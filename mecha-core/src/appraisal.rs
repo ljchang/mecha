@@ -256,9 +256,11 @@ impl Affect {
     /// the `sessions appraise` readout derives its "N of the ten variants"
     /// line from this against [`Affect::reachable_today`], because that
     /// count has now shipped stale as a literal twice (HISTORY records the
-    /// first). The length is asserted by the reachability test, so a new
-    /// variant that forgets this list fails there rather than shipping a
-    /// count that is quietly short.
+    /// first). What keeps the *list* honest is the exhaustive `match` in
+    /// the reachability test: a new variant fails to compile there, and the
+    /// arm the author then writes asserts membership here — a length assert
+    /// alone would be a tautology about `[Affect; 10]`'s own type, which is
+    /// exactly the quietly-short count this constant exists to prevent.
     pub const ALL: [Affect; 10] = [
         Affect::Neutral,
         Affect::Anger,
@@ -1619,7 +1621,33 @@ mod tests {
 
     #[test]
     fn only_five_labels_are_reachable_and_the_rest_say_why() {
-        assert_eq!(Affect::ALL.len(), 10);
+        // The compiler carries the pairing between the enum and `ALL`: this
+        // match must stay exhaustive, so a new variant fails to compile
+        // here, and the arm its author adds asserts the variant into `ALL`.
+        // (A bare `ALL.len() == 10` assert would be a tautology about the
+        // array's own declared type — it cannot notice a variant the list
+        // forgot.)
+        let member_of_all = |a: Affect| {
+            match a {
+                Affect::Neutral
+                | Affect::Anger
+                | Affect::Embarrassment
+                | Affect::Frustration
+                | Affect::Regret
+                | Affect::Disappointment
+                | Affect::Guilt
+                | Affect::Shame
+                | Affect::Pride
+                | Affect::Excitement => {}
+            }
+            assert!(
+                Affect::ALL.contains(&a),
+                "{a:?} is missing from Affect::ALL"
+            );
+        };
+        for a in Affect::ALL {
+            member_of_all(a);
+        }
         assert_eq!(
             Affect::ALL.iter().filter(|a| a.reachable_today()).count(),
             5
