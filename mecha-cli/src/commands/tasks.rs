@@ -459,7 +459,7 @@ async fn set(
     // it stood going in.
     let before = if status
         .as_deref()
-        .is_some_and(|s| matches!(s, "done" | "dropped"))
+        .is_some_and(crate::closure_guard::is_closing_status)
     {
         match find_task_with(&prepared, task).await {
             Ok(v) => Some(v),
@@ -536,7 +536,8 @@ async fn find_task_with(prepared: &setup::PreparedTools, task_id: &str) -> Resul
 /// closure.
 fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
     let was = before["status"].as_str().unwrap_or("inbox");
-    matches!(new_status, "done" | "dropped") && !matches!(was, "done" | "dropped")
+    crate::closure_guard::is_closing_status(new_status)
+        && !crate::closure_guard::is_closing_status(was)
 }
 
 /// §5.4's medium-tier appraisal moment. Best-effort throughout: the task is
@@ -575,7 +576,13 @@ fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
 /// out-of-band write — another process talking to the graph store directly
 /// — which no guard in this binary can see and which skips the appraisal;
 /// the complete fix for that one is still a closure claim the board owns,
-/// same shape as the atomicity note below.
+/// same shape as the atomicity note below. One configured cousin of the
+/// out-of-band case, noted on review: a `kg_task_update` routed through
+/// `[outbox] tools` is staged *before* the guard sees it, and the outbox
+/// release surface executes against an unguarded `prepare_tools` registry —
+/// so that path closes without appraising too. It takes deliberate config
+/// and the owner's own release, which is why it sits with the out-of-band
+/// writer rather than with anything the guard should catch.
 ///
 /// **Not atomic, and known rather than fixed.** Two closures of the same
 /// task landing together — a Slack tap and a TUI keypress within the same
@@ -1320,7 +1327,7 @@ async fn work(
     let was_waiting_on = task["waiting_on"].as_str().unwrap_or("").to_string();
 
     // A closed task is not work, and reopening it is the owner's decision.
-    if matches!(was.as_str(), "done" | "dropped") {
+    if crate::closure_guard::is_closing_status(was.as_str()) {
         bail!("{task_id} is {was} — `mecha tasks set {task_id} --status next` reopens it first");
     }
     // **D11: one live run per task, and only that.**

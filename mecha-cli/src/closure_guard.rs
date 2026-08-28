@@ -96,14 +96,49 @@ pub fn guard(registry: &mut mecha_core::tool::Registry) {
     }
 }
 
+/// The closed set of closing statuses — **the** definition, shared with
+/// `tasks.rs`'s `is_fresh_closure` and the `work` precondition, because the
+/// guard's correctness is precisely that it agrees with them: a status the
+/// closure appraisal counts as a closure is a status the model may not
+/// write, and a fourth hand-copied `"done" | "dropped"` is how the two
+/// drift.
+pub fn is_closing_status(s: &str) -> bool {
+    matches!(s, "done" | "dropped")
+}
+
 /// The one argument shape the guard exists for. Anything else — a missing
 /// `status`, an open status like `waiting`, a non-string — passes through
 /// untouched; the store's own validation owns those.
 fn closing_status(input: &Value) -> Option<&str> {
-    match input.get("status").and_then(Value::as_str) {
-        Some(s @ ("done" | "dropped")) => Some(s),
-        _ => None,
+    input
+        .get("status")
+        .and_then(Value::as_str)
+        .filter(|s| is_closing_status(s))
+}
+
+/// Fail the start if a model-facing registry holds an unguarded
+/// `kg_task_update` — the silently-degrading-guard rule applied to this
+/// guard itself. [`guard`]'s call in `setup::build` is positional (nothing
+/// can drive `build` in a unit test without a full `PreparedTools`), and a
+/// protection that can be silently lost to a refactor is the exact shape
+/// CLAUDE.md says must stop the run instead. Called at the end of `build`,
+/// after the subagent pool is cloned, so a reorder or deletion of the wrap
+/// fails every start loudly rather than shipping an unguarded surface.
+pub fn verify(registry: &mecha_core::tool::Registry) -> anyhow::Result<()> {
+    for tool in registry.iter() {
+        let name = tool.name();
+        if (name == "kg_task_update" || name.ends_with("__kg_task_update"))
+            && !tool.description().ends_with(GUARD_NOTE)
+        {
+            anyhow::bail!(
+                "`{name}` is on the model-facing surface without the closure guard — \
+                 `closure_guard::guard` must run before the registry is handed to the \
+                 agent, and refusing to start beats silently shipping a surface where \
+                 the model can close tasks around `mecha tasks set`"
+            );
+        }
     }
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -293,12 +328,12 @@ mod tests {
     /// module exists for — measured at the seam `setup::build` calls: every
     /// `kg_task_update` on the registry is guarded, a second `prefix_tools`
     /// server's included, and nothing else is touched. This fails if
-    /// `guard` regresses to a single `if let`. **It does not fail if the
-    /// call disappears from `build`** — an earlier version of this comment
-    /// overclaimed that, and the review checked it: driving `build` itself
-    /// means constructing a full `PreparedTools`, so the parent wiring
-    /// remains positional, guarded by the comment at its call site; only
-    /// the child path (`build_subagent`'s clone-site wrap) is structural.
+    /// `guard` regresses to a single `if let`. It does not drive `build`
+    /// itself (that means constructing a full `PreparedTools`) — what
+    /// closes that gap is [`verify`], which `build` runs on every start and
+    /// which turns a lost or reordered `guard` call into a startup error
+    /// rather than a silently unguarded surface; the test below pins
+    /// `verify`'s two directions.
     #[tokio::test]
     async fn guard_wraps_every_matching_handle_and_nothing_else() {
         struct Named(&'static str);
@@ -341,6 +376,26 @@ mod tests {
             !untouched.description().contains("mecha tasks set"),
             "only kg_task_update is guarded"
         );
+    }
+
+    /// The startup invariant behind the positional `guard` call in `build`:
+    /// an unguarded `kg_task_update` on a model-facing registry refuses to
+    /// start, and a guarded one passes — the silently-degrading-guard rule
+    /// applied to the guard itself.
+    #[test]
+    fn verify_refuses_a_raw_surface_and_passes_a_guarded_one() {
+        let mut registry = mecha_core::tool::Registry::new();
+        registry.insert(Arc::new(Reaches));
+        assert!(
+            verify(&registry).is_err(),
+            "a raw kg_task_update must fail the start"
+        );
+        guard(&mut registry);
+        verify(&registry).expect("a guarded surface passes");
+
+        // A registry with no task tool at all has nothing to verify.
+        let empty = mecha_core::tool::Registry::new();
+        verify(&empty).expect("no kg_task_update, nothing to guard");
     }
 
     /// `build` wraps the pool and `build_subagent` wraps again at the clone
