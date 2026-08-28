@@ -1294,21 +1294,22 @@ fn check_charter(path: &Path) -> Vec<Finding> {
             ),
             remedy: remedy("review the charter and trim it"),
         }],
-        // A file that exists and parses to zero lines is an authoring
-        // mistake by construction — nobody writes an empty charter on
-        // purpose — and otherwise indistinguishable from never having
+        // A file that exists and parses *cleanly* to zero lines is an
+        // authoring mistake by construction — nobody writes an empty charter
+        // on purpose — and otherwise indistinguishable from never having
         // written one at all: `load` returns `Ok`, `prompt_block` returns
-        // `None`, and `prepare_tools` prints nothing. `[[lines]]` instead of
-        // `[[line]]` is exactly this, since `RawCharter`'s `#[serde(default)]`
-        // turns an unrecognised table name into a silently empty document
-        // rather than a parse error.
+        // `None`, and `prepare_tools` prints nothing. This is not the
+        // typo'd-table-name case: `RawCharter` denies unknown fields, so
+        // `[[lines]]` instead of `[[line]]` is a load error and reaches the
+        // `Err` arm above, not this one. What lands here is a file that is
+        // empty, or holds only comments.
         Ok(charter) if charter.is_empty() => vec![Finding {
             component: "charter".to_string(),
             severity: Severity::Attention,
             summary: "charter file exists but has no lines".to_string(),
             detail: format!(
-                "{} parsed with zero `[[line]]` entries — check the table name; a typo \
-                 there parses as an empty charter rather than a load error",
+                "{} parsed cleanly with zero `[[line]]` entries — nothing from it \
+                 rides in any prompt",
                 path.display()
             ),
             remedy: remedy("see what's actually in the charter file"),
