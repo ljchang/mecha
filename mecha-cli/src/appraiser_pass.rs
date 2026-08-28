@@ -16,7 +16,11 @@ use mecha_core::provider::Provider;
 /// folding them into one counter hides which one a reader is looking at.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Tally {
-    /// Model calls actually made.
+    /// Appraisals attempted — **not** model calls. `appraise_with_model`
+    /// retries once on a malformed reply, so one driven appraisal can cost up
+    /// to two calls; the retry is never separately charged to the budget,
+    /// matching `appraisal_probe::Tally::driven`'s own unit ("arms actually
+    /// driven", not requests sent).
     pub driven: usize,
     pub found_negative: usize,
     pub found_positive: usize,
@@ -67,6 +71,13 @@ pub async fn appraise_one(
                 None => tally.found_nothing += 1,
                 Some(s) if s < 0.0 => tally.found_negative += 1,
                 Some(_) => tally.found_positive += 1,
+            }
+            // The one place the model's own reasoning is ever read — printed
+            // beside the tally for a human, on `appraiser_prompt`'s own
+            // promise, and never carried any further: `apply_appraiser` has
+            // no field for it, so it stops here.
+            if let Some(reasoning) = &v.reasoning {
+                eprintln!("· {}: {reasoning}", appraisal.session_id);
             }
             apply_appraiser(appraisal, v);
         }
