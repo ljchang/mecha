@@ -208,8 +208,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // compaction leaves the list shorter than it started, and
                 // truncating *that* keeps the dangling message this exists
                 // to drop.
-                convo.messages = recorded;
+                convo.messages = recorded.clone();
                 convo.messages.pop();
+                // And the transcript must agree, or the failure survives a
+                // resume (serve/chat's review finding, which holds here
+                // verbatim): the triggering user message was appended at
+                // submit, so without this the file ends on a dangling user
+                // turn and `--resume`'s next line puts two user messages in
+                // a row. The rolled-back list is not an extension of
+                // `recorded`, so `record_run` writes the `Rewrite` that
+                // makes a resume load exactly what memory holds. Taint is
+                // still persisted — a failed turn that read a hostile page
+                // still read it.
+                if let Some(s) = &session {
+                    let _ = s.record_run(&recorded, &convo);
+                    let _ = s.append(&Record::Taint(convo.taint));
+                }
             }
         }
     }
