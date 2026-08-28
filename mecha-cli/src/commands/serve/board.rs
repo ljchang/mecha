@@ -188,6 +188,13 @@ fn run_summary(dir: &std::path::Path, session_id: &str) -> serde_json::Value {
     // way `chat.rs`'s `valid_key` refuses a session key before it becomes a
     // directory component: a real session id is never a path.
     if !is_bare_path_component(session_id) {
+        // Not silent: a `session` field shaped like a path means the graph
+        // store is corrupt or being actively pushed at, and the refusal
+        // otherwise renders identically to an ordinary swept transcript —
+        // "an unreadable store reports as a dash, never as zero," one
+        // finding over. Costs nothing on the common path, where this never
+        // fires.
+        tracing::warn!("refusing a session id shaped like a path: {session_id:?}");
         return serde_json::json!({ "recorded": false, "transcript": false });
     }
     let direct = dir.join(format!("{session_id}.jsonl"));
@@ -769,23 +776,21 @@ mod tests {
     ///
     /// **A denylist, not an allowlist.** Kept beside the real regression
     /// test below because `is_bare_path_component`'s own doc names the
-    /// difference: these seven inputs are the ones a hand-picked list would
+    /// difference: these six inputs are the ones a hand-picked list would
     /// name, and every one of them is still worth pinning down even though
     /// none of them can distinguish the fixed code from the unfixed code on
     /// an *empty* directory (see the next test for why that distinction
     /// needs a planted file, not an empty one).
+    ///
+    /// **Not `"a\\b"`.** On this platform `\` is not a separator, so
+    /// `is_bare_path_component` correctly *accepts* it as one ordinary
+    /// segment (asserted directly in that function's own test) — a case
+    /// asserting it must be refused here would describe Windows, not the
+    /// platform this suite actually runs on.
     #[test]
     fn a_session_id_shaped_like_a_path_is_refused_not_joined() {
         let dir = tmpdir("path-safety");
-        for hostile in [
-            "../../etc/passwd",
-            "/etc/passwd",
-            "..",
-            ".",
-            "",
-            "a/b",
-            "a\\b",
-        ] {
+        for hostile in ["../../etc/passwd", "/etc/passwd", "..", ".", "", "a/b"] {
             let v = run_summary(&dir, hostile);
             assert_eq!(
                 v,
