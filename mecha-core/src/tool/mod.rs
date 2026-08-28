@@ -32,6 +32,17 @@ pub struct ToolOutput {
     /// guards is not third-party content, and labelling it as such makes the
     /// model invent explanations for its own harness's behaviour.
     pub external: bool,
+    /// This error is mecha's own in-process guard refusing the call, not
+    /// the tool failing — the harness working. The loop reads it into the
+    /// trace's `denied`, so it lands on the same side of the failure
+    /// accounting as an approver or hook denial: excluded from
+    /// `ended_on_failed_call` and the tool-error rate `doctor` thresholds,
+    /// exactly as the loop's own comment on that split demands. Only
+    /// trusted in-process wrappers set it; nothing constructed from an MCP
+    /// wire ever does (`mcp.rs` builds outputs through `ok`/`err`, which
+    /// leave it false), so a third-party server cannot launder its failures
+    /// into "the harness working".
+    pub refusal: bool,
 }
 
 impl ToolOutput {
@@ -40,6 +51,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: false,
             external: false,
+            refusal: false,
         }
     }
 
@@ -48,6 +60,18 @@ impl ToolOutput {
             content: content.into(),
             is_error: true,
             external: false,
+            refusal: false,
+        }
+    }
+
+    /// An expected failure that is the harness refusing, not the tool
+    /// failing — see the `refusal` field for what that changes.
+    pub fn refusal(content: impl Into<String>) -> Self {
+        ToolOutput {
+            content: content.into(),
+            is_error: true,
+            external: false,
+            refusal: true,
         }
     }
 

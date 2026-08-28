@@ -3527,11 +3527,18 @@ impl Agent {
                     .await;
             }
 
+            // `out.refusal` is an in-process guard's "no" — the harness
+            // working, exactly as an approver or hook denial is — so it
+            // lands on the denied side of the failure accounting rather
+            // than in `ended_on_failed_call` and the tool-error rate.
+            // (`denied_this_turn` is deliberately not incremented: it was
+            // consumed earlier in the turn, before execution, and a dead
+            // add here would claim an effect it cannot have.)
             trace.push(ToolCallTrace {
                 name: name.clone(),
                 input: calls[i].2.clone(),
                 is_error: out.is_error,
-                denied: false,
+                denied: out.refusal,
                 unknown: false,
                 staged: false,
             });

@@ -36,9 +36,19 @@
 //! simply delegate. Wrapping the pooled handle first means every child
 //! inherits the guarded one.
 //!
-//! An expected failure (`ToolOutput::err`), never `Err`: the model can
+//! An expected failure (`ToolOutput::refusal`), never `Err`: the model can
 //! recover — relay the command to the owner, or run it — and the refusal is
-//! mecha's own guard speaking, so it is not marked external.
+//! mecha's own guard speaking, so it is not marked external and it lands on
+//! the *denied* side of the failure accounting (the loop reads the flag into
+//! the trace), never in `ended_on_failed_call` or the tool-error rate — a
+//! run this guard said "no" to is the harness working, not a run that broke.
+//!
+//! Stated precisely, because the review caught the doc reaching further than
+//! the mechanism: what this guard makes true is **a closure cannot silently
+//! skip its appraisal** — every surviving path either appraises (`tasks
+//! set`, including via shell) or is the documented out-of-band residue. The
+//! stronger "every closure crosses a human" holds only where the approver or
+//! the withholding does, and is their claim, not this wrapper's.
 
 use mecha_core::tool::{Capabilities, CarriedState, Tool, ToolCtx, ToolOutput};
 use serde_json::Value;
@@ -202,7 +212,7 @@ impl Tool for ClosedStatusGuard {
                             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
                 })
                 .unwrap_or("<task-id>");
-            return Ok(ToolOutput::err(format!(
+            return Ok(ToolOutput::refusal(format!(
                 "closing a task is the owner's act: a direct status write skips the \
                  closure appraisal that decision gets exactly once. Ask the owner to \
                  run `mecha tasks set {task} --status {status}` (or run it yourself \
@@ -269,6 +279,12 @@ mod tests {
             assert!(
                 !out.external,
                 "mecha's own guard is not third-party content"
+            );
+            assert!(
+                out.refusal,
+                "the guard's no is the harness working — it must land on the \
+                 denied side of the failure accounting, never in \
+                 ended_on_failed_call"
             );
         }
     }

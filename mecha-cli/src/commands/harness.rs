@@ -322,6 +322,14 @@ async fn measure(
                 .as_deref()
                 .map(|c| format!(" [{c}]"))
                 .unwrap_or_default();
+            // Into the stored record for *every* multi-config episode, not
+            // only the dropped ones — found on review: an episode that pairs
+            // cleanly contributes to the tally that gates acceptance, and
+            // that is the more consequential place for the decider reading
+            // `mecha harness show` to know the replay was compromising.
+            if let Some(c) = &prep.config_caveat {
+                replay_caveats.push(format!("{} — {c}", prep.id));
+            }
             eprint!(
                 "· [{label}] {}{caveat} ({}/{}) baseline…",
                 prep.id, n, total
@@ -368,9 +376,6 @@ async fn measure(
                 // not necessarily about the change.
                 eprintln!(" diverged — dropped");
                 diverged.push(prep.id.clone());
-                if let Some(c) = &prep.config_caveat {
-                    replay_caveats.push(format!("{} — {c}", prep.id));
-                }
                 continue;
             }
             eprintln!(" paired");
