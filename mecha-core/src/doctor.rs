@@ -115,6 +115,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_questions(&home.join("questions"), now));
     findings.extend(check_frontdoor(&home.join("requests"), now));
     findings.extend(check_triggers(&home.join("triggers"), now));
+    findings.extend(check_charter(&home.join("charter.toml")));
     findings.extend(check_runs(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
     findings.extend(check_learning(&home.join("learning"), now));
@@ -1246,6 +1247,82 @@ const CUT_SHORT_RATE: f64 = 0.25;
 /// shared with the candidate gate's metric — see its doc for why there were two.
 fn cut_short(stats: &crate::session::RunStats) -> bool {
     stats.stop_cause.is_some_and(|c| c.cut_short())
+}
+
+/// A charter that fails to load degrades every run to un-chartered with
+/// nothing but a stderr line the TUI's alternate screen covers for the whole
+/// session (`setup.rs::prepare_tools`) — the same discovery gap `mecha
+/// skills` exists to close for a bad `SKILL.md`, with no `/charter` modal yet
+/// to close it here. `Charter::load` is read-only and creates nothing, so
+/// calling it directly is safe under doctor's own rule against healing what
+/// it is about to report.
+fn check_charter(path: &Path) -> Vec<Finding> {
+    // `exists()`, not `is_file()`: the latter also reads false for a
+    // directory sitting at this path or a broken symlink, which would
+    // silently report a broken charter as "nothing written yet" instead of
+    // falling through to `Charter::load` below and getting a real `Err` —
+    // `read_to_string` on a directory fails with its own I/O error rather
+    // than `NotFound`, so `Charter::load` already tells the two apart
+    // correctly once it's actually called.
+    if !path.exists() {
+        return Vec::new();
+    }
+    let remedy = |description: &str| {
+        Some(Remedy {
+            description: description.to_string(),
+            argv: vec!["mecha".to_string(), "charter".to_string()],
+            needs_terminal: false,
+        })
+    };
+    match crate::charter::Charter::load(path) {
+        Err(e) => vec![Finding {
+            component: "charter".to_string(),
+            severity: Severity::Broken,
+            summary: "charter did not load".to_string(),
+            detail: format!(
+                "{}: {e:#} — every run is proceeding un-chartered",
+                path.display()
+            ),
+            remedy: remedy("see the parse error and fix charter.toml"),
+        }],
+        // Loads and is usable, but costs more of the cached prefix than
+        // argued — a warning, not a failure: it still rides in every prompt
+        // exactly as authored, the same "warns and still loads" shape
+        // `over_budget_domains` gives the learned-rules cap.
+        Ok(charter) if charter.over_budget() => vec![Finding {
+            component: "charter".to_string(),
+            severity: Severity::Attention,
+            summary: "charter is over its character budget".to_string(),
+            detail: format!(
+                "{} is {} characters, over the {}-character budget",
+                path.display(),
+                charter.char_count(),
+                crate::charter::CHARTER_CHAR_BUDGET,
+            ),
+            remedy: remedy("review the charter and trim it"),
+        }],
+        // A file that exists and parses *cleanly* to zero lines is an
+        // authoring mistake by construction — nobody writes an empty charter
+        // on purpose — and otherwise indistinguishable from never having
+        // written one at all: `load` returns `Ok`, `prompt_block` returns
+        // `None`, and `prepare_tools` prints nothing. This is not the
+        // typo'd-table-name case: `RawCharter` denies unknown fields, so
+        // `[[lines]]` instead of `[[line]]` is a load error and reaches the
+        // `Err` arm above, not this one. What lands here is a file that is
+        // empty, or holds only comments.
+        Ok(charter) if charter.is_empty() => vec![Finding {
+            component: "charter".to_string(),
+            severity: Severity::Attention,
+            summary: "charter file exists but has no lines".to_string(),
+            detail: format!(
+                "{} parsed cleanly with zero `[[line]]` entries — nothing from it \
+                 rides in any prompt",
+                path.display()
+            ),
+            remedy: remedy("see what's actually in the charter file"),
+        }],
+        Ok(_) => Vec::new(),
+    }
 }
 
 /// Report population-level run quality: the signals that are invisible in any
@@ -3234,5 +3311,125 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].component, "graph");
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn a_malformed_charter_is_broken_and_names_the_remedy() {
+        let home = home("charter-broken");
+        std::fs::write(
+            home.join("charter.toml"),
+            "[[line]]\nid = \"a\"\ntext = \"one\"\n[[line]]\nid = \"a\"\ntext = \"two\"\n",
+        )
+        .unwrap();
+
+        let findings = check_charter(&home.join("charter.toml"));
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].severity, Severity::Broken);
+        assert!(
+            findings[0].detail.contains("used more than once"),
+            "{}",
+            findings[0].detail
+        );
+        assert_eq!(
+            findings[0].remedy.as_ref().unwrap().argv,
+            vec!["mecha", "charter"]
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_charter_over_budget_is_attention_not_broken_and_still_named_loaded() {
+        let home = home("charter-over-budget");
+        let long = "x".repeat(3000);
+        std::fs::write(
+            home.join("charter.toml"),
+            format!("[[line]]\nid = \"only\"\ntext = \"{long}\"\n"),
+        )
+        .unwrap();
+
+        let findings = check_charter(&home.join("charter.toml"));
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        // Attention, not Broken: the document is valid and still loads in
+        // full — it only costs more of the prefix than argued.
+        assert_eq!(findings[0].severity, Severity::Attention);
+        assert!(
+            findings[0].summary.contains("budget"),
+            "{}",
+            findings[0].summary
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_healthy_charter_and_a_missing_one_are_both_silent() {
+        let home = home("charter-healthy");
+        assert!(
+            check_charter(&home.join("charter.toml")).is_empty(),
+            "no file at all"
+        );
+
+        std::fs::write(
+            home.join("charter.toml"),
+            "[[line]]\nid = \"a\"\ntext = \"protect the owner\"\n",
+        )
+        .unwrap();
+        assert!(check_charter(&home.join("charter.toml")).is_empty());
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_genuinely_empty_charter_file_is_flagged_not_silent() {
+        // A file that exists and parses cleanly (a comment, or nothing at
+        // all) to zero `[[line]]` entries — as opposed to a typo'd table
+        // name, which `RawCharter`'s `deny_unknown_fields` now turns into a
+        // load error instead, covered by the next test.
+        let home = home("charter-empty-comment");
+        std::fs::write(home.join("charter.toml"), "# no priorities written yet\n").unwrap();
+
+        let findings = check_charter(&home.join("charter.toml"));
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].severity, Severity::Attention);
+        assert!(
+            findings[0].summary.contains("no lines"),
+            "{}",
+            findings[0].summary
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_directory_at_the_charter_path_is_broken_not_silently_absent() {
+        // `is_file()` would read this as "nothing written yet" and stay
+        // silent; `exists()` lets it reach `Charter::load`, whose
+        // `read_to_string` fails on a directory with a real I/O error rather
+        // than `NotFound`.
+        let home = home("charter-is-a-directory");
+        std::fs::create_dir_all(home.join("charter.toml")).unwrap();
+
+        let findings = check_charter(&home.join("charter.toml"));
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].severity, Severity::Broken);
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_typo_d_table_name_beside_a_real_line_is_broken_not_silently_short() {
+        let home = home("charter-typo-table");
+        std::fs::write(
+            home.join("charter.toml"),
+            "[[line]]\nid = \"a\"\ntext = \"one\"\n\n[[lines]]\nid = \"b\"\ntext = \"two\"\n",
+        )
+        .unwrap();
+
+        let findings = check_charter(&home.join("charter.toml"));
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].severity, Severity::Broken);
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

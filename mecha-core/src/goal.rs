@@ -14,9 +14,9 @@
 //! somebody else's record is the thing that can disagree with it.
 //!
 //! **Three kinds, because there are three horizons** — a standing commitment,
-//! a current concern, a homeostatic setpoint. Only `Task` has a store behind
-//! it today; the other two are named here because the wire format below has to
-//! survive their arrival, and because a reference whose kinds are invented one
+//! a current concern, a homeostatic setpoint. `Task` and `Charter` have stores
+//! behind them; `Setpoint` is named here because the wire format below has to
+//! survive its arrival, and because a reference whose kinds are invented one
 //! at a time acquires a fourth spelling of the same idea.
 //!
 //! ## The wire format, and why parsing has two policies
@@ -43,7 +43,8 @@ use std::str::FromStr;
 /// What a piece of work serves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalRef {
-    /// A standing commitment from the charter. No store yet.
+    /// A standing commitment from the charter (see [`crate::charter`]). The
+    /// id is a [`crate::charter::CharterLine`]'s own `id`.
     ///
     /// **Rank is the charter's line order, and is deliberately not carried
     /// here.** Standing commitments conflict — protecting the owner against

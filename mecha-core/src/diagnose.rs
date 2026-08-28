@@ -93,6 +93,23 @@ pub struct Evidence {
     pub ended_on_failed_call_rate: Option<f64>,
     pub compactions: u64,
     pub stop_causes: Vec<(String, usize)>,
+    /// Average `Homeostat::peak_context_pressure` over the runs that sensed
+    /// it (`docs/GOAL-SYSTEM-DESIGN.md` §4 into this brief) — the machine's
+    /// own conditions, beside what runs *did*. A counter like every other
+    /// field here: the diagnostician judges what a high number means, this
+    /// module only reports it.
+    pub mean_peak_context_pressure: Option<f64>,
+    /// Average `Homeostat::anticipated_guilt` over the runs that sensed it
+    /// (`crate::guilt`). The sensor has no behavioural consumer yet; this is
+    /// the corpus existing before anything is built on it.
+    ///
+    /// **Not independent of [`Self::mean_peak_context_pressure`] above it.**
+    /// `crate::guilt::anticipated_guilt`'s own formula takes context pressure
+    /// as one of its three terms, so the two fields will move together by
+    /// construction whenever pressure is what is driving guilt up — a reader
+    /// treating a rise in both as two corroborating signals is seeing one
+    /// cause twice.
+    pub mean_anticipated_guilt: Option<f64>,
     /// What `doctor` said, verbatim — machine-authored text, not third-party.
     pub findings: Vec<String>,
     /// What earlier passes already tried, one line each — machine-authored
@@ -131,6 +148,8 @@ impl Evidence {
                     (name, n)
                 })
                 .collect(),
+            mean_peak_context_pressure: corpus.mean_peak_context_pressure(),
+            mean_anticipated_guilt: corpus.mean_anticipated_guilt(),
             findings: Vec::new(),
             history: Vec::new(),
         }
@@ -149,7 +168,10 @@ impl Evidence {
         let mut out = format!(
             "model: {}\nruns: {} (from {} session(s))\n\
              tool calls: {} · refused by the environment: {} ({})\n\
-             finished on a failed call: {} ({})\ncompactions: {}\nstop causes: {}\n",
+             finished on a failed call: {} ({})\ncompactions: {}\nstop causes: {}\n\
+             avg peak context pressure: {} · avg anticipated guilt: {} \
+             (guilt is computed partly from pressure — a rise in both is not two \
+             independent findings)\n",
             self.model,
             self.runs,
             self.sessions_read,
@@ -164,6 +186,10 @@ impl Evidence {
                 .map(|(name, n)| format!("{name} {n}"))
                 .collect::<Vec<_>>()
                 .join(", "),
+            pct(self.mean_peak_context_pressure),
+            self.mean_anticipated_guilt
+                .map(|g| format!("{g:.2}"))
+                .unwrap_or_else(|| "unknown (no denominator)".into()),
         );
         if !self.findings.is_empty() {
             out.push_str("\nwhat the health check reported:\n");
@@ -676,6 +702,23 @@ rationale: the threshold is too low";
         let brief = evidence.brief();
         assert!(brief.contains("unknown (no denominator)"), "{brief}");
         assert!(!brief.contains("0.0%"), "{brief}");
+    }
+
+    #[test]
+    fn the_brief_reports_the_homeostat_means_when_sensed() {
+        let evidence = Evidence {
+            model: "tiny-local".into(),
+            runs: 8,
+            mean_peak_context_pressure: Some(0.42),
+            mean_anticipated_guilt: Some(0.1),
+            ..Default::default()
+        };
+        let brief = evidence.brief();
+        assert!(brief.contains("42.0%"), "{brief}");
+        assert!(brief.contains("0.10"), "{brief}");
+        // The non-independence has to reach the model reading this brief,
+        // not just a Rust doc comment nobody handed to it.
+        assert!(brief.contains("not two"), "{brief}");
     }
 
     #[test]
