@@ -558,19 +558,19 @@ fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
 /// is a real design question rather than a line fix — named here so it is
 /// not mistaken for coverage this rung already has.
 ///
-/// **A closure made anywhere but `tasks set` consumes this moment, silently.**
-/// `is_fresh_closure` fires only on the transition *this command* observes.
-/// Every first-party owner surface does route through `tasks set` (the TUI
-/// modal via `self_cli`, the web board's `task_set`, Slack's `Action::
-/// TaskDone`) — but an ordinary chat session's model still holds
-/// `kg_task_update` behind the interactive approver, and any out-of-band
-/// graph write can move a task to `done`; the owner's later `tasks set
-/// --status done` then sees `was == "done"`, not fresh, and the one
-/// appraisal that delegated session was ever going to get is never made,
-/// with nothing saying so. A coverage gap, not an exploit; closing it means
-/// either withholding `kg_task_update` from chat surfaces too (a real
-/// posture change) or a closure claim the board owns, same shape as the
-/// atomicity note below.
+/// **A closure made anywhere but `tasks set` consumes this moment, silently
+/// — and the model-facing path is now closed.** `is_fresh_closure` fires
+/// only on the transition *this command* observes. Every first-party owner
+/// surface routes through `tasks set` (the TUI modal via `self_cli`, the web
+/// board's `task_set`, Slack's `Action::TaskDone`), and the model can no
+/// longer close one around it: `closure_guard::ClosedStatusGuard` wraps
+/// `kg_task_update` on every model-facing registry (`setup::build`, before
+/// the subagent pool is cloned), refusing exactly a `status` of
+/// `done`/`dropped` and pointing at this command. What remains reachable is
+/// a genuinely out-of-band write — another process talking to the graph
+/// store directly — which no guard in this binary can see; the complete fix
+/// is still a closure claim the board owns, same shape as the atomicity
+/// note below.
 ///
 /// **Not atomic, and known rather than fixed.** Two closures of the same
 /// task landing together — a Slack tap and a TUI keypress within the same
