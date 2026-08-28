@@ -29,6 +29,13 @@
   let todoOpen = $state(true);
   const MARK = { completed: '[x]', in_progress: '[~]', pending: '[ ]' };
   let taint = $state(null);
+  // §6.2's readout — the logo's tint. `null` means "nothing to say", which
+  // is the overwhelming common case (the server sends an event only when
+  // the label is not neutral, to avoid a wire event on every turn saying
+  // nothing); `sawAffectThisRun` is what tells `done` whether to fall back
+  // to that silence for a run that produced no event.
+  let affect = $state(null);
+  let sawAffectThisRun = false;
   let usage = $state(null);
   let model = $state('');
   let draft = $state('');
@@ -162,6 +169,7 @@
           // started, since nothing local set `running` for it.
           pushEntry({ kind: 'user', text: ev.text, spoken: true });
           running = true;
+          sawAffectThisRun = false;
           break;
         case 'tool':
           pushEntry({ kind: 'tool', name: ev.name, pending: true });
@@ -187,6 +195,10 @@
           break;
         case 'notice':
           pushEntry({ kind: 'notice', text: ev.text });
+          break;
+        case 'affect':
+          affect = ev.label;
+          sawAffectThisRun = true;
           break;
         case 'mode':
           // The server is the owner of this, not the tap that asked for it:
@@ -224,6 +236,9 @@
           flushStreaming();
           running = false;
           taint = { private: ev.taint_private, untrusted: ev.taint_untrusted };
+          // A run that produced no `affect` event was `Neutral` — the
+          // server never says so out loud, so silence is read as such here.
+          if (!sawAffectThisRun) affect = null;
           if (!ev.ok && ev.error) pushEntry({ kind: 'notice', text: ev.error });
           entries = entries.map((e) =>
             e.kind === 'tool' && e.pending ? { ...e, pending: false } : e
@@ -566,6 +581,7 @@
       if (data.started) {
         pushEntry({ kind: 'user', text });
         running = true;
+        sawAffectThisRun = false;
       } else if (data.steered) {
         pushEntry({ kind: 'user', text, queued: true });
       }
@@ -1058,7 +1074,11 @@
           aria-label={vState.name === 'idle' ? 'reconnect the call' : `mecha ${vState.label}`}
         >
           <svg viewBox="0 0 63 54" width="112" height="96" aria-hidden="true">
-            <g fill="var(--accent-700)">
+            <!-- §6.2's readout: the logo's tint. `affect` is `null` on the
+                 overwhelming common (neutral) case, which is what leaves
+                 the ordinary colour alone — never a word, never a shape,
+                 just which colour reads. -->
+            <g fill="var(--accent-700)" style:fill={affect ? 'var(--hazard)' : null}>
               <path d="M0 0h24l7.5 8.5L39 0h24v16H0z" />
               <path d="M0 20h14v15H0zM49 20h14v15H49zM0 39h14v15H0zM49 39h14v15H49z" />
               <path d="M14 39v15h13.24zM49 39v15H35.76z" />

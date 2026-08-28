@@ -23,6 +23,7 @@ The three legs are env-configurable base URLs (D6):
 import os
 import uuid
 
+import httpx
 from openai.types.audio import Transcription
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -70,6 +71,22 @@ MIN_SPEED, MAX_SPEED = 0.5, 2.0
 # the library's neutral rather than this one.
 TTS_EXAGGERATION = float(os.environ.get("MECHA_VOICE_TTS_EXAGGERATION", "0.8"))
 TTS_CFG_WEIGHT = float(os.environ.get("MECHA_VOICE_TTS_CFG_WEIGHT", "0.3"))
+
+# GOAL-SYSTEM-DESIGN.md §6.2's voice readout: a small side channel to the
+# facade, symmetric with the TTS/STT legs above rather than piggybacking the
+# OpenAI-compatible completion response - `OpenAILLMService` parses that
+# through the real `openai` SDK's typed models, which drop an unrecognised
+# top-level field before any pipecat frame processor ever sees it.
+AFFECT_URL = f"{FACADE_URL}/mecha-affect"
+# A single, deliberately conservative nudge for whichever of the four labels
+# reachable today (`Affect::reachable_today`, mecha-core/src/appraisal.rs)
+# the harness names - not a full emotion-to-prosody mapping, because nothing
+# here can validate one perceptually. Lower `cfg_weight` reads as a more
+# measured, careful delivery (Resemble's own expressive recipe: cfg_weight
+# moves *against* exaggeration). Extending this is free once rung 7's
+# quarantined appraiser and counterfactual probe make more labels reachable
+# - only this table grows, nothing else here needs to change.
+AFFECT_CFG_WEIGHT_DELTA = -0.05
 
 # Pinned per the build log (docs/VOICE-RESEARCH.md S7): this wording
 # transcribes; "from beginning to end" phrasing makes the model refuse, and
@@ -222,11 +239,19 @@ class LocalTTS(OpenAITTSService):
 
     def __init__(self, *args, speed: float = 1.0,
                  exaggeration: float = TTS_EXAGGERATION,
-                 cfg_weight: float = TTS_CFG_WEIGHT, **kwargs):
+                 cfg_weight: float = TTS_CFG_WEIGHT,
+                 affect_key: str | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._speed = speed
         self._exaggeration = exaggeration
         self._cfg_weight = cfg_weight
+        # §6.2: the same namespaced key `mecha-cli`'s facade uses internally
+        # (`"chat:<id>"` for a hosted D3 session, `"voice:<slot>"` for the
+        # facade's own) - the two must not collide, so the namespace has to
+        # match on both sides of this poll. `None` when there is nothing to
+        # poll for (should not happen in practice; `run_bot` always sets one).
+        self._affect_key = affect_key
+        self._affect_client = httpx.AsyncClient(timeout=0.3)
 
     @property
     def speed(self) -> float:
@@ -244,10 +269,46 @@ class LocalTTS(OpenAITTSService):
     def set_voice_name(self, voice: str) -> None:
         self._settings.voice = voice
 
+    def set_affect_key(self, key: str) -> None:
+        """Set once `named`/`session_key` are known in `run_bot` - the same
+        after-construction pattern `set_speed`/`set_voice_name` already use,
+        since the facade's namespaced key is not known at construction
+        time."""
+        self._affect_key = key
+
+    async def _tts_params(self) -> tuple[float, float]:
+        """§6.2's voice readout, applied to this one call only - never
+        mutating `self._exaggeration`/`self._cfg_weight`, which stay the
+        owner's configured baseline for every other session. Pipecat
+        aggregates TTS by sentence, so this polls once per sentence of one
+        answer rather than once per turn; the facade's cache is
+        set-and-overwrite for exactly that reason (never take-once).
+
+        Failure, timeout, or a `neutral`/absent label all fall back to the
+        baseline silently - a harness hiccup must never make a call worse
+        or slower than if this did not exist."""
+        if not self._affect_key:
+            return self._exaggeration, self._cfg_weight
+        try:
+            r = await self._affect_client.get(
+                AFFECT_URL, params={"session": self._affect_key}
+            )
+            if r.status_code == 200:
+                label = r.json().get("affect")
+                if label and label != "neutral":
+                    return (
+                        self._exaggeration,
+                        max(0.0, self._cfg_weight + AFFECT_CFG_WEIGHT_DELTA),
+                    )
+        except Exception:
+            pass
+        return self._exaggeration, self._cfg_weight
+
     async def run_tts(self, text: str, context_id: str):
         from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
 
         try:
+            exaggeration, cfg_weight = await self._tts_params()
             create_params = {
                 "input": text,
                 "model": self._settings.model,
@@ -259,8 +320,8 @@ class LocalTTS(OpenAITTSService):
                 # typed client - which is how a knob gets plumbed to a
                 # server that accepts it and still never arrives.
                 "extra_body": {
-                    "exaggeration": self._exaggeration,
-                    "cfg_weight": self._cfg_weight,
+                    "exaggeration": exaggeration,
+                    "cfg_weight": cfg_weight,
                 },
             }
             async with self._client.audio.speech.with_streaming_response.create(
@@ -327,6 +388,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             print(f"voice: refusing malformed chat session {want!r}", flush=True)
     if named:
         headers["X-Chat-Session"] = named
+    # §6.2: the same namespaced key `mecha-cli`'s facade keys its cache by
+    # (`hosted_completion`'s `confirm_key`) - a hosted chat session and this
+    # connection's own voice slot must not collide, so the namespace has to
+    # match exactly on both sides of the poll.
+    tts.set_affect_key(f"chat:{named}" if named else f"voice:{session_key}")
     print(
         f"voice session key: {session_key}"
         + (f" (speaking into chat session {named!r})" if named else ""),

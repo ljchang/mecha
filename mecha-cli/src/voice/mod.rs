@@ -114,6 +114,10 @@ pub struct HostedAnswer {
     pub text: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// §6.2's readout, lowercase and `None` on `Neutral` — the same value
+    /// the page's `WireEvent::Affect` carries, computed once and threaded
+    /// out through both doors.
+    pub affect: Option<String>,
 }
 
 /// What asking a host to speak can come to.
@@ -208,6 +212,14 @@ struct Shared {
     /// rather than inside one, because a hosted call (D3) has no slot here
     /// and still gets asked.
     confirmations: confirm::Confirmations,
+    /// §6.2's voice readout — the last non-`Neutral` label a hosted turn
+    /// (D3) came back with, per chat session key. Set-and-overwrite, never
+    /// take-once: Pipecat's TTS aggregates by sentence, so the worker polls
+    /// this once per sentence of one answer, and consuming semantics would
+    /// go stale after the first. Cleared (not merely left stale) on every
+    /// completed turn — `Neutral` removes the entry — so a synthesis for a
+    /// *later*, ordinary turn never inherits an earlier turn's mood.
+    affects: Mutex<HashMap<String, String>>,
 }
 
 /// The facade as a mountable component: `mecha voice-serve` builds its own
@@ -241,6 +253,7 @@ impl Facade {
                 config,
                 token,
                 confirmations: confirm::Confirmations::default(),
+                affects: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -459,11 +472,53 @@ async fn handle(mut stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
         body.extend_from_slice(&chunk[..n]);
     }
 
-    match (head.method.as_str(), head.path.as_str()) {
+    // Routing ignores the query string; `/v1/mecha-affect` is the only
+    // route that reads one, off `head.path` itself.
+    let route = head.path.split('?').next().unwrap_or(&head.path);
+    match (head.method.as_str(), route) {
         ("GET", "/health") => write_json(&mut stream, 200, &json!({"status": "ok"})).await,
         ("POST", "/v1/chat/completions") => completion(&mut stream, &shared, &head, &body).await,
+        ("GET", "/v1/mecha-affect") => affect_status(&mut stream, &shared, &head).await,
         _ => write_json(&mut stream, 404, &json!({"error": "not found"})).await,
     }
+}
+
+/// §6.2's voice side-channel. Not authenticated, matching `/health`: this is
+/// loopback-only like everything else in this module, and the worst a
+/// compromised loopback caller learns is which of four mood words a session
+/// last carried — no more sensitive than the health check already answers
+/// with no token.
+///
+/// A plain HTTP GET rather than piggybacking the OpenAI-compatible
+/// completion response: `worker.py`'s LLM service is a stock
+/// `pipecat.services.openai.llm.OpenAILLMService`, which parses that
+/// response through the real `openai` SDK's typed models — an unrecognised
+/// top-level field there is silently dropped before any pipecat frame
+/// processor ever sees it, so that channel cannot carry this.
+async fn affect_status(stream: &mut TcpStream, shared: &Arc<Shared>, head: &Head) -> Result<()> {
+    let Some(session) = query_param(&head.path, "session") else {
+        return write_json(stream, 400, &json!({"error": "missing ?session="})).await;
+    };
+    match shared.affects.lock().await.get(session) {
+        Some(label) => write_json(stream, 200, &json!({"affect": label})).await,
+        None => {
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n")
+                .await?;
+            Ok(())
+        }
+    }
+}
+
+/// Hand-rolled rather than pulling in a URL/query-string crate: this module
+/// already hand-rolls its whole HTTP surface (it is a raw-socket loopback
+/// facade, not an axum app), and one query parameter does not change that.
+fn query_param<'a>(path: &'a str, key: &str) -> Option<&'a str> {
+    let (_, query) = path.split_once('?')?;
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then_some(v)
+    })
 }
 
 async fn write_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result<()> {
@@ -740,6 +795,21 @@ async fn hosted_completion(
         .done
         .await
         .unwrap_or_else(|_| Err("the run ended without answering".to_string()));
+    // §6.2: cache (or clear) this turn's label before anything else touches
+    // `answer`, so the worker's next per-sentence poll — which can start as
+    // soon as the first chunk of `say`/`finish_stream` below reaches it —
+    // sees this turn's mood, never a stale one from before it.
+    if let Ok(a) = &answer {
+        let mut affects = shared.affects.lock().await;
+        match &a.affect {
+            Some(label) => {
+                affects.insert(confirm_key.to_string(), label.clone());
+            }
+            None => {
+                affects.remove(confirm_key);
+            }
+        }
+    }
     // The offer comes after the model's own words and only when the turn
     // produced an answer: a run that failed has staged nothing worth
     // confirming, and asking about drafts on top of an error is a question
@@ -1272,6 +1342,25 @@ mod tests {
             session_key(&serde_json::json!({"user": "call-7"}), &header),
             "conn-abc"
         );
+    }
+
+    /// §6.2's side channel: the one query parameter this module reads.
+    #[test]
+    fn query_param_reads_the_named_pair_and_nothing_else_matches() {
+        assert_eq!(
+            query_param("/v1/mecha-affect?session=main", "session"),
+            Some("main")
+        );
+        assert_eq!(
+            query_param("/v1/mecha-affect?other=x&session=main", "session"),
+            Some("main")
+        );
+        assert_eq!(query_param("/v1/mecha-affect", "session"), None);
+        assert_eq!(
+            query_param("/v1/mecha-affect?session=", "session"),
+            Some("")
+        );
+        assert_eq!(query_param("/v1/mecha-affect?session=main", "other"), None);
     }
 
     #[test]
