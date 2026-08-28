@@ -514,6 +514,7 @@ impl Tool for Shell {
             content: body,
             is_error: code != 0,
             external: false,
+            refusal: false,
         })
     }
 }
@@ -641,6 +642,7 @@ impl Tool for HttpFetch {
             content: truncate(format!("HTTP {status}\n\n{body}"), "body"),
             is_error: !status.is_success(),
             external: true,
+            refusal: false,
         })
     }
 }
