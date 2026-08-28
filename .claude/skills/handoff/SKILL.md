@@ -23,7 +23,14 @@ things between HANDOFF and HISTORY.
 
 A commit that says "add the rules cap" may have added a constant and no gate.
 A commit that says "wire up X" may have wired half of it. The only evidence
-that an item shipped is the code that implements it, cited as `file:line`.
+that an item shipped is the code that implements it.
+
+Verify at a `file:line`, but **write the citation as a symbol** — the
+function, type, or constant. A line number in a doc is wrong the moment
+another lane lands, and it rots silently: on 2026-08-26 two refs drifted
+within the hour, and one of them was itself a repair of an earlier stale
+ref. Where a line is genuinely needed, name the commit it was verified
+against.
 
 This is not pedantry — it is the specific failure that produced a 1,965-line
 handoff. Items were struck through when their commit landed, and the ones that
@@ -31,6 +38,20 @@ were never struck through silently became indistinguishable from the ones that
 were never built.
 
 ## Procedure
+
+### 0. Claim the file before writing it
+
+`docs/HANDOFF.md` and `docs/HISTORY.md` are single-writer documents that
+every lane accumulates into — announced, never raced. Before editing either:
+
+```bash
+ls .git/worktrees/*/MERGE_HEAD 2>/dev/null   # another lane mid-merge?
+```
+
+Check `ListAgents` for live peer sessions, say you are about to write the
+handoff, and sequence behind whoever already claimed it. Two sessions editing
+the same handoff is a conflict in the one file whose job is telling the next
+session what happened.
 
 ### 1. Find out what actually changed
 
@@ -51,7 +72,7 @@ Walk `## What to do next` top to bottom. For each item, decide:
 
 | Verdict | What to do |
 |---|---|
-| **Shipped** | Confirm with `file:line`, then move it to HISTORY (step 3) |
+| **Shipped** | Confirm in source, cite the symbol, then move it to HISTORY (step 3) |
 | **Partial** | Rewrite the item to describe *only the part that is still missing* — a half-done item described as whole is the worst kind of stale |
 | **Still open** | Leave it. If the reason it is open has changed, say so |
 | **Obsolete** | Move to HISTORY with one line on why it stopped making sense. Do not simply delete — the next person will re-propose it |
@@ -68,8 +89,9 @@ grep -nE '^pub mod' mecha-core/src/lib.rs
 ```
 
 If an item is large, delegating the verification sweep to a subagent works
-well — give it a line range and demand `file:line` evidence for every "shipped"
-verdict.
+well — give it a line range and demand named evidence for every "shipped"
+verdict: the function, type, or constant that implements it, and the file
+that holds it.
 
 ### 3. Move shipped work to HISTORY, do not strike it through
 
@@ -79,6 +101,13 @@ bullet, and not as `~~struck through~~`.
 
 Strikethrough is how the old handoff got long: it kept every completed item in
 the reader's way forever. HISTORY is where completed work lives.
+
+While an item is in your hand, check whether a `docs/*-DESIGN.md` or
+`*-RESEARCH.md` still describes the same thing as unbuilt. The convention
+(`docs/README.md`) is an addendum line at the top pointing at HISTORY, never
+a rewrite of the body. A design doc that describes shipped behaviour as
+unbuilt is the handoff failure one file over — it is also something someone
+reads before deciding what to build next.
 
 ### 4. Record any trap you hit
 
@@ -122,6 +151,14 @@ curl -s localhost:8080/props | jq '{total_slots, n_ctx: .default_generation_sett
 systemctl --user list-unit-files | grep mecha
 ```
 
+When the claim is about an installed artifact, **ask the artifact what it
+can do** — `mecha sessions health --json` for a new field, `mecha tools
+--json` for a tool, `strings` for a literal. A fresh mtime is not a fresh
+build (mtime records when a file was written, not what it was built from),
+and version strings do not distinguish builds either; both premises can be
+true while the inference is false, which is exactly how it went wrong on
+2026-08-26.
+
 Anything in `## Environment as left` that you verified should carry the date
 you verified it. Anything you could not verify should say so rather than
 carrying an old claim forward.
@@ -133,7 +170,10 @@ line budget — a project with a lot genuinely open has a long handoff, and
 truncating it to hit a number is how a real item gets deleted instead of
 finished. What matters is that everything in it is *the right kind of thing*:
 
-- Explaining *why* the code is shaped a certain way → `CLAUDE.md`
+- Explaining *why* a subsystem is shaped a certain way → that subsystem's
+  section of `docs/ARCHITECTURE.md`; only an invariant any session could
+  trip over on any run goes in `CLAUDE.md`, which rides in every agent's
+  context and is priced accordingly
 - A completed thing, or a lesson → `docs/HISTORY.md`
 - A question you researched → its own `docs/*-RESEARCH.md`
 - A thing designed but not yet built → its own `docs/*-DESIGN.md`
@@ -171,6 +211,10 @@ finished.
 
 - **Striking items through instead of moving them.** The list only grows.
 - **Trusting your own commit message.** You wrote it before you finished.
+- **Citing `file:line` in the doc.** Lines rot silently across merges — cite
+  the symbol, and name the verified commit where a line is unavoidable.
+- **Racing another lane into a single-writer doc.** Announce first (step 0);
+  a merge conflict in the handoff defeats the file's whole purpose.
 - **Recording a measurement without its conditions.** A number with no arm,
   no `n`, and no date is not a result and will mislead someone later.
 - **Carrying an unverified environment claim forward.** Say "unverified" —
