@@ -84,6 +84,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`anticipated_guilt` no longer pins at a constant `1.0` under a standing
+  backlog.** The first run recorded under the sensor (2026-08-28) read
+  exactly `1.0` — the live outbox held drafts eight days old, the age term
+  clamped, and the OR-combination erased count and pressure entirely: the
+  degenerate-constant corpus `guilt.rs`'s own week-long horizon was chosen
+  to avoid, arriving through the clamp instead of the horizon. The
+  standing-debt terms (age, count) are now asymptotic — half of maximal at
+  the same constants that used to be ceilings, approaching `1.0` without
+  reaching it — so older still reads worse, no term is argued down by the
+  others (still an OR), and pressure and count stay visible in the reading.
+  Pressure keeps its hard top: it is a fact about this run, not standing
+  debt, so it cannot pin the corpus across runs. A regression test carries
+  the live store's exact shape.
+
+- **`Affect::reachable_today` now tells the truth about which labels have a
+  producer.** It claimed `Embarrassment` and `Frustration` were reachable
+  and `Regret`/`Disappointment` were not; all four claims had drifted.
+  `Embarrassment` lost its only producer when the `SentEdited` outbox arm
+  was (correctly) made `visible: false` — nothing now records mecha's own
+  mistake reaching a third party, so the label is unreachable from every
+  real path. `Frustration` is probe-gated, not deterministic: no counter
+  kind fires twice in one session, so the free readout's whole range is
+  `Neutral` and `Anger` — pinned by a new test that walks every stop cause.
+  And `Regret`/`Disappointment` became reachable when the counterfactual
+  probe shipped (#91). The module note now carries the story; two new tests
+  fail the day any of this drifts again, in either direction.
+
+- **`sessions appraise --probe`'s help now says it needs a workspace.** The
+  replay builds a real agent with a real path jail, so from a home directory
+  it refuses (correctly — the jail would cover `~/.mecha`); the flag's help
+  text now names `--workspace` instead of leaving the refusal to explain
+  itself. `--appraise` is unaffected: its quarantined call has no tools by
+  construction and runs from anywhere.
+
 - **Two real gaps in rung 9's episode tagging and surprise detection (#97,
   #98), each closed across several review rounds that kept finding the
   sibling case the previous fix missed.** `mecha distill` printed a
