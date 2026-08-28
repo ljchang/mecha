@@ -19,7 +19,7 @@
 //! the same rule one noun over: state is derived from the record, never
 //! self-reported.
 //!
-//! ## Six labels are unreachable today, and that is the finding
+//! ## Five labels are unreachable today, and that is the finding
 //!
 //! §14 puts this rung at *observation only* — build the corpus and check the
 //! labels are not degenerate before anything consumes them. Working the
@@ -28,21 +28,42 @@
 //!
 //! | label | what it needs | where that comes from |
 //! |---|---|---|
-//! | `Pride` | a charter line, not a task | the charter (§11), unbuilt |
+//! | `Pride` | a charter line, not a task | closure against the charter (§11), unbuilt |
 //! | `Guilt` | *harmed another* | nothing computes harm; `visible` is exposure |
 //! | `Shame` | a pattern across runs | an aggregate — a per-event function cannot see it |
 //! | `Excitement` | a *predicted* error | anticipatory appraisal (§7.4), unbuilt |
-//! | `Regret` / `Disappointment` | the counterfactual verdict | a probe, which is a real model run per arm |
+//! | `Embarrassment` | a **visible negative** error | no assembler emits one — see below |
+//!
+//! `Embarrassment` is the one whose unreachability arrived silently rather
+//! than by design, so it gets its own sentence: exposure used to have a
+//! producer — a sent-with-edits draft — until the `SentEdited` arm was
+//! (correctly) made `visible: false`, because the owner's rewrite sends
+//! *their* words and the catch is the mechanism working. That correction was
+//! right and it removed the label's only producer as a side effect: nothing
+//! now records "mecha's own mistake reached a third party". A `SentUnchanged`
+//! draft is visible but positive; counters, interventions and the appraiser
+//! all start `visible: false`; a probe never touches the field. The label
+//! becomes reachable again only when some channel can truthfully compute
+//! that exposure — a released front-door reply later corrected, say — and
+//! until then [`Affect::reachable_today`] says so rather than letting the
+//! claim drift.
 //!
 //! They are variants anyway, on [`learning::Origin::Derived`]'s precedent —
 //! that one is documented as classifying nothing yet and existing so the
 //! schema does not move when it does. A store is a wire format; adding a
 //! variant later is the change that costs.
 //!
-//! What is left — anger, embarrassment, frustration and neutral — is a
-//! narrow readout, and saying so is the point. The alternative is inventing
-//! precedence until every run gets an interesting word, which manufactures
-//! the signal this rung exists to test for.
+//! What is left is narrower than it looks, and saying so is the point. The
+//! **free** readout — [`of_session`] over on-disk records, no model — can
+//! only ever say *neutral* or *anger*: every negative it assembles is either
+//! invisible `Own`/`Owner` with `controllable` unfilled (which reduces to
+//! `Neutral`) or a ceiling nobody here caused (`Anger`), and no counter kind
+//! fires twice in one session, so `Frustration`'s repetition cannot occur.
+//! The **probe** (§5.3, a paid replay per intervention) is what buys the
+//! rest: `Regret` and `Disappointment` directly, and `Frustration` when two
+//! probed steers on one goal both come back load-bearing. The alternative to
+//! stating this is inventing precedence until every run gets an interesting
+//! word, which manufactures the signal this rung exists to test for.
 //!
 //! ## Mood is not here
 //!
@@ -231,16 +252,55 @@ pub enum Affect {
 }
 
 impl Affect {
-    /// Is this one of the labels the deterministic channels can actually
-    /// produce today?
+    /// Every variant, for a caller that needs to count or partition them —
+    /// the `sessions appraise` readout derives its "N of the ten variants"
+    /// line from this against [`Affect::reachable_today`], because that
+    /// count has now shipped stale as a literal twice (HISTORY records the
+    /// first). What keeps the *list* honest is the exhaustive `match` in
+    /// the reachability test: a new variant fails to compile there, and the
+    /// arm the author then writes asserts membership here — a length assert
+    /// alone would be a tautology about `[Affect; 10]`'s own type, which is
+    /// exactly the quietly-short count this constant exists to prevent.
+    pub const ALL: [Affect; 10] = [
+        Affect::Neutral,
+        Affect::Anger,
+        Affect::Embarrassment,
+        Affect::Frustration,
+        Affect::Regret,
+        Affect::Disappointment,
+        Affect::Guilt,
+        Affect::Shame,
+        Affect::Pride,
+        Affect::Excitement,
+    ];
+
+    /// Can any shipped path actually produce this label today?
     ///
     /// Here so the fact is testable rather than only documented — a variant
     /// that quietly becomes reachable, or quietly stops being, is the kind of
-    /// drift a doc comment cannot fail on.
+    /// drift a doc comment cannot fail on. Both happened between rungs and
+    /// neither was recorded at the time, which is why the split below is
+    /// spelled out:
+    ///
+    /// - `Neutral` and `Anger` are the **free** readout's whole range — see
+    ///   the module note on why [`of_session`] alone can produce nothing
+    ///   else.
+    /// - `Regret`, `Disappointment` and `Frustration` are **probe-gated**:
+    ///   the counterfactual pass (§5.3, shipped in the appraisal probe) is
+    ///   the only thing that fills `controllable` or turns an intervention
+    ///   into the `Own`-agency repetition frustration is defined over.
+    /// - `Embarrassment` has **no producer at all** since the `SentEdited`
+    ///   arm stopped counting as exposure — the module note carries the
+    ///   story. It stays `false` here until something can truthfully compute
+    ///   that mecha's own mistake reached a third party.
     pub fn reachable_today(self) -> bool {
         matches!(
             self,
-            Affect::Neutral | Affect::Anger | Affect::Embarrassment | Affect::Frustration
+            Affect::Neutral
+                | Affect::Anger
+                | Affect::Regret
+                | Affect::Disappointment
+                | Affect::Frustration
         )
     }
 
@@ -1022,6 +1082,14 @@ fn enum_name<T: Serialize>(v: &T) -> String {
 }
 
 impl AppraiserEvidence {
+    /// **`context_pressure` and `load_avg_1m` describe the session's *first*
+    /// run when the session had several.** `Appraisal::state` is the folded
+    /// `RunStats::homeostat`, and `merge` deliberately keeps the first row's
+    /// snapshot ("the conditions belong to the run that sampled them") — so
+    /// on a resumed session the appraiser reads run 1's conditions beside
+    /// whole-session counts. Tolerable while the appraiser only ever adds
+    /// one coarse signed fact; worth revisiting before anything thresholds
+    /// on these two numbers.
     pub fn of(a: &Appraisal) -> Self {
         let negative_errors = a.errors.iter().filter(|e| e.sign < 0.0).count();
         let positive_errors = a.errors.iter().filter(|e| e.sign > 0.0).count();
@@ -1386,19 +1454,23 @@ mod tests {
         assert_eq!(affect_of(&appraisal(vec![e])), Affect::Embarrassment);
     }
 
-    /// The unmeasured dimension, and the reason two labels are dead: without a
-    /// probe verdict there is nothing to split regret from disappointment on.
+    /// The unmeasured dimension: without a probe verdict there is nothing to
+    /// split regret from disappointment on, so a private self-caused error
+    /// has no word. Both labels are reachable — the probe pass shipped and
+    /// is what fills `controllable` — which `reachable_today` now states;
+    /// what stays true is that the *free* readout alone never produces
+    /// either.
     #[test]
     fn without_a_probe_verdict_a_private_self_caused_error_has_no_word() {
         assert_eq!(
             affect_of(&appraisal(vec![err(-1.0, Agency::Own)])),
             Affect::Neutral
         );
-        assert!(!Affect::Regret.reachable_today());
-        assert!(!Affect::Disappointment.reachable_today());
+        assert!(Affect::Regret.reachable_today());
+        assert!(Affect::Disappointment.reachable_today());
 
-        // And with one, both are live — the function is ready for the rung
-        // that pays for the probes.
+        // And with a verdict, both are live — the probe pass is what pays
+        // for one.
         let mut could = err(-1.0, Agency::Own);
         could.controllable = Some(true);
         assert_eq!(affect_of(&appraisal(vec![could])), Affect::Regret);
@@ -1548,20 +1620,136 @@ mod tests {
     }
 
     #[test]
-    fn only_four_labels_are_reachable_and_the_rest_say_why() {
-        let all = [
-            Affect::Neutral,
-            Affect::Anger,
-            Affect::Embarrassment,
-            Affect::Frustration,
-            Affect::Regret,
-            Affect::Disappointment,
-            Affect::Guilt,
-            Affect::Shame,
-            Affect::Pride,
-            Affect::Excitement,
+    fn only_five_labels_are_reachable_and_the_rest_say_why() {
+        // Honest about what can and cannot be checked here: without a
+        // variant-enumerating macro there is no assertion over `ALL` that
+        // notices a variant the list forgot — a length check is a tautology
+        // about the array's own type, and a contains-check over ALL's own
+        // members is circular (both were tried; review caught both). The
+        // compile-time tripwire for a new variant is `says_more`'s
+        // exhaustive match, which HISTORY already records as the mechanism
+        // — it forces the author into this file, where `ALL` and this test
+        // are the checklist, and the derived `sessions appraise` count is
+        // what goes quietly short if `ALL` is forgotten. What *is* checkable
+        // is that the list carries no duplicate, which would double-count a
+        // variant in that same derived line.
+        let mut seen = std::collections::BTreeSet::new();
+        for a in Affect::ALL {
+            assert!(seen.insert(a.wire()), "{a:?} appears twice in Affect::ALL");
+        }
+        assert_eq!(
+            Affect::ALL.iter().filter(|a| a.reachable_today()).count(),
+            5
+        );
+    }
+
+    /// Exposure lost its only producer when the `SentEdited` arm was made
+    /// `visible: false` — correct on its own terms (the owner's rewrite
+    /// sends their words, and the catch is the mechanism working), and it
+    /// silently removed the one path that ever set a visible negative. The
+    /// derivation still knows the label (the test above this block reaches
+    /// it from a hand-built error); no assembler can. This is the assertion
+    /// that fails the day a channel starts computing real exposure, so the
+    /// module note and `reachable_today` get updated instead of drifting.
+    #[test]
+    fn embarrassment_has_no_producer_and_reachable_today_says_so() {
+        assert!(!Affect::Embarrassment.reachable_today());
+
+        // Every negative `of_session` can assemble is invisible: the
+        // owner's rewrite, a rejected draft, every counter, a steer.
+        let rewrote = draft("o1", "sent", true);
+        let rejected = draft("o2", "rejected", false);
+        let mut s = stats();
+        s.stop_cause = Some(crate::agent::StopCause::Loop);
+        s.ended_on_failed_call = true;
+        s.boredom_notices = Some(2);
+        let steer = crate::learning::Intervention {
+            trigger: crate::learning::Trigger::Steer,
+            context: String::new(),
+            text: "no, the other file".into(),
+            aftermath: String::new(),
+            at: 4,
+            tools_before: vec![],
+            tools_after: vec![],
+        };
+        let a = built(&s, &[&rewrote, &rejected], &[steer]);
+        assert!(a.errors.iter().any(|e| e.sign < 0.0), "fixture is vacuous");
+        assert!(
+            a.errors.iter().all(|e| !(e.visible && e.sign < 0.0)),
+            "an assembler has started emitting a visible negative — \
+             Embarrassment has a producer again, so update reachable_today \
+             and the module note: {:?}",
+            a.errors
+        );
+        assert_ne!(a.label, Affect::Embarrassment);
+    }
+
+    /// The free readout's whole range, pinned. `of_session` with no probe
+    /// verdict reduces every negative it can assemble to `Neutral` (invisible
+    /// `Own`/`Owner`, `controllable` unfilled) or `Anger` (a ceiling), and no
+    /// counter kind fires twice in one session, so `Frustration`'s
+    /// repetition cannot occur — it is probe-gated, not deterministic, which
+    /// this would catch changing silently in either direction.
+    #[test]
+    fn the_free_readout_can_only_ever_say_neutral_or_anger() {
+        use crate::agent::StopCause;
+        let goal = GoalRef::Task("01J8ZK".into());
+        let steer = crate::learning::Intervention {
+            trigger: crate::learning::Trigger::Steer,
+            context: String::new(),
+            text: "steered".into(),
+            aftermath: String::new(),
+            at: 4,
+            tools_before: vec![],
+            tools_after: vec![],
+        };
+        // The compiler carries this list: the match below is exhaustive, so
+        // a new StopCause variant fails here instead of silently going
+        // unwalked by the drift guard.
+        let every_cause = [
+            StopCause::Completed,
+            StopCause::MaxTurns,
+            StopCause::OutputTokenBudget,
+            StopCause::CostBudget,
+            StopCause::Interrupted,
+            StopCause::Loop,
+            StopCause::NoOutput,
         ];
-        assert_eq!(all.iter().filter(|a| a.reachable_today()).count(), 4);
+        for c in every_cause {
+            match c {
+                StopCause::Completed
+                | StopCause::MaxTurns
+                | StopCause::OutputTokenBudget
+                | StopCause::CostBudget
+                | StopCause::Interrupted
+                | StopCause::Loop
+                | StopCause::NoOutput => {}
+            }
+        }
+        for cause in std::iter::once(None).chain(every_cause.into_iter().map(Some)) {
+            let mut s = stats();
+            s.stop_cause = cause;
+            s.ended_on_failed_call = true;
+            s.boredom_notices = Some(1);
+            let rewrote = draft("o1", "sent", true);
+            let rejected = draft("o2", "rejected", false);
+            let a = of_session(
+                "s1",
+                &s,
+                std::slice::from_ref(&goal),
+                std::slice::from_ref(&steer),
+                &[&rewrote, &rejected],
+                Some(s.taint),
+                "2026-08-28T00:00:00Z".into(),
+            );
+            assert!(
+                matches!(a.label, Affect::Neutral | Affect::Anger),
+                "the free readout produced {:?} under {cause:?} — a new \
+                 deterministic label; update the module note and \
+                 reachable_today's split",
+                a.label
+            );
+        }
     }
 
     // --- the assembler ---
