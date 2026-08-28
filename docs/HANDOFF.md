@@ -117,19 +117,32 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,768 tests**, no failures — measured 2026-08-28 on `main` at
-**63f88b3**, which carries both rung 9 (this entry) and rung 10 (#100,
-`e124f8a`, plus its own handoff pass #105) — say which tree, since a count
-taken between the two would have read differently and did, one paragraph
-below. Breakdown: **565** in `mecha-cli` with 1 ignored, **978** in
+Expect **1,788 tests**, no failures — measured 2026-08-28 on `main` at
+**d32b288**, which carries rung 8 (#99, #103, this entry) on top of rung 9
+and rung 10. Breakdown: **580** in `mecha-cli` with 1 ignored, **983** in
 `mecha-core`, 6 + 9 in its two integration suites, **133** in `mecha-mail`
-plus 1 in a mail binary, **75** in `mecha-slack`, and 1 doctest. The **71**
-added over the previous figure (1,697 at `a0638c8`) split `mecha-cli` +7
-and `mecha-core` +29 for rung 9 (#97/#98/#101 — consistent with
-`appraisal::for_session`, `Distiller`'s new `Surprise` extraction, and
-#101's four rounds of terminal-escaping and outbox-read hardening) plus
-`mecha-core` +35 for rung 10's `charter.rs`/`guilt.rs` (#100), with mail,
-Slack and the integration fixtures untouched by either — 7 + 29 + 35 = 71.
+plus 1 in a mail binary, **75** in `mecha-slack`, and 1 doctest. The **20**
+added over the previous figure (1,768 at `63f88b3`) split `mecha-cli` +15
+and `mecha-core` +5 — confirmed by `git diff --stat 63f88b3..d32b288 --
+'*.rs'` touching only the files #99 and #103 changed (`appraisal.rs`,
+`tasks.rs`, `tui/mod.rs`, `voice/mod.rs`, `serve/board.rs`); the rung 9/10
+handoff PRs (#104, #105) in between are docs-only and moved nothing. Mail,
+Slack and the integration fixtures untouched.
+
+Expect **1,768 tests** on the tree *before* rung 8 — measured 2026-08-28 on
+`main` at **63f88b3**, which carries both rung 9 (this entry) and rung 10
+(#100, `e124f8a`, plus its own handoff pass #105) — say which tree, since a
+count taken between the two would have read differently and did, one
+paragraph below. Breakdown: **565** in `mecha-cli` with 1 ignored, **978**
+in `mecha-core`, 6 + 9 in its two integration suites, **133** in
+`mecha-mail` plus 1 in a mail binary, **75** in `mecha-slack`, and 1
+doctest. The **71** added over the previous figure (1,697 at `a0638c8`)
+split `mecha-cli` +7 and `mecha-core` +29 for rung 9 (#97/#98/#101 —
+consistent with `appraisal::for_session`, `Distiller`'s new `Surprise`
+extraction, and #101's four rounds of terminal-escaping and outbox-read
+hardening) plus `mecha-core` +35 for rung 10's `charter.rs`/`guilt.rs`
+(#100), with mail, Slack and the integration fixtures untouched by
+either — 7 + 29 + 35 = 71.
 
 The previous figure was **1,697**, measured 2026-08-27 at **a0638c8**, the
 merge commit of PR #92, the last of the nine appraisal-arc PRs (#86, #87,
@@ -209,17 +222,17 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 978 |
-| `mecha-cli` unit | 565 (1 ignored) |
+| `mecha-core` unit | 983 |
+| `mecha-cli` unit | 580 (1 ignored) |
 | `mecha-mail` unit | 133 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
 
-Measured 2026-08-28 at `63f88b3`, same tree as the prose above. The table
-had drifted two counts behind that prose once already, which is the failure
-mode of stating one fact twice — read the prose if they ever disagree again,
-and fix the table.
+Measured 2026-08-28 at `d32b288`, same tree as the first prose figure above
+(1,788, post-rung-8). The table had drifted two counts behind that prose
+once already, which is the failure mode of stating one fact twice — read
+the prose if they ever disagree again, and fix the table.
 
 The integration tests need docker (with `debian:stable-slim` and `python:3-slim`
 pulled) and `python3`; without them they skip and say so. CI sets
@@ -1413,7 +1426,7 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
-### The goal system — rungs 0–7, 9 and 10 shipped (10 out of build order); rung 7's model half of step appraisal and rung 8 are what's left
+### The goal system — rungs 0–10 shipped, out of build order; rung 7's model half of step appraisal and rung 9's review-queue salience are what's left
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the authority and carries a status header
 saying which rungs shipped. The arc's premise, which is what makes the rest
@@ -1436,6 +1449,74 @@ ordering and not a coincidence — and the appraiser is the first thing here
 that actually spends a model call, on the observation-first shape every
 other rung took: offline, budgeted, and left without a store until a real
 corpus says it earns one.
+
+**And rung 8 shipped after rung 10 too** (PRs #99, #103, merged 2026-08-28,
+this entry's own work) — the last rung to land against the caution below,
+by the same kind of explicit owner ruling rung 10 landed under: the corpus
+still said the affect label was degenerate at build time, and building
+anyway was the call that the mechanism is worth having correct independent
+of how interesting today's label is, not that the caution's underlying
+argument was wrong. Two pieces:
+
+- **§5.4, goal-closure appraisal.** The trigger is `tasks set --status
+  done|dropped` (`mecha-cli/src/commands/tasks.rs`'s `is_fresh_closure`),
+  which every surface that mutates a task's status already shells out to —
+  the TUI's `/tasks` modal, the web board, and Slack's Done tap — so hooking
+  there covers all of them for free, and D6 (the agent may not close its own
+  task) holds structurally: nothing on any run's tool surface reaches this
+  code path. `appraise_closure` resolves the task's linked session (D9),
+  builds an `Appraisal` the same four-step way `mecha sessions appraise`
+  does for one session instead of a whole-store scan, and prints the label
+  to the owner on stderr — never stdout, which Slack's Done tap parses whole
+  as one JSON document. On a non-`Neutral` label it stages exactly one
+  follow-up task via `kg_task_create`, composed only from typed fields (the
+  label, the channel names, the closed task's **id** — never its **name**,
+  which `mail task` can default to a raw email subject line CLAUDE.md
+  already documents as untrusted). **The follow-up gate is `done`-only,
+  never `dropped`** (`worth_a_follow_up`) — found in review after the first
+  cut gated on the label alone, which put a "Revisit" task back on the board
+  for a run the owner had explicitly walked away from. §5.4's own framing is
+  "the owner took it *anyway*"; a drop is the owner not taking it.
+- **§6.2, the readout surfaces.** `mecha_core::appraisal::live` is a new
+  per-*run* sibling to `of_session` (which is per-*session*, for §5.4) —
+  same four-step assembly, but scoped to one run's own message range
+  (`run_started_at`) rather than the whole conversation, so an intervention
+  from an earlier run in a resumed session never bleeds into a later clean
+  one's reading. **It reads a compacted run as `Neutral` outright**, not a
+  partial signal computed with the interventions dropped — found in review
+  that the naive version was backwards: `affect_of` reduces magnitude-first,
+  so dropping a masking `Steer` can *unmask* a smaller raw error instead of
+  staying silent, producing a louder label than an uncompacted run of the
+  same fixture would show. Wired to three surfaces: the TUI status-strip
+  badge (`tui/mod.rs`, showing nothing on `Neutral`), a `WireEvent::Affect`
+  on `mecha serve`'s SSE stream tinting the web logo (`Chat.svelte` — a CSS
+  `outline`, not a fill, after the first cut violated `brand.md`'s "hazard
+  amber never fills an area" rule), and a real per-*answer* voice TTS
+  `cfg_weight` nudge. The voice half needed one new piece of plumbing: a
+  loopback `GET /v1/mecha-affect` route in `mecha-cli/src/voice/mod.rs`
+  (cloned out from under its mutex before the socket write, not held across
+  it), polled by `scripts/voice/worker.py`'s `LocalTTS` — latched once per
+  answer in `on_turn_context_created`, the base `pipecat` class's own
+  once-per-turn hook, after the first cut polled once per *sentence* against
+  a set-and-overwrite cache and could switch tone mid-utterance. Logs every
+  latch unconditionally (not only the ones that change the params), because
+  a silently undispatched hook would otherwise read identical to "every
+  session is neutral" — confirmed directly against the installed pipecat
+  1.7.0 that the hook is real and dispatched, not assumed from this diff.
+
+Both PRs together took **nine rounds of automated review** (Claude's own PR
+bot plus one independent Codex pass) to reach that state, catching — beyond
+what is described above — a percent-encoding bug that made the voice readout
+inert end to end, a retry that could duplicate a task, a redundant MCP
+server startup on every status change, a path-traversal guard
+(`is_bare_path_component`, using `std::path::Component::Normal` rather than
+a denylist) for a board-writable field reaching a bare `dir.join` — the same
+vulnerability shape independently found and fixed in `serve/board.rs` as the
+sibling PR #103 — and, twice, a doc comment asserting something about the
+code (once about the compaction guard's own safety direction, once about
+whether `board.rs`'s copy of the join was already guarded) that turned out
+to be false against the tree. Full detail belongs in `HISTORY.md`, not
+repeated here.
 
 **Open now:**
 
@@ -1592,18 +1673,30 @@ corpus says it earns one.
   it landed to confirm `validations.jsonl` now gets written for a steer/denial
   probe that used to silently skip.
 
-  **This caution held for rung 8, and rung 10 shipped anyway — on purpose,
-  and without contradicting it.** §8's prioritised replay still keys off
-  affect being non-degenerate and is still unbuilt for that reason. Rung 10
-  (PR #100, 2026-08-28) shipped ahead of it in build order specifically
-  because its two pieces — the charter and the anticipated-guilt sensor —
-  depend on neither the probe nor the label: the charter is a static,
-  user-authored prompt block, and the sensor is deliberately unconsumed (see
-  the summary paragraph above). What still waits on the label from rung 10
-  is charter-driven `Pride`/`Frustration` — that half is genuinely unbuilt,
-  for the same reason rung 8 is. Whether rung 9's own affect-adjacent pieces
-  (§10's review-queue salience) hit the same wall is not verified in this
-  entry — see whoever shipped #97/#98 for that.
+  **This caution held for rung 10, which shipped anyway — on purpose, and
+  without contradicting it — and rung 8 then shipped against it too, this
+  time by explicit ruling rather than by needing nothing from the label.**
+  §8's prioritised replay still keys off affect being non-degenerate and is
+  still unbuilt for that reason. Rung 10 (PR #100, 2026-08-28) shipped ahead
+  of rung 8 in build order specifically because its two pieces — the
+  charter and the anticipated-guilt sensor — depend on neither the probe nor
+  the label: the charter is a static, user-authored prompt block, and the
+  sensor is deliberately unconsumed (see the summary paragraph above). What
+  still waits on the label from rung 10 is charter-driven `Pride`/
+  `Frustration` — that half is genuinely unbuilt. **Rung 8 (PRs #99, #103,
+  2026-08-28) is different**: it does read the label directly (§6.2's three
+  readout surfaces show whatever `affect_of` currently derives, degenerate
+  or not, and §5.4's follow-up gate predicates on it), so this caution
+  applied to it exactly as written — and it was built anyway, on the ruling
+  that the mechanism earns its place independent of today's label, not that
+  the corpus argument was wrong. Concretely: on a corpus that is 119/120
+  `Neutral`, the TUI badge, the web tint and the voice nudge will show
+  nothing on nearly every run today, and the follow-up gate will stage a
+  follow-up almost never — both are the honest readout of a label the probe
+  (§14 item 7) is what would actually move, not evidence rung 8 was built
+  wrong. Whether rung 9's own affect-adjacent pieces (§10's review-queue
+  salience) hit the same wall is not verified in this entry — see whoever
+  shipped #97/#98 for that.
 
   **Narrowed 2026-08-28, by rung 9's own first piece — see that bullet
   below.** This caution is about *consuming* the label: reordering a queue
@@ -1680,9 +1773,8 @@ corpus says it earns one.
   reaches through the MCP tool surface) to read `meta.affect`/
   `meta.goal_errors` back and reorder pkg's review queue on them. Not
   started, and not scoped beyond `GOAL-SYSTEM-DESIGN.md` §10's own paragraph
-  naming it. Rung 8 (goal-closure appraisal) is an open PR from another
-  session as of this writing — #99 — and its content is theirs to describe,
-  not this entry's. (Rung 10, the charter, landed as #100; see above.)
+  naming it. (Rung 10, the charter, landed as #100; rung 8 landed as #99 and
+  #103 — see the summary paragraph above for what shipped.)
 
 **Two things named rather than done**, recorded so they are not rediscovered
 as oversights. (The third — context pressure absent from `Homeostat` — shipped:
