@@ -58,6 +58,11 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
 /// see `editor::edit_charter_with` for the two cases where those disagree.
 fn edit() -> Result<()> {
     let path = Charter::default_path()?;
+    // Asked here rather than returned from `edit_charter_with`: that helper
+    // reports what the *edit* did, and creating the file is something that
+    // happened before it. `CharterEdit::TemplateCreated` is not the same
+    // fact — it means created *and* nothing added, so a first edit that types
+    // a line comes back as `Saved`.
     let existed = path.is_file();
     let outcome = crate::editor::edit_charter_with(&path, crate::editor::edit_file)?;
     if !existed {
