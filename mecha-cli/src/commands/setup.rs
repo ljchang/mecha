@@ -66,7 +66,11 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         match (one, wrote.changed) {
             (Some(id), true) => println!("`{id}` will be offered again"),
             (Some(id), false) => println!(
-                "`{id}` was not declined — nothing to restore                  (`mecha setup --json` lists every step id)"
+                concat!(
+                    "`{id}` was not declined — nothing to restore ",
+                    "(`mecha setup --json` lists every step id)"
+                ),
+                id = id
             ),
             (None, true) => println!("every declined step will be offered again"),
             (None, false) => println!("nothing was declined — nothing to restore"),

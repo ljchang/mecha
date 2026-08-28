@@ -124,6 +124,33 @@ fn steps(out: &Output) -> Vec<serde_json::Value> {
         .unwrap_or_else(|e| panic!("`mecha setup --json` did not emit JSON ({e}):\n{text}"))
 }
 
+/// Fail on a sentence carrying its source literal's indentation.
+///
+/// **This is the fourth time that defect has landed in this branch**, and the
+/// unit test added for it — `onboarding`'s
+/// `no_step_detail_carries_its_source_indentation` — could not see three of
+/// them, because it walks `plan()`'s step details and these are `setup`'s own
+/// printed output. So the check moves to where the bytes actually reach a
+/// person: applied to a captured line rather than to the whole of stdout,
+/// because several blocks here are column-aligned on purpose and a blanket
+/// scan would fail on those.
+///
+/// The cause is always the same — a `\`-continued string literal that lost
+/// its backslash — and the symptom always reads as a bug to the one person
+/// least able to tell it is cosmetic.
+fn assert_reads_as_prose(line: &str) {
+    assert!(
+        !line.contains("   "),
+        "this line carries indentation from its source literal: {line:?}"
+    );
+}
+
+fn line_containing<'a>(text: &'a str, needle: &str) -> &'a str {
+    text.lines()
+        .find(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("no line containing {needle:?} in:\n{text}"))
+}
+
 fn step<'a>(steps: &'a [serde_json::Value], id: &str) -> &'a serde_json::Value {
     steps
         .iter()
@@ -523,6 +550,8 @@ fn setup_exits_zero_once_everything_outstanding_has_been_answered() {
         text.contains("--undecline"),
         "a decision nobody can find their way back out of is one to hesitate over:\n{text}"
     );
+    // The closing advice is prose, unlike the aligned command list above it.
+    assert_reads_as_prose(line_containing(&text, "workspace is"));
 }
 
 /// **The step that makes everything else work cannot be declined**, not even
@@ -618,6 +647,7 @@ fn undecline_of_an_unknown_id_does_not_claim_to_have_restored_it() {
         said.contains("was not declined"),
         "grade the message off the write, not off the argument: {said}"
     );
+    assert_reads_as_prose(line_containing(&said, "was not declined"));
     // And the real decline is untouched by the failed attempt.
     assert_eq!(
         step(&steps(&mecha(&home, &["setup", "--json"])), "slack")["status"],
