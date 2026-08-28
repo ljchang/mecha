@@ -631,6 +631,69 @@ pub fn of_session(
     a
 }
 
+/// One session's transcript and its own outbox items, assembled the way
+/// `mecha sessions appraise` and `mecha distill`'s episode tagging both need
+/// it built. Extracted so there is one definition of the assembly rather than
+/// two that can drift — the same rule `Session::read`'s own doc names for the
+/// three-reads-of-one-file mistake, one level up.
+pub struct SessionAppraisal {
+    pub appraisal: Appraisal,
+    /// Handed back so a caller wanting the paid probe pass (§5.3) does not
+    /// have to walk the transcript a second time for them.
+    pub interventions: Vec<crate::learning::Intervention>,
+}
+
+/// Build one session's [`Appraisal`], or `None` when there is nothing to
+/// appraise — no outcome recorded yet (`Session::read`'s `episode: None`,
+/// which includes a transcript predating the sensor) or the file could not be
+/// read at all. The caller decides whether either is worth reporting; this
+/// function only says whether there was something to build.
+///
+/// `goal` overrides the transcript's own `serves:` line when the caller
+/// already knows the goal authoritatively — a delegated task run's own
+/// board id, say. Without one, an older run that predates `serves:`, or one
+/// that simply forgot to name it, appraises as goal-less even when the
+/// caller could have said otherwise; a caller that already knows must not be
+/// at that model's mercy. `None` falls back to the transcript's own
+/// `TodoTool::plan_from_transcript`, which is what every caller wants that
+/// has no independent source of truth for it — `mecha distill`'s episode
+/// tagging, in particular, has nothing else to go on.
+pub fn for_session(
+    path: &std::path::Path,
+    session_id: &str,
+    created_at: String,
+    drafts: &[&crate::outbox::OutboxItem],
+    goal: Option<GoalRef>,
+) -> Option<SessionAppraisal> {
+    let transcript = crate::session::Session::read(path).ok()?;
+    let stats = transcript.episode?;
+    let messages = transcript.convo.messages;
+    let interventions = crate::learning::extract_interventions(&messages);
+    // Without a goal, `of_session` never has one to attribute anything to —
+    // see the matching comment in `mecha sessions appraise` for why an
+    // absent goal is recorded rather than guessed.
+    let goal = goal.or_else(|| {
+        crate::tool::todo::TodoTool::plan_from_transcript(&messages).and_then(|p| p.goal)
+    });
+    let goals: Vec<_> = goal.into_iter().collect();
+    let end_taint = crate::session::Session::taint_timeline(path)
+        .ok()
+        .and_then(|tl| tl.covering(messages.len().saturating_sub(1)));
+    let appraisal = of_session(
+        session_id,
+        &stats,
+        &goals,
+        &interventions,
+        drafts,
+        end_taint,
+        created_at,
+    );
+    Some(SessionAppraisal {
+        appraisal,
+        interventions,
+    })
+}
+
 /// What a counterfactual probe found about one intervention.
 ///
 /// The verdict is [`counterfactual::ProbeVerdict`]'s, restated in this

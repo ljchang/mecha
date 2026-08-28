@@ -105,6 +105,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .await
         .with_context(|| format!("connecting to MCP server '{}'", args.server))?;
 
+    // For episode tagging (§10 of GOAL-SYSTEM-DESIGN.md): the affect label
+    // and goal errors ride on the episode's `meta`, and a `GoalError` cites
+    // an outbox draft (`Cite::Draft`) the same way `mecha sessions appraise`
+    // does. Best-effort like every reader of this store — a failure here
+    // costs the `Edit` channel of the tagging and nothing else, so unlike
+    // that command's own readout there is no separate "could not read" vs
+    // "empty" report to keep honest; the difference is invisible in what
+    // gets pushed either way.
+    let drafts: Vec<mecha_core::outbox::OutboxItem> =
+        match mecha_core::outbox::OutboxStore::open_existing_default() {
+            None => Vec::new(),
+            Some(store) => store.items().unwrap_or_default(),
+        };
+
     let mut distilled = 0usize;
     let mut skipped = 0usize;
     // Counted apart from `distilled`: a carrier is an episode the
@@ -136,6 +150,23 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let taint = Session::taint_timeline(path)
             .unwrap_or_else(|_| TaintTimeline::default())
             .covering(convo.messages.len().saturating_sub(1));
+
+        // The same assembly `mecha sessions appraise` uses — `None` when the
+        // transcript has no outcome recorded yet, which most sessions this
+        // command has never seen before will (episode tagging only reaches
+        // sessions the appraisal sensor was already running for).
+        let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts
+            .iter()
+            .filter(|i| i.session_id.as_deref() == Some(meta.id.as_str()))
+            .collect();
+        let appraisal = mecha_core::appraisal::for_session(
+            path,
+            &meta.id,
+            meta.created_at.to_rfc3339(),
+            &mine,
+            None,
+        )
+        .map(|built| built.appraisal);
 
         let transcript = distill::render_for_distill(&convo.messages, 6000, 18000);
         match distiller.distill(&transcript).await {
@@ -170,6 +201,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     taint,
                     distiller.model(),
                     &sendable,
+                    appraisal.as_ref(),
                 );
                 match distill::push_episode(&client, push_args).await {
                     Ok(outcome) => {
