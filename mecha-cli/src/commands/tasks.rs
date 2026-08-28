@@ -425,7 +425,7 @@ async fn set(
         ("defer", defer),
         ("context", context),
         ("waiting_on", waiting_on),
-        ("session", session),
+        ("session", session.clone()),
     ] {
         if let Some(v) = value {
             args[key] = json!(v);
@@ -444,8 +444,18 @@ async fn set(
     // it. Never the agent (D6): this function is reachable only from a
     // person typing `tasks set` or from the modals that shell out to it —
     // there is no tool on any run's surface that calls it.
-    if let (Some(status), Some(before)) = (status.as_deref(), before) {
+    if let (Some(status), Some(mut before)) = (status.as_deref(), before) {
         if is_fresh_closure(status, &before) {
+            // `before` was read *before* the mutation above, so a `--session`
+            // passed in this same call (`tasks set T --session S --status
+            // done`) is not in it yet — patched in here rather than read
+            // back, since we already know exactly what this call just set
+            // and a second read would race against the very thing
+            // `is_fresh_closure` above is guarding. Without this, linking and
+            // closing a task in one command silently skipped appraisal.
+            if let Some(s) = &session {
+                before["session"] = json!(s);
+            }
             appraise_closure(global, task, &before).await;
         }
     }
@@ -480,17 +490,42 @@ fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
 /// §5.4's medium-tier appraisal moment. Best-effort throughout: the task is
 /// already closed by the time this runs, so nothing here may make that read
 /// as having failed — a warning on stderr, never a `bail!`.
+///
+/// **Not atomic, and known rather than fixed.** Two closures of the same
+/// task landing together — a Slack tap and a TUI keypress within the same
+/// `is_fresh_closure` window — can both see the pre-mutation state and both
+/// reach here, staging two follow-ups instead of the one §5.4 asks for. A
+/// correct fix needs a durable claim the board or this store owns (the
+/// `runmarker`/`permit` pattern this file already uses for *live runs*
+/// answers a different question — "is one in flight" — not "was this
+/// closure's appraisal already claimed"), which is a real feature rather
+/// than a line fix, and it does not exist yet. The blast radius is bounded
+/// to an extra advisory task on the board, never a lost or corrupted one, so
+/// this is disclosed rather than rushed.
 async fn appraise_closure(global: &GlobalOpts, task_id: &str, before: &Value) {
     // Never delegated — the ordinary case for a hand-typed task. There is
     // nothing here for D9's index to point at, and that is not an error.
     let Some(session_id) = before["session"].as_str() else {
         return;
     };
+    // Closing while the run is still live is reachable from the terminal or
+    // the modal regardless of what the model is doing, and it produces the
+    // same `Ok(None)` below as a crash would — with a real cause worth
+    // saying rather than folding into that silence. This appraisal never
+    // gets a second chance: the task is already closed, and nothing
+    // retriggers it once the run finally does record its outcome.
+    if markers().is_ok_and(|m| m.running(task_id).is_some()) {
+        eprintln!(
+            "mecha: {task_id} was closed while mecha was still working its session — this \
+             appraisal reflects an incomplete run and will not be redone"
+        );
+    }
     let a = match appraise_session(session_id, task_id) {
         Ok(Some(a)) => a,
         // The run never got as far as recording an outcome — a crash, a
-        // kill, or a transcript from before the record existed. Silence, not
-        // a warning: `board.rs`'s own rule for the same absence.
+        // kill, or a transcript from before the record existed (the live
+        // case above already said its own piece). Otherwise silent, on
+        // `board.rs`'s own rule for the same absence.
         Ok(None) => return,
         Err(e) => {
             eprintln!("mecha: could not appraise {task_id}'s session {session_id}: {e:#}");
@@ -539,6 +574,23 @@ fn appraise_session(
     session_id: &str,
     task_id: &str,
 ) -> Result<Option<mecha_core::appraisal::Appraisal>> {
+    // The board's `session` field is nominally the harness's own — set once
+    // by `move_task` at delegation — but `kg_task_list` is a read off
+    // somebody else's store and `tasks set --session` lets a person type
+    // anything into it. Validated the same way `voice/mod.rs`'s `valid_key`
+    // validates a session key before it becomes a directory component: a
+    // real session id is never a path, so a value that contains one is
+    // refused before it reaches `dir.join`, not trusted because it usually
+    // wouldn't be malicious. Found on review: an absolute or `..`-bearing
+    // value here reaches `Path::join` (which discards the base entirely for
+    // an absolute argument) with nothing in between.
+    if session_id.is_empty()
+        || session_id.contains(['/', '\\'])
+        || session_id == "."
+        || session_id == ".."
+    {
+        anyhow::bail!("not a session id: {session_id:?}");
+    }
     let dir = mecha_core::session::Session::default_dir()?;
     let direct = dir.join(format!("{session_id}.jsonl"));
     let path = if direct.is_file() {
@@ -555,15 +607,28 @@ fn appraise_session(
     let end_taint = mecha_core::session::Session::taint_timeline(&path)
         .ok()
         .and_then(|tl| tl.covering(messages.len().saturating_sub(1)));
+    // `sessions.rs`'s own scan keeps "the store could not be read" apart
+    // from "the store has nothing in it" (`outbox_unreadable`) for the same
+    // reason this needs to: a read failure here silently undercounts the
+    // `Edit` channel's evidence for a decision that, unlike that scan, can
+    // never be rerun — the task is already closed by the time this runs.
     let drafts: Vec<mecha_core::outbox::OutboxItem> =
         match mecha_core::outbox::OutboxStore::open_existing_default() {
             None => Vec::new(),
-            Some(store) => store
-                .items()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|i| i.session_id.as_deref() == Some(session_id))
-                .collect(),
+            Some(store) => match store.items() {
+                Ok(items) => items
+                    .into_iter()
+                    .filter(|i| i.session_id.as_deref() == Some(session_id))
+                    .collect(),
+                Err(e) => {
+                    eprintln!(
+                        "mecha: could not read the outbox while appraising {task_id} — its \
+                         drafts are missing from this appraisal and the follow-up decision, if \
+                         any, may be based on incomplete evidence: {e:#}"
+                    );
+                    Vec::new()
+                }
+            },
         };
     let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts.iter().collect();
     let goal = mecha_core::goal::GoalRef::Task(task_id.to_string());
@@ -595,17 +660,25 @@ fn describe(a: &mecha_core::appraisal::Appraisal) -> String {
 /// §5.4: "a disappointed closure may stage a follow-up... one follow-up per
 /// closure." Created via the same tool `add` already calls, composed
 /// entirely from typed fields the harness minted — the label, which channels
-/// fired, and the *original task's own name*, which is trusted board text
-/// and not transcript prose. Never a quote from the session: the front
-/// door's rule that a paraphrase of an injection is the injection
-/// rearranged applies here exactly as it does there.
+/// fired, and the task's own **id**, never its name.
+///
+/// **The task's own name is not necessarily trusted board text, and an
+/// earlier version of this comment was wrong to call it that.** `mail task`
+/// defaults a task's name to the classifier's paraphrase and then to the
+/// raw subject line of somebody else's mail (CLAUDE.md's own task-board
+/// section names this as a known, unresolved gap for the *original* task).
+/// Copying that text verbatim into a *new* record, under a `captured_from`
+/// that says `kind: session` — implying the harness authored it — would
+/// launder exactly that provenance: a later reader (or a delegation seed
+/// built from the follow-up) would see no reason to treat the embedded text
+/// as anything other than the harness's own words. Citing the id instead
+/// costs the reader one lookup (`mecha tasks list`) and costs nothing here.
 async fn stage_follow_up(
     global: &GlobalOpts,
     task_id: &str,
     before: &Value,
     a: &mecha_core::appraisal::Appraisal,
 ) -> Result<()> {
-    let name = before["name"].as_str().unwrap_or("(unnamed)");
     let channels: std::collections::BTreeSet<String> = a
         .errors
         .iter()
@@ -615,7 +688,7 @@ async fn stage_follow_up(
     let channels: Vec<String> = channels.into_iter().collect();
     let mut args = json!({
         "name": format!(
-            "Revisit \"{name}\" ({task_id}) — mecha's own closure appraisal came back {:?} ({})",
+            "Revisit {task_id} — mecha's own closure appraisal came back {:?} ({})",
             a.label,
             channels.join(", ")
         ),
@@ -2287,6 +2360,30 @@ mod tests {
             !is_fresh_closure("waiting", &open),
             "moving to an open status is not a closure at all"
         );
+    }
+
+    /// Found on review: `before["session"]` comes off `kg_task_list` (a read
+    /// off somebody else's store) or a `tasks set --session` a person typed,
+    /// and `appraise_session` used to build a filesystem path from it with
+    /// no check at all. `Path::join` discards the base entirely for an
+    /// absolute argument, so a value shaped like a path reached the
+    /// filesystem with nothing in between.
+    #[test]
+    fn a_session_id_shaped_like_a_path_is_refused_before_it_reaches_the_filesystem() {
+        for hostile in [
+            "../../etc/passwd",
+            "/etc/passwd",
+            "..",
+            ".",
+            "",
+            "a/b",
+            "a\\b",
+        ] {
+            assert!(
+                appraise_session(hostile, "task-1a2b3c4d").is_err(),
+                "{hostile:?} must be refused, not joined onto a directory"
+            );
+        }
     }
 
     /// The follow-up gate reads the derived label, not the raw signed

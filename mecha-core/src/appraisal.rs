@@ -819,6 +819,21 @@ pub fn for_session(
 /// persistent surface to tint (no status strip, no logo), so there is
 /// nothing here for it to feed.
 ///
+/// **No drafts, on purpose — found on review, the same bug class the
+/// intervention scoping above exists to fix, in a place that boundary
+/// cannot reach.** `OutboxItem` records when a draft was created and
+/// resolved as timestamps, not a message index, so there is no cheap way to
+/// ask "did this run *itself* draft and see resolved" the way
+/// `run_started_at` asks it of interventions. And the honest answer for the
+/// common case is *no*: review almost never happens inside the run that
+/// staged the draft, so scoping "this run's own drafts" correctly would
+/// return empty far more often than not anyway. Including every session-wide
+/// draft instead — the bug as first written — let a draft edited or sent
+/// clean turns *earlier* silently override a later run's own outcome (an
+/// old `SentEdited` error outranking a fresh `MaxTurns` `Anger` and reducing
+/// it to `Neutral`). §5.4's goal-closure appraisal still sees every draft:
+/// it is genuinely session-scoped, and that is where this signal belongs.
+///
 /// No goal is attributed unless the conversation's own plan named one
 /// (`serves:`, via [`crate::tool::todo::TodoTool::plan_from_transcript`]).
 /// Unlike the goal-closure appraisal, nothing calling this already knows
@@ -830,7 +845,6 @@ pub fn live(
     outcome: &crate::agent::RunOutcome,
     conversation: &crate::agent::Conversation,
     run_started_at: usize,
-    drafts: &[&crate::outbox::OutboxItem],
 ) -> Affect {
     let stats = crate::session::RunStats::from(outcome);
     let interventions: Vec<_> = crate::learning::extract_interventions(&conversation.messages)
@@ -845,7 +859,7 @@ pub fn live(
         &stats,
         &goals,
         &interventions,
-        drafts,
+        &[],
         // The outcome's own taint at run end, not a timeline lookup — there
         // is no torn-transcript or before-checkpoints-existed case to guard
         // against here, because this is the object itself, not a file read
@@ -2247,7 +2261,7 @@ mod tests {
     fn a_clean_live_turn_is_neutral() {
         let outcome = bare_outcome();
         let convo = crate::agent::Conversation::default();
-        assert_eq!(live("s1", &outcome, &convo, 0, &[]), Affect::Neutral);
+        assert_eq!(live("s1", &outcome, &convo, 0), Affect::Neutral);
     }
 
     /// A run the harness cut short (`MaxTurns`) is `Agency::World` —
@@ -2260,7 +2274,7 @@ mod tests {
         outcome.stop_cause = crate::agent::StopCause::MaxTurns;
         outcome.exhausted = true;
         let convo = crate::agent::Conversation::default();
-        assert_eq!(live("s1", &outcome, &convo, 0, &[]), Affect::Anger);
+        assert_eq!(live("s1", &outcome, &convo, 0), Affect::Anger);
     }
 
     /// Live and offline agree on the same recorded outcome — `live` is not a
@@ -2271,7 +2285,7 @@ mod tests {
         let mut outcome = bare_outcome();
         outcome.stop_cause = crate::agent::StopCause::Loop;
         let convo = crate::agent::Conversation::default();
-        let via_live = live("s1", &outcome, &convo, 0, &[]);
+        let via_live = live("s1", &outcome, &convo, 0);
 
         let stats = crate::session::RunStats::from(&outcome);
         let via_of_session = of_session(
@@ -2334,7 +2348,7 @@ mod tests {
         ]));
 
         assert_eq!(
-            live("s1", &bare_outcome(), &convo, run_2_started_at, &[]),
+            live("s1", &bare_outcome(), &convo, run_2_started_at),
             Affect::Neutral,
             "a steer from an earlier run must not appear in a later, clean run's live reading"
         );

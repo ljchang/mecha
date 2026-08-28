@@ -1381,27 +1381,18 @@ fn finish_run(
                 // task's goal-closure appraisal (`mecha tasks set`), which
                 // reads a finished session back off disk, possibly from
                 // another process. `Neutral` (the overwhelming common case)
-                // clears the badge rather than showing one.
-                let drafts: Vec<mecha_core::outbox::OutboxItem> =
-                    mecha_core::outbox::OutboxStore::open_existing_default()
-                        .and_then(|store| store.items().ok())
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|i| i.session_id.as_deref() == Some(s.meta.id.as_str()))
-                        .collect();
-                let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts.iter().collect();
+                // clears the badge rather than showing one. No drafts here
+                // (`appraisal::live`'s own doc comment) — found on review, a
+                // draft resolved on an earlier or later turn than this one
+                // has nothing to do with how *this* run went.
+                //
                 // `persisted.len()`, not `app.convo.messages.len()`: `live`
                 // needs where *this run's own* messages start, and
                 // `persisted` is exactly that boundary — the conversation as
                 // it stood right after the triggering user turn was
                 // appended, before this run added anything of its own.
-                let label = mecha_core::appraisal::live(
-                    &s.meta.id,
-                    &outcome,
-                    &app.convo,
-                    persisted.len(),
-                    &mine,
-                );
+                let label =
+                    mecha_core::appraisal::live(&s.meta.id, &outcome, &app.convo, persisted.len());
                 app.affect = (label != mecha_core::appraisal::Affect::Neutral).then_some(label);
             }
         }
