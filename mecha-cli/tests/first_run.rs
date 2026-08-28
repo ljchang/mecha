@@ -713,11 +713,30 @@ fn an_unreadable_decline_store_says_so_rather_than_forgetting_silently() {
     let home = Home::new("decline-broken");
     std::fs::write(home.path().join("setup-declined.json"), "{not json").unwrap();
 
-    let out = mecha(&home, &["setup"]);
-    let text = String::from_utf8_lossy(&out.stdout);
+    // **Both spellings**, which is the half the first version of this test
+    // missed: it drove `mecha setup` only, so the warning being unreachable
+    // from `--json` — the surface this change made scriptable — would have
+    // passed it unchanged. With a corrupt store, `--json` reports every
+    // declined step as `missing`, and nothing in the payload separates
+    // *you declined nothing* from *your declines could not be read*.
+    for args in [vec!["setup"], vec!["setup", "--json"]] {
+        let out = mecha(&home, &args);
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            said.contains("could not be read"),
+            "{args:?}: a store that could not be read must not read as an empty one:\n{said}"
+        );
+    }
+
+    // And it goes to stderr, so a script's stdout is still a parseable array.
+    let out = mecha(&home, &["setup", "--json"]);
     assert!(
-        text.contains("could not be read"),
-        "a store that could not be read must not read as an empty one:\n{text}"
+        !String::from_utf8_lossy(&out.stdout).contains("could not be read"),
+        "the notice must not land in the JSON payload"
+    );
+    assert!(
+        !steps(&out).is_empty(),
+        "and the payload is still valid JSON"
     );
 }
 

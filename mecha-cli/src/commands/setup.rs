@@ -161,6 +161,23 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         .filter(|s| !matches!(s.status, Status::Done | Status::Declined))
         .collect();
 
+    // **On stderr, and before the `--json` return.** This warning used to sit
+    // after `render`, so it was unreachable from the one surface this change
+    // made scriptable: a corrupt `setup-declined.json` made `--json` emit
+    // every declined step as `"status": "missing"` and exit 1, with nothing in
+    // the payload telling *you declined nothing* from *your declines could not
+    // be read*. Somebody's check goes red with no reason in the
+    // machine-readable output — the rule the rest of this file argues for, one
+    // surface over. stderr keeps stdout a parseable array while saying it to
+    // both spellings.
+    if declined.is_none() {
+        eprintln!(
+            "mecha: the declined-steps file at {} could not be read, so everything is \
+             being offered again — that is a read failure, not an empty list",
+            onboarding::declined_path(&home).display()
+        );
+    }
+
     if args.json {
         println!("{}", serde_json::to_string_pretty(&steps)?);
         // **Doctor's contract, which this used to document and not keep.**
@@ -181,13 +198,6 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         return write_verified(&name, &facts);
     }
     render(&steps);
-    if declined.is_none() {
-        println!(
-            "\n(the declined-steps file at {} could not be read, so everything is being \n\
-             offered again — that is a read failure, not an empty list)",
-            onboarding::declined_path(&home).display()
-        );
-    }
 
     if outstanding.is_empty() {
         println!("\nNothing outstanding.");
