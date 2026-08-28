@@ -1649,6 +1649,14 @@ fuller argument.
   **Do not build rungs 8–10 on the label yet.** §8's prioritised replay and
   §10's memory salience both key off affect, and today affect is a constant.
 
+  **Narrowed 2026-08-28, by rung 9's own first piece — see that bullet
+  below.** This caution is about *consuming* the label: reordering a queue
+  or a replay pass on a value that mostly resolves `Neutral` would optimise
+  for nothing. It does not cover *recording* it, which carries no such
+  risk — `mecha distill` now stamps `meta.affect` on every pushed pkg
+  episode regardless. The consumer this caution guards against (pkg
+  actually reordering its review queue on that field) is still unbuilt.
+
 - **The quarantined appraiser (§5.1) shipped 2026-08-27** — no tools, no
   conversation, typed output, offline via `mecha sessions appraise --appraise`
   (`mecha-core/src/appraisal.rs`'s `AppraiserEvidence`/`appraise_with_model`/
