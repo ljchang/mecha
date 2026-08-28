@@ -1531,11 +1531,17 @@ argument was wrong. Two pieces:
   below; this one is a known, bounded gap (an extra advisory board item,
   never a lost or corrupted task), not yet closed.
 - **§6.2, the readout surfaces.** `mecha_core::appraisal::live` is a new
-  per-*run* sibling to `of_session` (which is per-*session*, for §5.4) —
-  same four-step assembly, but scoped to one run's own message range
-  (`run_started_at`) rather than the whole conversation, so an intervention
-  from an earlier run in a resumed session never bleeds into a later clean
-  one's reading. **It reads a compacted run as `Neutral` outright**, not a
+  per-*run* sibling to `of_session` (which is per-*session*, for §5.4), and
+  scopes interventions to one run's own message range (`run_started_at`)
+  rather than the whole conversation, so an intervention from an earlier
+  run in a resumed session never bleeds into a later clean one's reading.
+  **It passes no drafts at all, on purpose** — `OutboxItem` carries
+  timestamps rather than a message index, so there is no
+  `run_started_at`-equivalent boundary to scope them by, and including
+  every session-wide draft (the bug as first written) let a draft edited
+  or sent clean turns *earlier* silently override a later run's own
+  outcome. Three channels, not `of_session`'s four. **It reads a compacted
+  run as `Neutral` outright**, not a
   partial signal computed with the interventions dropped — found in review
   that the naive version was backwards: `affect_of` reduces magnitude-first,
   so dropping a masking `Steer` can *unmask* a smaller raw error instead of
