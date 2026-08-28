@@ -1257,7 +1257,14 @@ fn cut_short(stats: &crate::session::RunStats) -> bool {
 /// calling it directly is safe under doctor's own rule against healing what
 /// it is about to report.
 fn check_charter(path: &Path) -> Vec<Finding> {
-    if !path.is_file() {
+    // `exists()`, not `is_file()`: the latter also reads false for a
+    // directory sitting at this path or a broken symlink, which would
+    // silently report a broken charter as "nothing written yet" instead of
+    // falling through to `Charter::load` below and getting a real `Err` —
+    // `read_to_string` on a directory fails with its own I/O error rather
+    // than `NotFound`, so `Charter::load` already tells the two apart
+    // correctly once it's actually called.
+    if !path.exists() {
         return Vec::new();
     }
     let remedy = |description: &str| {
@@ -3390,6 +3397,22 @@ mod tests {
             "{}",
             findings[0].summary
         );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_directory_at_the_charter_path_is_broken_not_silently_absent() {
+        // `is_file()` would read this as "nothing written yet" and stay
+        // silent; `exists()` lets it reach `Charter::load`, whose
+        // `read_to_string` fails on a directory with a real I/O error rather
+        // than `NotFound`.
+        let home = home("charter-is-a-directory");
+        std::fs::create_dir_all(home.join("charter.toml")).unwrap();
+
+        let findings = check_charter(&home.join("charter.toml"));
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].severity, Severity::Broken);
 
         let _ = std::fs::remove_dir_all(&home);
     }

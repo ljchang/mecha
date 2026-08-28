@@ -36,9 +36,14 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
             // scripted consumer of it deserves the same contract doctor's
             // own `--json` gives everything else.
             if args.json {
+                // `{e:#}` for the full chain, not `.to_string()`/`{e}` —
+                // anyhow's default `Display` prints only the outermost
+                // context ("parsing <path>") and drops the actual TOML error
+                // underneath it, same as the human-facing branch three lines
+                // down already does.
                 let out = serde_json::json!({
                     "path": path,
-                    "error": e.to_string(),
+                    "error": format!("{e:#}"),
                 });
                 println!("{}", serde_json::to_string_pretty(&out)?);
             } else {
@@ -51,6 +56,11 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     if args.json {
         let out = serde_json::json!({
             "path": path,
+            // A missing file and a present-but-empty one both load as an
+            // empty `Charter` — the same distinction the plain-text branch
+            // below makes by checking this, and doctor makes as two
+            // different findings, so a scripted consumer needs it too.
+            "exists": path.is_file(),
             "over_budget": charter.over_budget(),
             "char_count": charter.char_count(),
             "lines": charter.lines().iter().map(|l| serde_json::json!({

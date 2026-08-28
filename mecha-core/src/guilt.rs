@@ -116,21 +116,34 @@ pub fn anticipated_guilt(
 
     let mut waiting = 0usize;
     let mut oldest_hours: Option<f64> = None;
+    // Whether *any* non-empty depth's age could not be read — not whether
+    // *every* depth's could. A store with three waiting items and a corrupt
+    // stamp must not have its unknown age silently overridden by a second,
+    // readable store's fresher one: the true oldest could easily be the
+    // unreadable row, and reporting the readable row's age as the answer
+    // understates it exactly as much as reading it as zero would.
+    let mut age_unknown = false;
     for depth in depths {
         waiting += depth.waiting;
-        if let Some(stamp) = &depth.oldest {
-            if let Some(hours) = hours_since(stamp, now) {
-                oldest_hours = Some(oldest_hours.map_or(hours, |h: f64| h.max(hours)));
-            }
+        if depth.waiting == 0 {
+            continue;
+        }
+        match depth.oldest.as_deref().and_then(|s| hours_since(s, now)) {
+            Some(hours) => oldest_hours = Some(oldest_hours.map_or(hours, |h: f64| h.max(hours))),
+            None => age_unknown = true,
         }
     }
     if waiting == 0 {
         // Genuinely nothing recorded as owed — a real zero, not an absence.
         return Some(0.0);
     }
-    // Something is recorded as waiting, but nothing readable said how long —
-    // an age-blind reading would silently score it as fresh, which is a
-    // guess dressed as a measurement.
+    // Something is recorded as waiting, but at least one non-empty depth's
+    // age could not be read — an age-blind reading would silently score it
+    // as fresh, or worse, let a sibling depth's real age stand in for it,
+    // which is a guess dressed as a measurement either way.
+    if age_unknown {
+        return None;
+    }
     let oldest_hours = oldest_hours?;
 
     let age = (oldest_hours / SATURATES_AT_HOURS).clamp(0.0, 1.0) as f32;
@@ -312,5 +325,20 @@ mod tests {
         // Scoring this as age-zero would understate a real commitment this
         // sensor simply failed to date.
         assert_eq!(anticipated_guilt(&backlog, None, Utc::now()), None);
+    }
+
+    #[test]
+    fn one_undated_store_is_unknown_even_when_a_sibling_store_is_dated() {
+        // The gap the single-store version of this test above didn't cover:
+        // a second, readable store's real age must not stand in for the
+        // first store's unreadable one. The true oldest commitment could
+        // easily be the one this can't date at all.
+        let now = Utc::now();
+        let backlog = Backlog {
+            outbox: Some(depth(1, Some("not-a-timestamp"))),
+            questions: Some(depth(1, Some(&now.to_rfc3339()))),
+            ..readable_and_empty()
+        };
+        assert_eq!(anticipated_guilt(&backlog, Some(0.0), now), None);
     }
 }
