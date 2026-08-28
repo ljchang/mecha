@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assertion written against the documented contract is ignored entirely by
   `set -e`, so it neither failed nor passed.
 
+- **Two smaller `mecha setup` bugs, both found in review.** `never` and the
+  offer loop's de-duplication disagreed: `mail` and `docs` carry the identical
+  remedy argv when neither binary is on PATH, and the dedup skipped the second
+  *question* as well as the second command — so declining mail recorded only
+  `mail`, left `docs` outstanding, and setup still exited 1 after somebody had
+  answered everything they were asked. It self-corrected on the next pass,
+  which is why no store-level test could see it; the loop takes its reader as
+  a parameter now so the answers can be driven, and the dedup is on what has
+  been *run*. And `--undecline` sat below the `--json`/`--write` returns, so
+  `mecha setup --json --undecline all` printed a plan, exited 1 and undeclined
+  nothing, silently — it is handled first now, ahead of every network call,
+  since a verb that rewrites one local file should not wait on a loopback
+  timeout.
+
 - **Two claims the local-server probe made without establishing them.** Both
   found in review, both the shape this module's own header is about (*never
   write down a number the user merely believes*). The probe result was an

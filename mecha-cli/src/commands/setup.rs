@@ -42,6 +42,23 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     let cfg = mecha_core::config::Config::load_global()
         .context("reading the global config — run `mecha config init` first")?;
     let (name, pcfg) = cfg.provider(global.provider.as_deref())?;
+    let home = mecha_core::work::mecha_home()?;
+
+    // **Handled before anything else, and before any network call.**
+    // It used to sit below the `--json` and `--write` returns, so
+    // `mecha setup --json --undecline all` printed a plan, exited 1, and
+    // undeclined nothing — silently, which is the worst way for a flag to
+    // not work. And a verb whose entire job is rewriting one local JSON file
+    // has no business waiting on a three-second loopback timeout first.
+    if let Some(id) = &args.undecline {
+        let one = (id != "all").then_some(id.as_str());
+        onboarding::undecline(&home, one)?;
+        match one {
+            Some(id) => println!("`{id}` will be offered again"),
+            None => println!("every declined step will be offered again"),
+        }
+        return Ok(());
+    }
 
     // The one network call, and only for a local server: it is the only kind
     // known to answer `/props`, and a 404 from somebody else's endpoint would
@@ -88,7 +105,6 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         onboarding::LocalProbe::NotAttempted
     };
 
-    let home = mecha_core::work::mecha_home()?;
     let declined = onboarding::read_declined(&home);
     let facts = Facts {
         has_mail_binary: onboarding::on_path("mecha-mail"),
@@ -145,16 +161,6 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     if args.write {
         return write_verified(&name, &facts);
     }
-    if let Some(id) = &args.undecline {
-        let one = (id != "all").then_some(id.as_str());
-        onboarding::undecline(&home, one)?;
-        match one {
-            Some(id) => println!("`{id}` will be offered again"),
-            None => println!("every declined step will be offered again"),
-        }
-        return Ok(());
-    }
-
     render(&steps);
     if declined.is_none() {
         println!(
@@ -175,7 +181,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // same list either way.
         std::process::exit(1);
     }
-    offer(&outstanding, &home)?;
+    offer(&outstanding, &home, &mut std::io::stdin().lock())?;
     finished_note(&steps);
     Ok(())
 }
@@ -241,7 +247,7 @@ enum Answer {
     Never,
 }
 
-/// Offer each remedy once, EOF is no — the outbox `send` convention, and
+/// Offer each remedy, EOF is no — the outbox `send` convention, and
 /// `doctor`'s: silence is not consent.
 ///
 /// `never` records the step id in `~/.mecha/setup-declined.json` so the
@@ -249,15 +255,33 @@ enum Answer {
 /// one: a broken charter or a server that disagrees with its config is a
 /// fault rather than an optional extra, and there is nothing coherent to
 /// decline about being told.
-fn offer(steps: &[&Step], home: &std::path::Path) -> Result<()> {
-    let stdin = std::io::stdin();
-    let mut offered: Vec<&[String]> = Vec::new();
+///
+/// **The de-duplication is on what has been *run*, not on what has been
+/// asked**, and the difference is a bug that shipped. `mail` and `docs` carry
+/// the identical remedy argv when neither binary is on PATH — one
+/// `cargo install mecha-mail` satisfies both — so skipping the second
+/// *command* is right and skipping the second *question* was not: a `never`
+/// at the mail prompt recorded only `mail`, left `docs` outstanding, and
+/// `mecha setup` still exited 1 after somebody had answered every question
+/// they were asked. They are two features that happen to share an installer,
+/// and declining one is not declining the other.
+///
+/// `read` is a parameter so the loop is testable without a terminal. That is
+/// not incidental: `setup_exits_zero_once_everything_outstanding_has_been_answered`
+/// builds the declined store by hand and so was structurally unable to see
+/// the bug above — the only way to catch it is to drive the answers.
+fn offer(steps: &[&Step], home: &std::path::Path, read: &mut impl std::io::BufRead) -> Result<()> {
+    let mut already_run: Vec<&[String]> = Vec::new();
     for s in steps {
         let Some(remedy) = &s.remedy else { continue };
-        if offered.contains(&remedy.argv.as_slice()) {
+        // Already satisfied by a command answered `y` earlier in this pass.
+        // Not asked again, because there is nothing left to ask: the thing it
+        // would install is installed.
+        if already_run.contains(&remedy.argv.as_slice()) {
+            println!("\n{}", remedy.description);
+            println!("already handled by the command above");
             continue;
         }
-        offered.push(&remedy.argv);
         // Only an *absent* optional thing can be declined. `Wrong` is
         // something broken, and "stop telling me this is broken" is not a
         // preference a setup tool should be able to record — it is the
@@ -274,7 +298,7 @@ fn offer(steps: &[&Step], home: &std::path::Path) -> Result<()> {
         );
         std::io::stdout().flush()?;
         let mut line = String::new();
-        let answer = match std::io::BufRead::read_line(&mut stdin.lock(), &mut line) {
+        let answer = match read.read_line(&mut line) {
             Ok(0) => {
                 println!();
                 Answer::Skip
@@ -287,7 +311,10 @@ fn offer(steps: &[&Step], home: &std::path::Path) -> Result<()> {
             Err(_) => Answer::Skip,
         };
         match answer {
-            Answer::Yes => run(remedy)?,
+            Answer::Yes => {
+                run(remedy)?;
+                already_run.push(&remedy.argv);
+            }
             Answer::Skip => println!("skipped — asked again next time"),
             Answer::Never => match onboarding::decline(home, &s.id) {
                 // Said with the undo in the same breath: a decision nobody
@@ -666,6 +693,104 @@ mod tests {
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(str::to_string).collect()
+    }
+
+    fn step_with(id: &str, argv: &[&str], optional: bool) -> Step {
+        let mut s = Step {
+            id: id.into(),
+            title: id.into(),
+            status: Status::Missing,
+            detail: String::new(),
+            remedy: Some(Remedy {
+                description: format!("install for {id}"),
+                argv: argv.iter().map(|a| a.to_string()).collect(),
+                needs_terminal: false,
+            }),
+            optional,
+        };
+        s.status = Status::Missing;
+        s
+    }
+
+    fn scratch_home(tag: u32) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("mecha-offer-test-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// **Two steps sharing one installer are two questions, not one.**
+    ///
+    /// `mail` and `docs` carry the identical remedy argv when neither binary
+    /// is on PATH, and the de-duplication skipped the second *question* as
+    /// well as the second command. So `never` at the mail prompt recorded
+    /// only `mail`, left `docs` outstanding, and `mecha setup` still exited 1
+    /// after somebody had answered every question they were asked — which is
+    /// the one contract this whole feature is.
+    ///
+    /// It self-corrected on the next pass, which is exactly why no
+    /// store-level test could see it: the state after two runs was right.
+    #[test]
+    fn declining_one_of_two_steps_sharing_an_installer_declines_only_that_one() {
+        let home = scratch_home(line!());
+        let argv = ["cargo", "install", "mecha-mail", "--locked"];
+        let mail = step_with("mail", &argv, true);
+        let docs = step_with("docs", &argv, true);
+        let steps = [&mail, &docs];
+
+        // "never" to the first, "never" to the second: both asked, both
+        // recorded.
+        let mut input = std::io::Cursor::new(b"never\nnever\n".to_vec());
+        offer(&steps, &home, &mut input).unwrap();
+        let declined = onboarding::read_declined(&home).unwrap();
+        assert!(
+            declined.contains("mail") && declined.contains("docs"),
+            "both questions must be asked and answered separately: {declined:?}"
+        );
+
+        // And declining only the first leaves the second genuinely open,
+        // rather than silently swallowing it.
+        let home = scratch_home(line!());
+        let mut input = std::io::Cursor::new(b"never\n\n".to_vec());
+        offer(&steps, &home, &mut input).unwrap();
+        let declined = onboarding::read_declined(&home).unwrap();
+        assert!(declined.contains("mail"));
+        assert!(
+            !declined.contains("docs"),
+            "a skip is not a decline, and one answer is not two: {declined:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// EOF is a skip, never a decline — silence is not consent, and it is
+    /// emphatically not a permanent decision either.
+    #[test]
+    fn silence_declines_nothing() {
+        let home = scratch_home(line!());
+        let mail = step_with("mail", &["cargo", "install", "mecha-mail"], true);
+        let mut input = std::io::Cursor::new(Vec::new());
+        offer(&[&mail], &home, &mut input).unwrap();
+        assert!(onboarding::read_declined(&home).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A step that is not optional cannot be declined at the prompt, whatever
+    /// is typed — the same guarantee `plan` enforces over the store, kept at
+    /// the other end so neither is the only thing standing between a
+    /// credential and a "never".
+    #[test]
+    fn a_non_optional_step_cannot_be_declined_at_the_prompt() {
+        let home = scratch_home(line!());
+        let credential = step_with("provider-credential", &["mecha", "config", "show"], false);
+        let mut input = std::io::Cursor::new(b"never\n".to_vec());
+        offer(&[&credential], &home, &mut input).unwrap();
+        assert!(
+            onboarding::read_declined(&home).unwrap().is_empty(),
+            "`never` on a required step is not an answer this may record"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// A new top-level key goes *under* the file's own header comment, not

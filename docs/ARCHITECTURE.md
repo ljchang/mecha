@@ -2137,6 +2137,18 @@ one address rather than a scan (a range would make a setup tool behave like a
 port scanner for the sake of finding a server on a port nobody documented), and
 runs only on an install that is otherwise stuck.
 
+**`offer`'s de-duplication is on what has been *run*, not on what has been
+asked.** `mail` and `docs` carry the identical remedy argv when neither binary
+is on PATH — one `cargo install mecha-mail` satisfies both — so skipping the
+second *command* is right and skipping the second *question* was not: a
+`never` at the mail prompt recorded only `mail`, left `docs` outstanding, and
+`mecha setup` still exited 1 after somebody had answered every question they
+were asked, which is the one contract the feature is. They are two features
+that happen to share an installer, and declining one is not declining the
+other. It self-corrected on the next pass, which is exactly why no store-level
+test could see it — `offer` takes its reader as a parameter so the answers can
+be driven.
+
 **The probe is three-valued, because two of its outcomes were being reported
 as the third.** `Option<LocalServer>` collapsed *asked and heard nothing* into
 *never asked*, and the step printed the first for both — so somebody with a
