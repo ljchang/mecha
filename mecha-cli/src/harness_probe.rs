@@ -45,7 +45,8 @@ pub struct EpisodePrep {
     /// hand; asking for it separately is another walk of the same file.
     episode: Option<mecha_core::session::RunStats>,
     /// The compromise this replay is making, when it is making one — today,
-    /// a session resumed under several configs replayed under its first.
+    /// a session attached several times (a resume, or a mid-session
+    /// `/provider`/`/mode` switch) replayed under its first config.
     /// A whole-session replay has no better single choice (`first()` is
     /// exactly right for the opening turns, and the driver cannot rebuild
     /// the agent at a config boundary mid-drive), but the compromise raises
@@ -85,10 +86,14 @@ pub fn prepare_episode(path: &Path, id: &str) -> Result<Result<EpisodePrep, Stri
     // a single drive, so no one config is right for all of it, and first is
     // exactly right for the opening turns where a divergence would land
     // first. The compromise is carried as a caveat rather than silently —
-    // see `EpisodePrep::config_caveat`.
+    // see `EpisodePrep::config_caveat`. "Attached", matching `mecha
+    // replay`'s own line, not "resumed" — found on review: a `/provider`
+    // or `/mode` switch mid-session also appends a `Config`, and that case
+    // (the *worse* compromise: the session's later half ran under another
+    // model) would have read as a resume it never was.
     let config_caveat = (read.configs.len() > 1).then(|| {
         format!(
-            "resumed under {} configs; replayed under the first",
+            "attached {} times; replayed under the first config",
             read.configs.len()
         )
     });
@@ -428,7 +433,10 @@ mod tests {
         let prep = prepare_episode(&resumed.path, "multi").unwrap().unwrap();
         assert_eq!(
             prep.config_caveat.as_deref(),
-            Some("resumed under 2 configs; replayed under the first")
+            // "Attached", not "resumed": a mid-session `/provider` or
+            // `/mode` switch also writes a Config, and that case must not
+            // read as a resume it never was.
+            Some("attached 2 times; replayed under the first config")
         );
 
         let single = Session::create(&dir, meta("20260101T000001-single")).unwrap();
