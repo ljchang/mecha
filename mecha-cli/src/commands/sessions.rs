@@ -405,10 +405,15 @@ async fn appraise(
     // records a session. `RunStats::fold` collapses a session's runs the way
     // rung 4's episode stats do, through the same fold.
     let mut appraisals = Vec::new();
-    // Kept beside each appraisal only for the probe pass. The free readout
-    // never looks at them again, so this allocates nothing extra when `--probe`
-    // is off — `of_session` has already read what it needs out of them.
-    let mut per_session_interventions: Vec<Vec<mecha_core::learning::Intervention>> = Vec::new();
+    // Kept beside each appraisal only for the probe pass: the transcript's
+    // own path (so the probe never re-resolves an id this walk already
+    // resolved) and its interventions. The free readout never looks at
+    // either again, so this allocates nothing extra when `--probe` is off —
+    // `of_session` has already read what it needs out of them.
+    let mut per_session_probe_input: Vec<(
+        std::path::PathBuf,
+        Vec<mecha_core::learning::Intervention>,
+    )> = Vec::new();
     let mut sessions_read = 0usize;
     for (meta, path) in Session::list(dir)? {
         if since.is_some_and(|t| meta.created_at < t) {
@@ -440,10 +445,10 @@ async fn appraise(
             continue;
         };
         appraisals.push(built.appraisal);
-        per_session_interventions.push(if probe {
-            built.interventions
+        per_session_probe_input.push(if probe {
+            (path, built.interventions)
         } else {
-            Vec::new()
+            (std::path::PathBuf::new(), Vec::new())
         });
     }
 
@@ -474,16 +479,16 @@ async fn appraise(
             // `mecha validate` and `mecha replay` do; the agent it builds is
             // discarded and only its registry is borrowed.
             let prepared = crate::setup::prepare(global, false).await?;
-            let wanted: usize = per_session_interventions.iter().map(Vec::len).sum();
+            let wanted: usize = per_session_probe_input.iter().map(|(_, i)| i.len()).sum();
             // The honest ceiling, not `wanted`: `probe_appraisal` checks
             // `replayable(trigger)` before spending budget, so a `followup` or
             // an `edit` — most of an ordinary corpus — costs nothing and was
             // never going to be probed regardless of `max_probes`. Reporting
             // `wanted` here reads as a cap that will bind when it almost never
             // does.
-            let replayable: usize = per_session_interventions
+            let replayable: usize = per_session_probe_input
                 .iter()
-                .flatten()
+                .flat_map(|(_, i)| i)
                 .filter(|i| crate::appraisal_probe::replayable(i.trigger))
                 .count();
             eprintln!(
@@ -491,12 +496,12 @@ async fn appraise(
                  with {model} ({provider_name})",
                 max_probes.min(replayable)
             );
-            for (a, interventions) in appraisals.iter_mut().zip(&per_session_interventions) {
+            for (a, (path, interventions)) in appraisals.iter_mut().zip(&per_session_probe_input) {
                 let t = crate::appraisal_probe::probe_appraisal(
                     &prepared,
                     provider_cfg,
                     &model,
-                    dir,
+                    path,
                     interventions,
                     a,
                     &mut budget,
