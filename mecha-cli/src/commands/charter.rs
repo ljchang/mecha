@@ -28,7 +28,22 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
             // a missing file is: it's the one document ranking every other
             // priority, and a run that started with an empty one because of
             // a typo would be silently un-chartered.
-            eprintln!("mecha: charter at {} did not load — {e:#}", path.display());
+            //
+            // Structured even on failure when `--json` was asked for, on
+            // `mecha skills --json`'s rule that machine output reports an
+            // error in the payload rather than only as a bare exit code —
+            // this is doctor's own remedy for a broken charter, and a
+            // scripted consumer of it deserves the same contract doctor's
+            // own `--json` gives everything else.
+            if args.json {
+                let out = serde_json::json!({
+                    "path": path,
+                    "error": e.to_string(),
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                eprintln!("mecha: charter at {} did not load — {e:#}", path.display());
+            }
             std::process::exit(1);
         }
     };
@@ -48,7 +63,18 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     if charter.is_empty() {
-        println!("no charter at {}", path.display());
+        // Distinguished from "no file at all" — this is the message doctor's
+        // "charter file exists but has no lines" finding sends people to, and
+        // printing the same "no charter at" line either way would reproduce
+        // exactly the indistinguishability that finding exists to break.
+        if path.is_file() {
+            println!(
+                "{} exists but has no `[[line]]` entries — check the table name",
+                path.display()
+            );
+        } else {
+            println!("no charter at {}", path.display());
+        }
         println!(
             "a charter is `[[line]]` tables, ranked highest first by their order in the \
              file — `id = \"...\"` and `text = \"...\"` each"
