@@ -1426,7 +1426,7 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
-### The goal system — rungs 0–10 shipped, out of build order; rung 7's model half of step appraisal and rung 9's review-queue salience are what's left
+### The goal system — rungs 0–10 shipped, out of build order; rung 7's model half of step appraisal, rung 9's review-queue salience and rung 10's charter-driven labelling are what's left
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the authority and carries a status header
 saying which rungs shipped. The arc's premise, which is what makes the rest
@@ -1476,7 +1476,18 @@ argument was wrong. Two pieces:
   never `dropped`** (`worth_a_follow_up`) — found in review after the first
   cut gated on the label alone, which put a "Revisit" task back on the board
   for a run the owner had explicitly walked away from. §5.4's own framing is
-  "the owner took it *anyway*"; a drop is the owner not taking it.
+  "the owner took it *anyway*"; a drop is the owner not taking it. **Two
+  limitations are disclosed on `appraise_closure` itself, not fixed, and
+  worth carrying here too**: the stderr readout reaches only someone who
+  typed `mecha tasks set` into a terminal, because every non-terminal caller
+  of `set` — `tui::self_cli`, `serve::review::verb`, Slack's Done tap —
+  discards stderr on success; the trigger covers all four surfaces, the
+  readout doesn't. And staging is not atomic — two closures of the same task
+  landing together (a Slack tap and a TUI keypress within the same
+  `is_fresh_closure` window) can both stage a follow-up, which is a
+  different bug from the retry-duplication one review caught and fixed
+  below; this one is a known, bounded gap (an extra advisory board item,
+  never a lost or corrupted task), not yet closed.
 - **§6.2, the readout surfaces.** `mecha_core::appraisal::live` is a new
   per-*run* sibling to `of_session` (which is per-*session*, for §5.4) —
   same four-step assembly, but scoped to one run's own message range
