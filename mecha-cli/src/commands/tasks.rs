@@ -2491,9 +2491,18 @@ mod tests {
     #[test]
     fn appraise_session_refuses_a_hostile_id_before_touching_the_filesystem() {
         for hostile in ["../../etc/passwd", "/etc/passwd", ".."] {
+            let e = appraise_session(hostile, "task-1a2b3c4d")
+                .expect_err(&format!("{hostile:?} must be refused"));
+            // The guard's own refusal, not `Session::find`'s "no session
+            // matching" — which every one of these would produce anyway,
+            // *after* the join this exists to prevent. `dir.join(hostile)`
+            // is never a real file, so without the guard control would fall
+            // through to `Session::find` and still return `Err` — making a
+            // bare `is_err()` true for the wrong reason and vacuous against
+            // the old behaviour.
             assert!(
-                appraise_session(hostile, "task-1a2b3c4d").is_err(),
-                "{hostile:?} must be refused"
+                e.to_string().starts_with("not a session id"),
+                "{hostile:?} was refused by something other than the guard: {e:#}"
             );
         }
     }
