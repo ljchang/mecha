@@ -9,7 +9,12 @@ step appraisal (§5.5's escalation) closes the rung. **Rung 9's episode
 tagging and gossip seeding shipped 2026-08-28** (#97, #98). **Rung 10's
 charter and its guilt sensor also shipped 2026-08-28, ahead of rung 8** —
 see the table and §14 item 10 for what that does and does not include.
-Rung 8 remains open.
+**Rung 8 shipped 2026-08-28 too** (#99, #103), by explicit owner ruling
+*against* this file's own caution below — the affect label was still
+measured degenerate (§14 item 7's corpus) at build time, and the ruling was
+that the mechanism is worth having correct regardless of how interesting
+today's label is, not that the caution was wrong. See the table for what
+that bought.
 The body below is the design as proposed and is
 deliberately not rewritten — `docs/HISTORY.md` records what was built, and the
 gap between the two is evidence about how the built thing came to be shaped
@@ -26,7 +31,7 @@ beside the original rather than replacing it (§2.1 and §4.4).
 | 5 | predictive compaction and task sizing | shipped, #69/#71/#72 + #78 |
 | 6 | boredom, and the deterministic half of step appraisal | shipped, 2026-08-27 — with §5.5's three comparison signals and §9.1's rung 2 named rather than built |
 | 7 | the appraisal record, the pure `Affect` function, the quarantined appraiser, and step appraisal's model half | **shipped in full**, 2026-08-27/28 |
-| 8 | goal-closure appraisal and the readout surfaces | unbuilt, and §14's note below argues the order should change |
+| 8 | goal-closure appraisal and the readout surfaces | **shipped, 2026-08-28** (#99, #103) — §5.4's `tasks set --status done\|dropped` trigger (`mecha-cli/src/commands/tasks.rs`'s `appraise_closure`/`worth_a_follow_up`/`stage_follow_up`; the follow-up *gate* is `done`-only, never `dropped`, per §5.4's own "the owner took it anyway" framing) and §6.2's readout on all three surfaces (`mecha_core::appraisal::live`, a per-*run* sibling to `of_session` that passes no drafts at all (no message-index boundary to scope them by) and reads `Neutral` outright on any compacted run rather than a partial signal; TUI status-strip badge; web logo tint as a CSS outline, never a fill, per `brand.md`; a real per-*answer* voice `cfg_weight` nudge via `LocalTTS.on_turn_context_created`, lagging one turn by construction — it fires while the turn that earns the label is still streaming, so a call hears the *previous* turn's mood). Built against §14's own note below, by explicit owner ruling — see the paragraph above |
 | 9 | episode tagging, review-queue salience, gossip seeding | **episode tagging and gossip seeding shipped, 2026-08-28** (#97, #98); review-queue salience's status is not verified from this branch |
 | 10 | the charter (§11) and anticipated guilt's sensor (§7.4) | **the charter store/loader/CLI/prompt-block shipped**, plus the homeostat's own aggregate into `diagnose::Evidence`; anticipated guilt shipped **as a recorded sensor only** — see the note after this table. §7.4's actual anticipatory mechanism (an in-run signal that changes behaviour, not just a recorded number) and any charter-driven `Pride`/`Frustration` labelling are still open, both blocked on the same thing rung 7's measurement found: affect is a constant until a run actually names a goal |
 | 11 | curiosity | unbuilt |
@@ -1295,6 +1300,18 @@ Each rung is independently useful and independently measurable.
    decomposition problem — and the reasoning it gave never reached the
    recorded transcript.
 8. **Goal-closure appraisal and the readout surfaces** (§5.4, §6.2).
+
+   *Built 2026-08-28* (#99, #103), against item 7's own caution —
+   the corpus still said the probe was the cheaper half, and this rung was
+   built anyway on the owner's explicit ruling that the mechanism earns its
+   place independent of how interesting today's label is. §5.4's trigger
+   lives on `tasks set --status done|dropped`; only the follow-up gate
+   narrows to `done` alone, never `dropped`, on the design's own "the owner
+   took it anyway" framing — a closure the owner walked away from is not
+   one they accepted mediocre work on. §6.2's `live()` reads a compacted run
+   as `Neutral` outright rather than a partial, amplified signal, on the
+   same magnitude-first reduction §5's `affect_of` already uses.
+   `mecha-core/src/appraisal.rs`, `mecha-cli/src/commands/tasks.rs`.
 9. **Episode tagging, review-queue salience, gossip seeding** (§10).
 
    *Episode tagging built 2026-08-28*: `appraisal::for_session` is the one
