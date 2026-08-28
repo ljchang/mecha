@@ -1434,8 +1434,21 @@ fn finish_run(
             // it. Restored from the snapshot rather than truncated: a mid-run
             // compaction leaves the list shorter than it started, and
             // truncating that keeps the very message this exists to drop.
-            app.convo.messages = persisted;
+            app.convo.messages = persisted.clone();
             app.convo.messages.pop();
+            // And the transcript must agree, or the failure survives a
+            // resume (serve/chat's review finding, holding here verbatim):
+            // the opening user message was written at submit, so without
+            // this the file ends on a dangling user turn and `--resume`'s
+            // next submit puts two user messages in a row. The rolled-back
+            // list is not an extension of `persisted`, so `record_run`
+            // writes the `Rewrite` that makes a resume load exactly what
+            // memory holds; taint is persisted either way — a failed run
+            // that read a hostile page still read it.
+            if let Some(s) = session {
+                let _ = s.record_run(&persisted, &app.convo);
+                let _ = s.append(&Record::Taint(app.convo.taint));
+            }
             // A run with no `RunOutcome` has nothing to appraise — leaving
             // the previous run's badge up would read as *this* run's mood,
             // which is exactly the web page's own `sawAffectThisRun` rule

@@ -823,9 +823,24 @@ fn health(
         return Ok(());
     }
 
+    // Found on review: this was the one reader of the corpus that never said
+    // `unreadable` — and it is the surface whose stated job is the corpus,
+    // summarised. A store where every file is headerless printed "0
+    // session(s) read" with nothing wrong, which is exactly the
+    // dash-versus-zero inversion the counter was added to close. Said on
+    // both paths, empty corpus included — that path most of all.
+    let unreadable_line = (corpus.unreadable > 0)
+        .then(|| {
+            format!(
+                " · {} transcript(s) in the store unreadable",
+                corpus.unreadable
+            )
+        })
+        .unwrap_or_default();
+
     if corpus.is_empty() {
         println!(
-            "no recorded run outcomes in {} ({} session(s) read)",
+            "no recorded run outcomes in {} ({} session(s) read{unreadable_line})",
             dir.display(),
             corpus.sessions_read
         );
@@ -837,7 +852,7 @@ fn health(
     }
 
     println!(
-        "{} run(s) across {} session(s){}\n",
+        "{} run(s) across {} session(s){}{unreadable_line}\n",
         corpus.len(),
         corpus.sessions_read,
         days.map(|d| format!(", last {d} day(s)"))
@@ -980,6 +995,9 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     serde_json::json!({
         "runs": corpus.len(),
         "sessions_read": corpus.sessions_read,
+        // Store-wide, like the scan that produced it — a skipped file has no
+        // readable date to window on.
+        "sessions_unreadable": corpus.unreadable,
         "tool_calls": corpus.tool_calls(),
         "tool_errors": corpus.tool_errors(),
         "tool_error_rate": corpus.tool_error_rate(),
