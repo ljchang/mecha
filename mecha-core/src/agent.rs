@@ -2057,7 +2057,17 @@ impl Agent {
                                     ) => {}
                                     StepEscalationOutcome::Interrupted => {}
                                     StepEscalationOutcome::Failed(e) => {
-                                        tracing::debug!(error = %e, "step escalation call failed");
+                                        // Quality improvement, not a guard,
+                                        // on `compact_validate`'s exact
+                                        // precedent (its own failure logs at
+                                        // `warn` too) — a model that never
+                                        // emits the JSON object burns two
+                                        // requests per candidate, entirely
+                                        // invisibly at the default log level,
+                                        // with the metered tokens landing in
+                                        // `RunStats` and nothing saying what
+                                        // bought them.
+                                        tracing::warn!(error = %e, "step escalation call failed");
                                     }
                                 }
                             } else {
