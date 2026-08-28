@@ -89,15 +89,21 @@ impl Corpus {
             if scan.max_sessions.is_some_and(|n| out.sessions_read >= n) {
                 break;
             }
-            out.sessions_read += 1;
             // Attributed rather than taken from the header: a mid-session
             // model switch writes a `Config`, and crediting those runs to the
             // header's model would defeat `by_model` in the one case where a
             // corpus genuinely blends two.
+            //
+            // Counted as read only *after* the read succeeds — found on
+            // review: incrementing first put a torn-body transcript in both
+            // counters, which is exactly the "never folded into
+            // `sessions_read`" the field's own doc promises, broken two
+            // lines down. The two numbers are disjoint by construction now.
             let Ok(rows) = Session::outcomes_attributed(&path) else {
                 out.unreadable += 1;
                 continue;
             };
+            out.sessions_read += 1;
             for (i, (provider, model, s)) in rows.into_iter().enumerate() {
                 out.rows.push(RunRow {
                     session_id: meta.id.clone(),

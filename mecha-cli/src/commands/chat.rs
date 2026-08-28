@@ -160,12 +160,34 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
         }
 
-        let user = Message::user(input);
-        convo.push(user.clone());
-        if let Some(s) = &session {
-            s.append(&Record::Message(user))?;
-        }
-        let recorded = convo.messages.clone();
+        // Folded, not pushed, when the tail is already a user message — a
+        // Ctrl-C mid-tool-turn keeps the partial turn (cancel's contract),
+        // so the conversation can end on the user message carrying tool
+        // results, and pushing there makes two user messages in a row. The
+        // fold is recorded at submit (one direct `Rewrite` — `record_run`
+        // between runs would replay the previous run's still-uncleared
+        // `rewritten` states) and fails closed like the push branch's own
+        // append, so either way `recorded` is what the file already holds.
+        let recorded = if convo
+            .messages
+            .last()
+            .is_some_and(|m| m.role == mecha_core::message::Role::User)
+        {
+            mecha_core::agent::append_user_text(&mut convo.messages, input.to_string());
+            if let Some(s) = &session {
+                s.append(&Record::Rewrite {
+                    messages: convo.messages.clone(),
+                })?;
+            }
+            convo.messages.clone()
+        } else {
+            let user = Message::user(input);
+            convo.push(user.clone());
+            if let Some(s) = &session {
+                s.append(&Record::Message(user))?;
+            }
+            convo.messages.clone()
+        };
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let renderer = render::spawn(
@@ -203,13 +225,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Err(e) => {
                 eprintln!("error: {e:#}");
                 // Drop the turn so a failed request doesn't leave a dangling
-                // user message that the next request would resend. Restored
-                // from the snapshot rather than truncated: a mid-run
-                // compaction leaves the list shorter than it started, and
-                // truncating *that* keeps the dangling message this exists
-                // to drop.
-                convo.messages = recorded.clone();
-                convo.messages.pop();
+                // user message that the next request would resend — see
+                // `Conversation::roll_back_failed_turn` for why restore-then-
+                // pop, and why a bare pop was wrong twice over.
+                convo.roll_back_failed_turn(recorded.clone());
                 // And the transcript must agree, or the failure survives a
                 // resume (serve/chat's review finding, which holds here
                 // verbatim): the triggering user message was appended at
@@ -221,7 +240,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // still persisted — a failed turn that read a hostile page
                 // still read it.
                 if let Some(s) = &session {
-                    let _ = s.record_run(&recorded, &convo);
+                    // The one write whose failure reproduces the resume-time
+                    // 400 this arm exists to prevent — never silent.
+                    if let Err(e) = s.record_run(&recorded, &convo) {
+                        eprintln!(
+                            "warning: the rollback was not recorded — resuming \
+                             this session will replay the failed turn: {e:#}"
+                        );
+                    }
                     let _ = s.append(&Record::Taint(convo.taint));
                 }
             }
