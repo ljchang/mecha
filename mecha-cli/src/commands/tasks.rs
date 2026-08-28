@@ -581,6 +581,25 @@ fn worth_a_follow_up(a: &mecha_core::appraisal::Appraisal) -> bool {
     a.label != mecha_core::appraisal::Affect::Neutral
 }
 
+/// Is `id` exactly one ordinary path component — never a root, a `..`,
+/// empty, or more than one segment?
+///
+/// The same helper `serve/board.rs::run_summary` uses for the identical
+/// problem (a store-supplied session id reaching a bare `dir.join`), not
+/// shared with it because it is three lines and the two files do not
+/// otherwise depend on each other. A denylist of specific characters was
+/// the first cut here and a review of the board.rs copy caught the deeper
+/// gap: a denylist is complete only for the platform it was checked
+/// against. `std::path::Component::Normal` is what the standard library
+/// itself calls "an ordinary path segment", so asking it directly is
+/// correct on whatever platform this runs on rather than needing its own
+/// list of that platform's separators and prefixes.
+fn is_bare_path_component(id: &str) -> bool {
+    let mut components = std::path::Path::new(id).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
 /// Build one session's appraisal off its own transcript, the outbox, and the
 /// task it served — the single-lookup twin of `mecha sessions appraise`'s
 /// whole-store scan, which already does this same four-step assembly per
@@ -610,18 +629,12 @@ fn appraise_session(
     // The board's `session` field is nominally the harness's own — set once
     // by `move_task` at delegation — but `kg_task_list` is a read off
     // somebody else's store and `tasks set --session` lets a person type
-    // anything into it. Validated the same way `voice/mod.rs`'s `valid_key`
-    // validates a session key before it becomes a directory component: a
-    // real session id is never a path, so a value that contains one is
-    // refused before it reaches `dir.join`, not trusted because it usually
-    // wouldn't be malicious. Found on review: an absolute or `..`-bearing
-    // value here reaches `Path::join` (which discards the base entirely for
-    // an absolute argument) with nothing in between.
-    if session_id.is_empty()
-        || session_id.contains(['/', '\\'])
-        || session_id == "."
-        || session_id == ".."
-    {
+    // anything into it. `is_bare_path_component` refuses it before it
+    // reaches `dir.join`, not trusted because it usually wouldn't be
+    // malicious. Found on review: an absolute or `..`-bearing value here
+    // reaches `Path::join` (which discards the base entirely for an
+    // absolute argument) with nothing in between.
+    if !is_bare_path_component(session_id) {
         anyhow::bail!("not a session id: {session_id:?}");
     }
     let dir = mecha_core::session::Session::default_dir()?;
@@ -2395,26 +2408,43 @@ mod tests {
         );
     }
 
-    /// Found on review: `before["session"]` comes off `kg_task_list` (a read
-    /// off somebody else's store) or a `tasks set --session` a person typed,
-    /// and `appraise_session` used to build a filesystem path from it with
-    /// no check at all. `Path::join` discards the base entirely for an
-    /// absolute argument, so a value shaped like a path reached the
-    /// filesystem with nothing in between.
+    /// **The actual proof the guard does something.** `serve/board.rs`'s
+    /// twin of this check has the full filesystem-escape regression test
+    /// (a real session planted outside the resolution root, reached via
+    /// `../`, found without the guard and refused with it) — not repeated
+    /// here since the two functions share this exact implementation, and a
+    /// second copy of that test would prove the same mechanism twice
+    /// without proving anything new about this call site. What *is* worth
+    /// pinning here, directly and without touching the filesystem or
+    /// `Session::default_dir()`'s global state, is the predicate itself.
     #[test]
-    fn a_session_id_shaped_like_a_path_is_refused_before_it_reaches_the_filesystem() {
-        for hostile in [
-            "../../etc/passwd",
-            "/etc/passwd",
-            "..",
-            ".",
-            "",
-            "a/b",
-            "a\\b",
-        ] {
+    fn is_bare_path_component_accepts_one_ordinary_segment_and_nothing_else() {
+        for real in ["20260826T090000-aaaaaaaa", "task-1a2b3c4d", "x"] {
+            assert!(is_bare_path_component(real), "{real:?} must be accepted");
+        }
+        for hostile in ["../../etc/passwd", "/etc/passwd", "..", ".", "", "a/b"] {
+            assert!(
+                !is_bare_path_component(hostile),
+                "{hostile:?} must be refused"
+            );
+        }
+        // Not a separator on this platform — a single ordinary segment that
+        // happens to contain a backslash character, which `dir.join` cannot
+        // turn into an escape here. `is_bare_path_component`'s own doc names
+        // this as the reason it is correct *per-platform* rather than
+        // needing a denylist of every platform's separators.
+        assert!(is_bare_path_component("a\\b"));
+    }
+
+    /// **The wiring**, not the mechanism: `appraise_session` must actually
+    /// call the guard before doing anything else, so a hostile id never
+    /// reaches `Session::default_dir()` at all.
+    #[test]
+    fn appraise_session_refuses_a_hostile_id_before_touching_the_filesystem() {
+        for hostile in ["../../etc/passwd", "/etc/passwd", ".."] {
             assert!(
                 appraise_session(hostile, "task-1a2b3c4d").is_err(),
-                "{hostile:?} must be refused, not joined onto a directory"
+                "{hostile:?} must be refused"
             );
         }
     }
