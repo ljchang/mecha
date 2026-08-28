@@ -1975,16 +1975,29 @@ and `candidate::Metric`'s docstring makes lower-is-better an invariant. So a run
 could be recorded as having gone badly and never as having gone well, and
 nothing could start a loop unless the world acted first.
 
-**The charter has no write path, at any privilege level.** No CLI verb, no tool,
-no config field, no registry — `Charter::default_path` is the only path there
-is, and it is global, because a `mecha.toml` arrives with a cloned repository
-and a repo that could hand your agent standing priorities is the `[[trigger]]`
-rule in a worse costume. Skills and triggers keep the same guarantee the same
-way: by having no configurable path at all rather than by relying on callers to
-pick the global loader. The TUI's `/charter` `e` and the web settings editor
-both hand out `charter::TEMPLATE` and then hand the *file* to an editor; the
-template is comments-only, and a test fails on any uncommented `[[line]]`,
-because a template that shipped priorities would be mecha authoring the charter.
+**The charter's invariant is about the author, not the verb.** The owner may
+edit it from anywhere — `mecha charter edit`, the TUI's `/charter` `e`, the web
+settings page — and **no model composes, suggests or edits a line**, at any
+privilege level. This paragraph used to say "no write path, no CLI verb", which
+was already untrue of the TUI and the web page when it was written and made the
+command line the only surface where the owner could not edit their own
+document; `charter.rs`'s module doc carries the correction. What *is* still
+enforced, and is the part to keep:
+
+- **No tool, and nothing derived from a session.** There is no path by which a
+  model reaches this file.
+- **No configurable path.** `Charter::default_path` is the only one there is,
+  and it is global, because a `mecha.toml` arrives with a cloned repository and
+  a repo that could hand your agent standing priorities is the `[[trigger]]`
+  rule in a worse costume. Skills and triggers keep the same guarantee the same
+  way: by having no configurable path at all rather than by relying on callers
+  to pick the global loader.
+- **The only bytes mecha writes are `charter::TEMPLATE`'s**, which is comments
+  only, with a test that fails on any uncommented `[[line]]` — a template that
+  shipped priorities would be mecha authoring the charter. The write and the
+  did-anything-actually-land classification live once, in
+  `editor::edit_charter_with`, shared by every surface that can create a first
+  charter.
 
 **Order is rank, and `deny_unknown_fields` is what enforces it.** There is no
 priority field, because value conflict is the measured cause of goal drift and a

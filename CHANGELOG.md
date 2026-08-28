@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha setup --json` now exits non-zero when work is outstanding**, which
+  it had documented ("like doctor") and did not do: the `--json` path returned
+  before the exit-code branch, so the machine-readable spelling was the one
+  that always reported success. `doctor --json` prints its findings and then
+  falls through to the shared check; setup now does the same. The cost of the
+  old behaviour was a silent one rather than a wrong answer — a `!`-inverted
+  assertion written against the documented contract is ignored entirely by
+  `set -e`, so it neither failed nor passed.
+
 - **The step that blocks every other one has a way out of it.** `mecha setup`
   reported `anthropic has no usable credential` and offered `mecha config
   show` — a command that displays a file and fixes nothing, so the one step

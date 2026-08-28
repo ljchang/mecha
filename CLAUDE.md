@@ -132,8 +132,8 @@ permit.rs    how many background runs may hold the model at once — seats on
              llama-server, as files in a directory; a latency control, not memory
 frontdoor.rs inbound requests from strangers, and the quarantine over them
 goal.rs      what a run is for: charter, board task, or setpoint, by reference
-charter.rs   the owner's standing priorities, ranked by file order — read-only
-             by construction: no verb, no tool, no configurable path
+charter.rs   the owner's standing priorities, ranked by file order — the owner
+             edits from anywhere, no model ever authors a line
 guilt.rs     predicted error against another party's expectation, folded from
              *recorded* commitments only, never claimed ones
 capture.rs   what a typed or spoken capture says about *when* — detected and
@@ -380,10 +380,12 @@ trip over from *outside* the subsystem:
 - **Compaction**: the cut must land on an assistant message (an orphaned
   `tool_result` is a 400), taint and carried tool state survive it, and the
   session file records a `rewrite` when history is edited.
-- **The goal system**: the charter has **no write path at any privilege level**
-  and no configurable path; `Affect` is a pure function of the record with no
-  way to report one; and the homeostat, boredom's notices and
-  `anticipated_guilt` are all sensors that deliberately ship with no consumer.
+- **The goal system**: the charter's rule is about the **author, not the verb**
+  — the owner edits it from anywhere (`mecha charter edit`, `/charter`, the web
+  settings page), no model ever authors a line, and there is no tool and no
+  configurable path; `Affect` is a pure function of the record with no way to
+  report one; and the homeostat, boredom's notices and `anticipated_guilt` are
+  all sensors that deliberately ship with no consumer.
 
 ## Testing without credentials
 
