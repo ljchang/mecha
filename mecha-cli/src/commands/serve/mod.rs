@@ -85,6 +85,9 @@ struct WebState {
     review: Arc<review::ReviewState>,
     /// The voice runner's offer endpoint, or None when disabled.
     offer_target: Option<Arc<String>>,
+    /// Host directory of TTS cloning references (`[web] voices_dir`), or
+    /// None when cloning is not configured on this box.
+    voices_dir: Option<Arc<PathBuf>>,
 }
 
 pub async fn execute(args: Args) -> Result<()> {
@@ -127,6 +130,7 @@ pub async fn execute(args: Args) -> Result<()> {
         chat,
         review,
         offer_target,
+        voices_dir: config.web.voices_dir.clone().map(Arc::new),
     };
     // Mount the voice facade on the same agent: one provider connection,
     // one cached prefix, two dialects. It rides this process's lifetime;
@@ -296,6 +300,14 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
             get(settings::charter).post(settings::charter_save),
         )
         .route("/api/settings/rules", get(settings::rules))
+        .route(
+            "/api/settings/voice/clone",
+            axum::routing::post(settings::voice_clone),
+        )
+        .route(
+            "/api/settings/voice/clone/delete",
+            axum::routing::post(settings::voice_clone_delete),
+        )
         .route("/api/settings/voice", get(settings::voice))
         .route("/api/notes", get(board::notes).post(board::note))
         .route("/api/notes/edit", axum::routing::post(board::note_edit))
@@ -541,6 +553,7 @@ mod tests {
                 owner_login: Arc::new("owner@example.com".into()),
                 chat: None,
                 offer_target: None,
+                voices_dir: None,
                 review: Arc::new(review::ReviewState {
                     outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
                     sessions_dir: None,
