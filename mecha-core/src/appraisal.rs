@@ -1621,32 +1621,21 @@ mod tests {
 
     #[test]
     fn only_five_labels_are_reachable_and_the_rest_say_why() {
-        // The compiler carries the pairing between the enum and `ALL`: this
-        // match must stay exhaustive, so a new variant fails to compile
-        // here, and the arm its author adds asserts the variant into `ALL`.
-        // (A bare `ALL.len() == 10` assert would be a tautology about the
-        // array's own declared type — it cannot notice a variant the list
-        // forgot.)
-        let member_of_all = |a: Affect| {
-            match a {
-                Affect::Neutral
-                | Affect::Anger
-                | Affect::Embarrassment
-                | Affect::Frustration
-                | Affect::Regret
-                | Affect::Disappointment
-                | Affect::Guilt
-                | Affect::Shame
-                | Affect::Pride
-                | Affect::Excitement => {}
-            }
-            assert!(
-                Affect::ALL.contains(&a),
-                "{a:?} is missing from Affect::ALL"
-            );
-        };
+        // Honest about what can and cannot be checked here: without a
+        // variant-enumerating macro there is no assertion over `ALL` that
+        // notices a variant the list forgot — a length check is a tautology
+        // about the array's own type, and a contains-check over ALL's own
+        // members is circular (both were tried; review caught both). The
+        // compile-time tripwire for a new variant is `says_more`'s
+        // exhaustive match, which HISTORY already records as the mechanism
+        // — it forces the author into this file, where `ALL` and this test
+        // are the checklist, and the derived `sessions appraise` count is
+        // what goes quietly short if `ALL` is forgotten. What *is* checkable
+        // is that the list carries no duplicate, which would double-count a
+        // variant in that same derived line.
+        let mut seen = std::collections::BTreeSet::new();
         for a in Affect::ALL {
-            member_of_all(a);
+            assert!(seen.insert(a.wire()), "{a:?} appears twice in Affect::ALL");
         }
         assert_eq!(
             Affect::ALL.iter().filter(|a| a.reachable_today()).count(),
