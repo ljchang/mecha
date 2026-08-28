@@ -1,9 +1,10 @@
 # The goal system — design
 
 Decided 2026-08-26. **Rungs 0–5 of §14 shipped the same day** (PRs #61–#72),
-rung 5's model-facing half followed on 2026-08-27 (#78), and **rungs 6 and 7's
-observation half shipped the same day** — the latter with a measurement that
-argues against the build order below. Rung 8 waits on it.
+rung 5's model-facing half followed on 2026-08-27 (#78), and **rung 6, rung
+7's observation half, and rung 7's quarantined appraiser all shipped the same
+day** — the observation half with a measurement that argues against the build
+order below. Rung 7's model half of step appraisal and rung 8 both wait on it.
 The body below is the design as proposed and is
 deliberately not rewritten — `docs/HISTORY.md` records what was built, and the
 gap between the two is evidence about how the built thing came to be shaped
@@ -19,7 +20,7 @@ beside the original rather than replacing it (§2.1 and §4.4).
 | 4 | prioritised replay + uniform holdout | shipped, #66 |
 | 5 | predictive compaction and task sizing | shipped, #69/#71/#72 + #78 |
 | 6 | boredom, and the deterministic half of step appraisal | shipped, 2026-08-27 — with §5.5's three comparison signals and §9.1's rung 2 named rather than built |
-| 7 | the appraisal record and the pure `Affect` function | **observation half shipped**, 2026-08-27; the quarantined appraiser (§5.1) and the model half of step appraisal are open |
+| 7 | the appraisal record, the pure `Affect` function, and the quarantined appraiser | **observation half and the quarantined appraiser (§5.1) shipped**, 2026-08-27; the model half of step appraisal is open |
 | 8–11 | consumers of the label, the charter, curiosity | unbuilt, and §14's note below argues the order should change |
 
 Everything shipped so far has no model, no charter and no adversary in it,
@@ -1187,11 +1188,11 @@ Each rung is independently useful and independently measurable.
    got one — `Tool::runs_a_fresh_conversation`, fourth in the family with
    `carried_state`, `fixed_workspace` and `narrows_surface_to` — which is the
    shape closing rung 2 would take.
-7. **The appraisal store and the pure `Affect` function** (§5, §6), and the
-   model half of step appraisal — the escalation, not the common path.
-   Observation only — build the corpus and check the labels are not
-   degenerate before anything consumes them. If 95% come back neutral the
-   channel is dead, learned cheaply.
+7. **The appraisal store and the pure `Affect` function** (§5, §6), the
+   quarantined appraiser (§5.1), and the model half of step appraisal — the
+   escalation, not the common path. Observation only — build the corpus and
+   check the labels are not degenerate before anything consumes them. If 95%
+   come back neutral the channel is dead, learned cheaply.
 
    *Built 2026-08-27 (`appraisal.rs`, `mecha sessions appraise`), and the
    measurement came back at the pessimistic end: **119 signed goal errors
@@ -1224,6 +1225,26 @@ Each rung is independently useful and independently measurable.
    interventions rather than every one, and today it reaches none of them,
    because `replay_registry` cannot build a surface containing `ask_user` and
    every interactive session has one.
+
+   **The quarantined appraiser (§5.1) shipped 2026-08-27**, offline and
+   budgeted like the probe: `mecha sessions appraise --appraise` drives at
+   most one quarantined call per session (`appraisal::appraise_with_model`,
+   `mecha-cli/src/appraiser_pass.rs`), reading a numbers-only
+   `AppraiserEvidence` — never the transcript, an intervention's text, or a
+   draft's body — and returning one more signed `GoalError` (`Channel::
+   Appraisal`, `Cite::Appraiser`) or "nothing further", the ordinary and
+   correct answer. **The anti-injection property is the type, not a filter**:
+   `AppraiserEvidence` has no field that could hold prose, built from the
+   already-computed `Appraisal` (ids/enums/numbers by construction) rather
+   than from raw interventions or drafts — the same move `QuarantinedPass`
+   itself makes for tools and history. `controllable` and `visible` start
+   conservative (`None`/`false`), same as a fresh intervention before a
+   probe. **Still no store**: this is the channel the note above says earns
+   one, and it is deliberately not built yet — a handful of sessions smoke
+   tested live all came back "nothing further", which is not the corpus
+   measurement that decides the question. Re-running `--appraise` at scale
+   over the store, the way the observation half's 120-session measurement was
+   taken, is the next thing to do with it before anything is built on top.
 8. **Goal-closure appraisal and the readout surfaces** (§5.4, §6.2).
 9. **Episode tagging, review-queue salience, gossip seeding** (§10).
 10. **The charter** (§11), anticipated guilt (§7.4), and the homeostat into
