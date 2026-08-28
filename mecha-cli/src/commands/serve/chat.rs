@@ -1299,9 +1299,7 @@ fn begin_turn(
         if let Some(ws) = sessions.get_mut(&key_for_task) {
             let outcome_err = outcome.is_err();
             if outcome_err {
-                // A failed request must not leave a dangling user message the
-                // next request would resend (the chat command's rule).
-                conversation.messages.pop();
+                roll_back_failed_turn(&mut conversation, before);
             }
             ws.conversation = Some(conversation);
             ws.live = None;
@@ -1591,6 +1589,22 @@ pub async fn set_mode(
         text: format!("mode set to {}", mode_wire(mode)),
     });
     Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+/// Roll a failed run back to the conversation the request found, minus the
+/// user message that triggered it — the chat command's rule, spelled the way
+/// both siblings spell it (`mecha chat`, the TUI's `finish_run`): **restore
+/// the snapshot, then pop**. `Agent::run_in` mutates the list in place and
+/// does not roll back on `Err`, so a bare pop is wrong twice over: after a
+/// failure mid-tool-turn the tail is a tool-result message, and popping it
+/// orphans the assistant's `tool_use` — every later request on the session
+/// 400s ("a tool result must exist for every `tool_use` id"), each failure
+/// then eating the user's newly typed message; and after a mid-run compaction
+/// the list is *shorter* than the snapshot, so the pop keeps the very message
+/// it exists to drop.
+fn roll_back_failed_turn(conversation: &mut Conversation, before: Vec<Message>) {
+    conversation.messages = before;
+    conversation.messages.pop();
 }
 
 /// The first user line of a transcript, for a history listing — the thing
@@ -1892,6 +1906,95 @@ mod tests {
         }
         for good in ["main", "grant-review", "walk_2", "a"] {
             assert!(valid_key(good), "{good:?} should pass");
+        }
+    }
+}
+
+#[cfg(test)]
+mod rollback_tests {
+    use super::*;
+
+    /// The regression this pins: the error arm used to pop the *mutated*
+    /// list's tail instead of restoring the snapshot first — the only one of
+    /// the four pop sites in this crate that skipped the restore. A failure
+    /// after a tool turn then orphaned the assistant's `tool_use`, and every
+    /// later request on the session 400'd.
+    #[test]
+    fn a_failure_after_a_tool_turn_leaves_no_orphaned_tool_use() {
+        let before = vec![
+            Message::user("earlier turn"),
+            Message::assistant(vec![Block::text("earlier answer")]),
+            Message::user("do the thing"),
+        ];
+        let mut conversation = Conversation::from(before.clone());
+        // What `run_in` leaves behind when the provider dies after one tool
+        // round: the call, its result, and no final answer.
+        conversation
+            .messages
+            .push(Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({}),
+            }]));
+        conversation.messages.push(Message {
+            role: Role::User,
+            content: vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+        });
+
+        roll_back_failed_turn(&mut conversation, before);
+
+        assert!(
+            !conversation
+                .messages
+                .iter()
+                .flat_map(|m| &m.content)
+                .any(|b| matches!(b, Block::ToolUse { .. })),
+            "a dangling tool_use survived the rollback: {:?}",
+            conversation.messages
+        );
+        assert_eq!(
+            conversation.messages.last().map(|m| m.role),
+            Some(Role::Assistant),
+            "the triggering user message must be gone too, or the next \
+             request resends it"
+        );
+    }
+
+    /// The second failure mode the siblings' comments name: a mid-run
+    /// compaction leaves the live list *shorter* than the snapshot, so the
+    /// old bare pop removed an arbitrary rewritten message and kept the very
+    /// user message the arm exists to drop.
+    #[test]
+    fn a_failure_after_a_compaction_still_drops_the_triggering_message() {
+        let before = vec![
+            Message::user("a long history"),
+            Message::assistant(vec![Block::text("...")]),
+            Message::user("the triggering message"),
+        ];
+        let mut conversation =
+            Conversation::from(vec![Message::user("[summary of the run so far]")]);
+
+        roll_back_failed_turn(&mut conversation, before);
+
+        assert!(
+            !conversation
+                .messages
+                .iter()
+                .flat_map(|m| &m.content)
+                .any(|b| m_text(b) == "the triggering message"),
+            "the triggering user message must not survive the rollback"
+        );
+        assert_eq!(conversation.messages.len(), 2);
+    }
+
+    fn m_text(b: &Block) -> &str {
+        match b {
+            Block::Text { text } => text,
+            _ => "",
         }
     }
 }
