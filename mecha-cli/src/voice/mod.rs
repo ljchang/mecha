@@ -213,12 +213,27 @@ struct Shared {
     /// and still gets asked.
     confirmations: confirm::Confirmations,
     /// §6.2's voice readout — the last non-`Neutral` label a hosted turn
-    /// (D3) came back with, per chat session key. Set-and-overwrite, never
-    /// take-once: Pipecat's TTS aggregates by sentence, so the worker polls
-    /// this once per sentence of one answer, and consuming semantics would
-    /// go stale after the first. Cleared (not merely left stale) on every
-    /// completed turn — `Neutral` removes the entry — so a synthesis for a
-    /// *later*, ordinary turn never inherits an earlier turn's mood.
+    /// (D3) came back with, per chat session key.
+    ///
+    /// **Lags by one turn, honestly rather than by accident.** `Affect` is a
+    /// function of the *finished* `RunOutcome` (`appraisal::live`), and
+    /// `pump` streams the answer's text — and therefore starts feeding
+    /// Pipecat's TTS, sentence by sentence — before `hosted_completion`
+    /// updates this map, which happens only after `turn.done` resolves. So
+    /// the mood a sentence is spoken with is whichever turn's label was
+    /// cached *before* this one started, not this one's own. There is no
+    /// way to do better without holding speech until the whole answer is
+    /// known, which is the latency the streaming exists to avoid — this is
+    /// a documented trade-off, not a bug to chase.
+    ///
+    /// Set-and-overwrite, never take-once: the worker polls once per
+    /// sentence of one answer (Pipecat aggregates TTS by sentence), and
+    /// consuming semantics would go stale after the first. Cleared on
+    /// **every** completed turn regardless of outcome — `Neutral` removes
+    /// the entry, and so does an error, on the same "silence means neutral"
+    /// rule the TUI's `Err` arm and the web page's `sawAffectThisRun` both
+    /// follow — so a synthesis for a later turn never inherits a stale
+    /// mood from one that failed.
     affects: Mutex<HashMap<String, String>>,
 }
 
@@ -845,17 +860,30 @@ async fn hosted_completion(
         .done
         .await
         .unwrap_or_else(|_| Err("the run ended without answering".to_string()));
-    // §6.2: cache (or clear) this turn's label before anything else touches
-    // `answer`, so the worker's next per-sentence poll — which can start as
-    // soon as the first chunk of `say`/`finish_stream` below reaches it —
-    // sees this turn's mood, never a stale one from before it.
-    if let Ok(a) = &answer {
+    // §6.2: cache (or clear) this turn's label. Deliberately *after* `pump`
+    // has already streamed this turn's own text above — the label is a
+    // function of the finished `RunOutcome`, so it cannot exist before this
+    // point, and this turn's own sentences have already gone to the worker
+    // by the time it lands. What this sets is what the *next* turn's
+    // sentences will poll (the `affects` field's own docstring is the honest
+    // account of that lag).
+    //
+    // Cleared on `Err` too, not only on an `Ok` answer with no label — a
+    // failed run has nothing to report, and leaving the previous turn's
+    // entry in place here would be exactly the staleness the rest of this
+    // cache exists to avoid, one arm over.
+    {
         let mut affects = shared.affects.lock().await;
-        match &a.affect {
-            Some(label) => {
-                affects.insert(confirm_key.to_string(), label.clone());
-            }
-            None => {
+        match &answer {
+            Ok(a) => match &a.affect {
+                Some(label) => {
+                    affects.insert(confirm_key.to_string(), label.clone());
+                }
+                None => {
+                    affects.remove(confirm_key);
+                }
+            },
+            Err(_) => {
                 affects.remove(confirm_key);
             }
         }
