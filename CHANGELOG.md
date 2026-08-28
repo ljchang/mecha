@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assertion written against the documented contract is ignored entirely by
   `set -e`, so it neither failed nor passed.
 
+- **`mecha-cli` did not compile on macOS, and nothing could see it.** `exe.rs`
+  imported `std::path::Path` unconditionally while using it only inside
+  `#[cfg(target_os = "linux")]` branches — an unused import everywhere else,
+  which this repo's `-D warnings` makes a build failure rather than a lint.
+  Every CI job was ubuntu-only, so the break was invisible; the
+  `first run (macos-latest)` job added in this release found it on its first
+  run, which is the whole argument for building on more than the platform you
+  develop on.
+
 - **`mecha setup --undecline` no longer announces an undo it did not
   perform.** A typo'd or unknown step id wrote the set back unchanged and
   still printed "`slak` will be offered again" and exited 0, so the person
