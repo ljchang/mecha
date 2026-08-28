@@ -646,8 +646,12 @@ impl App {
         // without a corpus to measure one from (rung 6's own precedent for
         // its own thresholds).
         if let Some(affect) = self.affect {
+            // `wire()`, not `{:?}` — the divergence `Affect::wire()` exists
+            // to prevent (its own doc comment). Identical for all ten
+            // current variants; a future two-word one would make this badge
+            // and the web page's tint disagree silently.
             spans.push(Span::styled(
-                format!(" {affect:?} ").to_lowercase(),
+                format!(" {} ", affect.wire()),
                 Style::new().fg(Color::Black).bg(Color::Yellow),
             ));
         }

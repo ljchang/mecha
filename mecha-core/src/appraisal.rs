@@ -847,10 +847,27 @@ pub fn live(
     run_started_at: usize,
 ) -> Affect {
     let stats = crate::session::RunStats::from(outcome);
-    let interventions: Vec<_> = crate::learning::extract_interventions(&conversation.messages)
-        .into_iter()
-        .filter(|i| i.at >= run_started_at)
-        .collect();
+    // A mid-run compaction rewrites `conversation.messages` *in place*
+    // (CLAUDE.md, "The session record survives compaction too" — the same
+    // rewrite `Session::record_run` compares against rather than slicing
+    // past). `run_started_at` was captured before that happened, so after a
+    // compaction it no longer names this run's own starting point in the
+    // rewritten list — it is too high, and the filter below would silently
+    // drop this run's genuine `Steer`/`Denial` interventions along with
+    // whatever the rewrite actually removed. Found on review: there is no
+    // way to recover the true boundary from here (the rewrite does not
+    // record how far indices shifted), so the honest answer is that this
+    // run's interventions are unknowable rather than empty-by-omission —
+    // and unknowable reads as none, on the same fail-safe direction as
+    // everywhere else in this module (silence, never a false signal).
+    let interventions: Vec<_> = if outcome.compactions > 0 {
+        Vec::new()
+    } else {
+        crate::learning::extract_interventions(&conversation.messages)
+            .into_iter()
+            .filter(|i| i.at >= run_started_at)
+            .collect()
+    };
     let goal = crate::tool::todo::TodoTool::plan_from_transcript(&conversation.messages)
         .and_then(|p| p.goal);
     let goals: Vec<GoalRef> = goal.into_iter().collect();
@@ -2352,5 +2369,54 @@ mod tests {
             Affect::Neutral,
             "a steer from an earlier run must not appear in a later, clean run's live reading"
         );
+    }
+
+    /// The regression this exists to catch: a mid-run compaction rewrites
+    /// `conversation.messages` *in place*, so `run_started_at` — captured
+    /// before the run — no longer names this run's own starting point in
+    /// the rewritten list. Left unguarded, a steer from *this same run*
+    /// would still pass the `i.at >= run_started_at` filter by coincidence
+    /// or fail it depending on how far the rewrite shifted indices — either
+    /// way, an index that no longer means what it did is not something to
+    /// trust either way, so `live` treats a compacted run's interventions as
+    /// unknowable rather than gambling on the coincidence.
+    #[test]
+    fn a_compacted_run_does_not_trust_its_own_intervention_index() {
+        let messages = vec![
+            crate::message::Message::user("do the thing"),
+            crate::message::Message::assistant(vec![crate::message::Block::ToolUse {
+                id: "t1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({}),
+            }]),
+            crate::message::Message {
+                role: crate::message::Role::User,
+                content: vec![
+                    crate::message::Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    },
+                    crate::message::Block::text("change of plan: skip the rest"),
+                ],
+            },
+        ];
+        let convo = crate::agent::Conversation::from(messages);
+
+        // Without a compaction, the steer's `-1.0` outranks the ceiling's
+        // `-0.5` in `affect_of`'s magnitude-first reduce and masks it down
+        // to `Neutral` — the pre-existing, correct behaviour for an
+        // uncompacted run, included here so the next assertion is a
+        // contrast rather than a guess.
+        let mut clean = bare_outcome();
+        clean.stop_cause = crate::agent::StopCause::MaxTurns;
+        assert_eq!(live("s1", &clean, &convo, 0), Affect::Neutral);
+
+        // With a compaction recorded, the same steer must not be trusted at
+        // all — what's left is the ceiling's `Anger`, reading through
+        // rather than being masked by an index the rewrite invalidated.
+        let mut compacted = clean.clone();
+        compacted.compactions = 1;
+        assert_eq!(live("s1", &compacted, &convo, 0), Affect::Anger);
     }
 }

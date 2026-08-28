@@ -245,10 +245,22 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
 /// and needs to be told which of those two it is.
 async fn call(global: &GlobalOpts, tool: &str, args: Value) -> Result<Value> {
     let prepared = setup::prepare_tools(global, false).await?;
+    call_with(&prepared, tool, args).await
+}
+
+/// `call`'s own dispatch, over a registry the caller already paid to build.
+/// Every other verb in this file wants exactly one `prepare_tools` per
+/// invocation and `call` gives it that — but a closure now makes up to four
+/// calls in sequence (`find_task`, the update, `stage_follow_up`'s create
+/// and its possible retry), and each one going through `call` was `mcp::
+/// connect_all` — third-party server startup — two to four times for one
+/// keystroke, synchronously in front of the TUI event loop and Slack's Done
+/// tap. One `PreparedTools`, threaded through, pays that once.
+async fn call_with(prepared: &setup::PreparedTools, tool: &str, args: Value) -> Result<Value> {
     let found = find_tool(&prepared.registry, tool).with_context(|| {
         format!("no knowledge-graph server in this configuration — `{tool}` is not on the tool surface. Is `[[mcp]]` enabled?")
     })?;
-    let out = found.call(args, &tool_ctx(&prepared)).await?;
+    let out = found.call(args, &tool_ctx(prepared)).await?;
     if out.is_error {
         bail!("{}: {}", tool, out.content.trim());
     }
@@ -398,24 +410,6 @@ async fn set(
     waiting_on: Option<String>,
     session: Option<String>,
 ) -> Result<()> {
-    // Read before the mutation, and only when the target is a status
-    // `is_fresh_closure` could ever call a closure (`done`/`dropped`) —
-    // `kg_task_update` answers with the fields it moved, never the row as a
-    // whole, so telling a fresh closure apart from one already closed (and
-    // finding the session/project a closure appraises) needs the record as
-    // it stood going in. Narrower than "any status move": `call` pays a
-    // full `mcp::connect_all` startup for this lookup, and `/tasks` drives
-    // every status change — including the ones nowhere near a closure —
-    // through this same function.
-    let before = if status
-        .as_deref()
-        .is_some_and(|s| matches!(s, "done" | "dropped"))
-    {
-        find_task(global, task).await.ok()
-    } else {
-        None
-    };
-
     let mut args = json!({ "task": task });
     // Every field `kg_task_update` takes, because the modal drives the CLI and
     // a verb the terminal cannot reach is one the UI must not offer either.
@@ -437,7 +431,32 @@ async fn set(
              --waiting-on"
         );
     }
-    let out = call(global, "kg_task_update", args).await?;
+
+    // One `prepare_tools` for everything below — the update, the
+    // pre-mutation read, and a closure's appraisal-and-maybe-follow-up all
+    // used to go through `call`'s own `prepare_tools`, which is a full
+    // `mcp::connect_all` (third-party server startup) apiece. That is up to
+    // four of them for one `tasks set` — synchronously in front of the TUI
+    // event loop (`self_cli`) and Slack's Done tap — for a keystroke that
+    // used to cost one.
+    let prepared = setup::prepare_tools(global, false).await?;
+
+    // Read before the mutation, and only when the target is a status
+    // `is_fresh_closure` could ever call a closure (`done`/`dropped`) —
+    // `kg_task_update` answers with the fields it moved, never the row as a
+    // whole, so telling a fresh closure apart from one already closed (and
+    // finding the session/project a closure appraises) needs the record as
+    // it stood going in.
+    let before = if status
+        .as_deref()
+        .is_some_and(|s| matches!(s, "done" | "dropped"))
+    {
+        find_task_with(&prepared, task).await.ok()
+    } else {
+        None
+    };
+
+    let out = call_with(&prepared, "kg_task_update", args).await?;
     println!("{}", serde_json::to_string_pretty(&out)?);
 
     // §5.4 — appraise the medium-tier goal at the moment the *owner* closes
@@ -456,7 +475,7 @@ async fn set(
             if let Some(s) = &session {
                 before["session"] = json!(s);
             }
-            appraise_closure(global, task, &before).await;
+            appraise_closure(&prepared, task, &before).await;
         }
     }
     Ok(())
@@ -466,8 +485,8 @@ async fn set(
 /// same `kg_task_list --include_closed` the modal already fetches — there is
 /// no `kg_task_get`, and a scan of one small JSON array beats a second
 /// implementation of the board's own lookup.
-async fn find_task(global: &GlobalOpts, task_id: &str) -> Result<Value> {
-    let board = call(global, "kg_task_list", json!({ "include_closed": true })).await?;
+async fn find_task_with(prepared: &setup::PreparedTools, task_id: &str) -> Result<Value> {
+    let board = call_with(prepared, "kg_task_list", json!({ "include_closed": true })).await?;
     board["items"]
         .as_array()
         .map(Vec::as_slice)
@@ -502,7 +521,7 @@ fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
 /// than a line fix, and it does not exist yet. The blast radius is bounded
 /// to an extra advisory task on the board, never a lost or corrupted one, so
 /// this is disclosed rather than rushed.
-async fn appraise_closure(global: &GlobalOpts, task_id: &str, before: &Value) {
+async fn appraise_closure(prepared: &setup::PreparedTools, task_id: &str, before: &Value) {
     // Never delegated — the ordinary case for a hand-typed task. There is
     // nothing here for D9's index to point at, and that is not an error.
     let Some(session_id) = before["session"].as_str() else {
@@ -544,7 +563,7 @@ async fn appraise_closure(global: &GlobalOpts, task_id: &str, before: &Value) {
     if !worth_a_follow_up(&a) {
         return;
     }
-    if let Err(e) = stage_follow_up(global, task_id, before, &a).await {
+    if let Err(e) = stage_follow_up(prepared, task_id, before, &a).await {
         eprintln!("mecha: could not stage a follow-up for {task_id}: {e:#}");
     }
 }
@@ -570,6 +589,20 @@ fn worth_a_follow_up(a: &mecha_core::appraisal::Appraisal) -> bool {
 /// resolution from a bare session id — `serve/board.rs::run_summary`'s
 /// pattern, direct join first and `Session::find`'s whole-directory scan
 /// only as the fallback, one file over.
+///
+/// **Deliberately not `appraisal::for_session`, which does the identical
+/// assembly below the path resolution.** Found on review, and the reason is
+/// real rather than an oversight: `for_session` folds "the transcript could
+/// not be read" and "no outcome recorded yet" into one `None`, which is
+/// right for its own callers (`mecha sessions appraise`'s scan, `distill`'s
+/// episode tagging) — a report or an episode either has evidence or it
+/// doesn't, and neither can act on *why* not. This caller needs the
+/// distinction: a closure gets one appraisal, ever, so "could not read the
+/// file" (worth a warning — something is actually wrong) and "the run
+/// hasn't recorded an outcome yet" (silence — `board.rs`'s own rule) must
+/// not read the same to the owner. Widening `for_session` to carry that
+/// distinction for one caller would cost every other reader of it a richer
+/// error type they have no use for.
 fn appraise_session(
     session_id: &str,
     task_id: &str,
@@ -674,7 +707,7 @@ fn describe(a: &mecha_core::appraisal::Appraisal) -> String {
 /// as anything other than the harness's own words. Citing the id instead
 /// costs the reader one lookup (`mecha tasks list`) and costs nothing here.
 async fn stage_follow_up(
-    global: &GlobalOpts,
+    prepared: &setup::PreparedTools,
     task_id: &str,
     before: &Value,
     a: &mecha_core::appraisal::Appraisal,
@@ -705,28 +738,28 @@ async fn stage_follow_up(
     if let Some(p) = before["project"].as_str() {
         args["project"] = json!(p);
     }
-    let out = match call(global, "kg_task_create", args.clone()).await {
+    let out = match call_with(prepared, "kg_task_create", args.clone()).await {
         Ok(v) => v,
         // The store's own validation may be stricter than the documented
         // closed set — if `captured_from` is what it rejected, still get
         // the follow-up onto the board rather than losing it over a
         // provenance pointer nobody can act on today anyway.
         //
-        // **Narrowed to that one case, not every `Err` `call` can produce.**
-        // `call` also errors on a JSON-parse failure of an otherwise
+        // **Narrowed to that one case, not every `Err` `call_with` can
+        // produce.** It also errors on a JSON-parse failure of an otherwise
         // successful response and on a transport failure inside
         // `found.call` — in both, `kg_task_create` may already have run,
         // and retrying would stage a second, indistinguishable task rather
         // than recover from a rejection. The one shape that means "the
-        // store rejected the argument before creating anything" is `call`'s
+        // store rejected the argument before creating anything" is `call_with`'s
         // own `bail!("{tool}: {..}")` for `out.is_error`, whose text begins
-        // with the tool's name and a colon — nothing else in `call` (or in
-        // `Tool::call`'s errors, or `find_tool`'s) produces that prefix.
+        // with the tool's name and a colon — nothing else it can produce
+        // (or `Tool::call`'s errors, or `find_tool`'s) matches that prefix.
         Err(e) if e.to_string().starts_with("kg_task_create: ") => {
             if let Some(o) = args.as_object_mut() {
                 o.remove("captured_from");
             }
-            call(global, "kg_task_create", args)
+            call_with(prepared, "kg_task_create", args)
                 .await
                 .with_context(|| format!("retried without captured_from after: {e:#}"))?
         }
