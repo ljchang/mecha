@@ -3654,12 +3654,21 @@ fn submit(
         .last()
         .is_some_and(|m| m.role == mecha_core::message::Role::User)
     {
-        let file_held = app.convo.messages.clone();
         if let Some(last) = app.convo.messages.last_mut() {
             last.content.extend(blocks);
         }
         if let Some(s) = session {
-            s.record_run(&file_held, &app.convo)?;
+            // A direct `Rewrite`, not `record_run` — found on review:
+            // between runs `convo.rewritten` still holds the *previous*
+            // run's compaction states (only `run_in` clears it, at run
+            // start), and `record_run` replays them first, writing
+            // redundant full-history copies whose torn middle resumes at a
+            // stale pre-compaction state. Those states are already on disk
+            // from the previous run's own record; this fold is one mutation
+            // and earns exactly one record.
+            s.append(&Record::Rewrite {
+                messages: app.convo.messages.clone(),
+            })?;
         }
     } else {
         let user = Message {

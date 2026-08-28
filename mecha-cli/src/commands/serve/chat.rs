@@ -1079,19 +1079,30 @@ fn begin_turn(
     // barge-in mid-tool-turn (`VoiceHost::speak` cancels the live run and
     // resubmits through here) leaves the conversation ending on the user
     // message carrying tool results, and pushing there makes two user
-    // messages in a row. When folding, nothing is appended by hand:
-    // `before` snapshots the pre-fold state — which is what the file holds
-    // — and `record_run` at turn end expresses the fold as the rewrite it
-    // is (`questions.rs`'s rule). The plain case keeps the
-    // append-at-submit contract: `before` is what the file already holds.
+    // messages in a row. The fold is recorded at submit, so either way
+    // `before` is what the file already holds — the `record_run` contract
+    // every arm downstream assumes.
     let before;
     if conversation
         .messages
         .last()
         .is_some_and(|m| m.role == Role::User)
     {
-        before = conversation.messages.clone();
+        // Recorded immediately (one direct `Rewrite` — `record_run` here
+        // would replay the previous run's still-uncleared `rewritten`
+        // states), and fail-closed exactly as the push branch below is: an
+        // unrecorded turn is invisible to distill, recall and the
+        // run-quality corpus, whichever way it entered the conversation.
+        let pre_fold = conversation.messages.clone();
         mecha_core::agent::append_user_text(&mut conversation.messages, text.clone());
+        if let Err(e) = ws.session.append(&Record::Rewrite {
+            messages: conversation.messages.clone(),
+        }) {
+            conversation.messages = pre_fold;
+            ws.conversation = Some(conversation);
+            return Err(TurnError::Failed(format!("recording: {e:#}")));
+        }
+        before = conversation.messages.clone();
     } else {
         let user = Message::user(&text);
         conversation.push(user.clone());

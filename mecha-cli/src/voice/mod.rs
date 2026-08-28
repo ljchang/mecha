@@ -1269,23 +1269,27 @@ async fn completion(
     } else {
         text
     };
-    // Folded, not pushed, when the tail is already a user message —
-    // `questions.rs`'s rule, arriving here because a barge-in mid-tool-turn
-    // leaves the transcript ending on the user message carrying tool
-    // results, and pushing there makes two user messages in a row (invalid
-    // on the Anthropic backend, merely tolerated by llama-server). When
-    // folding, nothing is appended by hand: the fold modifies the tail in
-    // place, so `recorded` snapshots the pre-fold state — which is exactly
-    // what the file holds — and `record_run` expresses the change as the
-    // rewrite it actually is. The plain case keeps the append-at-submit
-    // contract every other surface has.
-    let pre_turn = slot.convo.messages.clone();
-    let folded = pre_turn
+    // Folded, not pushed, when the tail is already a user message — a
+    // barge-in mid-tool-turn leaves the transcript ending on the user
+    // message carrying tool results, and pushing there makes two user
+    // messages in a row (invalid on the Anthropic backend, merely tolerated
+    // by llama-server). Recorded at submit either way, so `recorded` is
+    // what the file holds — the contract every arm downstream assumes.
+    let folded = slot
+        .convo
+        .messages
         .last()
         .is_some_and(|m| m.role == mecha_core::message::Role::User);
     let recorded = if folded {
         mecha_core::agent::append_user_text(&mut slot.convo.messages, text.clone());
-        pre_turn
+        // One direct `Rewrite`, recorded at submit like every other surface
+        // — `record_run` between runs would replay the previous run's
+        // still-uncleared `rewritten` states. Best-effort (`let _`), which
+        // is this surface's posture for every session write.
+        let _ = slot.session.append(&Record::Rewrite {
+            messages: slot.convo.messages.clone(),
+        });
+        slot.convo.messages.clone()
     } else {
         let user = Message::user(&text);
         slot.convo.push(user.clone());
@@ -1514,11 +1518,16 @@ mod tests {
         }
         session.record_run(&recorded, &convo).unwrap();
 
-        // Turn 2: the tail is a user message, so the utterance folds.
-        let pre_turn = convo.messages.clone();
-        assert!(pre_turn.last().is_some_and(|m| m.role == Role::User));
+        // Turn 2: the tail is a user message, so the utterance folds — and
+        // the fold is recorded at submit as one direct Rewrite, exactly as
+        // the push site now runs it.
+        assert!(convo.messages.last().is_some_and(|m| m.role == Role::User));
         mecha_core::agent::append_user_text(&mut convo.messages, "actually, stop".into());
-        session.record_run(&pre_turn, &convo).unwrap();
+        session
+            .append(&mecha_core::session::Record::Rewrite {
+                messages: convo.messages.clone(),
+            })
+            .unwrap();
 
         let (_, resumed) = mecha_core::session::Session::load(&session.path).unwrap();
         assert_eq!(
