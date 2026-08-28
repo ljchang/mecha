@@ -139,6 +139,7 @@ fn a_fresh_install_says_what_it_needs() {
     // rather than by count, so adding one is not a test change and dropping
     // one is.
     for id in [
+        "config-file",
         "provider-credential",
         "mail",
         "docs",
@@ -157,13 +158,131 @@ fn a_fresh_install_says_what_it_needs() {
         );
     }
 
-    // With no key in the environment and no local server configured, the
-    // one step that blocks every other must be named first — a new user
+    // Ordered by what blocks what: somewhere to put settings, then something
+    // that can answer, then everything those two make testable. A new user
     // wiring up mail against a provider that cannot answer is an hour spent
     // on the wrong end.
+    let order: Vec<&str> = steps
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .take(2)
+        .collect();
     assert_eq!(
-        steps[0]["id"], "provider-credential",
-        "the blocking step comes first: {steps:#?}"
+        order,
+        ["config-file", "provider-credential"],
+        "the blocking steps come first: {steps:#?}"
+    );
+}
+
+/// The step that blocks every other one carries a **path forward**, not a
+/// viewer.
+///
+/// It used to offer `mecha config show`, which displays a file and fixes
+/// nothing — the one step that makes all the others untestable was the one
+/// with no way out of it.
+///
+/// **Asserted branch-agnostically on purpose.** Which shape this takes
+/// depends on whether a local server happens to be running on the
+/// developer's own machine, and a test that pinned one branch would pass
+/// here and fail in CI, or the reverse. Both branches are pinned exactly in
+/// `onboarding.rs`'s unit tests, which own the `Facts` and so can choose.
+/// What is machine-independent — and what actually matters — is that
+/// whichever branch you land in leaves you with something to do.
+#[test]
+fn the_blocking_step_offers_a_way_out_rather_than_a_viewer() {
+    let home = Home::new("blocking");
+    let s = steps(&mecha(&home, &["setup", "--json"]));
+    let step = step(&s, "provider-credential");
+    let detail = step["detail"].as_str().unwrap();
+
+    match step["remedy"]["argv"].as_array() {
+        // A server is running here: writing it down is a real remedy, and it
+        // is `setup`'s own verb rather than a viewer.
+        Some(argv) => assert_eq!(
+            argv.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(),
+            ["mecha", "setup", "--write"],
+            "the only runnable answer to this step is writing down what answered"
+        ),
+        // Nothing is running: the fix is a secret, which no command may set
+        // on somebody's behalf, so the detail carries the exact variable and
+        // both ways forward instead.
+        None => {
+            assert!(
+                detail.contains("ANTHROPIC_API_KEY"),
+                "name the variable rather than describing it: {detail}"
+            );
+            assert!(
+                detail.contains("never the key itself"),
+                "say where the secret does not go: {detail}"
+            );
+            assert!(
+                detail.contains("locally"),
+                "name the other way out, which is what this project is for: {detail}"
+            );
+        }
+    }
+
+    // Whichever branch, it is never something you can wave away.
+    assert_ne!(step["status"], "declined");
+}
+
+/// A new install is told the config file exists, and where.
+///
+/// `Config::load_global` tolerating its absence is right — mecha must work
+/// before anybody has written one — and is also exactly why nobody ever
+/// learned about the file that every other step is fixed by editing.
+#[test]
+fn a_fresh_install_is_told_where_its_settings_live() {
+    let home = Home::new("configfile");
+    let s = steps(&mecha(&home, &["setup", "--json"]));
+    assert_eq!(
+        step(&s, "config-file")["remedy"]["argv"],
+        serde_json::json!(["mecha", "config", "init"])
+    );
+
+    // And once it exists it is not a step any more — a checklist that keeps
+    // listing what you have already done is one people stop reading.
+    assert!(mecha(&home, &["config", "init"]).status.success());
+    assert!(
+        !steps(&mecha(&home, &["setup", "--json"]))
+            .iter()
+            .any(|s| s["id"] == "config-file"),
+        "a file that exists is not outstanding work"
+    );
+}
+
+/// **No setup path ever writes a secret**, and the config it produces holds
+/// the *name* of an environment variable rather than a key.
+///
+/// This is the invariant that makes the no-server branch of the blocking step
+/// advice rather than a command: a config file people can read, copy, share
+/// and commit is only safe because there was never a key in it. Asserted
+/// against a run that *has* a key in its environment, so a path that copied
+/// one would have had one to copy.
+#[test]
+fn no_setup_path_ever_writes_a_key_into_the_config() {
+    let home = Home::new("nosecret");
+    let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
+        .args(["config", "init"])
+        .current_dir(&home.work)
+        .env("MECHA_HOME", home.path())
+        .env("ANTHROPIC_API_KEY", "sk-secret-value-that-must-not-land")
+        .output()
+        .expect("running the mecha binary");
+    assert!(out.status.success());
+
+    let body = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+    assert!(
+        !body.contains("sk-secret-value-that-must-not-land"),
+        "a key from the environment reached the config file"
+    );
+    assert!(
+        body.contains("api_key_env"),
+        "the config names the variable, which is the whole mechanism"
+    );
+    assert!(
+        !body.contains("api_key ="),
+        "there is no key-valued field, only a variable name"
     );
 }
 
@@ -299,6 +418,12 @@ fn a_declined_step_is_remembered_and_stops_being_outstanding() {
 #[test]
 fn setup_exits_zero_once_everything_outstanding_has_been_answered() {
     let home = Home::new("all-declined");
+    // A config file is not something anybody declines — it is something they
+    // create, and a finished install has one. Doing it here rather than
+    // declining it is the point: only *optional* things are declinable, so
+    // this test would otherwise be asserting that a required step can be
+    // waved away.
+    assert!(mecha(&home, &["config", "init"]).status.success());
 
     let out = mecha_with_key(&home, &["setup"]);
     assert!(

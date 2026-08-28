@@ -198,14 +198,22 @@ jobs:
 
           # Every step a new install is entitled to be told about, by id. A
           # renamed id is a breaking change for anybody scripting this.
-          for id in mail docs slack graph charter; do
+          for id in config-file mail docs slack graph charter; do
             jq -e --arg id "$id" 'any(.[]; .id == $id)' steps.json
           done
 
-          # With no credential anywhere, the step that blocks every other one
-          # is present and is named *first* — a new user wiring up mail
-          # against a provider that cannot answer is an hour on the wrong end.
-          jq -e '.[0].id == "provider-credential"' steps.json
+          # Ordered by what blocks what: somewhere to put settings, then
+          # something that can answer. A new user wiring up mail against a
+          # provider that cannot answer is an hour spent on the wrong end.
+          jq -e '[.[0].id, .[1].id] == ["config-file", "provider-credential"]' steps.json
+
+          # And the blocking step offers a way *out*, not a viewer. Nothing is
+          # serving on a CI runner, so this is the no-server branch: the fix
+          # is a secret, which no command may set on somebody's behalf, so the
+          # detail has to name the exact variable and promise the key never
+          # lands in a file.
+          jq -e '.[] | select(.id == "provider-credential") | .detail
+                 | test("ANTHROPIC_API_KEY") and test("never the key itself")' steps.json
 
           # The charter is offered, and the offer hands over an editor rather
           # than composing anything.
@@ -246,6 +254,23 @@ jobs:
           ! grep -qE '^[[:space:]]*[^#[:space:]]' "$MECHA_HOME/charter.toml"
           mecha charter --json | jq -e '.lines | length == 0'
 
+      # The invariant that lets the step above be advice rather than a command:
+      # a config file is safe to read, copy and commit because there was never
+      # a key in it. Run with a key in the environment, so a path that copied
+      # one would have had one to copy.
+      - name: No setup path writes a secret into the config
+        env:
+          MECHA_HOME: ${{ runner.temp }}/secret/home
+          ANTHROPIC_API_KEY: sk-secret-value-that-must-not-land
+        run: |
+          set -eux
+          mkdir -p "$MECHA_HOME" "${{ runner.temp }}/secret/work"
+          cd "${{ runner.temp }}/secret/work"
+          mecha config init
+          ! grep -q "sk-secret-value-that-must-not-land" "$MECHA_HOME/config.toml"
+          grep -q "api_key_env" "$MECHA_HOME/config.toml"
+          ! grep -qE '^[[:space:]]*api_key[[:space:]]*=' "$MECHA_HOME/config.toml"
+
       - name: A step you decline stops being outstanding, and can be restored
         env:
           MECHA_HOME: ${{ runner.temp }}/fresh/home
@@ -259,6 +284,13 @@ jobs:
           # It reaches nothing: the default provider is not `local`, so
           # `setup` opens no socket on this path.
           WITHKEY="env ANTHROPIC_API_KEY=not-a-real-key"
+
+          # A config file is created, never declined — only genuinely optional
+          # things are declinable, so without this the assertion below would
+          # be claiming a required step can be waved away. (The earlier step
+          # deliberately runs without one, because being *told* the file
+          # exists is the thing it checks.)
+          mecha config init
 
           # Answer every open question, the way a person would with `never`.
           $WITHKEY mecha setup --json > steps.json || true
