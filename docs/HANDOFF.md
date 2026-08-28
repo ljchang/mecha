@@ -1665,7 +1665,9 @@ fuller argument.
   steps (≥3× their mean, floor 6 calls, ≥2 siblings to compare against) or
   claims a verification its calls never made (`step::looks_like_verification`,
   a `Work`/`Span` counter beside `calls`/`failed`/`refused`). One quarantined
-  call (`step::escalate`) settles it; the verdict is a closed
+  call (`Agent::escalate_step`, routed through the same cancellable
+  `self.complete()` `compact()` uses, so it honours the run's cancellation
+  token and its tokens land in `RunStats`) settles it; the verdict is a closed
   `accept`/`revise_plan`, folded into the turn via `append_user_text`
   exactly where boredom's notices land. The step's own text rides in the
   call — it is this same model's own prior plan output, already trusted

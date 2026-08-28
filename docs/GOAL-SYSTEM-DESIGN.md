@@ -1263,8 +1263,11 @@ Each rung is independently useful and independently measurable.
    `calls`/`failed`/`refused`). A hit is written into a new `ToolCtx` slot
    (`step_escalation`, `compact_requested`'s exact shape — presence is the
    enablement, the loop reads-and-clears it once per turn) and settled by
-   one quarantined call (`step::escalate`), folded into the turn via
-   `append_user_text` exactly where boredom's notices land.
+   one quarantined call (`Agent::escalate_step`, using the same
+   cancellable `self.complete()` `compact()` already relies on, so the call
+   honours the run's cancellation token and meters its own tokens into
+   `RunStats`), folded into the turn via `append_user_text` exactly where
+   boredom's notices land.
 
    **The step's own text is fed to the call; the model's reasoning about it
    is not fed back.** Unlike the appraiser's evidence (numbers only, because
