@@ -6601,7 +6601,7 @@ fn suspend_and_edit_charter(
         // and all) over a template nobody typed.
         let write = path
             .parent()
-            .map(|p| std::fs::create_dir_all(p))
+            .map(std::fs::create_dir_all)
             .unwrap_or(Ok(()))
             .and_then(|()| std::fs::write(&path, charter::TEMPLATE));
         if let Err(e) = write {
