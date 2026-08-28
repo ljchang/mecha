@@ -489,7 +489,7 @@ async fn set(
             if let Some(s) = &session {
                 before["session"] = json!(s);
             }
-            appraise_closure(&prepared, task, &before).await;
+            appraise_closure(&prepared, task, status, &before).await;
         }
     }
     Ok(())
@@ -550,7 +550,12 @@ fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
 /// than a line fix, and it does not exist yet. The blast radius is bounded
 /// to an extra advisory task on the board, never a lost or corrupted one, so
 /// this is disclosed rather than rushed.
-async fn appraise_closure(prepared: &setup::PreparedTools, task_id: &str, before: &Value) {
+async fn appraise_closure(
+    prepared: &setup::PreparedTools,
+    task_id: &str,
+    new_status: &str,
+    before: &Value,
+) {
     // Never delegated — the ordinary case for a hand-typed task. There is
     // nothing here for D9's index to point at, and that is not an error.
     let Some(session_id) = before["session"].as_str() else {
@@ -589,7 +594,9 @@ async fn appraise_closure(prepared: &setup::PreparedTools, task_id: &str, before
     // button is offered on.
     eprintln!("mecha's appraisal of {task_id}: {}", describe(&a));
 
-    if !worth_a_follow_up(&a) {
+    // The appraisal record and the warning above apply to any closure — only
+    // the board write is gated, in `worth_a_follow_up`.
+    if !worth_a_follow_up(new_status, &a) {
         return;
     }
     if let Err(e) = stage_follow_up(prepared, task_id, before, &a).await {
@@ -597,17 +604,27 @@ async fn appraise_closure(prepared: &setup::PreparedTools, task_id: &str, before
     }
 }
 
-/// The follow-up gate. Reads the *derived* label, never the raw signed
-/// errors: `affect_of` already reduced "does this need a human" down to one
-/// word, and re-deriving a threshold over raw signs here would be a second,
+/// The follow-up gate. Two conditions, both load-bearing:
+///
+/// **The label.** Reads the *derived* label, never the raw signed errors:
+/// `affect_of` already reduced "does this need a human" down to one word, and
+/// re-deriving a threshold over raw signs here would be a second,
 /// less-tested version of exactly that reduction — and it would fire on
 /// almost every closure today, since the rung 7 corpus found a negative
 /// signal on 119 of 120 sessions. `Neutral`, the overwhelming common case,
 /// must never stage a follow-up nobody asked for; this stays rare today and
 /// gets richer for free as rung 7 lands more reachable labels, with no
 /// change needed here.
-fn worth_a_follow_up(a: &mecha_core::appraisal::Appraisal) -> bool {
-    a.label != mecha_core::appraisal::Affect::Neutral
+///
+/// **The status.** §5.4's follow-up belongs to the *accepted* case alone:
+/// "the trigger is the owner accepting the work... a disappointed closure —
+/// the owner took it anyway." A `dropped` closure is the owner declining the
+/// work, not accepting mediocre work, so proposing a follow-up there
+/// overrides a decision the owner just made. Found on review: staging fired
+/// on any non-neutral `dropped` closure too — e.g. a `MaxTurns` run the
+/// owner gave up on got a "Revisit" task put right back on the board.
+fn worth_a_follow_up(new_status: &str, a: &mecha_core::appraisal::Appraisal) -> bool {
+    new_status == "done" && a.label != mecha_core::appraisal::Affect::Neutral
 }
 
 /// Is `id` exactly one ordinary path component — never a root, a `..`,
@@ -2515,9 +2532,10 @@ mod tests {
     /// never stage a follow-up nobody asked for.
     #[test]
     fn a_neutral_closure_never_stages_a_follow_up() {
-        assert!(!worth_a_follow_up(&appraisal(
-            mecha_core::appraisal::Affect::Neutral
-        )));
+        assert!(!worth_a_follow_up(
+            "done",
+            &appraisal(mecha_core::appraisal::Affect::Neutral)
+        ));
     }
 
     #[test]
@@ -2527,7 +2545,26 @@ mod tests {
             mecha_core::appraisal::Affect::Embarrassment,
             mecha_core::appraisal::Affect::Frustration,
         ] {
-            assert!(worth_a_follow_up(&appraisal(label)), "{label:?}");
+            assert!(worth_a_follow_up("done", &appraisal(label)), "{label:?}");
+        }
+    }
+
+    /// §5.4's follow-up is for the *accepted* case — "the owner took it
+    /// anyway" — never for one the owner declined. A `dropped` closure must
+    /// never stage a follow-up regardless of how disappointed the appraisal
+    /// is, or dropping a task the owner gave up on puts it right back on the
+    /// board under a different name.
+    #[test]
+    fn a_dropped_closure_never_stages_a_follow_up_however_disappointed() {
+        for label in [
+            mecha_core::appraisal::Affect::Anger,
+            mecha_core::appraisal::Affect::Embarrassment,
+            mecha_core::appraisal::Affect::Frustration,
+        ] {
+            assert!(
+                !worth_a_follow_up("dropped", &appraisal(label)),
+                "{label:?}"
+            );
         }
     }
 
