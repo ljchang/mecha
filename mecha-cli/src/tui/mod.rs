@@ -6640,12 +6640,25 @@ fn suspend_and_edit_charter(
             Ok(CharterEdit::SavedButInvalid(e)) => format!(
                 "saved, but it will NOT load: {e} — every run starts uncharted until this is fixed (e re-edits)"
             ),
-            Ok(CharterEdit::EditorFailedButChanged { error, loads }) => match loads {
-                None => format!("the editor exited with an error ({error}), but the file changed and loads"),
-                Some(le) => format!(
-                    "the editor exited with an error ({error}); the file changed and will NOT load: {le}"
-                ),
-            },
+            Ok(CharterEdit::EditorFailedButChanged { error, loads }) => {
+                // **Both editor-failure arms reach the transcript**, which
+                // the refactor briefly stopped doing for this one. The old
+                // shape was `if let Err(e) = result`, and that covered a
+                // non-zero exit whether or not the file changed. A modal
+                // status is transient — it goes when the modal closes — and
+                // the transcript is the durable record of a thing that went
+                // wrong, so dropping it here would have quietly narrowed
+                // what a session keeps.
+                editor_error = Some(error.clone());
+                match loads {
+                    None => format!(
+                        "the editor exited with an error ({error}), but the file changed and loads"
+                    ),
+                    Some(le) => format!(
+                        "the editor exited with an error ({error}); the file changed and will NOT load: {le}"
+                    ),
+                }
+            }
             Ok(CharterEdit::EditorFailed(e)) => {
                 editor_error = Some(e.clone());
                 format!("charter unchanged: {e}")
