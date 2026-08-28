@@ -55,19 +55,29 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         None
     };
 
-    // Only when there is no local provider *configured* and no credential to
-    // use — a working install makes no extra call, and this one is loopback,
-    // so nothing leaves the machine. It is what lets the step that blocks
-    // every other one carry a remedy instead of a diagnosis.
+    // Only when **no local provider is configured at all** and no credential
+    // is available — a working install makes no extra call, and this one is
+    // loopback, so nothing leaves the machine. It is what lets the step that
+    // blocks every other one carry a remedy instead of a diagnosis.
     //
-    // **Keyed on the provider being configured, not on `props` being `None`.**
-    // A configured local server that is merely *down* also has no props and no
-    // api key, and probing there would find whatever else is on 8080 and
-    // announce "a server nothing names" about an install that names one — then
-    // `--write` would take the create-a-table path over the existing table it
-    // should have been correcting. The right answer for a down server is the
-    // `local-server` step's own "start it", which `plan` already gives.
-    let local_server = if pcfg.kind != "local" && pcfg.resolve_api_key().is_none() {
+    // **Across every provider, not just the selected one.** Keying this on
+    // `pcfg.kind` was narrower than the claim the step then makes: a config
+    // with `default_provider = "anthropic"` (no key exported) *and* a
+    // `[providers.local]` on :8080 selects anthropic, passes a `kind !=
+    // "local"` test, and gets told "something is serving here and **nothing
+    // in the config names it**" about a server the config names on the very
+    // next line — with `mecha setup --write` offered as the remedy, which
+    // then bails in `append_table` telling you to run the command you just
+    // ran. Exactly the "the blocking step's remedy is not a way out" shape
+    // this whole change set out to remove.
+    //
+    // The same test also covers the down-server case: a configured local
+    // server that is merely *down* has no props and no api key either, and
+    // probing there would find whatever else is on 8080. The right answer
+    // for a down server is the `local-server` step's own "start it", which
+    // `plan` already gives.
+    let a_local_provider_is_configured = cfg.providers.values().any(|p| p.kind == "local");
+    let local_server = if !a_local_provider_is_configured && pcfg.resolve_api_key().is_none() {
         probe_for_a_local_server().await
     } else {
         None
@@ -98,8 +108,33 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
 
     let steps = onboarding::plan(&cfg, &name, &facts);
 
+    // Nothing is offered when nobody is there to answer, which is the
+    // `doctor` rule: a setup flow that acts with no one watching is the
+    // shape this project keeps refusing.
+    //
+    // **`Declined` is not outstanding**, which is the whole point of it
+    // existing: a scripted `mecha setup` on a machine whose owner does not
+    // want Slack must exit 0, or the check is permanently red over a choice
+    // somebody already made.
+    let outstanding: Vec<&Step> = steps
+        .iter()
+        .filter(|s| !matches!(s.status, Status::Done | Status::Declined))
+        .collect();
+
     if args.json {
         println!("{}", serde_json::to_string_pretty(&steps)?);
+        // **Doctor's contract, which this used to document and not keep.**
+        // `doctor --json` prints the findings and then falls through to the
+        // shared exit check; `setup --json` returned early and skipped it, so
+        // the documented "exit 1 when anything is outstanding, like doctor"
+        // was false — and every `! mecha setup --json` written against it was
+        // silently vacuous rather than loudly wrong, because `set -e` does
+        // not apply to an inverted command. A machine-readable plan whose
+        // exit code says nothing is a plan every caller has to parse to learn
+        // what a status byte could have told it.
+        if !outstanding.is_empty() {
+            std::process::exit(1);
+        }
         return Ok(());
     }
     if args.write {
@@ -124,18 +159,6 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         );
     }
 
-    // Nothing is offered when nobody is there to answer, which is the
-    // `doctor` rule: a setup flow that acts with no one watching is the
-    // shape this project keeps refusing.
-    //
-    // **`Declined` is not outstanding**, which is the whole point of it
-    // existing: a scripted `mecha setup` on a machine whose owner does not
-    // want Slack must exit 0, or the check is permanently red over a choice
-    // somebody already made.
-    let outstanding: Vec<&Step> = steps
-        .iter()
-        .filter(|s| !matches!(s.status, Status::Done | Status::Declined))
-        .collect();
     if outstanding.is_empty() {
         println!("\nNothing outstanding.");
         finished_note(&steps);

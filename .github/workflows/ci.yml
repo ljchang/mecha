@@ -190,10 +190,18 @@ jobs:
           # step pass for a reason that has nothing to do with the code.
           NOKEY="env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY"
 
-          # Outstanding work exits non-zero, so this is a check a person can
-          # put in their own CI. `!` rather than `|| true`: an unexpected
-          # *success* has to fail this step too.
-          ! $NOKEY mecha setup --json > steps.json
+          # Outstanding work exits non-zero — doctor's contract — so this is a
+          # check a person can put in their own CI.
+          #
+          # `if`, not `! cmd`: **`set -e` does not apply to an inverted
+          # command**, so `! mecha setup --json` neither fails nor passes the
+          # step, it is simply ignored. A vacuous assertion in CI reads
+          # exactly like a passing one, which is the failure this whole job
+          # exists to prevent one layer down.
+          if $NOKEY mecha setup --json > steps.json; then
+            echo "setup --json must exit non-zero while work is outstanding"
+            exit 1
+          fi
           jq -e 'type == "array" and length > 0' steps.json
 
           # Every step a new install is entitled to be told about, by id. A
@@ -308,12 +316,18 @@ jobs:
           # otherwise this feature turns a checklist that nags into one that
           # lies. Without the key, the same declined store must still report
           # unfinished work.
-          ! $NOKEY mecha setup > nokey.txt
+          if $NOKEY mecha setup > nokey.txt; then
+            echo "an install that cannot answer a prompt is not a finished one"
+            exit 1
+          fi
           grep -q "A provider that can answer" nokey.txt
 
           # And the decision is reversible.
           mecha setup --undecline all
-          ! $WITHKEY mecha setup --json > steps.json
+          if $WITHKEY mecha setup --json > steps.json; then
+            echo "un-declined steps are outstanding again, so this must exit non-zero"
+            exit 1
+          fi
           jq -e 'any(.[]; .status == "missing")' steps.json
 
       # The documentation is verified against the binary rather than against

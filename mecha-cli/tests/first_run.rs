@@ -16,14 +16,23 @@
 //! Three rules these keep, each of which is why a previous version of some
 //! test elsewhere was useless:
 //!
-//! - **No network, ever.** The default provider is not `local`, so `setup`'s
-//!   one HTTP call (`GET /props`) is not on this path. A first-run test that
-//!   needed a server would be skipped on exactly the machines it is for.
+//! - **Loopback only, and never a dependency.** These used to claim "no
+//!   network, ever", which stopped being true the moment `setup` grew its
+//!   local-server probe — and the condition that probe fires on is precisely
+//!   the credential-free one these tests construct. What holds instead: the
+//!   only address it can touch is `127.0.0.1:8080`, nothing leaves the
+//!   machine, and no test *needs* a server, because one that did would be
+//!   skipped on exactly the machines it is for.
 //! - **Nothing depends on the developer's machine.** Provider credentials are
 //!   removed from the child's environment, and every assertion about
 //!   *status* is confined to steps whose answer comes from `MECHA_HOME`
 //!   (which is empty and ours) rather than from `PATH` (which is not) — a
 //!   contributor with `mecha-mail` installed and one without must both pass.
+//!   The probe makes this sharper rather than looser: whether anything is
+//!   serving on :8080 is a fact about the developer's box, so the one
+//!   assertion that would differ is written branch-agnostically and the two
+//!   branches are pinned in `onboarding.rs`'s pure tests instead — see
+//!   `the_blocking_step_offers_a_way_out_rather_than_a_viewer`.
 //! - **The home is unique per test.** These write files; sharing a directory
 //!   would make them order-dependent, which is the kind of flake that gets a
 //!   suite ignored.
@@ -128,10 +137,13 @@ fn step<'a>(steps: &'a [serde_json::Value], id: &str) -> &'a serde_json::Value {
 fn a_fresh_install_says_what_it_needs() {
     let home = Home::new("needs");
     let out = mecha(&home, &["setup", "--json"]);
+    // **The plan on stdout, and the exit code says whether anything is
+    // outstanding** — doctor's contract, which `setup --json` documented and
+    // did not keep until this was fixed. A fresh install has work to do, so
+    // this is the non-zero case, and the payload is still there to parse.
     assert!(
-        out.status.success(),
-        "`mecha setup --json` failed on a fresh install:\n{}",
-        String::from_utf8_lossy(&out.stderr)
+        !out.status.success(),
+        "a fresh install has outstanding work, so `--json` exits non-zero too"
     );
     let steps = steps(&out);
 
@@ -224,6 +236,54 @@ fn the_blocking_step_offers_a_way_out_rather_than_a_viewer() {
 
     // Whichever branch, it is never something you can wave away.
     assert_ne!(step["status"], "declined");
+}
+
+/// **The exit code carries the plan's verdict, and `--json` is not exempt.**
+///
+/// `doctor --json` prints its findings and then falls through to the shared
+/// exit check; `setup --json` returned early and skipped it, so the
+/// documented *"exit 1 when anything is outstanding, like doctor"* was false.
+/// The cost was not a wrong answer but a silent one: every
+/// `! mecha setup --json` written against the documented contract was
+/// vacuous, because `set -e` does not apply to an inverted command — so the
+/// assertion neither failed nor passed, it was ignored. A machine-readable
+/// plan whose exit code says nothing makes every caller parse to learn what a
+/// status byte could have told them.
+#[test]
+fn the_json_plan_carries_the_same_exit_code_as_the_human_one() {
+    let home = Home::new("jsonexit");
+
+    // Outstanding work: both spellings agree, and the payload is still there
+    // to parse alongside the non-zero status.
+    let plain = mecha(&home, &["setup"]);
+    let json = mecha(&home, &["setup", "--json"]);
+    assert!(!plain.status.success());
+    assert!(
+        !json.status.success(),
+        "`--json` must not be the one spelling that reports success on an unfinished install"
+    );
+    assert!(!steps(&json).is_empty(), "and the plan is still on stdout");
+
+    // Nothing outstanding: both exit 0. Built the same way as the
+    // finished-install test — a config file is created, the optional extras
+    // declined, and a credential supplied.
+    assert!(mecha(&home, &["config", "init"]).status.success());
+    let missing: Vec<String> = steps(&mecha_with_key(&home, &["setup", "--json"]))
+        .iter()
+        .filter(|s| s["status"] == "missing")
+        .map(|s| s["id"].as_str().unwrap().to_string())
+        .collect();
+    std::fs::write(
+        home.path().join("setup-declined.json"),
+        serde_json::json!({ "declined": missing }).to_string(),
+    )
+    .unwrap();
+
+    assert!(mecha_with_key(&home, &["setup"]).status.success());
+    assert!(
+        mecha_with_key(&home, &["setup", "--json"]).status.success(),
+        "an answered install exits 0 in both spellings, or `--json` is useless as a check"
+    );
 }
 
 /// A new install is told the config file exists, and where.
