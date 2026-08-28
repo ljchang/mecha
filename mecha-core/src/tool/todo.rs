@@ -386,6 +386,17 @@ impl Tracked {
                                     }
                                 }
                             }
+                            // Dedupe on content first, same as `started`
+                            // (a `HashMap`, so a revision's fresh mark
+                            // already replaces rather than doubles up): a
+                            // step revised and completed twice would
+                            // otherwise contribute two entries under the
+                            // same name, inflating `completed.len()` and the
+                            // mean it feeds, and letting a step be listed as
+                            // its own sibling. Keeps the latest span, and
+                            // moves the entry to the end so "most recent
+                            // last" still holds for a step that was redone.
+                            self.completed.retain(|(k, _)| k != &item.content);
                             self.completed.push((item.content.clone(), span.calls));
                             if self.completed.len() > COMPLETED_HISTORY_CAP {
                                 self.completed.remove(0);
@@ -1884,6 +1895,92 @@ mod tests {
             slot.lock().unwrap().is_none(),
             "the same write that drops the small steps from the plan must not let \
              huge step's own completion see them as its baseline"
+        );
+    }
+
+    /// The review finding: `completed` is a `Vec` keyed by nothing, unlike
+    /// `started` (a `HashMap`, so a revision's fresh mark already replaces
+    /// rather than doubles up). A step completed, reopened, and completed
+    /// again used to land in `completed` twice under the same name —
+    /// inflating `sibling_count`/the mean it feeds, and making the step its
+    /// own sibling in the prompt's list. Here "A" completes small, gets
+    /// reopened, and completes again large; a later "huge step" must see
+    /// exactly one "A" entry (its latest span), not two.
+    #[tokio::test]
+    async fn a_step_revised_and_recompleted_contributes_one_entry_not_two() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+
+        items.push(json!({"content": "small step 0", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 0, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 2, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "A", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 2, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 5, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        // Reopen A and complete it again, at a much larger span.
+        items.last_mut().unwrap()["status"] = json!("in_progress");
+        write(
+            &tool,
+            &escalation_ctx(1, 5, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 35, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "huge step", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 35, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        let (done_ctx, slot) = escalation_ctx(1, 100, Some(Outcome::Ok), 0);
+        write(&tool, &done_ctx, Value::Array(items.clone())).await;
+
+        let escalation = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("huge step's span is a clear outlier");
+        assert_eq!(
+            escalation.sibling_count, 2,
+            "A's revision must count once, not twice, among the siblings"
+        );
+        assert_eq!(
+            escalation.siblings.iter().filter(|s| *s == "A").count(),
+            1,
+            "A must not be listed as its own sibling twice"
         );
     }
 
