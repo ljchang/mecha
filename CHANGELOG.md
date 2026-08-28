@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`/charter` in the TUI: see the standing priorities, and edit them without
+  leaving the screen.** The list shows the ranked lines (order is rank), enter
+  opens a line's full text, and `e` hands the terminal to `$EDITOR` on
+  `~/.mecha/charter.toml` itself — the charter's write path stays "the owner
+  with a text editor" (§11): no CLI verb, no tool, and no model path writes a
+  line, and the only bytes mecha ever writes are a comments-only template when
+  the file does not exist yet. Validation feedback lands the moment the editor
+  closes — a duplicate id or a typo'd table name is reported in the modal, not
+  at the next session's startup where the alternate screen covers the warning —
+  and the status line says the honest thing about scope: an edit rides in the
+  prompt from the next session (`/model` rebuilds this one), never the
+  conversation already running.
+
 - **`mecha distill` now notices when the world disagreed with the graph.**
   The same quarantined pass that already finds corrections also reports
   SURPRISES: moments where something the agent said, sourced from graph

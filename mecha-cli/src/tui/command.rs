@@ -25,6 +25,9 @@ pub enum Command {
     /// User-authored procedures: what the run carries, what it has loaded,
     /// and what the store holds that this run did not get.
     Skills,
+    /// The standing priorities in ~/.mecha/charter.toml, ranked highest
+    /// first — and `e` to edit them in $EDITOR, on the file itself.
+    Charter,
     /// Scheduled prompts: see, edit, enable/disable, run, cancel, delete.
     Triggers,
     /// Staged outbound actions: read, edit, send, reject.
@@ -132,6 +135,7 @@ pub fn parse(line: &str) -> Option<Command> {
         // `skill` singular too: the tool the model calls is `skill`, so that
         // is the word a user has just been reading in the transcript.
         "skills" | "skill" => Command::Skills,
+        "charter" => Command::Charter,
         // Both spellings: the command is `mecha trigger`, the thing you want
         // to see is all of them.
         "triggers" | "trigger" => Command::Triggers,
@@ -313,10 +317,11 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 26] = [
+pub const NAMES: [&str; 27] = [
     "help",
     "tools",
     "skills",
+    "charter",
     "triggers",
     "outbox",
     "queues",
@@ -398,6 +403,7 @@ pub const HELP: &str = "\
   /help                  this list
   /tools                 tools this agent can call
   /skills                procedures this agent can load, and which are loaded
+  /charter               standing priorities, ranked — e edits them in $EDITOR
   /triggers              scheduled prompts: see, edit, run, cancel
   /queues                every store waiting on you, incl. the graph merge queue
   /learning              reflections, rules and proposals — read, edit, refuse
@@ -436,7 +442,8 @@ mod tests {
             vec!["model"],
             "an exact match still offers longer names"
         );
-        assert_eq!(completions("/c"), vec!["clear"]);
+        assert_eq!(completions("/c"), vec!["charter", "clear"]);
+        assert_eq!(completions("/ch"), vec!["charter"]);
 
         // Not a command, or past the name: nothing to suggest.
         assert!(completions("summarise this").is_empty());
