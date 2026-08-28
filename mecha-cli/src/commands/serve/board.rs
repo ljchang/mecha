@@ -161,6 +161,21 @@ fn attach_runs(board: &mut serde_json::Value, dir: &std::path::Path) {
 /// comment claiming it was bounded. The scan survives only as the fallback
 /// for a stored id that is somehow not a filename.
 fn run_summary(dir: &std::path::Path, session_id: &str) -> serde_json::Value {
+    // `session_id` is the board's own `session` field off `kg_task_list` — a
+    // read on somebody else's store, not a value this process minted — and
+    // it reaches this join with nothing between them. `Path::join` discards
+    // `dir` entirely for an absolute argument, so an id shaped like
+    // `/etc/passwd` or containing `..` would otherwise be resolved with no
+    // containment check at all. Refused the same way `voice/mod.rs`'s
+    // `valid_key` refuses a session key before it becomes a directory
+    // component: a real session id is never a path.
+    if session_id.is_empty()
+        || session_id.contains(['/', '\\'])
+        || session_id == "."
+        || session_id == ".."
+    {
+        return serde_json::json!({ "recorded": false, "transcript": false });
+    }
     let direct = dir.join(format!("{session_id}.jsonl"));
     let path = if direct.is_file() {
         direct
@@ -730,6 +745,32 @@ mod tests {
         let v = run_summary(&dir, "20260826T090000-nosuch01");
         assert_eq!(v["transcript"], serde_json::json!(false));
         assert_eq!(v["recorded"], serde_json::json!(false));
+    }
+
+    /// `session_id` comes off `kg_task_list` — a read on somebody else's
+    /// store — and `Path::join` discards `dir` entirely for an absolute
+    /// argument, so a value shaped like a path used to reach the
+    /// filesystem with nothing in between. Refused before that join, not
+    /// after it.
+    #[test]
+    fn a_session_id_shaped_like_a_path_is_refused_not_joined() {
+        let dir = tmpdir("path-safety");
+        for hostile in [
+            "../../etc/passwd",
+            "/etc/passwd",
+            "..",
+            ".",
+            "",
+            "a/b",
+            "a\\b",
+        ] {
+            let v = run_summary(&dir, hostile);
+            assert_eq!(
+                v,
+                serde_json::json!({ "recorded": false, "transcript": false }),
+                "{hostile:?} must be refused, not joined onto a directory"
+            );
+        }
     }
 
     /// The state D16 says must never render as `idle`. `NoOutput` is a real
