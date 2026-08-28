@@ -69,7 +69,7 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
         // exactly the indistinguishability that finding exists to break.
         if path.is_file() {
             println!(
-                "{} exists but has no `[[line]]` entries — check the table name",
+                "{} exists but has no `[[line]]` entries — nothing from it rides in any prompt",
                 path.display()
             );
         } else {
