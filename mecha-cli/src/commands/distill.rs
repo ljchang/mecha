@@ -17,7 +17,7 @@ use anyhow::{bail, Context, Result};
 use mecha_core::config::Config;
 use mecha_core::distill::{self, Distiller};
 use mecha_core::learning::LearningStore;
-use mecha_core::session::{Session, TaintTimeline};
+use mecha_core::session::Session;
 use std::path::PathBuf;
 
 #[derive(clap::Args, Debug)]
@@ -157,8 +157,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // night it gained five repairs.
     let mut carriers = 0usize;
     for (meta, path) in &todo {
-        let (_, convo) = match Session::load(path) {
-            Ok(loaded) => loaded,
+        // One read for everything below — the messages, the positioned taint
+        // timeline, and the appraisal's inputs all come off this pass, where
+        // this loop used to pay four complete read-and-parse passes per
+        // session (`load`, `taint_timeline`, then `for_session`'s own read
+        // and second timeline read).
+        let transcript = match Session::read(path) {
+            Ok(t) => t,
             Err(e) => {
                 // Not this command's bug to fix; leave it unmarked so a later
                 // mecha that can read it still gets the chance.
@@ -166,6 +171,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 continue;
             }
         };
+        let convo = &transcript.convo;
         // A session with no assistant turn taught the graph nothing, and that
         // is a fact about the transcript, not about today's model — mark it.
         if convo.messages.len() < 2 {
@@ -176,8 +182,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
         // Recorded taint, for the episode's meta. `None` (torn or pre-taint
         // transcript) is recorded as unknown — never as clean.
-        let taint = Session::taint_timeline(path)
-            .unwrap_or_else(|_| TaintTimeline::default())
+        let taint = transcript
+            .taint_timeline
             .covering(convo.messages.len().saturating_sub(1));
 
         // The same assembly `mecha sessions appraise` uses — `None` when the
@@ -188,8 +194,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             .iter()
             .filter(|i| i.session_id.as_deref() == Some(meta.id.as_str()))
             .collect();
-        let appraisal = mecha_core::appraisal::for_session(
-            path,
+        let appraisal = mecha_core::appraisal::for_transcript(
+            &transcript,
             &meta.id,
             meta.created_at.to_rfc3339(),
             &mine,

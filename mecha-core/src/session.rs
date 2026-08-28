@@ -530,6 +530,13 @@ pub struct Transcript {
     pub config_positions: Vec<usize>,
     /// Every recorded outcome, folded into the episode the session describes.
     pub episode: Option<RunStats>,
+    /// The taint checkpoints, positioned against the loaded messages — the
+    /// same structure [`Session::taint_timeline`] builds from a second full
+    /// read, carried here because this pass already walked every record.
+    /// `mecha distill` paid four complete read-and-parse passes per session
+    /// (`load`, `taint_timeline`, then `for_session`'s own `read` *and*
+    /// `taint_timeline`) for questions this one walk answers together.
+    pub taint_timeline: TaintTimeline,
 }
 
 impl Transcript {
@@ -795,6 +802,13 @@ impl Session {
         let mut meta = None;
         let mut messages = Vec::new();
         let mut taint = Taint::default();
+        // Built here with `TaintTimeline::from_records`'s exact state
+        // machine (a `Rewrite` drops checkpoints — see that function for
+        // why dropping fails closed where clamping under-taints), because
+        // this pass already walks every record and a second full read to
+        // rebuild the same structure is the multi-read mistake this
+        // function exists to end.
+        let mut taint_checkpoints: Vec<(usize, Taint)> = Vec::new();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             match serde_json::from_str::<Record>(line) {
                 Ok(Record::Meta(m)) => meta = Some(m),
@@ -803,16 +817,21 @@ impl Session {
                 // is deliberately not touched: summarising away the text of a
                 // hostile page does not un-read it. Config positions recorded
                 // against the replaced list are clamped, not kept — see
-                // `Transcript::config_positions`.
+                // `Transcript::config_positions` — and taint checkpoints are
+                // dropped, per `TaintTimeline::from_records`.
                 Ok(Record::Rewrite { messages: m }) => {
                     messages = m;
                     for p in &mut config_positions {
                         *p = 0;
                     }
+                    taint_checkpoints.clear();
                 }
                 // Merged rather than replaced: taint only ever grows, and a
                 // transcript written by an older build has none at all.
-                Ok(Record::Taint(t)) => taint.merge(t),
+                Ok(Record::Taint(t)) => {
+                    taint.merge(t);
+                    taint_checkpoints.push((messages.len(), taint));
+                }
                 // Kept rather than discarded: this is the pass that has them
                 // in hand, and the alternative is two more reads of the file
                 // it just walked.
@@ -833,6 +852,9 @@ impl Session {
             configs,
             config_positions,
             episode: RunStats::fold(outcomes),
+            taint_timeline: TaintTimeline {
+                checkpoints: taint_checkpoints,
+            },
         })
     }
 
@@ -1652,6 +1674,19 @@ mod tests {
         // Beyond the last checkpoint is unknown, and unknown is the caller's
         // cue to fail closed.
         assert_eq!(tl.covering(4).map(|t| t.untrusted), None);
+
+        // `Session::read` builds the same timeline in its one pass — the
+        // two must never disagree, or the single-read callers (`distill`,
+        // the closure appraisal) classify provenance differently from the
+        // dedicated reader.
+        let carried = Session::read(&session.path).unwrap().taint_timeline;
+        for i in 0..5 {
+            assert_eq!(
+                carried.covering(i).map(|t| t.untrusted),
+                tl.covering(i).map(|t| t.untrusted),
+                "read()'s carried timeline diverged from taint_timeline() at {i}"
+            );
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -753,9 +753,12 @@ fn appraise_session(
     };
     let messages = &transcript.convo.messages;
     let interventions = mecha_core::learning::extract_interventions(messages);
-    let end_taint = mecha_core::session::Session::taint_timeline(&path)
-        .ok()
-        .and_then(|tl| tl.covering(messages.len().saturating_sub(1)));
+    // Off the transcript already in hand — `Session::read` positions the
+    // timeline in the same pass now, so the second full read this used to
+    // pay is gone.
+    let end_taint = transcript
+        .taint_timeline
+        .covering(messages.len().saturating_sub(1));
     // `sessions.rs`'s own scan keeps "the store could not be read" apart
     // from "the store has nothing in it" (`outbox_unreadable`) for the same
     // reason this needs to: a read failure here silently undercounts the
