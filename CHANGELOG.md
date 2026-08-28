@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assertion written against the documented contract is ignored entirely by
   `set -e`, so it neither failed nor passed.
 
+- **CI builds and tests the whole workspace on macOS.** The `test` job was
+  ubuntu-only on both arms, so *nothing* proved any of the four crates
+  compiled anywhere else — the `mecha-cli` break below was found by a job
+  added for an unrelated reason, and only because it happened to build one
+  binary. macOS is now a full arm (`--all-targets`, so the tests have to
+  compile too, and then run). The MSRV arm stays Linux-only: it exists to
+  pin what the manifest promises, and a second platform does not make that
+  promise more or less kept.
+
 - **`mecha-cli` did not compile on macOS, and nothing could see it.** `exe.rs`
   imported `std::path::Path` unconditionally while using it only inside
   `#[cfg(target_os = "linux")]` branches — an unused import everywhere else,
