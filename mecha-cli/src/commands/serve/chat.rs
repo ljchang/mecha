@@ -1075,18 +1075,45 @@ fn begin_turn(
     };
     ws.last_turn_spoken = opts.spoken;
 
-    // Append the user message to the record *before* the run — the
-    // `record_run` contract: `before` is what the file already holds.
-    let user = Message::user(&text);
-    conversation.push(user.clone());
-    if let Err(e) = ws.session.append(&Record::Message(user)) {
-        // Refuse to run a turn the record did not accept: an unrecorded run
-        // is invisible to distill, recall and the run-quality corpus.
-        conversation.messages.pop();
-        ws.conversation = Some(conversation);
-        return Err(TurnError::Failed(format!("recording: {e:#}")));
-    }
-    let before = conversation.messages.clone();
+    // Folded, not pushed, when the tail is already a user message — a
+    // barge-in mid-tool-turn (`VoiceHost::speak` cancels the live run and
+    // resubmits through here) leaves the conversation ending on the user
+    // message carrying tool results, and pushing there makes two user
+    // messages in a row. The fold is recorded at submit, so either way
+    // `before` is what the file already holds — the `record_run` contract
+    // every arm downstream assumes.
+    let before = if conversation
+        .messages
+        .last()
+        .is_some_and(|m| m.role == Role::User)
+    {
+        // Recorded immediately (one direct `Rewrite` — `record_run` here
+        // would replay the previous run's still-uncleared `rewritten`
+        // states), and fail-closed exactly as the push branch below is: an
+        // unrecorded turn is invisible to distill, recall and the
+        // run-quality corpus, whichever way it entered the conversation.
+        let pre_fold = conversation.messages.clone();
+        mecha_core::agent::append_user_text(&mut conversation.messages, text.clone());
+        if let Err(e) = ws.session.append(&Record::Rewrite {
+            messages: conversation.messages.clone(),
+        }) {
+            conversation.messages = pre_fold;
+            ws.conversation = Some(conversation);
+            return Err(TurnError::Failed(format!("recording: {e:#}")));
+        }
+        conversation.messages.clone()
+    } else {
+        let user = Message::user(&text);
+        conversation.push(user.clone());
+        if let Err(e) = ws.session.append(&Record::Message(user)) {
+            // Refuse to run a turn the record did not accept: an unrecorded
+            // run is invisible to distill, recall and the run-quality corpus.
+            conversation.messages.pop();
+            ws.conversation = Some(conversation);
+            return Err(TurnError::Failed(format!("recording: {e:#}")));
+        }
+        conversation.messages.clone()
+    };
 
     // A typed turn is echoed by the page that typed it; a spoken one has no
     // local echo anywhere, so it is announced — with the voice block
@@ -1225,8 +1252,15 @@ fn begin_turn(
             // than in the hand-back below so there is one rolled-back state
             // and both readers of it (the file, the next request) agree.
             Err(_) => {
-                roll_back_failed_turn(&mut conversation, before.clone());
-                let _ = session.record_run(&before, &conversation);
+                conversation.roll_back_failed_turn(before.clone());
+                // The one write whose failure reproduces the resume-time 400
+                // this arm exists to prevent — it must not fail silently.
+                if let Err(e) = session.record_run(&before, &conversation) {
+                    tracing::warn!(
+                        "the rollback was not recorded — a resume of this \
+                         session will replay the failed turn: {e:#}"
+                    );
+                }
             }
         }
         // Taint is kept either way — a failed turn that read a hostile page
@@ -1609,22 +1643,6 @@ pub async fn set_mode(
     Json(serde_json::json!({ "ok": true })).into_response()
 }
 
-/// Roll a failed run back to the conversation the request found, minus the
-/// user message that triggered it — the chat command's rule, spelled the way
-/// both siblings spell it (`mecha chat`, the TUI's `finish_run`): **restore
-/// the snapshot, then pop**. `Agent::run_in` mutates the list in place and
-/// does not roll back on `Err`, so a bare pop is wrong twice over: after a
-/// failure mid-tool-turn the tail is a tool-result message, and popping it
-/// orphans the assistant's `tool_use` — every later request on the session
-/// 400s ("a tool result must exist for every `tool_use` id"), each failure
-/// then eating the user's newly typed message; and after a mid-run compaction
-/// the list is *shorter* than the snapshot, so the pop keeps the very message
-/// it exists to drop.
-fn roll_back_failed_turn(conversation: &mut Conversation, before: Vec<Message>) {
-    conversation.messages = before;
-    conversation.messages.pop();
-}
-
 /// The first user line of a transcript, for a history listing — the thing
 /// a person recognises a conversation by. Bounded: a transcript can be
 /// megabytes, and a listing that reads whole files is a listing nobody
@@ -1939,9 +1957,27 @@ mod rollback_tests {
     /// the rollback had removed from memory only. Recording the
     /// *rolled-back* conversation instead makes the file express it as a
     /// `Rewrite`, and a resume loads exactly what memory holds.
+    ///
+    /// **Scope, stated so nobody over-reads a green run:** this re-types
+    /// `begin_turn`'s error-arm sequence by hand and pins the
+    /// *composition* — rollback then `record_run` yields a resumable file.
+    /// It does not drive `begin_turn` itself (that means standing up the
+    /// server), so dropping or reordering the calls at the real site would
+    /// not fail here; the site's own comment carries that contract.
     #[test]
     fn a_failed_turn_s_transcript_resumes_to_the_rolled_back_state() {
-        let dir = std::env::temp_dir().join(format!("mecha-chat-rollback-{}", std::process::id()));
+        // Nanos, not just the pid: `cargo test` runs every test of this
+        // binary in one process, so a pid-keyed dir collides with any
+        // sibling using the same scheme. Leaked on panic, accepted — the
+        // assertion message names the dir's content, not its path.
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-chat-rollback-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let session = mecha_core::session::Session::create(
             &dir,
@@ -1985,7 +2021,7 @@ mod rollback_tests {
 
         // The error arm's sequence, exactly as begin_turn's completion task
         // runs it.
-        roll_back_failed_turn(&mut conversation, before.clone());
+        conversation.roll_back_failed_turn(before.clone());
         session.record_run(&before, &conversation).unwrap();
 
         let (_, resumed) = mecha_core::session::Session::load(&session.path).unwrap();
@@ -2028,7 +2064,7 @@ mod rollback_tests {
             }],
         });
 
-        roll_back_failed_turn(&mut conversation, before);
+        conversation.roll_back_failed_turn(before);
 
         assert!(
             !conversation
@@ -2061,7 +2097,7 @@ mod rollback_tests {
         let mut conversation =
             Conversation::from(vec![Message::user("[summary of the run so far]")]);
 
-        roll_back_failed_turn(&mut conversation, before);
+        conversation.roll_back_failed_turn(before);
 
         assert!(
             !conversation
