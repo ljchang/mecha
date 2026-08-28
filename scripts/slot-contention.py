@@ -13,7 +13,7 @@ of thousands means the whole transcript was re-prefilled.
 """
 import json, sys, threading, time, urllib.request
 
-BIG = open("/home/ljchang/Github/mecha/CLAUDE.md").read()[:40000]
+BIG = open("/home/ljchang/Github/mecha/docs/ARCHITECTURE.md").read()[:40000]
 K = int(sys.argv[1])
 TURNS = int(sys.argv[2]) if len(sys.argv) > 2 else 6
 

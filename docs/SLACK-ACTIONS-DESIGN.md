@@ -34,7 +34,7 @@ string list is data, and data gets appended to. An enum is code — adding an
 action is a diff someone reviews, the compiler forces the executor's `match` to
 handle it, and there is no runtime state whose corruption widens the set. This
 is the same move as `Decision::Allow | Deny | Blocked`
-(`mecha-cli/src/slack/approve.rs`, and the hooks section of `CLAUDE.md`): the
+(`mecha-cli/src/slack/approve.rs`, and the hooks section of `ARCHITECTURE.md`): the
 split lives in the type, so no wording a caller chooses can escape it.
 
 It lives in `mecha-cli/src/slack/`, beside `approve.rs`, and **never in

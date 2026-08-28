@@ -751,7 +751,7 @@ shipped row changed both, and the amendments sit beside the originals.
 fire-and-forget child at all** — it opens the task's chat session, the model
 speaks first, and the board does not move until the owner hands it over. That
 is D2 restored rather than a new decision; the mechanism and the four rules
-it needed are in `CLAUDE.md`'s task-board section, and HISTORY has the
+it needed are in `ARCHITECTURE.md`'s task-board section, and HISTORY has the
 narrative.
 
 The return path was not on this list and is the half of D13 the first pass

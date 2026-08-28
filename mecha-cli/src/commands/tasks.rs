@@ -766,7 +766,7 @@ fn describe(a: &mecha_core::appraisal::Appraisal) -> String {
 /// **The task's own name is not necessarily trusted board text, and an
 /// earlier version of this comment was wrong to call it that.** `mail task`
 /// defaults a task's name to the classifier's paraphrase and then to the
-/// raw subject line of somebody else's mail (CLAUDE.md's own task-board
+/// raw subject line of somebody else's mail (docs/ARCHITECTURE.md's own task-board
 /// section names this as a known, unresolved gap for the *original* task).
 /// Copying that text verbatim into a *new* record, under a `captured_from`
 /// that says `kind: session` — implying the harness authored it — would

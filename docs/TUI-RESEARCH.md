@@ -269,7 +269,7 @@ mecha's TUI has six unit tests — picker wrapping, input layout under wrapping,
 pasted newlines, a zero-width terminal. All good, all about arithmetic.
 Nothing renders a frame.
 
-`CLAUDE.md` already records the pty method and its trap (`script -qec "stty
+`ARCHITECTURE.md` already records the pty method and its trap (`script -qec "stty
 rows 45 cols 130; mecha tui" /dev/null`, because a pty with no window size
 renders every frame into 0×0). That is the right tool for end-to-end checks and
 too heavy for regressions.

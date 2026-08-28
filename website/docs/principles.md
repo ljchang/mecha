@@ -230,7 +230,9 @@ had twice:
 ## Where these came from
 
 Most of the above is the generalisation of a specific bug. The unabridged
-version, with the incident behind each rule, is [`CLAUDE.md`] in the repository;
+version, with the incident behind each rule, is [`CLAUDE.md`] and its
+companion [`ARCHITECTURE.md`] in the repository;
 this page is the part that survives being restated without the scar tissue.
 
 [`CLAUDE.md`]: https://github.com/ljchang/mecha/blob/main/CLAUDE.md
+[`ARCHITECTURE.md`]: https://github.com/ljchang/mecha/blob/main/docs/ARCHITECTURE.md

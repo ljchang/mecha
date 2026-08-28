@@ -11,7 +11,7 @@ survey behind adding a skill mechanism to mecha, written before the design.*
 
 **This survey has been implemented.** `mecha-core/src/skill.rs` is the store,
 `mecha-core/src/tool/skill.rs` is the `skill` tool, `[skills]` is the config,
-`mecha skills` is the inspector, and `CLAUDE.md` § *Skills* is the maintained
+`mecha skills` is the inspector, and `ARCHITECTURE.md` § *Skills* is the maintained
 record. §7's six rules all hold and have tests named on them.
 
 How §8's open questions were answered:

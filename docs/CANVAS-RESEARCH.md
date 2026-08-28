@@ -277,7 +277,7 @@ Two Canvas-specific notes worth writing down before they cost something:
 
 - **`client_secret` is required on the refresh call.** Microsoft taught the
   opposite lesson — a device-code public client that 400s with `AADSTS7000215`
-  if you send one (`CLAUDE.md`, mecha-mail). Canvas is a confidential client and
+  if you send one (`ARCHITECTURE.md`, mecha-mail). Canvas is a confidential client and
   wants it on both `authorization_code` and `refresh_token`. The two providers
   disagree, so this cannot be shared code without a flag.
 - **`purpose` is a real parameter** and shows in the user's token list. Set it

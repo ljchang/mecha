@@ -260,9 +260,10 @@ Full documentation is at **[docs.mecha-factory.ai](https://docs.mecha-factory.ai
 - [CLI](https://docs.mecha-factory.ai/docs/reference/cli) and
   [configuration](https://docs.mecha-factory.ai/docs/reference/configuration) reference
 
-In this repository, [`CLAUDE.md`](CLAUDE.md) is the canonical design document —
-why each subsystem is shaped the way it is, and the incident behind each
-invariant. [`docs/README.md`](docs/README.md) maps which document holds what.
+In this repository, [`CLAUDE.md`](CLAUDE.md) holds the cross-cutting design
+invariants and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) records why each
+subsystem is shaped the way it is, with the incident behind each invariant.
+[`docs/README.md`](docs/README.md) maps which document holds what.
 
 ## Contributing
 
