@@ -220,6 +220,36 @@ impl Charter {
     }
 }
 
+/// The comments-only template a surface may write when no charter exists
+/// yet, so the first edit never starts from an empty buffer — which is how
+/// a first charter ends up shaped wrong. **No active `[[line]]` entries**:
+/// a template that shipped priorities would be mecha authoring the charter,
+/// the one thing every surface here refuses (§11), and the test on this
+/// constant fails on any uncommented line. Lives here so the TUI's `e` and
+/// the web settings editor hand out the same bytes rather than two copies
+/// that drift. The commented example exists because the costliest authoring
+/// mistake (§11) is a "never disappoint"-shaped line, and the place to say
+/// so is inside the file being edited.
+pub const TEMPLATE: &str = "\
+# Your charter: standing priorities, in your own words, ranked highest
+# first — ORDER IS RANK. There is no priority field; when two lines
+# conflict, the higher one wins outright, and re-ranking is moving a line.
+#
+# mecha only ever reads this file. Each entry is:
+#
+#   [[line]]
+#   id = \"a-short-stable-slug\"     # unique; goal references point at it
+#   text = \"The priority itself, one or two sentences.\"
+#
+# One authoring trap, from the design doc: a line shaped like \"never
+# disappoint anyone\" produces sycophancy and withheld bad news. Point it
+# the other way — e.g.:
+#
+#   [[line]]
+#   id = \"tell-the-truth-early\"
+#   text = \"Tell me the truth early, especially when it disappoints.\"
+";
+
 /// The block rendered straight into the system prompt. `None` when the
 /// charter is empty, so a machine with no charter authored yet sends no block
 /// at all — the same reason [`crate::skill::prompt_block`] returns `None` on
@@ -252,6 +282,23 @@ pub fn prompt_block(charter: &Charter) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The template must never author a priority: a `[[line]]` not behind a
+    /// comment would ship ranked content mecha wrote, which is the invariant
+    /// every charter surface exists to refuse.
+    #[test]
+    fn the_template_carries_no_active_lines() {
+        for l in TEMPLATE.lines() {
+            let l = l.trim();
+            assert!(
+                l.is_empty() || l.starts_with('#'),
+                "template has an uncommented line: {l:?}"
+            );
+        }
+        // And it stays honest as a TOML document: parsing it yields nothing.
+        let c = Charter::parse(TEMPLATE).unwrap();
+        assert!(c.is_empty());
+    }
 
     fn line(id: &str, text: &str) -> CharterLine {
         CharterLine {

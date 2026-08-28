@@ -61,7 +61,11 @@
   load();
 
   function openEditor() {
-    draft = charter?.raw ?? '';
+    // A first charter must not start from an empty buffer — the TUI writes
+    // the comments-only template for the same reason, and the GET serves
+    // those exact bytes so the two surfaces cannot drift. The template
+    // carries the format and §11's "never disappoint" authoring trap.
+    draft = charter?.raw || charter?.template || '';
     confirming = false;
     saveError = null;
     savedNote = null;
@@ -328,11 +332,11 @@
             full, but costs more of the cached prefix than argued.
           </div>
         {/if}
-      {:else if charter && !charter.parse_error}
+      {:else if charter && !charter.parse_error && !charter.error}
         <div class="card">
           <div class="sub">
-            No charter yet — nothing rides in any prompt. Edit to write one; the format is
-            explained by example once you start.
+            No charter yet — nothing rides in any prompt. Edit opens the format explained by
+            example, ready to fill in.
           </div>
         </div>
       {/if}
@@ -468,7 +472,10 @@
             {#each voice.cloned as c}
               <div class="cloned-row">
                 <span class="cname">{c.name}</span>
-                <span class="sub">{c.seconds ? `${c.seconds.toFixed(0)}s` : ''}</span>
+                <span class="sub">
+                  {c.seconds ? `${c.seconds.toFixed(0)}s` : ''}
+                  {c.created ? ` · ${new Date(c.created * 1000).toLocaleDateString()}` : ''}
+                </span>
                 <button class="btn tiny" class:armed={deleteArmed === c.name} onclick={() => deleteClone(c.name)}>
                   {deleteArmed === c.name ? 'sure?' : 'delete'}
                 </button>
