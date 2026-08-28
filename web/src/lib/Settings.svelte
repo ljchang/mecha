@@ -245,6 +245,14 @@
     }
   }
 
+  // Browser-back is the ordinary way off this view, and a recording left
+  // running would otherwise hold the microphone (and its indicator light)
+  // for the life of the page.
+  $effect(() => () => {
+    stopCapture();
+    if (recUrl) URL.revokeObjectURL(recUrl);
+  });
+
   async function deleteClone(name) {
     if (deleteArmed !== name) {
       deleteArmed = name;
@@ -466,6 +474,11 @@
         {/if}
         {#if cloneError}
           <div class="sub notice">{cloneError}</div>
+        {/if}
+        {#if voice.cloned_error}
+          <div class="sub notice">
+            the voices directory could not be listed — recordings may not land: {voice.cloned_error}
+          </div>
         {/if}
         {#if voice.cloned.length}
           <div class="cloned">
