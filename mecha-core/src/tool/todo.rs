@@ -360,10 +360,29 @@ impl Tracked {
                             // baseline worth remembering, and a candidate
                             // worth a second opinion (§5.5's escalation).
                             if let Some(slot) = step_escalation {
+                                // `completed_before_this_batch` is filtered
+                                // by `live`, which this item's own content
+                                // is a member of — it is in `next.items`,
+                                // being completed right now — so the batch
+                                // filter alone does not exclude it. A step
+                                // that completed once, was reopened, and is
+                                // completing again here would otherwise see
+                                // its own pre-revision span as one of "the
+                                // plan's other completed steps": the
+                                // opposite of round 12's fix, but the same
+                                // bug — a step being counted as its own
+                                // sibling — reached through the batch
+                                // snapshot instead of the live push.
+                                let siblings_excluding_self: Vec<(String, u32)> =
+                                    completed_before_this_batch
+                                        .iter()
+                                        .filter(|(k, _)| k != &item.content)
+                                        .cloned()
+                                        .collect();
                                 if let Some(escalation) = crate::step::escalation_candidate(
                                     span,
                                     &item.content,
-                                    &completed_before_this_batch,
+                                    &siblings_excluding_self,
                                 ) {
                                     // First candidate this batch wins. The
                                     // slot is always drained once per turn
@@ -1981,6 +2000,71 @@ mod tests {
             escalation.siblings.iter().filter(|s| *s == "A").count(),
             1,
             "A must not be listed as its own sibling twice"
+        );
+    }
+
+    /// The review finding one step past the test above: that one checks a
+    /// *later* step's escalation, once the dedupe/push has already run for
+    /// "A". This checks "A"'s own re-completion — the moment where its
+    /// pre-revision entry is still sitting in `completed_before_this_batch`
+    /// (the dedupe/push that would remove it runs *after* the escalation
+    /// check, and the batch-level `live` filter does not exclude it either,
+    /// since "A" is in `next.items` — it is the very item being completed).
+    /// With only "small step 0" as a genuine sibling, this must not clear
+    /// `SPAN_OUTLIER_MIN_SIBLINGS`.
+    #[tokio::test]
+    async fn a_steps_own_pre_revision_entry_does_not_count_as_its_sibling() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+
+        items.push(json!({"content": "small step 0", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 0, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 2, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "A", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 2, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 4, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        // Reopen A and complete it again, at a span that would clear the
+        // outlier floor against a mean of 2.0 (small step 0 and A's own
+        // stale entry) but not against the true single-sibling baseline.
+        items.last_mut().unwrap()["status"] = json!("in_progress");
+        write(
+            &tool,
+            &escalation_ctx(1, 4, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        let (done_ctx, slot) = escalation_ctx(1, 19, Some(Outcome::Ok), 0);
+        write(&tool, &done_ctx, Value::Array(items.clone())).await;
+
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "A's own pre-revision entry must not count as one of its siblings, \
+             leaving only one real sibling — below SPAN_OUTLIER_MIN_SIBLINGS"
         );
     }
 
