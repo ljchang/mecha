@@ -398,12 +398,19 @@ async fn set(
     waiting_on: Option<String>,
     session: Option<String>,
 ) -> Result<()> {
-    // Read before the mutation, and only when a status move is even in play —
+    // Read before the mutation, and only when the target is a status
+    // `is_fresh_closure` could ever call a closure (`done`/`dropped`) —
     // `kg_task_update` answers with the fields it moved, never the row as a
     // whole, so telling a fresh closure apart from one already closed (and
-    // finding the session/project a closure appraises) needs the record as it
-    // stood going in.
-    let before = if status.is_some() {
+    // finding the session/project a closure appraises) needs the record as
+    // it stood going in. Narrower than "any status move": `call` pays a
+    // full `mcp::connect_all` startup for this lookup, and `/tasks` drives
+    // every status change — including the ones nowhere near a closure —
+    // through this same function.
+    let before = if status
+        .as_deref()
+        .is_some_and(|s| matches!(s, "done" | "dropped"))
+    {
         find_task(global, task).await.ok()
     } else {
         None
@@ -621,15 +628,29 @@ async fn stage_follow_up(
     let out = match call(global, "kg_task_create", args.clone()).await {
         Ok(v) => v,
         // The store's own validation may be stricter than the documented
-        // closed set — if `captured_from` is what it rejected, still get the
-        // follow-up onto the board rather than losing it over a provenance
-        // pointer nobody can act on today anyway.
-        Err(_) => {
+        // closed set — if `captured_from` is what it rejected, still get
+        // the follow-up onto the board rather than losing it over a
+        // provenance pointer nobody can act on today anyway.
+        //
+        // **Narrowed to that one case, not every `Err` `call` can produce.**
+        // `call` also errors on a JSON-parse failure of an otherwise
+        // successful response and on a transport failure inside
+        // `found.call` — in both, `kg_task_create` may already have run,
+        // and retrying would stage a second, indistinguishable task rather
+        // than recover from a rejection. The one shape that means "the
+        // store rejected the argument before creating anything" is `call`'s
+        // own `bail!("{tool}: {..}")` for `out.is_error`, whose text begins
+        // with the tool's name and a colon — nothing else in `call` (or in
+        // `Tool::call`'s errors, or `find_tool`'s) produces that prefix.
+        Err(e) if e.to_string().starts_with("kg_task_create: ") => {
             if let Some(o) = args.as_object_mut() {
                 o.remove("captured_from");
             }
-            call(global, "kg_task_create", args).await?
+            call(global, "kg_task_create", args)
+                .await
+                .with_context(|| format!("retried without captured_from after: {e:#}"))?
         }
+        Err(e) => return Err(e),
     };
     println!(
         "staged a follow-up: {}  {}",

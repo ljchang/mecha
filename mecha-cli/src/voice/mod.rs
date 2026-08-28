@@ -499,7 +499,7 @@ async fn affect_status(stream: &mut TcpStream, shared: &Arc<Shared>, head: &Head
     let Some(session) = query_param(&head.path, "session") else {
         return write_json(stream, 400, &json!({"error": "missing ?session="})).await;
     };
-    match shared.affects.lock().await.get(session) {
+    match shared.affects.lock().await.get(session.as_str()) {
         Some(label) => write_json(stream, 200, &json!({"affect": label})).await,
         None => {
             stream
@@ -513,12 +513,62 @@ async fn affect_status(stream: &mut TcpStream, shared: &Arc<Shared>, head: &Head
 /// Hand-rolled rather than pulling in a URL/query-string crate: this module
 /// already hand-rolls its whole HTTP surface (it is a raw-socket loopback
 /// facade, not an axum app), and one query parameter does not change that.
-fn query_param<'a>(path: &'a str, key: &str) -> Option<&'a str> {
+///
+/// **Must decode.** The cache is keyed by `confirm_key` — `"chat:{id}"` or
+/// `"voice:{slot}"` — which contains a colon, and `worker.py` sends it via
+/// httpx's `params=`, which percent-encodes it (`urlencode`'s default
+/// `quote_plus`, `safe=''`) to `chat%3Amain`. A version of this that
+/// returned the raw slice looked right, built, and passed every existing
+/// test — because every test used a colon-free key — while missing every
+/// real lookup in production and always falling back to the baseline
+/// silently, exactly as the caller's own failure path is designed to.
+fn query_param(path: &str, key: &str) -> Option<String> {
     let (_, query) = path.split_once('?')?;
-    query.split('&').find_map(|pair| {
-        let (k, v) = pair.split_once('=')?;
-        (k == key).then_some(v)
-    })
+    query
+        .split('&')
+        .find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k == key).then_some(v)
+        })
+        .map(percent_decode)
+}
+
+/// `%XX` and `+` only — the two forms a query string actually needs and the
+/// two `urlencode` actually produces. A malformed escape (`%` with fewer
+/// than two hex digits after it, or non-hex digits) is passed through
+/// byte-for-byte rather than dropped, on the same "absent is not zero, and
+/// a caller cannot check for it" fail-safe reasoning as everywhere else in
+/// this codebase that refuses to silently discard bytes.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 3 <= bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 async fn write_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result<()> {
@@ -1349,18 +1399,48 @@ mod tests {
     fn query_param_reads_the_named_pair_and_nothing_else_matches() {
         assert_eq!(
             query_param("/v1/mecha-affect?session=main", "session"),
-            Some("main")
+            Some("main".to_string())
         );
         assert_eq!(
             query_param("/v1/mecha-affect?other=x&session=main", "session"),
-            Some("main")
+            Some("main".to_string())
         );
         assert_eq!(query_param("/v1/mecha-affect", "session"), None);
         assert_eq!(
             query_param("/v1/mecha-affect?session=", "session"),
-            Some("")
+            Some(String::new())
         );
         assert_eq!(query_param("/v1/mecha-affect?session=main", "other"), None);
+    }
+
+    /// The regression this exists to catch: `hosted_completion`'s
+    /// `confirm_key` is `"chat:{id}"`/`"voice:{slot}"`, both containing a
+    /// colon, and `worker.py` sends it through httpx's `params=`, which
+    /// percent-encodes it. A version of this returning the raw slice passed
+    /// every other case here — none of them used a colon — while missing
+    /// every real lookup in production.
+    #[test]
+    fn query_param_decodes_the_percent_encoded_key_the_worker_actually_sends() {
+        assert_eq!(
+            query_param("/v1/mecha-affect?session=chat%3Amain", "session"),
+            Some("chat:main".to_string())
+        );
+        assert_eq!(
+            query_param("/v1/mecha-affect?session=voice%3Awebrtc-1a2b", "session"),
+            Some("voice:webrtc-1a2b".to_string())
+        );
+    }
+
+    #[test]
+    fn percent_decode_handles_escapes_plus_and_malformed_input_without_dropping_bytes() {
+        assert_eq!(percent_decode("chat%3Amain"), "chat:main");
+        assert_eq!(percent_decode("a+b"), "a b");
+        assert_eq!(percent_decode("plain"), "plain");
+        // A trailing or malformed escape is passed through rather than
+        // dropped — absent is not the same as zero, one door over.
+        assert_eq!(percent_decode("50%"), "50%");
+        assert_eq!(percent_decode("50%2"), "50%2");
+        assert_eq!(percent_decode("50%zz"), "50%zz");
     }
 
     #[test]
