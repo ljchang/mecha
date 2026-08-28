@@ -233,8 +233,23 @@ visible instead of silent. `mecha doctor` reads those
 [populations](/docs/features/run-quality), `mecha diagnose` proposes one change
 with a falsifiable prediction, and `mecha eval --ab-config` is the measurement
 that would refute it — paired by case, confirmed on a holdout, and rejected
-outright if the gain was bought by attempting less work. Nothing in that loop
-applies itself.
+outright if the gain was bought by attempting less work. `mecha harness
+ruminate` runs all four nightly, and a config change that survives the whole
+gate applies itself to a **revertible override layer**. Nothing outside that
+closed set of run options does, no model sits in the gate, and a change that
+would widen mecha's own confinement is never even measured.
+
+**It has a written statement of what it is for.** Every other evaluative signal
+in the system is a cost or a correction — four ways of saying a person stepped
+in, six metrics that are all phrased as costs — so a run could be recorded as
+having gone badly and never as having gone well. A
+[charter](/docs/features/appraisal) is a short ranked list of standing
+priorities, in your own words, that rides in every run's prompt; a plan can name
+what it serves; and how a run went **against that** is a signed error with a
+label derived from the record. Derived, never reported: a model that could
+announce its own mood is an unfalsifiable self-report and an injection target, so
+the label is a pure function and there is no field a model can write one into.
+There is no path by which a model edits its own charter, either.
 
 ## Where to go next
 
@@ -251,5 +266,7 @@ applies itself.
   each one cost to learn.
 - [Security model](/docs/features/security) — read this before giving an agent
   anything private.
+- [Goals and appraisal](/docs/features/appraisal) — the charter, and how a run is
+  measured against what it was for.
 - [The factory](/docs/factory/overview) — publishing out, and typed requests in.
 - [CLI reference](/docs/reference/cli) — every command and flag.

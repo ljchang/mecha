@@ -176,12 +176,15 @@ happens when a run stages drafts (see [the outbox](/docs/features/outbox)), and
 `/remote-control <name>` mirrors the session into a Slack thread you can pick
 up from a phone (see [Slack](/docs/features/slack#remote-control-one-session-two-places)).
 
-Nine modals open onto the review surfaces:
+The modals open onto the review surfaces:
 
 | Modal | Onto |
 |---|---|
 | `/triggers` | [scheduled prompts](/docs/features/triggers) — see, edit, run, cancel |
 | `/skills` | [the procedures this agent carries](/docs/features/skills#skills--what-this-agent-knows-how-to-do) — and the one you mean, in full |
+| `/charter` | [the standing priorities](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words) every run carries, ranked — `e` hands the file to `$EDITOR` |
+| `/queues` | [every store waiting on you](/docs/features/queues), in one list, including the graph's merge queue |
+| `/learning` | [reflections, rules and proposals](/docs/features/learning) — read, edit, refuse |
 | `/outbox` | [staged outbound drafts](/docs/features/outbox) — read, edit, send, reject |
 | `/frontdoor` | [inbound requests](/docs/features/frontdoor) — read, extract, triage, close |
 | `/mail` (or `/inbox`) | [the triage queue](/docs/features/mail#mail--the-queue-as-a-modal) — reply, task, correct, park, dismiss |
@@ -189,6 +192,11 @@ Nine modals open onto the review surfaces:
 | `/polls` | [open polls](/docs/factory/polls#watching-one-without-leaving-the-session) — tallies, close, export |
 | `/docs` | [what is in `drive.file` scope](/docs/features/documents#two-ways-a-document-gets-in-scope) — list, pick a new one, quote its id into the prompt |
 | `/doctor` | [what is silently wrong](/docs/reference/cli#doctor) across every store, and the way out |
+| `/tools` | every tool this agent can call, with what each declares it can do |
+
+`/note <text>` captures straight into the knowledge graph, `/find [query]`
+searches it — entities, facts and episodes — and `/entity` (or `/who`) opens one
+person or thing, all without leaving the session.
 
 Every one of them drives the matching `mecha …` or `factory-publish …` child
 process rather than reimplementing it, so nothing a modal can do is missing from
@@ -204,6 +212,12 @@ The status line becomes a fuel gauge when `[providers.X] context_window` is
 set — `context 29.3k/32.8k (89%)`, grey below 75%, yellow to 89%, red above.
 Without a configured window it shows the prompt size with nothing to compare
 it to. See [Compaction](/docs/features/compaction).
+
+It also carries an [affect badge](/docs/features/appraisal#where-a-label-actually-shows-up)
+after a run — but **only** when the derived label is not neutral, which is
+uncommon. It clears when the next run starts and on `/clear`, because the label
+describes the run that just finished and would otherwise read as the new
+conversation's own mood.
 
 Testing the TUI means driving a pty, and giving it a size:
 

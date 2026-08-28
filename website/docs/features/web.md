@@ -67,6 +67,25 @@ and there is exactly one implementation of each verb.
 | **Notes** | Capture into the [knowledge graph](/docs/graph/overview) as evidence, a recent list, and a search box |
 | **Review** | [Outbox](/docs/features/outbox), the graph's merge queue, and the [front door](/docs/features/frontdoor) — every approval surface in one place |
 | **Tasks** | The GTD board, with the views in a drawer and one tap per status change |
+| **Settings** | Behind the gear, upper-right: the [charter](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words) (view, and the page's one write), the learned-rule roster with its ledger tallies, and the [voice](/docs/features/voice) stack's health and preferences |
+
+### Settings, and the one thing a browser may write
+
+The charter save is the only mutation on the whole page, and it is fenced in
+four ways. The body is **refused above 64 KB before the TOML parser sees it** —
+a document orders of magnitude past a 2,000-character rendered budget is not an
+edit of one, whatever it parses as. It is then **validated by the same reader
+every run loads through**, so a document the server would not load never reaches
+disk. The write is a temp-sibling-and-rename in the same directory, so a crash
+between the two leaves the old charter whole. And the save is **two taps**,
+because the charter rides in every run's prompt and one stray tap must not
+rewrite it.
+
+Everything else on the page is a read. The rule roster is exactly what the TUI's
+`/learning` shows, and retiring a rule still goes through `mecha rules retire`'s
+own staged path — there is no shortcut around it from a browser. The voice panel
+answers whether the stack is reachable and where this process would send an
+offer; the worker is configured where it runs.
 
 ### Chat, and what a session is
 
@@ -169,6 +188,10 @@ typing still works.
 - **There is no push yet.** A page that is open streams; a page that is
   closed catches up on reload. [Slack](/docs/features/slack) remains the
   channel that can reach you when nothing is open.
+- **It does not compose a charter line.** The settings editor hands you the
+  file's own bytes — a comments-only template when none exists — and refuses a
+  save that would not load. There is no generate button, and no model path that
+  writes one, for the reason [the charter](/docs/features/appraisal) gives.
 
 ## Installing the app itself
 

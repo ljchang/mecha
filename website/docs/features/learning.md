@@ -65,6 +65,33 @@ so two concurrent closes cannot mine the same session twice.
 `mecha reflect` also mines the [outbox](/docs/features/outbox): an item that was
 sent with edits yields a `writing`-domain reflection from `diff(staged, sent)`.
 
+### Reading the lessons before they are consolidated
+
+```bash
+mecha reflections                       # newest first
+mecha reflections show 20260828T0915    # what happened, what was said, the lesson
+mecha reflections edit 20260828T0915    # rewrite it in your own words
+mecha reflections drop 20260828T0915 --reason "specific to one thread"
+```
+
+The store had no reader for a long time, and that is the wrong end of the
+pipeline to be blind at. A rule is a *consolidation* of several lessons, so by
+the time a proposal is reviewable the thing you wanted to disagree with has
+already been merged with four others and rewritten. The lesson is where a
+disagreement is cheap and precise.
+
+`edit` is a **provenance promotion** rather than a text change: a lesson you
+typed yourself skips the model that would otherwise have laundered third-party
+bytes into it, which is the way an excluded reflection gets rescued rather than
+merely lamented. `drop` is a flag and never a deletion, on the same rule retired
+rules follow — a store that forgets its refusals offers the same lesson again
+next pass with nothing to say it was already judged; `restore` undoes it.
+
+Nothing in these verbs calls a model or touches the network, and every write
+takes the store lock, so they are safe against a store the nightly is also
+using. The `/learning` modal in the TUI drives exactly them, alongside
+`mecha rules list --json`.
+
 ## `mecha learn` — reflections become rules
 
 Consolidation rewrites `rules/<domain>.learned.toml` whole: absorb the new

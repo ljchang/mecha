@@ -22,7 +22,7 @@
 use crate::config::Config;
 use crate::doctor::Remedy;
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Where a step stands. Deliberately three-valued: "cannot tell from here"
 /// is a real answer and must not be printed as "not done" — a person told
@@ -36,6 +36,18 @@ pub enum Status {
     /// Configured, but something about it disagrees with reality.
     Wrong,
     Unknown,
+    /// The owner said they do not want this one.
+    ///
+    /// **Not a fifth shade of "not done" — its opposite.** Every other status
+    /// here describes the machine; this one describes a decision, and the two
+    /// were indistinguishable until it existed: somebody who does not use
+    /// Slack read `not set up` on every `mecha setup` forever, and every
+    /// scripted run exited non-zero over a choice they had already made. The
+    /// same "a dash is never zero" rule [`crate::backlog`] states, one noun
+    /// over — an absence of the thing and a decision against the thing are
+    /// different findings, and a reader that cannot tell them apart turns a
+    /// finished install into a permanent defect list.
+    Declined,
 }
 
 /// One thing a new install might still need.
@@ -50,6 +62,20 @@ pub struct Step {
     /// a model, deciding whether they want mail at all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remedy: Option<Remedy>,
+    /// May the owner say they never want this?
+    ///
+    /// **A property of the step, not of its status**, and the distinction is
+    /// load-bearing: inferring it from `Missing` made *"a provider that can
+    /// answer"* declinable, so a person could decline the one thing without
+    /// which nothing runs and be told `Nothing outstanding.` on an install
+    /// that could not answer a single prompt. Found by running the flow
+    /// rather than by reading it.
+    ///
+    /// True only where "I don't want this" is a coherent sentence — the
+    /// integrations, and the charter. Never for a credential, a server that
+    /// disagrees with its config, or anything else that is the machine being
+    /// wrong rather than a feature going unused.
+    pub optional: bool,
 }
 
 impl Step {
@@ -60,7 +86,13 @@ impl Step {
             status,
             detail: detail.into(),
             remedy: None,
+            optional: false,
         }
+    }
+    /// Mark a step as one the owner may decline outright.
+    fn optional(mut self) -> Self {
+        self.optional = true;
+        self
     }
     fn with(mut self, description: &str, argv: &[&str], needs_terminal: bool) -> Self {
         self.remedy = Some(Remedy {
@@ -98,6 +130,43 @@ pub struct Facts {
     /// Whether a trigger scheduler is running or installed.
     pub scheduler_installed: bool,
     pub trigger_count: usize,
+    /// What the owner's charter is doing, read through the ordinary loader.
+    pub charter: CharterState,
+    /// Step ids the owner has said they do not want, from
+    /// [`read_declined`].
+    ///
+    /// An unreadable store yields an **empty** set rather than a failure, and
+    /// the direction is deliberate: showing a step somebody declined is a
+    /// nuisance, hiding one they never declined is a silently incomplete
+    /// install. This is the one place in this module where unknown resolves
+    /// towards *more* noise, because here noise is the safe side. `setup`
+    /// still says out loud that the store could not be read.
+    pub declined: std::collections::BTreeSet<String>,
+}
+
+/// What `~/.mecha/charter.toml` is doing — the five answers a reader has to
+/// tell apart.
+///
+/// `Absent` and `Empty` are **not** folded together, for the reason
+/// [`crate::doctor`]'s own charter check keeps them apart: a file that parses
+/// cleanly to zero lines is an authoring mistake by construction (nobody
+/// writes an empty charter on purpose), where no file at all is the ordinary
+/// state of a fresh install and is the one this module exists to offer
+/// something about.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum CharterState {
+    /// No file. A new install, and the case worth prompting.
+    #[default]
+    Absent,
+    /// A file with no `[[line]]` entries — a template nobody filled in, or an
+    /// edit that removed the last line.
+    Empty,
+    /// `n` lines, loading cleanly.
+    Lines(usize),
+    /// It exists and does not load: every run is starting un-chartered.
+    Broken(String),
+    /// Could not be established from here.
+    Unknown,
 }
 
 /// What still needs doing. Empty means a complete install.
@@ -186,6 +255,7 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     }
 
     steps.extend(integration_steps(facts));
+    steps.push(charter_step(&facts.charter));
 
     // --- 4. scheduling, and nothing is turned on for anyone
     //
@@ -215,7 +285,124 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
         );
     }
 
+    // Applied last, over the finished list, so a decline can never change
+    // what a step *says* — only whether it is still being asked for. A
+    // declined step keeps its detail and loses its remedy, because a remedy
+    // is an offer and this one has been answered.
+    //
+    // **A `Done` step is never overwritten.** Declining Slack and then
+    // linking it anyway (from the phone, from `mecha slack auth` directly)
+    // must read as done rather than as refused — the machine's state is a
+    // fact and the decision is a preference, and where they disagree the
+    // fact wins. Otherwise a stale decline would hide a working integration
+    // from its own owner. The same reason `Wrong` and `Broken` survive it:
+    // "I don't want mail" is not "I don't want to be told my mail is
+    // broken", and a decline that could suppress a failure would be a
+    // silently-degrading guard.
+    //
+    // Gated on `optional` as well as on the status, so the guarantee holds
+    // against a **hand-edited** store too: `setup-declined.json` is a plain
+    // file, and a decline that only the prompt refused to record would be
+    // one anybody could add with a text editor.
+    for step in &mut steps {
+        if step.optional
+            && matches!(step.status, Status::Missing)
+            && facts.declined.contains(&step.id)
+        {
+            step.status = Status::Declined;
+            step.remedy = None;
+        }
+    }
+
     steps
+}
+
+/// The charter: what mecha is for, in the owner's own words.
+///
+/// **Nothing anywhere used to mention this.** `doctor`'s charter check
+/// returns early on a file that does not exist — correctly, because never
+/// having written one is not a fault — so a fresh install had no surface at
+/// all that named the feature, and a never-written charter was
+/// indistinguishable from a deliberately-empty one. Discovery was scrolling
+/// the TUI's `/help` or finding the gear on the web page. That is the wrong
+/// way round for the one document that says what the machine is *for*.
+///
+/// The remedy hands over `$EDITOR`; it never composes a line. See
+/// [`crate::charter`]'s module doc for why that distinction, rather than the
+/// absence of a verb, is the actual invariant.
+fn charter_step(state: &CharterState) -> Step {
+    const WHY: &str = concat!(
+        "A short ranked list of standing priorities, in your own words, that rides in ",
+        "every run's prompt. Order is rank: when two conflict, the higher one wins ",
+        "outright. mecha never writes a line of it."
+    );
+    match state {
+        CharterState::Lines(n) => Step::new(
+            "charter",
+            "Your charter",
+            Status::Done,
+            format!(
+                "{n} standing priorit{} in rank order",
+                if *n == 1 { "y" } else { "ies" }
+            ),
+        ),
+        // Distinguished from `Absent` in the *detail*, not the status: both
+        // are "nothing rides in the prompt", and both are fixed by the same
+        // command, but only one of them is a half-finished edit somebody
+        // should be told about rather than a fresh install.
+        CharterState::Empty => Step::new(
+            "charter",
+            "Your charter",
+            Status::Missing,
+            format!(
+                "The file exists with no `[[line]]` entries yet, so nothing from it rides \
+                 in any prompt. {WHY}"
+            ),
+        )
+        .with(
+            "Open the charter in $EDITOR.",
+            &["mecha", "charter", "edit"],
+            true,
+        )
+        .optional(),
+        CharterState::Absent => Step::new(
+            "charter",
+            "Your charter",
+            Status::Missing,
+            format!("Nothing written yet — every run is proceeding un-chartered. {WHY}"),
+        )
+        .with(
+            "Create it from a commented template and open it in $EDITOR.",
+            &["mecha", "charter", "edit"],
+            true,
+        )
+        .optional(),
+        // `Wrong`, not `Missing`: there is a document and it disagrees with
+        // what a run can load, which is a different thing to do about it —
+        // and unlike the two above, this one is already a `doctor` finding,
+        // because it is a fault rather than an absence.
+        CharterState::Broken(e) => Step::new(
+            "charter",
+            "Your charter does not load",
+            Status::Wrong,
+            format!(
+                "{e}
+
+Every run is starting un-chartered until this parses."
+            ),
+        )
+        .with(
+            "Open the charter in $EDITOR and fix it.",
+            &["mecha", "charter", "edit"],
+            true,
+        ),
+        CharterState::Unknown => Step::new(
+            "charter",
+            "Your charter",
+            Status::Unknown,
+            "the charter could not be read from here.",
+        ),
+    }
 }
 
 /// The integrations, each detected the same way: is the binary there, and has
@@ -242,7 +429,8 @@ fn integration_steps(facts: &Facts) -> Vec<Step> {
             "Install the mail and calendar MCP servers.",
             &["cargo", "install", "mecha-mail", "--locked"],
             false,
-        ),
+        )
+        .optional(),
         (true, Some(0)) => Step::new(
             "mail",
             "Mail and calendar",
@@ -254,7 +442,8 @@ fn integration_steps(facts: &Facts) -> Vec<Step> {
             "Authorise a mailbox. Needs a browser, or `--paste` over SSH.",
             &["mecha-mail", "auth", "personal", "--provider", "google"],
             true,
-        ),
+        )
+        .optional(),
         (true, Some(n)) => Step::new(
             "mail",
             "Mail and calendar",
@@ -282,7 +471,8 @@ fn integration_steps(facts: &Facts) -> Vec<Step> {
             "Install the documents server (same crate as mail).",
             &["cargo", "install", "mecha-mail", "--locked"],
             false,
-        ),
+        )
+        .optional(),
         (true, Some(0)) => Step::new(
             "docs",
             "Google Docs, Sheets and Slides",
@@ -293,7 +483,8 @@ fn integration_steps(facts: &Facts) -> Vec<Step> {
             "Authorise Drive access. Use `--paste` if there is no browser here.",
             &["mecha-docs", "auth", "personal"],
             true,
-        ),
+        )
+        .optional(),
         (true, Some(n)) => Step::new(
             "docs",
             "Google Docs, Sheets and Slides",
@@ -327,7 +518,8 @@ fn integration_steps(facts: &Facts) -> Vec<Step> {
             "Start the Slack setup, which prints the binding nonce.",
             &["mecha", "slack", "auth"],
             true,
-        ),
+        )
+        .optional(),
         None => Step::new(
             "slack",
             "Slack as a remote control",
@@ -360,6 +552,7 @@ fn integration_steps(facts: &Facts) -> Vec<Step> {
             &["cargo", "install", "mecha-graph-mcp", "--locked"],
             false,
         )
+        .optional()
     });
 
     steps
@@ -399,6 +592,108 @@ pub fn count_accounts(root: &Path) -> Option<usize> {
         ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(0),
         Err(_) => None,
+    }
+}
+
+/// Where declines are recorded.
+///
+/// **In `~/.mecha/`, never in layered config**, on the rule triggers, skills
+/// and the charter all keep: a project's `mecha.toml` arrives with a cloned
+/// repository, and a repo that could decline your integrations would be
+/// deciding what your machine offers you. There is deliberately no config
+/// field pointing anywhere else, which is the same way the other three keep
+/// the guarantee — by having no configurable path at all rather than by
+/// asking callers to choose the global loader.
+pub fn declined_path(home: &Path) -> PathBuf {
+    home.join("setup-declined.json")
+}
+
+/// Step ids the owner has said they do not want.
+///
+/// An absent file is a confident empty set; an unreadable or malformed one
+/// is `None`, so the caller can *say so* rather than quietly proceeding as
+/// though nothing had been declined. See [`Facts::declined`] for why the
+/// resolution of `None` is nonetheless "offer everything".
+pub fn read_declined(home: &Path) -> Option<std::collections::BTreeSet<String>> {
+    let path = declined_path(home);
+    match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Some(std::collections::BTreeSet::new())
+        }
+        Err(_) => None,
+        Ok(text) => serde_json::from_str::<Declined>(&text)
+            .ok()
+            .map(|d| d.declined),
+    }
+}
+
+/// Record that the owner does not want `id`. Idempotent.
+///
+/// Read-modify-write rather than append, because this is a *set* and the
+/// file is small enough that the whole document is the unit. Written to a
+/// temp sibling and renamed, so a crash mid-write leaves the previous
+/// answer whole rather than a truncated file that reads as "nothing
+/// declined" — which would silently re-offer everything.
+pub fn decline(home: &Path, id: &str) -> std::io::Result<()> {
+    let mut set = read_declined(home).unwrap_or_default();
+    set.insert(id.to_string());
+    write_declined(home, &set)
+}
+
+/// Take one back out — the undo, so a decline is a preference rather than a
+/// door that locks behind you. `id` of `None` clears every one.
+pub fn undecline(home: &Path, id: Option<&str>) -> std::io::Result<()> {
+    let mut set = read_declined(home).unwrap_or_default();
+    match id {
+        Some(id) => {
+            set.remove(id);
+        }
+        None => set.clear(),
+    }
+    write_declined(home, &set)
+}
+
+fn write_declined(home: &Path, set: &std::collections::BTreeSet<String>) -> std::io::Result<()> {
+    let path = declined_path(home);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_string_pretty(&Declined {
+        declined: set.clone(),
+    })
+    .map_err(std::io::Error::other)?;
+    // Same directory, so the rename cannot cross a filesystem — the shape
+    // `serve::settings`' charter save already uses, and for the same reason.
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// The file's own shape. A named field rather than a bare array so the
+/// document can grow a sibling (a timestamp, a reason) without the next
+/// version having to guess what a top-level list meant.
+#[derive(Debug, Default, Serialize, serde::Deserialize)]
+struct Declined {
+    #[serde(default)]
+    declined: std::collections::BTreeSet<String>,
+}
+
+/// Read the charter the way a run does, for [`Facts`].
+///
+/// Through [`crate::charter::Charter::load`] rather than by looking at the
+/// file, because the question is not "is there a file" but "would a run get
+/// anything from it" — and those differ for a template nobody filled in and
+/// for a document with a typo'd table name.
+pub fn charter_state(path: &Path) -> CharterState {
+    match std::fs::metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return CharterState::Absent,
+        Err(_) => return CharterState::Unknown,
+        Ok(_) => {}
+    }
+    match crate::charter::Charter::load(path) {
+        Err(e) => CharterState::Broken(format!("{e:#}")),
+        Ok(c) if c.is_empty() => CharterState::Empty,
+        Ok(c) => CharterState::Lines(c.lines().len()),
     }
 }
 
@@ -449,6 +744,10 @@ mod tests {
             has_graph_binary: true,
             scheduler_installed: true,
             trigger_count: 0,
+            // A complete install has a charter, so `everything_configured…`
+            // keeps meaning what it says.
+            charter: CharterState::Lines(3),
+            declined: Default::default(),
         }
     }
 
@@ -470,6 +769,314 @@ mod tests {
                 .map(|s| &s.id)
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// A fresh install is *offered* a charter, and the offer never composes
+    /// one.
+    ///
+    /// The gap this closes: `doctor::check_charter` returns early on a file
+    /// that does not exist — right, because never having written one is not
+    /// a fault — so before this step nothing on any surface named the
+    /// feature to a new user at all.
+    #[test]
+    fn a_fresh_install_is_offered_a_charter_and_the_offer_authors_nothing() {
+        let cfg = cfg_with_local(262144, Some(true));
+        let mut f = facts(Some(props(262144, 4, true)));
+        f.charter = CharterState::Absent;
+        let steps = plan(&cfg, "local", &f);
+        let charter = step(&steps, "charter");
+        assert_eq!(charter.status, Status::Missing);
+        let remedy = charter.remedy.as_ref().expect("a fresh charter is offered");
+        assert_eq!(remedy.argv, ["mecha", "charter", "edit"]);
+        assert!(
+            remedy.needs_terminal,
+            "handing over $EDITOR needs a keyboard"
+        );
+        // The offer must not put words in anyone's mouth: the *only* text
+        // this module supplies about a charter is a description of what one
+        // is. Nothing here may read as a suggested priority, because a
+        // priority mecha proposed is a priority a model could later argue
+        // from — see `charter.rs`'s module doc for the invariant.
+        assert!(
+            charter.detail.contains("in your own words"),
+            "the detail should say whose words these are: {}",
+            charter.detail
+        );
+    }
+
+    /// A file with no lines and no file at all are both "nothing rides in
+    /// the prompt" and are told apart in the detail, because only one of
+    /// them is a half-finished edit.
+    #[test]
+    fn an_empty_charter_reads_differently_from_an_absent_one() {
+        let cfg = cfg_with_local(262144, Some(true));
+        let mut f = facts(Some(props(262144, 4, true)));
+
+        f.charter = CharterState::Empty;
+        let empty = step(&plan(&cfg, "local", &f), "charter").clone();
+        f.charter = CharterState::Absent;
+        let absent = step(&plan(&cfg, "local", &f), "charter").clone();
+
+        assert_eq!(empty.status, Status::Missing);
+        assert_eq!(absent.status, Status::Missing);
+        assert_ne!(
+            empty.detail, absent.detail,
+            "a template nobody filled in is not the same finding as a fresh install"
+        );
+    }
+
+    /// A charter that does not load is `Wrong`, not `Missing`: there *is* a
+    /// document and it disagrees with what a run can load, which is a
+    /// different thing to do about it — and, unlike the other two, already
+    /// a `doctor` finding.
+    #[test]
+    fn a_charter_that_does_not_load_is_wrong_rather_than_missing() {
+        let cfg = cfg_with_local(262144, Some(true));
+        let mut f = facts(Some(props(262144, 4, true)));
+        f.charter = CharterState::Broken("duplicate id `x`".into());
+        let charter = step(&plan(&cfg, "local", &f), "charter").clone();
+        assert_eq!(charter.status, Status::Wrong);
+        assert!(charter.detail.contains("duplicate id"));
+        assert!(
+            charter.detail.contains("un-chartered"),
+            "say what it costs, not just that it failed: {}",
+            charter.detail
+        );
+    }
+
+    /// A decline is remembered, and it is not a fifth shade of "not done".
+    #[test]
+    fn a_declined_step_reports_the_decision_rather_than_the_absence() {
+        let cfg = cfg_with_local(262144, Some(true));
+        let mut f = facts(Some(props(262144, 4, true)));
+        f.slack_linked = Some(false);
+
+        // Without the decline it is ordinary outstanding work, with a remedy.
+        let before = step(&plan(&cfg, "local", &f), "slack").clone();
+        assert_eq!(before.status, Status::Missing);
+        assert!(before.remedy.is_some());
+
+        f.declined.insert("slack".into());
+        let after = step(&plan(&cfg, "local", &f), "slack").clone();
+        assert_eq!(after.status, Status::Declined);
+        assert!(
+            after.remedy.is_none(),
+            "a remedy is an offer, and this one has been answered"
+        );
+        assert_eq!(
+            after.detail, before.detail,
+            "a decline changes whether a step is asked for, never what it says"
+        );
+    }
+
+    /// **The step that makes everything else work cannot be declined.**
+    ///
+    /// The bug this fails on was found by running the flow rather than by
+    /// reading it: `declinable` was inferred from `Status::Missing`, and a
+    /// provider with no credential is missing — so declining every "missing"
+    /// step reported `Nothing outstanding.` on an install that could not
+    /// answer a single prompt. Asserted against a *hand-edited* store,
+    /// because the file is plain JSON and a guarantee that only the prompt
+    /// enforced would be one anybody could edit around.
+    #[test]
+    fn a_step_that_is_not_optional_cannot_be_declined_even_by_editing_the_file() {
+        let mut cfg = Config::default();
+        // A provider with no credential and no local server: the one step
+        // that blocks every other.
+        let p = cfg.providers.get_mut("anthropic").unwrap();
+        p.api_key_env = Some("MECHA_TEST_NO_SUCH_KEY".into());
+        let mut f = facts(None);
+        f.provider_credential = false;
+        f.slack_linked = Some(false);
+
+        for id in [
+            "provider-credential",
+            "mail",
+            "docs",
+            "slack",
+            "graph",
+            "charter",
+        ] {
+            f.declined.insert(id.to_string());
+        }
+        let steps = plan(&cfg, "anthropic", &f);
+
+        assert_eq!(
+            step(&steps, "provider-credential").status,
+            Status::Missing,
+            "a credential is not a feature somebody can decline"
+        );
+        // The integrations, which genuinely are optional, still honour it —
+        // otherwise this test would pass on a decline that never worked.
+        assert_eq!(step(&steps, "slack").status, Status::Declined);
+    }
+
+    /// Every declinable step is one where "I don't want this" is a coherent
+    /// sentence. Asserted over the whole plan rather than per step, so the
+    /// next step added has to be decided about rather than defaulting into
+    /// being refusable.
+    #[test]
+    fn only_genuinely_optional_things_are_declinable() {
+        let cfg = Config::default();
+        let mut f = facts(None);
+        f.provider_credential = false;
+        f.mail_accounts = Some(0);
+        f.docs_accounts = Some(0);
+        f.slack_linked = Some(false);
+        f.has_graph_binary = false;
+        f.charter = CharterState::Absent;
+        f.trigger_count = 1;
+        f.scheduler_installed = false;
+
+        let steps = plan(&cfg, "anthropic", &f);
+        let optional: Vec<&str> = steps
+            .iter()
+            .filter(|s| s.optional)
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(optional, ["mail", "docs", "slack", "graph", "charter"]);
+    }
+
+    /// The offer text is one paragraph, not a wrapped source literal.
+    ///
+    /// A `\`-continued string that loses its backslash keeps the source's
+    /// indentation, and the result reads as a bug to the one person least
+    /// able to tell it is cosmetic — somebody on their first five minutes.
+    /// Caught by running the command; kept by this.
+    #[test]
+    fn no_step_detail_carries_its_source_indentation() {
+        let cfg = Config::default();
+        let mut f = facts(None);
+        f.provider_credential = false;
+        f.charter = CharterState::Empty;
+        f.trigger_count = 1;
+        f.scheduler_installed = false;
+        for s in plan(&cfg, "anthropic", &f) {
+            assert!(
+                !s.detail.contains("   "),
+                "`{}` carries a run of spaces from its source literal: {:?}",
+                s.id,
+                s.detail
+            );
+        }
+    }
+
+    /// The fact beats the preference. Declining Slack and then linking it
+    /// anyway — from the phone, or by running `mecha slack auth` directly —
+    /// must read as done, or a stale decline hides a working integration
+    /// from its own owner.
+    #[test]
+    fn a_decline_never_overwrites_a_step_that_is_actually_done() {
+        let cfg = cfg_with_local(262144, Some(true));
+        let mut f = facts(Some(props(262144, 4, true)));
+        f.slack_linked = Some(true);
+        f.declined.insert("slack".into());
+        assert_eq!(step(&plan(&cfg, "local", &f), "slack").status, Status::Done);
+    }
+
+    /// And it never suppresses a failure. "I don't want mail" is not "I
+    /// don't want to be told my mail is broken" — a decline that could hide
+    /// a `Wrong` would be a silently-degrading guard.
+    #[test]
+    fn a_decline_cannot_suppress_a_broken_one() {
+        let cfg = cfg_with_local(262144, Some(true));
+        let mut f = facts(Some(props(262144, 4, true)));
+        f.charter = CharterState::Broken("bad toml".into());
+        f.declined.insert("charter".into());
+        assert_eq!(
+            step(&plan(&cfg, "local", &f), "charter").status,
+            Status::Wrong,
+            "a decline must not hide a document that stops every run being chartered"
+        );
+    }
+
+    /// An unknown store is not silently declined either — `Unknown` is
+    /// already "cannot tell from here" and must not become "answered".
+    #[test]
+    fn a_decline_does_not_apply_to_an_unknown_step() {
+        let cfg = cfg_with_local(262144, Some(true));
+        let mut f = facts(Some(props(262144, 4, true)));
+        f.mail_accounts = None;
+        f.declined.insert("mail".into());
+        assert_eq!(
+            step(&plan(&cfg, "local", &f), "mail").status,
+            Status::Unknown
+        );
+    }
+
+    /// The store round-trips, is idempotent, and can be undone — a decline
+    /// is a preference, not a door that locks behind you.
+    #[test]
+    fn declines_round_trip_and_can_be_taken_back() {
+        let home = std::env::temp_dir().join(format!(
+            "mecha-declined-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+
+        // An absent file is a confident empty set, never `None` — the same
+        // rule `count_accounts` keeps for a credential root.
+        assert_eq!(read_declined(&home), Some(Default::default()));
+
+        decline(&home, "slack").unwrap();
+        decline(&home, "slack").unwrap();
+        decline(&home, "docs").unwrap();
+        let set = read_declined(&home).unwrap();
+        assert_eq!(set.len(), 2, "declining twice declines once");
+        assert!(set.contains("slack") && set.contains("docs"));
+
+        undecline(&home, Some("slack")).unwrap();
+        assert_eq!(
+            read_declined(&home)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["docs"]
+        );
+        undecline(&home, None).unwrap();
+        assert!(read_declined(&home).unwrap().is_empty());
+
+        // A file that is there but is not a decline store is `None`, so the
+        // caller can say so — not an empty set, which would read as "you
+        // have declined nothing" about a document nobody could parse.
+        std::fs::write(declined_path(&home), "{not json").unwrap();
+        assert_eq!(read_declined(&home), None);
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// `charter_state` answers the question a run would ask, not "is there
+    /// a file" — a template nobody filled in loads fine and supplies
+    /// nothing.
+    #[test]
+    fn charter_state_reads_what_a_run_would_get() {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-charter-state-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("charter.toml");
+
+        assert_eq!(charter_state(&path), CharterState::Absent);
+
+        std::fs::write(&path, crate::charter::TEMPLATE).unwrap();
+        assert_eq!(
+            charter_state(&path),
+            CharterState::Empty,
+            "the shipped template must parse to zero lines, or it is authoring priorities"
+        );
+
+        std::fs::write(&path, "[[line]]\nid = \"a\"\ntext = \"b\"\n").unwrap();
+        assert_eq!(charter_state(&path), CharterState::Lines(1));
+
+        std::fs::write(&path, "[[lines]]\nid = \"a\"\n").unwrap();
+        assert!(matches!(charter_state(&path), CharterState::Broken(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The trap this exists to retire: `context_window` naming `-c` rather

@@ -9,6 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha setup` offers a charter, and you can tell it no.** Two gaps in what
+  a new install walks into. The first: nothing anywhere named the charter to
+  somebody who had never written one — `doctor` returns early on a file that
+  does not exist (right, since not having one is not a fault), so the only
+  ways to find the feature were scrolling the TUI's `/help` or noticing the
+  gear on the web page. It is now a step, whose remedy hands over `$EDITOR`
+  and composes nothing. The second: "I haven't done this yet" and "I don't
+  want this" were the same line of output, so somebody who does not use Slack
+  read `not set up` forever and every scripted `mecha setup` exited non-zero
+  over a choice they had already made. Each offer now takes `y`/`N`/`never`;
+  `never` records the step in `~/.mecha/setup-declined.json`, a declined step
+  is not outstanding, and `mecha setup --undecline <id>` (or `all`) asks
+  again. Only genuinely optional things are declinable — found by running the
+  flow rather than reading it, because inferring "declinable" from "missing"
+  made a *provider with no credential* declinable, and declining it reported
+  `Nothing outstanding.` on an install that could not answer a prompt. The
+  gate is on the plan rather than on the prompt, so hand-editing the file in
+  does not work either, and a decline never overrides a step that is `done`,
+  `wrong` or `unknown`. Setup also now closes with where to go next, and with
+  the one trap a new install walks into unaided: run it from a project
+  directory, because a workspace over `~/.mecha` is a jail covering its own
+  tokens.
+
+- **`mecha charter edit`, and the rule said properly.** The charter's own
+  module claimed there was "no `--edit`, and there never will be — the absence
+  is the safety argument". That was a misstatement of the invariant rather
+  than a decision anybody made: the TUI's `/charter` already handed the file
+  to `$EDITOR` and the web settings page already took a validated save, so
+  stating the rule as *no verb writes the file* made the command line the only
+  surface where the owner could not edit their own document, which protects
+  nothing. The invariant is about the **author**: the owner may edit the
+  charter from anywhere, and no model ever composes, suggests or edits a line.
+  `edit` creates the commented template when there is no file, hands over
+  `$EDITOR`, and exits non-zero if what was saved will not load — the
+  validation feedback being the reason to use it over a hand-run `vi`. The
+  template write and the did-anything-actually-land classification are now one
+  implementation shared with the TUI, which is where the two subtle cases live:
+  a clean editor exit that saved nothing, and a `:cq` that exits non-zero
+  *after* a save landed.
+
+- **A first-run test suite, and a CI job that installs mecha the way a new
+  user does.** `mecha-cli/tests/first_run.rs` drives the real binary against
+  an isolated `MECHA_HOME` with nothing in it — the state no other test is
+  ever in, since every unit test starts from a `Config` somebody constructed.
+  It asserts that a fresh install says what it needs in a shape a script can
+  read, that the credential-free commands work before anything is configured,
+  that `doctor` is quiet about stores that merely do not exist yet, that a
+  first charter is a template holding no priorities, and that starting from
+  the directory holding `~/.mecha` is refused *with a reason*. Beside it, a
+  `first run` CI job on Linux and macOS runs `cargo install --path` into a
+  clean prefix and repeats the walkthrough against the installed binary,
+  because a crate that will not install standalone is invisible from inside
+  the workspace and lands on the person least equipped to debug it. That job
+  also checks every command the getting-started pages name actually exists.
+
 - **Voice and rate moved out of the call pane, and a voice can be cloned.**
   The in-call picker and slider were preferences wearing call-control
   clothes; they live on the settings page now (the call pane keeps mute and
@@ -135,6 +190,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   learned half misdescribes what a run carries.
 
 ### Fixed
+
+- **`mecha eval --ab-rules` measured nothing, while announcing that it did.**
+  Both arms ran rules-free: consolidating eval's forced-off list into
+  `force_reproducible` (which existed to stop entries being lost from a list
+  written in prose across forty lines) flattened
+  `opts.no_learned_rules = !with_rules` into an unconditional `true`, so the
+  treatment arm printed *"learned rules INJECTED (A/B treatment arm)"* over an
+  arm that had none — two identical arms, and every per-case flip it reported
+  was noise. The lever is now a parameter of `force_reproducible` rather than
+  a re-enable at the call site, because a lever inside the list cannot be lost
+  while consolidating the list. The existing set-assertion test could not have
+  caught this and did not: a test that asserts a list is complete cannot notice
+  that one member of it was supposed to be a variable, so the regression gets
+  its own test asserting the treatment arm *does* carry rules, and that the
+  lever is one flag wide.
 
 - **`anticipated_guilt` no longer pins at a constant `1.0` under a standing
   backlog.** The first run recorded under the sensor (2026-08-28) read

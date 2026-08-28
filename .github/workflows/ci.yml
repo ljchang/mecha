@@ -130,3 +130,169 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo run --locked --bin mecha -- tools
       - run: cargo run --locked --bin mecha -- tools --json
+
+  # What a new user actually does, on the platforms they do it on.
+  #
+  # `cargo test` already runs `mecha-cli/tests/first_run.rs`, which drives the
+  # built binary through the first-run commands. This job exists because that
+  # one cannot fail on the thing most likely to break an install: `cargo test`
+  # builds in the workspace, and a new user runs `cargo install`. A crate that
+  # will not install standalone, a binary that needs a workspace-relative file
+  # at runtime, a dependency that only resolves from the dev lockfile — none of
+  # those are visible from inside the workspace, and all of them land on the
+  # person least equipped to debug them.
+  #
+  # macOS is in the matrix rather than assumed: install-path failures are
+  # exactly the kind that are platform-specific, and "it worked on my Linux
+  # box" is how they ship.
+  first-run:
+    name: first run (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The command the documentation tells people to run, against a prefix
+      # that is not the developer's — so a stale `~/.cargo/bin/mecha` cannot
+      # answer for the code in this commit. `CLAUDE.md`'s rule: ask the
+      # artifact what it can do, and be sure which artifact is answering.
+      - name: Install it the way a new user does
+        run: cargo install --path mecha-cli --locked --root "${{ runner.temp }}/prefix"
+
+      - name: Put the installed binary on PATH
+        run: echo "${{ runner.temp }}/prefix/bin" >> "$GITHUB_PATH"
+
+      - name: It is the binary we just built
+        run: |
+          set -eux
+          command -v mecha
+          mecha --version
+
+      # Everything below runs against an empty home, which is the state that
+      # matters and the one no other job is ever in.
+      - name: A fresh install says what it needs
+        env:
+          MECHA_HOME: ${{ runner.temp }}/fresh/home
+        run: |
+          set -eux
+          mkdir -p "$MECHA_HOME" "${{ runner.temp }}/fresh/work"
+          cd "${{ runner.temp }}/fresh/work"
+
+          # `env -u` rather than trusting the runner to have no key: whether
+          # `provider-credential` appears at all depends on the environment,
+          # so an assertion about it has to control the environment instead
+          # of hoping. A fork that exports a key would otherwise see this
+          # step pass for a reason that has nothing to do with the code.
+          NOKEY="env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY"
+
+          # Outstanding work exits non-zero, so this is a check a person can
+          # put in their own CI. `!` rather than `|| true`: an unexpected
+          # *success* has to fail this step too.
+          ! $NOKEY mecha setup --json > steps.json
+          jq -e 'type == "array" and length > 0' steps.json
+
+          # Every step a new install is entitled to be told about, by id. A
+          # renamed id is a breaking change for anybody scripting this.
+          for id in mail docs slack graph charter; do
+            jq -e --arg id "$id" 'any(.[]; .id == $id)' steps.json
+          done
+
+          # With no credential anywhere, the step that blocks every other one
+          # is present and is named *first* — a new user wiring up mail
+          # against a provider that cannot answer is an hour on the wrong end.
+          jq -e '.[0].id == "provider-credential"' steps.json
+
+          # The charter is offered, and the offer hands over an editor rather
+          # than composing anything.
+          jq -e 'any(.[]; .id == "charter" and .remedy.argv == ["mecha","charter","edit"])' steps.json
+
+          # And each one says something about itself and carries a status.
+          jq -e 'all(.[]; (.title | length > 0) and (.detail | length > 0)
+                          and (.status | IN("done","missing","wrong","unknown","declined")))' steps.json
+
+      - name: The credential-free commands work before anything is configured
+        env:
+          MECHA_HOME: ${{ runner.temp }}/fresh/home
+        run: |
+          set -eux
+          cd "${{ runner.temp }}/fresh/work"
+          mecha tools > /dev/null
+          mecha tools --json | jq -e 'type == "array" and length > 0'
+          # Absent stores are not broken ones. A wall of alarm about
+          # directories nobody has created yet is the worst possible first
+          # impression, and the easiest regression to introduce.
+          mecha doctor --json | jq -e 'type == "array" and ([.[] | select(.severity == "broken")] | length) == 0'
+          mecha config show > /dev/null
+
+      - name: A first charter is a template, and mecha writes no priority into it
+        env:
+          MECHA_HOME: ${{ runner.temp }}/fresh/home
+          # Exits 0 having changed nothing, so what lands is exactly what
+          # mecha wrote — and a code path that tried to open a real editor
+          # would hang this job rather than passing quietly.
+          VISUAL: "true"
+        run: |
+          set -eux
+          cd "${{ runner.temp }}/fresh/work"
+          mecha charter edit
+          test -f "$MECHA_HOME/charter.toml"
+          # No uncommented line: a charter mecha authored is the one thing
+          # every surface here refuses.
+          ! grep -qE '^[[:space:]]*[^#[:space:]]' "$MECHA_HOME/charter.toml"
+          mecha charter --json | jq -e '.lines | length == 0'
+
+      - name: A step you decline stops being outstanding, and can be restored
+        env:
+          MECHA_HOME: ${{ runner.temp }}/fresh/home
+        run: |
+          set -eux
+          cd "${{ runner.temp }}/fresh/work"
+          NOKEY="env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY"
+
+          # A key in the environment, because what remains outstanding then is
+          # exactly the optional half — which is the state this step is about.
+          # It reaches nothing: the default provider is not `local`, so
+          # `setup` opens no socket on this path.
+          WITHKEY="env ANTHROPIC_API_KEY=not-a-real-key"
+
+          # Answer every open question, the way a person would with `never`.
+          $WITHKEY mecha setup --json > steps.json || true
+          jq '{declined: [.[] | select(.status == "missing") | .id]}' steps.json \
+            > "$MECHA_HOME/setup-declined.json"
+
+          # An install whose every question has been answered exits 0 — which
+          # is what makes `mecha setup` usable as somebody's own health check
+          # rather than a permanently red one.
+          $WITHKEY mecha setup | tee out.txt
+          grep -q "Nothing outstanding" out.txt
+          grep -q -- "--undecline" out.txt
+
+          # But a credential is NOT declinable, even by editing the store —
+          # otherwise this feature turns a checklist that nags into one that
+          # lies. Without the key, the same declined store must still report
+          # unfinished work.
+          ! $NOKEY mecha setup > nokey.txt
+          grep -q "A provider that can answer" nokey.txt
+
+          # And the decision is reversible.
+          mecha setup --undecline all
+          ! $WITHKEY mecha setup --json > steps.json
+          jq -e 'any(.[]; .status == "missing")' steps.json
+
+      # The documentation is verified against the binary rather than against
+      # memory. A command named in the getting-started pages that does not
+      # exist is a new user's first dead end, and it is the failure this
+      # repository has shipped most often.
+      - name: Every command the getting-started docs name exists
+        run: |
+          set -eux
+          for cmd in setup doctor tools charter run chat tui config sessions trigger; do
+            mecha "$cmd" --help > /dev/null
+          done
+          mecha charter edit --help > /dev/null
+          mecha setup --help | grep -q -- --undecline
