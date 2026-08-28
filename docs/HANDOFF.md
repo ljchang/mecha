@@ -117,22 +117,35 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,788 tests**, no failures — measured 2026-08-28 on `main` at
-**d32b288**, which carries rung 8 (#99, #103, this entry) on top of rung 9
-and rung 10. Breakdown: **580** in `mecha-cli` with 1 ignored, **983** in
-`mecha-core`, 6 + 9 in its two integration suites, **133** in `mecha-mail`
-plus 1 in a mail binary, **75** in `mecha-slack`, and 1 doctest. The **20**
-added over the previous figure (1,768 at `63f88b3`) split `mecha-cli` +15
-and `mecha-core` +5 — confirmed by `git diff --stat 63f88b3..d32b288 --
-'*.rs'` touching only the six files #99 and #103 changed (`appraisal.rs`,
-`tasks.rs`, `tui/mod.rs`, `voice/mod.rs`, `serve/board.rs`, and
-`serve/chat.rs` — the last carries `WireEvent::Affect`'s own wire-shape
-test, part of the `mecha-cli` +15); the one rung 9/10 handoff PR in
-between, #104, is docs-only and moved nothing (#105 is not in between —
-it is `63f88b3` itself). Mail, Slack and the integration fixtures
-untouched.
+Expect **1,831 tests**, no failures — measured 2026-08-28 on `main` at
+**b26571f**, rung 7's closing piece (#102, the model half of step
+appraisal) merged on top of rung 8 (#99, #103). Breakdown: **582** in
+`mecha-cli` with 1 ignored, **1,024** in `mecha-core`, 6 + 9 in its two
+integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
+in `mecha-slack`, and 1 doctest. The **43** added over the previous figure
+(1,788 at `d32b288`) split `mecha-cli` +2 and `mecha-core` +41, consistent
+with #102's `agent.rs`/`step.rs`/`tool/todo.rs` — this entry's own prose
+already describes step escalation as shipped (the paragraph beginning
+"Step escalation is different in kind," below), so the count it opens with
+has to be the tree that includes it, not the tree this entry's own PRs
+alone produced.
 
-The previous figure was **1,768**, measured 2026-08-28 on `main` at
+The previous figure was **1,788**, measured 2026-08-28 on `main` at
+**d32b288**, which carries rung 8 (#99, #103) on top of rung 9 and rung
+10 — the tree *before* rung 7's closing piece. Breakdown: **580** in
+`mecha-cli` with 1 ignored, **983** in `mecha-core`, 6 + 9 in its two
+integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
+in `mecha-slack`, and 1 doctest. The **20** added over the figure before it
+(1,768 at `63f88b3`) split `mecha-cli` +15 and `mecha-core` +5 — confirmed
+by `git diff --stat 63f88b3..d32b288 -- '*.rs'` touching only the six files
+#99 and #103 changed (`appraisal.rs`, `tasks.rs`, `tui/mod.rs`,
+`voice/mod.rs`, `serve/board.rs`, and `serve/chat.rs` — the last carries
+`WireEvent::Affect`'s own wire-shape test, part of the `mecha-cli` +15);
+the one rung 9/10 handoff PR in between, #104, is docs-only and moved
+nothing (#105 is not in between — it is `63f88b3` itself). Mail, Slack and
+the integration fixtures untouched by either.
+
+The figure before that was **1,768**, measured 2026-08-28 on `main` at
 **63f88b3**, which carries both rung 9 and rung 10 (#100, `e124f8a`, plus
 its own handoff pass #105) — the tree *before* rung 8. Say which tree,
 since a count taken between the two would have read differently and did,
@@ -225,16 +238,16 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 983 |
-| `mecha-cli` unit | 580 (1 ignored) |
+| `mecha-core` unit | 1,024 |
+| `mecha-cli` unit | 582 (1 ignored) |
 | `mecha-mail` unit | 133 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
 
-Measured 2026-08-28 at `d32b288`, same tree as the first prose figure above
-(1,788, post-rung-8). The table had drifted two counts behind that prose
-once already, which is the failure mode of stating one fact twice — read
+Measured 2026-08-28 at `b26571f`, same tree as the first prose figure above
+(1,831, post-rung-7-and-8). The table had drifted two counts behind that
+prose once already, which is the failure mode of stating one fact twice — read
 the prose if they ever disagree again, and fix the table.
 
 The integration tests need docker (with `debian:stable-slim` and `python:3-slim`
