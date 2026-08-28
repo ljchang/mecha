@@ -203,13 +203,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Err(e) => {
                 eprintln!("error: {e:#}");
                 // Drop the turn so a failed request doesn't leave a dangling
-                // user message that the next request would resend. Restored
-                // from the snapshot rather than truncated: a mid-run
-                // compaction leaves the list shorter than it started, and
-                // truncating *that* keeps the dangling message this exists
-                // to drop.
-                convo.messages = recorded.clone();
-                convo.messages.pop();
+                // user message that the next request would resend — see
+                // `Conversation::roll_back_failed_turn` for why restore-then-
+                // pop, and why a bare pop was wrong twice over.
+                convo.roll_back_failed_turn(recorded.clone());
                 // And the transcript must agree, or the failure survives a
                 // resume (serve/chat's review finding, which holds here
                 // verbatim): the triggering user message was appended at

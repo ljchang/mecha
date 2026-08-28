@@ -1225,7 +1225,7 @@ fn begin_turn(
             // than in the hand-back below so there is one rolled-back state
             // and both readers of it (the file, the next request) agree.
             Err(_) => {
-                roll_back_failed_turn(&mut conversation, before.clone());
+                conversation.roll_back_failed_turn(before.clone());
                 let _ = session.record_run(&before, &conversation);
             }
         }
@@ -1609,22 +1609,6 @@ pub async fn set_mode(
     Json(serde_json::json!({ "ok": true })).into_response()
 }
 
-/// Roll a failed run back to the conversation the request found, minus the
-/// user message that triggered it — the chat command's rule, spelled the way
-/// both siblings spell it (`mecha chat`, the TUI's `finish_run`): **restore
-/// the snapshot, then pop**. `Agent::run_in` mutates the list in place and
-/// does not roll back on `Err`, so a bare pop is wrong twice over: after a
-/// failure mid-tool-turn the tail is a tool-result message, and popping it
-/// orphans the assistant's `tool_use` — every later request on the session
-/// 400s ("a tool result must exist for every `tool_use` id"), each failure
-/// then eating the user's newly typed message; and after a mid-run compaction
-/// the list is *shorter* than the snapshot, so the pop keeps the very message
-/// it exists to drop.
-fn roll_back_failed_turn(conversation: &mut Conversation, before: Vec<Message>) {
-    conversation.messages = before;
-    conversation.messages.pop();
-}
-
 /// The first user line of a transcript, for a history listing — the thing
 /// a person recognises a conversation by. Bounded: a transcript can be
 /// megabytes, and a listing that reads whole files is a listing nobody
@@ -1985,7 +1969,7 @@ mod rollback_tests {
 
         // The error arm's sequence, exactly as begin_turn's completion task
         // runs it.
-        roll_back_failed_turn(&mut conversation, before.clone());
+        conversation.roll_back_failed_turn(before.clone());
         session.record_run(&before, &conversation).unwrap();
 
         let (_, resumed) = mecha_core::session::Session::load(&session.path).unwrap();
@@ -2028,7 +2012,7 @@ mod rollback_tests {
             }],
         });
 
-        roll_back_failed_turn(&mut conversation, before);
+        conversation.roll_back_failed_turn(before);
 
         assert!(
             !conversation
@@ -2061,7 +2045,7 @@ mod rollback_tests {
         let mut conversation =
             Conversation::from(vec![Message::user("[summary of the run so far]")]);
 
-        roll_back_failed_turn(&mut conversation, before);
+        conversation.roll_back_failed_turn(before);
 
         assert!(
             !conversation

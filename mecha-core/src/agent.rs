@@ -566,6 +566,33 @@ impl Conversation {
         self.messages.push(message);
     }
 
+    /// Roll a failed run back to the messages the request found, minus the
+    /// user message that triggered it — **restore the snapshot, then pop**,
+    /// in that order. `run_in` mutates the list in place and does not roll
+    /// back on `Err`, so a bare pop is wrong twice over: after a failure
+    /// mid-tool-turn the tail is a tool-result message, and popping it
+    /// orphans the assistant's `tool_use` — every later request on the
+    /// session 400s ("a tool result must exist for every `tool_use` id"),
+    /// each failure then eating the user's newly typed message; and after a
+    /// mid-run compaction the list is *shorter* than the snapshot, so the
+    /// pop keeps the very message it exists to drop.
+    ///
+    /// Here rather than in any one front-end because four of them need it
+    /// (the chat REPL, the TUI, the web surface, the voice facade), and the
+    /// fourth was found missing the fix precisely because the first three
+    /// each carried their own copy. Deliberately touches `messages` and
+    /// nothing else: taint stays — a failed turn that read a hostile page
+    /// still read it.
+    ///
+    /// A caller that writes a transcript must also record the rolled-back
+    /// state (`Session::record_run` with the pre-run snapshot expresses it
+    /// as a rewrite), or the failure survives a resume — the file otherwise
+    /// keeps the user turn memory just dropped.
+    pub fn roll_back_failed_turn(&mut self, before: Vec<Message>) {
+        self.messages = before;
+        self.messages.pop();
+    }
+
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }

@@ -1318,10 +1318,20 @@ async fn completion(
             tracing::error!("voice run failed: {e}");
             // The chat REPL's rule: drop the turn so a failed request does
             // not leave a dangling user message the next request would
-            // collide with. Restored from the snapshot, not truncated — a
-            // mid-run compaction leaves the list shorter than it started.
-            slot.convo.messages = recorded.clone();
-            slot.convo.messages.pop();
+            // collide with — `Conversation::roll_back_failed_turn` carries
+            // the reasoning. This was the fourth failed-turn arm, found on
+            // review missing what the other three had each grown their own
+            // copy of — and the worst of the four to miss: the slot survives
+            // in `shared.slots`, so the *next successful* turn's record_run
+            // diffed memory against memory and appended its tail on top of
+            // the user turn the file still held, permanently writing two
+            // consecutive user messages that 400 anything resuming the id.
+            // Recording the rolled-back state (a rewrite) is what keeps the
+            // file agreeing with memory; taint is kept either way — a failed
+            // turn that read a hostile page still read it.
+            slot.convo.roll_back_failed_turn(recorded.clone());
+            let _ = slot.session.record_run(&recorded, &slot.convo);
+            let _ = slot.session.append(&Record::Taint(slot.convo.taint));
         }
     }
 
