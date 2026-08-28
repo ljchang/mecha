@@ -2887,6 +2887,79 @@ this diff been addressed*. Neither failure was expensive to fix once
 noticed; both were invisible from the outside for as long as nobody looked
 past the PR's own final "looks good."
 
+**2026-08-28 — rung 10: the charter, and a guilt sensor that shipped
+deliberately unconsumed.** PR #100. Landed ahead of rung 8 in §14's build
+order on purpose — argued from a measurement, same as the probe reordering
+above: both pieces of this rung depend on neither the probe nor the affect
+label, so there was no reason to wait on either.
+
+The charter (`mecha-core/src/charter.rs`, `mecha-cli/src/commands/charter.rs`)
+shipped as designed in §11: `~/.mecha/charter.toml`, an ordered list of
+standing priorities the owner authors and edits by hand, ranked by file order
+rather than a weight, with no config field, no project layer, and no write
+path anywhere a model or this command could use — `mecha charter` is
+read-only. Rendered straight into the system prompt (no progressive
+disclosure, unlike skills) via `setup.rs::prepare_tools`. `--no-charter`
+matches the skills/rules opt-out and `mecha eval` forces it off with
+everything else a scorecard must not depend on.
+
+Anticipated guilt (§7.4) shipped as a **recorded sensor only** —
+`crate::guilt::anticipated_guilt`, folding the age of the oldest commitment
+recorded in the outbox/questions/front-door stores, how many are waiting, and
+the run's own peak context pressure into `Homeostat::anticipated_guilt`.
+**Nothing consumes it.** Confirmed before building it that nothing today
+wires `Backlog`/"owner-attention debt" to the model at all, so there was no
+existing seam to narrow — inventing one under time pressure is exactly the
+scope §7.2 warns a guilt mechanism must not acquire. Same precedent as the
+homeostat (rung 3) and boredom (rung 6): ship the sensor, let a corpus exist,
+decide the consumer deliberately later. Also folded the homeostat into
+`diagnose::Evidence` (mean context pressure, mean anticipated guilt, both
+`None` over unsensed rows, never zero) so the nightly diagnostician's brief
+carries machine conditions beside outcome counters.
+
+**The automated PR review earned its keep here, five rounds deep, and the
+last round found the most important bug of the five.** Summarized rather
+than itemized, since the PR's own review thread carries the full record:
+
+- A partial backlog read (one store unreadable, others empty) collapsed into
+  `Some(0.0)` — indistinguishable from "genuinely nothing owed" — and a
+  counted-but-undated commitment scored as fresh instead of unknown. Fixed by
+  requiring all three stores readable and by making pressure itself unknown
+  rather than a measured zero when a provider declares no `context_window`
+  (the same floor `Homeostat`'s own doc already warns against, reintroduced
+  one struct over).
+- The character budget crossing `CHARTER_CHAR_BUDGET` refused to load the
+  whole document — inverting the learned-rules precedent
+  (`over_budget_domains` warns and still loads) and meaning an owner's
+  eleventh priority line would silently un-charter every future run. Split
+  into a hard validity check (duplicate/empty id, bad TOML — still refused)
+  and a separate `over_budget()` warning that `setup.rs`, `mecha charter`,
+  and a new `doctor` check all surface without dropping the document.
+  `RawCharter`/`CharterLine` also gained `deny_unknown_fields`, since no
+  harness but this one authors a `charter.toml` and a typo'd table name
+  sitting beside a correct one used to vanish silently rather than error.
+- **The one that mattered most**: `Homeostat::finish` fed the sensor the
+  *post-run* backlog, so a trigger that staged three replies overnight —
+  doing exactly its job — hit the count term's saturation point and recorded
+  `anticipated_guilt: 1.0`, indistinguishable from three replies it found
+  waiting and ignored. And separately, the one-day age-saturation horizon was
+  shorter than the real distribution these stores produce: `questions.rs`
+  parks answers overnight *by design* ("nobody answers until morning" is the
+  mechanism working), and `backlog.rs`'s own canonical fixture ages a wait
+  8–9 days. Because the three terms combine as a logical OR, either gap alone
+  was enough to saturate the whole reading to a constant `1.0` on any real
+  install — the same degenerate-label shape rung 7's own measurement found
+  the hard way, just found before a corpus existed instead of after. Fixed by
+  reading the pre-run snapshot instead of a fresh post-run one, and by
+  widening the horizon to a week.
+
+The general lesson, on top of the one #86–#94 already recorded above: a
+review that keeps finding real bugs on the fifth consecutive pass is not
+diminishing returns, it is the review doing its job — the temptation to treat
+round four's "looks clean" as a stopping condition is exactly backwards when
+round five is the one that finds the bug that would have made the entire
+shipped sensor a useless constant.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
