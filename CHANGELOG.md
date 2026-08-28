@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assertion written against the documented contract is ignored entirely by
   `set -e`, so it neither failed nor passed.
 
+- **Five test fixtures named their scratch directory from a timestamp, and
+  two could collide.** `format!("{pid}-{nanos}")` assumes the clock is
+  fine-grained enough that two parallel tests never see the same value —
+  measured on this hardware, 11 of 20,000 adjacent `as_nanos()` calls are
+  identical, and on macOS it is coarser still. Two tests then share a
+  directory and the first to finish `remove_dir_all`s the other's store out
+  from under it, surfacing as a bare `No such file or directory` in whichever
+  lost. Found on the macOS CI arm, where it is a race rather than a
+  certainty — it passed twice before it failed. All five now use a
+  process-unique counter, which cannot collide by construction.
+
 - **A model name from a server nobody named can no longer produce a config
   that will not parse.** `verified_settings` rendered the alias with Rust's
   `Debug` escaping, which is not TOML's — a control character becomes
