@@ -1431,11 +1431,9 @@ fn finish_run(
         Err(e) => {
             app.transcript.push(Entry::Error(format!("error: {e:#}")));
             // Drop the dangling user turn so the next request doesn't resend
-            // it. Restored from the snapshot rather than truncated: a mid-run
-            // compaction leaves the list shorter than it started, and
-            // truncating that keeps the very message this exists to drop.
-            app.convo.messages = persisted.clone();
-            app.convo.messages.pop();
+            // it — see `Conversation::roll_back_failed_turn` for why
+            // restore-then-pop, and why a bare pop was wrong twice over.
+            app.convo.roll_back_failed_turn(persisted.clone());
             // And the transcript must agree, or the failure survives a
             // resume (serve/chat's review finding, holding here verbatim):
             // the opening user message was written at submit, so without
