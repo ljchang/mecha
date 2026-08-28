@@ -117,17 +117,19 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,733 tests**, no failures — measured 2026-08-28 on `main` at
-**be9e32b**, the merge commit of PR #101, the last of three rung-9 PRs (#97,
-#98, #101) to land after the appraisal arc closed. Breakdown: **565** in
-`mecha-cli` with 1 ignored, **943** in `mecha-core`, 6 + 9 in its two
-integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75** in
-`mecha-slack`, and 1 doctest. The **36** added over the previous figure
-(1,697 at `a0638c8`) split `mecha-cli` +7 and `mecha-core` +29, with every
-other suite unchanged — consistent with rung 9's episode tagging and
-surprise detection (`appraisal::for_session`, `Distiller`'s new `Surprise`
-extraction) plus #101's four rounds of terminal-escaping and outbox-read
-hardening, none of which touch mail, Slack or the integration fixtures.
+Expect **1,768 tests**, no failures — measured 2026-08-28 on `main` at
+**63f88b3**, which carries both rung 9 (this entry) and rung 10 (#100,
+`e124f8a`, plus its own handoff pass #105) — say which tree, since a count
+taken between the two would have read differently and did, one paragraph
+below. Breakdown: **565** in `mecha-cli` with 1 ignored, **978** in
+`mecha-core`, 6 + 9 in its two integration suites, **133** in `mecha-mail`
+plus 1 in a mail binary, **75** in `mecha-slack`, and 1 doctest. The **71**
+added over the previous figure (1,697 at `a0638c8`) split `mecha-cli` +7
+and `mecha-core` +29 for rung 9 (#97/#98/#101 — consistent with
+`appraisal::for_session`, `Distiller`'s new `Surprise` extraction, and
+#101's four rounds of terminal-escaping and outbox-read hardening) plus
+`mecha-core` +35 for rung 10's `charter.rs`/`guilt.rs` (#100), with mail,
+Slack and the integration fixtures untouched by either — 7 + 29 + 35 = 71.
 
 The previous figure was **1,697**, measured 2026-08-27 at **a0638c8**, the
 merge commit of PR #92, the last of the nine appraisal-arc PRs (#86, #87,
@@ -207,14 +209,14 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 943 |
+| `mecha-core` unit | 978 |
 | `mecha-cli` unit | 565 (1 ignored) |
 | `mecha-mail` unit | 133 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
 
-Measured 2026-08-28 at `be9e32b`, same tree as the prose above. The table
+Measured 2026-08-28 at `63f88b3`, same tree as the prose above. The table
 had drifted two counts behind that prose once already, which is the failure
 mode of stating one fact twice — read the prose if they ever disagree again,
 and fix the table.
@@ -1678,9 +1680,9 @@ corpus says it earns one.
   reaches through the MCP tool surface) to read `meta.affect`/
   `meta.goal_errors` back and reorder pkg's review queue on them. Not
   started, and not scoped beyond `GOAL-SYSTEM-DESIGN.md` §10's own paragraph
-  naming it. Rung 8 (goal-closure appraisal) and rung 10 (the charter) are
-  open PRs from other sessions as of this writing — #99 and #100 — and their
-  content is theirs to describe, not this entry's.
+  naming it. Rung 8 (goal-closure appraisal) is an open PR from another
+  session as of this writing — #99 — and its content is theirs to describe,
+  not this entry's. (Rung 10, the charter, landed as #100; see above.)
 
 **Two things named rather than done**, recorded so they are not rediscovered
 as oversights. (The third — context pressure absent from `Homeostat` — shipped:
