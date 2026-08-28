@@ -451,7 +451,21 @@ async fn set(
         .as_deref()
         .is_some_and(|s| matches!(s, "done" | "dropped"))
     {
-        find_task_with(&prepared, task).await.ok()
+        match find_task_with(&prepared, task).await {
+            Ok(v) => Some(v),
+            // Found on review: `.ok()` used to drop this silently, and by
+            // this feature's own reasoning that is the worse of the two
+            // read failures it can have — the *outbox* read failing only
+            // costs one channel's evidence and warns loudly about it; this
+            // one loses the whole appraisal, with the same "will not be
+            // redone" stakes, and said nothing.
+            Err(e) => {
+                eprintln!(
+                    "mecha: could not appraise {task}'s closure — the board read failed: {e:#}"
+                );
+                None
+            }
+        }
     } else {
         None
     };
@@ -509,6 +523,21 @@ fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
 /// §5.4's medium-tier appraisal moment. Best-effort throughout: the task is
 /// already closed by the time this runs, so nothing here may make that read
 /// as having failed — a warning on stderr, never a `bail!`.
+///
+/// **Stderr, and known to be one-sided.** `set`'s own stdout/stderr split
+/// is correct — Slack's Done tap parses the whole of stdout as one JSON
+/// document, so nothing here may touch it — but found on review: every
+/// non-terminal caller of `set` (`tui::self_cli`, `serve::review::verb`,
+/// Slack's Done tap) discards stderr on success, reading only the failure
+/// arm's. So `describe`'s summary and every warning this function prints —
+/// including "will not be redone," about a decision that genuinely never
+/// gets a second one — reach only someone who typed `mecha tasks set` into
+/// a terminal. `/tasks`' own rule is that the modal can do nothing the
+/// command line cannot; the reverse now holds too, and that is the gap.
+/// Surfacing it on the other three surfaces means deciding what "a warning
+/// on an otherwise-successful child process" means to each of them, which
+/// is a real design question rather than a line fix — named here so it is
+/// not mistaken for coverage this rung already has.
 ///
 /// **Not atomic, and known rather than fixed.** Two closures of the same
 /// task landing together — a Slack tap and a TUI keypress within the same
@@ -740,14 +769,21 @@ async fn stage_follow_up(
         .collect();
     let channels: Vec<String> = channels.into_iter().collect();
     let mut args = json!({
+        // `{:?}`, not `Affect::wire()`, and deliberately: this is prose for
+        // a human to read on the board, not a wire value another surface
+        // parses, so `Affect`'s `Debug` form ("Anger") reads better here
+        // than `wire()`'s snake_case ("anger") would. `wire()` exists for
+        // the case that bit this PR once already — a value crossing to a
+        // *different* reader — which this string never does.
         "name": format!(
             "Revisit {task_id} — mecha's own closure appraisal came back {:?} ({})",
             a.label,
             channels.join(", ")
         ),
         // `"session"` is a documented member of the closed `captured_from`
-        // kind set with no reader yet (CLAUDE.md) — honest provenance even
-        // though nothing follows it back today.
+        // kind set, and — corrected after a review checked the claim
+        // against the tree — it has a reader: `mecha tasks source`'s
+        // `"session"` arm routes straight to `sessions show`.
         "captured_from": {
             "kind": "session",
             "id": a.session_id,

@@ -322,6 +322,14 @@
     streaming = '';
     usage = null;
     taint = null;
+    // Same rule as everywhere else this readout guards against staleness
+    // (the TUI's `/clear`, voice's `Hosted::Unknown` fall-through): the
+    // tint describes the *previous* conversation's last run, and nothing
+    // else here would clear it — `/api/chat/{key}` carries no affect
+    // field, and the new key's own SSE subscription emits `Affect` only
+    // once a run there finishes.
+    affect = null;
+    sawAffectThisRun = false;
   }
 
   // The drawer: every conversation this process holds, and the recorded
@@ -1076,16 +1084,20 @@
         <button
           class="logo"
           class:tappable={vState.name === 'idle'}
+          class:notable={affect}
           disabled={vState.name !== 'idle'}
           onclick={reconnectVoice}
           aria-label={vState.name === 'idle' ? 'reconnect the call' : `mecha ${vState.label}`}
         >
           <svg viewBox="0 0 63 54" width="112" height="96" aria-hidden="true">
-            <!-- §6.2's readout: the logo's tint. `affect` is `null` on the
-                 overwhelming common (neutral) case, which is what leaves
-                 the ordinary colour alone — never a word, never a shape,
-                 just which colour reads. -->
-            <g fill="var(--accent-700)" style:fill={affect ? 'var(--hazard)' : null}>
+            <!-- §6.2's readout. `affect` is `null` on the overwhelming
+                 common (neutral) case, which is what leaves the mark alone
+                 — never a word, never a fill change. brand.md: "hazard
+                 amber never fills an area — lines, ticks and single
+                 characters only," so the tint is a thin outline on the
+                 button (see `.logo.notable` below), not the mark's own
+                 solid fill, which an earlier version of this got wrong. -->
+            <g fill="var(--accent-700)">
               <path d="M0 0h24l7.5 8.5L39 0h24v16H0z" />
               <path d="M0 20h14v15H0zM49 20h14v15H49zM0 39h14v15H0zM49 39h14v15H49z" />
               <path d="M14 39v15h13.24zM49 39v15H35.76z" />
@@ -1885,6 +1897,15 @@
   }
   .logo.tappable {
     cursor: pointer;
+  }
+  /* §6.2's readout. A line, never a fill — brand.md's own rule for hazard
+     amber, and the reason this is an outline around the mark rather than
+     the mark's own colour. `outline-offset` keeps it a ring around the
+     button, not touching the SVG's paths at all. */
+  .logo.notable {
+    outline: 2px solid var(--hazard);
+    outline-offset: 4px;
+    border-radius: var(--radius);
   }
   .voice-overlay {
     position: absolute;
