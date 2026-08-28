@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha distill` now notices when the world disagreed with the graph.**
+  The same quarantined pass that already finds corrections also reports
+  SURPRISES: moments where something the agent said, sourced from graph
+  memory, was contradicted by something else in the same session — "I said
+  the 14th because the graph says so; the email says the 9th." Printed for
+  a human to act on, never auto-chased: `mecha gossip --entity <about>` is
+  the human's call, not the session's own. Gated on the timeline's trust
+  like a correction, since it is the model's own free-text reading of
+  transcript prose. Rung 9's second piece (`GOAL-SYSTEM-DESIGN.md` §10.1) —
+  review-queue salience is still unbuilt, and needs a different repository.
+
 - **An episode pushed to the knowledge graph now carries how the session
   went.** `mecha distill` stamps each episode's `meta` with the session's
   affect label and signed goal errors, the same record `mecha sessions
@@ -16,8 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that could drift. Unlike a correction, neither is gated on the timeline's
   trust: both are structured facts the harness computed about its own run,
   with nothing in them a model or a fetched page could have authored. Rung 9's
-  first piece (`GOAL-SYSTEM-DESIGN.md` §10) — review-queue salience and
-  gossip seeding from the same tags are not built yet.
+  first piece (`GOAL-SYSTEM-DESIGN.md` §10).
 
 - **A finished plan step is checked against what the run actually did.** A
   board task is closed by the owner, so a person is the check; a todo step is
