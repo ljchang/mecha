@@ -279,6 +279,16 @@ impl Tracked {
             .map(|i| (i.content.as_str(), i.status))
             .collect();
 
+        // `live` is computed here, before the item loop, rather than only
+        // after it (its other use, in the sweep below) — a write that both
+        // trims finished steps out of the plan *and* lands a new one in the
+        // same call needs the pruned baseline for that landing's own
+        // comparison, not just for steps *after* this write. Computing it
+        // once and reading it twice also means the sweep below can't drift
+        // from what the snapshot used.
+        let live: std::collections::HashSet<&str> =
+            next.items.iter().map(|i| i.content.as_str()).collect();
+
         // Snapshotted once, before this batch's own completions can reach
         // it: a model that marks two steps `completed` in one write (the
         // tool's own docstring discourages this — "as soon as it is done
@@ -287,8 +297,17 @@ impl Tracked {
         // contaminated by the *first* item's own call count, pushed onto
         // `self.completed` earlier in this same loop. Every candidate this
         // batch produces is judged against the plan's history as it stood
-        // before the batch, never against a sibling landing beside it.
-        let completed_before_this_batch = self.completed.clone();
+        // before the batch, never against a sibling landing beside it —
+        // and filtered by `live` for the same reason the sweep below prunes
+        // it: a step this same write is dropping from the plan is not "the
+        // plan's other completed steps" either, even though the retain
+        // below has not run yet.
+        let completed_before_this_batch: Vec<(String, u32)> = self
+            .completed
+            .iter()
+            .filter(|(k, _)| live.contains(k.as_str()))
+            .cloned()
+            .collect();
 
         let mut lines = Vec::new();
         for item in &next.items {
@@ -390,9 +409,8 @@ impl Tracked {
         // from a plan that no longer exists as the mean a new plan's steps
         // are judged against. Bounding `COMPLETED_HISTORY_CAP` protects
         // against unbounded growth; it does not scope the history to the
-        // plan that is live now.
-        let live: std::collections::HashSet<&str> =
-            next.items.iter().map(|i| i.content.as_str()).collect();
+        // plan that is live now. `live` itself is the same set the snapshot
+        // above filtered by — computed once, at the top of this call.
         self.started.retain(|k, _| live.contains(k.as_str()));
         self.flagged.retain(|k| live.contains(k.as_str()));
         self.completed.retain(|(k, _)| live.contains(k.as_str()));
@@ -1821,6 +1839,51 @@ mod tests {
         assert!(
             slot.lock().unwrap().is_none(),
             "a rewritten plan must not escalate against a mean from steps it no longer holds"
+        );
+    }
+
+    /// The review finding one step further than the test above: that one
+    /// puts the rewrite (starting "a huge step" with no small steps in the
+    /// array) and the *completion* in two separate writes, so the first
+    /// write's own sweep already prunes `self.completed` before the second
+    /// write's snapshot is even taken — the bug never gets a chance to
+    /// appear. Here the rewrite and the completion land in the *same*
+    /// write: "huge step" is started with the small steps still present
+    /// (an ordinary write, not a rewrite), then completed in a write whose
+    /// item array holds only itself. Without filtering the snapshot by
+    /// `live`, that completion would still see the stale two-step mean the
+    /// sweep has not pruned yet.
+    #[tokio::test]
+    async fn a_rewrite_and_a_completion_in_the_same_write_still_prunes_the_baseline() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+        for (i, n) in [2u32, 3u32].into_iter().enumerate() {
+            let step = format!("small step {i}");
+            items.push(json!({"content": step, "status": "in_progress"}));
+            let (start_ctx, _) = escalation_ctx(1, 0, None, 0);
+            write(&tool, &start_ctx, Value::Array(items.clone())).await;
+            items.last_mut().unwrap()["status"] = json!("completed");
+            let (done_ctx, _) = escalation_ctx(1, n, Some(Outcome::Ok), 0);
+            write(&tool, &done_ctx, Value::Array(items.clone())).await;
+        }
+        // An ordinary start — the small steps ride along, so this write is
+        // not itself a rewrite and its own sweep prunes nothing.
+        items.push(json!({"content": "huge step", "status": "in_progress"}));
+        let (start_ctx, _) = escalation_ctx(1, 5, None, 0);
+        write(&tool, &start_ctx, Value::Array(items.clone())).await;
+        // The rewrite and the completion together: this write's item array
+        // holds only "huge step".
+        let (done_ctx, slot) = escalation_ctx(1, 40, Some(Outcome::Ok), 0);
+        write(
+            &tool,
+            &done_ctx,
+            json!([{"content": "huge step", "status": "completed"}]),
+        )
+        .await;
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "the same write that drops the small steps from the plan must not let \
+             huge step's own completion see them as its baseline"
         );
     }
 
