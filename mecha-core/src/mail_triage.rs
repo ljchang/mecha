@@ -2838,10 +2838,10 @@ fn parse_verdict(text: &str) -> Result<Verdict> {
         anyhow::bail!("the classifier returned no JSON object");
     }
     let mut v: Verdict = serde_json::from_str(&text[start..=end]).with_context(|| {
-        format!(
-            "parsing the verdict: {}",
-            &text[start..=end.min(start + 400)]
-        )
+        // A raw byte cutoff panics the instant it lands inside a multi-byte
+        // character, which a mail subject or body can supply at any offset.
+        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400));
+        format!("parsing the verdict: {}", &text[start..cut])
     })?;
 
     v.tags.retain(|t| TAGS.contains(&t.as_str()));

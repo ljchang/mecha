@@ -327,38 +327,43 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
     // The most negative error decides, exactly as when there is no
     // repetition below — computed first so the repetition check can only
     // ever upgrade this result, never bury it. See that check for why the
-    // order matters.
-    let reduced = negatives
+    // order matters. Carries the channel along only for the appraiser-scoped
+    // correction just below; `label_of`'s reduce itself never reads it.
+    let (reduced, reduced_channel) = negatives
         .iter()
-        .map(|e| (e.sign, label_of(e)))
+        .map(|e| (e.sign, label_of(e), e.channel))
         .reduce(|a, b| match a.0.total_cmp(&b.0) {
             std::cmp::Ordering::Less => a,
             std::cmp::Ordering::Greater => b,
             std::cmp::Ordering::Equal if says_more(b.1) > says_more(a.1) => b,
             std::cmp::Ordering::Equal => a,
         })
-        .map(|(_, label)| label)
-        .unwrap_or(Affect::Neutral);
+        .map(|(_, label, channel)| (label, channel))
+        .unwrap_or((Affect::Neutral, Channel::Counter));
 
-    // **`Neutral` must never mask a label that names something — not only on
-    // an exact magnitude tie, which is all the reduce above guards.** A
-    // larger-magnitude error can still reduce to `Neutral` (any `Own`/`Owner`
-    // error whose `visible`/`controllable` are unresolved does), and until
-    // this correction it would out-rank a smaller-magnitude error that
-    // `label_of` could actually name — burying `Anger`, say, under a bigger
-    // number that says nothing. `says_more`'s own stated principle ("a label
-    // that names nothing must never mask one that names something") already
-    // covers this in spirit; the reduce above just never applied it outside a
-    // tie. The failure mode was latent — `ended_on_failed_call` at a fixed
-    // `-1.0` can already out-rank a `-0.5` `Anger` — and became reachable in
-    // practice once a channel could emit an arbitrary large-magnitude
-    // `Neutral` by a model's free choice rather than only a deterministic
-    // counter (the quarantined appraiser, §5.1). Scanning every negative's
-    // own label rather than trusting `reduced` to have found the best one is
-    // deliberate: the magnitude-first reduce above is right for choosing
-    // *among informative labels*, and wrong only when its answer is the one
-    // label that names nothing.
-    let reduced = if reduced == Affect::Neutral {
+    // **A large-magnitude `Neutral` from the quarantined appraiser must not
+    // bury a smaller error that names something.** `apply_appraiser` starts
+    // `visible`/`controllable` conservative, so a `self`/`owner` verdict
+    // reduces to `Neutral` under `label_of` whatever magnitude the model
+    // picked — and the magnitude-first reduce above would let that outrank a
+    // smaller, already-informative error (an `Anger` from a ceiling, say)
+    // purely on size. `says_more`'s own stated principle ("a label that names
+    // nothing must never mask one that names something") already covers this
+    // in spirit; the reduce above only ever applied it within an exact tie.
+    //
+    // **Deliberately scoped to `Channel::Appraisal`, not every channel.** The
+    // identical shape is reachable today from deterministic channels alone
+    // (`ended_on_failed_call` at a fixed `-1.0` can already outrank a `-0.5`
+    // `Anger`), but that is `of_session`'s free readout — the number
+    // `GOAL-SYSTEM-DESIGN.md`'s 120-session measurement and `HANDOFF.md`'s
+    // "today affect is a constant" are stated against — and a general fix
+    // changes it without either document saying so. The appraiser is what
+    // makes an arbitrarily large label-less `Neutral` a *model's free choice*
+    // on any session rather than one specific counter; narrowing the
+    // correction to the channel that introduces that freedom is what keeps
+    // the free readout's own numbers reproducible while still closing the
+    // hole this channel opened.
+    let reduced = if reduced == Affect::Neutral && reduced_channel == Channel::Appraisal {
         negatives
             .iter()
             .map(|e| label_of(e))
@@ -915,21 +920,6 @@ pub struct AppraiserVerdict {
     pub reasoning: Option<String>,
 }
 
-/// The largest byte index `<= max` that lands on a char boundary of `s`.
-///
-/// `s[..n]` for a plain byte cutoff panics the instant the cut lands inside a
-/// multi-byte character — an em-dash or a curly quote is all it takes in a
-/// reply over 400 bytes — and that is a panic in the *error path* of a pass
-/// whose own next step is running at scale. Same idiom as `outbox::clip`,
-/// duplicated rather than shared: this is a one-line guard, and a shared
-/// utility is a larger change than the bug it would fix.
-fn char_boundary_at_or_before(s: &str, max: usize) -> usize {
-    (0..=max.min(s.len()))
-        .rev()
-        .find(|&i| s.is_char_boundary(i))
-        .unwrap_or(0)
-}
-
 /// Parse what the appraiser returned.
 ///
 /// The bracket-matching leniency is `frontdoor::parse_extraction`'s: models
@@ -955,7 +945,7 @@ pub fn parse_appraiser_verdict(text: &str) -> Result<AppraiserVerdict> {
         agency: Option<String>,
     }
     let wire: Wire = serde_json::from_str(&text[start..=end]).with_context(|| {
-        let cut = char_boundary_at_or_before(text, end.min(start + 400));
+        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400));
         format!("parsing the appraiser's verdict: {}", &text[start..cut])
     })?;
 
@@ -1846,6 +1836,29 @@ mod tests {
             a.label,
             Affect::Anger,
             "a bigger but label-less error must not mask a smaller one that names something"
+        );
+    }
+
+    /// The correction above is scoped to `Channel::Appraisal` on purpose:
+    /// the identical shape from deterministic channels alone (no appraiser
+    /// involved) is the free readout's own pre-existing behaviour, and the
+    /// 120-session measurement recorded in `GOAL-SYSTEM-DESIGN.md` was taken
+    /// against it. Widening the fix would move that number silently.
+    #[test]
+    fn the_same_shape_from_deterministic_channels_alone_is_unchanged() {
+        let ceiling = GoalError {
+            cite: Cite::Counter("stop_cause".into()),
+            ..err(-0.5, Agency::World)
+        };
+        let ended_on_failed_call = GoalError {
+            cite: Cite::Counter("ended_on_failed_call".into()),
+            ..err(-1.0, Agency::Own)
+        };
+        assert_eq!(
+            affect_of(&appraisal(vec![ceiling, ended_on_failed_call])),
+            Affect::Neutral,
+            "no Channel::Appraisal error is present, so the free readout's \
+             pre-existing reduce must decide exactly as it always has"
         );
     }
 
