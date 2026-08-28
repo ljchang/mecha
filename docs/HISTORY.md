@@ -3066,6 +3066,61 @@ round four's "looks clean" as a stopping condition is exactly backwards when
 round five is the one that finds the bug that would have made the entire
 shipped sensor a useless constant.
 
+**2026-08-28 — rung 7 closes: the model half of step appraisal.** PR #102.
+`docs/GOAL-SYSTEM-DESIGN.md` §5.5's escalation — the two comparison signals
+rung 6 left to a model rather than a threshold (a landed step's span a clear
+outlier against the plan's other completed steps; a step whose own words
+claim verification with nothing verify-shaped in its span) — now runs inside
+`agent.rs`'s own loop rather than as an offline CLI pass, since a step's plan
+action has to reach the *same* run before it wastes more turns on a bad
+decomposition. `ToolCtx::step_escalation` is `compact_requested`'s exact
+shape (a tool asks, the loop acts, presence is the enablement); `tool/todo.rs`
+writes a candidate into it, `Agent::escalate_step` settles it with one
+quarantined call routed through the same cancellable `self.complete()`
+`compact()` already uses, and the verdict folds into the turn as a fully
+templated nudge — the model's own free-text reasoning about it never reaches
+the conversation or the learning miner. Off by default (`[agent]
+step_escalation`, `--no-step-escalation`, forced off under `mecha eval`),
+since the pre-filter's thresholds are argued, not measured; `RunOutcome`/
+`RunStats` gain `step_escalations_attempted`/`step_escalations_revised` so
+that measurement can eventually be taken from the store, on `boredom_notices`'
+own precedent.
+
+**Fourteen real review rounds, the deepest single-PR cycle recorded here so
+far — summarized, not itemized, since the PR's own thread carries the full
+record.** The shape worth remembering is that the findings clustered in two
+places, both non-obvious the first time: the quarantined call's own
+cancellation/budget/effort/logging discipline (it originally bypassed
+`self.complete` entirely, missed the loop's `stopping` check, left `effort`
+unset, and logged its own failure at `debug`), and a family of bugs in how
+`Tracked::completed`'s rolling history interacts with a plan write that does
+more than one thing at once — a batch completing two steps at once, a
+rewrite and a completion landing in the same write, and a step revised and
+recompleted all corrupted the "plan's other completed steps" baseline in
+distinct ways that three separate, increasingly narrow fixes were needed to
+close, the last of which (a step seeing its *own* pre-revision entry as a
+sibling) survived one round after the doubling half of the same bug was
+already fixed and named in the fix commit's own comment. **The most
+consequential single fix**: `escalate_step` streamed its quarantined call's
+raw JSON reply — reasoning included — to whatever front-end was attached
+(TUI, Slack, voice), because it forwarded the run's real `events` sender into
+`self.complete`, which forwards every text delta as ordinary assistant text.
+The design's own stated guarantee ("the model's reasoning never reaches the
+conversation") held; "never reaches the *user*" did not, until `&None` was
+passed instead. Also mid-cycle: `main` picked up an unrelated PR (rung 8),
+and GitHub's `pull_request` CI — which tests an implicit merge with `main`'s
+current tip, not the branch's own head — caught the resulting gap before a
+local merge ever would have (see Environment, below).
+
+The general lesson: a mechanism whose whole design is "quarantine a model
+call and template its output" still needs the same auxiliary-call discipline
+(cancellation, usage, effort, logging) every sibling quarantined call in this
+file already has, and building it fresh instead of copying the sibling's
+shape is exactly where the gap opens — cancellation and usage were caught
+early, but effort and the failure-log level were each separate, later
+findings in the same category, arriving well after the first pair looked
+like it had closed the class.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -5615,6 +5670,23 @@ asserted about. **When re-upserting to update, enumerate what the write
 touches and carry forward everything you are not deliberately changing**; the
 dangerous fields are the ones with a plausible default, because those fail
 silently rather than erroring.
+
+**A green local build does not mean CI is testing your branch — it may be
+testing an implicit merge with `main`'s current tip** (2026-08-28, PR #102).
+`cargo clippy --all-features` and `cargo test --workspace` were clean, on the
+exact flags CI runs, against the branch's own committed HEAD — and CI still
+failed with a plain field-completeness error (`RunOutcome` missing two new
+fields) at a source line the local checkout did not even have: the file was
+2,130 lines locally and the error named line 2,260. `main` had merged an
+unrelated PR mid-review, adding a new construction site this branch had never
+seen. GitHub's `pull_request` trigger by default checks out the *synthetic
+merge* of the PR branch with `main`'s current tip (`refs/pull/<n>/merge`), not
+the branch's raw head — so CI was truthfully reporting a real conflict between
+this branch and a `main` that had moved, while every local check answered a
+question about this branch alone. **A CI failure with no local repro is not
+necessarily flaky**: fetch and diff against `origin/main` before assuming the
+runner is wrong, because the runner may be testing a tree that does not exist
+in any local checkout yet.
 
 ### A merge, made under a standing authorization, can race a fix in flight elsewhere
 
