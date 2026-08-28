@@ -234,6 +234,15 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // lands on the same registry key and the cached prefix does not move.
     // (`tasks set` itself is unaffected: it calls through `prepare_tools`'s
     // registry directly, which this — the model-facing build — never touches.)
+    //
+    // One handle downstream of here is guarded on purpose, not by accident:
+    // the copy `tasks work` and `questions` later pull back off this
+    // registry via `withhold_tool` — D5's "the harness's hand" — is the
+    // wrapped one, so `move_task` cannot perform a closure either. That is
+    // the rule, not a limitation: the harness moves a task to `waiting` or
+    // back to its pre-run status, and a closure is the *owner's* act on
+    // every path — the day `move_task` is asked to carry `done`, the guard's
+    // refusal is the correct answer and `tasks set` is the correct caller.
     if let Some((_, tool)) = withhold_tool(&mut registry, "kg_task_update") {
         registry.insert(crate::closure_guard::ClosedStatusGuard::wrap(tool));
     }
@@ -1037,6 +1046,20 @@ fn build_subagent(
             );
         }
         match pool.get(wanted) {
+            // The closure guard again, at the clone: `build` wraps the pool's
+            // handle before this loop runs, but that protection is an
+            // *ordering* — reviewed as the one load-bearing line position in
+            // the arrangement — and a reorder would silently hand every
+            // child the unwrapped tool. Wrapping here too makes the property
+            // structural rather than positional; a double wrap is harmless
+            // (the outer guard refuses first, and everything else delegates
+            // straight through), and the ordering test in this file's tests
+            // drives exactly this seam with a raw pool.
+            Some(tool) if wanted == "kg_task_update" || wanted.ends_with("__kg_task_update") => {
+                child_registry.insert(crate::closure_guard::ClosedStatusGuard::wrap(Arc::clone(
+                    tool,
+                )))
+            }
             Some(tool) => child_registry.insert(Arc::clone(tool)),
             // A typo here silently produces a child that cannot do its job, so
             // say so rather than starting a crippled agent.
@@ -1486,6 +1509,79 @@ mod tests {
             Some(100_000),
             "without the window the child's compaction threshold is None, and \
              `compact` becomes a tool that reports success and does nothing"
+        );
+    }
+
+    /// The review's note on the closure guard: the security argument rested
+    /// on one line's *position* — wrapped before the subagent loop — and
+    /// nothing measured it, so moving the wrap below the loop restored the
+    /// delegation hole with every test green. `build_subagent` now wraps at
+    /// the clone too, which is what this drives: a **raw** pool (exactly
+    /// what a reordered `build` would hand it) must still produce a child
+    /// whose `kg_task_update` refuses a closure.
+    #[tokio::test]
+    async fn a_subagent_built_from_a_raw_pool_still_carries_the_closure_guard() {
+        struct Raw;
+        #[async_trait::async_trait]
+        impl mecha_core::tool::Tool for Raw {
+            fn name(&self) -> &str {
+                "graph__kg_task_update"
+            }
+            fn description(&self) -> &str {
+                "update a task"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            async fn call(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &mecha_core::tool::ToolCtx,
+            ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
+                Ok(mecha_core::tool::ToolOutput::ok("reached the store"))
+            }
+        }
+
+        let mut pool = mecha_core::tool::Registry::new();
+        pool.insert(std::sync::Arc::new(Raw));
+        let cfg = mecha_core::config::Config::default();
+        let provider_cfg = cfg.providers.values().next().cloned().unwrap_or_default();
+        let profile = mecha_core::subagent::SubagentProfile {
+            name: "child".into(),
+            description: "a child".into(),
+            tools: vec!["graph__kg_task_update".into()],
+            ..Default::default()
+        };
+        let child = match build_subagent(
+            &profile,
+            &pool,
+            &cfg,
+            &provider_cfg,
+            &mecha_core::tool::ToolCtx::default(),
+            None,
+            None,
+        ) {
+            Ok(c) => c,
+            // A provider this machine cannot build is not what this test is
+            // about; skipping beats asserting on the error text.
+            Err(_) => return,
+        };
+        let tool = child
+            .agent()
+            .registry()
+            .get("graph__kg_task_update")
+            .expect("the child allowlisted it");
+        let out = tool
+            .call(
+                serde_json::json!({"task": "t1", "status": "done"}),
+                &mecha_core::tool::ToolCtx::default(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("mecha tasks set"),
+            "a child built from a raw pool must still refuse a closure: {}",
+            out.content
         );
     }
 
