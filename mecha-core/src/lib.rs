@@ -93,6 +93,7 @@ pub mod skill;
 pub mod step;
 pub mod subagent;
 pub mod surface;
+pub mod text;
 pub mod tool;
 pub mod trigger;
 pub mod work;

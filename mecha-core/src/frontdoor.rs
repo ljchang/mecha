@@ -546,10 +546,13 @@ pub fn parse_extraction(text: &str) -> Result<Extraction> {
         anyhow::bail!("the extractor returned no JSON object");
     }
     let extraction: Extraction = serde_json::from_str(&text[start..=end]).with_context(|| {
-        format!(
-            "parsing the extraction: {}",
-            &text[start..=end.min(start + 400)]
-        )
+        // A raw byte cutoff panics the instant it lands inside a multi-byte
+        // character, and this text is a stranger's — an em-dash or a curly
+        // quote at exactly the wrong offset in a malformed extraction would
+        // abort the process in the module whose whole job is being the safe
+        // boundary for outside input.
+        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400));
+        format!("parsing the extraction: {}", &text[start..cut])
     })?;
     Ok(extraction)
 }
