@@ -154,7 +154,9 @@ pub struct Facts {
     /// nuisance, hiding one they never declined is a silently incomplete
     /// install. This is the one place in this module where unknown resolves
     /// towards *more* noise, because here noise is the safe side. `setup`
-    /// still says out loud that the store could not be read.
+    /// says out loud that the store could not be read — **on stderr, and
+    /// before the `--json` return**, so the scriptable surface carries it
+    /// too and stdout stays a parseable array.
     pub declined: std::collections::BTreeSet<String>,
 }
 
