@@ -630,14 +630,15 @@ fn worth_a_follow_up(new_status: &str, a: &mecha_core::appraisal::Appraisal) -> 
 /// Is `id` exactly one ordinary path component — never a root, a `..`,
 /// empty, or more than one segment?
 ///
-/// A store-supplied session id reaching a bare `dir.join` is the same shape
-/// `serve/board.rs::run_summary` guards, and each file checks it
-/// independently rather than sharing this — it is three lines, and the two
-/// files do not otherwise depend on each other. `std::path::Component::Normal`
-/// is what the standard library itself calls "an ordinary path segment", so
-/// asking it directly is correct on whatever platform this runs on, unlike a
-/// denylist of separator characters, which is only ever complete for the
-/// platform it was checked against.
+/// `serve/board.rs::run_summary` builds an identical `dir.join` off the same
+/// board field, with the same provenance — `task["session"]`, writable by
+/// anything holding `kg_task_update`. Not shared as a function between the
+/// two files; it is three lines, and they do not otherwise depend on each
+/// other. `std::path::Component::Normal` is what the standard library
+/// itself calls "an ordinary path segment", so asking it directly is
+/// correct on whatever platform this runs on, unlike a denylist of
+/// separator characters, which is only ever complete for the platform it
+/// was checked against.
 fn is_bare_path_component(id: &str) -> bool {
     let mut components = std::path::Path::new(id).components();
     matches!(components.next(), Some(std::path::Component::Normal(_)))
@@ -2463,11 +2464,11 @@ mod tests {
     /// touching the filesystem or `Session::default_dir()`'s global state —
     /// full coverage of the shapes that must be accepted and refused. It
     /// does not prove that a hostile id would otherwise have reached a real
-    /// file outside `dir` (`serve/board.rs`'s sibling test for its own copy
-    /// of this join does prove that, by planting a file and observing the
-    /// escape); doing the same here would need `appraise_session` to take
-    /// its directory as a parameter rather than resolving
-    /// `Session::default_dir()` internally, which it does not yet.
+    /// file outside `dir` — that would need `appraise_session` to take its
+    /// directory as a parameter rather than resolving
+    /// `Session::default_dir()` internally, which it does not yet, so the
+    /// filesystem-level proof for this file's own copy of the join does not
+    /// exist here either.
     #[test]
     fn is_bare_path_component_accepts_one_ordinary_segment_and_nothing_else() {
         for real in ["20260826T090000-aaaaaaaa", "task-1a2b3c4d", "x"] {
