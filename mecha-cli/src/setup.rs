@@ -245,19 +245,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // back to its pre-run status, and a closure is the *owner's* act on
     // every path — the day `move_task` is asked to carry `done`, the guard's
     // refusal is the correct answer and `tasks set` is the correct caller.
-    // Every match, not the first: two graph servers under `prefix_tools`
-    // would each hold a `*__kg_task_update`, and `withhold_tool` returns one
-    // at a time — found on review, the single `if let` left the second
-    // server's handle raw. Collected before re-inserting, because the
-    // wrapper keeps the inner name and an eager re-insert would be found
-    // again by the next iteration, forever.
-    let mut guarded = Vec::new();
-    while let Some((_, tool)) = withhold_tool(&mut registry, "kg_task_update") {
-        guarded.push(crate::closure_guard::ClosedStatusGuard::wrap(tool));
-    }
-    for tool in guarded {
-        registry.insert(tool);
-    }
+    crate::closure_guard::guard(&mut registry);
     for profile in &cfg.subagents {
         // `--tool` narrows the pool deliberately, and a subagent whose profile
         // names something the narrowing excluded is not a misconfiguration —

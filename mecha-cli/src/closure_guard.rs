@@ -49,15 +49,40 @@ pub struct ClosedStatusGuard {
     description: String,
 }
 
+/// The sentence the wrap appends — a const so [`ClosedStatusGuard::wrap`]
+/// can recognise an already-guarded handle and be idempotent: `build` wraps
+/// the pool and `build_subagent` wraps again at the clone (the ordering
+/// belt), and without the check every subagent's description carried the
+/// note twice, its spec no longer matching its parent's.
+const GUARD_NOTE: &str = "Note: status cannot be set to done or dropped from here — a \
+     closure is the owner's act and goes through `mecha tasks set`, which \
+     also appraises it.";
+
 impl ClosedStatusGuard {
     pub fn wrap(inner: Arc<dyn Tool>) -> Arc<dyn Tool> {
-        let description = format!(
-            "{} Note: status cannot be set to done or dropped from here — a \
-             closure is the owner's act and goes through `mecha tasks set`, \
-             which also appraises it.",
-            inner.description()
-        );
+        if inner.description().ends_with(GUARD_NOTE) {
+            return inner;
+        }
+        let description = format!("{} {GUARD_NOTE}", inner.description());
         Arc::new(ClosedStatusGuard { inner, description })
+    }
+}
+
+/// Wrap every `kg_task_update` on `registry` — **every** match, not the
+/// first: two graph servers under `prefix_tools` each hold a
+/// `*__kg_task_update`, and `withhold_tool` returns one at a time. Collected
+/// before re-inserting, because the wrapper keeps the inner name and an
+/// eager re-insert would be found again by the next iteration, forever.
+/// Idempotent, like the wrap it applies. A function rather than a block in
+/// `setup::build` so the parent-surface guarantee — the regression this
+/// module exists for — is testable without standing up a provider.
+pub fn guard(registry: &mut mecha_core::tool::Registry) {
+    let mut guarded = Vec::new();
+    while let Some((_, tool)) = crate::setup::withhold_tool(registry, "kg_task_update") {
+        guarded.push(ClosedStatusGuard::wrap(tool));
+    }
+    for tool in guarded {
+        registry.insert(tool);
     }
 }
 
@@ -252,6 +277,73 @@ mod tests {
             assert!(!out.is_error, "{}", out.content);
             assert_eq!(out.content, "reached the store");
         }
+    }
+
+    /// The parent-surface guarantee itself — the regression this module
+    /// exists for — measured at the seam `setup::build` calls: every
+    /// `kg_task_update` on the registry is guarded, a second `prefix_tools`
+    /// server's included, and nothing else is touched. This is the test
+    /// that fails if `guard` regresses to a single `if let`, or if the call
+    /// disappears from `build` and someone reaches for this helper to put
+    /// it back.
+    #[tokio::test]
+    async fn guard_wraps_every_matching_handle_and_nothing_else() {
+        struct Named(&'static str);
+        #[async_trait::async_trait]
+        impl Tool for Named {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                "update a task"
+            }
+            fn input_schema(&self) -> Value {
+                serde_json::json!({"type": "object"})
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> anyhow::Result<ToolOutput> {
+                Ok(ToolOutput::ok("reached the store"))
+            }
+        }
+
+        let mut registry = mecha_core::tool::Registry::new();
+        registry.insert(Arc::new(Named("graphA__kg_task_update")));
+        registry.insert(Arc::new(Named("graphB__kg_task_update")));
+        registry.insert(Arc::new(Named("graphA__kg_task_create")));
+        guard(&mut registry);
+
+        for name in ["graphA__kg_task_update", "graphB__kg_task_update"] {
+            let out = registry
+                .get(name)
+                .expect("still registered under its own name")
+                .call(
+                    serde_json::json!({"task": "t1", "status": "done"}),
+                    &ToolCtx::default(),
+                )
+                .await
+                .unwrap();
+            assert!(out.is_error, "{name} must refuse a closure");
+        }
+        let untouched = registry.get("graphA__kg_task_create").unwrap();
+        assert!(
+            !untouched.description().contains("mecha tasks set"),
+            "only kg_task_update is guarded"
+        );
+    }
+
+    /// `build` wraps the pool and `build_subagent` wraps again at the clone
+    /// — the ordering belt — so the wrap must be idempotent, or every
+    /// subagent's description carries the note twice and its spec stops
+    /// matching its parent's.
+    #[test]
+    fn wrapping_twice_is_wrapping_once() {
+        let once = ClosedStatusGuard::wrap(Arc::new(Reaches));
+        let twice = ClosedStatusGuard::wrap(Arc::clone(&once));
+        assert_eq!(once.description(), twice.description());
+        assert_eq!(
+            once.description().matches("mecha tasks set").count(),
+            1,
+            "the note appears exactly once"
+        );
     }
 
     /// The name and schema are the inner tool's — the registry re-insert
