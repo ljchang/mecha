@@ -252,6 +252,26 @@ pub enum Affect {
 }
 
 impl Affect {
+    /// Every variant, for a caller that needs to count or partition them —
+    /// the `sessions appraise` readout derives its "N of the ten variants"
+    /// line from this against [`Affect::reachable_today`], because that
+    /// count has now shipped stale as a literal twice (HISTORY records the
+    /// first). The length is asserted by the reachability test, so a new
+    /// variant that forgets this list fails there rather than shipping a
+    /// count that is quietly short.
+    pub const ALL: [Affect; 10] = [
+        Affect::Neutral,
+        Affect::Anger,
+        Affect::Embarrassment,
+        Affect::Frustration,
+        Affect::Regret,
+        Affect::Disappointment,
+        Affect::Guilt,
+        Affect::Shame,
+        Affect::Pride,
+        Affect::Excitement,
+    ];
+
     /// Can any shipped path actually produce this label today?
     ///
     /// Here so the fact is testable rather than only documented — a variant
@@ -1599,19 +1619,11 @@ mod tests {
 
     #[test]
     fn only_five_labels_are_reachable_and_the_rest_say_why() {
-        let all = [
-            Affect::Neutral,
-            Affect::Anger,
-            Affect::Embarrassment,
-            Affect::Frustration,
-            Affect::Regret,
-            Affect::Disappointment,
-            Affect::Guilt,
-            Affect::Shame,
-            Affect::Pride,
-            Affect::Excitement,
-        ];
-        assert_eq!(all.iter().filter(|a| a.reachable_today()).count(), 5);
+        assert_eq!(Affect::ALL.len(), 10);
+        assert_eq!(
+            Affect::ALL.iter().filter(|a| a.reachable_today()).count(),
+            5
+        );
     }
 
     /// Exposure lost its only producer when the `SentEdited` arm was made
@@ -1674,15 +1686,30 @@ mod tests {
             tools_before: vec![],
             tools_after: vec![],
         };
-        for cause in [
-            None,
-            Some(StopCause::Loop),
-            Some(StopCause::NoOutput),
-            Some(StopCause::MaxTurns),
-            Some(StopCause::OutputTokenBudget),
-            Some(StopCause::CostBudget),
-            Some(StopCause::Interrupted),
-        ] {
+        // The compiler carries this list: the match below is exhaustive, so
+        // a new StopCause variant fails here instead of silently going
+        // unwalked by the drift guard.
+        let every_cause = [
+            StopCause::Completed,
+            StopCause::MaxTurns,
+            StopCause::OutputTokenBudget,
+            StopCause::CostBudget,
+            StopCause::Interrupted,
+            StopCause::Loop,
+            StopCause::NoOutput,
+        ];
+        for c in every_cause {
+            match c {
+                StopCause::Completed
+                | StopCause::MaxTurns
+                | StopCause::OutputTokenBudget
+                | StopCause::CostBudget
+                | StopCause::Interrupted
+                | StopCause::Loop
+                | StopCause::NoOutput => {}
+            }
+        }
+        for cause in std::iter::once(None).chain(every_cause.into_iter().map(Some)) {
             let mut s = stats();
             s.stop_cause = cause;
             s.ended_on_failed_call = true;

@@ -2570,12 +2570,18 @@ mod tests {
     }
 
     #[test]
-    fn a_reachable_non_neutral_closure_is_worth_a_follow_up() {
-        for label in [
-            mecha_core::appraisal::Affect::Anger,
-            mecha_core::appraisal::Affect::Embarrassment,
-            mecha_core::appraisal::Affect::Frustration,
-        ] {
+    fn every_non_neutral_closure_is_worth_a_follow_up() {
+        // The whole non-Neutral alphabet, from the enum's own list rather
+        // than a hand-picked subset — the first cut named Embarrassment
+        // (which has no producer) and omitted Regret/Disappointment (which
+        // probes produce), so the test's names disagreed with the
+        // reachability facts this branch itself establishes. The gate is a
+        // pure function of the label, so iterating everything is both the
+        // honest claim and the drift-proof one.
+        for label in mecha_core::appraisal::Affect::ALL {
+            if label == mecha_core::appraisal::Affect::Neutral {
+                continue;
+            }
             assert!(worth_a_follow_up("done", &appraisal(label)), "{label:?}");
         }
     }
@@ -2587,11 +2593,7 @@ mod tests {
     /// board under a different name.
     #[test]
     fn a_dropped_closure_never_stages_a_follow_up_however_disappointed() {
-        for label in [
-            mecha_core::appraisal::Affect::Anger,
-            mecha_core::appraisal::Affect::Embarrassment,
-            mecha_core::appraisal::Affect::Frustration,
-        ] {
+        for label in mecha_core::appraisal::Affect::ALL {
             assert!(
                 !worth_a_follow_up("dropped", &appraisal(label)),
                 "{label:?}"
