@@ -1207,6 +1207,21 @@ mod tests {
         assert!(parse_extraction("I could not do that.").is_err());
     }
 
+    /// This call site is a stranger's free text through the front door's own
+    /// extractor — exactly the input the "safe boundary" argument is about.
+    /// A raw byte cutoff in the error-path slice panics the instant it lands
+    /// inside a multi-byte character; `&s[a..=b]` is `&s[a..b + 1]`, so the
+    /// index that needs a boundary is 401, not the 400-byte cutoff itself.
+    #[test]
+    fn a_malformed_extraction_past_400_bytes_does_not_panic_on_a_char_boundary() {
+        let mut text = String::from("{");
+        text.push_str(&"a".repeat(398));
+        text.push('—'); // 3 bytes: 399, 400, 401 — the inclusive slice ends at 401
+        text.push_str("not valid json, just filler past the cutoff}");
+        assert!(!text.is_char_boundary(401));
+        assert!(parse_extraction(&text).is_err());
+    }
+
     /// A round trip must not drop a field the other side wrote. The two
     /// programs version independently, and the drain is the authority on what
     /// it recorded.
