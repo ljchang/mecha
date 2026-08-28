@@ -1070,6 +1070,7 @@ mod tests {
             "m",
             &[],
             Some(&appraisal),
+            &[],
         );
         assert_eq!(args["meta"]["goal_errors"][0]["goal"], "task");
     }
