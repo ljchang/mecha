@@ -11,6 +11,7 @@
 //! `(source, source_id)` key makes a duplicate push an update anyway), so a
 //! nightly run or a `session_end` hook only ever pays for the new sessions.
 
+use crate::logs::strip_ansi_and_controls;
 use crate::GlobalOpts;
 use anyhow::{bail, Context, Result};
 use mecha_core::config::Config;
@@ -108,27 +109,43 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // For episode tagging (§10 of GOAL-SYSTEM-DESIGN.md): the affect label
     // and goal errors ride on the episode's `meta`, and a `GoalError` cites
     // an outbox draft (`Cite::Draft`) the same way `mecha sessions appraise`
-    // does. Best-effort like every reader of this store, but unlike that
-    // readout — a report you can re-run — this loop's `mark_distilled`
-    // makes the result permanent: a transient read failure here silently
-    // drops every `Edit`-channel row (including the one channel that can
-    // say a run went *well*, `SentUnchanged`) from a `meta.goal_errors` the
-    // session will never be appraised again to correct. Reported rather
-    // than swallowed, matching how the loop below already reports a
-    // session it could not load.
+    // does. `None` (no store at all — a fresh install, or one that has never
+    // staged a draft) is the ordinary empty case and stays best-effort, same
+    // as every other reader of this store.
+    //
+    // A genuine read failure, though — `items_strict`, not `items`: this
+    // store's own temp-sibling-and-rename discipline (`outbox.rs`'s module
+    // header) rules out a half-written file, so the realistic cause is
+    // persistent rather than transient — a stray file, or an item written
+    // by a schema this binary cannot read. Either way `items()`'s own
+    // skip-and-warn would pass it through as a silently short list,
+    // indistinguishable from an outbox that simply has fewer drafts (its
+    // `tracing::warn!` is invisible here too — the nightly runs with no
+    // `MECHA_LOG`) — bails the whole run rather than degrading.
+    // Deliberately more conservative than `sessions appraise`'s own
+    // best-effort read of the identical store: that readout is a report
+    // you can re-run; this loop's `mark_distilled` makes its result
+    // permanent, so silently continuing would drop every `Edit`-channel
+    // row (including `SentUnchanged`, the one channel that can say a run
+    // went *well*) from a `meta.goal_errors` no later run can ever
+    // revisit.
+    //
+    // A failing run stops the nightly `mecha distill` cold, silently,
+    // behind one line in a dated logfile (`ruminate.sh` is deliberately
+    // not `set -e`, and `mecha doctor` has no check for a stalled distill
+    // ledger) — a real gap, and a persistent cause means the situation
+    // will not clear on its own. Left for a `doctor` finding rather than
+    // solved here; the point of this bail is that the incomplete
+    // permanent record it replaces is the worse of the two failure modes,
+    // not that a retry will fix the realistic one.
     let drafts: Vec<mecha_core::outbox::OutboxItem> =
         match mecha_core::outbox::OutboxStore::open_existing_default() {
             None => Vec::new(),
-            Some(store) => match store.items() {
-                Ok(items) => items,
-                Err(e) => {
-                    eprintln!(
-                        "warning: could not read the outbox ({e:#}) — episode tagging will \
-                         miss the Edit channel for every session distilled this run"
-                    );
-                    Vec::new()
-                }
-            },
+            Some(store) => store.items_strict().context(
+                "could not read the outbox for episode tagging — a stray or unreadable-schema \
+                 file, most likely, not a transient one — refusing to distill any session this \
+                 run rather than permanently mark one with an incomplete Edit channel",
+            )?,
         };
 
     let mut distilled = 0usize;
@@ -203,26 +220,42 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // the model's own free-text reading of transcript prose —
                 // and `about` in particular is a string a person might be
                 // tempted to paste straight into `mecha gossip --entity`.
+                //
+                // **"A person's own terminal" assumes a live one, and
+                // `scripts/ruminate.sh` runs this into a dated logfile
+                // instead** — exactly as exposed to a screen-clearing or
+                // OSC-52 escape sequence once opened later as a live read
+                // would have been. `strip_ansi_and_controls` (not plain
+                // `strip_ansi`: this is a whole field, never pre-split at
+                // `\n` the way that function's own call site guarantees)
+                // runs on every field, trusted or not — a bare `\r` at the
+                // end of `actual` would otherwise rewrite the rendered line
+                // from column 0 and erase the very `⚠ untrusted` marker the
+                // untrusted branch exists to print. The taint gate speaks to
+                // whether the *claim* is believable, not to whether its
+                // bytes are safe to render.
                 let sendable_surprises = distill::surprises_for(taint, &out.surprises);
                 let trusted_surprises = !out.surprises.is_empty() && !sendable_surprises.is_empty();
                 for s in &out.surprises {
+                    let predicted = strip_ansi_and_controls(&s.predicted);
+                    let actual = strip_ansi_and_controls(&s.actual);
                     let about = s
                         .about
                         .as_deref()
-                        .map(|a| format!(" (about {a})"))
+                        .map(|a| format!(" (about {})", strip_ansi_and_controls(a)))
                         .unwrap_or_default();
                     if trusted_surprises {
                         println!(
-                            "· {} — surprise{about}: predicted \"{}\", found \"{}\"",
-                            meta.id, s.predicted, s.actual
+                            "· {} — surprise{about}: predicted \"{predicted}\", found \"{actual}\"",
+                            meta.id
                         );
                     } else {
                         println!(
                             "· {} — ⚠ surprise{about} (untrusted or unknown timeline — read \
                              `predicted`/`found` as this session's own claim, unverified, and \
-                             do not paste `about` into a command unread): predicted \"{}\", \
-                             found \"{}\"",
-                            meta.id, s.predicted, s.actual
+                             do not paste `about` into a command unread): predicted \
+                             \"{predicted}\", found \"{actual}\"",
+                            meta.id
                         );
                     }
                 }
