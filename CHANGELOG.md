@@ -84,21 +84,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Two findings from an independent second review of rung 9's episode
-  tagging and surprise detection (#97, #98), both real.** `mecha distill`
+- **Four findings from two independent review rounds of rung 9's episode
+  tagging and surprise detection (#97, #98), all real.** `mecha distill`
   printed a `Surprise`'s free-text fields straight to stdout unescaped —
   the "a person reading their own terminal is a safe context" argument
   didn't hold for `scripts/ruminate.sh`'s actual nightly path, which
   redirects that output to a dated logfile instead, exactly as exposed to
-  a screen-clearing or OSC-52 sequence as a live read would have been.
-  `strip_ansi` (shared from `logs.rs`, where the TUI already distrusts
-  formatted text for the same reason) now runs on every printed field,
-  trusted or not. Separately, a genuinely unreadable outbox during episode
-  tagging used to warn and continue, permanently `mark_distilled`-ing every
-  session that run with a silently incomplete `Edit` channel — no later
-  run could ever revisit it. Now bails the whole run instead, so the
-  operator retries once the outbox is readable rather than shipping a
-  permanent half-tagged record.
+  a screen-clearing or OSC-52 sequence as a live read would have been. The
+  first fix ran `strip_ansi` on every printed field, trusted or not — a
+  second round then found `strip_ansi` alone does not stop a bare `\r`, and
+  a `\r` at the end of `actual` rewrites the rendered line from column 0
+  and erases the very "untrusted, don't act on this" marker the whole fix
+  exists to show. `strip_ansi_and_controls` (`strip_ansi` plus every
+  remaining control byte but tab) closes it. Separately, a genuinely
+  unreadable outbox during episode tagging used to warn and continue,
+  permanently `mark_distilled`-ing every session that run with a silently
+  incomplete `Edit` channel — no later run could ever revisit it. The first
+  fix bailed on a hard I/O error; the second round found `OutboxStore::items`
+  also skips a merely *malformed* item file with only an invisible
+  `tracing::warn!` (the nightly runs with no `MECHA_LOG`) and still returns
+  `Ok`, so the one failure this change was written to close — a
+  half-written `.json` mid-save — survived through the path it didn't
+  check. `items_strict` bails on that too.
 
 - **mecha was mining its own words as the user's corrections.** `agent.rs`
   prefixes a refusal it did not author with `"Denied by the user: "` precisely
