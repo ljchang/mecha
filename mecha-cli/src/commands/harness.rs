@@ -297,6 +297,7 @@ async fn measure(
     let mut selection_pairs: Vec<Pair> = Vec::new();
     let mut holdout_pairs: Vec<Pair> = Vec::new();
     let mut diverged: Vec<String> = Vec::new();
+    let mut replay_caveats: Vec<String> = Vec::new();
     let mut skipped = unusable;
     let total = draw.selection.len() + draw.holdout.len();
     // The flag decides the slice; the label only decides the column width.
@@ -359,13 +360,17 @@ async fn measure(
                 // change on the fraction it happened to track.
                 //
                 // The caveat rides into the stored record too, not only the
-                // nightly's stderr — `Drawn.diverged` is what `mecha harness
-                // show` renders for whoever decides on a staged candidate,
-                // and that reader is the one the caveat was written for: a
-                // multi-config episode's divergence says something about the
-                // replay's compromise, not necessarily about the change.
+                // nightly's stderr — beside the id, never folded into it:
+                // `diverged` is a joinable id list by contract, and the
+                // reader the caveat was written for is `mecha harness
+                // show`'s (whoever decides on a staged candidate) — such a
+                // divergence says something about the replay's compromise,
+                // not necessarily about the change.
                 eprintln!(" diverged — dropped");
-                diverged.push(format!("{}{caveat}", prep.id));
+                diverged.push(prep.id.clone());
+                if let Some(c) = &prep.config_caveat {
+                    replay_caveats.push(format!("{} — {c}", prep.id));
+                }
                 continue;
             }
             eprintln!(" paired");
@@ -418,6 +423,7 @@ async fn measure(
             holdout_episodes,
             seed: draw.seed,
             diverged,
+            replay_caveats,
             skipped,
         },
     ));
@@ -584,6 +590,12 @@ fn show(id: &str) -> Result<()> {
                 "diverged:   {} (dropped, not scored)",
                 m.diverged.join(", ")
             );
+        }
+        // The compromise behind a drop, for the person deciding on this
+        // candidate: a multi-config episode's divergence says something
+        // about the replay, not necessarily about the change.
+        for caveat in &m.replay_caveats {
+            println!("  caveat:   {caveat}");
         }
         if m.skipped > 0 {
             println!("skipped:    {}", m.skipped);
