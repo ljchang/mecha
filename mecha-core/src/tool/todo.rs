@@ -353,10 +353,20 @@ impl Tracked {
         // A mark on an item the plan no longer holds describes work nobody is
         // doing, and would otherwise sit in the map for the life of the
         // conversation waiting for a step of the same wording to be re-added.
+        // `completed` gets the same sweep: unlike `started`/`flagged`, it is
+        // read by `escalation_candidate` as "the plan's other completed
+        // steps", and `TodoTool`'s lists are keyed by workspace rather than
+        // conversation — so without this, a wholesale plan rewrite (or a
+        // second conversation reusing the workspace) leaves stale entries
+        // from a plan that no longer exists as the mean a new plan's steps
+        // are judged against. Bounding `COMPLETED_HISTORY_CAP` protects
+        // against unbounded growth; it does not scope the history to the
+        // plan that is live now.
         let live: std::collections::HashSet<&str> =
             next.items.iter().map(|i| i.content.as_str()).collect();
         self.started.retain(|k, _| live.contains(k.as_str()));
         self.flagged.retain(|k| live.contains(k.as_str()));
+        self.completed.retain(|(k, _)| live.contains(k.as_str()));
         drop(live);
 
         self.plan = next;
@@ -1705,24 +1715,60 @@ mod tests {
     #[tokio::test]
     async fn a_span_outlier_writes_a_candidate_into_the_slot_when_present() {
         let tool = TodoTool::new();
+        // The tool's own contract ("pass the COMPLETE list every time") means
+        // a real write carries every step touched so far, finished ones
+        // included — never just the one currently changing. `completed`'s
+        // own sweep (`advance`, beside `started`/`flagged`) now prunes
+        // against exactly that list, so a test that sent one-item plans
+        // per call would prune its own history before this trigger could
+        // ever see two siblings.
+        let mut items: Vec<Value> = Vec::new();
         // Two small completed steps establish a baseline mean of ~2.5.
         for (i, n) in [2u32, 3u32].into_iter().enumerate() {
             let step = format!("small step {i}");
+            items.push(json!({"content": step, "status": "in_progress"}));
             let (start_ctx, _) = escalation_ctx(1, 0, None, 0);
-            write(
-                &tool,
-                &start_ctx,
-                json!([{"content": step, "status": "in_progress"}]),
-            )
-            .await;
+            write(&tool, &start_ctx, Value::Array(items.clone())).await;
+            items.last_mut().unwrap()["status"] = json!("completed");
             let (done_ctx, _) = escalation_ctx(1, n, Some(Outcome::Ok), 0);
-            write(
-                &tool,
-                &done_ctx,
-                json!([{"content": step, "status": "completed"}]),
-            )
-            .await;
+            write(&tool, &done_ctx, Value::Array(items.clone())).await;
         }
+        items.push(json!({"content": "a huge step", "status": "in_progress"}));
+        let (start_ctx, _) = escalation_ctx(1, 5, None, 0);
+        write(&tool, &start_ctx, Value::Array(items.clone())).await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        let (done_ctx, slot) = escalation_ctx(1, 25, Some(Outcome::Ok), 0);
+        write(&tool, &done_ctx, Value::Array(items.clone())).await;
+        let escalation = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("20 calls against a mean of 2.5 should have written a candidate");
+        assert_eq!(
+            escalation.reason,
+            crate::step::EscalationReason::SpanOutlier
+        );
+        assert_eq!(escalation.step, "a huge step");
+    }
+
+    /// The review finding: `completed` must not survive a step falling out
+    /// of the live plan, or a wholesale plan rewrite (or a second
+    /// conversation reusing the same workspace-keyed list) leaves stale
+    /// history behind as the mean new steps get judged against.
+    #[tokio::test]
+    async fn completed_history_is_pruned_once_a_step_leaves_the_live_plan() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+        for (i, n) in [2u32, 3u32].into_iter().enumerate() {
+            let step = format!("small step {i}");
+            items.push(json!({"content": step, "status": "in_progress"}));
+            let (start_ctx, _) = escalation_ctx(1, 0, None, 0);
+            write(&tool, &start_ctx, Value::Array(items.clone())).await;
+            items.last_mut().unwrap()["status"] = json!("completed");
+            let (done_ctx, _) = escalation_ctx(1, n, Some(Outcome::Ok), 0);
+            write(&tool, &done_ctx, Value::Array(items.clone())).await;
+        }
+        // A wholesale rewrite: neither of the two small steps rides along.
         let (start_ctx, _) = escalation_ctx(1, 5, None, 0);
         write(
             &tool,
@@ -1737,16 +1783,10 @@ mod tests {
             json!([{"content": "a huge step", "status": "completed"}]),
         )
         .await;
-        let escalation = slot
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("20 calls against a mean of 2.5 should have written a candidate");
-        assert_eq!(
-            escalation.reason,
-            crate::step::EscalationReason::SpanOutlier
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "a rewritten plan must not escalate against a mean from steps it no longer holds"
         );
-        assert_eq!(escalation.step, "a huge step");
     }
 
     #[tokio::test]

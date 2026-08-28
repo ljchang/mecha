@@ -461,6 +461,14 @@ pub struct StepEscalation {
     /// The mean call count of the completed steps this was compared
     /// against. Only set for [`EscalationReason::SpanOutlier`].
     pub sibling_mean_calls: Option<f32>,
+    /// How many completed steps `sibling_mean_calls` is a mean *over* —
+    /// `completed.len()` at the time of the comparison, not `siblings.len()`.
+    /// The two diverge once the plan has more completed steps than
+    /// `ESCALATION_SIBLING_SAMPLE`: the mean is still over all of them, but
+    /// `siblings` is a truncated sample for the model to read, and stating
+    /// the sample's length beside the full mean would describe a mean over
+    /// 5 steps that was actually taken over 20.
+    pub sibling_count: usize,
 }
 
 /// A span is a clear enough outlier to be worth a second opinion at this
@@ -503,6 +511,7 @@ pub fn escalation_candidate(
                     .collect(),
                 calls: span.calls,
                 sibling_mean_calls: Some(mean),
+                sibling_count: completed.len(),
             });
         }
     }
@@ -513,6 +522,7 @@ pub fn escalation_candidate(
             siblings: Vec::new(),
             calls: span.calls,
             sibling_mean_calls: None,
+            sibling_count: 0,
         });
     }
     None
@@ -539,7 +549,7 @@ pub fn escalation_prompt(escalation: &StepEscalation) -> String {
              in how the plan divided the work?",
             escalation.calls,
             escalation.sibling_mean_calls.unwrap_or(0.0),
-            escalation.siblings.len(),
+            escalation.sibling_count,
         ),
         EscalationReason::UnverifiedClaim => format!(
             "This step was marked done. Its own wording reads as claiming something \
@@ -554,7 +564,8 @@ pub fn escalation_prompt(escalation: &StepEscalation) -> String {
         String::new()
     } else {
         format!(
-            "\n\nOther completed steps in this plan, for context:\n{}",
+            "\n\nThe {} most recent of them, for context:\n{}",
+            escalation.siblings.len(),
             escalation
                 .siblings
                 .iter()
@@ -1014,6 +1025,14 @@ mod tests {
         assert_eq!(escalation.siblings.len(), ESCALATION_SIBLING_SAMPLE);
         // Most recent first.
         assert_eq!(escalation.siblings[0], "step 19");
+        // The review finding: the mean is over all 20, and the prompt must
+        // say so — not the length of the truncated sample listed below it.
+        assert_eq!(escalation.sibling_count, 20);
+        let prompt = escalation_prompt(&escalation);
+        assert!(prompt.contains("(20 of them)"));
+        assert!(prompt.contains(&format!(
+            "The {ESCALATION_SIBLING_SAMPLE} most recent of them"
+        )));
     }
 
     fn span_outlier_escalation() -> StepEscalation {
@@ -1023,6 +1042,7 @@ mod tests {
             siblings: vec!["read the config".into()],
             calls: 20,
             sibling_mean_calls: Some(2.5),
+            sibling_count: 1,
         }
     }
 
@@ -1078,6 +1098,7 @@ mod tests {
             siblings: Vec::new(),
             calls: 3,
             sibling_mean_calls: None,
+            sibling_count: 0,
         };
         let nudge = templated_nudge(&escalation);
         assert!(nudge.contains("test that the API responds"));
