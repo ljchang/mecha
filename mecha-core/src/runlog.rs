@@ -364,6 +364,8 @@ mod tests {
             homeostat: None,
             context_overflows: None,
             boredom_notices: None,
+            step_escalations_attempted: None,
+            step_escalations_revised: None,
             turns: 3,
             usage: Usage::default(),
             cost_usd: Some(0.25),
