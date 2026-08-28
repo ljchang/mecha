@@ -103,6 +103,15 @@ const COUNT_HALF_AT: usize = 3;
 /// variance under exactly the backlog it actually has. Pressure keeps its
 /// hard top: it is a fact about *this run*, not standing debt, so it cannot
 /// pin the corpus across runs.
+///
+/// Rows recorded under the old clamped formula and rows recorded under this
+/// one share the `anticipated_guilt` field with nothing marking which
+/// produced them — the numeric cousin of "a closed enum written to an
+/// append-only store is a wire format". Accepted deliberately: the sensor
+/// was one day and one row old at the change, so the mixed span is a
+/// handful of rows, and a version marker would outlive the problem it
+/// dated. Worth remembering only if this formula moves again after the
+/// corpus has real depth.
 const AGE_HALF_AT_HOURS: f64 = 24.0 * 7.0;
 
 /// A magnitude in `[0, 1]`, combining three signals as a logical OR —

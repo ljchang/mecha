@@ -633,11 +633,21 @@ async fn appraise(
     }
     // The one that decides whether this rung goes further. Said out loud
     // rather than left to be read off the table, because it is the finding.
+    // The count is derived, not typed: this line has shipped stale as a
+    // literal twice ("six" survived both the probe landing and
+    // Embarrassment losing its producer), and a number nothing fails on is
+    // a number that drifts.
     let neutral = labels.get("neutral").copied().unwrap_or(0);
+    let unreachable = appraisal::Affect::ALL
+        .iter()
+        .filter(|a| !a.reachable_today())
+        .count();
     println!(
-        "\n  {:.0}% carry no label — six of the ten `Affect` variants need a \
-         charter, a probe, a notion of harm, a cross-run view or a prediction",
-        neutral as f64 / appraisals.len() as f64 * 100.0
+        "\n  {:.0}% carry no label — {unreachable} of the {} `Affect` variants need a \
+         charter, a notion of harm, a cross-run view, a prediction, or an \
+         exposure producer",
+        neutral as f64 / appraisals.len() as f64 * 100.0,
+        appraisal::Affect::ALL.len(),
     );
 
     println!("\n  signed errors, by channel");
