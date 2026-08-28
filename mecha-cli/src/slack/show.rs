@@ -258,42 +258,11 @@ mod tests {
     /// as done. Every refusal path has to arrive as an error the model can
     /// recover from — `Ok(is_error)`, per the project's convention, so it can
     /// route around rather than failing the run.
-    /// `MECHA_HOME` is process-global, so a test that moves it holds a lock
-    /// and puts it back — the `work.rs` tests' guard, which is private to
-    /// that module.
-    struct HomeGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        previous: Option<String>,
-        dir: std::path::PathBuf,
-    }
-
-    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    impl HomeGuard {
-        fn new() -> Self {
-            let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
-            let previous = std::env::var("MECHA_HOME").ok();
-            let dir =
-                std::env::temp_dir().join(format!("mecha-show-{}-{}", std::process::id(), line!()));
-            std::fs::create_dir_all(&dir).unwrap();
-            std::env::set_var("MECHA_HOME", &dir);
-            HomeGuard {
-                _lock: lock,
-                previous,
-                dir,
-            }
-        }
-    }
-
-    impl Drop for HomeGuard {
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(v) => std::env::set_var("MECHA_HOME", v),
-                None => std::env::remove_var("MECHA_HOME"),
-            }
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
+    /// `MECHA_HOME` is process-global and this binary's tests share one
+    /// process, so every module that moves it must hold the *same* lock —
+    /// `crate::testenv::HomeGuard`, extracted from the private copy that
+    /// used to live here the day a second module needed one.
+    use crate::testenv::HomeGuard;
 
     /// The regression, driven rather than asserted about.
     ///
@@ -307,7 +276,7 @@ mod tests {
     /// message two sessions actually saw on 2026-08-21.
     #[tokio::test]
     async fn an_unparseable_config_no_longer_reaches_a_call_two_hours_in() {
-        let home = HomeGuard::new();
+        let home = HomeGuard::new("show");
         std::fs::write(
             home.dir.join("config.toml"),
             "[a_section_this_binary_has_never_heard_of]\nkey = 1\n",

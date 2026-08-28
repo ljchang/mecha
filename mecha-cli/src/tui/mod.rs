@@ -6595,12 +6595,21 @@ fn suspend_and_edit_charter(
     let path = modal.path.clone();
     let mut created = false;
     if !path.is_file() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+        // A store failure here is a status line, never a `?` — every
+        // sibling hand-over routes its store errors into the modal, and a
+        // full disk must not take down the whole session (partial answer
+        // and all) over a template nobody typed.
+        let write = path
+            .parent()
+            .map(|p| std::fs::create_dir_all(p))
+            .unwrap_or(Ok(()))
+            .and_then(|()| std::fs::write(&path, charter::TEMPLATE));
+        if let Err(e) = write {
+            if let Some(modal) = &mut app.charter {
+                modal.status = Some(format!("could not create {}: {e}", path.display()));
+            }
+            return Ok(());
         }
-        std::fs::write(&path, charter::TEMPLATE)
-            .with_context(|| format!("writing {}", path.display()))?;
         created = true;
     }
     // The file *is* the store (`edit_file` has no scratch copy), so what the
