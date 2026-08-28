@@ -1224,25 +1224,16 @@ fn begin_turn(
         // every turn for a label that says nothing.
         let mut affect_label = None;
         if let Ok(o) = &outcome {
-            let drafts: Vec<mecha_core::outbox::OutboxItem> = OutboxStore::open(&outbox_root)
-                .ok()
-                .and_then(|store| store.items().ok())
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|i| i.session_id.as_deref() == Some(session.meta.id.as_str()))
-                .collect();
-            let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts.iter().collect();
+            // No drafts here (`appraisal::live`'s own doc comment) — found
+            // on review, a draft resolved on an earlier or later turn than
+            // this one has nothing to do with how *this* run went.
+            //
             // `before.len()`, not `conversation.messages.len()`: `live`
             // needs where *this run's own* messages start, and `before` is
             // exactly that boundary — captured right after the triggering
             // user turn was appended, before this run added anything.
-            let label = mecha_core::appraisal::live(
-                &session.meta.id,
-                o,
-                &conversation,
-                before.len(),
-                &mine,
-            );
+            let label =
+                mecha_core::appraisal::live(&session.meta.id, o, &conversation, before.len());
             if label != mecha_core::appraisal::Affect::Neutral {
                 affect_label = Some(label.wire());
                 let _ = bcast.send(WireEvent::Affect {
