@@ -551,7 +551,10 @@ pub fn parse_extraction(text: &str) -> Result<Extraction> {
         // quote at exactly the wrong offset in a malformed extraction would
         // abort the process in the module whose whole job is being the safe
         // boundary for outside input.
-        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400));
+        // `+ 1`: the helper's `max` is exclusive, and the `..=` slice this
+        // replaces was inclusive — without it the ordinary all-ASCII case
+        // would drop one trailing byte versus the original message.
+        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400) + 1);
         format!("parsing the extraction: {}", &text[start..cut])
     })?;
     Ok(extraction)

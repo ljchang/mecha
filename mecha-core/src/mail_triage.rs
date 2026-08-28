@@ -2854,7 +2854,10 @@ fn parse_verdict(text: &str) -> Result<Verdict> {
     let mut v: Verdict = serde_json::from_str(&text[start..=end]).with_context(|| {
         // A raw byte cutoff panics the instant it lands inside a multi-byte
         // character, which a mail subject or body can supply at any offset.
-        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400));
+        // `+ 1`: the helper's `max` is exclusive, and the `..=` slice this
+        // replaces was inclusive — without it the ordinary all-ASCII case
+        // would drop one trailing byte versus the original message.
+        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400) + 1);
         format!("parsing the verdict: {}", &text[start..cut])
     })?;
 
