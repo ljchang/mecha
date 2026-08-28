@@ -438,7 +438,7 @@ async fn appraise(
     // appraise": a corrupt transcript was invisible from this readout
     // entirely — it appeared in no count at all, which on this surface of
     // all surfaces is the dash-versus-zero inversion.
-    let (listed, sessions_unreadable) = Session::list_counting(dir)?;
+    let (listed, mut sessions_unreadable) = Session::list_counting(dir)?;
     for (meta, path) in listed {
         if since.is_some_and(|t| meta.created_at < t) {
             continue;
@@ -446,26 +446,39 @@ async fn appraise(
         if limit.is_some_and(|n| sessions_read >= n) {
             break;
         }
+        // Read first, count second: `for_session` folds "the file could not
+        // be read" and "no outcome recorded yet" into one `None`, which used
+        // to land a body-corrupt transcript in `sessions_read` and no
+        // unreadable count — the half of this readout's own thesis
+        // `Corpus::scan` already closed. Going through `Session::read`
+        // directly (the `for_transcript` seam exists for callers that
+        // already read) is what keeps the two answers apart, and the one
+        // assembly is unchanged: the outcome, the interventions and the
+        // goal all come off the same pass, the goal from the model's own
+        // `serves` argument (absent is recorded, never guessed), and origin
+        // from the carried timeline's coverage — fail-closed, unknown never
+        // clean.
+        let transcript = match Session::read(&path) {
+            Ok(t) => t,
+            Err(_) => {
+                sessions_unreadable += 1;
+                continue;
+            }
+        };
         sessions_read += 1;
-        // `appraisal::for_session` is the one assembly: `Session::read` once
-        // (the outcome, the interventions and the goal all off the same
-        // pass — its own doc names the three-reads mistake this collapses),
-        // the goal from the model's own `serves` argument (absent is
-        // recorded, never guessed, so a goal-less session cannot be
-        // confused with a dead channel), and origin from the timeline's own
-        // coverage rather than `stats.taint`, which cannot tell "recorded
-        // clean" apart from "recorded before the field existed". `None`
-        // covers both an unreadable file and one with no outcome recorded
-        // yet — `Session::read` fails on the former where `episode_stats`
-        // would have answered `Ok(None)` for the latter, so both still land
-        // on one `continue` here, exactly as they did before the extraction.
         let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts
             .iter()
             .filter(|i| i.session_id.as_deref() == Some(meta.id.as_str()))
             .collect();
-        let Some(built) =
-            appraisal::for_session(&path, &meta.id, meta.created_at.to_rfc3339(), &mine, None)
-        else {
+        // `None` now means exactly one thing — no outcome recorded yet —
+        // which is "read, nothing to appraise", counted above.
+        let Some(built) = appraisal::for_transcript(
+            &transcript,
+            &meta.id,
+            meta.created_at.to_rfc3339(),
+            &mine,
+            None,
+        ) else {
             continue;
         };
         appraisals.push(built.appraisal);

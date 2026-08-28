@@ -1118,11 +1118,16 @@
   .chip.taint {
     color: var(--hazard);
   }
-  /* brand.md: hazard amber never fills an area — an outline and the word,
-     matching the voice logo's outline-only tint one overlay over. */
+  /* Deliberately NOT hazard amber — found on review: this chip sits in the
+     same row as the taint chip, and two amber chips side by side make "this
+     conversation holds untrusted content" (a security posture) and "the
+     last run went badly" (a mood) read as the same class of signal.
+     brand.md scopes amber to held sends, read-only, and the called-out
+     rule; the appraisal readout is none of those, so it takes the muted
+     outline instead. Outline-only either way — no fills. */
   .chip.affect {
-    color: var(--hazard);
-    border: 1px solid var(--hazard);
+    color: var(--text-muted);
+    border: 1px solid var(--text-muted);
     background: none;
   }
   .menubtn {
