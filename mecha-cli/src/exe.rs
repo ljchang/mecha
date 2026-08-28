@@ -24,7 +24,17 @@
 //! whose flags may have moved (which is precisely what `/queues` against a
 //! younger `mecha review` would have been, inverted).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+/// Only the Linux branch below (and its test) resolves a `Path`, so importing
+/// it unconditionally is an unused import everywhere else — and this repo
+/// builds with `-D warnings`, which makes that a **compile failure on macOS**
+/// rather than a lint. It went unnoticed because every CI job was
+/// ubuntu-only; the `first run (macos-latest)` job added alongside this found
+/// it on its first run, which is the whole argument for building on more than
+/// the platform you happen to develop on.
+#[cfg(target_os = "linux")]
+use std::path::Path;
 
 /// The path to spawn this same program from.
 ///
