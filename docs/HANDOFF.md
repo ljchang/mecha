@@ -21,14 +21,21 @@ maps which document holds what.
 
 ## Where the work is
 
-Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.14**
-(2026-08-25 — the day the last release got used rather than built on: voice
-calls and chat became one conversation, three review surfaces stopped hiding
-what they were asking people to approve, and the nightly mail classifier took
-both mailboxes; 0.1.13 shipped 2026-08-24 night with the web surface, voice,
-and the graph queue's similarity
-groups; 0.1.12 on 2026-08-22, 0.1.11 on 2026-08-21, 0.1.10 on 2026-08-20,
-and 0.1.7/0.1.8 on 2026-08-19/20 after the mail hold lifted).
+Public at **github.com/ljchang/mecha**, MIT licensed, released as **v0.1.15**
+(2026-08-26 — five surfaces that described themselves wrongly, found by
+using them: a chip claiming a stop-and-ask that would not happen, a card
+printing raw JSON at somebody about to approve it, a graph verdict that
+could fail with nowhere to go, a call that ended without saying why, and a
+harness-change gate that read the label the proposer had written on its own
+change; 0.1.14 shipped 2026-08-25 — voice calls and chat became one
+conversation, three review surfaces stopped hiding what they were asking
+people to approve, and the nightly mail classifier took both mailboxes;
+0.1.13 shipped 2026-08-24 night with the web surface, voice, and the graph
+queue's similarity groups; 0.1.12 on 2026-08-22, 0.1.11 on 2026-08-21, 0.1.10
+on 2026-08-20, and 0.1.7/0.1.8 on 2026-08-19/20 after the mail hold lifted).
+**`main` carries commits beyond v0.1.15 that are not yet tagged** — rung 9's
+episode tagging, surprise detection and the appraisal-arc PRs before it, all
+in the `Unreleased` section of `CHANGELOG.md` as of 2026-08-28.
 
 **0.1.14 is thirty-one commits from three sessions working the same day**,
 which is the thing to know about reading its history: the lanes interleave,
@@ -109,20 +116,30 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,697 tests**, no failures — measured 2026-08-27 on `main` at
-**a0638c8**, the merge commit of PR #92, the last of the nine appraisal-arc
-PRs (#86, #87, #93, #88, #89, #90, #91, #94, #92) to land that day. Breakdown:
-**558** in `mecha-cli` with 1 ignored, **914** in `mecha-core`, 6 + 9 in its
-two integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75**
-in `mecha-slack`, and 1 doctest. The **131** added over the figure two merges
-back (1,566 at `85b244c`, before any of the nine landed) split `mecha-core`
-+99 and `mecha-cli` +32, with every other suite unchanged — consistent with
-an arc that was almost entirely appraisal logic, learning-UI panes and the
-replay surface store, none of which touch mail, Slack or the integration
-fixtures. An intermediate count of 1,690 at `c630ff9` (after #86, #87, #93,
-#88, #89, #90 but before #91, #94, #92) was measured and superseded within
-the same session; it is not carried forward as a separate step in this
-chain because nothing was ever built or read against it.
+Expect **1,733 tests**, no failures — measured 2026-08-28 on `main` at
+**be9e32b**, the merge commit of PR #101, the last of three rung-9 PRs (#97,
+#98, #101) to land after the appraisal arc closed. Breakdown: **565** in
+`mecha-cli` with 1 ignored, **943** in `mecha-core`, 6 + 9 in its two
+integration suites, **133** in `mecha-mail` plus 1 in a mail binary, **75** in
+`mecha-slack`, and 1 doctest. The **36** added over the previous figure
+(1,697 at `a0638c8`) split `mecha-cli` +7 and `mecha-core` +29, with every
+other suite unchanged — consistent with rung 9's episode tagging and
+surprise detection (`appraisal::for_session`, `Distiller`'s new `Surprise`
+extraction) plus #101's four rounds of terminal-escaping and outbox-read
+hardening, none of which touch mail, Slack or the integration fixtures.
+
+The previous figure was **1,697**, measured 2026-08-27 at **a0638c8**, the
+merge commit of PR #92, the last of the nine appraisal-arc PRs (#86, #87,
+#93, #88, #89, #90, #91, #94, #92) to land that day. The **131** added over
+the figure two merges back (1,566 at `85b244c`, before any of the nine
+landed) split `mecha-core` +99 and `mecha-cli` +32, with every other suite
+unchanged — consistent with an arc that was almost entirely appraisal
+logic, learning-UI panes and the replay surface store, none of which touch
+mail, Slack or the integration fixtures. An intermediate count of 1,690 at
+`c630ff9` (after #86, #87, #93, #88, #89, #90 but before #91, #94, #92) was
+measured and superseded within the same session; it is not carried forward
+as a separate step in this chain because nothing was ever built or read
+against it.
 
 Clippy and rustfmt are clean at that commit, **measured locally**. CI is a
 separate claim and a weaker one, and it must be made per **sha**. Every PR
@@ -189,14 +206,14 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 914 |
-| `mecha-cli` unit | 558 (1 ignored) |
+| `mecha-core` unit | 943 |
+| `mecha-cli` unit | 565 (1 ignored) |
 | `mecha-mail` unit | 133 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
 
-Measured 2026-08-27 at `a0638c8`, same tree as the prose above. The table
+Measured 2026-08-28 at `be9e32b`, same tree as the prose above. The table
 had drifted two counts behind that prose once already, which is the failure
 mode of stating one fact twice — read the prose if they ever disagree again,
 and fix the table.
@@ -1682,6 +1699,25 @@ fuller argument.
   slow to be worth the mechanism, and one near one means the transcript is
   mostly the harness talking about the harness. Neither is visible any other
   way.
+
+- **Rung 9's first two pieces shipped 2026-08-27/28** (§10, §10.1 —
+  `appraisal::for_session` at `mecha-core/src/appraisal.rs:736` is now the
+  one assembly `mecha sessions appraise` and `mecha distill`'s episode
+  tagging both call; `distill::upsert_args` at `mecha-core/src/distill.rs:427`
+  writes `meta.affect`/`meta.goal_errors` onto the pushed pkg episode, not
+  gated on taint, and the quarantined `Distiller` now also extracts
+  `Surprise { predicted, actual, about }` — gated like a correction, printed
+  by `mecha distill` for a human to chase with `mecha gossip --entity
+  <about>`, never auto-run. See HISTORY's 2026-08-27/28 entry for the
+  four-round review saga on top of it). **Review-queue salience — the rest
+  of §10 — is still unbuilt**: it needs the private
+  `personalized_knowledge_graph` repository (a different codebase mecha only
+  reaches through the MCP tool surface) to read `meta.affect`/
+  `meta.goal_errors` back and reorder pkg's review queue on them. Not
+  started, and not scoped beyond `GOAL-SYSTEM-DESIGN.md` §10's own paragraph
+  naming it. Rung 8 (goal-closure appraisal) and rung 10 (the charter) are
+  open PRs from other sessions as of this writing — #99 and #100 — and their
+  content is theirs to describe, not this entry's.
 
 **Two things named rather than done**, recorded so they are not rediscovered
 as oversights. (The third — context pressure absent from `Homeostat` — shipped:
