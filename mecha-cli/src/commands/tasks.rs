@@ -398,11 +398,22 @@ async fn set(
     waiting_on: Option<String>,
     session: Option<String>,
 ) -> Result<()> {
+    // Read before the mutation, and only when a status move is even in play —
+    // `kg_task_update` answers with the fields it moved, never the row as a
+    // whole, so telling a fresh closure apart from one already closed (and
+    // finding the session/project a closure appraises) needs the record as it
+    // stood going in.
+    let before = if status.is_some() {
+        find_task(global, task).await.ok()
+    } else {
+        None
+    };
+
     let mut args = json!({ "task": task });
     // Every field `kg_task_update` takes, because the modal drives the CLI and
     // a verb the terminal cannot reach is one the UI must not offer either.
     for (key, value) in [
-        ("status", status),
+        ("status", status.clone()),
         ("due", due),
         ("defer", defer),
         ("context", context),
@@ -421,6 +432,210 @@ async fn set(
     }
     let out = call(global, "kg_task_update", args).await?;
     println!("{}", serde_json::to_string_pretty(&out)?);
+
+    // §5.4 — appraise the medium-tier goal at the moment the *owner* closes
+    // it. Never the agent (D6): this function is reachable only from a
+    // person typing `tasks set` or from the modals that shell out to it —
+    // there is no tool on any run's surface that calls it.
+    if let (Some(status), Some(before)) = (status.as_deref(), before) {
+        if is_fresh_closure(status, &before) {
+            appraise_closure(global, task, &before).await;
+        }
+    }
+    Ok(())
+}
+
+/// The task's record as the board holds it right now, read by id off the
+/// same `kg_task_list --include_closed` the modal already fetches — there is
+/// no `kg_task_get`, and a scan of one small JSON array beats a second
+/// implementation of the board's own lookup.
+async fn find_task(global: &GlobalOpts, task_id: &str) -> Result<Value> {
+    let board = call(global, "kg_task_list", json!({ "include_closed": true })).await?;
+    board["items"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .find(|t| t["id"].as_str() == Some(task_id))
+        .cloned()
+        .with_context(|| format!("no such task: {task_id} — `mecha tasks list` shows the board"))
+}
+
+/// A fresh entry into a closed status, never a status that was already
+/// there. Nudging the due date on a task that is already `done` must not
+/// re-appraise it — only the transition *into* `done`/`dropped` is a
+/// closure.
+fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
+    let was = before["status"].as_str().unwrap_or("inbox");
+    matches!(new_status, "done" | "dropped") && !matches!(was, "done" | "dropped")
+}
+
+/// §5.4's medium-tier appraisal moment. Best-effort throughout: the task is
+/// already closed by the time this runs, so nothing here may make that read
+/// as having failed — a warning on stderr, never a `bail!`.
+async fn appraise_closure(global: &GlobalOpts, task_id: &str, before: &Value) {
+    // Never delegated — the ordinary case for a hand-typed task. There is
+    // nothing here for D9's index to point at, and that is not an error.
+    let Some(session_id) = before["session"].as_str() else {
+        return;
+    };
+    let a = match appraise_session(session_id, task_id) {
+        Ok(Some(a)) => a,
+        // The run never got as far as recording an outcome — a crash, a
+        // kill, or a transcript from before the record existed. Silence, not
+        // a warning: `board.rs`'s own rule for the same absence.
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("mecha: could not appraise {task_id}'s session {session_id}: {e:#}");
+            return;
+        }
+    };
+    println!("mecha's appraisal of {task_id}: {}", describe(&a));
+
+    if !worth_a_follow_up(&a) {
+        return;
+    }
+    if let Err(e) = stage_follow_up(global, task_id, before, &a).await {
+        eprintln!("mecha: could not stage a follow-up for {task_id}: {e:#}");
+    }
+}
+
+/// The follow-up gate. Reads the *derived* label, never the raw signed
+/// errors: `affect_of` already reduced "does this need a human" down to one
+/// word, and re-deriving a threshold over raw signs here would be a second,
+/// less-tested version of exactly that reduction — and it would fire on
+/// almost every closure today, since the rung 7 corpus found a negative
+/// signal on 119 of 120 sessions. `Neutral`, the overwhelming common case,
+/// must never stage a follow-up nobody asked for; this stays rare today and
+/// gets richer for free as rung 7 lands more reachable labels, with no
+/// change needed here.
+fn worth_a_follow_up(a: &mecha_core::appraisal::Appraisal) -> bool {
+    a.label != mecha_core::appraisal::Affect::Neutral
+}
+
+/// Build one session's appraisal off its own transcript, the outbox, and the
+/// task it served — the single-lookup twin of `mecha sessions appraise`'s
+/// whole-store scan, which already does this same four-step assembly per
+/// session it walks. Not shared with it: that loop already holds
+/// `(meta, path)` off one `Session::list` pass, where this needs its own
+/// resolution from a bare session id — `serve/board.rs::run_summary`'s
+/// pattern, direct join first and `Session::find`'s whole-directory scan
+/// only as the fallback, one file over.
+fn appraise_session(
+    session_id: &str,
+    task_id: &str,
+) -> Result<Option<mecha_core::appraisal::Appraisal>> {
+    let dir = mecha_core::session::Session::default_dir()?;
+    let direct = dir.join(format!("{session_id}.jsonl"));
+    let path = if direct.is_file() {
+        direct
+    } else {
+        mecha_core::session::Session::find(&dir, session_id)?
+    };
+    let transcript = mecha_core::session::Session::read(&path)?;
+    let Some(stats) = transcript.episode else {
+        return Ok(None);
+    };
+    let messages = transcript.convo.messages;
+    let interventions = mecha_core::learning::extract_interventions(&messages);
+    let end_taint = mecha_core::session::Session::taint_timeline(&path)
+        .ok()
+        .and_then(|tl| tl.covering(messages.len().saturating_sub(1)));
+    let drafts: Vec<mecha_core::outbox::OutboxItem> =
+        match mecha_core::outbox::OutboxStore::open_existing_default() {
+            None => Vec::new(),
+            Some(store) => store
+                .items()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|i| i.session_id.as_deref() == Some(session_id))
+                .collect(),
+        };
+    let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts.iter().collect();
+    let goal = mecha_core::goal::GoalRef::Task(task_id.to_string());
+    Ok(Some(mecha_core::appraisal::of_session(
+        session_id,
+        &stats,
+        &[goal],
+        &interventions,
+        &mine,
+        end_taint,
+        chrono::Utc::now().to_rfc3339(),
+    )))
+}
+
+/// A one-line summary built only from typed fields — the label plus a count
+/// of the signed errors behind it — never from anything in the transcript.
+/// `GoalError::cite`'s own rule, carried out to what a human reads: a
+/// pointer, never prose.
+fn describe(a: &mecha_core::appraisal::Appraisal) -> String {
+    let positives = a.errors.iter().filter(|e| e.sign > 0.0).count();
+    let negatives = a.errors.iter().filter(|e| e.sign < 0.0).count();
+    format!(
+        "{:?} ({positives} positive, {negatives} negative signal{})",
+        a.label,
+        if negatives == 1 { "" } else { "s" }
+    )
+}
+
+/// §5.4: "a disappointed closure may stage a follow-up... one follow-up per
+/// closure." Created via the same tool `add` already calls, composed
+/// entirely from typed fields the harness minted — the label, which channels
+/// fired, and the *original task's own name*, which is trusted board text
+/// and not transcript prose. Never a quote from the session: the front
+/// door's rule that a paraphrase of an injection is the injection
+/// rearranged applies here exactly as it does there.
+async fn stage_follow_up(
+    global: &GlobalOpts,
+    task_id: &str,
+    before: &Value,
+    a: &mecha_core::appraisal::Appraisal,
+) -> Result<()> {
+    let name = before["name"].as_str().unwrap_or("(unnamed)");
+    let channels: std::collections::BTreeSet<String> = a
+        .errors
+        .iter()
+        .filter(|e| e.sign < 0.0)
+        .map(|e| format!("{:?}", e.channel))
+        .collect();
+    let channels: Vec<String> = channels.into_iter().collect();
+    let mut args = json!({
+        "name": format!(
+            "Revisit \"{name}\" ({task_id}) — mecha's own closure appraisal came back {:?} ({})",
+            a.label,
+            channels.join(", ")
+        ),
+        // `"session"` is a documented member of the closed `captured_from`
+        // kind set with no reader yet (CLAUDE.md) — honest provenance even
+        // though nothing follows it back today.
+        "captured_from": {
+            "kind": "session",
+            "id": a.session_id,
+            "label": format!("mecha's closure appraisal of {task_id}"),
+            "at": a.created_at,
+        },
+    });
+    if let Some(p) = before["project"].as_str() {
+        args["project"] = json!(p);
+    }
+    let out = match call(global, "kg_task_create", args.clone()).await {
+        Ok(v) => v,
+        // The store's own validation may be stricter than the documented
+        // closed set — if `captured_from` is what it rejected, still get the
+        // follow-up onto the board rather than losing it over a provenance
+        // pointer nobody can act on today anyway.
+        Err(_) => {
+            if let Some(o) = args.as_object_mut() {
+                o.remove("captured_from");
+            }
+            call(global, "kg_task_create", args).await?
+        }
+    };
+    println!(
+        "staged a follow-up: {}  {}",
+        out["id"].as_str().unwrap_or("created"),
+        out["name"].as_str().unwrap_or("")
+    );
     Ok(())
 }
 
@@ -2002,5 +2217,96 @@ mod tests {
             p.contains("every time you write the list"),
             "a repeat clause, or the goal is gone on the plan's second write:\n{p}"
         );
+    }
+
+    // --- §5.4: goal-closure appraisal ---
+
+    fn appraisal(label: mecha_core::appraisal::Affect) -> mecha_core::appraisal::Appraisal {
+        mecha_core::appraisal::Appraisal {
+            id: "s1".into(),
+            session_id: "s1".into(),
+            goals: vec![mecha_core::goal::GoalRef::Task("task-1a2b3c4d".into())],
+            state: None,
+            errors: Vec::new(),
+            label,
+            origin: mecha_core::learning::Origin::Clean,
+            taint: mecha_core::agent::Taint::default(),
+            created_at: "2026-08-27T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn only_a_transition_into_a_closed_status_is_a_fresh_closure() {
+        let open = json!({"status": "next"});
+        let already_done = json!({"status": "done"});
+        let already_dropped = json!({"status": "dropped"});
+
+        assert!(is_fresh_closure("done", &open));
+        assert!(is_fresh_closure("dropped", &open));
+        assert!(
+            !is_fresh_closure("done", &already_done),
+            "an already-closed task getting nudged must not re-appraise"
+        );
+        assert!(!is_fresh_closure("done", &already_dropped));
+        assert!(
+            !is_fresh_closure("waiting", &open),
+            "moving to an open status is not a closure at all"
+        );
+    }
+
+    /// The follow-up gate reads the derived label, not the raw signed
+    /// errors — `affect_of` already reduced "does this need a human" down
+    /// to one word, and re-deriving a threshold over raw signs here would be
+    /// a second, less-tested version of exactly that reduction. A `Neutral`
+    /// closure — the overwhelming common case per the rung 7 corpus — must
+    /// never stage a follow-up nobody asked for.
+    #[test]
+    fn a_neutral_closure_never_stages_a_follow_up() {
+        assert!(!worth_a_follow_up(&appraisal(
+            mecha_core::appraisal::Affect::Neutral
+        )));
+    }
+
+    #[test]
+    fn a_reachable_non_neutral_closure_is_worth_a_follow_up() {
+        for label in [
+            mecha_core::appraisal::Affect::Anger,
+            mecha_core::appraisal::Affect::Embarrassment,
+            mecha_core::appraisal::Affect::Frustration,
+        ] {
+            assert!(worth_a_follow_up(&appraisal(label)), "{label:?}");
+        }
+    }
+
+    /// `describe` is the owner-facing line, and it must be built only from
+    /// typed fields — `GoalError::cite`'s "a pointer, never prose" rule,
+    /// carried out to what a human reads.
+    #[test]
+    fn describe_counts_signed_errors_and_never_quotes_anything() {
+        let mut a = appraisal(mecha_core::appraisal::Affect::Frustration);
+        a.errors = vec![
+            mecha_core::appraisal::GoalError {
+                goal: None,
+                channel: mecha_core::appraisal::Channel::Counter,
+                sign: -1.0,
+                agency: mecha_core::appraisal::Agency::Own,
+                visible: false,
+                controllable: None,
+                cite: mecha_core::appraisal::Cite::Counter("stop_cause".into()),
+            },
+            mecha_core::appraisal::GoalError {
+                goal: None,
+                channel: mecha_core::appraisal::Channel::Edit,
+                sign: 1.0,
+                agency: mecha_core::appraisal::Agency::Own,
+                visible: true,
+                controllable: None,
+                cite: mecha_core::appraisal::Cite::Draft("o1".into()),
+            },
+        ];
+        let s = describe(&a);
+        assert!(s.contains("Frustration"));
+        assert!(s.contains("1 positive"));
+        assert!(s.contains("1 negative signal"));
     }
 }
