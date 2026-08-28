@@ -456,9 +456,9 @@ fn append_table(path: &std::path::Path, provider: &str, table: &[String]) -> Res
 
 /// Point `default_provider` at `provider`, in place.
 ///
-/// Rewrites the assignment where there is one and inserts it at the top where
-/// there is not — never a parse-and-reserialise, for the reason [`apply`]
-/// gives: the comments in this file are most of it.
+/// Rewrites the assignment where there is one and inserts it where there is
+/// not — never a parse-and-reserialise, for the reason [`apply`] gives: the
+/// comments in this file are most of it.
 fn set_default_provider(path: &std::path::Path, provider: &str) -> Result<()> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {path:?}"))?;
     let assignment = format!("default_provider = {provider:?}");
@@ -472,10 +472,35 @@ fn set_default_provider(path: &std::path::Path, provider: &str) -> Result<()> {
         .position(|l| l.split('=').next().map(str::trim) == Some("default_provider"))
     {
         Some(i) => lines[i] = assignment,
-        None => lines.insert(0, assignment),
+        // **After the leading comment block, not at line 0.** A file that
+        // opens with its own header comment — which the starter this writes
+        // does, and which is the shape people's hand-written configs take —
+        // would otherwise get the assignment *above* the comment describing
+        // the file, so the comment reads as if it were about the assignment.
+        // Valid TOML, and wrong about what the file says.
+        None => lines.insert(leading_comment_end(&lines), assignment),
     }
     std::fs::write(path, lines.join("\n") + "\n")?;
     Ok(())
+}
+
+/// The first line that is neither a comment nor blank — where a new top-level
+/// key belongs in a file that opens with prose about itself.
+fn leading_comment_end(lines: &[String]) -> usize {
+    let end = lines
+        .iter()
+        .position(|l| {
+            let t = l.trim_start();
+            !t.is_empty() && !t.starts_with('#')
+        })
+        .unwrap_or(lines.len());
+    // Back up over blank lines so the key joins the content rather than
+    // orphaning the blank that separated the header from it.
+    lines[..end]
+        .iter()
+        .rposition(|l| l.trim_start().starts_with('#'))
+        .map(|i| i + 1)
+        .unwrap_or(end)
 }
 
 /// Keep the previous file beside the new one. Best-effort by design: a backup
@@ -590,4 +615,34 @@ fn shell_words(argv: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(text: &str) -> Vec<String> {
+        text.lines().map(str::to_string).collect()
+    }
+
+    /// A new top-level key goes *under* the file's own header comment, not
+    /// above it. Found by running `--write` against a hand-written config:
+    /// the result was valid TOML that lied about what the comment described.
+    #[test]
+    fn a_new_top_level_key_lands_below_the_files_own_header() {
+        let l = lines("# My config.\n# Second line.\n\n[agent]\nmax_turns = 40\n");
+        assert_eq!(leading_comment_end(&l), 2, "just past the comment block");
+
+        // No header at all: the key goes first, which is where it belongs.
+        assert_eq!(leading_comment_end(&lines("[agent]\nx = 1\n")), 0);
+
+        // A file that is nothing but comments — the starter, before anybody
+        // uncomments anything. `lines.len()` would be past the end for an
+        // insert, so this has to be the comment count exactly.
+        let all_comments = lines("# a\n# b\n");
+        assert_eq!(leading_comment_end(&all_comments), all_comments.len());
+
+        // Empty file: no panic, and index 0 is a legal insert point.
+        assert_eq!(leading_comment_end(&[]), 0);
+    }
 }
