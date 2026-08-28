@@ -62,15 +62,16 @@
 use crate::backlog::{Backlog, Depth};
 use chrono::{DateTime, Utc};
 
-/// How many recorded commitments make the count term treat "more" as no
-/// worse than this. A single item is not yet "piling up" — the term is zero
-/// at one and ramps linearly from there — so a lone fresh commitment cannot
-/// be read as several stacking up; it saturates at three, past which a
-/// fourth waiting item does not make a run four times as concerning.
-const SATURATES_AT_COUNT: usize = 3;
+/// How many recorded commitments read as half of maximal on the count term.
+/// A single item is not yet "piling up" — the term is zero at one — and it
+/// climbs asymptotically from there: `0.5` at three, approaching but never
+/// reaching `1.0`, so a fourth waiting item still reads worse than a third
+/// without any count ever pinning the combined reading outright (see the
+/// midpoint-not-ceiling note on [`AGE_HALF_AT_HOURS`]).
+const COUNT_HALF_AT: usize = 3;
 
-/// How long the oldest recorded commitment can wait before the age term
-/// treats it as maximally so.
+/// How long the oldest recorded commitment waits before the age term reads
+/// half of maximal.
 ///
 /// **A day was the wrong number, found by reading what the three stores this
 /// reads actually hold rather than by guessing.** `questions.rs` exists
@@ -85,17 +86,32 @@ const SATURATES_AT_COUNT: usize = 3;
 /// *whole* reading regardless of count or pressure (`1 - (1-1)(1-c)(1-p) ==
 /// 1`), which is a machine reading a constant `anticipated_guilt: 1.0`
 /// forever. A corpus of a constant carries nothing, the same degenerate-label
-/// shape rung 7's own measurement found the hard way. A week gives the
-/// distribution these stores actually produce room to still vary.
-const SATURATES_AT_HOURS: f64 = 24.0 * 7.0;
+/// shape rung 7's own measurement found the hard way.
+///
+/// **A midpoint, not a ceiling — and that arrived the same way, one week
+/// later.** Widening the horizon to a week only moved the cliff: on
+/// 2026-08-28 the first run recorded under this sensor read exactly `1.0`,
+/// because the live outbox held drafts eight days old — past any horizon a
+/// clamp-to-1.0 could reasonably use, since the owner sitting on a draft for
+/// a week is this store's *normal* state, not an anomaly (doctor already
+/// nags about it separately). A term that reaches exactly `1.0` multiplies
+/// every other term's variance away in the OR, so the standing-debt terms
+/// (age, count) now approach the maximum asymptotically — `h / (h +
+/// AGE_HALF_AT_HOURS)`, `0.5` at one week, `0.67` at two — instead of
+/// clamping. Ordering is preserved (older always reads worse), no term is
+/// ever argued down by the others (still an OR), and the corpus keeps its
+/// variance under exactly the backlog it actually has. Pressure keeps its
+/// hard top: it is a fact about *this run*, not standing debt, so it cannot
+/// pin the corpus across runs.
+const AGE_HALF_AT_HOURS: f64 = 24.0 * 7.0;
 
 /// A magnitude in `[0, 1]`, combining three signals as a logical OR —
 /// `1 - (1-a)(1-b)(1-c)` — rather than an average or a product:
 ///
 /// - **age** — how long the oldest recorded commitment has sat unresolved,
-///   saturating at [`SATURATES_AT_HOURS`].
+///   half of maximal at [`AGE_HALF_AT_HOURS`] and asymptotic above it.
 /// - **count** — how many are recorded as waiting at all, zero at a single
-///   item and saturating at [`SATURATES_AT_COUNT`].
+///   item, half of maximal at [`COUNT_HALF_AT`], asymptotic above it.
 /// - **pressure** — the run's own
 ///   [`crate::homeostat::Homeostat::peak_context_pressure`], a proxy for how
 ///   much room the run actually had to act on any of it.
@@ -107,9 +123,14 @@ const SATURATES_AT_HOURS: f64 = 24.0 * 7.0;
 /// ago, and that is intentional rather than a slip: no term may be argued
 /// back down by the others being low, which is the "may only narrow, never
 /// loosen" shape §7.3 gives affect generally, applied here to three inputs
-/// instead of one. A future consumer that wants "old *and* under pressure is
-/// worse than either alone" is a different, stricter function than this one,
-/// and should replace it deliberately rather than by way of this comment.
+/// instead of one. The standing-debt alarms are asymptotic rather than
+/// clamped for the reason [`AGE_HALF_AT_HOURS`]'s doc carries: an alarm that
+/// reaches exactly `1.0` does not merely stay raised, it erases the other
+/// two from the reading entirely, which on the live store's normal backlog
+/// made the whole sensor a constant. A future consumer that wants "old *and*
+/// under pressure is worse than either alone" is a different, stricter
+/// function than this one, and should replace it deliberately rather than by
+/// way of this comment.
 ///
 /// **Returns `None` unless all three stores were read.** A partial reading —
 /// two stores readable and one not — must not collapse into a number that
@@ -172,11 +193,13 @@ pub fn anticipated_guilt(
     }
     let oldest_hours = oldest_hours?;
 
-    let age = (oldest_hours / SATURATES_AT_HOURS).clamp(0.0, 1.0) as f32;
+    // Asymptotic, never clamped — see AGE_HALF_AT_HOURS: a standing-debt
+    // term that reaches exactly 1.0 erases the other terms from the OR.
+    let age = (oldest_hours / (oldest_hours + AGE_HALF_AT_HOURS)) as f32;
     // Zero at one item — a single fresh commitment is not "several piling
-    // up" — ramping linearly from two toward the saturation count.
-    let count =
-        ((waiting.saturating_sub(1)) as f32 / (SATURATES_AT_COUNT - 1) as f32).clamp(0.0, 1.0);
+    // up" — climbing toward (never to) 1.0, half of maximal at the midpoint.
+    let above_one = waiting.saturating_sub(1) as f32;
+    let count = above_one / (above_one + (COUNT_HALF_AT - 1) as f32);
     // Unknown, not a measured zero — see the doc comment above.
     let pressure = peak_context_pressure?.clamp(0.0, 1.0);
     let combined = 1.0 - (1.0 - age) * (1.0 - count) * (1.0 - pressure);
@@ -261,16 +284,55 @@ mod tests {
     }
 
     #[test]
-    fn a_week_old_commitment_saturates_the_age_term() {
+    fn a_week_old_commitment_reads_half_of_maximal_on_the_age_term() {
         let now = Utc::now();
-        let old = now - chrono::Duration::hours(SATURATES_AT_HOURS.round() as i64);
+        let old = now - chrono::Duration::hours(AGE_HALF_AT_HOURS.round() as i64);
         let backlog = Backlog {
             questions: Some(depth(1, Some(&old.to_rfc3339()))),
             ..readable_and_empty()
         };
         // Pressure known and zero, so age alone is what is being measured.
         let g = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
-        assert!((g - 1.0).abs() < 1e-6, "{g}");
+        assert!((g - 0.5).abs() < 1e-3, "{g}");
+    }
+
+    /// The regression the midpoint exists for, taken from the live store on
+    /// 2026-08-28: four drafts eight days old plus three questions read
+    /// exactly `1.0` on the first run recorded under this sensor — the age
+    /// term clamped, the OR erased count and pressure, and the corpus was a
+    /// constant from its first row. Standing debt must *order* readings, not
+    /// pin them: past-the-midpoint debt reads high but below `1.0`, still
+    /// worsens as it ages, and still lets pressure move the reading.
+    #[test]
+    fn a_standing_week_old_backlog_does_not_pin_the_reading_at_a_constant() {
+        let now = Utc::now();
+        let eight_days = now - chrono::Duration::hours(24 * 8);
+        let two_days = now - chrono::Duration::hours(48);
+        let live_shape = Backlog {
+            outbox: Some(depth(4, Some(&eight_days.to_rfc3339()))),
+            questions: Some(depth(3, Some(&two_days.to_rfc3339()))),
+            ..readable_and_empty()
+        };
+        let g = anticipated_guilt(&live_shape, Some(0.06), now).unwrap();
+        assert!(g > 0.5, "eight-day-old debt should still read high: {g}");
+        assert!(g < 1.0 - 1e-3, "…but must not pin the reading: {g}");
+
+        // Variance survives in both remaining inputs.
+        let under_pressure = anticipated_guilt(&live_shape, Some(0.6), now).unwrap();
+        assert!(under_pressure > g, "{g} vs {under_pressure}");
+        let older = Backlog {
+            outbox: Some(depth(
+                4,
+                Some(&(now - chrono::Duration::hours(24 * 16)).to_rfc3339()),
+            )),
+            questions: Some(depth(3, Some(&two_days.to_rfc3339()))),
+            ..readable_and_empty()
+        };
+        let g_older = anticipated_guilt(&older, Some(0.06), now).unwrap();
+        assert!(
+            g_older > g,
+            "older debt must still read worse: {g} vs {g_older}"
+        );
     }
 
     #[test]
@@ -323,14 +385,14 @@ mod tests {
     }
 
     #[test]
-    fn several_waiting_items_saturate_the_count_term_even_when_fresh() {
+    fn several_waiting_items_raise_the_count_term_even_when_fresh() {
         let now = Utc::now();
         let one = Backlog {
             outbox: Some(depth(1, Some(&now.to_rfc3339()))),
             ..readable_and_empty()
         };
         let several = Backlog {
-            outbox: Some(depth(SATURATES_AT_COUNT, Some(&now.to_rfc3339()))),
+            outbox: Some(depth(COUNT_HALF_AT, Some(&now.to_rfc3339()))),
             ..readable_and_empty()
         };
         let g_one = anticipated_guilt(&one, Some(0.0), now).unwrap();
@@ -341,7 +403,7 @@ mod tests {
     #[test]
     fn the_oldest_across_stores_wins_not_the_first() {
         let now = Utc::now();
-        let backlog = Backlog {
+        let fresh_first = Backlog {
             outbox: Some(depth(
                 1,
                 Some(&(now - chrono::Duration::hours(1)).to_rfc3339()),
@@ -349,16 +411,31 @@ mod tests {
             questions: Some(depth(
                 1,
                 Some(
-                    &(now - chrono::Duration::hours(SATURATES_AT_HOURS.round() as i64 * 2))
+                    &(now - chrono::Duration::hours(AGE_HALF_AT_HOURS.round() as i64 * 2))
                         .to_rfc3339(),
                 ),
             )),
             ..readable_and_empty()
         };
-        let g = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
-        // Two saturation-horizons-old saturates the age term regardless of
-        // the 1h row beside it.
-        assert!((g - 1.0).abs() < 1e-6, "{g}");
+        let both_fresh = Backlog {
+            outbox: Some(depth(
+                1,
+                Some(&(now - chrono::Duration::hours(1)).to_rfc3339()),
+            )),
+            questions: Some(depth(
+                1,
+                Some(&(now - chrono::Duration::hours(1)).to_rfc3339()),
+            )),
+            ..readable_and_empty()
+        };
+        // The 1h row in the first store must not stand in for the two-week
+        // row behind it: the reading is driven by the oldest anywhere.
+        let g_old_behind = anticipated_guilt(&fresh_first, Some(0.0), now).unwrap();
+        let g_fresh = anticipated_guilt(&both_fresh, Some(0.0), now).unwrap();
+        assert!(g_old_behind > g_fresh, "{g_fresh} vs {g_old_behind}");
+        // Two midpoints old (age 2/3) OR two waiting items (count 1/3):
+        // 1 - (1/3)(2/3) = 7/9. Pinned so the arithmetic stays honest.
+        assert!((g_old_behind - 7.0 / 9.0).abs() < 1e-2, "{g_old_behind}");
     }
 
     #[test]
