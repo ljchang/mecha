@@ -127,9 +127,10 @@ and `mecha-core` +5 — confirmed by `git diff --stat 63f88b3..d32b288 --
 '*.rs'` touching only the six files #99 and #103 changed (`appraisal.rs`,
 `tasks.rs`, `tui/mod.rs`, `voice/mod.rs`, `serve/board.rs`, and
 `serve/chat.rs` — the last carries `WireEvent::Affect`'s own wire-shape
-test, part of the `mecha-cli` +15); the rung 9/10 handoff PRs (#104, #105)
-in between are docs-only and moved nothing. Mail, Slack and the integration
-fixtures untouched.
+test, part of the `mecha-cli` +15); the one rung 9/10 handoff PR in
+between, #104, is docs-only and moved nothing (#105 is not in between —
+it is `63f88b3` itself). Mail, Slack and the integration fixtures
+untouched.
 
 The previous figure was **1,768**, measured 2026-08-28 on `main` at
 **63f88b3**, which carries both rung 9 and rung 10 (#100, `e124f8a`, plus
@@ -1471,7 +1472,13 @@ argument was wrong. Two pieces:
   structurally" — `shell` is universal and CLAUDE.md already documents
   taint tracking's own blind spot inside a command, so a shell-capable run
   invoking `mecha tasks set --status done` as a subprocess is the same known
-  gap, inherited here rather than introduced by it. `appraise_closure`
+  gap, inherited here rather than introduced by it. A narrower, second gap:
+  `kg_task_update` itself is on an ordinary run's tool surface — withheld
+  only for a *task* session closing its own task (D6's actual scope), not
+  for a chat/TUI run holding the graph MCP tools closing some *other* task
+  directly. Not a D6 violation and not a wrong appraisal, only a missed
+  one — bypassing `tasks set` bypasses `is_fresh_closure` too, same as the
+  `shell` case. `appraise_closure`
   resolves the task's linked session (D9),
   builds an `Appraisal` the same four-step way `mecha sessions appraise`
   does for one session instead of a whole-store scan, and prints the label
