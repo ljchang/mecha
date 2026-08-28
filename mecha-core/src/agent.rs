@@ -609,14 +609,19 @@ impl Conversation {
     ///
     /// **The pop is conditional on the tail being the person's own text**
     /// ([`is_plain_user_text`]), not on its role — because there are two
-    /// ways a turn begins. A plain submit pushes a user message, and the
-    /// snapshot ends with it: popped, or the next request resends it. A
-    /// submit that *folded* into a tool-round tail (the barge-in shape —
-    /// see `append_user_text`'s callers) pushed nothing, and the snapshot
-    /// ends with the tool results of the turn before: restoring the
-    /// snapshot already removed the folded text, and popping would orphan
-    /// that round's `tool_use`. One rule serves both, so a caller does not
-    /// have to carry a flag from its push site to its error arm.
+    /// ways a turn begins, and they earn different failure outcomes. A
+    /// plain submit pushes a user message, and the snapshot ends with it:
+    /// popped, or the next request resends the dangling trigger. A submit
+    /// that *folded* into a tool-round tail (the barge-in shape — see
+    /// `append_user_text`'s callers, all of which record the fold at submit
+    /// and snapshot **after** it) leaves the snapshot ending with the tool
+    /// results *carrying* the folded text: popping would orphan that
+    /// round's `tool_use`, so the utterance survives the failed turn inside
+    /// an already-valid tail and simply waits for the next attempt.
+    /// Asymmetric on purpose — a popped trigger prevents a verbatim resend,
+    /// a kept fold is the owner's words already on the record inside a turn
+    /// the next request may legally carry — and one rule serves both, so a
+    /// caller does not carry a flag from its push site to its error arm.
     ///
     /// There is a third shape, and its outcome is chosen, not accidental: a
     /// fold into a **plain** user tail (an interrupt before the first token
