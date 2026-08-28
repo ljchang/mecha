@@ -363,6 +363,20 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
     // correction to the channel that introduces that freedom is what keeps
     // the free readout's own numbers reproducible while still closing the
     // hole this channel opened.
+    //
+    // **Not a total guarantee — dormant on an exact sign tie.** An appraiser
+    // `Neutral` (say, `strongly_negative`/`self` at `-1.0`) can tie exactly
+    // with a deterministic `Neutral` of the same magnitude
+    // (`ended_on_failed_call` is also `-1.0`); `says_more` is `0` on both, so
+    // the reduce above keeps whichever was encountered first — the
+    // deterministic error, since `of_session` builds those before
+    // `apply_appraiser` pushes the appraiser's — and `reduced_channel` reads
+    // `Channel::Counter`, so this correction never fires. The record still
+    // reports `Neutral` even if a smaller error elsewhere names something.
+    // Not a regression: a session with no appraiser and this same tie already
+    // reads `Neutral` today, which is exactly the pre-existing behaviour the
+    // scoping above protects — but worth stating plainly rather than letting
+    // "must not bury" above read as unconditional.
     // Re-runs the *same* magnitude-first reduce over the non-`Neutral`
     // subset rather than ranking by `says_more` alone — `max_by_key` would
     // drop magnitude entirely (a `-0.1` `Embarrassment` beating a `-0.9`
@@ -963,7 +977,11 @@ pub fn parse_appraiser_verdict(text: &str) -> Result<AppraiserVerdict> {
         agency: Option<String>,
     }
     let wire: Wire = serde_json::from_str(&text[start..=end]).with_context(|| {
-        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400));
+        // `+ 1` because the helper's `max` is an *exclusive* upper bound and
+        // the old `..=` slice this replaces was inclusive — without it, the
+        // ordinary all-ASCII case would silently drop one trailing byte
+        // (usually the closing brace) versus the original message.
+        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400) + 1);
         format!("parsing the appraiser's verdict: {}", &text[start..cut])
     })?;
 
@@ -1878,6 +1896,40 @@ mod tests {
             Affect::Neutral,
             "no Channel::Appraisal error is present, so the free readout's \
              pre-existing reduce must decide exactly as it always has"
+        );
+    }
+
+    /// The gap the correction's own doc comment names: an exact sign tie
+    /// between an appraiser `Neutral` and a deterministic one is dormant,
+    /// because `reduced_channel` reads whichever tied error came first
+    /// (`of_session`'s deterministic errors, built before `apply_appraiser`
+    /// runs), not `Channel::Appraisal`. Pinned as expected rather than left
+    /// to be rediscovered as a surprise: this is the pre-existing behaviour
+    /// the scoping protects, not a new hole.
+    #[test]
+    fn an_exact_tie_between_an_appraiser_neutral_and_a_deterministic_one_is_dormant() {
+        let ceiling = GoalError {
+            cite: Cite::Counter("stop_cause".into()),
+            ..err(-0.5, Agency::World)
+        }; // Anger, but not the most negative error present
+        let ended_on_failed_call = GoalError {
+            cite: Cite::Counter("ended_on_failed_call".into()),
+            ..err(-1.0, Agency::Own)
+        }; // reduces to Neutral, ties with the appraiser's -1.0 below
+        let mut a = appraisal(vec![ceiling, ended_on_failed_call]);
+        apply_appraiser(
+            &mut a,
+            AppraiserVerdict {
+                sign: Some(-1.0),
+                agency: Agency::Own,
+                reasoning: None,
+            },
+        );
+        assert_eq!(
+            a.label,
+            Affect::Neutral,
+            "an exact-magnitude tie with a deterministic Neutral keeps the \
+             correction dormant, exactly as documented above"
         );
     }
 
