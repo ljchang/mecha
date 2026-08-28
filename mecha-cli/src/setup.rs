@@ -243,8 +243,18 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // back to its pre-run status, and a closure is the *owner's* act on
     // every path — the day `move_task` is asked to carry `done`, the guard's
     // refusal is the correct answer and `tasks set` is the correct caller.
-    if let Some((_, tool)) = withhold_tool(&mut registry, "kg_task_update") {
-        registry.insert(crate::closure_guard::ClosedStatusGuard::wrap(tool));
+    // Every match, not the first: two graph servers under `prefix_tools`
+    // would each hold a `*__kg_task_update`, and `withhold_tool` returns one
+    // at a time — found on review, the single `if let` left the second
+    // server's handle raw. Collected before re-inserting, because the
+    // wrapper keeps the inner name and an eager re-insert would be found
+    // again by the next iteration, forever.
+    let mut guarded = Vec::new();
+    while let Some((_, tool)) = withhold_tool(&mut registry, "kg_task_update") {
+        guarded.push(crate::closure_guard::ClosedStatusGuard::wrap(tool));
+    }
+    for tool in guarded {
+        registry.insert(tool);
     }
     for profile in &cfg.subagents {
         // `--tool` narrows the pool deliberately, and a subagent whose profile
@@ -1545,14 +1555,24 @@ mod tests {
         let mut pool = mecha_core::tool::Registry::new();
         pool.insert(std::sync::Arc::new(Raw));
         let cfg = mecha_core::config::Config::default();
-        let provider_cfg = cfg.providers.values().next().cloned().unwrap_or_default();
+        // A local provider, so the child always builds: the default config's
+        // provider is anthropic, whose builder wants a credential — found on
+        // review, the first cut skipped on that `Err` and this test asserted
+        // nothing on any machine without a key, standing in for a property
+        // the PR's own comment calls previously positional. `kind = "local"`
+        // needs no credential and nothing here ever sends a request.
+        let provider_cfg = mecha_core::config::ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:1".into()),
+            ..Default::default()
+        };
         let profile = mecha_core::subagent::SubagentProfile {
             name: "child".into(),
             description: "a child".into(),
             tools: vec!["graph__kg_task_update".into()],
             ..Default::default()
         };
-        let child = match build_subagent(
+        let child = build_subagent(
             &profile,
             &pool,
             &cfg,
@@ -1560,12 +1580,8 @@ mod tests {
             &mecha_core::tool::ToolCtx::default(),
             None,
             None,
-        ) {
-            Ok(c) => c,
-            // A provider this machine cannot build is not what this test is
-            // about; skipping beats asserting on the error text.
-            Err(_) => return,
-        };
+        )
+        .expect("a local provider needs no credential, so the child must build");
         let tool = child
             .agent()
             .registry()
