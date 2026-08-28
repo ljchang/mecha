@@ -91,7 +91,18 @@ const SATURATES_AT_HOURS: f64 = 24.0;
 /// [`crate::backlog::Waiting`] states for why a backlog total is reported
 /// beside how much of it could not be read rather than silently as a lower
 /// bound. The same applies to a commitment counted but whose timestamp could
-/// not be parsed: `waiting > 0` with no age reachable is unknown, not zero.
+/// not be parsed (`waiting > 0` with no age reachable is unknown, not zero),
+/// and to pressure itself: `peak_context_pressure` is `None` on any provider
+/// with no declared `context_window`, which [`crate::homeostat::Homeostat`]'s
+/// own doc says must never be read as a measured `0.0` — silently treating
+/// unknown pressure as none would put exactly that floor under this reading
+/// instead, and would let a two-term computation average into
+/// `Corpus::mean_anticipated_guilt` beside three-term ones with no mark
+/// telling them apart. So this returns `None` whenever `waiting > 0` and
+/// pressure is unsensed, even though age and count are both known — the same
+/// "unknown beats a confident-looking guess" rule this function makes for
+/// every other input, applied to the one it was tempted to treat as a
+/// default instead.
 pub fn anticipated_guilt(
     backlog: &Backlog,
     peak_context_pressure: Option<f32>,
@@ -127,7 +138,8 @@ pub fn anticipated_guilt(
     // up" — ramping linearly from two toward the saturation count.
     let count =
         ((waiting.saturating_sub(1)) as f32 / (SATURATES_AT_COUNT - 1) as f32).clamp(0.0, 1.0);
-    let pressure = peak_context_pressure.unwrap_or(0.0).clamp(0.0, 1.0);
+    // Unknown, not a measured zero — see the doc comment above.
+    let pressure = peak_context_pressure?.clamp(0.0, 1.0);
     let combined = 1.0 - (1.0 - age) * (1.0 - count) * (1.0 - pressure);
     Some(combined.clamp(0.0, 1.0))
 }
@@ -217,8 +229,23 @@ mod tests {
             questions: Some(depth(1, Some(&old.to_rfc3339()))),
             ..readable_and_empty()
         };
-        let g = anticipated_guilt(&backlog, None, now).unwrap();
+        // Pressure known and zero, so age alone is what is being measured.
+        let g = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
         assert!((g - 1.0).abs() < 1e-6, "{g}");
+    }
+
+    #[test]
+    fn unknown_pressure_is_unknown_not_a_measured_zero() {
+        // A provider with no declared context_window reports `None` here —
+        // not "definitely idle" — and this function must not quietly treat
+        // it as the latter just because age and count are both known.
+        let now = Utc::now();
+        let old = now - chrono::Duration::hours(48);
+        let backlog = Backlog {
+            questions: Some(depth(1, Some(&old.to_rfc3339()))),
+            ..readable_and_empty()
+        };
+        assert_eq!(anticipated_guilt(&backlog, None, now), None);
     }
 
     #[test]
@@ -271,7 +298,7 @@ mod tests {
             )),
             ..readable_and_empty()
         };
-        let g = anticipated_guilt(&backlog, None, now).unwrap();
+        let g = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
         // 30h saturates the 24h age term regardless of the 1h row beside it.
         assert!((g - 1.0).abs() < 1e-6, "{g}");
     }

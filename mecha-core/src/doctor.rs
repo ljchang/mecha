@@ -1294,6 +1294,25 @@ fn check_charter(path: &Path) -> Vec<Finding> {
             ),
             remedy: remedy("review the charter and trim it"),
         }],
+        // A file that exists and parses to zero lines is an authoring
+        // mistake by construction — nobody writes an empty charter on
+        // purpose — and otherwise indistinguishable from never having
+        // written one at all: `load` returns `Ok`, `prompt_block` returns
+        // `None`, and `prepare_tools` prints nothing. `[[lines]]` instead of
+        // `[[line]]` is exactly this, since `RawCharter`'s `#[serde(default)]`
+        // turns an unrecognised table name into a silently empty document
+        // rather than a parse error.
+        Ok(charter) if charter.is_empty() => vec![Finding {
+            component: "charter".to_string(),
+            severity: Severity::Attention,
+            summary: "charter file exists but has no lines".to_string(),
+            detail: format!(
+                "{} parsed with zero `[[line]]` entries — check the table name; a typo \
+                 there parses as an empty charter rather than a load error",
+                path.display()
+            ),
+            remedy: remedy("see what's actually in the charter file"),
+        }],
         Ok(_) => Vec::new(),
     }
 }
@@ -3349,6 +3368,31 @@ mod tests {
         )
         .unwrap();
         assert!(check_charter(&home.join("charter.toml")).is_empty());
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_charter_file_that_parses_to_zero_lines_is_flagged_not_silent() {
+        // `[[lines]]` (plural) is valid TOML that `RawCharter`'s
+        // `#[serde(default)]` turns into an empty charter rather than a
+        // parse error — indistinguishable from never having authored one at
+        // all unless something says so.
+        let home = home("charter-empty-typo");
+        std::fs::write(
+            home.join("charter.toml"),
+            "[[lines]]\nid = \"a\"\ntext = \"protect the owner\"\n",
+        )
+        .unwrap();
+
+        let findings = check_charter(&home.join("charter.toml"));
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].severity, Severity::Attention);
+        assert!(
+            findings[0].summary.contains("no lines"),
+            "{}",
+            findings[0].summary
+        );
 
         let _ = std::fs::remove_dir_all(&home);
     }

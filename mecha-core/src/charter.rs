@@ -136,7 +136,11 @@ impl Charter {
             if line.text.trim().is_empty() {
                 bail!("charter line `{}` has empty `text`", line.id);
             }
-            if !seen.insert(line.id.as_str()) {
+            // Trimmed, to match both the emptiness check two lines up and
+            // `GoalRef::from_str` (`goal.rs`), which trims an id it parses —
+            // `"x"` and `"x "` must collide here or they answer to the same
+            // `charter:x` reference without this check ever having noticed.
+            if !seen.insert(line.id.trim()) {
                 // Ambiguous rather than merely untidy: a `GoalRef::Charter(id)`
                 // naming a duplicated id would point at whichever line a
                 // lookup happened to find first, silently.
@@ -183,13 +187,20 @@ pub fn prompt_block(charter: &Charter) -> Option<String> {
     if charter.is_empty() {
         return None;
     }
+    // No instruction to cite a line's id via `serves`, deliberately: `todo`'s
+    // schema documents only `task:<id>` there (`tool/todo.rs`), and this
+    // block is unconditional — rendered whether or not `todo` is even in the
+    // tool surface (a narrow `--tool` allowlist, Slack's own set). Asking for
+    // a citation with nowhere reliable to put it, or a tool that may not
+    // exist, is worse than not asking; wiring that up is the appraisal
+    // consumer's job (see the rung 10 note in `GOAL-SYSTEM-DESIGN.md`), not
+    // this block's.
     let mut out = String::from(
         "## Charter\n\n\
          Standing priorities the owner has written for you, ranked highest first \
          and listed in that order. They are not weighted: when two conflict, the \
          higher one wins outright, whatever the lower one would otherwise argue \
-         for — no amount of urgency on a lower line outranks a higher one. Cite a \
-         line's id as `charter:<id>` when a plan serves it.\n\n",
+         for — no amount of urgency on a lower line outranks a higher one.\n\n",
     );
     for (i, line) in charter.lines().iter().enumerate() {
         out.push_str(&format!("{}. `{}` — {}\n", i + 1, line.id, line.text));
@@ -255,6 +266,18 @@ text = "Tell the owner the truth early, especially when it disappoints."
     #[test]
     fn a_duplicate_id_is_refused_because_a_reference_to_it_would_be_ambiguous() {
         let e = Charter::validate(vec![line("a", "one"), line("a", "two")])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("used more than once"), "{e}");
+    }
+
+    #[test]
+    fn ids_differing_only_by_surrounding_whitespace_still_collide() {
+        // `GoalRef::from_str` trims an id it parses (`goal.rs`), so `"x"` and
+        // `"x "` answer to the same `charter:x` reference — this check has to
+        // trim too, or two visually distinct-looking lines pass as unique
+        // and then can't be told apart by anything that resolves the id.
+        let e = Charter::validate(vec![line("a", "one"), line("a ", "two")])
             .unwrap_err()
             .to_string();
         assert!(e.contains("used more than once"), "{e}");
