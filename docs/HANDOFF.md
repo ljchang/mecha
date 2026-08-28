@@ -133,7 +133,7 @@ fixtures untouched.
 
 The previous figure was **1,768**, measured 2026-08-28 on `main` at
 **63f88b3**, which carries both rung 9 and rung 10 (#100, `e124f8a`, plus
-its own handoff pass #105) — the tree *before* rung 8, say which tree,
+its own handoff pass #105) — the tree *before* rung 8. Say which tree,
 since a count taken between the two would have read differently and did,
 one paragraph below. Breakdown: **565** in `mecha-cli` with 1 ignored, **978**
 in `mecha-core`, 6 + 9 in its two integration suites, **133** in
@@ -1428,7 +1428,7 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
-### The goal system — rungs 0–10 shipped, out of build order; rung 7's model half of step appraisal, rung 9's review-queue salience and rung 10's charter-driven labelling are what's left
+### The goal system — rungs 0–10 shipped, out of build order; rung 7's model half of step appraisal and rung 10's charter-driven labelling are what's left, and rung 9's review-queue salience is unverified from this branch
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the authority and carries a status header
 saying which rungs shipped. The arc's premise, which is what makes the rest
@@ -1465,8 +1465,14 @@ argument was wrong. Two pieces:
   which every surface that mutates a task's status already shells out to —
   the TUI's `/tasks` modal, the web board, and Slack's Done tap — so hooking
   there covers all of them for free, and D6 (the agent may not close its own
-  task) holds structurally: nothing on any run's tool surface reaches this
-  code path. `appraise_closure` resolves the task's linked session (D9),
+  task) holds for every **registered** tool: no name on any run's tool
+  surface reaches this code path (`RunContext::withheld` is a dispatch-seam
+  check, not a process boundary). That is narrower than "holds
+  structurally" — `shell` is universal and CLAUDE.md already documents
+  taint tracking's own blind spot inside a command, so a shell-capable run
+  invoking `mecha tasks set --status done` as a subprocess is the same known
+  gap, inherited here rather than introduced by it. `appraise_closure`
+  resolves the task's linked session (D9),
   builds an `Appraisal` the same four-step way `mecha sessions appraise`
   does for one session instead of a whole-store scan, and prints the label
   to the owner on stderr — never stdout, which Slack's Done tap parses whole
@@ -1516,6 +1522,13 @@ argument was wrong. Two pieces:
   a silently undispatched hook would otherwise read identical to "every
   session is neutral" — confirmed directly against the installed pipecat
   1.7.0 that the hook is real and dispatched, not assumed from this diff.
+  **And it lags by one turn on purpose, the same disclosed-not-fixed shape
+  as §5.4's two gaps above**: the latch fires while the turn that will
+  *earn* the label is still streaming its own answer out, so what a call
+  actually hears is the *previous* turn's mood applied to the current
+  turn's words. Closing that would mean holding speech until the whole
+  answer is known, which defeats the point of streaming — `LocalTTS.
+  on_turn_context_created`'s own docstring in `worker.py` says so.
 
 Both PRs together took **nine rounds of automated review** (Claude's own PR
 bot plus one independent Codex pass) to reach that state, catching — beyond
