@@ -1226,6 +1226,18 @@ Each rung is independently useful and independently measurable.
    every interactive session has one.
 8. **Goal-closure appraisal and the readout surfaces** (§5.4, §6.2).
 9. **Episode tagging, review-queue salience, gossip seeding** (§10).
+
+   *Episode tagging built 2026-08-28*: `appraisal::for_session` is the one
+   assembly `mecha sessions appraise` and `mecha distill` now both call
+   (extracted so the two cannot drift the way `Session::read`'s own doc
+   warns about), and `distill::upsert_args` puts the affect label and goal
+   errors on the episode's `meta`, beside the taint snapshot already there —
+   not gated on the timeline's trust, because unlike a correction's free
+   text they are structured facts the harness computed about its own run.
+   **Review-queue salience and gossip seeding are still unbuilt**: the first
+   needs pkg (a different repository) to read `meta.affect`/`meta.goal_errors`
+   and reorder on them, and the second needs a surprise channel this rung
+   does not compute yet.
 10. **The charter** (§11), anticipated guilt (§7.4), and the homeostat into
     `diagnose::Evidence`.
 11. **Curiosity** (§9.2). Last: it needs the competence time series the

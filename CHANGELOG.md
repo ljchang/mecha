@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An episode pushed to the knowledge graph now carries how the session
+  went.** `mecha distill` stamps each episode's `meta` with the session's
+  affect label and signed goal errors, the same record `mecha sessions
+  appraise` derives — one assembly (`appraisal::for_session`) rather than two
+  that could drift. Unlike a correction, neither is gated on the timeline's
+  trust: both are structured facts the harness computed about its own run,
+  with nothing in them a model or a fetched page could have authored. Rung 9's
+  first piece (`GOAL-SYSTEM-DESIGN.md` §10) — review-queue salience and
+  gossip seeding from the same tags are not built yet.
+
 - **A finished plan step is checked against what the run actually did.** A
   board task is closed by the owner, so a person is the check; a todo step is
   closed by the model, so there was no check at all. The loop folds its own
