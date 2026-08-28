@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assertion written against the documented contract is ignored entirely by
   `set -e`, so it neither failed nor passed.
 
+- **Two `mecha setup` writes that were quiet about losing something.** A
+  `never` answered over an unreadable `setup-declined.json` rewrote the file
+  with just that one id and dropped every earlier answer — `read_declined`
+  distinguishes *unknown* from *empty* precisely so that cannot happen, and
+  the write path collapsed the distinction and persisted it. The damaged
+  bytes are moved aside now, stamped so a later corruption cannot overwrite
+  the salvage, and where they went is printed. Separately, `offer` marked a
+  shared installer as handled off the answer rather than the outcome, so a
+  *failed* `cargo install mecha-mail` made the documents step report "already
+  handled by the command above" — an assertion about a command nothing had
+  checked. It reads the exit status now, and a failed install leaves the next
+  step genuinely outstanding.
+
 - **Two smaller `mecha setup` bugs, both found in review.** `never` and the
   offer loop's de-duplication disagreed: `mail` and `docs` carry the identical
   remedy argv when neither binary is on PATH, and the dedup skipped the second

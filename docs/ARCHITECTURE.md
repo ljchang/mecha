@@ -2137,6 +2137,18 @@ one address rather than a scan (a range would make a setup tool behave like a
 port scanner for the sake of finding a server on a port nobody documented), and
 runs only on an install that is otherwise stuck.
 
+**Two writes that must not be quiet.** `read_declined` answers `None` for an
+unreadable store so a caller can tell *unknown* from *empty* — and the write
+path collapsed it to empty and then **persisted** that, so one `never` over a
+typo'd `setup-declined.json` rewrote it with a single id and dropped every
+earlier answer. `read_for_write` moves the damaged bytes aside (stamped, so a
+second corruption cannot overwrite the first salvage) and hands the path back
+for the caller to print. And `offer` records an argv as handled off the `y`
+answer, so `run` returns whether the command actually **succeeded**: a failed
+`cargo install` used to make the next step sharing that installer print
+"already handled by the command above", which is a claim about a command
+nothing checked — grade the artifact, never the report.
+
 **A terminal that could not be restored is not an editor failure.**
 `with_terminal_suspended` returns `Result<Result<_>>`: the outer error is the
 suspend/restore dance (`disable_raw_mode`, `LeaveAlternateScreen`, and

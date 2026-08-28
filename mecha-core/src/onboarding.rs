@@ -886,23 +886,71 @@ pub fn read_declined(home: &Path) -> Option<std::collections::BTreeSet<String>> 
 /// temp sibling and renamed, so a crash mid-write leaves the previous
 /// answer whole rather than a truncated file that reads as "nothing
 /// declined" — which would silently re-offer everything.
-pub fn decline(home: &Path, id: &str) -> std::io::Result<()> {
-    let mut set = read_declined(home).unwrap_or_default();
+///
+/// `Ok(Some(path))` says an unreadable store was **set aside** at `path`
+/// rather than overwritten — see [`salvage_unreadable`]. The caller is
+/// expected to say so; losing somebody's recorded answers is not a thing to
+/// do quietly.
+pub fn decline(home: &Path, id: &str) -> std::io::Result<Option<PathBuf>> {
+    let (mut set, salvaged) = read_for_write(home);
     set.insert(id.to_string());
-    write_declined(home, &set)
+    write_declined(home, &set)?;
+    Ok(salvaged)
 }
 
 /// Take one back out — the undo, so a decline is a preference rather than a
 /// door that locks behind you. `id` of `None` clears every one.
-pub fn undecline(home: &Path, id: Option<&str>) -> std::io::Result<()> {
-    let mut set = read_declined(home).unwrap_or_default();
+pub fn undecline(home: &Path, id: Option<&str>) -> std::io::Result<Option<PathBuf>> {
+    let (mut set, salvaged) = read_for_write(home);
     match id {
         Some(id) => {
             set.remove(id);
         }
         None => set.clear(),
     }
-    write_declined(home, &set)
+    write_declined(home, &set)?;
+    Ok(salvaged)
+}
+
+/// The set to modify, and where the previous file went if it could not be
+/// read.
+///
+/// **`unwrap_or_default()` here was this module's own rule inverted.**
+/// [`read_declined`] answers `None` for an unreadable or malformed store
+/// precisely so a caller can tell *unknown* from *empty* — and collapsing it
+/// to empty on the write path then **persisted** the collapse: somebody with
+/// a typo in `setup-declined.json` saw `setup`'s honest "could not be read"
+/// warning, answered `never` to one step, and had the file rewritten with
+/// exactly that one id, every previously recorded answer gone with no further
+/// word. [`write_declined`]'s own comment argues that a partial write "would
+/// silently re-offer everything"; this path was doing it on purpose.
+///
+/// So the bytes are kept. Same move `mecha setup --write` makes before
+/// editing a config it did not author: a file somebody may have meant
+/// something by is moved aside, never overwritten.
+fn read_for_write(home: &Path) -> (std::collections::BTreeSet<String>, Option<PathBuf>) {
+    match read_declined(home) {
+        Some(set) => (set, None),
+        None => (Default::default(), salvage_unreadable(home)),
+    }
+}
+
+/// Move an unreadable decline store aside so the write about to happen
+/// cannot destroy it. Best-effort: a salvage that fails must not stop the
+/// answer being recorded, or a read-only directory would make `never`
+/// permanently unavailable.
+fn salvage_unreadable(home: &Path) -> Option<PathBuf> {
+    let path = declined_path(home);
+    // Stamped, so a second corruption later does not overwrite the first
+    // salvage — the whole point here is that nothing is lost quietly.
+    let aside = path.with_extension(format!(
+        "json.unreadable.{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    ));
+    std::fs::rename(&path, &aside).ok().map(|()| aside)
 }
 
 fn write_declined(home: &Path, set: &std::collections::BTreeSet<String>) -> std::io::Result<()> {
@@ -1523,6 +1571,59 @@ mod tests {
         // have declined nothing" about a document nobody could parse.
         std::fs::write(declined_path(&home), "{not json").unwrap();
         assert_eq!(read_declined(&home), None);
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// **An unreadable store is kept, never overwritten.**
+    ///
+    /// The bug this fails on: `decline` collapsed `read_declined`'s `None`
+    /// to an empty set and then *persisted* it, so somebody with a typo in
+    /// `setup-declined.json` who answered `never` to one step had the file
+    /// rewritten with exactly that one id and every earlier answer gone —
+    /// with no message beyond the "could not be read" line they had already
+    /// seen and reasonably read as "so nothing is recorded".
+    #[test]
+    fn declining_over_an_unreadable_store_keeps_the_old_bytes() {
+        let home = std::env::temp_dir().join(format!(
+            "mecha-declined-salvage-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+
+        let damaged = r#"{"declined": ["slack", "docs"] "#; // truncated
+        std::fs::write(declined_path(&home), damaged).unwrap();
+        assert_eq!(
+            read_declined(&home),
+            None,
+            "the fixture is genuinely unreadable"
+        );
+
+        let salvaged = decline(&home, "mail")
+            .unwrap()
+            .expect("the old file is kept");
+        assert_eq!(
+            std::fs::read_to_string(&salvaged).unwrap(),
+            damaged,
+            "kept byte for byte — a salvage that rewrites is not a salvage"
+        );
+
+        // The new store is well-formed and holds the answer just given.
+        let now = read_declined(&home).unwrap();
+        assert_eq!(now.into_iter().collect::<Vec<_>>(), ["mail"]);
+
+        // And the ordinary path reports no salvage, so a caller cannot print
+        // the warning on every decline.
+        assert_eq!(decline(&home, "slack").unwrap(), None);
+
+        // `undecline` takes the same care: it also writes the whole document.
+        std::fs::write(declined_path(&home), damaged).unwrap();
+        assert!(
+            undecline(&home, Some("slack")).unwrap().is_some(),
+            "the undo path overwrites the same file and must salvage too"
+        );
 
         let _ = std::fs::remove_dir_all(&home);
     }
