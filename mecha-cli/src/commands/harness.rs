@@ -357,8 +357,15 @@ async fn measure(
                 // The recording has nothing truthful to say past a divergence;
                 // stats over the tracked prefix would grade a behaviour-visible
                 // change on the fraction it happened to track.
+                //
+                // The caveat rides into the stored record too, not only the
+                // nightly's stderr — `Drawn.diverged` is what `mecha harness
+                // show` renders for whoever decides on a staged candidate,
+                // and that reader is the one the caveat was written for: a
+                // multi-config episode's divergence says something about the
+                // replay's compromise, not necessarily about the change.
                 eprintln!(" diverged — dropped");
-                diverged.push(prep.id.clone());
+                diverged.push(format!("{}{caveat}", prep.id));
                 continue;
             }
             eprintln!(" paired");

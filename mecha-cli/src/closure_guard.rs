@@ -35,16 +35,29 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// The wrapper. Everything delegates to the wrapped tool — same name, same
-/// spec, same capabilities, so the cached prefix and the interlock see the
-/// tool they always saw — except a closing `status`, which never reaches it.
+/// The wrapper. The name, schema and capabilities delegate untouched, so the
+/// registry key and the interlock see the tool they always saw. The
+/// **description does not** — found on review, deliberately: the guard is a
+/// real capability change, and a byte-identical spec would make
+/// `RunConfig.tools_hash` read `Match` across it, which is exactly the
+/// silent-surface-drift `surface.rs` exists to catch — from the other
+/// direction. Saying it in the description also tells the model up front,
+/// instead of costing a burned turn per attempt. The one-time prefix re-pay
+/// this causes is the honest price of the surface actually changing.
 pub struct ClosedStatusGuard {
     inner: Arc<dyn Tool>,
+    description: String,
 }
 
 impl ClosedStatusGuard {
     pub fn wrap(inner: Arc<dyn Tool>) -> Arc<dyn Tool> {
-        Arc::new(ClosedStatusGuard { inner })
+        let description = format!(
+            "{} Note: status cannot be set to done or dropped from here — a \
+             closure is the owner's act and goes through `mecha tasks set`, \
+             which also appraises it.",
+            inner.description()
+        );
+        Arc::new(ClosedStatusGuard { inner, description })
     }
 }
 
@@ -64,7 +77,7 @@ impl Tool for ClosedStatusGuard {
         self.inner.name()
     }
     fn description(&self) -> &str {
-        self.inner.description()
+        &self.description
     }
     fn input_schema(&self) -> Value {
         self.inner.input_schema()
@@ -241,17 +254,30 @@ mod tests {
         }
     }
 
-    /// The wrapper is invisible to everything but `call`: same name, same
-    /// spec — the cached prefix must not move, and the registry re-insert
-    /// must land on the same key.
+    /// The name and schema are the inner tool's — the registry re-insert
+    /// lands on the same key — while the description deliberately is NOT:
+    /// the guard is a real capability change, and a byte-identical spec
+    /// would make `tools_hash` read `Match` across it (and cost the model a
+    /// burned turn discovering the rule). This is the assertion that fails
+    /// if either half regresses.
     #[test]
-    fn the_wrapper_keeps_the_inner_tool_s_identity() {
+    fn the_wrapper_keeps_the_name_and_schema_and_honestly_changes_the_description() {
         let g = guarded();
         assert_eq!(g.name(), "graph__kg_task_update");
         let (a, b) = (g.spec(), Reaches.spec());
-        assert_eq!(
-            (a.name, a.description, a.input_schema),
-            (b.name, b.description, b.input_schema)
+        assert_eq!((a.name, a.input_schema), (b.name, b.input_schema));
+        assert!(
+            a.description.starts_with(&b.description),
+            "the inner description survives verbatim at the front"
+        );
+        assert!(
+            a.description.contains("mecha tasks set"),
+            "the guard's rule is stated where the model reads it: {}",
+            a.description
+        );
+        assert_ne!(
+            a.description, b.description,
+            "a byte-identical spec would hide the capability change from tools_hash"
         );
     }
 }
