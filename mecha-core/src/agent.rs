@@ -1383,6 +1383,19 @@ impl Agent {
             }
 
             // Is this iteration going to stop before it does any more work?
+            // One definition, called wherever the answer matters this turn —
+            // `loop_detected` and `usage` both still change after this point,
+            // so every call site passes its own current values rather than
+            // this closure closing over stale ones. A second, hand-spelled
+            // copy of a three-input predicate is how the copies stop
+            // agreeing (`Tier::of`, `harness::OverrideKey`,
+            // `LEARN_MIN_REFLECTIONS` all take this same one-definition rule
+            // elsewhere in this codebase).
+            let stopping_now = |loop_detected: bool, turns: u32, usage: &Usage| {
+                loop_detected
+                    || turns >= cx.budget.max_turns.unwrap_or(self.cfg.max_turns)
+                    || self.over_budget(&cx.budget, usage).is_some()
+            };
             // Computed here, ahead of the mailbox, because claiming a message
             // is irreversible: it marks the message delivered in the store,
             // and a run that stops this turn would consume it without ever
@@ -1392,9 +1405,7 @@ impl Agent {
             // on consuming mail. (Compaction is deliberately *not* guarded by
             // it: a final-answer turn on an oversized transcript needs the
             // summary or it overflows.)
-            let stopping = loop_detected
-                || turns >= cx.budget.max_turns.unwrap_or(self.cfg.max_turns)
-                || self.over_budget(&cx.budget, &usage).is_some();
+            let stopping = stopping_now(loop_detected, turns, &usage);
 
             // Messages other agents left for this run's producer — the same
             // fold point as steering, because it is the same constraint. The
@@ -2038,25 +2049,22 @@ impl Agent {
                         // up there, and Ctrl-C arriving during tool execution
                         // would otherwise reach this point before that check
                         // runs again, spending a call for a run that is
-                        // already ending. `stopping` (line ~1395) is the same
-                        // check, but it was computed *before* this turn's
-                        // `loop_detected` could flip true at line ~2008 — the
-                        // guard firing on this very turn's repeated call is
-                        // exactly the case a stale read would miss. Recomputed
-                        // fresh, on compaction's and the mailbox's own rule
-                        // for the same three inputs: a nudge for a run that
-                        // is stopping serves nobody, and on the `max_turns`
-                        // arm specifically, the only turn left to read it is
-                        // `final_answer` — tool-less, unable to act on
-                        // "re-scope the plan" regardless.
-                        let escalation_stopping = loop_detected
-                            || turns >= cx.budget.max_turns.unwrap_or(self.cfg.max_turns)
-                            || self.over_budget(&cx.budget, &usage).is_some();
-                        let candidate = slot
-                            .lock()
-                            .unwrap()
-                            .take()
-                            .filter(|_| !cx.cancelled() && !escalation_stopping);
+                        // already ending. `stopping` above is the same
+                        // check, but it was computed before `loop_guard`'s
+                        // `observe_turn` call — a few lines up — could flip
+                        // `loop_detected` true for *this* turn: the guard
+                        // firing on this very turn's repeated call is exactly
+                        // the case that stale a read would miss, so
+                        // `stopping_now` is called again here rather than
+                        // reusing `stopping`'s already-computed value. Same
+                        // rule as compaction's and the mailbox's own: a nudge
+                        // for a run that is stopping serves nobody, and on
+                        // the `max_turns` arm specifically, the only turn
+                        // left to read it is `final_answer` — tool-less,
+                        // unable to act on "re-scope the plan" regardless.
+                        let candidate = slot.lock().unwrap().take().filter(|_| {
+                            !cx.cancelled() && !stopping_now(loop_detected, turns, &usage)
+                        });
                         if let Some(escalation) = candidate {
                             if step_escalations_used < MAX_STEP_ESCALATIONS_PER_RUN {
                                 step_escalations_used += 1;
