@@ -18,6 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assertion written against the documented contract is ignored entirely by
   `set -e`, so it neither failed nor passed.
 
+- **Two claims the local-server probe made without establishing them.** Both
+  found in review, both the shape this module's own header is about (*never
+  write down a number the user merely believes*). The probe result was an
+  `Option`, which collapsed *asked and heard nothing* into *never asked* —
+  so an install with a configured-but-unselected `[providers.local]` and a
+  llama-server running on it was told "Nothing was answering at
+  http://127.0.0.1:8080 when this ran" about an address nothing had asked.
+  It is three-valued now, and that install gets a branch of its own naming
+  the provider it already has and the one-line fix, because it emitted no
+  `local-server` step either and previously received a single step telling
+  it to serve a model it was already serving. Separately, `preflight::Props`
+  defaults every field so a version bump costs a check rather than a parse
+  failure — which meant `{}` with a 200 parsed fine and *any* JSON service on
+  :8080 was announced as "already serving (an unnamed model)", one `y` from
+  repointing `default_provider` at it with no `model` and no
+  `context_window`. Discovery now asks for a field only llama-server
+  supplies; `fetch` keeps its tolerance, which is right for a server the
+  owner has already named.
+
 - **The step that blocks every other one has a way out of it.** `mecha setup`
   reported `anthropic has no usable credential` and offered `mecha config
   show` — a command that displays a file and fixes nothing, so the one step

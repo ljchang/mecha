@@ -134,15 +134,13 @@ pub struct Facts {
     /// it meant a new install was never told the file exists or where it
     /// lives, and the first thing anyone needs to change lives in it.
     pub config_file: bool,
-    /// A local server that answered on a well-known address but which no
-    /// provider in the config names.
+    /// What the loopback probe found — **including whether it ran at all**.
     ///
-    /// Sampled only when nothing else can answer (see
-    /// [`local_probe_candidates`]) — the point is to turn *"`anthropic` has no
-    /// usable credential"* into *"there is a server running right here, shall
-    /// I write it down"*, which is the difference between a remedy and a
-    /// diagnosis.
-    pub local_server: Option<LocalServer>,
+    /// See [`LocalProbe`]. The point of the probe is to turn *"`anthropic` has
+    /// no usable credential"* into *"there is a server running right here,
+    /// shall I write it down"*, which is the difference between a remedy and
+    /// a diagnosis.
+    pub local_probe: LocalProbe,
     /// Whether a trigger scheduler is running or installed.
     pub scheduler_installed: bool,
     pub trigger_count: usize,
@@ -166,6 +164,54 @@ pub struct Facts {
 pub struct LocalServer {
     pub base_url: String,
     pub props: crate::provider::preflight::Props,
+}
+
+/// What the loopback probe found — **three-valued, because two of these were
+/// being reported as the third.**
+///
+/// An `Option` here collapsed *"asked, and nothing answered"* into *"never
+/// asked"*, and the step then printed the first sentence for both: somebody
+/// with a configured-but-unselected `[providers.local]` and a llama-server
+/// happily running on it was told **"Nothing was answering at
+/// http://127.0.0.1:8080 when this ran"** — a fact asserted with no
+/// observation behind it, which is this module's own header rule
+/// (*never write down a number the user merely believes*) inverted. The
+/// distinction is the same one [`Status::Unknown`] and [`Facts::declined`]
+/// both keep: an absence and an unasked question are different findings.
+#[derive(Debug, Clone, Default)]
+pub enum LocalProbe {
+    /// No probe was attempted — something can already answer, or a local
+    /// provider is configured and it is not this module's place to go looking
+    /// for a second one.
+    #[default]
+    NotAttempted,
+    /// Asked, and nothing that looks like a model server answered.
+    NothingAnswered,
+    /// Asked, and found a server no provider names.
+    Found(LocalServer),
+}
+
+/// Does this `/props` answer come from something that is actually a model
+/// server?
+///
+/// **`preflight::Props` defaults every field on purpose**, so a llama-server
+/// version bump costs a check rather than a parse failure — which means `{}`
+/// with a 200 deserializes perfectly, and *any* JSON service answering on
+/// :8080 (a catch-all API, a proxy) parses as a `Props`. That tolerance is
+/// right where it is used for a server the owner has already told us about,
+/// and wrong here, where the whole question is whether this is a model server
+/// at all: without a check, an unrelated service gets announced as "already
+/// serving (an unnamed model)" and one `y` repoints `default_provider` at it,
+/// with no `model` and no `context_window` — the two settings this module's
+/// header is about, both of which degrade quietly rather than failing.
+///
+/// So the discovery site asks for one thing only llama-server supplies.
+/// Deliberately a *disjunction* rather than a required pair: either field
+/// alone is enough to say "a model server answered", and demanding both would
+/// reject a real server whose build reports one of them differently — which
+/// is the forward-compatibility `Props` was made tolerant for.
+pub fn answers_like_a_model_server(props: &crate::provider::preflight::Props) -> bool {
+    props.model_alias.is_some() || props.default_generation_settings.n_ctx.is_some()
 }
 
 /// Where to look for a local server when the configured provider cannot
@@ -398,30 +444,37 @@ fn provider_step(provider_name: &str, cfg: &Config, facts: &Facts) -> Step {
         .get(provider_name)
         .and_then(|p| p.api_key_env.clone());
 
-    if let Some(found) = &facts.local_server {
+    let step = |detail: String| {
+        Step::new(
+            "provider-credential",
+            "A provider that can answer",
+            Status::Missing,
+            detail,
+        )
+    };
+
+    // 1. Something is serving, and no provider names it. The only branch with
+    //    a command behind it, because it is the only one where the fix is a
+    //    fact mecha can read rather than a secret only the owner has.
+    if let LocalProbe::Found(found) = &facts.local_probe {
         let serving = found
             .props
             .model_alias
             .as_deref()
             .unwrap_or("(an unnamed model)");
-        return Step::new(
-            "provider-credential",
-            "A provider that can answer",
-            Status::Missing,
-            format!(
-                concat!(
-                    "`{provider_name}` has no usable credential — but something is ",
-                    "already serving {serving} at {url}, and nothing in the config names ",
-                    "it. Writing it down reads every value back off the server rather ",
-                    "than asking you for any of them, which is the only way ",
-                    "`context_window` ever gets to be the per-slot figure rather than ",
-                    "`-c`."
-                ),
-                provider_name = provider_name,
-                serving = serving,
-                url = found.base_url
+        return step(format!(
+            concat!(
+                "`{provider_name}` has no usable credential — but something is ",
+                "already serving {serving} at {url}, and nothing in the config names ",
+                "it. Writing it down reads every value back off the server rather ",
+                "than asking you for any of them, which is the only way ",
+                "`context_window` ever gets to be the per-slot figure rather than ",
+                "`-c`."
             ),
-        )
+            provider_name = provider_name,
+            serving = serving,
+            url = found.base_url
+        ))
         .with(
             "Write the local server down as a provider, from what it reports about itself.",
             &["mecha", "setup", "--write"],
@@ -429,9 +482,48 @@ fn provider_step(provider_name: &str, cfg: &Config, facts: &Facts) -> Step {
         );
     }
 
-    // No credential and nothing answering. Say precisely what to do, because
-    // there is no command that can do it — and be explicit that the secret
-    // itself never lands in a file.
+    // 2. A local provider is configured and simply is not the selected one.
+    //
+    //    **This branch is why the probe's absence had to become visible.**
+    //    Nothing probes when a local provider exists, so the "nothing
+    //    answered" sentence below would be printed about an address never
+    //    asked — and this is exactly the config that hits it: a
+    //    `[providers.local]` on :8080 with a server running on it, and
+    //    `default_provider` still pointing at a cloud provider whose key was
+    //    never exported. Before this, that person got one step telling them
+    //    to do the thing they had already done, and was never told the actual
+    //    one-line fix.
+    if let Some((name, pcfg)) = cfg
+        .providers
+        .iter()
+        .find(|(name, p)| p.kind == "local" && *name != provider_name)
+    {
+        let where_it_points = pcfg
+            .base_url
+            .as_deref()
+            .map(|u| format!(" ({u})"))
+            .unwrap_or_default();
+        return step(format!(
+            concat!(
+                "`{provider_name}` has no usable credential — but you already have a ",
+                "local provider configured, `{name}`{where_it_points}, and it is not ",
+                "the default. Point `default_provider` at it in the config, or select ",
+                "it for one run with `-p {name}`. Nothing here probed {name}: whether ",
+                "it is up is what `mecha setup` reports once it is the one being used."
+            ),
+            provider_name = provider_name,
+            name = name,
+            where_it_points = where_it_points
+        ));
+    }
+
+    // 3. Nothing configured can answer and nothing was found. The fix is a
+    //    secret, and a secret is the one thing this tool must not write —
+    //    mecha stores the **name of an environment variable**, never a key, so
+    //    a config file can be read, copied or committed without leaking one.
+    //    Naming the exact variable is the most a remedy can honestly be, so
+    //    the detail carries it rather than pointing at a command that would
+    //    only show what is already known.
     let key_line = match &env_var {
         Some(var) => format!(
             concat!(
@@ -453,23 +545,28 @@ fn provider_step(provider_name: &str, cfg: &Config, facts: &Facts) -> Step {
             provider_name = provider_name
         ),
     };
-    Step::new(
-        "provider-credential",
-        "A provider that can answer",
-        Status::Missing,
-        format!(
+    // **Only said when a probe actually ran.** Reporting "nothing was
+    // answering at X" after not asking is the same class of claim as writing
+    // down a `context_window` nobody read off the wire.
+    let local_line = match &facts.local_probe {
+        LocalProbe::NothingAnswered => format!(
             concat!(
-                "Nothing can answer a prompt yet, so nothing below this can be tested. ",
-                "Two ways out.\n\n",
-                "1. {key_line}\n\n",
                 "2. Run a model locally — the target rather than the fallback. Serve ",
-                "it, then `mecha setup --write` reads the settings off it. Nothing was ",
-                "answering at {tried} when this ran."
+                "it, then `mecha setup --write` reads the settings off it. Nothing ",
+                "was answering at {tried} when this ran."
             ),
-            key_line = key_line,
             tried = local_probe_candidates().join(", ")
         ),
-    )
+        _ => concat!(
+            "2. Run a model locally — the target rather than the fallback. Serve it, ",
+            "then `mecha setup --write` reads the settings off it."
+        )
+        .to_string(),
+    };
+    step(format!(
+        "Nothing can answer a prompt yet, so nothing below this can be tested. \
+         Two ways out.\n\n1. {key_line}\n\n{local_line}"
+    ))
 }
 
 /// The charter: what mecha is for, in the owner's own words.
@@ -903,7 +1000,7 @@ mod tests {
             // `everything_configured…` keeps meaning what it says.
             charter: CharterState::Lines(3),
             config_file: true,
-            local_server: None,
+            local_probe: LocalProbe::NotAttempted,
             declined: Default::default(),
         }
     }
@@ -1038,7 +1135,7 @@ mod tests {
         let cfg = Config::default();
         let mut f = facts(None);
         f.provider_credential = false;
-        f.local_server = Some(LocalServer {
+        f.local_probe = LocalProbe::Found(LocalServer {
             base_url: "http://127.0.0.1:8080".into(),
             props: props(32768, 4, false),
         });
@@ -1069,6 +1166,7 @@ mod tests {
         let cfg = Config::default();
         let mut f = facts(None);
         f.provider_credential = false;
+        f.local_probe = LocalProbe::NothingAnswered;
 
         let s = plan(&cfg, "anthropic", &f);
         let step = step(&s, "provider-credential");
@@ -1102,11 +1200,127 @@ mod tests {
         let mut f = facts(None);
         f.provider_credential = false;
 
+        f.local_probe = LocalProbe::NothingAnswered;
         let detail = step(&plan(&cfg, "anthropic", &f), "provider-credential")
             .detail
             .clone();
         assert!(detail.contains("names no `api_key_env`"), "{detail}");
         assert!(!detail.contains("export "), "nothing to export: {detail}");
+    }
+
+    /// **A probe that never ran must not be reported as one that found
+    /// nothing.**
+    ///
+    /// The config that hits this: a `[providers.local]` on :8080 with a
+    /// server running on it, and `default_provider` still pointing at a
+    /// cloud provider whose key was never exported. Nothing probes (a local
+    /// provider is configured), so an `Option<LocalServer>` made "never
+    /// asked" indistinguishable from "asked and heard nothing" — and the
+    /// person with a running server was told *"Nothing was answering at
+    /// http://127.0.0.1:8080 when this ran"*. A fact with no observation
+    /// behind it, which is this module's own header rule inverted.
+    #[test]
+    fn an_unattempted_probe_is_never_reported_as_a_failed_one() {
+        let cfg = Config::default();
+        let mut f = facts(None);
+        f.provider_credential = false;
+
+        f.local_probe = LocalProbe::NothingAnswered;
+        let asked = step(&plan(&cfg, "anthropic", &f), "provider-credential")
+            .detail
+            .clone();
+        assert!(
+            asked.contains("Nothing was answering"),
+            "a probe that ran may report what it found: {asked}"
+        );
+
+        f.local_probe = LocalProbe::NotAttempted;
+        let never_asked = step(&plan(&cfg, "anthropic", &f), "provider-credential")
+            .detail
+            .clone();
+        assert!(
+            !never_asked.contains("Nothing was answering"),
+            "a probe that never ran must claim nothing about what is there: {never_asked}"
+        );
+        // And the rest of the advice survives — this is about dropping one
+        // unearned sentence, not the route it belongs to.
+        assert!(never_asked.contains("Run a model locally"), "{never_asked}");
+    }
+
+    /// A configured local provider that simply is not selected gets named,
+    /// with the one-line fix.
+    ///
+    /// Before this branch existed, that install produced a single step
+    /// telling somebody to serve a model they were already serving, and
+    /// never mentioned the provider sitting in their own config.
+    #[test]
+    fn a_configured_but_unselected_local_provider_is_named_as_the_way_out() {
+        let mut cfg = Config::default();
+        let mut local = cfg.providers.get("anthropic").cloned().unwrap();
+        local.kind = "local".into();
+        local.base_url = Some("http://127.0.0.1:8080".into());
+        local.api_key_env = None;
+        cfg.providers.insert("local".into(), local);
+
+        let mut f = facts(None);
+        f.provider_credential = false;
+        // Nothing probed, because a local provider exists — which is exactly
+        // the state that used to produce a false report.
+        f.local_probe = LocalProbe::NotAttempted;
+
+        let detail = step(&plan(&cfg, "anthropic", &f), "provider-credential")
+            .detail
+            .clone();
+        assert!(
+            detail.contains("`local`") && detail.contains("127.0.0.1:8080"),
+            "name the provider they already have, and where it points: {detail}"
+        );
+        assert!(
+            detail.contains("default_provider"),
+            "and the one-line fix: {detail}"
+        );
+        assert!(
+            !detail.contains("Nothing was answering"),
+            "nothing probed it, so nothing may be claimed about it: {detail}"
+        );
+    }
+
+    /// **Parsing is not identification.** `Props` defaults every field so a
+    /// llama-server version bump costs a check rather than a parse failure —
+    /// so `{}` from any JSON service on :8080 parses perfectly. Without this
+    /// check it was announced as "already serving (an unnamed model)", and
+    /// one `y` would repoint `default_provider` at it with no `model` and no
+    /// `context_window`: the two settings this module exists to stop people
+    /// getting wrong, both of which degrade quietly.
+    #[test]
+    fn a_stranger_answering_200_is_not_a_model_server() {
+        use crate::provider::preflight::Props;
+
+        // The premise, pinned rather than assumed: an empty object really
+        // does parse. If `Props` ever stops being fully-defaulted this
+        // assertion fails and the check below can be reconsidered, instead of
+        // quietly guarding against something that can no longer happen.
+        let stranger: Props =
+            serde_json::from_str("{}").expect("Props defaults every field, so `{}` parses");
+        assert!(
+            !answers_like_a_model_server(&stranger),
+            "any JSON service answering 200 would otherwise read as a model server"
+        );
+        // A plausible non-model service: valid JSON, unrelated keys, still a
+        // clean parse because unknown fields are ignored.
+        let proxy: Props = serde_json::from_str(r#"{"status":"ok","uptime":42}"#)
+            .expect("unknown fields are ignored");
+        assert!(!answers_like_a_model_server(&proxy));
+
+        // Either field alone identifies a real one — a disjunction on
+        // purpose, so a build that reports one of them differently is not
+        // rejected, which is what the tolerance was for.
+        let named = Props {
+            model_alias: Some("qwen3-14b".into()),
+            ..Props::default()
+        };
+        assert!(answers_like_a_model_server(&named));
+        assert!(answers_like_a_model_server(&props(32768, 4, false)));
     }
 
     /// A new install is told the config file exists and where — nothing did.
