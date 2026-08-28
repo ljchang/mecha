@@ -1269,10 +1269,29 @@ async fn completion(
     } else {
         text
     };
-    let user = Message::user(&text);
-    slot.convo.push(user.clone());
-    let _ = slot.session.append(&Record::Message(user));
-    let recorded = slot.convo.messages.clone();
+    // Folded, not pushed, when the tail is already a user message —
+    // `questions.rs`'s rule, arriving here because a barge-in mid-tool-turn
+    // leaves the transcript ending on the user message carrying tool
+    // results, and pushing there makes two user messages in a row (invalid
+    // on the Anthropic backend, merely tolerated by llama-server). When
+    // folding, nothing is appended by hand: the fold modifies the tail in
+    // place, so `recorded` snapshots the pre-fold state — which is exactly
+    // what the file holds — and `record_run` expresses the change as the
+    // rewrite it actually is. The plain case keeps the append-at-submit
+    // contract every other surface has.
+    let pre_turn = slot.convo.messages.clone();
+    let folded = pre_turn
+        .last()
+        .is_some_and(|m| m.role == mecha_core::message::Role::User);
+    let recorded = if folded {
+        mecha_core::agent::append_user_text(&mut slot.convo.messages, text.clone());
+        pre_turn
+    } else {
+        let user = Message::user(&text);
+        slot.convo.push(user.clone());
+        let _ = slot.session.append(&Record::Message(user));
+        slot.convo.messages.clone()
+    };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
     let agent = Arc::clone(&shared.agent);
@@ -1302,12 +1321,18 @@ async fn completion(
             // invalid everywhere in this codebase. Pop it; record_run sees
             // the divergence from `recorded` and writes a rewrite record,
             // so the transcript stays honest about what happened.
-            if slot
-                .convo
-                .messages
-                .last()
-                .is_some_and(|m| matches!(m.role, mecha_core::message::Role::User))
-            {
+            //
+            // Only a *plain* user tail — found on review, the fifth pop
+            // site: a barge-in mid-tool-turn also lands here (`run_in`
+            // pushes the tool results and reads the cancel at the top of
+            // the *next* turn, returning Ok(Interrupted)), and tool results
+            // ride in a `Role::User` message, so the bare role check popped
+            // them and orphaned the assistant's `tool_use` — which
+            // `record_run` then persisted, 400ing the slot and any resume
+            // of the id. A completed tool round is a valid tail; only two
+            // user *texts* in a row are not, and the next push folds into
+            // it the way steering already does.
+            if slot.convo.messages.last().is_some_and(is_plain_user_text) {
                 slot.convo.messages.pop();
             }
             let _ = slot.session.record_run(&recorded, &slot.convo);
@@ -1329,7 +1354,15 @@ async fn completion(
             // Recording the rolled-back state (a rewrite) is what keeps the
             // file agreeing with memory; taint is kept either way — a failed
             // turn that read a hostile page still read it.
-            slot.convo.roll_back_failed_turn(recorded.clone());
+            //
+            // A folded turn pushed nothing, so there is nothing to pop —
+            // `recorded` (the pre-fold snapshot) IS the rollback, and the
+            // pop would orphan the previous round's `tool_use` instead.
+            if folded {
+                slot.convo.messages = recorded.clone();
+            } else {
+                slot.convo.roll_back_failed_turn(recorded.clone());
+            }
             let _ = slot.session.record_run(&recorded, &slot.convo);
             let _ = slot.session.append(&Record::Taint(slot.convo.taint));
         }
@@ -1388,9 +1421,148 @@ async fn completion(
     Ok(())
 }
 
+/// A user message that is the owner's own text and nothing else — no tool
+/// results. The interrupted-run pop may only ever remove one of these:
+/// tool results ride in a `Role::User` message too, so a bare role check
+/// fired on a barge-in mid-tool-turn and popped the results, orphaning the
+/// assistant's `tool_use` — which `record_run` then persisted. A completed
+/// tool round is a valid tail; two user *texts* in a row are not, and only
+/// the second shape may be trimmed.
+fn is_plain_user_text(m: &Message) -> bool {
+    m.role == mecha_core::message::Role::User
+        && !m
+            .content
+            .iter()
+            .any(|b| matches!(b, mecha_core::message::Block::ToolResult { .. }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fifth pop site's regression, pinned at the predicate: the old
+    /// guard was `role == User`, which is true of the message carrying tool
+    /// results — so a barge-in mid-tool-turn popped them and orphaned the
+    /// `tool_use`. Only the owner's own dangling text may be trimmed.
+    #[test]
+    fn a_tool_result_tail_is_not_a_poppable_user_turn() {
+        use mecha_core::message::{Block, Role};
+        let plain = Message::user("say that again?");
+        assert!(is_plain_user_text(&plain));
+
+        let results = Message {
+            role: Role::User,
+            content: vec![
+                Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                },
+                // Steering text riding beside results still counts as a tool
+                // round — popping it would orphan the `tool_use` all the same.
+                Block::text("change of plan"),
+            ],
+        };
+        assert!(!is_plain_user_text(&results));
+
+        let assistant = Message::assistant(vec![Block::text("done")]);
+        assert!(!is_plain_user_text(&assistant));
+    }
+
+    /// The barge-in composition end to end: an interrupted tool round keeps
+    /// its pair on disk, and the next utterance folds rather than pushes —
+    /// no orphaned `tool_use`, no two user texts in a row, and a resume
+    /// loads exactly what memory holds.
+    #[test]
+    fn a_barge_in_mid_tool_turn_keeps_the_round_and_folds_the_next_utterance() {
+        use mecha_core::message::{Block, Role};
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-voice-bargein-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = mecha_core::session::Session::create(
+            &dir,
+            mecha_core::session::SessionMeta {
+                id: "20260101T000000-bargein".into(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "m".into(),
+                workspace: std::path::PathBuf::from("/tmp"),
+                title: None,
+            },
+        )
+        .unwrap();
+
+        // Turn 1, as the Ok(Interrupted) arm sees it: the user spoke, the
+        // run opened a tool round, the barge-in cancelled after the results
+        // landed.
+        let user = Message::user("look that up");
+        session
+            .append(&mecha_core::session::Record::Message(user.clone()))
+            .unwrap();
+        let recorded = vec![user];
+        let mut convo = Conversation::from(recorded.clone());
+        convo.messages.push(Message::assistant(vec![Block::ToolUse {
+            id: "t1".into(),
+            name: "web_search".into(),
+            input: serde_json::json!({}),
+        }]));
+        convo.messages.push(Message {
+            role: Role::User,
+            content: vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "found it".into(),
+                is_error: false,
+            }],
+        });
+
+        // The Ok arm's guard: a tool-result tail is not poppable.
+        if convo.messages.last().is_some_and(is_plain_user_text) {
+            convo.messages.pop();
+        }
+        session.record_run(&recorded, &convo).unwrap();
+
+        // Turn 2: the tail is a user message, so the utterance folds.
+        let pre_turn = convo.messages.clone();
+        assert!(pre_turn.last().is_some_and(|m| m.role == Role::User));
+        mecha_core::agent::append_user_text(&mut convo.messages, "actually, stop".into());
+        session.record_run(&pre_turn, &convo).unwrap();
+
+        let (_, resumed) = mecha_core::session::Session::load(&session.path).unwrap();
+        assert_eq!(
+            resumed.messages, convo.messages,
+            "a resume must load exactly what memory holds"
+        );
+        // Every tool_use still has its result…
+        let uses: Vec<_> = resumed
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter(|b| matches!(b, Block::ToolUse { .. }))
+            .collect();
+        let results: Vec<_> = resumed
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter(|b| matches!(b, Block::ToolResult { .. }))
+            .collect();
+        assert_eq!(uses.len(), results.len(), "no orphaned tool_use");
+        // …and no two user messages sit adjacent.
+        assert!(
+            !resumed
+                .messages
+                .windows(2)
+                .any(|w| w[0].role == Role::User && w[1].role == Role::User),
+            "the fold, not a push, carries the next utterance"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn the_bind_address_is_loopback_and_stays_that_way() {
