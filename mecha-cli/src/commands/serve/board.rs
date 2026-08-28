@@ -137,6 +137,24 @@ fn attach_runs(board: &mut serde_json::Value, dir: &std::path::Path) {
     }
 }
 
+/// Is `id` exactly one ordinary path component — never a root, a `..`, empty,
+/// or more than one segment?
+///
+/// A denylist of specific characters was the first cut here and a review
+/// caught it citing the wrong file for its own precedent (`valid_key`, an
+/// **allowlist**, lives in `chat.rs`) while pointing at the deeper gap: a
+/// denylist is complete only for the platform it was checked against.
+/// `std::path::Component::Normal` is what the standard library itself calls
+/// "an ordinary path segment", so asking it directly — one `Normal`
+/// component and nothing else — is correct on whatever platform this runs
+/// on rather than needing its own list of what that platform's separators
+/// and prefixes are.
+fn is_bare_path_component(id: &str) -> bool {
+    let mut components = std::path::Path::new(id).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
 /// How the run on a session went — or that nobody can say.
 ///
 /// **Three answers, never two.** An outcome record says how the loop stopped;
@@ -166,14 +184,10 @@ fn run_summary(dir: &std::path::Path, session_id: &str) -> serde_json::Value {
     // it reaches this join with nothing between them. `Path::join` discards
     // `dir` entirely for an absolute argument, so an id shaped like
     // `/etc/passwd` or containing `..` would otherwise be resolved with no
-    // containment check at all. Refused the same way `voice/mod.rs`'s
-    // `valid_key` refuses a session key before it becomes a directory
-    // component: a real session id is never a path.
-    if session_id.is_empty()
-        || session_id.contains(['/', '\\'])
-        || session_id == "."
-        || session_id == ".."
-    {
+    // containment check at all. `is_bare_path_component` refuses it the same
+    // way `chat.rs`'s `valid_key` refuses a session key before it becomes a
+    // directory component: a real session id is never a path.
+    if !is_bare_path_component(session_id) {
         return serde_json::json!({ "recorded": false, "transcript": false });
     }
     let direct = dir.join(format!("{session_id}.jsonl"));
@@ -752,6 +766,14 @@ mod tests {
     /// argument, so a value shaped like a path used to reach the
     /// filesystem with nothing in between. Refused before that join, not
     /// after it.
+    ///
+    /// **A denylist, not an allowlist.** Kept beside the real regression
+    /// test below because `is_bare_path_component`'s own doc names the
+    /// difference: these seven inputs are the ones a hand-picked list would
+    /// name, and every one of them is still worth pinning down even though
+    /// none of them can distinguish the fixed code from the unfixed code on
+    /// an *empty* directory (see the next test for why that distinction
+    /// needs a planted file, not an empty one).
     #[test]
     fn a_session_id_shaped_like_a_path_is_refused_not_joined() {
         let dir = tmpdir("path-safety");
@@ -771,6 +793,52 @@ mod tests {
                 "{hostile:?} must be refused, not joined onto a directory"
             );
         }
+    }
+
+    /// **The regression test the guard actually needs.** Found on review:
+    /// the test above passes against the *unguarded* code too, because
+    /// `tmpdir` starts empty — every hostile id falls through to
+    /// `Session::find` on nothing and returns byte-identical JSON either
+    /// way, so a future refactor could delete the guard with the suite
+    /// green. Proving the guard does something means a transcript that
+    /// genuinely exists at the escaped location: a real session, one
+    /// directory above `dir`, reached by `../<that directory's name>/<id>`.
+    /// Without the guard, `direct.is_file()` is true for that joined path
+    /// and this returns `{"recorded": false, "transcript": true}` — the
+    /// planted session has no outcome recorded, but it is *found*. With the
+    /// guard, `is_bare_path_component` refuses the escape before the join
+    /// is ever built, and the answer is the same "nothing to see" as every
+    /// other refusal.
+    #[test]
+    fn an_id_that_would_have_escaped_to_a_real_transcript_is_still_refused() {
+        let dir = tmpdir("path-safety-inside");
+        let outside = tmpdir("path-safety-outside");
+        let planted_id = "20260826T090000-aaaaaaaa";
+        session(&outside, planted_id);
+
+        // Sanity: the planted session is genuinely readable at the
+        // unescaped path, so the assertion below is about the guard and
+        // not about a fixture that never existed.
+        assert!(outside.join(format!("{planted_id}.jsonl")).is_file());
+
+        let escape = format!(
+            "../{}/{planted_id}",
+            outside.file_name().unwrap().to_str().unwrap()
+        );
+        // Sanity in the other direction: the escape really does resolve to
+        // the planted file when nothing stops it, which is what makes the
+        // assertion below a test of the guard rather than of geometry that
+        // happens not to line up.
+        assert!(
+            dir.join(format!("{escape}.jsonl")).is_file(),
+            "the escape must reach the planted transcript for this test to mean anything"
+        );
+        assert_eq!(
+            run_summary(&dir, &escape),
+            serde_json::json!({ "recorded": false, "transcript": false }),
+            "an id that resolves outside `dir` must be refused even when \
+             something real sits at the far end of it"
+        );
     }
 
     /// The state D16 says must never render as `idle`. `NoOutput` is a real
