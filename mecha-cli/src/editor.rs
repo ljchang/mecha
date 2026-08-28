@@ -70,7 +70,16 @@ pub fn edit_file(path: &std::path::Path) -> Result<()> {
 /// module's own doc opens with.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CharterEdit {
-    /// The template was written and the editor closed without adding a line.
+    /// The template was written **and** the editor closed without adding a
+    /// line.
+    ///
+    /// Narrower than its name: it is not "a template was created". A first
+    /// edit that actually adds a priority returns [`Saved`], because what
+    /// this enum reports is what the *edit* did. A caller that needs to know
+    /// a file was created asks the filesystem before calling — see
+    /// `edit_charter_with`.
+    ///
+    /// [`Saved`]: CharterEdit::Saved
     TemplateCreated,
     /// The file came back byte-identical.
     Unchanged,
@@ -104,8 +113,19 @@ pub enum CharterEdit {
 /// CLI already owns the terminal. Everything after it is identical, which is
 /// the half worth sharing.
 ///
-/// Returns the created-flag separately from the outcome so a caller can
-/// distinguish "I made you a template" from "you had one".
+/// **Whether a template was created is deliberately not returned**, and the
+/// doc here used to claim it was — a sentence describing a signature this
+/// function never had. `TemplateCreated` is not that flag either: it means
+/// *created **and** the editor added nothing*, so a first edit where somebody
+/// actually typed a line comes back as `Saved`, with the creation not
+/// recorded anywhere in the return.
+///
+/// Left that way on purpose rather than widened. The one caller that reports
+/// the creation (`commands::charter`) asks the filesystem itself, one line
+/// before calling, which is cheap, local and obviously correct; the TUI does
+/// not report it at all, and threading a flag through for a single consumer
+/// buys a wider type without buying an answer that caller does not already
+/// have.
 pub fn edit_charter_with(
     path: &std::path::Path,
     run_editor: impl FnOnce(&std::path::Path) -> Result<()>,
