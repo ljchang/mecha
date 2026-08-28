@@ -20,6 +20,16 @@
 //! appraisal — behind the same approver a direct write would have needed
 //! anyway.
 //!
+//! **The refusal text is itself what surfaces that path.** It deliberately
+//! teaches `shell: mecha tasks set …` — fine for §5.4, since that path
+//! appraises, and a *delegated* run never reads it (`tasks work` withholds
+//! the tool outright) — but under an unattended run whose permission mode
+//! is not `ask`, the refusal reads as instructions for the workaround, and
+//! a run holding a shell can follow them. That is D6's honest residue for
+//! such a lane, named here because this message is where a reader first
+//! meets it; `appraise_closure`'s doc carries the fuller map of what
+//! remains reachable.
+//!
 //! Wrapped in [`crate::setup::build`], **before** the subagent pool is
 //! cloned, because `withhold_tool`'s own doc names the hole: a child registry
 //! built from unwrapped handles would let a run told "you cannot set status"
@@ -279,13 +289,16 @@ mod tests {
         }
     }
 
-    /// The parent-surface guarantee itself — the regression this module
-    /// exists for — measured at the seam `setup::build` calls: every
+    /// The parent-surface guarantee's *mechanism* — the regression this
+    /// module exists for — measured at the seam `setup::build` calls: every
     /// `kg_task_update` on the registry is guarded, a second `prefix_tools`
-    /// server's included, and nothing else is touched. This is the test
-    /// that fails if `guard` regresses to a single `if let`, or if the call
-    /// disappears from `build` and someone reaches for this helper to put
-    /// it back.
+    /// server's included, and nothing else is touched. This fails if
+    /// `guard` regresses to a single `if let`. **It does not fail if the
+    /// call disappears from `build`** — an earlier version of this comment
+    /// overclaimed that, and the review checked it: driving `build` itself
+    /// means constructing a full `PreparedTools`, so the parent wiring
+    /// remains positional, guarded by the comment at its call site; only
+    /// the child path (`build_subagent`'s clone-site wrap) is structural.
     #[tokio::test]
     async fn guard_wraps_every_matching_handle_and_nothing_else() {
         struct Named(&'static str);
