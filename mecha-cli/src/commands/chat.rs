@@ -163,26 +163,31 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // Folded, not pushed, when the tail is already a user message — a
         // Ctrl-C mid-tool-turn keeps the partial turn (cancel's contract),
         // so the conversation can end on the user message carrying tool
-        // results, and pushing there makes two user messages in a row. When
-        // folding, nothing is appended by hand: `recorded` snapshots the
-        // pre-fold state — what the file holds — and `record_run` expresses
-        // the fold as the rewrite it is (`questions.rs`'s rule).
-        let recorded;
-        if convo
+        // results, and pushing there makes two user messages in a row. The
+        // fold is recorded at submit (one direct `Rewrite` — `record_run`
+        // between runs would replay the previous run's still-uncleared
+        // `rewritten` states) and fails closed like the push branch's own
+        // append, so either way `recorded` is what the file already holds.
+        let recorded = if convo
             .messages
             .last()
             .is_some_and(|m| m.role == mecha_core::message::Role::User)
         {
-            recorded = convo.messages.clone();
             mecha_core::agent::append_user_text(&mut convo.messages, input.to_string());
+            if let Some(s) = &session {
+                s.append(&Record::Rewrite {
+                    messages: convo.messages.clone(),
+                })?;
+            }
+            convo.messages.clone()
         } else {
             let user = Message::user(input);
             convo.push(user.clone());
             if let Some(s) = &session {
                 s.append(&Record::Message(user))?;
             }
-            recorded = convo.messages.clone();
-        }
+            convo.messages.clone()
+        };
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let renderer = render::spawn(

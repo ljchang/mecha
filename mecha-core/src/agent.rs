@@ -618,6 +618,17 @@ impl Conversation {
     /// that round's `tool_use`. One rule serves both, so a caller does not
     /// have to carry a flag from its push site to its error arm.
     ///
+    /// There is a third shape, and its outcome is chosen, not accidental: a
+    /// fold into a **plain** user tail (an interrupt before the first token
+    /// leaves the previous prompt unanswered; the next submit merges into
+    /// it, since pushing beside it is the invalid shape). On failure the
+    /// snapshot's tail is that merged message — plain user text — so the
+    /// pop removes *both* prompts. Deliberate: they were two unanswered
+    /// requests awaiting the same never-produced reply, and a resend of
+    /// either without the other misquotes the person. The recorded rewrite
+    /// removes them from the loadable state only; `messages_ever` still
+    /// unions them into the corpus, so recall keeps what was said.
+    ///
     /// Two costs of that recording, known and accepted: the rewrite carries
     /// the **whole** conversation, so a long-lived surface riding out a
     /// flapping provider appends one full history copy per failure — the

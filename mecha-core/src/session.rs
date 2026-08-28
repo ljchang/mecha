@@ -852,8 +852,19 @@ impl Session {
                 // content to tell the two rewrites apart; provenance must
                 // not depend on which reader classified it.
                 Ok(Record::Rewrite { messages: m }) => {
-                    let truncation = m.len() <= messages.len() && messages[..m.len()] == m[..];
-                    if truncation {
+                    // Positions survive any rewrite that leaves every shared
+                    // index meaning what it meant: a truncation (the
+                    // rollback's strict prefix) and a fold (same length,
+                    // only the *last* message's content extended — the
+                    // barge-in submit writes these). Both leave message `i`
+                    // as message `i`; only a rewrite that replaces the head
+                    // (a summarising compaction) invalidates them. Checked
+                    // as "everything before the last shared message is
+                    // unchanged": a strict prefix passes it, a tail-extend
+                    // passes it, a replaced head fails on message 0.
+                    let shared = m.len().saturating_sub(1);
+                    let in_place = m.len() <= messages.len() && messages[..shared] == m[..shared];
+                    if in_place {
                         for p in &mut config_positions {
                             *p = (*p).min(m.len());
                         }
@@ -1671,6 +1682,26 @@ mod tests {
             t.config_covering(2).unwrap().compact_at_tokens,
             Some(1200),
             "the next appended turn is attach B's"
+        );
+
+        // And a *fold* rewrite — same length, only the tail's content
+        // extended, which is what a barge-in submit writes — preserves
+        // positions the same way: message 0 still ran under attach A.
+        let mut folded = Session::load(&session.path).unwrap().1.messages;
+        let barged = Message::user("the turn that barged in");
+        session.append(&Record::Message(barged.clone())).unwrap();
+        folded.push(barged);
+        crate::agent::append_user_text(&mut folded, "and another thing".into());
+        session
+            .append(&Record::Rewrite {
+                messages: folded.clone(),
+            })
+            .unwrap();
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(
+            t.config_covering(0).unwrap().compact_at_tokens,
+            None,
+            "a fold rewrite must not collapse the head onto the newest attach"
         );
 
         std::fs::remove_dir_all(&dir).ok();
