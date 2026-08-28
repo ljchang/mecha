@@ -84,6 +84,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Two real gaps in rung 9's episode tagging and surprise detection (#97,
+  #98), each closed across several review rounds that kept finding the
+  sibling case the previous fix missed.** `mecha distill` printed a
+  `Surprise`'s free-text fields straight to stdout unescaped — the "a
+  person reading their own terminal is a safe context" argument didn't
+  hold for `scripts/ruminate.sh`'s actual nightly path, which redirects
+  that output to a dated logfile instead. `strip_ansi` alone doesn't stop
+  a bare `\r`/`\n` (an interior one survives `trim_end`, which is also why
+  this module's *own two* callers — `Writer::write` and `release` — turned
+  out to have the identical gap, now fixed alongside it) or the Unicode
+  categories that buy the same two effects without being `is_control()`
+  (U+2028/U+2029 forge a line break; U+202A–E and U+2066–9 reorder the
+  rendered line around a bidi-aware reader). `strip_ansi_and_controls`
+  closes all three, used everywhere free text reaches a terminal or a log
+  in this module.
+
+  Separately, a genuinely unreadable outbox during episode tagging used to
+  warn and continue, permanently `mark_distilled`-ing every session that
+  run with a silently incomplete `Edit` channel — no later run could ever
+  revisit it. `OutboxStore::items_strict` bails on a read failure instead
+  of skip-and-warn, covering both a hard I/O error and a merely
+  *malformed* item file (`items()`'s own `tracing::warn!` for the latter
+  is invisible on the nightly, which runs with no `MECHA_LOG`). The
+  originally-cited cause — a half-written `.json` mid-save — turned out to
+  be one this store's own temp-sibling-and-rename discipline already rules
+  out structurally; the realistic cause is persistent (a stray file, or an
+  item written by a schema this binary cannot read), which the error
+  message and doc comments now say plainly rather than implying a retry
+  will clear it. A `doctor` finding for a stalled distill ledger would
+  close the remaining gap (the nightly currently fails silently behind one
+  logfile line) and is left for later rather than built here.
+
 - **mecha was mining its own words as the user's corrections.** `agent.rs`
   prefixes a refusal it did not author with `"Denied by the user: "` precisely
   so machine policy is never learned from as a human correction; this is that

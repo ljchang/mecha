@@ -93,12 +93,18 @@ pub struct Work {
     /// is arithmetic, and a tool asking "was there a check in this span"
     /// needs a count, not the calls themselves.
     pub verify_like: u32,
-    /// Every `shell` call, matched or not — the denominator `verify_like`
-    /// needs to mean anything. `looks_like_verification` can only recognise
-    /// a check shaped as `shell`, so `verify_like == 0` is ambiguous on its
-    /// own: it is true both when a step's checks used some other tool (an
-    /// MCP test runner, `cargo check`-via-a-non-`shell` wrapper) and on any
-    /// surface where `shell` is not even registered (a mail-only trigger, a
+    /// Every *successful* `shell` call, matched or not — the denominator
+    /// `verify_like` needs to mean anything, so it has to count the same
+    /// population `verify_like` draws from (`Outcome::Ok` only). A refused
+    /// or failed `shell` call never ran, and counting it here would reopen
+    /// exactly the false positive this field exists to close: on a
+    /// read-only run (`shell` denied) or a surface where `shell` is not
+    /// registered at all, that is precisely the shape a step's one attempt
+    /// takes. `looks_like_verification` can only recognise a check shaped as
+    /// `shell`, so `verify_like == 0` is ambiguous on its own: it is true
+    /// both when a step's checks used some other tool (an MCP test runner,
+    /// `cargo check`-via-a-non-`shell` wrapper) and on any surface where
+    /// `shell` is not even registered (a mail-only trigger, a
     /// `tools:`-narrowed skill, a read-only run) — cases where nothing could
     /// have set the counter regardless of what actually happened. See
     /// [`escalation_candidate`]'s `UnverifiedClaim` branch, which reads this
@@ -165,13 +171,13 @@ impl Work {
         for call in trace {
             let outcome = Outcome::of(call);
             work.calls += 1;
-            if call.name == "shell" {
-                work.shell_calls += 1;
-            }
             match outcome {
                 Outcome::Failed => work.failed += 1,
                 Outcome::Refused => work.refused += 1,
                 Outcome::Ok => {
+                    if call.name == "shell" {
+                        work.shell_calls += 1;
+                    }
                     if looks_like_verification(call) {
                         work.verify_like += 1;
                     }
@@ -1004,6 +1010,24 @@ mod tests {
         failing_test.is_error = true;
         let work = Work::of(&[shell("cargo test"), failing_test]);
         assert_eq!(work.verify_like, 1);
+    }
+
+    /// The review finding: a refused or failed `shell` call never ran, so
+    /// counting it would let a single denied attempt (a read-only run, or
+    /// any surface `shell` isn't registered on) satisfy `shell_calls > 0`
+    /// and reopen the exact false positive that check exists to close.
+    #[test]
+    fn work_folds_shell_calls_only_for_successful_calls() {
+        // `call(is_error, denied, unknown)` already names itself `"shell"`.
+        let refused = call(false, true, false);
+        let failed = call(true, false, false);
+        let work = Work::of(&[refused, failed]);
+        assert_eq!(
+            work.shell_calls, 0,
+            "neither call actually ran, so shell_calls must stay at zero"
+        );
+        let work = Work::of(&[ok()]);
+        assert_eq!(work.shell_calls, 1);
     }
 
     #[test]

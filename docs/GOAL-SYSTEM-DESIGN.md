@@ -5,7 +5,11 @@ rung 5's model-facing half followed on 2026-08-27 (#78), and **rung 6, rung
 7's observation half, and rung 7's quarantined appraiser all shipped the same
 day** — the observation half with a measurement that argues against the build
 order below. **Rung 7 shipped in full on 2026-08-28**: the model half of
-step appraisal (§5.5's escalation) closes the rung.
+step appraisal (§5.5's escalation) closes the rung. **Rung 9's episode
+tagging and gossip seeding shipped 2026-08-28** (#97, #98). **Rung 10's
+charter and its guilt sensor also shipped 2026-08-28, ahead of rung 8** —
+see the table and §14 item 10 for what that does and does not include.
+Rung 8 remains open.
 The body below is the design as proposed and is
 deliberately not rewritten — `docs/HISTORY.md` records what was built, and the
 gap between the two is evidence about how the built thing came to be shaped
@@ -22,10 +26,10 @@ beside the original rather than replacing it (§2.1 and §4.4).
 | 5 | predictive compaction and task sizing | shipped, #69/#71/#72 + #78 |
 | 6 | boredom, and the deterministic half of step appraisal | shipped, 2026-08-27 — with §5.5's three comparison signals and §9.1's rung 2 named rather than built |
 | 7 | the appraisal record, the pure `Affect` function, the quarantined appraiser, and step appraisal's model half | **shipped in full**, 2026-08-27/28 |
-| 8–11 | consumers of the label, the charter, curiosity | unbuilt, and §14's note below argues the order should change |
-
-Everything shipped so far has no model, no charter and no adversary in it,
-which is §14's ordering rather than a coincidence.
+| 8 | goal-closure appraisal and the readout surfaces | unbuilt, and §14's note below argues the order should change |
+| 9 | episode tagging, review-queue salience, gossip seeding | **episode tagging and gossip seeding shipped, 2026-08-28** (#97, #98); review-queue salience's status is not verified from this branch |
+| 10 | the charter (§11) and anticipated guilt's sensor (§7.4) | **the charter store/loader/CLI/prompt-block shipped**, plus the homeostat's own aggregate into `diagnose::Evidence`; anticipated guilt shipped **as a recorded sensor only** — see the note after this table. §7.4's actual anticipatory mechanism (an in-run signal that changes behaviour, not just a recorded number) and any charter-driven `Pride`/`Frustration` labelling are still open, both blocked on the same thing rung 7's measurement found: affect is a constant until a run actually names a goal |
+| 11 | curiosity | unbuilt |
 
 Two things were deliberately named rather than done, so they are not
 rediscovered as oversights: rewiring `/queues` onto `backlog.rs` (§13.3 — it
@@ -1315,11 +1319,40 @@ Each rung is independently useful and independently measurable.
    them.
 10. **The charter** (§11), anticipated guilt (§7.4), and the homeostat into
     `diagnose::Evidence`.
+
+    *Built out of order relative to 8–9, ahead of both — the charter and the
+    guilt sensor depend on neither, and building this rung first is a smaller
+    version of the same argument item 7's own built-note already makes about
+    the probe: ship what does not need what is still unmeasured.*
+
+    **The charter, the CLI, and the homeostat→`Evidence` wiring shipped as
+    designed.** Anticipated guilt shipped **as a sensor only** —
+    `crate::guilt::anticipated_guilt`, recorded on
+    `Homeostat::anticipated_guilt` every run, folding the age of the oldest
+    recorded commitment across the outbox/questions/front-door stores with
+    the run's own peak context pressure. **It has no consumer.** §7.4
+    describes an *in-run* signal computed by the harness that changes
+    behaviour before acting; that is not what shipped, and building it now
+    would mean inventing where it narrows something with no concrete lever
+    named yet — exactly the scope §7.2 warns a guilt mechanism must not
+    acquire under pressure. This is rung 3 (the homeostat) and rung 6
+    (boredom)'s own precedent: ship the sensor, let a corpus exist, decide
+    the consumer deliberately once one is needed.
+
+    **And a charter-driven `Pride`/`Frustration` label needs a fix that has
+    not landed anywhere yet.** `GoalError.goal` is `None` in every appraised
+    session (rung 7's measurement, HANDOFF) because nothing names a goal on
+    an ordinary run — the `serves:` fix that shipped for delegated task runs
+    does not touch chat, the TUI, or a trigger. A charter line existing does
+    not make an appraisal reference one; that is a separate, unbuilt piece,
+    named here rather than assumed done because the charter shipped.
 11. **Curiosity** (§9.2). Last: it needs the competence time series the
     earlier rungs produce, and it is the only rung that spends on its own.
 
 Rungs 1–6 contain no model and no charter. That is deliberate: the parts with
-the clearest payoff are also the parts with nothing to be injected.
+the clearest payoff are also the parts with nothing to be injected. Rung 10 is
+the first rung with a charter in the tree, and it is inert by construction —
+nothing yet reads it for anything but rendering it into the prompt.
 
 ---
 

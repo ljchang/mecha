@@ -93,7 +93,11 @@ pub fn release() -> Vec<String> {
     if let Ok(mut b) = buffer().lock() {
         let tail = std::mem::take(&mut b.partial);
         if !tail.trim().is_empty() {
-            out.push(tail.trim_end().to_string());
+            // Never passed through `Writer::write`'s own stripping (it has
+            // no trailing `\n` to trigger that loop), and this is printed to
+            // the real terminal on the way out — the "unterminated escape
+            // reaching a terminal" case this module's own doc opens with.
+            out.push(strip_ansi_and_controls(tail.trim_end()));
         }
         b.lines = None;
     }
@@ -118,7 +122,11 @@ impl Write for Writer {
         let mut ready: Vec<String> = Vec::new();
         while let Some(i) = b.partial.find('\n') {
             let line: String = b.partial.drain(..=i).collect();
-            let line = strip_ansi(line.trim_end());
+            // `trim_end` only removes a *trailing* `\r`/whitespace — an
+            // interior one (a server-supplied error string, a model reply
+            // that failed to parse) survives it, so this cannot lean on
+            // `strip_ansi` alone the way its own doc comment used to claim.
+            let line = strip_ansi_and_controls(line.trim_end());
             if !line.is_empty() {
                 ready.push(line);
             }
@@ -152,7 +160,19 @@ impl Write for Writer {
 /// anything else beginning `ESC` loses the `ESC` and its successor. There is
 /// nothing here worth being clever about, and an unterminated escape reaching
 /// a terminal is how a session ends up in a mode nobody chose.
-fn strip_ansi(s: &str) -> String {
+///
+/// **Only `ESC`-introduced sequences — every other C0 control passes
+/// through, including `\r` and `\n`.** A private detail of
+/// [`strip_ansi_and_controls`] now, not a guarantee any caller here relies
+/// on directly: this module's own two callers used to lean on "the caller
+/// already cut the stream at `\n`" to excuse a bare `\r`, and that
+/// precondition was never actually true — `trim_end` removes a *trailing*
+/// one, not an interior one, so a server- or model-supplied string with a
+/// `\r` in the middle reached both a terminal and the TUI transcript
+/// unstripped. Use [`strip_ansi_and_controls`] for anything a person will
+/// read; this function exists to be the one place the ESC-handling loop is
+/// written.
+pub(crate) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
@@ -180,6 +200,55 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     out
+}
+
+/// [`strip_ansi`] plus every remaining C0/C1 control except tab. What both
+/// callers in this module actually need, and what `mecha distill` needs one
+/// crate over.
+///
+/// Neither of this module's own two sinks — `Writer::write`'s per-line
+/// capture and `release`'s unterminated tail — could actually lean on
+/// "the stream was already cut at `\n`" the way `strip_ansi` alone assumes:
+/// `trim_end` removes a *trailing* `\r`, not an interior one, so a
+/// server-supplied error string or a model reply with a `\r` in the middle
+/// reached a live terminal (or the TUI transcript) with it intact. `mecha
+/// distill`'s case is more direct: it prints a whole free-text field, never
+/// split at newlines at all — a session's own `Surprise` text, which is the
+/// model's free-text reading of transcript content that can include a
+/// fetched page or a mail body — to a nightly logfile
+/// (`scripts/ruminate.sh` redirects `mecha distill`'s output there, not to
+/// a live terminal). A bare `\r` at the end of that field rewrites the
+/// rendered line from column 0 in whatever reads the log back, erasing the
+/// very "untrusted, don't act on this" marker the print exists to show; a
+/// bare `\n` forges an extra line outright. `pub(crate)` rather than a
+/// second copy of `strip_ansi`'s ESC-handling loop, on the one-definition
+/// rule this codebase keeps paying to relearn.
+///
+/// **`is_control()` is Unicode category Cc only (C0, DEL, C1), and two other
+/// categories buy the same two effects.** U+2028/U+2029 (line/paragraph
+/// separator, Zl/Zp) render as a line break in most editors and log
+/// viewers — the same forged-extra-line trick as a bare `\n`, through a
+/// character `is_control()` does not name. U+202A–U+202E and U+2066–U+2069
+/// (bidi overrides/isolates, Cf) visually reorder the rest of the line in
+/// any bidi-aware reader, which can move the "⚠ untrusted" marker away from
+/// the text it qualifies — the Trojan Source shape, same field, same
+/// deferred-read scenario. Both are named rather than left to a broader
+/// "printable only" filter: this field is free-text prose that may
+/// legitimately carry non-Latin scripts, and a filter that could not say
+/// which characters it distrusts would be guessing rather than closing a
+/// specific, described class.
+pub(crate) fn strip_ansi_and_controls(s: &str) -> String {
+    strip_ansi(s)
+        .chars()
+        .filter(|&c| {
+            c == '\t'
+                || !(c.is_control()
+                    || matches!(c,
+                        '\u{2028}' | '\u{2029}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'))
+        })
+        .collect()
 }
 
 /// Installed once in `main`. Every event gets a fresh `Writer`, which is free:
@@ -293,6 +362,55 @@ mod tests {
         assert_eq!(strip_ansi("a\u{1b}[31"), "a");
         assert_eq!(strip_ansi("a\u{1b}"), "a");
         assert_eq!(strip_ansi("plain text"), "plain text");
+    }
+
+    #[test]
+    fn strip_ansi_alone_does_not_catch_a_bare_carriage_return() {
+        // The precondition `strip_ansi` relies on — its own call site cuts
+        // at `\n` first — does not hold for a whole free-text field, and this
+        // is what that gap looks like: a bare `\r` survives and would
+        // overwrite everything before it once rendered.
+        assert_eq!(strip_ansi("safe\rDANGER"), "safe\rDANGER");
+    }
+
+    #[test]
+    fn strip_ansi_and_controls_removes_what_strip_ansi_leaves_behind() {
+        // A `\r` rewrites the line, a `\n` forges an extra one — both are
+        // exactly as effective at defeating a printed warning as the ANSI
+        // sequences `strip_ansi` already handles, for a field nothing has
+        // pre-split at newlines.
+        assert_eq!(strip_ansi_and_controls("safe\rDANGER"), "safeDANGER");
+        assert_eq!(
+            strip_ansi_and_controls("line one\nline two"),
+            "line oneline two"
+        );
+        assert_eq!(
+            strip_ansi_and_controls("a\u{1b}[31mred\u{1b}[0m\rb"),
+            "aredb"
+        );
+        // Tab survives — it is not the threat the others are.
+        assert_eq!(strip_ansi_and_controls("a\tb"), "a\tb");
+        assert_eq!(strip_ansi_and_controls("plain text"), "plain text");
+    }
+
+    #[test]
+    fn strip_ansi_and_controls_catches_what_is_control_alone_would_miss() {
+        // U+2028/U+2029 are Zl/Zp, not Cc — `is_control()` alone would let
+        // them through to forge an extra rendered line exactly like a bare
+        // `\n` does.
+        assert_eq!(strip_ansi_and_controls("safe\u{2028}DANGER"), "safeDANGER");
+        assert_eq!(strip_ansi_and_controls("safe\u{2029}DANGER"), "safeDANGER");
+        // Bidi overrides/isolates are Cf, not Cc — left in place, a
+        // bidi-aware reader can visually reorder the line around them,
+        // moving a warning marker away from the text it qualifies.
+        assert_eq!(
+            strip_ansi_and_controls("safe\u{202e}DANGER\u{202c}"),
+            "safeDANGER"
+        );
+        assert_eq!(
+            strip_ansi_and_controls("safe\u{2066}DANGER\u{2069}"),
+            "safeDANGER"
+        );
     }
 
     #[test]

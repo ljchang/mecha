@@ -125,6 +125,10 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_skills: bool,
 
+    /// Don't load ~/.mecha/charter.toml into the system prompt.
+    #[arg(long, global = true)]
+    pub no_charter: bool,
+
     /// Don't offer the `compact` tool — the run still compacts at its
     /// threshold, the model just cannot ask for it early.
     ///
@@ -346,6 +350,11 @@ pub enum Command {
     /// for it in ~/.mecha/skills, and which of them this run would load.
     Skills(commands::skills::Args),
 
+    /// Show the standing priorities in ~/.mecha/charter.toml, ranked highest
+    /// first. Read-only — a charter is edited with a text editor, never by a
+    /// model or by this command.
+    Charter(commands::charter::Args),
+
     /// Inspect saved transcripts.
     #[command(subcommand)]
     Sessions(commands::sessions::Args),
@@ -423,6 +432,7 @@ async fn dispatch() -> Result<()> {
         Command::Replay(args) => commands::replay::execute(&cli.global, args).await,
         Command::Tools(args) => commands::tools::execute(&cli.global, args).await,
         Command::Skills(args) => commands::skills::execute(&cli.global, args).await,
+        Command::Charter(args) => commands::charter::execute(&cli.global, args).await,
         Command::Sessions(args) => commands::sessions::execute(&cli.global, args).await,
         Command::Config(args) => commands::config::execute(&cli.global, args).await,
     }

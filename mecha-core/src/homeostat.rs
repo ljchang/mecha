@@ -42,6 +42,7 @@
 
 use crate::backlog::{Backlog, BacklogDelta};
 use crate::pressure::ContextTracker;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 /// A run's conditions: sampled at start, completed at end.
@@ -82,6 +83,16 @@ pub struct Homeostat {
     /// every later reading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peak_context_pressure: Option<f32>,
+    /// A harness-computed proxy for anticipated guilt
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §7.4) — predicted error against another
+    /// party's expectation, folded from how long the oldest recorded
+    /// commitment in [`backlog`](Self::backlog)'s stores has waited and how
+    /// much room this run had to act on it. See [`crate::guilt`] for the
+    /// formula and, importantly, for what this is *not* used for yet:
+    /// **nothing consumes this today.** It is recorded so the corpus exists
+    /// before anything is built on it, on `runlog`'s own rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anticipated_guilt: Option<f32>,
 }
 
 impl Homeostat {
@@ -105,13 +116,22 @@ impl Homeostat {
     /// loop's memory and is deliberately never stored: what is worth keeping
     /// is the one number below, not a per-turn trace of every run.
     pub fn finish(mut self, pressure: &ContextTracker, window: Option<u64>) -> Homeostat {
-        if let Some(before) = &self.backlog {
-            self.backlog_delta = Some(Backlog::delta(before, &Backlog::read()));
-        }
         // Zero means the run never got a response — no request was ever
         // priced — which is an absence and not a measurement of nought.
         self.peak_prompt_tokens = (pressure.peak_tokens() > 0).then(|| pressure.peak_tokens());
         self.peak_context_pressure = pressure.peak_pressure(window);
+        if let Some(before) = &self.backlog {
+            // Guilt is computed from what this run *inherited*, not what it
+            // leaves behind — the same distinction `backlog_delta` already
+            // makes ("the level alone cannot separate a run's own output
+            // from what it inherited"). Reading it off `after` instead would
+            // score a trigger that staged three replies overnight as
+            // maximally guilty for doing exactly its job: those drafts are
+            // seconds old and this run's own output, not neglected debt.
+            self.anticipated_guilt =
+                crate::guilt::anticipated_guilt(before, self.peak_context_pressure, Utc::now());
+            self.backlog_delta = Some(Backlog::delta(before, &Backlog::read()));
+        }
         self
     }
 }
@@ -151,6 +171,7 @@ mod tests {
             backlog_delta: Some(BacklogDelta::default()),
             peak_prompt_tokens: Some(18_008),
             peak_context_pressure: Some(0.0687),
+            anticipated_guilt: Some(0.0),
         };
         let json = serde_json::to_string(&h).unwrap();
         assert_eq!(serde_json::from_str::<Homeostat>(&json).unwrap(), h);
