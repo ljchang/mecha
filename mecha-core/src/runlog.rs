@@ -234,6 +234,44 @@ impl Corpus {
             .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
     }
 
+    /// Average of `Homeostat::peak_context_pressure` over the rows that
+    /// sensed it (`GOAL-SYSTEM-DESIGN.md` §4, feeding `diagnose::Evidence`).
+    ///
+    /// A mean rather than a rate against a threshold, on purpose: this module
+    /// counts and never judges, and a fixed "high pressure" cutoff would be
+    /// exactly the judgement the reader — `diagnose::Evidence`'s consumer —
+    /// is supposed to make. `None` over no sensed rows, like every reading
+    /// here: a corpus written before the homeostat existed and one where
+    /// every run had headroom to spare are opposite findings.
+    pub fn mean_peak_context_pressure(&self) -> Option<f64> {
+        let sensed: Vec<f64> = self
+            .rows
+            .iter()
+            .filter_map(|r| r.stats.homeostat.as_ref())
+            .filter_map(|h| h.peak_context_pressure)
+            .map(f64::from)
+            .collect();
+        (!sensed.is_empty()).then(|| sensed.iter().sum::<f64>() / sensed.len() as f64)
+    }
+
+    /// Average of `Homeostat::anticipated_guilt` over the rows that sensed
+    /// it. See [`crate::guilt`] — the sensor has no consumer yet, and this is
+    /// the corpus existing before anything is built on it, same as every
+    /// other reading here.
+    ///
+    /// `None` over no sensed rows, not zero — a corpus predating the sensor
+    /// must not read as one where nothing was ever owed.
+    pub fn mean_anticipated_guilt(&self) -> Option<f64> {
+        let sensed: Vec<f64> = self
+            .rows
+            .iter()
+            .filter_map(|r| r.stats.homeostat.as_ref())
+            .filter_map(|h| h.anticipated_guilt)
+            .map(f64::from)
+            .collect();
+        (!sensed.is_empty()).then(|| sensed.iter().sum::<f64>() / sensed.len() as f64)
+    }
+
     /// Total cost, and how many rows knew theirs. Reported as a pair because
     /// a total over partial data is a lower bound, and one that does not say
     /// so is a wrong number.
@@ -452,6 +490,59 @@ mod tests {
 
         let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
         assert_eq!(corpus.boredom_rate(), None, "not Some(0.0)");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_row_without_a_homeostat_snapshot_is_unknown_and_never_a_zero_for_either_mean() {
+        let dir = tmpdir();
+        let sensed = |pressure: f32, guilt: f32| {
+            let mut st = stats(4, 0, false, StopCause::Completed);
+            st.homeostat = Some(crate::homeostat::Homeostat {
+                peak_context_pressure: Some(pressure),
+                anticipated_guilt: Some(guilt),
+                ..Default::default()
+            });
+            st
+        };
+        session_with(
+            &dir,
+            "20260801T000000-mixed",
+            "opus",
+            vec![
+                // Written before Homeostat was recorded: knows nothing.
+                stats(4, 0, false, StopCause::Completed),
+                sensed(0.25, 0.0),
+                sensed(0.75, 0.5),
+            ],
+        );
+
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(corpus.len(), 3, "all three rows are in the corpus");
+        // Averaged over the two sensed rows only — the unsensed row must not
+        // dilute it toward zero, the same dilution `boredom_rate` guards
+        // against. Chosen as exact binary fractions so the f32→f64 widening
+        // this method does cannot introduce rounding noise into the assertion.
+        assert_eq!(corpus.mean_peak_context_pressure(), Some(0.5));
+        assert_eq!(corpus.mean_anticipated_guilt(), Some(0.25));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_corpus_predating_the_homeostat_has_neither_mean() {
+        let dir = tmpdir();
+        session_with(
+            &dir,
+            "20260801T000000-old",
+            "opus",
+            vec![stats(4, 0, false, StopCause::Completed)],
+        );
+
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(corpus.mean_peak_context_pressure(), None, "not Some(0.0)");
+        assert_eq!(corpus.mean_anticipated_guilt(), None, "not Some(0.0)");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
