@@ -340,6 +340,35 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
         .map(|(_, label)| label)
         .unwrap_or(Affect::Neutral);
 
+    // **`Neutral` must never mask a label that names something — not only on
+    // an exact magnitude tie, which is all the reduce above guards.** A
+    // larger-magnitude error can still reduce to `Neutral` (any `Own`/`Owner`
+    // error whose `visible`/`controllable` are unresolved does), and until
+    // this correction it would out-rank a smaller-magnitude error that
+    // `label_of` could actually name — burying `Anger`, say, under a bigger
+    // number that says nothing. `says_more`'s own stated principle ("a label
+    // that names nothing must never mask one that names something") already
+    // covers this in spirit; the reduce above just never applied it outside a
+    // tie. The failure mode was latent — `ended_on_failed_call` at a fixed
+    // `-1.0` can already out-rank a `-0.5` `Anger` — and became reachable in
+    // practice once a channel could emit an arbitrary large-magnitude
+    // `Neutral` by a model's free choice rather than only a deterministic
+    // counter (the quarantined appraiser, §5.1). Scanning every negative's
+    // own label rather than trusting `reduced` to have found the best one is
+    // deliberate: the magnitude-first reduce above is right for choosing
+    // *among informative labels*, and wrong only when its answer is the one
+    // label that names nothing.
+    let reduced = if reduced == Affect::Neutral {
+        negatives
+            .iter()
+            .map(|e| label_of(e))
+            .filter(|&l| l != Affect::Neutral)
+            .max_by_key(|&l| says_more(l))
+            .unwrap_or(Affect::Neutral)
+    } else {
+        reduced
+    };
+
     // Repeated negative error on one goal, self-agency, of the *same kind*
     // (§6.1: "repeated, one goal, self-agency"). Whole-record by
     // construction: one event cannot be a repetition, which is why this is a
@@ -1786,6 +1815,37 @@ mod tests {
             a.label,
             Affect::Anger,
             "Other-agency negative reduces to Anger"
+        );
+    }
+
+    /// The bug the review found on PR #96, round 3. `apply_appraiser` starts
+    /// `visible`/`controllable` conservative, so a `self`/`owner` verdict
+    /// reduces to `Neutral` under `label_of` however large its magnitude —
+    /// and before the fix above, the plain magnitude reduce let that `Neutral`
+    /// out-rank a smaller but *named* error, discarding the fact that
+    /// something else in the same record actually said something. Reproduces
+    /// the reviewer's own trace: a `MaxTurns` ceiling (`-0.5`, `Anger`)
+    /// alongside a `strongly_negative`/`self` appraiser verdict (`-1.0`,
+    /// reduces to `Neutral`) must still read `Anger`.
+    #[test]
+    fn a_large_neutral_appraiser_error_does_not_bury_a_smaller_named_one() {
+        let ceiling = GoalError {
+            cite: Cite::Counter("stop_cause".into()),
+            ..err(-0.5, Agency::World)
+        };
+        let mut a = appraisal(vec![ceiling]);
+        apply_appraiser(
+            &mut a,
+            AppraiserVerdict {
+                sign: Some(-1.0),
+                agency: Agency::Own,
+                reasoning: None,
+            },
+        );
+        assert_eq!(
+            a.label,
+            Affect::Anger,
+            "a bigger but label-less error must not mask a smaller one that names something"
         );
     }
 
