@@ -1011,6 +1011,13 @@ pub(crate) const OWNER: &str = "@owner";
 /// Both in one call because they are one fact about the task: "waiting" with
 /// nobody named is the ambiguity this whole phase exists to remove, and two
 /// calls could leave the board in exactly that state if the second failed.
+///
+/// **Never a closing status.** The withheld handle is the
+/// `closure_guard`-wrapped one (`setup::build` wraps before anything is
+/// pulled off the registry), so `done`/`dropped` through here is refused by
+/// construction — deliberately: a closure is the owner's act on every path,
+/// and `tasks set` is its one caller. Every status this function is asked to
+/// carry today is `waiting` or the pre-run status it is restoring.
 pub(crate) async fn move_task(
     update: &std::sync::Arc<dyn mecha_core::tool::Tool>,
     ctx: &mecha_core::tool::ToolCtx,
