@@ -256,13 +256,23 @@ async fn call(global: &GlobalOpts, tool: &str, args: Value) -> Result<Value> {
 /// connect_all` — third-party server startup — two to four times for one
 /// keystroke, synchronously in front of the TUI event loop and Slack's Done
 /// tap. One `PreparedTools`, threaded through, pays that once.
+/// `call_with`'s own error text for a tool that answered `is_error: true` —
+/// factored out so a caller that needs to tell "the store rejected the
+/// argument" apart from every other way `call_with` can fail (a missing
+/// server, a non-JSON response, a transport error) matches against the same
+/// string `call_with` actually produces, rather than a second, independently
+/// typed copy of it that a reworded `bail!` could silently stop matching.
+fn tool_rejected_prefix(tool: &str) -> String {
+    format!("{tool}: ")
+}
+
 async fn call_with(prepared: &setup::PreparedTools, tool: &str, args: Value) -> Result<Value> {
     let found = find_tool(&prepared.registry, tool).with_context(|| {
         format!("no knowledge-graph server in this configuration — `{tool}` is not on the tool surface. Is `[[mcp]]` enabled?")
     })?;
     let out = found.call(args, &tool_ctx(prepared)).await?;
     if out.is_error {
-        bail!("{}: {}", tool, out.content.trim());
+        bail!("{}{}", tool_rejected_prefix(tool), out.content.trim());
     }
     serde_json::from_str(&out.content)
         .with_context(|| format!("{tool} did not answer with JSON: {}", out.content))
@@ -816,11 +826,15 @@ async fn stage_follow_up(
         // `found.call` — in both, `kg_task_create` may already have run,
         // and retrying would stage a second, indistinguishable task rather
         // than recover from a rejection. The one shape that means "the
-        // store rejected the argument before creating anything" is `call_with`'s
-        // own `bail!("{tool}: {..}")` for `out.is_error`, whose text begins
-        // with the tool's name and a colon — nothing else it can produce
-        // (or `Tool::call`'s errors, or `find_tool`'s) matches that prefix.
-        Err(e) if e.to_string().starts_with("kg_task_create: ") => {
+        // store rejected the argument before creating anything" is
+        // `call_with`'s own text for `out.is_error`, matched through
+        // `tool_rejected_prefix` rather than a second copy of that literal —
+        // nothing else `call_with` (or `Tool::call`'s errors, or
+        // `find_tool`'s) can produce shares this prefix.
+        Err(e)
+            if e.to_string()
+                .starts_with(&tool_rejected_prefix("kg_task_create")) =>
+        {
             if let Some(o) = args.as_object_mut() {
                 o.remove("captured_from");
             }
@@ -2552,6 +2566,20 @@ mod tests {
                 "{label:?}"
             );
         }
+    }
+
+    /// Locks the exact shape `stage_follow_up`'s retry match keys off,
+    /// against the constant both sides now derive from rather than a
+    /// hand-typed literal that could drift from `call_with`'s real `bail!`.
+    /// Also checks the shape doesn't accidentally cover `call_with`'s other
+    /// two failure modes: a missing server never contains the tool name at
+    /// the front at all, and a JSON-parse failure's `"{tool} did not answer
+    /// with JSON: "` has a space, not a colon, right after the tool name.
+    #[test]
+    fn tool_rejected_prefix_is_exactly_what_call_with_emits_on_is_error() {
+        assert_eq!(tool_rejected_prefix("kg_task_create"), "kg_task_create: ");
+        assert!(!"kg_task_create did not answer with JSON: oops"
+            .starts_with(&tool_rejected_prefix("kg_task_create")));
     }
 
     /// `describe` is the owner-facing line, and it must be built only from

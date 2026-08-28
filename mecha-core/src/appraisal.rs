@@ -846,28 +846,36 @@ pub fn live(
     conversation: &crate::agent::Conversation,
     run_started_at: usize,
 ) -> Affect {
-    let stats = crate::session::RunStats::from(outcome);
     // A mid-run compaction rewrites `conversation.messages` *in place*
     // (CLAUDE.md, "The session record survives compaction too" — the same
     // rewrite `Session::record_run` compares against rather than slicing
     // past). `run_started_at` was captured before that happened, so after a
     // compaction it no longer names this run's own starting point in the
-    // rewritten list — it is too high, and the filter below would silently
-    // drop this run's genuine `Steer`/`Denial` interventions along with
-    // whatever the rewrite actually removed. Found on review: there is no
-    // way to recover the true boundary from here (the rewrite does not
-    // record how far indices shifted), so the honest answer is that this
-    // run's interventions are unknowable rather than empty-by-omission —
-    // and unknowable reads as none, on the same fail-safe direction as
-    // everywhere else in this module (silence, never a false signal).
-    let interventions: Vec<_> = if outcome.compactions > 0 {
-        Vec::new()
-    } else {
-        crate::learning::extract_interventions(&conversation.messages)
-            .into_iter()
-            .filter(|i| i.at >= run_started_at)
-            .collect()
-    };
+    // rewritten list, and there is no way to recover the true boundary from
+    // here (the rewrite does not record how far indices shifted).
+    //
+    // Dropping just the interventions and computing everything else is not
+    // the safe direction it looks like: `affect_of` reduces magnitude-first,
+    // so a `Steer`'s `-1.0` can mask a smaller raw error (a `-0.5` ceiling
+    // breach) down to `Neutral` — losing the interventions un-masks it
+    // instead of staying silent, trading a possibly-wrong partial reading
+    // for a *louder* one. Given `Neutral` is the label on 119 of 120
+    // sessions in the rung 7 corpus, and compaction correlates with long,
+    // hard runs, that would make this readout predominantly mean "this run
+    // compacted" rather than anything about how it went. So a compacted run
+    // reads as `Neutral` outright — the same real-absence semantics as the
+    // `Err` arm callers already use when a run doesn't finish at all —
+    // rather than a partial evidence set that reads worse than the full
+    // one. `a_compacted_run_reads_as_neutral_rather_than_a_louder_partial_signal`
+    // is the regression: without this guard the same fixture reads `Anger`.
+    if outcome.compactions > 0 {
+        return Affect::Neutral;
+    }
+    let stats = crate::session::RunStats::from(outcome);
+    let interventions: Vec<_> = crate::learning::extract_interventions(&conversation.messages)
+        .into_iter()
+        .filter(|i| i.at >= run_started_at)
+        .collect();
     let goal = crate::tool::todo::TodoTool::plan_from_transcript(&conversation.messages)
         .and_then(|p| p.goal);
     let goals: Vec<GoalRef> = goal.into_iter().collect();
@@ -2371,17 +2379,17 @@ mod tests {
         );
     }
 
-    /// The regression this exists to catch: a mid-run compaction rewrites
-    /// `conversation.messages` *in place*, so `run_started_at` — captured
-    /// before the run — no longer names this run's own starting point in
-    /// the rewritten list. Left unguarded, a steer from *this same run*
-    /// would still pass the `i.at >= run_started_at` filter by coincidence
-    /// or fail it depending on how far the rewrite shifted indices — either
-    /// way, an index that no longer means what it did is not something to
-    /// trust either way, so `live` treats a compacted run's interventions as
-    /// unknowable rather than gambling on the coincidence.
+    /// The regression this exists to catch, and the direction matters: a
+    /// mid-run compaction invalidates `run_started_at` as an index into the
+    /// rewritten `conversation.messages`, and dropping just the
+    /// interventions while still computing from everything else is not the
+    /// safe fallback it looks like — it un-masks whatever raw error a
+    /// dropped `Steer`/`Denial` was suppressing, producing a *louder* label
+    /// than an uncompacted run of the identical fixture would. `live` must
+    /// read a compacted run as `Neutral` outright rather than that partial,
+    /// amplified reading.
     #[test]
-    fn a_compacted_run_does_not_trust_its_own_intervention_index() {
+    fn a_compacted_run_reads_as_neutral_rather_than_a_louder_partial_signal() {
         let messages = vec![
             crate::message::Message::user("do the thing"),
             crate::message::Message::assistant(vec![crate::message::Block::ToolUse {
@@ -2407,16 +2415,18 @@ mod tests {
         // `-0.5` in `affect_of`'s magnitude-first reduce and masks it down
         // to `Neutral` — the pre-existing, correct behaviour for an
         // uncompacted run, included here so the next assertion is a
-        // contrast rather than a guess.
+        // contrast: the same fixture, only `compactions` differs.
         let mut clean = bare_outcome();
         clean.stop_cause = crate::agent::StopCause::MaxTurns;
         assert_eq!(live("s1", &clean, &convo, 0), Affect::Neutral);
 
-        // With a compaction recorded, the same steer must not be trusted at
-        // all — what's left is the ceiling's `Anger`, reading through
-        // rather than being masked by an index the rewrite invalidated.
+        // With a compaction recorded, the interventions are unknowable, and
+        // the honest reading of an unknowable evidence set is `Neutral` —
+        // never the ceiling's `Anger` reading through unmasked, which is
+        // what an uncompacted run's own `MaxTurns` would have looked like
+        // and is not evidence this run actually had.
         let mut compacted = clean.clone();
         compacted.compactions = 1;
-        assert_eq!(live("s1", &compacted, &convo, 0), Affect::Anger);
+        assert_eq!(live("s1", &compacted, &convo, 0), Affect::Neutral);
     }
 }
