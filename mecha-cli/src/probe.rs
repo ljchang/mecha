@@ -116,14 +116,33 @@ pub fn prepare_probe_at(
         Ok(p) => p,
         Err(_) => return Ok(Err(format!("session {session_id} not found"))),
     };
-    let (_, convo) = match Session::load(&path) {
-        Ok(loaded) => loaded,
+    prepare_probe_in(&path, trigger, intervention)
+}
+
+/// The same, for a caller that already holds the transcript's path — the
+/// appraisal probe walks `Session::list` itself, so re-resolving the id here
+/// paid a full directory scan per intervention for an answer the caller had.
+///
+/// One `Session::read` per call, deliberately: the messages and every run
+/// config come out of the same pass, where the first cut paid `Session::load`
+/// plus a *second* full parse for `run_configs` — the three-reads mistake
+/// `Session::read`'s own doc names — and, worse, propagated a failure of that
+/// second read as `Err`, aborting a whole corpus walk that skips per-item
+/// everywhere else. One read means one failure mode, and it is a skip.
+pub fn prepare_probe_in(
+    path: &Path,
+    trigger: &str,
+    intervention: &str,
+) -> Result<Result<ProbePrep, String>> {
+    let transcript = match Session::read(path) {
+        Ok(t) => t,
         Err(e) => return Ok(Err(format!("session unreadable: {e:#}"))),
     };
+    let messages = &transcript.convo.messages;
     let point = if trigger == Trigger::Steer.as_str() {
-        locate_steer(&convo.messages, intervention)
+        locate_steer(messages, intervention)
     } else if trigger == Trigger::Denial.as_str() {
-        locate_denial(&convo.messages, intervention)
+        locate_denial(messages, intervention)
     } else {
         // An `edit` reflection's intervention lives in an outbox item, not in
         // any transcript — there is no prefix to replay. Explicit, so a new
@@ -135,12 +154,17 @@ pub fn prepare_probe_at(
     let Some(point) = point else {
         return Ok(Err("could not locate the intervention".into()));
     };
-    let slice = truncate_after_run(&convo.messages, point.message_index);
+    let slice = truncate_after_run(messages, point.message_index);
     let trajectory = extract(slice);
     if trajectory.turns.is_empty() {
         return Ok(Err("no user turns before the intervention".into()));
     }
-    let Some(recorded) = Session::run_configs(&path)?.first().cloned() else {
+    // The config in effect *at the intervention*, not `first()`: a resumed
+    // session's later attach ran under its own system prompt and tool list,
+    // and replaying its turns under the first attach's diverges for reasons
+    // that say nothing about the steer — which a counterfactual verdict then
+    // reads as `Mattered`, inflating regret out of an artifact of the replay.
+    let Some(recorded) = transcript.config_covering(point.message_index).cloned() else {
         return Ok(Err("no RunConfig recorded".into()));
     };
 

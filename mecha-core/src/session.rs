@@ -515,8 +515,40 @@ pub struct Transcript {
     /// Every `RunConfig` recorded, in order. The first is the run the session
     /// began under; a `/model` switch appends another.
     pub configs: Vec<RunConfig>,
+    /// How many messages preceded each entry of `configs` in the *loaded*
+    /// list — parallel to it, and what [`Transcript::config_covering`] reads.
+    /// A front-end writes a `Config` at run start, before the run's own
+    /// messages, so the config in effect at message `i` is the last one with
+    /// a position at or below `i`. A `Rewrite` clamps every earlier position
+    /// to zero: the rewritten head's original indices are claims about a list
+    /// that no longer exists, and the config in flight at the rewrite — the
+    /// last of the clamped ones — is the honest answer for it (messages the
+    /// rewrite kept from *earlier attaches* were genuinely recorded under
+    /// older configs, but those turns are exactly the "not comparable" case
+    /// `run_configs`'s own doc names, and the replay fidelity caveat is the
+    /// place that says so).
+    pub config_positions: Vec<usize>,
     /// Every recorded outcome, folded into the episode the session describes.
     pub episode: Option<RunStats>,
+}
+
+impl Transcript {
+    /// The run config in effect at message `message_index` of the loaded
+    /// list, or `None` for a transcript recorded before configs were kept.
+    ///
+    /// This is what a replay driver should ask, not `configs.first()`:
+    /// resuming under different flags is a normal thing to do, and replaying
+    /// a later attach's turns under the first attach's system prompt and
+    /// tool list diverges for reasons that say nothing about those turns —
+    /// which a counterfactual reader then mistakes for evidence.
+    pub fn config_covering(&self, message_index: usize) -> Option<&RunConfig> {
+        self.config_positions
+            .iter()
+            .zip(&self.configs)
+            .filter(|(pos, _)| **pos <= message_index)
+            .last()
+            .map(|(_, cfg)| cfg)
+    }
 }
 
 /// Every `Record::Outcome` in a transcript, in order.
@@ -758,6 +790,7 @@ impl Session {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
         let mut configs = Vec::new();
+        let mut config_positions = Vec::new();
         let mut outcomes = Vec::new();
         let mut meta = None;
         let mut messages = Vec::new();
@@ -768,15 +801,25 @@ impl Session {
                 Ok(Record::Message(m)) => messages.push(m),
                 // The conversation state as of the rewrite, wholesale. Taint
                 // is deliberately not touched: summarising away the text of a
-                // hostile page does not un-read it.
-                Ok(Record::Rewrite { messages: m }) => messages = m,
+                // hostile page does not un-read it. Config positions recorded
+                // against the replaced list are clamped, not kept — see
+                // `Transcript::config_positions`.
+                Ok(Record::Rewrite { messages: m }) => {
+                    messages = m;
+                    for p in &mut config_positions {
+                        *p = 0;
+                    }
+                }
                 // Merged rather than replaced: taint only ever grows, and a
                 // transcript written by an older build has none at all.
                 Ok(Record::Taint(t)) => taint.merge(t),
                 // Kept rather than discarded: this is the pass that has them
                 // in hand, and the alternative is two more reads of the file
                 // it just walked.
-                Ok(Record::Config(c)) => configs.push(c),
+                Ok(Record::Config(c)) => {
+                    config_positions.push(messages.len());
+                    configs.push(c);
+                }
                 Ok(Record::Outcome(o)) => outcomes.push(o),
                 Ok(Record::Summary { .. }) => {}
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
@@ -788,6 +831,7 @@ impl Session {
             meta,
             convo: Conversation::resumed(messages, taint),
             configs,
+            config_positions,
             episode: RunStats::fold(outcomes),
         })
     }
@@ -1469,6 +1513,88 @@ mod tests {
         // And the messages still load, unbothered by the new record type.
         let (_, convo) = Session::load(&session.path).unwrap();
         assert_eq!(convo.messages.len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The replay driver's question, answered positionally: which config was
+    /// in effect *at this message* — not `first()`, which replayed a resumed
+    /// session's later attach under the first attach's system prompt and
+    /// tool list, diverging for reasons that said nothing about the turn
+    /// being probed.
+    #[test]
+    fn config_covering_names_the_attach_a_message_actually_ran_under() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-cover")).unwrap();
+        let first = RunConfig::default();
+        let second = RunConfig {
+            compact_at_tokens: Some(1200),
+            ..RunConfig::default()
+        };
+        session.append(&Record::Config(first)).unwrap();
+        session
+            .append_messages(&[
+                Message::user("first attach"),
+                Message::assistant(vec![Block::text("done")]),
+            ])
+            .unwrap();
+        session.append(&Record::Config(second)).unwrap();
+        session
+            .append_messages(&[Message::user("second attach")])
+            .unwrap();
+
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(
+            t.config_covering(0).unwrap().compact_at_tokens,
+            None,
+            "message 0 ran under the first attach"
+        );
+        assert_eq!(
+            t.config_covering(2).unwrap().compact_at_tokens,
+            Some(1200),
+            "message 2 ran under the second attach"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A rewrite replaces the list, so positions recorded against the old one
+    /// are claims about a list that no longer exists — they clamp to zero,
+    /// and the config in flight at the rewrite (the last of them) covers the
+    /// rewritten head. A transcript with no configs at all answers `None`,
+    /// never a default.
+    #[test]
+    fn config_covering_survives_a_rewrite_and_answers_none_without_configs() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-coverrw")).unwrap();
+        session
+            .append(&Record::Config(RunConfig::default()))
+            .unwrap();
+        session
+            .append_messages(&[
+                Message::user("a long history"),
+                Message::assistant(vec![Block::text("...")]),
+                Message::user("more"),
+            ])
+            .unwrap();
+        session
+            .append(&Record::Rewrite {
+                messages: vec![Message::user("[summary]")],
+            })
+            .unwrap();
+
+        let t = Session::read(&session.path).unwrap();
+        assert!(
+            t.config_covering(0).is_some(),
+            "the config in flight at the rewrite covers the rewritten head"
+        );
+
+        let bare = Session::create(&dir, meta_with_id("20260101T000001-bare")).unwrap();
+        bare.append_messages(&[Message::user("hello")]).unwrap();
+        assert!(Session::read(&bare.path)
+            .unwrap()
+            .config_covering(0)
+            .is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }
