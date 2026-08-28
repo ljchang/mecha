@@ -1402,6 +1402,12 @@ fn finish_run(
             // truncating that keeps the very message this exists to drop.
             app.convo.messages = persisted;
             app.convo.messages.pop();
+            // A run with no `RunOutcome` has nothing to appraise — leaving
+            // the previous run's badge up would read as *this* run's mood,
+            // which is exactly the web page's own `sawAffectThisRun` rule
+            // applied here: silence (or a failure) means neutral, not "no
+            // update".
+            app.affect = None;
         }
     }
 
