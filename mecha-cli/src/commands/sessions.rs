@@ -238,15 +238,24 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
     let cutoff = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
 
     let mut rows = std::collections::BTreeMap::<(String, String), StatRow>::new();
-    for (meta, path) in Session::list(dir)? {
+    let (listed, mut unreadable) = Session::list_counting(dir)?;
+    for (meta, path) in listed {
         if let Some(cutoff) = cutoff {
             if meta.created_at < cutoff {
                 continue;
             }
         }
-        // A torn transcript still counts what it recorded; one unreadable
-        // file must not sink the report.
-        let (usage, turns) = Session::usage_totals(&path).unwrap_or_default();
+        // A torn transcript still counts what it recorded (`usage_totals`
+        // skips malformed lines itself); a file whose *read* fails is a
+        // different thing — counting it as a session with zero tokens is the
+        // dash-versus-zero inversion, so it is counted apart and said.
+        let (usage, turns) = match Session::usage_totals(&path) {
+            Ok(v) => v,
+            Err(_) => {
+                unreadable += 1;
+                continue;
+            }
+        };
         let pricing = config
             .providers
             .get(&meta.provider)
@@ -260,6 +269,13 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
             row.priced = true;
         }
         row.usage.add(&usage);
+    }
+
+    // Stderr in both modes, so the JSON array's shape is untouched: the
+    // caveat is about the scan, not a row, and a machine reader of the rows
+    // must still be told a human was.
+    if unreadable > 0 {
+        eprintln!("{unreadable} transcript(s) could not be read and appear in no row");
     }
 
     if json {
@@ -415,7 +431,12 @@ async fn appraise(
         Vec<mecha_core::learning::Intervention>,
     )> = Vec::new();
     let mut sessions_read = 0usize;
-    for (meta, path) in Session::list(dir)? {
+    // The listing's skip count, kept apart from "read but nothing to
+    // appraise": a corrupt transcript was invisible from this readout
+    // entirely — it appeared in no count at all, which on this surface of
+    // all surfaces is the dash-versus-zero inversion.
+    let (listed, sessions_unreadable) = Session::list_counting(dir)?;
+    for (meta, path) in listed {
         if since.is_some_and(|t| meta.created_at < t) {
             continue;
         }
@@ -457,8 +478,11 @@ async fn appraise(
     // Off by default, and the free readout above is byte-for-byte what it was:
     // `appraise` with no flag still costs zero tokens and no model, which is
     // the property that lets it be run over the whole store. `--probe` and
-    // `--appraise` are independent — either, neither, or both — so the
-    // provider is built once for whichever is set rather than twice.
+    // `--appraise` are independent — either, neither, or both. The handle
+    // built here serves the appraiser's calls; the probe path builds its own
+    // provider per arm inside `drive_arm` (each arm builds a whole replay
+    // agent, and `Agent::new` owns its provider) — a real, small cost per
+    // replay, not the "built once" this comment used to claim.
     let mut tally = crate::appraisal_probe::Tally::default();
     let mut appraiser_tally = crate::appraiser_pass::Tally::default();
     let mut budget = if probe { max_probes } else { 0 };
@@ -564,8 +588,17 @@ async fn appraise(
     let mut labels: std::collections::BTreeMap<String, usize> = Default::default();
     let mut channels: std::collections::BTreeMap<String, usize> = Default::default();
     let mut positive = 0usize;
+    // Whether any session names what it serves is the corpus's own open
+    // question — `serves:` had never carried a value in production when rung
+    // 7's measurement was taken, and the instrument could not say so (#91's
+    // counter did not survive its merge). Derived here so the next honest
+    // read costs a flag, not an archaeology pass.
+    let mut named_a_goal = 0usize;
     for a in &appraisals {
         *labels.entry(enum_key(a.label)).or_default() += 1;
+        if !a.goals.is_empty() {
+            named_a_goal += 1;
+        }
         for e in &a.errors {
             *channels.entry(enum_key(e.channel)).or_default() += 1;
             if e.sign > 0.0 {
@@ -580,6 +613,8 @@ async fn appraise(
             serde_json::to_string_pretty(&serde_json::json!({
                 "appraised": appraisals.len(),
                 "sessions_read": sessions_read,
+                "sessions_unreadable": sessions_unreadable,
+                "named_a_goal": named_a_goal,
                 "labels": labels,
                 "channels": channels,
                 "positive_errors": positive,
@@ -627,6 +662,13 @@ async fn appraise(
     if outbox_unreadable {
         println!("  (the outbox could not be read, so the edit channel is missing — not empty)\n");
     }
+    // Same rule for the session store itself: a corrupt transcript is in no
+    // count above, and "skipped" must not read as "the store held less".
+    if sessions_unreadable > 0 {
+        println!(
+            "  ({sessions_unreadable} transcript(s) could not be read and are in no count above)\n"
+        );
+    }
     if appraisals.is_empty() {
         return Ok(());
     }
@@ -653,6 +695,14 @@ async fn appraise(
          exposure producer",
         neutral as f64 / appraisals.len() as f64 * 100.0,
         appraisal::Affect::ALL.len(),
+    );
+    // The other number the corpus turns on: frustration and every
+    // goal-attributed label are unreachable for a session that names no
+    // goal, and `serves:` coverage has never been measurable from the
+    // instrument itself since #91's counter was lost in its merge.
+    println!(
+        "  {named_a_goal} of {} named a goal (`serves:`)",
+        appraisals.len()
     );
 
     println!("\n  signed errors, by channel");
@@ -731,18 +781,12 @@ async fn appraise(
     Ok(())
 }
 
-/// A `Serialize` enum's own wire spelling, never `{:?}`. Debug and serde agree
-/// on every variant here today because each is one word, but `Agency::Own`
-/// already diverges (`"self"`, a hand-written rename) — so deriving a JSON key
-/// from Debug is a bug waiting on the first multi-word variant, silently
-/// mismatched the day it lands rather than caught here. `unwrap_or_else`'s
-/// fallback is unreachable for a unit-variant enum in practice; it exists so
-/// this stays a display helper rather than a second thing that can panic.
+/// One spelling of enum-to-wire-name, shared with the core — see
+/// `mecha_core::appraisal::enum_name` for why it is not `{:?}` and why the
+/// fallback is `"unknown"`, never `""`. This alias keeps the call sites
+/// by-value, matching how the tallies above use it.
 fn enum_key<T: serde::Serialize>(v: T) -> String {
-    serde_json::to_value(v)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".into())
+    mecha_core::appraisal::enum_name(&v)
 }
 
 /// `sessions health` — the run-quality corpus, summarised.
@@ -799,12 +843,7 @@ fn health(
         .into_iter()
         .map(|(cause, n)| {
             let name = cause
-                .map(|c| {
-                    serde_json::to_string(&c)
-                        .unwrap_or_default()
-                        .trim_matches('"')
-                        .to_string()
-                })
+                .map(|c| enum_key(c))
                 .unwrap_or_else(|| "unrecorded".into());
             format!("{name} {n}")
         })
