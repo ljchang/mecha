@@ -1234,10 +1234,19 @@ Each rung is independently useful and independently measurable.
    errors on the episode's `meta`, beside the taint snapshot already there —
    not gated on the timeline's trust, because unlike a correction's free
    text they are structured facts the harness computed about its own run.
-   **Review-queue salience and gossip seeding are still unbuilt**: the first
-   needs pkg (a different repository) to read `meta.affect`/`meta.goal_errors`
-   and reorder on them, and the second needs a surprise channel this rung
-   does not compute yet.
+   *Surprise detection built 2026-08-28*: the same quarantined pass that
+   already reads the transcript for corrections now also reports
+   `surprises` — moments where something the agent said, sourced from the
+   graph, disagreed with something else found in the same session. Gated
+   like corrections (the model's own free-text reading of transcript prose,
+   not a structured harness fact) and, deliberately, **not auto-run**:
+   `mecha distill` prints each one so a human decides whether to chase it
+   with `mecha gossip --entity <about>`, on this project's standing rule
+   that real model spend needs a gate rather than a session's own say-so.
+
+   **Review-queue salience is still unbuilt**: it needs pkg (a different
+   repository) to read `meta.affect`/`meta.goal_errors` and reorder on
+   them.
 10. **The charter** (§11), anticipated guilt (§7.4), and the homeostat into
     `diagnose::Evidence`.
 11. **Curiosity** (§9.2). Last: it needs the competence time series the
