@@ -52,11 +52,12 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     // has no business waiting on a three-second loopback timeout first.
     if let Some(id) = &args.undecline {
         let one = (id != "all").then_some(id.as_str());
-        onboarding::undecline(&home, one)?;
+        let salvaged = onboarding::undecline(&home, one)?;
         match one {
             Some(id) => println!("`{id}` will be offered again"),
             None => println!("every declined step will be offered again"),
         }
+        report_salvage(salvaged);
         return Ok(());
     }
 
@@ -312,18 +313,26 @@ fn offer(steps: &[&Step], home: &std::path::Path, read: &mut impl std::io::BufRe
         };
         match answer {
             Answer::Yes => {
-                run(remedy)?;
-                already_run.push(&remedy.argv);
+                // Only a command that *succeeded* satisfies the steps that
+                // share it. A failed install leaves the next one genuinely
+                // outstanding, so it gets asked rather than told the work is
+                // already done.
+                if run(remedy)? {
+                    already_run.push(&remedy.argv);
+                }
             }
             Answer::Skip => println!("skipped — asked again next time"),
             Answer::Never => match onboarding::decline(home, &s.id) {
                 // Said with the undo in the same breath: a decision nobody
                 // can find their way back out of is one people are right to
                 // hesitate over.
-                Ok(()) => println!(
-                    "noted — `{}` will not be offered again (`mecha setup --undecline {}` undoes it)",
-                    s.id, s.id
-                ),
+                Ok(salvaged) => {
+                    println!(
+                        "noted — `{}` will not be offered again (`mecha setup --undecline {}` undoes it)",
+                        s.id, s.id
+                    );
+                    report_salvage(salvaged);
+                }
                 // A store that could not be written must not read as a
                 // recorded answer, or the question silently comes back and
                 // the person believes they already settled it.
@@ -336,18 +345,51 @@ fn offer(steps: &[&Step], home: &std::path::Path, read: &mut impl std::io::BufRe
 
 /// Inheriting the real terminal, never captured: an OAuth flow needs a
 /// keyboard and a screen, and `.output()` gives it a pipe and a closed stdin.
-fn run(remedy: &Remedy) -> Result<()> {
+///
+/// **Returns whether it actually worked**, which the caller needs and used to
+/// assume. A remedy that failed is not one that satisfied anything, and
+/// `offer` records the argv as handled off this answer — so swallowing the
+/// status made a failed `cargo install mecha-mail` print *"already handled by
+/// the command above"* at the `docs` prompt, a claim about a command that did
+/// not succeed. The house rule one layer down: grade the artifact, never the
+/// report.
+fn run(remedy: &Remedy) -> Result<bool> {
     let (program, rest) = remedy
         .argv
         .split_first()
         .context("a remedy with an empty argv")?;
     let status = std::process::Command::new(program).args(rest).status();
-    match status {
-        Ok(s) if s.success() => println!("done"),
-        Ok(s) => println!("that exited {} — nothing else was changed", s),
-        Err(e) => println!("could not run it: {e}"),
+    Ok(match status {
+        Ok(s) if s.success() => {
+            println!("done");
+            true
+        }
+        Ok(s) => {
+            println!("that exited {s} — nothing else was changed");
+            false
+        }
+        Err(e) => {
+            println!("could not run it: {e}");
+            false
+        }
+    })
+}
+
+/// Say when an unreadable decline store was moved aside rather than
+/// overwritten.
+///
+/// Printed rather than swallowed because the alternative is the failure this
+/// whole path exists to avoid: somebody's recorded answers disappearing with
+/// no word. They are still on disk, and this is the only line that says
+/// where.
+fn report_salvage(salvaged: Option<std::path::PathBuf>) {
+    if let Some(path) = salvaged {
+        println!(
+            "  (the previous declined-steps file could not be read and was kept at {} \n\
+             rather than overwritten — earlier answers are in there, not lost)",
+            path.display()
+        );
     }
-    Ok(())
 }
 
 /// Ask the documented local address whether a **model server** is serving
@@ -761,6 +803,47 @@ mod tests {
             "a skip is not a decline, and one answer is not two: {declined:?}"
         );
 
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// **A command that failed has satisfied nothing.**
+    ///
+    /// `offer` records an argv as handled off the `y` answer, and `run`
+    /// swallowed the exit status — so a failed `cargo install mecha-mail`
+    /// printed "already handled by the command above" at the `docs` prompt,
+    /// asserting an outcome nothing had checked. The pair below distinguishes
+    /// the two by whether the second step is *asked*: a skipped step consumes
+    /// no answer, so the `never` reaches `docs` only when it was.
+    #[test]
+    fn a_failed_command_does_not_mark_the_steps_that_share_it_as_handled() {
+        // `false` exits 1, `true` exits 0 — real binaries on every platform
+        // this builds for, and the cheapest honest way to spawn each outcome.
+        let failing = [
+            step_with("mail", &["false"], true),
+            step_with("docs", &["false"], true),
+        ];
+        let home = scratch_home(line!());
+        let mut input = std::io::Cursor::new(b"y\nnever\n".to_vec());
+        offer(&[&failing[0], &failing[1]], &home, &mut input).unwrap();
+        assert!(
+            onboarding::read_declined(&home).unwrap().contains("docs"),
+            "the install failed, so `docs` is still outstanding and must be asked"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+
+        // And the contrast: a command that worked *does* satisfy both, so the
+        // second is not asked and the `never` is never consumed.
+        let working = [
+            step_with("mail", &["true"], true),
+            step_with("docs", &["true"], true),
+        ];
+        let home = scratch_home(line!());
+        let mut input = std::io::Cursor::new(b"y\nnever\n".to_vec());
+        offer(&[&working[0], &working[1]], &home, &mut input).unwrap();
+        assert!(
+            onboarding::read_declined(&home).unwrap().is_empty(),
+            "one successful install satisfies both, so nothing was declined"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
