@@ -6576,14 +6576,15 @@ fn suspend_and_edit_trigger(
 }
 
 /// Edit the charter in `$EDITOR` — on the file itself — then reload the
-/// modal and say what happened.
+/// modal and say what happened, where "what happened" is read off the file
+/// rather than the editor's exit code.
 ///
-/// The one write mecha ever makes here is a comments-only template when the
-/// file does not exist yet (`charter::TEMPLATE` carries the argument); every
-/// `[[line]]` is the owner's own typing. Validation feedback is the reason
-/// this beats a hand-run `vi`: a duplicate id or a typo'd table name is
-/// reported the moment the editor closes, not at the next session's startup
-/// where the alternate screen covers the warning.
+/// The one write mecha ever makes here is the comments-only
+/// `charter::TEMPLATE` when the file does not exist yet; every `[[line]]`
+/// is the owner's own typing. Validation feedback is the reason this beats
+/// a hand-run `vi`: a duplicate id or a typo'd table name is reported the
+/// moment the editor closes, not at the next session's startup where the
+/// alternate screen covers the warning.
 fn suspend_and_edit_charter(
     terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>,
     app: &mut App,
@@ -6592,6 +6593,7 @@ fn suspend_and_edit_charter(
         return Ok(());
     };
     let path = modal.path.clone();
+    let mut created = false;
     if !path.is_file() {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -6599,30 +6601,49 @@ fn suspend_and_edit_charter(
         }
         std::fs::write(&path, charter::TEMPLATE)
             .with_context(|| format!("writing {}", path.display()))?;
+        created = true;
     }
+    // The file *is* the store (`edit_file` has no scratch copy), so what the
+    // editor did to it is established by looking, not by its exit code: a
+    // clean exit may have saved nothing, and `:cq` may exit non-zero after a
+    // save landed. Bytes before against bytes after is the one honest
+    // answer to "did anything change".
+    let before = std::fs::read(&path).ok();
     let result = with_terminal_suspended(terminal, || crate::editor::edit_file(&path))?;
+    let changed = std::fs::read(&path).ok() != before;
 
     if let Some(modal) = &mut app.charter {
-        modal.status = Some(match &result {
-            // The honest clause: the charter is rendered into the system
-            // prompt at agent build, so a saved edit changes the next
-            // session (or this one after /model), never this conversation.
-            Ok(_) => match mecha_core::charter::Charter::load(&path) {
-                Ok(_) => {
-                    "saved — rides in the prompt from the next session (/model rebuilds this one)"
-                        .to_string()
-                }
+        // The honest clause in every "saved" arm: the charter is rendered
+        // into the system prompt at agent build, so a saved edit changes the
+        // next session (or this one after /model), never this conversation.
+        modal.status = Some(match (&result, changed) {
+            (Ok(_), false) if created => {
+                "the template is in place — no lines yet; e edits it".to_string()
+            }
+            (Ok(_), false) => "unchanged".to_string(),
+            (Ok(_), true) => match mecha_core::charter::Charter::load(&path) {
+                Ok(_) => "saved — rides in the prompt from the next session (/model rebuilds this one)".to_string(),
                 Err(e) => format!(
-                    "saved, but it will NOT load: {e:#} — every run starts uncharted until                      this is fixed (e re-edits)"
+                    "saved, but it will NOT load: {e:#} — every run starts uncharted until this is fixed (e re-edits)"
                 ),
             },
-            Err(e) => format!("charter unchanged: {e}"),
+            // A non-zero exit with the file changed anyway (`:cq` after a
+            // save, a wrapper script) — claiming "unchanged" here would be
+            // wrong about the one file that rides in every prompt, so say
+            // what actually happened and whether what landed loads.
+            (Err(e), true) => match mecha_core::charter::Charter::load(&path) {
+                Ok(_) => format!("the editor exited with an error ({e}), but the file changed and loads"),
+                Err(le) => format!(
+                    "the editor exited with an error ({e}); the file changed and will NOT load: {le:#}"
+                ),
+            },
+            (Err(e), false) => format!("charter unchanged: {e}"),
         });
         modal.reload();
     }
     if let Err(e) = result {
         app.transcript
-            .push(Entry::Error(format!("charter was not edited: {e}")));
+            .push(Entry::Error(format!("charter editor: {e}")));
     }
     Ok(())
 }

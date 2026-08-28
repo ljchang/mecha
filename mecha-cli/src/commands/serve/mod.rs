@@ -302,7 +302,16 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/settings/rules", get(settings::rules))
         .route(
             "/api/settings/voice/clone",
-            axum::routing::post(settings::voice_clone),
+            axum::routing::post(settings::voice_clone)
+                // A cloning reference is a multi-megabyte WAV by design —
+                // ~50s of 48 kHz mono s16 is ~5 MB — and axum's 2 MB
+                // default would cut the recording the page itself asks for
+                // at ~22s, with a bare 413 instead of any of the handler's
+                // own refusals. Same reasoning as upload and dictate above;
+                // the handler's MAX_CLONE_BYTES is the real ceiling.
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    settings::MAX_CLONE_BYTES + 4096,
+                )),
         )
         .route(
             "/api/settings/voice/clone/delete",
@@ -617,6 +626,170 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_settings_routes_sit_behind_the_owner_guard() {
+        // The charter save is the only write on the web surface that lands
+        // in a file every future run's prompt is built from, so it is the
+        // route most worth pinning behind the door — with the reads and the
+        // clone verbs beside it. A probe without the header learns nothing,
+        // not even that these routes exist.
+        for (method, uri) in [
+            ("GET", "/api/settings/charter"),
+            ("POST", "/api/settings/charter"),
+            ("GET", "/api/settings/rules"),
+            ("GET", "/api/settings/voice"),
+            ("POST", "/api/settings/voice/clone?name=x"),
+            ("POST", "/api/settings/voice/clone/delete"),
+        ] {
+            let response = test_router()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_invalid_charter_save_is_refused_at_the_handler() {
+        // The module doc's claim measured where it is made: a document the
+        // runs' own reader refuses comes back 422 from the handler — the
+        // validation happens before any path is even resolved, so a refusal
+        // here is structurally a refusal to write. (A *valid* save is
+        // deliberately not driven from a test: the handler writes to
+        // `Charter::default_path()`, which is the developer's real home.)
+        let dup =
+            r#"{"raw":"[[line]]\nid = \"a\"\ntext = \"x\"\n[[line]]\nid = \"a\"\ntext = \"y\"\n"}"#;
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings/charter")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("content-type", "application/json")
+                    .body(Body::from(dup))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// A router whose clone endpoints have somewhere to write, so the
+    /// content-type boundary and the write path itself are testable — the
+    /// default fixture's `voices_dir: None` refuses at the front door
+    /// (correctly, and revealing nothing), which also means it cannot pin
+    /// anything behind it.
+    fn test_router_with_voices(dir: &std::path::Path) -> Router {
+        router(
+            WebState {
+                owner_login: Arc::new("owner@example.com".into()),
+                chat: None,
+                offer_target: None,
+                voices_dir: Some(Arc::new(dir.to_path_buf())),
+                review: Arc::new(review::ReviewState {
+                    outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
+                    sessions_dir: None,
+                }),
+            },
+            None,
+        )
+    }
+
+    fn tiny_wav(rate: u32, seconds: f64) -> Vec<u8> {
+        let byte_rate = rate * 2;
+        let data_len = (f64::from(byte_rate) * seconds) as u32;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data_len).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&rate.to_le_bytes());
+        b.extend_from_slice(&byte_rate.to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&data_len.to_le_bytes());
+        b.resize(b.len() + data_len as usize, 0);
+        b
+    }
+
+    #[tokio::test]
+    async fn a_clone_without_the_wav_content_type_is_refused_before_the_write() {
+        // The content-type check is the CSRF boundary for the one raw-Bytes
+        // write: `audio/wav` is not a CORS-simple type, so requiring it
+        // forces a cross-origin caller through a preflight nothing answers.
+        // text/plain — the simple type a form post carries — must die at
+        // 415 with nothing written, even carrying a perfectly valid WAV.
+        let dir = std::env::temp_dir().join(format!("mecha-clone-ct-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let response = test_router_with_voices(&dir)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings/voice/clone?name=x")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("content-type", "text/plain")
+                    .body(Body::from(tiny_wav(16_000, 6.0)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert!(
+            std::fs::read_dir(&dir).unwrap().next().is_none(),
+            "a refused clone left something in the store"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_valid_clone_lands_and_an_invalid_one_leaves_no_trace() {
+        let dir = std::env::temp_dir().join(format!("mecha-clone-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Too short: refused by the duration check, nothing written.
+        let short = test_router_with_voices(&dir)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings/voice/clone?name=guest")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("content-type", "audio/wav")
+                    .body(Body::from(tiny_wav(16_000, 2.0)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(short.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
+        // Long enough: lands as <name>.wav, byte for byte.
+        let ok = test_router_with_voices(&dir)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings/voice/clone?name=guest")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("content-type", "audio/wav")
+                    .body(Body::from(tiny_wav(16_000, 6.0)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read(dir.join("guest.wav")).unwrap(),
+            tiny_wav(16_000, 6.0)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

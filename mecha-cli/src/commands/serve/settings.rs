@@ -35,6 +35,22 @@ use serde::Deserialize;
 
 type St = State<super::WebState>;
 
+/// A per-request suffix for temp-sibling writes. The pid alone was the
+/// first cut and is the wrong key: the concurrent unit on an async server
+/// is the request, and two overlapping saves sharing one temp path can
+/// interleave write/rename so the refused request's bytes are the ones
+/// that landed. Monotonic within the process; the pid keeps two *processes*
+/// (a dev serve beside the real one, aimed at one store) apart too.
+fn request_stamp() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// The one shape both the GET and a successful save return, so the page
 /// never has to merge two descriptions of the same file.
 fn charter_state() -> Json<serde_json::Value> {
@@ -57,6 +73,11 @@ fn charter_state() -> Json<serde_json::Value> {
             "char_count": charter.char_count(),
             "over_budget": charter.over_budget(),
             "budget": mecha_core::charter::CHARTER_CHAR_BUDGET,
+            // What the editor seeds a first charter from — the same
+            // comments-only bytes the TUI's `e` writes, served so the two
+            // surfaces cannot drift and the browser's first edit never
+            // starts from an empty buffer.
+            "template": mecha_core::charter::TEMPLATE,
         }),
         // A broken charter is a state the page must show, not a 500: the
         // TUI's rule that the failure is the headline, one surface over.
@@ -82,8 +103,10 @@ pub struct CharterSave {
 
 /// A charter is a handful of lines under a 2,000-character rendered budget;
 /// a body orders of magnitude past that is not an edit of one, whatever it
-/// parses as. Refused before the parser sees it, so a runaway paste cannot
-/// cost a TOML parse of arbitrary input.
+/// parses as. Refused before the *TOML* parser sees it — the JSON envelope
+/// has already been read by the time the handler runs, bounded by axum's
+/// own 2 MB default — so a runaway paste cannot cost a TOML parse of
+/// arbitrary input.
 const MAX_CHARTER_BYTES: usize = 64 * 1024;
 
 /// POST /api/settings/charter — validate, then write, in that order.
@@ -115,7 +138,10 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
     }
     // Temp-sibling-and-rename: same directory, so the rename cannot cross a
     // filesystem, and a crash between the two leaves the old charter whole.
-    let tmp = path.with_extension(format!("toml.tmp.{}", std::process::id()));
+    // Keyed per *request*, not per process — one async server, many
+    // connections, and two saves sharing one temp path can land A's rename
+    // over B's write while telling each the other's outcome.
+    let tmp = path.with_extension(format!("toml.tmp.{}", request_stamp()));
     let write = std::fs::write(&tmp, &body.raw).and_then(|()| std::fs::rename(&tmp, &path));
     if let Err(e) = write {
         let _ = std::fs::remove_file(&tmp);
@@ -160,10 +186,27 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
                 let Some(name) = path.file_stem().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                let seconds = std::fs::read(&path).ok().and_then(|b| wav_seconds(&b).ok());
+                // A bounded read: the fmt/data headers live in the first
+                // few hundred bytes, and slurping every clone's megabytes
+                // to answer a settings GET would make the page cost more
+                // the more voices it lists. `wav_seconds` reads declared
+                // sizes off headers, never the payload.
+                let seconds = read_head(&path, 64 * 1024)
+                    .ok()
+                    .and_then(|b| wav_seconds(&b).ok());
+                let created = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
                 out.push(serde_json::json!({
                     "name": name,
                     "seconds": seconds,
+                    // Unix seconds, off the mtime — which, for a store only
+                    // ever written by the clone endpoint, is when it was
+                    // recorded.
+                    "created": created,
                 }));
             }
         }
@@ -194,6 +237,17 @@ fn valid_voice_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// At most `cap` bytes off the front of a file — enough for any header
+/// walk, never the payload.
+fn read_head(path: &std::path::Path, cap: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::with_capacity(cap.min(1 << 20));
+    std::fs::File::open(path)?
+        .take(cap as u64)
+        .read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 /// Seconds of audio in a WAV, from its own header — never from the byte
@@ -248,7 +302,7 @@ const MIN_CLONE_SECONDS: f64 = 5.0;
 const MAX_CLONE_SECONDS: f64 = 120.0;
 /// And one cap in bytes, checked first, so a runaway upload is refused
 /// before any parsing: two minutes of 48 kHz mono s16 is ~11.5 MB.
-const MAX_CLONE_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_CLONE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub struct CloneQuery {
@@ -266,16 +320,33 @@ pub struct CloneQuery {
 pub async fn voice_clone(
     State(state): St,
     axum::extract::Query(q): axum::extract::Query<CloneQuery>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
     let Some(dir) = state.voices_dir.as_ref() else {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            "voice cloning is not configured — set [web] voices_dir to the host directory              the TTS container mounts as /voices
-",
+            "voice cloning is not configured — set [web] voices_dir to the host directory the TTS container mounts as /voices\n",
         )
             .into_response();
     };
+    // `audio/wav` is not one of CORS's "simple" content types, so requiring
+    // it forces any cross-origin caller through a preflight this server
+    // never answers — the same protection the Json extractors get from
+    // `application/json`, stated rather than inherited, because a raw
+    // `Bytes` route otherwise accepts a simple-form POST from any page the
+    // owner's tailnet browser happens to have open.
+    if headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_none_or(|v| !v.starts_with("audio/wav"))
+    {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "send the clip as content-type: audio/wav\n",
+        )
+            .into_response();
+    }
     if !valid_voice_name(&q.name) {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -329,7 +400,7 @@ pub async fn voice_clone(
         )
             .into_response();
     }
-    let tmp = dir.join(format!(".{}.wav.tmp.{}", q.name, std::process::id()));
+    let tmp = dir.join(format!(".{}.wav.tmp.{}", q.name, request_stamp()));
     let write = std::fs::write(&tmp, &body).and_then(|()| std::fs::rename(&tmp, &path));
     if let Err(e) = write {
         let _ = std::fs::remove_file(&tmp);

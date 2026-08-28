@@ -215,18 +215,29 @@ impl CharterModal {
         let height = super::list_height(body.len() as u16, frame.area().height);
         let area = super::centered(frame.area(), 100, height);
         frame.render_widget(Clear, area);
-        frame.render_widget(
-            Paragraph::new(body)
-                .wrap(Wrap { trim: false })
-                .scroll((self.list_scroll(area.height.saturating_sub(2)), 0))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::new().fg(Color::Cyan))
-                        .title(self.title()),
-                ),
-            area,
-        );
+        // The ranked list is NOT wrapped, on /skills' own reasoning: the
+        // sizing above and `list_scroll` below both count logical entries,
+        // and `Paragraph` applies `scroll` after wrapping — so a wrapped
+        // list under-scrolls exactly when rows are long, which for a
+        // charter ("one or two sentences" per line) is always, and the rows
+        // that vanish are the lower-ranked half. A clipped row's full text
+        // is one enter away in the detail view. The error and empty bodies
+        // have no selection to keep on screen, so they keep the wrap — a
+        // parse error must be readable whole.
+        let para = Paragraph::new(body)
+            .scroll((self.list_scroll(area.height.saturating_sub(2)), 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::new().fg(Color::Cyan))
+                    .title(self.title()),
+            );
+        let para = if self.lines.is_empty() {
+            para.wrap(Wrap { trim: false })
+        } else {
+            para
+        };
+        frame.render_widget(para, area);
     }
 
     fn list_scroll(&self, visible: u16) -> u16 {
@@ -276,31 +287,10 @@ impl CharterModal {
     }
 }
 
-/// The comments-only template written when `e` is pressed and no file
-/// exists. **No active `[[line]]` entries** — a template that shipped
-/// priorities would be mecha authoring the charter, which is the one thing
-/// every surface here refuses. The commented example exists because the
-/// costliest authoring mistake (§11) is a "never disappoint"-shaped line,
-/// and the place to say so is inside the file being edited.
-pub const TEMPLATE: &str = "\
-# Your charter: standing priorities, in your own words, ranked highest
-# first — ORDER IS RANK. There is no priority field; when two lines
-# conflict, the higher one wins outright, and re-ranking is moving a line.
-#
-# mecha only ever reads this file. Each entry is:
-#
-#   [[line]]
-#   id = \"a-short-stable-slug\"     # unique; goal references point at it
-#   text = \"The priority itself, one or two sentences.\"
-#
-# One authoring trap, from the design doc: a line shaped like \"never
-# disappoint anyone\" produces sycophancy and withheld bad news. Point it
-# the other way — e.g.:
-#
-#   [[line]]
-#   id = \"tell-the-truth-early\"
-#   text = \"Tell me the truth early, especially when it disappoints.\"
-";
+/// Re-exported so `mod.rs`'s editor hand-over and the tests below need no
+/// second path to it; the constant itself lives in core (`charter::TEMPLATE`)
+/// so the web settings editor hands out the same bytes.
+pub use mecha_core::charter::TEMPLATE;
 
 #[cfg(test)]
 mod tests {
@@ -326,32 +316,6 @@ mod tests {
             over_budget: false,
             status: None,
         }
-    }
-
-    /// The template must never author a priority: a `[[line]]` that is not
-    /// behind a comment would ship ranked content mecha wrote, which is the
-    /// invariant every charter surface exists to refuse.
-    #[test]
-    fn the_template_carries_no_active_lines() {
-        for l in TEMPLATE.lines() {
-            let l = l.trim();
-            assert!(
-                l.is_empty() || l.starts_with('#'),
-                "template has an uncommented line: {l:?}"
-            );
-        }
-        // And it stays honest as a TOML document: parsing it yields nothing.
-        let charter = {
-            let dir =
-                std::env::temp_dir().join(format!("mecha-charter-tpl-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            let p = dir.join("charter.toml");
-            std::fs::write(&p, TEMPLATE).unwrap();
-            let c = Charter::load(&p).unwrap();
-            let _ = std::fs::remove_dir_all(&dir);
-            c
-        };
-        assert!(charter.is_empty());
     }
 
     #[test]
@@ -424,6 +388,36 @@ mod tests {
                 Terminal::new(ratatui::backend::TestBackend::new(100, height.max(1))).unwrap();
             terminal.draw(|f| m.draw(f)).unwrap();
         }
+    }
+
+    /// The /skills rule the first cut broke: the ranked list must not be
+    /// wrapped, because `list_height` and `list_scroll` both count logical
+    /// entries while `Paragraph` scrolls after wrapping — so long lines
+    /// (a charter's normal case) made low-ranked rows unreachable: the
+    /// selection walked off screen with nothing indicating it moved.
+    #[test]
+    fn a_long_lined_charter_keeps_the_selection_on_screen() {
+        use ratatui::Terminal;
+        let long = "a standing priority long enough to wrap several times in any \
+                    reasonable terminal, which is the normal case for a charter \
+                    line of one or two sentences rather than a slug";
+        let m = CharterModal {
+            selected: 7,
+            ..modal((0..8).map(|i| line(&format!("p{i}"), long)).collect())
+        };
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 10)).unwrap();
+        terminal.draw(|f| m.draw(f)).unwrap();
+        let shown = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            shown.contains("p7"),
+            "the selected (last-ranked) row is off screen"
+        );
     }
 
     /// Reload keeps the feedback line: it is set by the editor round-trip
