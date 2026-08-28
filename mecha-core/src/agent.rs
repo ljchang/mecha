@@ -2040,8 +2040,7 @@ impl Agent {
                         if let Some(escalation) = candidate {
                             if step_escalations_used < MAX_STEP_ESCALATIONS_PER_RUN {
                                 step_escalations_used += 1;
-                                let (outcome, spent) =
-                                    self.escalate_step(cx, &events, &escalation).await;
+                                let (outcome, spent) = self.escalate_step(cx, &escalation).await;
                                 usage.add(&spent);
                                 match outcome {
                                     StepEscalationOutcome::Verdict(
@@ -2264,10 +2263,21 @@ impl Agent {
     /// `Completion::Interrupted` carrying whatever usage the partial call
     /// already spent, which this returns to the caller regardless of how
     /// the call ended — a wasted or interrupted attempt still cost tokens.
+    ///
+    /// **No `events` sender reaches `self.complete` here.** This call's
+    /// reply is a JSON verdict for the loop to read, not an answer for
+    /// anyone to see, but `self.complete` forwards every text delta to
+    /// whatever front-end is attached — the TUI, a Slack thread, a voice
+    /// call — as ordinary assistant text. Passing the real sender through
+    /// would stream the raw `{"reasoning": ..., "verdict": ...}` into the
+    /// user's terminal or ear, unmarked and indistinguishable from the
+    /// model's actual reply. `&None` still takes the cancellable path:
+    /// `complete`'s short-circuit is `events.is_none() && cx.cancel.is_none()`,
+    /// so with a cancel token present the `select!`/`Interrupted` accounting
+    /// above is unaffected — only the streaming forward is suppressed.
     async fn escalate_step(
         &self,
         cx: &RunContext,
-        events: &Option<UnboundedSender<AgentEvent>>,
         escalation: &crate::step::StepEscalation,
     ) -> (StepEscalationOutcome, Usage) {
         let prompt = crate::step::escalation_prompt(escalation);
@@ -2278,7 +2288,7 @@ impl Agent {
 
         for round in 0..2 {
             let request = pass.ask(attempt.clone());
-            let response = match self.complete(cx, &request, events).await {
+            let response = match self.complete(cx, &request, &None).await {
                 Ok(Completion::Finished(r)) => *r,
                 Ok(Completion::Interrupted(_, usage)) => {
                     spent.add(&usage);
@@ -6213,6 +6223,7 @@ mod tests {
                     siblings: vec!["read the config".into()],
                     calls: 20,
                     sibling_mean_calls: Some(2.5),
+                    sibling_count: 1,
                 });
             }
             Ok(ToolOutput::ok("1/1 done"))
@@ -6247,6 +6258,7 @@ mod tests {
                     siblings: vec!["read the config".into()],
                     calls: 20,
                     sibling_mean_calls: Some(2.5),
+                    sibling_count: 1,
                 });
             }
             if let Some(cancel) = ctx.cancel.as_ref() {
