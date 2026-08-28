@@ -234,6 +234,19 @@ struct Shared {
     /// rule the TUI's `Err` arm and the web page's `sawAffectThisRun` both
     /// follow — so a synthesis for a later turn never inherits a stale
     /// mood from one that failed.
+    ///
+    /// **Only the `chat:{id}` half of this map's key space is ever
+    /// written.** `hosted_completion` (D3) is the one writer; the
+    /// facade's own unhosted slot path (`voice:{key}`, used when a call
+    /// names no chat session, or falls through on `Hosted::Unknown`) never
+    /// computes an `Affect` at all — that would need `appraisal::live` on
+    /// a conversation this module keeps entirely to itself, which is a
+    /// real feature and not yet built. Found on review: the `Hosted::
+    /// Unknown` fall-through is the one place this matters live, since
+    /// `confirm_key` there is still `chat:{id}` from the call that named a
+    /// session nobody held, and the turn runs unhosted anyway — cleared at
+    /// that fall-through rather than left to answer with an earlier
+    /// hosted turn's mood.
     affects: Mutex<HashMap<String, String>>,
 }
 
@@ -1179,6 +1192,13 @@ async fn completion(
                         "voice call named chat session {chat_key:?}, which no front-end \
                          holds — answering in a conversation of its own instead"
                     );
+                    // `confirm_key` is still `chat:{chat_key}` below — this
+                    // turn runs in the facade's own untracked slot instead,
+                    // so nothing will update that entry for it the way
+                    // `hosted_completion` does. Cleared rather than left
+                    // stale: an earlier hosted turn's label must not be
+                    // spoken over an answer it has nothing to do with.
+                    shared.affects.lock().await.remove(&confirm_key);
                 }
             }
         }
