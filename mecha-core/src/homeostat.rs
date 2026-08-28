@@ -121,14 +121,16 @@ impl Homeostat {
         self.peak_prompt_tokens = (pressure.peak_tokens() > 0).then(|| pressure.peak_tokens());
         self.peak_context_pressure = pressure.peak_pressure(window);
         if let Some(before) = &self.backlog {
-            // Read once and reuse: the delta already needed a fresh read at
-            // finish time, and the guilt sensor wants the same freshly-read
-            // state — what is still recorded as owed *after* this run acted,
-            // not what was owed before it started.
-            let after = Backlog::read();
+            // Guilt is computed from what this run *inherited*, not what it
+            // leaves behind — the same distinction `backlog_delta` already
+            // makes ("the level alone cannot separate a run's own output
+            // from what it inherited"). Reading it off `after` instead would
+            // score a trigger that staged three replies overnight as
+            // maximally guilty for doing exactly its job: those drafts are
+            // seconds old and this run's own output, not neglected debt.
             self.anticipated_guilt =
-                crate::guilt::anticipated_guilt(&after, self.peak_context_pressure, Utc::now());
-            self.backlog_delta = Some(Backlog::delta(before, &after));
+                crate::guilt::anticipated_guilt(before, self.peak_context_pressure, Utc::now());
+            self.backlog_delta = Some(Backlog::delta(before, &Backlog::read()));
         }
         self
     }
