@@ -2137,6 +2137,17 @@ one address rather than a scan (a range would make a setup tool behave like a
 port scanner for the sake of finding a server on a port nobody documented), and
 runs only on an install that is otherwise stuck.
 
+**A lost `\`-continuation is checked where the bytes reach a person, not
+where they are built.** A continued string literal that loses its backslash
+keeps the source's indentation mid-sentence, and it reads as a bug to exactly
+the person least able to tell it is cosmetic. It landed four times in one
+branch. `onboarding`'s `no_step_detail_carries_its_source_indentation` walks
+`plan()`'s step details and so could not see three of them — `setup`'s own
+printed output and an assertion message. `first_run.rs`'s
+`assert_reads_as_prose` applies the check to a captured *line*, deliberately
+not to the whole of stdout, because several blocks are column-aligned on
+purpose and a blanket scan would fail on those.
+
 **A claim about a local write is graded off the write.** `undecline` discarded
 `BTreeSet::remove`'s answer, so a typo'd id wrote the set back untouched while
 the caller announced the restore and exited 0 — the person then met

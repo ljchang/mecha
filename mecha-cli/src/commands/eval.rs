@@ -1259,7 +1259,10 @@ mod tests {
         force_reproducible(&mut treatment, false, true);
         assert!(
             !treatment.no_learned_rules,
-            "--ab-rules' treatment arm must run with this machine's learned rules,              or the A/B measures nothing"
+            concat!(
+                "--ab-rules' treatment arm must run with this machine's learned rules, ",
+                "or the A/B measures nothing"
+            )
         );
         // And it opts into nothing else — the lever is one flag wide.
         assert!(treatment.no_mcp, "the rules lever is not an MCP opt-in");
