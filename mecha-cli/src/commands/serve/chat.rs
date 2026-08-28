@@ -1207,10 +1207,30 @@ fn begin_turn(
         let outcome = agent.run_in(&cx, &mut conversation, Some(tx)).await;
         let _ = forwarder.await;
 
-        let _ = session.record_run(&before, &conversation);
-        if let Ok(o) = &outcome {
-            let _ = session.record_outcome(o);
+        match &outcome {
+            Ok(o) => {
+                let _ = session.record_run(&before, &conversation);
+                let _ = session.record_outcome(o);
+            }
+            // The transcript must agree with the rollback, or the failure
+            // survives a resume — found on review: recording the mutated
+            // conversation unconditionally persisted the very turn the error
+            // arm below used to remove from memory only, and
+            // `ensure_session_as` resumes straight off the file, restoring a
+            // history that ends on an orphaned tool_result (or, since the
+            // user message is appended at submit, on a dangling user turn).
+            // The rolled-back list is not an extension of `before`, so
+            // `record_run` expresses it as a `Rewrite` — a resume then loads
+            // exactly what memory holds. The rollback happens HERE rather
+            // than in the hand-back below so there is one rolled-back state
+            // and both readers of it (the file, the next request) agree.
+            Err(_) => {
+                roll_back_failed_turn(&mut conversation, before.clone());
+                let _ = session.record_run(&before, &conversation);
+            }
         }
+        // Taint is kept either way — a failed turn that read a hostile page
+        // still read it, and taint only ever grows.
         let _ = session.append(&Record::Taint(conversation.taint));
 
         // §6.2's readout: how this session's just-finished run appraises,
@@ -1294,13 +1314,11 @@ fn begin_turn(
         };
 
         // Hand the conversation back, then announce the end — a stream left
-        // open is indistinguishable from a run still working.
+        // open is indistinguishable from a run still working. A failed
+        // turn's conversation was already rolled back beside the record
+        // above, where the file and this hand-back could be made to agree.
         let mut sessions = state_for_task.sessions.lock().await;
         if let Some(ws) = sessions.get_mut(&key_for_task) {
-            let outcome_err = outcome.is_err();
-            if outcome_err {
-                roll_back_failed_turn(&mut conversation, before);
-            }
             ws.conversation = Some(conversation);
             ws.live = None;
         }
@@ -1913,6 +1931,71 @@ mod tests {
 #[cfg(test)]
 mod rollback_tests {
     use super::*;
+
+    /// The review's follow-up finding: the in-memory rollback was right and
+    /// the transcript still kept what it discarded — `record_run` ran
+    /// unconditionally on the mutated conversation, so a resume
+    /// (`ensure_session_as` → `Session::load`) restored the orphaned turn
+    /// the rollback had removed from memory only. Recording the
+    /// *rolled-back* conversation instead makes the file express it as a
+    /// `Rewrite`, and a resume loads exactly what memory holds.
+    #[test]
+    fn a_failed_turn_s_transcript_resumes_to_the_rolled_back_state() {
+        let dir = std::env::temp_dir().join(format!("mecha-chat-rollback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = mecha_core::session::Session::create(
+            &dir,
+            SessionMeta {
+                id: "20260101T000000-rollback".into(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "m".into(),
+                workspace: std::path::PathBuf::from("/tmp"),
+                title: None,
+            },
+        )
+        .unwrap();
+
+        // What the file holds at run start — begin_turn appends the
+        // triggering user message at submit, before the run.
+        let before = vec![
+            Message::user("earlier turn"),
+            Message::assistant(vec![Block::text("earlier answer")]),
+            Message::user("do the thing"),
+        ];
+        session.append_messages(&before).unwrap();
+
+        // What run_in leaves in memory when the provider dies mid-tool-turn.
+        let mut conversation = Conversation::from(before.clone());
+        conversation
+            .messages
+            .push(Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({}),
+            }]));
+        conversation.messages.push(Message {
+            role: Role::User,
+            content: vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+            }],
+        });
+
+        // The error arm's sequence, exactly as begin_turn's completion task
+        // runs it.
+        roll_back_failed_turn(&mut conversation, before.clone());
+        session.record_run(&before, &conversation).unwrap();
+
+        let (_, resumed) = mecha_core::session::Session::load(&session.path).unwrap();
+        assert_eq!(
+            resumed.messages, conversation.messages,
+            "a resume must load exactly the rolled-back state, not the failed turn"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// The regression this pins: the error arm used to pop the *mutated*
     /// list's tail instead of restoring the snapshot first — the only one of

@@ -1368,9 +1368,14 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
         out.push(Finding::unreadable(
             "runs",
             &format!("{} transcript(s) in the session store", corpus.unreadable),
+            // Precise about what the counter can actually see: both
+            // increments are a file that could not be read or carries no
+            // session header — `Session::read` and `outcomes_attributed`
+            // skip malformed *lines* without erroring, so line-level rot
+            // inside a readable transcript is deliberately not claimed here.
             format!(
-                "{}: files with a .jsonl extension whose header or body \
-                 could not be parsed; every reader silently skips them",
+                "{}: files with a .jsonl extension that could not be read \
+                 or carry no session header; every reader silently skips them",
                 sessions.display()
             ),
         ));

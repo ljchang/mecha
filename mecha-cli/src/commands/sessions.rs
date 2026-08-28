@@ -275,7 +275,10 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
     // caveat is about the scan, not a row, and a machine reader of the rows
     // must still be told a human was.
     if unreadable > 0 {
-        eprintln!("{unreadable} transcript(s) could not be read and appear in no row");
+        // "in the store", because the count is store-wide while the rows may
+        // be windowed by --days: a skipped file has no readable date to
+        // window on, so the honest scope is the whole directory.
+        eprintln!("{unreadable} transcript(s) in the store could not be read and appear in no row");
     }
 
     if json {
@@ -664,9 +667,12 @@ async fn appraise(
     }
     // Same rule for the session store itself: a corrupt transcript is in no
     // count above, and "skipped" must not read as "the store held less".
+    // Store-wide, whatever --days narrowed the rows to — a skipped file has
+    // no readable date to window on.
     if sessions_unreadable > 0 {
         println!(
-            "  ({sessions_unreadable} transcript(s) could not be read and are in no count above)\n"
+            "  ({sessions_unreadable} transcript(s) in the store could not be read and are in \
+             no count above)\n"
         );
     }
     if appraisals.is_empty() {
@@ -817,9 +823,24 @@ fn health(
         return Ok(());
     }
 
+    // Found on review: this was the one reader of the corpus that never said
+    // `unreadable` — and it is the surface whose stated job is the corpus,
+    // summarised. A store where every file is headerless printed "0
+    // session(s) read" with nothing wrong, which is exactly the
+    // dash-versus-zero inversion the counter was added to close. Said on
+    // both paths, empty corpus included — that path most of all.
+    let unreadable_line = if corpus.unreadable > 0 {
+        format!(
+            " · {} transcript(s) in the store unreadable",
+            corpus.unreadable
+        )
+    } else {
+        String::new()
+    };
+
     if corpus.is_empty() {
         println!(
-            "no recorded run outcomes in {} ({} session(s) read)",
+            "no recorded run outcomes in {} ({} session(s) read{unreadable_line})",
             dir.display(),
             corpus.sessions_read
         );
@@ -831,7 +852,7 @@ fn health(
     }
 
     println!(
-        "{} run(s) across {} session(s){}\n",
+        "{} run(s) across {} session(s){}{unreadable_line}\n",
         corpus.len(),
         corpus.sessions_read,
         days.map(|d| format!(", last {d} day(s)"))
@@ -974,6 +995,9 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     serde_json::json!({
         "runs": corpus.len(),
         "sessions_read": corpus.sessions_read,
+        // Store-wide, like the scan that produced it — a skipped file has no
+        // readable date to window on.
+        "sessions_unreadable": corpus.unreadable,
         "tool_calls": corpus.tool_calls(),
         "tool_errors": corpus.tool_errors(),
         "tool_error_rate": corpus.tool_error_rate(),
