@@ -2321,7 +2321,22 @@ impl Agent {
         let prompt = crate::step::escalation_prompt(escalation);
         let mut attempt = prompt.clone();
         let mut last_error = String::new();
-        let pass = crate::quarantine::QuarantinedPass::new(&self.model, 4096);
+        // The run's own effort, not left at the provider's default (the
+        // review finding: unlike `compact`'s summariser and
+        // `validate_summary`, which both pass `self.cfg.effort` straight
+        // through, this call passed nothing at all — so a run configured for
+        // `[agent] effort = "low"` got the one call in the loop that wasn't
+        // cheap). But not passed unclamped either: `QuarantinedPass` always
+        // sets `thinking: false`, and `Anthropic::body` rejects disabled
+        // thinking above `high` effort — `setup.rs`'s own `--no-thinking`
+        // handling clamps for exactly this reason. `compact`/`validate_summary`
+        // tolerate that failure (compaction just gives up, uncompacted); the
+        // clamp avoids ever reaching it here instead.
+        let effort = match self.cfg.effort {
+            Some(Effort::XHigh) | Some(Effort::Max) => Some(Effort::High),
+            other => other,
+        };
+        let pass = crate::quarantine::QuarantinedPass::new(&self.model, 4096).effort(effort);
         let mut spent = Usage::default();
 
         for round in 0..2 {
@@ -6368,6 +6383,46 @@ mod tests {
             .messages
             .iter()
             .all(|m| !m.text().contains("too broad")));
+    }
+
+    /// The review finding: the escalation call must carry the run's own
+    /// effort (a `low`-configured run should not get the one cheap-looking
+    /// call in the loop that secretly runs at the provider's default), but
+    /// `QuarantinedPass` always sets `thinking: false`, and the API rejects
+    /// disabled thinking above `high` effort — so `xhigh`/`max` must clamp
+    /// down to `high` rather than being passed through and failing every
+    /// escalation call outright.
+    #[tokio::test]
+    async fn the_escalation_carries_the_runs_effort_clamped_at_high() {
+        let (mut agent, provider) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "todo".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                escalation_reply(r#"{"reasoning": "fine", "verdict": "accept"}"#),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EscalatorTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.step_escalation = true;
+        agent.cfg.effort = Some(Effort::Max);
+        agent.ctx_mut().step_escalation = Some(Arc::new(Mutex::new(None)));
+
+        let mut convo = Conversation::user("go");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(
+            seen[1].effort,
+            Some(Effort::High),
+            "Max must clamp to High, or QuarantinedPass's thinking:false would fail the call"
+        );
     }
 
     #[tokio::test]
