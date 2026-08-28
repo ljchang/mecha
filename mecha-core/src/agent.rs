@@ -750,6 +750,7 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         || text == EMPTY_TURN_NUDGE
         || text.starts_with(crate::boredom::NOTICE_STEM)
         || text.contains(crate::mailbox::DELIVERY_STEM)
+        || text.starts_with(crate::step::STEP_ESCALATION_STEM)
 }
 
 /// Detects a run re-living the turns a compaction just summarised away.
