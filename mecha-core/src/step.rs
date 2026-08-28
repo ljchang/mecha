@@ -539,7 +539,15 @@ pub enum StepVerdict {
 /// The prompt the quarantined pass runs. Reasoning first, the typed field
 /// last — the front door's and the appraiser's own finding: constrained
 /// output degrades reasoning when the answer precedes the thinking.
+/// How much of a step's own text — the model's own prior plan output, but
+/// nothing in `todo`'s schema bounds its length — reaches the quarantined
+/// call. Longer than [`ellipsize`]'s 60-char display cap on
+/// [`templated_nudge`]'s step name: this text is what the call judges from,
+/// not a label, so it gets room to be useful while still being bounded.
+const ESCALATION_PROMPT_TEXT_CHARS: usize = 400;
+
 pub fn escalation_prompt(escalation: &StepEscalation) -> String {
+    let step_text = ellipsize(&escalation.step, ESCALATION_PROMPT_TEXT_CHARS);
     let question = match escalation.reason {
         EscalationReason::SpanOutlier => format!(
             "This step just finished after {} tool calls. The plan's other completed \
@@ -569,7 +577,7 @@ pub fn escalation_prompt(escalation: &StepEscalation) -> String {
             escalation
                 .siblings
                 .iter()
-                .map(|s| format!("- {s}"))
+                .map(|s| format!("- {}", ellipsize(s, ESCALATION_PROMPT_TEXT_CHARS)))
                 .collect::<Vec<_>>()
                 .join("\n")
         )
@@ -585,7 +593,7 @@ pub fn escalation_prompt(escalation: &StepEscalation) -> String {
          `accept` is the common, correct answer when the work looks sound; \
          `revise_plan` only when there is a real reason to reconsider the \
          decomposition.",
-        escalation.step,
+        step_text,
     )
 }
 
@@ -1044,6 +1052,32 @@ mod tests {
         assert!(prompt.contains(&format!(
             "The {ESCALATION_SIBLING_SAMPLE} most recent of them"
         )));
+    }
+
+    /// Unlike `templated_nudge`, which ellipsizes before ever using step
+    /// text, `escalation_prompt` used to embed the step and every sibling
+    /// verbatim — and nothing in the `todo` tool's schema bounds a step's
+    /// length. A single very long step (or sibling) would have gone into
+    /// the quarantined call whole.
+    #[test]
+    fn a_very_long_step_or_sibling_is_bounded_in_the_prompt() {
+        let long_step = "x".repeat(5_000);
+        let long_sibling = "y".repeat(5_000);
+        let escalation = StepEscalation {
+            reason: EscalationReason::SpanOutlier,
+            step: long_step.clone(),
+            siblings: vec![long_sibling.clone()],
+            calls: 20,
+            sibling_mean_calls: Some(2.5),
+            sibling_count: 1,
+        };
+        let prompt = escalation_prompt(&escalation);
+        assert!(
+            !prompt.contains(&long_step),
+            "the full 5,000-char step must not reach the prompt whole"
+        );
+        assert!(!prompt.contains(&long_sibling));
+        assert!(prompt.len() < long_step.len() + long_sibling.len());
     }
 
     fn span_outlier_escalation() -> StepEscalation {

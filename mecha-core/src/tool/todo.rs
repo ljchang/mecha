@@ -279,6 +279,17 @@ impl Tracked {
             .map(|i| (i.content.as_str(), i.status))
             .collect();
 
+        // Snapshotted once, before this batch's own completions can reach
+        // it: a model that marks two steps `completed` in one write (the
+        // tool's own docstring discourages this — "as soon as it is done
+        // rather than in a batch at the end" — but does not prevent it)
+        // would otherwise have the *second* item's comparison silently
+        // contaminated by the *first* item's own call count, pushed onto
+        // `self.completed` earlier in this same loop. Every candidate this
+        // batch produces is judged against the plan's history as it stood
+        // before the batch, never against a sibling landing beside it.
+        let completed_before_this_batch = self.completed.clone();
+
         let mut lines = Vec::new();
         for item in &next.items {
             let was = before.get(item.content.as_str()).copied();
@@ -333,9 +344,27 @@ impl Tracked {
                                 if let Some(escalation) = crate::step::escalation_candidate(
                                     span,
                                     &item.content,
-                                    &self.completed,
+                                    &completed_before_this_batch,
                                 ) {
-                                    *slot.lock().unwrap() = Some(escalation);
+                                    // First candidate this batch wins. The
+                                    // slot is always drained once per turn
+                                    // (`agent.rs`'s read-clear-call-fold), so
+                                    // it is empty going into this call —
+                                    // `is_none` here means "nothing else in
+                                    // *this* batch has claimed it yet", not
+                                    // "an older, unconsumed candidate is
+                                    // stale." Two steps completing in one
+                                    // write is rare and the mechanism holds
+                                    // exactly one candidate at a time by
+                                    // design (`compact_requested`'s own
+                                    // shape); silently letting a later item
+                                    // overwrite an earlier one would make
+                                    // which candidate survives an accident of
+                                    // iteration order rather than a choice.
+                                    let mut guard = slot.lock().unwrap();
+                                    if guard.is_none() {
+                                        *guard = Some(escalation);
+                                    }
                                 }
                             }
                             self.completed.push((item.content.clone(), span.calls));
@@ -1786,6 +1815,161 @@ mod tests {
         assert!(
             slot.lock().unwrap().is_none(),
             "a rewritten plan must not escalate against a mean from steps it no longer holds"
+        );
+    }
+
+    /// The bug an adversarial review found after the round-2 pruning fix
+    /// shipped: `advance` loops over every item in one write, and pushes
+    /// each landed one onto `self.completed` as it goes — so a step earlier
+    /// in the *same* write's array was, before this fix, already counted in
+    /// a later step's own mean. Here "medium step" (span 4, below the
+    /// outlier floor on its own) lands *before* "huge step" in the same
+    /// array; without the snapshot, huge's comparison would see a 3-step,
+    /// contaminated baseline instead of the real 2-step one established
+    /// before this write ever started.
+    #[tokio::test]
+    async fn a_step_landing_earlier_in_the_same_write_does_not_contaminate_a_laters_mean() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+
+        // Baseline: two small completed steps, span 2 and 3 (mean 2.5, n=2).
+        items.push(json!({"content": "small step 0", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 0, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 3, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "small step 1", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 3, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 7, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        // "huge step" starts first (span will end up large); "medium step"
+        // starts later (span will end up small) — both finish in one write.
+        items.push(json!({"content": "huge step", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 7, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.push(json!({"content": "medium step", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 37, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        // "medium step" precedes "huge step" in the array — the exact
+        // ordering the bug needed to reach "huge"'s comparison at all.
+        let last = items.len() - 1;
+        items[last - 1]["status"] = json!("completed"); // medium step
+        items[last]["status"] = json!("completed"); // huge step
+        items.swap(last - 1, last); // medium now BEFORE huge in the array
+        let (done_ctx, slot) = escalation_ctx(1, 42, Some(Outcome::Ok), 0);
+        write(&tool, &done_ctx, Value::Array(items.clone())).await;
+
+        let escalation = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("huge step's span (33) is a clear outlier against the real baseline");
+        assert_eq!(escalation.step, "huge step");
+        assert_eq!(
+            escalation.sibling_count, 2,
+            "medium step landed earlier in this same write and must not count as a third sibling"
+        );
+        assert_eq!(escalation.sibling_mean_calls, Some(2.5));
+    }
+
+    /// Two genuine candidates in one write — the slot holds exactly one, and
+    /// it is the first one `advance` reaches, not whichever happened to be
+    /// processed last. Silently overwriting an earlier candidate with a
+    /// later one would make survival an accident of iteration order.
+    #[tokio::test]
+    async fn two_outliers_in_one_write_keep_only_the_first_found() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+
+        items.push(json!({"content": "small step 0", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 0, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 3, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "small step 1", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 3, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 7, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "big step A", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 7, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.push(json!({"content": "big step B", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 40, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        let last = items.len() - 1;
+        items[last - 1]["status"] = json!("completed"); // big step A, first in the array
+        items[last]["status"] = json!("completed"); // big step B, second in the array
+        let (done_ctx, slot) = escalation_ctx(1, 80, Some(Outcome::Ok), 0);
+        write(&tool, &done_ctx, Value::Array(items.clone())).await;
+
+        let escalation = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("both steps' spans are clear outliers");
+        assert_eq!(
+            escalation.step, "big step A",
+            "the first candidate `advance` reaches must win, deterministically"
         );
     }
 
