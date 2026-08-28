@@ -409,18 +409,24 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
 /// ledger: faster, and a second source of truth that can disagree with the
 /// first. Until then there is nothing to keep.
 ///
-/// **What earns a store is the first thing here that costs a model run**, and
-/// which one arrives first is not settled: the quarantined appraiser (§5.1) is
-/// the design's answer, and the counterfactual probe behind [`apply_probe`] is
-/// a real model run per intervention and may well land sooner. Either way it
-/// is a *verdict* that needs keeping and not an appraisal — the assembled
-/// record stays derivable from the transcript, the outbox and `RunStats`, and
-/// only the paid-for part is irrecoverable. So the thing to reach for first is
-/// the ledger that already exists for exactly this: `validations.jsonl` keeps
-/// probe outcomes today, keyed to what was measured, and a second store beside
-/// it needs an argument that these verdicts are keyed differently — which they
-/// are, to an intervention rather than to a rule set. Worth deciding
-/// deliberately rather than by whichever lands first.
+/// **What earns a store is the first thing here that costs a model run, and
+/// both have now landed with no store behind either.** The counterfactual
+/// probe behind [`apply_probe`] and the quarantined appraiser behind
+/// [`appraise_with_model`] each spend a real model run — the probe per
+/// intervention, the appraiser per session — and neither has a store, on
+/// purpose: what either produces is a *verdict* that needs keeping and not an
+/// appraisal, and the assembled record stays derivable from the transcript,
+/// the outbox and `RunStats` regardless. Only the paid-for part is
+/// irrecoverable. So the thing to reach for first, when a store is finally
+/// worth building, is the ledger that already exists for exactly this:
+/// `validations.jsonl` keeps probe outcomes today, keyed to what was measured,
+/// and a second store beside it needs an argument that these verdicts are
+/// keyed differently — which they are, to an intervention rather than to a
+/// rule set, and the appraiser's own verdicts are keyed differently again, to
+/// a session. Worth deciding deliberately once a corpus run at scale (not the
+/// handful of sessions either was smoke-tested against) says either channel's
+/// findings are worth keeping, rather than building storage on the strength
+/// of the mechanism existing.
 ///
 /// `interventions` and `drafts` are passed in rather than read here, on
 /// doctor's rule: this is a function, and the walking belongs to the caller
@@ -839,9 +845,11 @@ that is the ordinary, correct answer and not a failure to find something.";
 ///
 /// Reasoning first, the typed fields last — the front door's and the
 /// diagnostician's own finding: constrained output degrades reasoning when
-/// the answer precedes the thinking. The `reasoning` field is never read back
-/// by [`parse_appraiser_verdict`]: it exists for a human reading stderr, never
-/// for the stored record, on the same rule that keeps the front door's own
+/// the answer precedes the thinking. The `reasoning` field is carried on
+/// [`AppraiserVerdict`] only so a caller can print it beside the tally
+/// (`appraiser_pass::appraise_one` does); it never reaches the stored
+/// record — `apply_appraiser` has no field for it and `Cite::Appraiser`
+/// carries none of it, on the same rule that keeps the front door's own
 /// `reading` field out of the privileged path.
 pub fn appraiser_prompt(evidence: &AppraiserEvidence) -> String {
     format!(
@@ -867,10 +875,30 @@ pub fn appraiser_prompt(evidence: &AppraiserEvidence) -> String {
 /// and who caused it. `sign` is `None` for "nothing further" — the common and
 /// correct answer, not a parse failure — never a magnitude of zero, which
 /// would be indistinguishable from a real judgement that landed on neutral.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `reasoning` rides along only so a caller can print it beside the tally —
+/// see [`appraiser_prompt`]'s doc. It is not `Copy` for that reason; every
+/// other field stays comparable directly.
+#[derive(Debug, Clone, PartialEq)]
 pub struct AppraiserVerdict {
     pub sign: Option<f32>,
     pub agency: Agency,
+    pub reasoning: Option<String>,
+}
+
+/// The largest byte index `<= max` that lands on a char boundary of `s`.
+///
+/// `s[..n]` for a plain byte cutoff panics the instant the cut lands inside a
+/// multi-byte character — an em-dash or a curly quote is all it takes in a
+/// reply over 400 bytes — and that is a panic in the *error path* of a pass
+/// whose own next step is running at scale. Same idiom as `outbox::clip`,
+/// duplicated rather than shared: this is a one-line guard, and a shared
+/// utility is a larger change than the bug it would fix.
+fn char_boundary_at_or_before(s: &str, max: usize) -> usize {
+    (0..=max.min(s.len()))
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0)
 }
 
 /// Parse what the appraiser returned.
@@ -891,15 +919,15 @@ pub fn parse_appraiser_verdict(text: &str) -> Result<AppraiserVerdict> {
 
     #[derive(Deserialize)]
     struct Wire {
+        #[serde(default)]
+        reasoning: Option<String>,
         verdict: String,
         #[serde(default)]
         agency: Option<String>,
     }
     let wire: Wire = serde_json::from_str(&text[start..=end]).with_context(|| {
-        format!(
-            "parsing the appraiser's verdict: {}",
-            &text[start..=end.min(start + 400)]
-        )
+        let cut = char_boundary_at_or_before(text, end.min(start + 400));
+        format!("parsing the appraiser's verdict: {}", &text[start..cut])
     })?;
 
     // A closed set of magnitudes, not a float the model invents — the same
@@ -927,7 +955,11 @@ pub fn parse_appraiser_verdict(text: &str) -> Result<AppraiserVerdict> {
             ),
         },
     };
-    Ok(AppraiserVerdict { sign, agency })
+    Ok(AppraiserVerdict {
+        sign,
+        agency,
+        reasoning: wire.reasoning,
+    })
 }
 
 /// Run the quarantined pass over one appraisal's evidence.
@@ -1656,6 +1688,16 @@ mod tests {
         .unwrap();
         assert_eq!(v.sign, Some(-0.5));
         assert_eq!(v.agency, Agency::Owner);
+        assert_eq!(v.reasoning.as_deref(), Some("x"));
+    }
+
+    /// The one thing `reasoning` is for: reaching a caller that can print it,
+    /// never the stored record. A missing `reasoning` field parses fine too —
+    /// nothing here requires the model to have written one.
+    #[test]
+    fn a_missing_reasoning_field_is_not_a_parse_failure() {
+        let v = parse_appraiser_verdict(r#"{"verdict": "none"}"#).unwrap();
+        assert_eq!(v.reasoning, None);
     }
 
     /// `frontdoor::parse_extraction`'s own leniency: a model wraps JSON in
@@ -1687,6 +1729,27 @@ mod tests {
         assert!(parse_appraiser_verdict("I could not do that.").is_err());
     }
 
+    /// The bug the review found: `&text[start..=end.min(start + 400)]` slices
+    /// on a raw byte index, and panics the instant that index lands inside a
+    /// multi-byte character — an em-dash three bytes in front of the cutoff
+    /// is enough. Constructed so byte 400 (the cutoff, since `start` is the
+    /// opening `{` at index 0) falls on the em-dash's last byte, which is not
+    /// a char boundary; the JSON itself is garbage so parsing reaches the
+    /// error path that does the slicing. The assertion is that this returns
+    /// an error rather than aborting the process.
+    #[test]
+    fn an_unparseable_reply_past_400_bytes_does_not_panic_on_a_char_boundary() {
+        let mut text = String::from("{");
+        text.push_str(&"a".repeat(397)); // bytes 0..=397, next free index 398
+        text.push('—'); // 3 bytes: 398, 399, 400 — 400 is mid-character
+        text.push_str("not valid json, just filler past the cutoff}");
+        assert!(
+            !text.is_char_boundary(400),
+            "the cutoff must land mid-character for this to test anything"
+        );
+        assert!(parse_appraiser_verdict(&text).is_err());
+    }
+
     #[test]
     fn a_nothing_further_verdict_changes_nothing() {
         let mut a = appraisal(Vec::new());
@@ -1695,6 +1758,7 @@ mod tests {
             AppraiserVerdict {
                 sign: None,
                 agency: Agency::Own,
+                reasoning: None,
             },
         );
         assert!(a.errors.is_empty());
@@ -1709,6 +1773,7 @@ mod tests {
             AppraiserVerdict {
                 sign: Some(-1.0),
                 agency: Agency::Other,
+                reasoning: Some("a provider outage".into()),
             },
         );
         assert_eq!(a.errors.len(), 1);

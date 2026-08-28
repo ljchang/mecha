@@ -81,7 +81,8 @@ pub enum Args {
         /// Run the quarantined appraiser (§5.1) over each session's evidence.
         ///
         /// **A second paid pass, independent of `--probe`.** One quarantined
-        /// model call per session — no tools, no conversation, and the input
+        /// appraisal per session (up to two model calls, since a malformed
+        /// reply gets one retry) — no tools, no conversation, and the input
         /// is numbers only (see `AppraiserEvidence`), never the transcript.
         /// It looks for one additional signed error beyond what `of_session`
         /// already computed, or reports that the numbers support nothing
@@ -89,7 +90,8 @@ pub enum Args {
         #[arg(long)]
         appraise: bool,
 
-        /// Ceiling on appraiser calls, across the whole walk. Newest sessions
+        /// Ceiling on appraisals driven, across the whole walk — not model
+        /// calls; a retried appraisal still counts once. Newest sessions
         /// first, independent of `--max-probes`.
         #[arg(long, default_value_t = 25, requires = "appraise")]
         max_appraisals: usize,
@@ -704,7 +706,7 @@ async fn appraise(
 
     if run_appraiser {
         println!(
-            "\n  quarantined appraiser ({} call(s) driven)",
+            "\n  quarantined appraiser ({} appraisal(s) driven)",
             appraiser_tally.driven
         );
         println!(
