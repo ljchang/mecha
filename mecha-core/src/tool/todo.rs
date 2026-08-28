@@ -167,7 +167,18 @@ struct Tracked {
     /// its own `work.calls` against this to tell whether anything landed in
     /// between besides our own entry.
     next_own_position: Option<u32>,
+    /// Steps that landed cleanly, most recent last: `(content, calls)`. The
+    /// baseline `step::escalation_candidate`'s span-outlier trigger compares
+    /// against, and the siblings its escalation shows the model for context.
+    ///
+    /// Bounded at [`COMPLETED_HISTORY_CAP`] — a long resumed conversation
+    /// revises its plan many times, and this is a rolling sense of "how big
+    /// are this plan's steps", not a full history.
+    completed: Vec<(String, u32)>,
 }
+
+/// See [`Tracked::completed`].
+const COMPLETED_HISTORY_CAP: usize = 20;
 
 /// Where one step's span starts, in the two units it has to be measured in.
 #[derive(Clone, Copy)]
@@ -257,12 +268,45 @@ impl Tracked {
         work: Option<crate::step::Work>,
         own_calls_before: u32,
         last_real: Option<crate::step::Outcome>,
+        step_escalation: Option<
+            &std::sync::Arc<std::sync::Mutex<Option<crate::step::StepEscalation>>>,
+        >,
     ) -> Vec<String> {
         let before: HashMap<&str, Status> = self
             .plan
             .items
             .iter()
             .map(|i| (i.content.as_str(), i.status))
+            .collect();
+
+        // `live` is computed here, before the item loop, rather than only
+        // after it (its other use, in the sweep below) — a write that both
+        // trims finished steps out of the plan *and* lands a new one in the
+        // same call needs the pruned baseline for that landing's own
+        // comparison, not just for steps *after* this write. Computing it
+        // once and reading it twice also means the sweep below can't drift
+        // from what the snapshot used.
+        let live: std::collections::HashSet<&str> =
+            next.items.iter().map(|i| i.content.as_str()).collect();
+
+        // Snapshotted once, before this batch's own completions can reach
+        // it: a model that marks two steps `completed` in one write (the
+        // tool's own docstring discourages this — "as soon as it is done
+        // rather than in a batch at the end" — but does not prevent it)
+        // would otherwise have the *second* item's comparison silently
+        // contaminated by the *first* item's own call count, pushed onto
+        // `self.completed` earlier in this same loop. Every candidate this
+        // batch produces is judged against the plan's history as it stood
+        // before the batch, never against a sibling landing beside it —
+        // and filtered by `live` for the same reason the sweep below prunes
+        // it: a step this same write is dropping from the plan is not "the
+        // plan's other completed steps" either, even though the retain
+        // below has not run yet.
+        let completed_before_this_batch: Vec<(String, u32)> = self
+            .completed
+            .iter()
+            .filter(|(k, _)| live.contains(k.as_str()))
+            .cloned()
             .collect();
 
         let mut lines = Vec::new();
@@ -297,9 +341,8 @@ impl Tracked {
                     }) else {
                         continue;
                     };
-                    match crate::step::appraise(span)
-                        .line(&item.content, self.flagged.contains(&item.content))
-                    {
+                    let finding = crate::step::appraise(span);
+                    match finding.line(&item.content, self.flagged.contains(&item.content)) {
                         Some(line) => {
                             self.flagged.insert(item.content.clone());
                             lines.push(line);
@@ -312,6 +355,71 @@ impl Tracked {
                         // having gone well.
                         None if span.in_flight == 0 && span.denied == 0 => {
                             self.flagged.remove(&item.content);
+                            // A genuinely clean landing — not an ambiguous
+                            // batch `appraise` defaulted to `Landed` — is a
+                            // baseline worth remembering, and a candidate
+                            // worth a second opinion (§5.5's escalation).
+                            if let Some(slot) = step_escalation {
+                                // `completed_before_this_batch` is filtered
+                                // by `live`, which this item's own content
+                                // is a member of — it is in `next.items`,
+                                // being completed right now — so the batch
+                                // filter alone does not exclude it. A step
+                                // that completed once, was reopened, and is
+                                // completing again here would otherwise see
+                                // its own pre-revision span as one of "the
+                                // plan's other completed steps": the
+                                // opposite of round 12's fix, but the same
+                                // bug — a step being counted as its own
+                                // sibling — reached through the batch
+                                // snapshot instead of the live push.
+                                let siblings_excluding_self: Vec<(String, u32)> =
+                                    completed_before_this_batch
+                                        .iter()
+                                        .filter(|(k, _)| k != &item.content)
+                                        .cloned()
+                                        .collect();
+                                if let Some(escalation) = crate::step::escalation_candidate(
+                                    span,
+                                    &item.content,
+                                    &siblings_excluding_self,
+                                ) {
+                                    // First candidate this batch wins. The
+                                    // slot is always drained once per turn
+                                    // (`agent.rs`'s read-clear-call-fold), so
+                                    // it is empty going into this call —
+                                    // `is_none` here means "nothing else in
+                                    // *this* batch has claimed it yet", not
+                                    // "an older, unconsumed candidate is
+                                    // stale." Two steps completing in one
+                                    // write is rare and the mechanism holds
+                                    // exactly one candidate at a time by
+                                    // design (`compact_requested`'s own
+                                    // shape); silently letting a later item
+                                    // overwrite an earlier one would make
+                                    // which candidate survives an accident of
+                                    // iteration order rather than a choice.
+                                    let mut guard = slot.lock().unwrap();
+                                    if guard.is_none() {
+                                        *guard = Some(escalation);
+                                    }
+                                }
+                            }
+                            // Dedupe on content first, same as `started`
+                            // (a `HashMap`, so a revision's fresh mark
+                            // already replaces rather than doubles up): a
+                            // step revised and completed twice would
+                            // otherwise contribute two entries under the
+                            // same name, inflating `completed.len()` and the
+                            // mean it feeds, and letting a step be listed as
+                            // its own sibling. Keeps the latest span, and
+                            // moves the entry to the end so "most recent
+                            // last" still holds for a step that was redone.
+                            self.completed.retain(|(k, _)| k != &item.content);
+                            self.completed.push((item.content.clone(), span.calls));
+                            if self.completed.len() > COMPLETED_HISTORY_CAP {
+                                self.completed.remove(0);
+                            }
                         }
                         None => {}
                     }
@@ -323,10 +431,19 @@ impl Tracked {
         // A mark on an item the plan no longer holds describes work nobody is
         // doing, and would otherwise sit in the map for the life of the
         // conversation waiting for a step of the same wording to be re-added.
-        let live: std::collections::HashSet<&str> =
-            next.items.iter().map(|i| i.content.as_str()).collect();
+        // `completed` gets the same sweep: unlike `started`/`flagged`, it is
+        // read by `escalation_candidate` as "the plan's other completed
+        // steps", and `TodoTool`'s lists are keyed by workspace rather than
+        // conversation — so without this, a wholesale plan rewrite (or a
+        // second conversation reusing the workspace) leaves stale entries
+        // from a plan that no longer exists as the mean a new plan's steps
+        // are judged against. Bounding `COMPLETED_HISTORY_CAP` protects
+        // against unbounded growth; it does not scope the history to the
+        // plan that is live now. `live` itself is the same set the snapshot
+        // above filtered by — computed once, at the top of this call.
         self.started.retain(|k, _| live.contains(k.as_str()));
         self.flagged.retain(|k| live.contains(k.as_str()));
+        self.completed.retain(|(k, _)| live.contains(k.as_str()));
         drop(live);
 
         self.plan = next;
@@ -747,7 +864,13 @@ impl Tool for TodoTool {
             .unwrap()
             .entry(ctx.workspace.clone())
             .or_default()
-            .advance(plan, ctx.work, own_calls_before, last_real);
+            .advance(
+                plan,
+                ctx.work,
+                own_calls_before,
+                last_real,
+                ctx.step_escalation.as_ref(),
+            );
         let findings = match findings.is_empty() {
             true => String::new(),
             false => format!("\n\n{}", findings.join("\n")),
@@ -1599,5 +1722,552 @@ mod tests {
             "a rejected bookkeeping write batched with a sibling is not the \
              step's own failure: {out}"
         );
+    }
+
+    // --- the escalation slot (§5.5's model half) ---
+
+    fn escalation_ctx(
+        run: u64,
+        calls: u32,
+        last: Option<Outcome>,
+        verify_like: u32,
+    ) -> (
+        ToolCtx,
+        std::sync::Arc<std::sync::Mutex<Option<crate::step::StepEscalation>>>,
+    ) {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let ctx = ToolCtx {
+            work: Some(
+                Work {
+                    calls,
+                    last,
+                    verify_like,
+                    // Every test using this helper models a span made of
+                    // `shell` calls — the ordinary case the UnverifiedClaim
+                    // trigger is for — so `shell_calls` tracks `calls` here,
+                    // same convention as `step.rs`'s own `span()` test
+                    // helper.
+                    shell_calls: calls,
+                    ..Work::default()
+                }
+                .in_run(run),
+            ),
+            step_escalation: Some(slot.clone()),
+            ..ToolCtx::default()
+        };
+        (ctx, slot)
+    }
+
+    /// A run whose escalation slot is `None` — the feature off — behaves
+    /// exactly as every test above it already proves: no write, no panic.
+    /// This pins the same property directly against a span large enough that
+    /// it would be a candidate if the slot existed.
+    #[tokio::test]
+    async fn a_span_outlier_with_no_escalation_slot_writes_nothing_and_does_not_panic() {
+        let tool = TodoTool::new();
+        for i in 0..2 {
+            let step = format!("small step {i}");
+            write(
+                &tool,
+                &work_ctx(1, i * 3, None),
+                json!([{"content": step, "status": "in_progress"}]),
+            )
+            .await;
+            write(
+                &tool,
+                &work_ctx(1, i * 3 + 2, Some(Outcome::Ok)),
+                json!([{"content": step, "status": "completed"}]),
+            )
+            .await;
+        }
+        write(
+            &tool,
+            &work_ctx(1, 6, None),
+            json!([{"content": "a huge step", "status": "in_progress"}]),
+        )
+        .await;
+        // No slot on this ctx — the feature is off for this run.
+        write(
+            &tool,
+            &work_ctx(1, 30, Some(Outcome::Ok)),
+            json!([{"content": "a huge step", "status": "completed"}]),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_span_outlier_writes_a_candidate_into_the_slot_when_present() {
+        let tool = TodoTool::new();
+        // The tool's own contract ("pass the COMPLETE list every time") means
+        // a real write carries every step touched so far, finished ones
+        // included — never just the one currently changing. `completed`'s
+        // own sweep (`advance`, beside `started`/`flagged`) now prunes
+        // against exactly that list, so a test that sent one-item plans
+        // per call would prune its own history before this trigger could
+        // ever see two siblings.
+        let mut items: Vec<Value> = Vec::new();
+        // Two small completed steps establish a baseline mean of ~2.5.
+        for (i, n) in [2u32, 3u32].into_iter().enumerate() {
+            let step = format!("small step {i}");
+            items.push(json!({"content": step, "status": "in_progress"}));
+            let (start_ctx, _) = escalation_ctx(1, 0, None, 0);
+            write(&tool, &start_ctx, Value::Array(items.clone())).await;
+            items.last_mut().unwrap()["status"] = json!("completed");
+            let (done_ctx, _) = escalation_ctx(1, n, Some(Outcome::Ok), 0);
+            write(&tool, &done_ctx, Value::Array(items.clone())).await;
+        }
+        items.push(json!({"content": "a huge step", "status": "in_progress"}));
+        let (start_ctx, _) = escalation_ctx(1, 5, None, 0);
+        write(&tool, &start_ctx, Value::Array(items.clone())).await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        let (done_ctx, slot) = escalation_ctx(1, 25, Some(Outcome::Ok), 0);
+        write(&tool, &done_ctx, Value::Array(items.clone())).await;
+        let escalation = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("20 calls against a mean of 2.5 should have written a candidate");
+        assert_eq!(
+            escalation.reason,
+            crate::step::EscalationReason::SpanOutlier
+        );
+        assert_eq!(escalation.step, "a huge step");
+    }
+
+    /// The review finding: `completed` must not survive a step falling out
+    /// of the live plan, or a wholesale plan rewrite (or a second
+    /// conversation reusing the same workspace-keyed list) leaves stale
+    /// history behind as the mean new steps get judged against.
+    #[tokio::test]
+    async fn completed_history_is_pruned_once_a_step_leaves_the_live_plan() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+        for (i, n) in [2u32, 3u32].into_iter().enumerate() {
+            let step = format!("small step {i}");
+            items.push(json!({"content": step, "status": "in_progress"}));
+            let (start_ctx, _) = escalation_ctx(1, 0, None, 0);
+            write(&tool, &start_ctx, Value::Array(items.clone())).await;
+            items.last_mut().unwrap()["status"] = json!("completed");
+            let (done_ctx, _) = escalation_ctx(1, n, Some(Outcome::Ok), 0);
+            write(&tool, &done_ctx, Value::Array(items.clone())).await;
+        }
+        // A wholesale rewrite: neither of the two small steps rides along.
+        let (start_ctx, _) = escalation_ctx(1, 5, None, 0);
+        write(
+            &tool,
+            &start_ctx,
+            json!([{"content": "a huge step", "status": "in_progress"}]),
+        )
+        .await;
+        let (done_ctx, slot) = escalation_ctx(1, 25, Some(Outcome::Ok), 0);
+        write(
+            &tool,
+            &done_ctx,
+            json!([{"content": "a huge step", "status": "completed"}]),
+        )
+        .await;
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "a rewritten plan must not escalate against a mean from steps it no longer holds"
+        );
+    }
+
+    /// The review finding one step further than the test above: that one
+    /// puts the rewrite (starting "a huge step" with no small steps in the
+    /// array) and the *completion* in two separate writes, so the first
+    /// write's own sweep already prunes `self.completed` before the second
+    /// write's snapshot is even taken — the bug never gets a chance to
+    /// appear. Here the rewrite and the completion land in the *same*
+    /// write: "huge step" is started with the small steps still present
+    /// (an ordinary write, not a rewrite), then completed in a write whose
+    /// item array holds only itself. Without filtering the snapshot by
+    /// `live`, that completion would still see the stale two-step mean the
+    /// sweep has not pruned yet.
+    #[tokio::test]
+    async fn a_rewrite_and_a_completion_in_the_same_write_still_prunes_the_baseline() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+        for (i, n) in [2u32, 3u32].into_iter().enumerate() {
+            let step = format!("small step {i}");
+            items.push(json!({"content": step, "status": "in_progress"}));
+            let (start_ctx, _) = escalation_ctx(1, 0, None, 0);
+            write(&tool, &start_ctx, Value::Array(items.clone())).await;
+            items.last_mut().unwrap()["status"] = json!("completed");
+            let (done_ctx, _) = escalation_ctx(1, n, Some(Outcome::Ok), 0);
+            write(&tool, &done_ctx, Value::Array(items.clone())).await;
+        }
+        // An ordinary start — the small steps ride along, so this write is
+        // not itself a rewrite and its own sweep prunes nothing.
+        items.push(json!({"content": "huge step", "status": "in_progress"}));
+        let (start_ctx, _) = escalation_ctx(1, 5, None, 0);
+        write(&tool, &start_ctx, Value::Array(items.clone())).await;
+        // The rewrite and the completion together: this write's item array
+        // holds only "huge step".
+        let (done_ctx, slot) = escalation_ctx(1, 40, Some(Outcome::Ok), 0);
+        write(
+            &tool,
+            &done_ctx,
+            json!([{"content": "huge step", "status": "completed"}]),
+        )
+        .await;
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "the same write that drops the small steps from the plan must not let \
+             huge step's own completion see them as its baseline"
+        );
+    }
+
+    /// The review finding: `completed` is a `Vec` keyed by nothing, unlike
+    /// `started` (a `HashMap`, so a revision's fresh mark already replaces
+    /// rather than doubles up). A step completed, reopened, and completed
+    /// again used to land in `completed` twice under the same name —
+    /// inflating `sibling_count`/the mean it feeds, and making the step its
+    /// own sibling in the prompt's list. Here "A" completes small, gets
+    /// reopened, and completes again large; a later "huge step" must see
+    /// exactly one "A" entry (its latest span), not two.
+    #[tokio::test]
+    async fn a_step_revised_and_recompleted_contributes_one_entry_not_two() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+
+        items.push(json!({"content": "small step 0", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 0, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 2, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "A", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 2, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 5, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        // Reopen A and complete it again, at a much larger span.
+        items.last_mut().unwrap()["status"] = json!("in_progress");
+        write(
+            &tool,
+            &escalation_ctx(1, 5, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 35, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "huge step", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 35, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        let (done_ctx, slot) = escalation_ctx(1, 100, Some(Outcome::Ok), 0);
+        write(&tool, &done_ctx, Value::Array(items.clone())).await;
+
+        let escalation = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("huge step's span is a clear outlier");
+        assert_eq!(
+            escalation.sibling_count, 2,
+            "A's revision must count once, not twice, among the siblings"
+        );
+        assert_eq!(
+            escalation.siblings.iter().filter(|s| *s == "A").count(),
+            1,
+            "A must not be listed as its own sibling twice"
+        );
+    }
+
+    /// The review finding one step past the test above: that one checks a
+    /// *later* step's escalation, once the dedupe/push has already run for
+    /// "A". This checks "A"'s own re-completion — the moment where its
+    /// pre-revision entry is still sitting in `completed_before_this_batch`
+    /// (the dedupe/push that would remove it runs *after* the escalation
+    /// check, and the batch-level `live` filter does not exclude it either,
+    /// since "A" is in `next.items` — it is the very item being completed).
+    /// With only "small step 0" as a genuine sibling, this must not clear
+    /// `SPAN_OUTLIER_MIN_SIBLINGS`.
+    #[tokio::test]
+    async fn a_steps_own_pre_revision_entry_does_not_count_as_its_sibling() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+
+        items.push(json!({"content": "small step 0", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 0, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 2, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "A", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 2, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 4, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        // Reopen A and complete it again, at a span that would clear the
+        // outlier floor against a mean of 2.0 (small step 0 and A's own
+        // stale entry) but not against the true single-sibling baseline.
+        items.last_mut().unwrap()["status"] = json!("in_progress");
+        write(
+            &tool,
+            &escalation_ctx(1, 4, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        let (done_ctx, slot) = escalation_ctx(1, 19, Some(Outcome::Ok), 0);
+        write(&tool, &done_ctx, Value::Array(items.clone())).await;
+
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "A's own pre-revision entry must not count as one of its siblings, \
+             leaving only one real sibling — below SPAN_OUTLIER_MIN_SIBLINGS"
+        );
+    }
+
+    /// The bug an adversarial review found after the round-2 pruning fix
+    /// shipped: `advance` loops over every item in one write, and pushes
+    /// each landed one onto `self.completed` as it goes — so a step earlier
+    /// in the *same* write's array was, before this fix, already counted in
+    /// a later step's own mean. Here "medium step" (span 4, below the
+    /// outlier floor on its own) lands *before* "huge step" in the same
+    /// array; without the snapshot, huge's comparison would see a 3-step,
+    /// contaminated baseline instead of the real 2-step one established
+    /// before this write ever started.
+    #[tokio::test]
+    async fn a_step_landing_earlier_in_the_same_write_does_not_contaminate_a_laters_mean() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+
+        // Baseline: two small completed steps, span 2 and 3 (mean 2.5, n=2).
+        items.push(json!({"content": "small step 0", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 0, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 3, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "small step 1", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 3, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 7, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        // "huge step" starts first (span will end up large); "medium step"
+        // starts later (span will end up small) — both finish in one write.
+        items.push(json!({"content": "huge step", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 7, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.push(json!({"content": "medium step", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 37, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        // "medium step" precedes "huge step" in the array — the exact
+        // ordering the bug needed to reach "huge"'s comparison at all.
+        let last = items.len() - 1;
+        items[last - 1]["status"] = json!("completed"); // medium step
+        items[last]["status"] = json!("completed"); // huge step
+        items.swap(last - 1, last); // medium now BEFORE huge in the array
+        let (done_ctx, slot) = escalation_ctx(1, 42, Some(Outcome::Ok), 0);
+        write(&tool, &done_ctx, Value::Array(items.clone())).await;
+
+        let escalation = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("huge step's span (33) is a clear outlier against the real baseline");
+        assert_eq!(escalation.step, "huge step");
+        assert_eq!(
+            escalation.sibling_count, 2,
+            "medium step landed earlier in this same write and must not count as a third sibling"
+        );
+        assert_eq!(escalation.sibling_mean_calls, Some(2.5));
+    }
+
+    /// Two genuine candidates in one write — the slot holds exactly one, and
+    /// it is the first one `advance` reaches, not whichever happened to be
+    /// processed last. Silently overwriting an earlier candidate with a
+    /// later one would make survival an accident of iteration order.
+    #[tokio::test]
+    async fn two_outliers_in_one_write_keep_only_the_first_found() {
+        let tool = TodoTool::new();
+        let mut items: Vec<Value> = Vec::new();
+
+        items.push(json!({"content": "small step 0", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 0, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 3, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "small step 1", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 3, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.last_mut().unwrap()["status"] = json!("completed");
+        write(
+            &tool,
+            &escalation_ctx(1, 7, Some(Outcome::Ok), 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        items.push(json!({"content": "big step A", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 7, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+        items.push(json!({"content": "big step B", "status": "in_progress"}));
+        write(
+            &tool,
+            &escalation_ctx(1, 40, None, 0).0,
+            Value::Array(items.clone()),
+        )
+        .await;
+
+        let last = items.len() - 1;
+        items[last - 1]["status"] = json!("completed"); // big step A, first in the array
+        items[last]["status"] = json!("completed"); // big step B, second in the array
+        let (done_ctx, slot) = escalation_ctx(1, 80, Some(Outcome::Ok), 0);
+        write(&tool, &done_ctx, Value::Array(items.clone())).await;
+
+        let escalation = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("both steps' spans are clear outliers");
+        assert_eq!(
+            escalation.step, "big step A",
+            "the first candidate `advance` reaches must win, deterministically"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unverified_claim_writes_a_candidate_and_a_verified_one_does_not() {
+        let tool = TodoTool::new();
+
+        let (start_ctx, _) = escalation_ctx(1, 0, None, 0);
+        write(
+            &tool,
+            &start_ctx,
+            json!([{"content": "test that the API responds", "status": "in_progress"}]),
+        )
+        .await;
+        // No verify-shaped call in the span (verify_like stays 0).
+        let (done_ctx, slot) = escalation_ctx(1, 3, Some(Outcome::Ok), 0);
+        write(
+            &tool,
+            &done_ctx,
+            json!([{"content": "test that the API responds", "status": "completed"}]),
+        )
+        .await;
+        let escalation = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("an unverified claim should have written a candidate");
+        assert_eq!(
+            escalation.reason,
+            crate::step::EscalationReason::UnverifiedClaim
+        );
+
+        // Same claim, but this time the span actually contains a
+        // verify-shaped call — no candidate.
+        let (start_ctx, _) = escalation_ctx(2, 0, None, 0);
+        write(
+            &tool,
+            &start_ctx,
+            json!([{"content": "test that the widget renders", "status": "in_progress"}]),
+        )
+        .await;
+        let (done_ctx, slot) = escalation_ctx(2, 3, Some(Outcome::Ok), 1);
+        write(
+            &tool,
+            &done_ctx,
+            json!([{"content": "test that the widget renders", "status": "completed"}]),
+        )
+        .await;
+        assert!(slot.lock().unwrap().is_none());
     }
 }
