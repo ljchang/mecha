@@ -314,10 +314,34 @@ class LocalTTS(OpenAITTSService):
         the *previous* turn's mood, applied to the current turn's words.
         There is no way to close that gap without holding speech until the
         whole answer is known, which defeats the point of streaming - a
-        deliberate trade-off, not a bug."""
+        deliberate trade-off, not a bug.
+
+        **Logs every fire, unconditionally.** Whether this base-class hook is
+        actually dispatched by the installed pipecat is not provable from
+        this file alone (`run_tts`'s own `context_id` parameter proves TTS
+        context ids exist, not that this particular hook name is part of the
+        contract on every version). If it silently stopped firing, nothing
+        here would error - `_affect_context_id` would stay `None` and
+        `run_tts` would take the baseline every time, indistinguishable from
+        every session simply carrying no affect, which is most of them
+        (`Affect::Neutral` on 119 of 120 sessions in the rung 7 corpus). So
+        the log line fires every time this method runs, not only when it
+        changes the outgoing params - logging only the interesting case
+        would read identically to the hook never firing at all on an
+        ordinary, mostly-neutral day, which is exactly the silent-inertness
+        failure this exists to catch. Debug level, once per answer: the same
+        shape as the percent-encoding bug this module already shipped and
+        fixed, which was also silently inert until someone went looking."""
         await super().on_turn_context_created(context_id)
         self._affect_context_id = context_id
         self._affect_params = await self._poll_affect_params()
+        from loguru import logger
+
+        logger.debug(
+            f"voice affect latch: context={context_id} key={self._affect_key} "
+            f"cfg_weight={self._affect_params[1]:.3f} (baseline "
+            f"{self._cfg_weight:.3f})"
+        )
 
     async def _poll_affect_params(self) -> tuple[float, float]:
         """One fetch of the cached label, applied to the caller's context
