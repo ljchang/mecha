@@ -2036,8 +2036,25 @@ impl Agent {
                         // up there, and Ctrl-C arriving during tool execution
                         // would otherwise reach this point before that check
                         // runs again, spending a call for a run that is
-                        // already ending.
-                        let candidate = slot.lock().unwrap().take().filter(|_| !cx.cancelled());
+                        // already ending. `stopping` (line ~1395) is the same
+                        // check, but it was computed *before* this turn's
+                        // `loop_detected` could flip true at line ~2008 — the
+                        // guard firing on this very turn's repeated call is
+                        // exactly the case a stale read would miss. Recomputed
+                        // fresh, on compaction's and the mailbox's own rule
+                        // for the same three inputs: a nudge for a run that
+                        // is stopping serves nobody, and on the `max_turns`
+                        // arm specifically, the only turn left to read it is
+                        // `final_answer` — tool-less, unable to act on
+                        // "re-scope the plan" regardless.
+                        let escalation_stopping = loop_detected
+                            || turns >= cx.budget.max_turns.unwrap_or(self.cfg.max_turns)
+                            || self.over_budget(&cx.budget, &usage).is_some();
+                        let candidate = slot
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .filter(|_| !cx.cancelled() && !escalation_stopping);
                         if let Some(escalation) = candidate {
                             if step_escalations_used < MAX_STEP_ESCALATIONS_PER_RUN {
                                 step_escalations_used += 1;
@@ -6448,6 +6465,43 @@ mod tests {
         // second time and either consumed a turn meant for something else or
         // errored on running out of them.
         assert_eq!(provider.seen.lock().unwrap().len(), 1);
+    }
+
+    /// The review finding: `stopping` (`loop_detected || turns >=
+    /// max_turns || over_budget`) already gates the mailbox and compaction —
+    /// "a run about to stop should not spend more" — but the escalation
+    /// call was gated on cancellation alone. Here the run's one and only
+    /// turn is what flags the candidate *and* exhausts `max_turns`, so a
+    /// provider that only has that one scripted turn queued would panic on
+    /// "ran out of scripted turns" if the escalation fired anyway.
+    #[tokio::test]
+    async fn a_run_exhausting_max_turns_on_this_same_turn_skips_the_escalation() {
+        let (mut agent, provider) = agent_with_tools(
+            vec![assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "todo".into(),
+                    input: json!({}),
+                }],
+                StopReason::ToolUse,
+            )],
+            vec![Arc::new(EscalatorTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.step_escalation = true;
+        agent.cfg.max_turns = 1;
+        agent.cfg.force_final_answer = false;
+        agent.ctx_mut().step_escalation = Some(Arc::new(Mutex::new(None)));
+
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::MaxTurns);
+        assert_eq!(
+            provider.seen.lock().unwrap().len(),
+            1,
+            "the escalation must not spend a call on a run that is already stopping"
+        );
     }
 
     /// The feature defaults off, and "off" must mean byte-identical to a run
