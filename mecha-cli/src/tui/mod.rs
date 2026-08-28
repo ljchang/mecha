@@ -1444,7 +1444,15 @@ fn finish_run(
             // memory holds; taint is persisted either way — a failed run
             // that read a hostile page still read it.
             if let Some(s) = session {
-                let _ = s.record_run(&persisted, &app.convo);
+                // The one write whose failure reproduces the resume-time 400
+                // this arm exists to prevent — surfaced in the transcript,
+                // never silent.
+                if let Err(e) = s.record_run(&persisted, &app.convo) {
+                    app.transcript.push(Entry::Error(format!(
+                        "the rollback was not recorded — resuming this session \
+                         will replay the failed turn: {e:#}"
+                    )));
+                }
                 let _ = s.append(&Record::Taint(app.convo.taint));
             }
             // A run with no `RunOutcome` has nothing to appraise — leaving
@@ -3630,19 +3638,38 @@ fn submit(
 
     // Text first, images after: the order both provider families document,
     // and the one `encode_message` preserves.
-    let user = if images.is_empty() {
-        Message::user(&text)
-    } else {
-        let mut content = vec![MsgBlock::text(&text)];
-        content.extend(images);
-        Message {
-            role: mecha_core::message::Role::User,
-            content,
+    let mut blocks = vec![MsgBlock::text(&text)];
+    blocks.extend(images);
+    // Folded, not pushed, when the tail is already a user message — Ctrl-C
+    // mid-tool-turn keeps the partial turn (cancel's contract), so the
+    // conversation can end on the user message carrying tool results, and
+    // pushing there makes two user messages in a row. The fold is recorded
+    // immediately (a rewrite, since it mutates the tail in place): `run`'s
+    // `persisted` snapshot is taken at spawn, *after* this, and every
+    // downstream contract — record_run's diff, the error arm's rollback —
+    // assumes that snapshot is what the file holds.
+    if app
+        .convo
+        .messages
+        .last()
+        .is_some_and(|m| m.role == mecha_core::message::Role::User)
+    {
+        let file_held = app.convo.messages.clone();
+        if let Some(last) = app.convo.messages.last_mut() {
+            last.content.extend(blocks);
         }
-    };
-    app.convo.push(user.clone());
-    if let Some(s) = session {
-        s.append(&Record::Message(user))?;
+        if let Some(s) = session {
+            s.record_run(&file_held, &app.convo)?;
+        }
+    } else {
+        let user = Message {
+            role: mecha_core::message::Role::User,
+            content: blocks,
+        };
+        app.convo.push(user.clone());
+        if let Some(s) = session {
+            s.append(&Record::Message(user))?;
+        }
     }
     // Kept, so the stream can wait for it. Both are posted to the same thread
     // and Slack orders by the timestamp *it* assigns, so firing them

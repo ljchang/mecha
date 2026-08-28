@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use mecha_core::agent::{Agent, AgentEvent, Conversation};
+use mecha_core::agent::{is_plain_user_text, Agent, AgentEvent, Conversation};
 use mecha_core::message::Message;
 use mecha_core::outbox::{OutboxRoute, OutboxStore};
 use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
@@ -1353,17 +1353,19 @@ async fn completion(
             // consecutive user messages that 400 anything resuming the id.
             // Recording the rolled-back state (a rewrite) is what keeps the
             // file agreeing with memory; taint is kept either way — a failed
-            // turn that read a hostile page still read it.
-            //
-            // A folded turn pushed nothing, so there is nothing to pop —
-            // `recorded` (the pre-fold snapshot) IS the rollback, and the
-            // pop would orphan the previous round's `tool_use` instead.
-            if folded {
-                slot.convo.messages = recorded.clone();
-            } else {
-                slot.convo.roll_back_failed_turn(recorded.clone());
+            // turn that read a hostile page still read it. The rollback
+            // itself knows a folded turn from a pushed one (its pop is
+            // conditional on a plain user tail), so no flag travels from the
+            // push site to here. And the record is the one write whose
+            // failure reproduces the resume-time 400 this arm exists to
+            // prevent, so it is the one that must not fail silently.
+            slot.convo.roll_back_failed_turn(recorded.clone());
+            if let Err(e) = slot.session.record_run(&recorded, &slot.convo) {
+                tracing::warn!(
+                    "the rollback was not recorded — a resume of this session \
+                     will replay the failed turn: {e:#}"
+                );
             }
-            let _ = slot.session.record_run(&recorded, &slot.convo);
             let _ = slot.session.append(&Record::Taint(slot.convo.taint));
         }
     }
@@ -1419,21 +1421,6 @@ async fn completion(
 
     shared.slots.lock().await.insert(key, SlotState::Idle(slot));
     Ok(())
-}
-
-/// A user message that is the owner's own text and nothing else — no tool
-/// results. The interrupted-run pop may only ever remove one of these:
-/// tool results ride in a `Role::User` message too, so a bare role check
-/// fired on a barge-in mid-tool-turn and popped the results, orphaning the
-/// assistant's `tool_use` — which `record_run` then persisted. A completed
-/// tool round is a valid tail; two user *texts* in a row are not, and only
-/// the second shape may be trimmed.
-fn is_plain_user_text(m: &Message) -> bool {
-    m.role == mecha_core::message::Role::User
-        && !m
-            .content
-            .iter()
-            .any(|b| matches!(b, mecha_core::message::Block::ToolResult { .. }))
 }
 
 #[cfg(test)]
