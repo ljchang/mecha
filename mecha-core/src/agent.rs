@@ -159,6 +159,16 @@ enum Completion {
     Interrupted(String, Usage),
 }
 
+/// What `Agent::escalate_step` found, paired with the usage it cost
+/// regardless of which of these it is — a failed or interrupted attempt
+/// still spent tokens.
+enum StepEscalationOutcome {
+    Verdict(crate::step::StepVerdict),
+    /// The run is ending; a nudge for a run that is stopping serves nobody.
+    Interrupted,
+    Failed(anyhow::Error),
+}
+
 /// Add user text to the conversation without breaking it.
 ///
 /// Appending a second user *message* would leave two in a row, which some
@@ -2020,25 +2030,33 @@ impl Agent {
                     // spend more than `MAX_STEP_ESCALATIONS_PER_RUN` calls no
                     // matter how many candidates `todo` flags.
                     if let Some(slot) = cx.tools.step_escalation.as_ref() {
-                        let candidate = slot.lock().unwrap().take();
+                        // Cancellation is checked here, not only at the top
+                        // of the loop: `cx.cancelled()` is read once per turn
+                        // up there, and Ctrl-C arriving during tool execution
+                        // would otherwise reach this point before that check
+                        // runs again, spending a call for a run that is
+                        // already ending.
+                        let candidate = slot.lock().unwrap().take().filter(|_| !cx.cancelled());
                         if let Some(escalation) = candidate {
                             if step_escalations_used < MAX_STEP_ESCALATIONS_PER_RUN {
                                 step_escalations_used += 1;
-                                match crate::step::escalate(
-                                    self.provider.as_ref(),
-                                    &self.model,
-                                    &escalation,
-                                )
-                                .await
-                                {
-                                    Ok(crate::step::StepVerdict::RevisePlan) => {
+                                let (outcome, spent) =
+                                    self.escalate_step(cx, &events, &escalation).await;
+                                usage.add(&spent);
+                                match outcome {
+                                    StepEscalationOutcome::Verdict(
+                                        crate::step::StepVerdict::RevisePlan,
+                                    ) => {
                                         append_user_text(
                                             messages,
                                             crate::step::templated_nudge(&escalation),
                                         );
                                     }
-                                    Ok(crate::step::StepVerdict::Accept) => {}
-                                    Err(e) => {
+                                    StepEscalationOutcome::Verdict(
+                                        crate::step::StepVerdict::Accept,
+                                    ) => {}
+                                    StepEscalationOutcome::Interrupted => {}
+                                    StepEscalationOutcome::Failed(e) => {
                                         tracing::debug!(error = %e, "step escalation call failed");
                                     }
                                 }
@@ -2228,6 +2246,95 @@ impl Agent {
             },
         );
         Ok(Some(spent))
+    }
+
+    /// Run the escalation's quarantined call (`docs/GOAL-SYSTEM-DESIGN.md`
+    /// §5.5) through the same cancellable, usage-tracked path `compact`'s
+    /// summariser and `validate_summary` already use.
+    ///
+    /// **Why this cannot be a bare `&dyn Provider` call, unlike the
+    /// appraiser's (§5.1) offline one.** This runs *inside* a live run, so it
+    /// has to go through `self.complete`, not `self.provider.complete`
+    /// directly — the difference being cancellation and usage accounting.
+    /// Calling the provider directly (the first cut of this method) meant a
+    /// Ctrl-C landing mid-turn spent one more (two, with the retry)
+    /// 4096-token round trip before the run noticed, and its tokens never
+    /// reached `usage`, `RunStats`, or a cost budget. Both are `self
+    /// .complete`'s job: it `select!`s on `cx.cancel` and hands back
+    /// `Completion::Interrupted` carrying whatever usage the partial call
+    /// already spent, which this returns to the caller regardless of how
+    /// the call ended — a wasted or interrupted attempt still cost tokens.
+    async fn escalate_step(
+        &self,
+        cx: &RunContext,
+        events: &Option<UnboundedSender<AgentEvent>>,
+        escalation: &crate::step::StepEscalation,
+    ) -> (StepEscalationOutcome, Usage) {
+        let prompt = crate::step::escalation_prompt(escalation);
+        let mut attempt = prompt.clone();
+        let mut last_error = String::new();
+        let pass = crate::quarantine::QuarantinedPass::new(&self.model, 4096);
+        let mut spent = Usage::default();
+
+        for round in 0..2 {
+            let request = pass.ask(attempt.clone());
+            let response = match self.complete(cx, &request, events).await {
+                Ok(Completion::Finished(r)) => *r,
+                Ok(Completion::Interrupted(_, usage)) => {
+                    spent.add(&usage);
+                    return (StepEscalationOutcome::Interrupted, spent);
+                }
+                Err(e) => return (StepEscalationOutcome::Failed(e), spent),
+            };
+            spent.add(&response.usage);
+
+            if response.stop_reason == crate::message::StopReason::Refusal {
+                return (
+                    StepEscalationOutcome::Failed(anyhow::anyhow!(
+                        "the escalation refused the step{}",
+                        response
+                            .refusal
+                            .and_then(|r| r.category)
+                            .map(|c| format!(" ({c})"))
+                            .unwrap_or_default()
+                    )),
+                    spent,
+                );
+            }
+
+            let truncated = response.stop_reason == crate::message::StopReason::MaxTokens;
+            let text = response.message.text();
+
+            match crate::step::parse_step_verdict(&text) {
+                Ok(v) => return (StepEscalationOutcome::Verdict(v), spent),
+                Err(_) if truncated && text.trim().is_empty() => {
+                    last_error = format!(
+                        "the model hit the {} token budget before writing any answer",
+                        request.max_tokens
+                    );
+                    if round == 0 {
+                        attempt = format!(
+                            "{prompt}\nBe brief. Do not deliberate at length; write the \
+                             JSON object immediately."
+                        );
+                    }
+                }
+                Err(e) if round == 0 => {
+                    last_error = format!("{e:#}");
+                    attempt = format!(
+                        "{prompt}\nYour previous reply could not be parsed: {last_error}\n\
+                         Reply with the JSON object alone — no prose, no code fence."
+                    );
+                }
+                Err(e) => last_error = format!("{e:#}"),
+            }
+        }
+        (
+            StepEscalationOutcome::Failed(anyhow::anyhow!(
+                "the escalation produced nothing parseable: {last_error}"
+            )),
+            spent,
+        )
     }
 
     /// Ask a second, tool-less call what the summary lost.
@@ -6112,6 +6219,43 @@ mod tests {
         }
     }
 
+    /// Same as `EscalatorTool`, but also cancels the run — standing in for a
+    /// Ctrl-C arriving *during* tool execution, after the candidate is
+    /// written but before the loop's own top-of-turn cancellation check
+    /// runs again. `ctx.cancel` is the same token `RunContext::cancelled`
+    /// reads, so this is the real mechanism, not a fake signal.
+    struct CancellingEscalatorTool;
+    #[async_trait]
+    impl Tool for CancellingEscalatorTool {
+        fn name(&self) -> &str {
+            "todo"
+        }
+        fn description(&self) -> &str {
+            "Stands in for todo, and cancels the run on the way out."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+            if let Some(slot) = ctx.step_escalation.as_ref() {
+                *slot.lock().unwrap() = Some(crate::step::StepEscalation {
+                    reason: crate::step::EscalationReason::SpanOutlier,
+                    step: "do the big thing".into(),
+                    siblings: vec!["read the config".into()],
+                    calls: 20,
+                    sibling_mean_calls: Some(2.5),
+                });
+            }
+            if let Some(cancel) = ctx.cancel.as_ref() {
+                cancel.cancel();
+            }
+            Ok(ToolOutput::ok("1/1 done"))
+        }
+    }
+
     fn escalation_reply(text: &str) -> CompletionResponse {
         CompletionResponse {
             message: Message::assistant(vec![Block::text(text)]),
@@ -6204,6 +6348,83 @@ mod tests {
             .messages
             .iter()
             .all(|m| !m.text().contains("re-scoped") && !m.text().contains("broken down")));
+    }
+
+    /// The review's second finding: the escalation's own tokens must reach
+    /// `RunStats`/`RunOutcome::usage`, the same way `compact`'s summariser and
+    /// `validate_summary` already do — not be dropped on the floor.
+    #[tokio::test]
+    async fn the_escalations_own_tokens_are_added_to_the_runs_usage() {
+        let mut with_usage = escalation_reply(r#"{"reasoning": "fine", "verdict": "accept"}"#);
+        with_usage.usage = Usage {
+            input_tokens: 1_000,
+            output_tokens: 99_999,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        };
+        let (mut agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "todo".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                with_usage,
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EscalatorTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.step_escalation = true;
+        agent.ctx_mut().step_escalation = Some(Arc::new(Mutex::new(None)));
+
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(
+            outcome.usage.output_tokens >= 99_999,
+            "the escalation's usage must be folded into the run's total, got {:?}",
+            outcome.usage
+        );
+    }
+
+    /// The review's first finding: a cancellation arriving during tool
+    /// execution must not spend an escalation call anyway. `CancellingEscalatorTool`
+    /// stands in for a Ctrl-C landing exactly between the tool result being
+    /// pushed and the loop's own top-of-turn cancellation check running
+    /// again — the window the loop's read of `cx.cancelled()` at this call
+    /// site exists to close.
+    #[tokio::test]
+    async fn a_cancellation_during_the_tool_call_skips_the_escalation() {
+        let token = CancellationToken::new();
+        let (mut agent, provider) = agent_with_tools(
+            vec![assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "todo".into(),
+                    input: json!({}),
+                }],
+                StopReason::ToolUse,
+            )],
+            vec![Arc::new(CancellingEscalatorTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.step_escalation = true;
+        agent.ctx_mut().step_escalation = Some(Arc::new(Mutex::new(None)));
+        let cx = agent.context().as_ref().clone().with_cancel(token);
+
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Interrupted);
+        // Only the one scripted main turn was ever asked for — if the
+        // escalation had fired anyway, the provider would have been asked a
+        // second time and either consumed a turn meant for something else or
+        // errored on running out of them.
+        assert_eq!(provider.seen.lock().unwrap().len(), 1);
     }
 
     /// The feature defaults off, and "off" must mean byte-identical to a run
