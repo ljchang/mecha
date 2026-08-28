@@ -323,7 +323,7 @@ impl Reflexion {
     ///
     /// **Reaches a stored record only in the shape the live guard now
     /// produces.** `is_harness_voice` is a whole-string match (`==` for the
-    /// nudges, `starts_with`/`contains` for the two stemmed voices), which
+    /// nudges, `starts_with`/`contains` for the three stemmed voices), which
     /// recognises a harness voice recorded alone but not one folded into a
     /// joined string a pre-fix miner produced — a nudge concatenated with a
     /// real steer, from before `extract_interventions` filtered per block.

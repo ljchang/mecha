@@ -717,7 +717,7 @@ already know, or make the single next tool call. Keep your reasoning short this 
 
 /// Every voice the harness speaks in the **user** role.
 ///
-/// Four of them now, and the miner has to know all four: `agent.rs` prefixes
+/// Five of them now, and the miner has to know all five: `agent.rs` prefixes
 /// a refusal it did not author with `"Denied by the user: "`, and the mirror of
 /// that mistake is text mecha wrote being read as text a person typed.
 /// `learning::extract_interventions` mines a transcript for corrections and has
@@ -737,13 +737,18 @@ already know, or make the single next tool call. Keep your reasoning short this 
 /// peer's steer as "mecha correcting itself, not the user correcting mecha",
 /// and CLAUDE.md's rule that a peer cannot grant escalation is defeated
 /// through the learning store instead of the approver if the peer's words
-/// consolidate into a rule under the user's own name.
+/// consolidate into a rule under the user's own name. The fifth —
+/// `step::STEP_ESCALATION_STEM`, folded into the same tool-results message as
+/// boredom's notice when §5.5's escalation says `revise_plan` — is `step.rs`'s
+/// own account of the same mistake found the same way: an unrecognised voice
+/// there would have mined as a `Steer` carrying the plan step's own text.
 ///
 /// The list is closed and lives here rather than in the miner, because the
-/// party that knows a new voice exists is the one that adds it. Boredom's and
-/// the delivery header's are matched by a stem, since both interpolate
-/// something (a tool name and a count; a message id and a sender); the two
-/// nudges are constants and are matched whole.
+/// party that knows a new voice exists is the one that adds it. Boredom's,
+/// the delivery header's, and the escalation nudge's are matched by a stem,
+/// since each interpolates something (a tool name and a count; a message id
+/// and a sender; a step's own text); the two turn-level nudges are constants
+/// and are matched whole.
 pub(crate) fn is_harness_voice(text: &str) -> bool {
     let text = text.trim();
     text == FINAL_ANSWER_NUDGE
