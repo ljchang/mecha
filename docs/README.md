@@ -10,7 +10,8 @@ belonged in three other places.
 | Document | Holds | Tense | Grows? |
 |---|---|---|---|
 | [`README.md`](../README.md) | The front door: what mecha is, how to run it | present | slowly |
-| [`CLAUDE.md`](../CLAUDE.md) | **Why** the code is shaped the way it is — invariants and the incidents behind them | present | slowly |
+| [`CLAUDE.md`](../CLAUDE.md) | The cross-cutting invariants any session may need on any run — the expensive file, loaded into every agent's context | present | slowly |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | The per-subsystem invariants and the incident behind each — read a section before changing that subsystem | present | with subsystems |
 | [`AGENTS.md`](../AGENTS.md) | Orientation for an AI agent working here; points at CLAUDE.md rather than restating it | present | rarely |
 | [`CONTRIBUTING.md`](../CONTRIBUTING.md) | Build, test, review expectations | present | rarely |
 | [`SECURITY.md`](../SECURITY.md) | Reporting a vulnerability; the threat model and accepted limitations | present | rarely |
@@ -88,7 +89,7 @@ something shipped.
 Ask in this order; the first match wins.
 
 1. **Would a user of mecha need it to operate a feature?** → `website/docs/`
-2. **Does it explain why the code resists an obvious change?** → `CLAUDE.md`
+2. **Does it explain why the code resists an obvious change?** → `docs/ARCHITECTURE.md`, in that subsystem's section — or `CLAUDE.md` only if any session could trip over it on any run
 3. **Is it a completed thing, or a lesson from a mistake?** → `HISTORY.md`
 4. **Does a reader need it to decide what to build next?** → `HANDOFF.md`
 5. **Is it the answer to one question you went and researched?** → a new
@@ -112,6 +113,12 @@ code, and the bug that would come back if it were undone.
 
 State the rule, then the incident in one sentence. Not the other way round.
 
+Since 2026-08-28 the per-subsystem sections live in `ARCHITECTURE.md` (same
+writing convention, one section per subsystem) and `CLAUDE.md` keeps only
+what cuts across subsystems, plus pointers. The routing test for a new
+invariant: could a session hit this *without* working on that subsystem? If
+not, it goes in `ARCHITECTURE.md`.
+
 ### `HANDOFF.md` — bounded by what it holds, not by how long it is
 
 Current state and open work only.
@@ -123,7 +130,9 @@ those apart from a project that genuinely has a lot open. Trimming to hit a
 target deletes real items instead of finishing them.
 
 What keeps it trustworthy is the two rules underneath. Every open item must
-have been verified unbuilt, against source, with `file:line`. Every completed
+have been verified unbuilt, against source, cited by symbol — a `file:line`
+rots silently across merges, so name the function or type, and the commit
+where a line is genuinely needed. Every completed
 item **leaves** — moved to `HISTORY.md`, never struck through, because
 strikethrough keeps finished work in the reader's way forever and that is
 what actually produced the 1,965 lines. See the `handoff` skill

@@ -5,8 +5,9 @@ up cold.
 
 Two companion documents, so this one can hold open work and nothing else:
 
-- [`CLAUDE.md`](../CLAUDE.md) — why each subsystem is shaped the way it is. The
-  canonical design document. This file deliberately does not restate it.
+- [`CLAUDE.md`](../CLAUDE.md) — the cross-cutting invariants — and
+  [`ARCHITECTURE.md`](ARCHITECTURE.md) — why each subsystem is shaped the way
+  it is. This file deliberately does not restate either.
 - [`HISTORY.md`](HISTORY.md) — what was built and when, and the traps hit along
   the way. Everything here that turned into "done" moved there.
 
@@ -1009,7 +1010,7 @@ it by counterfactual replay of recent sessions → dispose through
 override layer (`~/.mecha/learning/harness/overrides.toml`, applied beneath
 every config file so the user always wins; `mecha harness revert` undoes);
 prose and architecture stage for a person; security-class stages with the
-standing warning and is never measured. CLAUDE.md "Harness rumination" holds
+standing warning and is never measured. ARCHITECTURE.md "Harness rumination" holds
 the design; `docs/SELF-IMPROVEMENT-RESEARCH.md` §13 records the rulings —
 auto-accept per §13.3 is Luke's explicit 2026-08-22 instruction, do not
 re-ask it. The corpus is live (64 runs of qwen3.6-35b-a3b across 280 sessions
@@ -1140,7 +1141,7 @@ the mechanism and every decision. What it left standing:
   `ask mecha` opens the task's chat session — voice, uploads, todo panel,
   approval cards, steering by typing — the model speaks first, the board does
   not move, and *let it carry on without me* hands the same transcript to a
-  detached child. HISTORY has the narrative and `CLAUDE.md` the invariants.
+  detached child. HISTORY has the narrative and `ARCHITECTURE.md` the invariants.
   What that leaves open:
   - **Admission control (R1 / phase 6) shipped 2026-08-26**
     (`mecha-core/src/permit.rs:50`), after R3 was run: three background seats
@@ -1496,7 +1497,7 @@ argument was wrong. Two pieces:
   task) holds for every **registered** tool: no name on any run's tool
   surface reaches this code path (`RunContext::withheld` is a dispatch-seam
   check, not a process boundary). That is narrower than "holds
-  structurally" — `shell` is universal and CLAUDE.md already documents
+  structurally" — `shell` is universal and ARCHITECTURE.md already documents
   taint tracking's own blind spot inside a command, so a shell-capable run
   invoking `mecha tasks set --status done` as a subprocess is the same known
   gap, inherited here rather than introduced by it. A narrower, second gap:
@@ -1513,7 +1514,7 @@ argument was wrong. Two pieces:
   as one JSON document. On a non-`Neutral` label it stages exactly one
   follow-up task via `kg_task_create`, composed only from typed fields (the
   label, the channel names, the closed task's **id** — never its **name**,
-  which `mail task` can default to a raw email subject line CLAUDE.md
+  which `mail task` can default to a raw email subject line ARCHITECTURE.md
   already documents as untrusted). **The follow-up gate is `done`-only,
   never `dropped`** (`worth_a_follow_up`) — found in review after the first
   cut gated on the label alone, which put a "Revisit" task back on the board
@@ -2506,7 +2507,7 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
 - **Cosmetic**: the private checkout still lives at
   `~/Github/personalized_knowledge_graph` (paths baked into mecha's config
   `command =`, two crontab lines, and the gitignored OPERATIONS.md), and
-  mecha's CLAUDE.md still says "pkg" in narrative spots.
+  mecha's ARCHITECTURE.md still says "pkg" in narrative spots.
 
 ### Larger, and deliberately not started
 
@@ -2756,7 +2757,7 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
 
   The mecha-side half of step 7 is **built**: `mecha-factory-publish drain`
   fetches the queue, and `mecha frontdoor` is the quarantine between a drained
-  record and a triage run. See `CLAUDE.md`.
+  record and a triage run. See `ARCHITECTURE.md`.
 
 - **Images: built, merged and deployed 2026-08-21.**
   `Block::Image`, both provider encoders, `image.rs`'s caps, `provider::preflight`,

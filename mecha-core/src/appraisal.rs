@@ -847,7 +847,7 @@ pub fn live(
     run_started_at: usize,
 ) -> Affect {
     // A mid-run compaction rewrites `conversation.messages` *in place*
-    // (CLAUDE.md, "The session record survives compaction too" — the same
+    // (docs/ARCHITECTURE.md, "The session record survives compaction too" — the same
     // rewrite `Session::record_run` compares against rather than slicing
     // past). `run_started_at` was captured before that happened, so after a
     // compaction it no longer names this run's own starting point in the

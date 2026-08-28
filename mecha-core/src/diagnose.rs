@@ -216,7 +216,7 @@ impl Evidence {
 // measured and never auto-applied, while `Config` inside the closed override
 // set goes straight to the measurement arm and can auto-accept. Until this
 // existed, the class was simply whatever the model typed on a line — so the
-// boundary CLAUDE.md describes as structural rested on the proposer's own
+// boundary docs/ARCHITECTURE.md describes as structural rested on the proposer's own
 // account of what it was proposing.
 //
 // It held anyway, but by coincidence: the closed set is four benign knobs, so
@@ -229,7 +229,7 @@ impl Evidence {
 ///
 /// `[security]` holds the interlock, `[sandbox]` the confinement that `shell`'s
 /// capability label depends on, and `[outbox]` the routing that makes a send a
-/// draft. Those are three of the four boundaries CLAUDE.md says reach a human
+/// draft. Those are three of the four boundaries docs/ARCHITECTURE.md says reach a human
 /// however anything scores; the fourth, the path jail, is not configurable and
 /// so cannot be proposed.
 pub const GUARDED_SECTIONS: [&str; 3] = ["security", "sandbox", "outbox"];

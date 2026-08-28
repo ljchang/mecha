@@ -1,7 +1,7 @@
 # Remote control — design
 
 **Built 2026-08-20** — `/remote-control` is live in the TUI and the Slack
-connector; `docs/HISTORY.md` records what shipped and `CLAUDE.md`'s *The remote
+connector; `docs/HISTORY.md` records what shipped and `ARCHITECTURE.md`'s *The remote
 control* holds the invariants. The body below is the design as proposed and is
 deliberately not rewritten: the gap between the two is evidence about how the
 built thing came to be shaped that way.

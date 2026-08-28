@@ -8,7 +8,7 @@ CANNOT show this — so it needs its own test.
 """
 import json, sys, urllib.request, time
 
-BIG = open("/home/ljchang/Github/mecha/CLAUDE.md").read()[:60000]
+BIG = open("/home/ljchang/Github/mecha/docs/ARCHITECTURE.md").read()[:60000]
 msgs = [{"role": "user", "content":
          "Here is a document I want to discuss:\n\n" + BIG +
          "\n\nReply with one short sentence acknowledging it."}]

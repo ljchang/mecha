@@ -5,9 +5,10 @@ project, what the review will look for, and the handful of invariants that are
 easy to break by accident.
 
 If you are an AI coding agent working in this repository, read
-[`CLAUDE.md`](CLAUDE.md) first. It is longer than this file and records *why*
-each subsystem is shaped the way it is, which is what you need in order to
-change one safely.
+[`CLAUDE.md`](CLAUDE.md) first — the cross-cutting invariants — and then the
+relevant section of [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), which
+records *why* each subsystem is shaped the way it is: what you need in order
+to change one safely.
 
 ## Build and test
 
@@ -63,7 +64,8 @@ Run it at the end of a session that changed behaviour.
 
 These are enforced structurally rather than by convention, and a change that
 erodes one is the most expensive kind of defect this project can ship. Each cost
-something to learn; `CLAUDE.md` records the incident behind most of them.
+something to learn; `CLAUDE.md` and `docs/ARCHITECTURE.md` record the
+incident behind most of them.
 
 **Every model-supplied path goes through `ToolCtx::resolve`.** It canonicalizes
 and proves containment in the workspace. Never call `fs::*` on a raw path from

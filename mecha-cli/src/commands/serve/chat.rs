@@ -155,7 +155,7 @@ impl ChatState {
             // a per-session jail; rooting them at the producer directory
             // means every session's jail is a subdirectory of where the
             // servers already point (the limitation is real and written
-            // down in the Slack section of CLAUDE.md).
+            // down in the Slack section of docs/ARCHITECTURE.md).
             workspace: Some(producer_root()?),
             // The registry belongs to the agent and one agent serves every
             // session — a loaded skill would be shared state across them.

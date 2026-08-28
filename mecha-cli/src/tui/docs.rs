@@ -26,7 +26,7 @@
 //! - **The picking is never done here.** The chooser is Google's own, in the
 //!   user's own browser, outside this process and outside the model's context.
 //!   That is the whole safety argument for `drive.file` — see the Documents
-//!   section of CLAUDE.md — and a modal that offered to pick *for* you would
+//!   section of docs/ARCHITECTURE.md — and a modal that offered to pick *for* you would
 //!   be an argument for widening the scope. All this does is carry a URL out
 //!   and an address back.
 //! - **`enter` writes a reference into the message box rather than doing

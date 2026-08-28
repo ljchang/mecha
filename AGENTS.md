@@ -2,11 +2,13 @@
 
 Instructions for AI coding agents working in this repository.
 
-**Read [`CLAUDE.md`](CLAUDE.md) first, in full.** It is the canonical guide and
-this file deliberately does not duplicate it. `CLAUDE.md` records *why* each
-subsystem is shaped the way it is — the incident behind each invariant, and the
-bug that reappears when one is undone. That reasoning is what you need in order
-to change something safely, and it is not recoverable from the code alone.
+**Read [`CLAUDE.md`](CLAUDE.md) first, in full.** It holds the cross-cutting
+invariants any session needs on any run, and this file deliberately does not
+duplicate it. **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) records *why*
+each subsystem is shaped the way it is** — the incident behind each invariant,
+and the bug that reappears when one is undone; read its section before
+changing a subsystem. That reasoning is what you need in order to change
+something safely, and it is not recoverable from the code alone.
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) covers build commands, the testing layers,
 and pull request expectations.
@@ -105,7 +107,8 @@ skipped test reads exactly like a passing one.
 and a decision rule for where a given piece of writing goes. Read it before
 adding to any of them; most new writing belongs in a file that already exists.
 
-The short version: `CLAUDE.md` is why the code is shaped this way,
+The short version: `CLAUDE.md` is the cross-cutting invariants and
+`docs/ARCHITECTURE.md` the per-subsystem ones,
 `docs/HANDOFF.md` is current state and open work only, `docs/HISTORY.md` is
 what shipped and what was learned, `website/docs/` is for users, and
 `CHANGELOG.md` gets the `## [Unreleased]` entry for anything user-visible.
@@ -121,4 +124,5 @@ that rot. Its one rule is worth internalising even if you never invoke it:
 If you learn something that would have saved you an hour, write it down. A
 lesson with a general rule attached goes in `docs/HISTORY.md` under "Traps
 already hit"; an invariant that would otherwise look like an improvement to
-remove goes in `CLAUDE.md`.
+remove goes in `docs/ARCHITECTURE.md` (that subsystem's section), or in
+`CLAUDE.md` only if it cuts across subsystems.
