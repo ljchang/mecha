@@ -186,6 +186,15 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         // Resolved in `prepare_tools` beside the tool's registration; see
         // `PreparedTools::compact_requested` for why it is not decided twice.
         compact_requested: tools.compact_requested.clone(),
+        // `compact_requested`'s own shape: presence is the enablement, and
+        // `--no-step-escalation` has already folded into `cfg.agent
+        // .step_escalation` above (`prepare_tools`), so this is the one
+        // place that decides it. `Agent::run_in` mints a fresh `Mutex` per
+        // run regardless — this initial one is never actually read from.
+        step_escalation: cfg
+            .agent
+            .step_escalation
+            .then(|| Arc::new(std::sync::Mutex::new(None))),
         ..ToolCtx::default()
     };
 
@@ -396,6 +405,9 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     }
     if opts.compact_at.is_some() {
         cfg.agent.compact_at_tokens = opts.compact_at;
+    }
+    if opts.no_step_escalation {
+        cfg.agent.step_escalation = false;
     }
     if opts.no_thinking {
         cfg.agent.thinking = false;

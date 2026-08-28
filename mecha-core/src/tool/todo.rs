@@ -167,7 +167,18 @@ struct Tracked {
     /// its own `work.calls` against this to tell whether anything landed in
     /// between besides our own entry.
     next_own_position: Option<u32>,
+    /// Steps that landed cleanly, most recent last: `(content, calls)`. The
+    /// baseline `step::escalation_candidate`'s span-outlier trigger compares
+    /// against, and the siblings its escalation shows the model for context.
+    ///
+    /// Bounded at [`COMPLETED_HISTORY_CAP`] — a long resumed conversation
+    /// revises its plan many times, and this is a rolling sense of "how big
+    /// are this plan's steps", not a full history.
+    completed: Vec<(String, u32)>,
 }
+
+/// See [`Tracked::completed`].
+const COMPLETED_HISTORY_CAP: usize = 20;
 
 /// Where one step's span starts, in the two units it has to be measured in.
 #[derive(Clone, Copy)]
@@ -257,6 +268,9 @@ impl Tracked {
         work: Option<crate::step::Work>,
         own_calls_before: u32,
         last_real: Option<crate::step::Outcome>,
+        step_escalation: Option<
+            &std::sync::Arc<std::sync::Mutex<Option<crate::step::StepEscalation>>>,
+        >,
     ) -> Vec<String> {
         let before: HashMap<&str, Status> = self
             .plan
@@ -297,9 +311,8 @@ impl Tracked {
                     }) else {
                         continue;
                     };
-                    match crate::step::appraise(span)
-                        .line(&item.content, self.flagged.contains(&item.content))
-                    {
+                    let finding = crate::step::appraise(span);
+                    match finding.line(&item.content, self.flagged.contains(&item.content)) {
                         Some(line) => {
                             self.flagged.insert(item.content.clone());
                             lines.push(line);
@@ -312,6 +325,23 @@ impl Tracked {
                         // having gone well.
                         None if span.in_flight == 0 && span.denied == 0 => {
                             self.flagged.remove(&item.content);
+                            // A genuinely clean landing — not an ambiguous
+                            // batch `appraise` defaulted to `Landed` — is a
+                            // baseline worth remembering, and a candidate
+                            // worth a second opinion (§5.5's escalation).
+                            if let Some(slot) = step_escalation {
+                                if let Some(escalation) = crate::step::escalation_candidate(
+                                    span,
+                                    &item.content,
+                                    &self.completed,
+                                ) {
+                                    *slot.lock().unwrap() = Some(escalation);
+                                }
+                            }
+                            self.completed.push((item.content.clone(), span.calls));
+                            if self.completed.len() > COMPLETED_HISTORY_CAP {
+                                self.completed.remove(0);
+                            }
                         }
                         None => {}
                     }
@@ -747,7 +777,13 @@ impl Tool for TodoTool {
             .unwrap()
             .entry(ctx.workspace.clone())
             .or_default()
-            .advance(plan, ctx.work, own_calls_before, last_real);
+            .advance(
+                plan,
+                ctx.work,
+                own_calls_before,
+                last_real,
+                ctx.step_escalation.as_ref(),
+            );
         let findings = match findings.is_empty() {
             true => String::new(),
             false => format!("\n\n{}", findings.join("\n")),
@@ -1599,5 +1635,165 @@ mod tests {
             "a rejected bookkeeping write batched with a sibling is not the \
              step's own failure: {out}"
         );
+    }
+
+    // --- the escalation slot (§5.5's model half) ---
+
+    fn escalation_ctx(
+        run: u64,
+        calls: u32,
+        last: Option<Outcome>,
+        verify_like: u32,
+    ) -> (
+        ToolCtx,
+        std::sync::Arc<std::sync::Mutex<Option<crate::step::StepEscalation>>>,
+    ) {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let ctx = ToolCtx {
+            work: Some(
+                Work {
+                    calls,
+                    last,
+                    verify_like,
+                    ..Work::default()
+                }
+                .in_run(run),
+            ),
+            step_escalation: Some(slot.clone()),
+            ..ToolCtx::default()
+        };
+        (ctx, slot)
+    }
+
+    /// A run whose escalation slot is `None` — the feature off — behaves
+    /// exactly as every test above it already proves: no write, no panic.
+    /// This pins the same property directly against a span large enough that
+    /// it would be a candidate if the slot existed.
+    #[tokio::test]
+    async fn a_span_outlier_with_no_escalation_slot_writes_nothing_and_does_not_panic() {
+        let tool = TodoTool::new();
+        for i in 0..2 {
+            let step = format!("small step {i}");
+            write(
+                &tool,
+                &work_ctx(1, i * 3, None),
+                json!([{"content": step, "status": "in_progress"}]),
+            )
+            .await;
+            write(
+                &tool,
+                &work_ctx(1, i * 3 + 2, Some(Outcome::Ok)),
+                json!([{"content": step, "status": "completed"}]),
+            )
+            .await;
+        }
+        write(
+            &tool,
+            &work_ctx(1, 6, None),
+            json!([{"content": "a huge step", "status": "in_progress"}]),
+        )
+        .await;
+        // No slot on this ctx — the feature is off for this run.
+        write(
+            &tool,
+            &work_ctx(1, 30, Some(Outcome::Ok)),
+            json!([{"content": "a huge step", "status": "completed"}]),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_span_outlier_writes_a_candidate_into_the_slot_when_present() {
+        let tool = TodoTool::new();
+        // Two small completed steps establish a baseline mean of ~2.5.
+        for (i, n) in [2u32, 3u32].into_iter().enumerate() {
+            let step = format!("small step {i}");
+            let (start_ctx, _) = escalation_ctx(1, 0, None, 0);
+            write(
+                &tool,
+                &start_ctx,
+                json!([{"content": step, "status": "in_progress"}]),
+            )
+            .await;
+            let (done_ctx, _) = escalation_ctx(1, n, Some(Outcome::Ok), 0);
+            write(
+                &tool,
+                &done_ctx,
+                json!([{"content": step, "status": "completed"}]),
+            )
+            .await;
+        }
+        let (start_ctx, _) = escalation_ctx(1, 5, None, 0);
+        write(
+            &tool,
+            &start_ctx,
+            json!([{"content": "a huge step", "status": "in_progress"}]),
+        )
+        .await;
+        let (done_ctx, slot) = escalation_ctx(1, 25, Some(Outcome::Ok), 0);
+        write(
+            &tool,
+            &done_ctx,
+            json!([{"content": "a huge step", "status": "completed"}]),
+        )
+        .await;
+        let escalation = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("20 calls against a mean of 2.5 should have written a candidate");
+        assert_eq!(
+            escalation.reason,
+            crate::step::EscalationReason::SpanOutlier
+        );
+        assert_eq!(escalation.step, "a huge step");
+    }
+
+    #[tokio::test]
+    async fn an_unverified_claim_writes_a_candidate_and_a_verified_one_does_not() {
+        let tool = TodoTool::new();
+
+        let (start_ctx, _) = escalation_ctx(1, 0, None, 0);
+        write(
+            &tool,
+            &start_ctx,
+            json!([{"content": "test that the API responds", "status": "in_progress"}]),
+        )
+        .await;
+        // No verify-shaped call in the span (verify_like stays 0).
+        let (done_ctx, slot) = escalation_ctx(1, 3, Some(Outcome::Ok), 0);
+        write(
+            &tool,
+            &done_ctx,
+            json!([{"content": "test that the API responds", "status": "completed"}]),
+        )
+        .await;
+        let escalation = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("an unverified claim should have written a candidate");
+        assert_eq!(
+            escalation.reason,
+            crate::step::EscalationReason::UnverifiedClaim
+        );
+
+        // Same claim, but this time the span actually contains a
+        // verify-shaped call — no candidate.
+        let (start_ctx, _) = escalation_ctx(2, 0, None, 0);
+        write(
+            &tool,
+            &start_ctx,
+            json!([{"content": "test that the widget renders", "status": "in_progress"}]),
+        )
+        .await;
+        let (done_ctx, slot) = escalation_ctx(2, 3, Some(Outcome::Ok), 1);
+        write(
+            &tool,
+            &done_ctx,
+            json!([{"content": "test that the widget renders", "status": "completed"}]),
+        )
+        .await;
+        assert!(slot.lock().unwrap().is_none());
     }
 }

@@ -30,6 +30,8 @@
 //! harness has no way to author a decomposition and no business having one.
 
 use crate::agent::ToolCallTrace;
+use anyhow::{Context, Result};
+use serde::Deserialize;
 
 /// How one executed call ended, as far as the run's own record knows.
 ///
@@ -84,6 +86,13 @@ pub struct Work {
     pub calls: u32,
     pub failed: u32,
     pub refused: u32,
+    /// Successful calls that look like they verified something — a `shell`
+    /// call whose command matches a small test-runner-shaped keyword list.
+    /// See [`looks_like_verification`]. Folded here rather than kept as a
+    /// raw trace for the same reason `calls`/`failed`/`refused` are: the span
+    /// is arithmetic, and a tool asking "was there a check in this span"
+    /// needs a count, not the calls themselves.
+    pub verify_like: u32,
     /// How the most recent attempt ended. `None` before the run makes one.
     pub last: Option<Outcome>,
     /// Calls approved in *this* turn whose results are not back yet — the
@@ -148,7 +157,11 @@ impl Work {
             match outcome {
                 Outcome::Failed => work.failed += 1,
                 Outcome::Refused => work.refused += 1,
-                Outcome::Ok => {}
+                Outcome::Ok => {
+                    if looks_like_verification(call) {
+                        work.verify_like += 1;
+                    }
+                }
             }
             work.last = Some(outcome);
         }
@@ -208,6 +221,7 @@ impl Work {
                 .saturating_sub(bookkeeping),
             failed: self.failed.saturating_sub(start.failed),
             refused: self.refused.saturating_sub(start.refused),
+            verify_like: self.verify_like.saturating_sub(start.verify_like),
             last,
             in_flight: self.in_flight,
             denied: self.denied,
@@ -221,6 +235,10 @@ pub struct Span {
     pub calls: u32,
     pub failed: u32,
     pub refused: u32,
+    /// See [`Work::verify_like`]. Read by [`escalation_candidate`], never by
+    /// [`appraise`] — a verify-shaped call is evidence for the escalation to
+    /// weigh, not a fact the deterministic reading changes on.
+    pub verify_like: u32,
     /// The run's most recent finished attempt — which is the *span's* most
     /// recent one whenever the span holds any, since calls happen in order.
     /// Meaningless when `calls` is zero, and [`appraise`] reads it only after
@@ -338,6 +356,348 @@ fn ellipsize(s: &str, max: usize) -> String {
     }
     let head: String = s.chars().take(max - 1).collect();
     format!("{}…", head.trim_end())
+}
+
+// ─── The model half: escalation (§5.5, rung 7) ──────────────────────────────
+//
+// Two of §5.5's five signals are *comparisons* rather than facts about one
+// span, and each needs either a threshold nobody has measured or a guess
+// about what a call meant — which is why the deterministic reading above
+// declines both. What follows is the escalation itself: a cheap deterministic
+// pre-filter decides *whether* to ask (never the answer), and one quarantined
+// model call settles the ambiguous case.
+//
+// **Live, not offline.** Unlike the appraiser (§5.1), which reviews a
+// finished session from outside it, a step's plan action has to reach the
+// *same* run before it wastes more turns on a bad decomposition — so this
+// has no CLI surface of its own. `agent.rs`'s loop calls `escalate` directly,
+// the same way it already calls the compaction summariser, and folds the
+// verdict into the turn the way `boredom.rs`'s notices already do.
+//
+// **What this may see, and what it may never say back.** The step's own
+// text (and its siblings') is this same model's own prior plan output —
+// already fully trusted in-context every turn, not a new place for
+// third-party text to reach a decision, which is what made the appraiser's
+// evidence numbers-only. But the model's free-text `reasoning` here never
+// re-enters the conversation: a model's paraphrase of step text it just read
+// is `frontdoor`'s "a paraphrase of an injection is the injection rearranged"
+// risk, arriving through the one channel that *does* reach context.
+// `templated_nudge` is fully templated by which trigger fired; the model
+// only ever decides the binary accept/revise_plan.
+
+/// Does this successful call look like it checked something, rather than
+/// merely done something? A coarse keyword match on a `shell` command —
+/// argued, not measured, on this module's own convention for its constants.
+/// Only `shell` is matched: a project's own test runner, wired up as an MCP
+/// tool, has no name this module could know in advance, and guessing at one
+/// would be the same mistake as guessing at a threshold.
+fn looks_like_verification(call: &ToolCallTrace) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "cargo test",
+        "pytest",
+        "npm test",
+        "npm run test",
+        "yarn test",
+        "pnpm test",
+        "make test",
+        "go test",
+        "rspec",
+        "jest",
+    ];
+    if call.name != "shell" {
+        return false;
+    }
+    let Some(command) = call.input.get("command").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let command = command.to_ascii_lowercase();
+    KEYWORDS.iter().any(|k| command.contains(k))
+}
+
+/// A step's own words that read as a checkable claim. Argued, not measured,
+/// same convention as [`looks_like_verification`]'s keyword list.
+fn reads_as_a_verification_claim(step: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "test",
+        "verify",
+        "confirm",
+        "check that",
+        "make sure",
+        "ensure",
+    ];
+    let step = step.to_ascii_lowercase();
+    KEYWORDS.iter().any(|k| step.contains(k))
+}
+
+/// Which comparison flagged a landed step for a second opinion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EscalationReason {
+    /// This step's span took far more calls than the plan's other completed
+    /// steps — maybe the decomposition was wrong, maybe the work was just
+    /// harder. The model, not a threshold, tells the two apart.
+    SpanOutlier,
+    /// The step's own words read as a checkable claim, but nothing in its
+    /// span looks like a check. The eval rig's "grade the artifact, never
+    /// the claim", one tier down.
+    UnverifiedClaim,
+}
+
+/// What the quarantined escalation call is handed. See the module note above
+/// on why the step's own text is safe to include here in a way an
+/// appraiser's evidence (§5.1) could not be.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepEscalation {
+    pub reason: EscalationReason,
+    pub step: String,
+    /// A sample of other completed steps in the same plan, most recent
+    /// first — never the whole history, which `Tracked` bounds but does not
+    /// make small. Empty for [`EscalationReason::UnverifiedClaim`], which
+    /// needs no comparison.
+    pub siblings: Vec<String>,
+    pub calls: u32,
+    /// The mean call count of the completed steps this was compared
+    /// against. Only set for [`EscalationReason::SpanOutlier`].
+    pub sibling_mean_calls: Option<f32>,
+}
+
+/// A span is a clear enough outlier to be worth a second opinion at this
+/// ratio against the mean of the plan's other completed steps...
+const SPAN_OUTLIER_RATIO: f32 = 3.0;
+/// ...and at least this many calls outright, so a plan of tiny steps does
+/// not escalate on a difference of one or two calls that means nothing.
+const SPAN_OUTLIER_FLOOR: u32 = 6;
+/// Fewer completed steps than this and there is no "the plan's other steps"
+/// to compare against yet.
+const SPAN_OUTLIER_MIN_SIBLINGS: usize = 2;
+/// How many prior steps' text ride along as context — enough to judge "does
+/// this decomposition look right", not the whole plan's history.
+const ESCALATION_SIBLING_SAMPLE: usize = 5;
+
+/// The escalation's own pre-filter: cheap, deterministic, and it only ever
+/// decides *whether to ask*, never the answer.
+///
+/// **The caller must already know `appraise(span) == Finding::Landed`.** A
+/// step with its own deterministic finding needs no second opinion, and this
+/// function takes that as given rather than re-deriving it, because deriving
+/// it needs the same `span` this function already has — asking the caller to
+/// check first is one comparison, not two.
+pub fn escalation_candidate(
+    span: Span,
+    step: &str,
+    completed: &[(String, u32)],
+) -> Option<StepEscalation> {
+    if completed.len() >= SPAN_OUTLIER_MIN_SIBLINGS {
+        let mean = completed.iter().map(|(_, n)| *n as f32).sum::<f32>() / completed.len() as f32;
+        if span.calls as f32 >= mean * SPAN_OUTLIER_RATIO && span.calls >= SPAN_OUTLIER_FLOOR {
+            return Some(StepEscalation {
+                reason: EscalationReason::SpanOutlier,
+                step: step.to_string(),
+                siblings: completed
+                    .iter()
+                    .rev()
+                    .take(ESCALATION_SIBLING_SAMPLE)
+                    .map(|(s, _)| s.clone())
+                    .collect(),
+                calls: span.calls,
+                sibling_mean_calls: Some(mean),
+            });
+        }
+    }
+    if reads_as_a_verification_claim(step) && span.verify_like == 0 {
+        return Some(StepEscalation {
+            reason: EscalationReason::UnverifiedClaim,
+            step: step.to_string(),
+            siblings: Vec::new(),
+            calls: span.calls,
+            sibling_mean_calls: None,
+        });
+    }
+    None
+}
+
+/// What the escalation decided: nothing further, or a plan-revision nudge is
+/// worth surfacing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepVerdict {
+    Accept,
+    RevisePlan,
+}
+
+/// The prompt the quarantined pass runs. Reasoning first, the typed field
+/// last — the front door's and the appraiser's own finding: constrained
+/// output degrades reasoning when the answer precedes the thinking.
+pub fn escalation_prompt(escalation: &StepEscalation) -> String {
+    let question = match escalation.reason {
+        EscalationReason::SpanOutlier => format!(
+            "This step just finished after {} tool calls. The plan's other completed \
+             steps averaged {:.1} calls each ({} of them). Does the size of this step \
+             suggest the plan's decomposition should be revised for the steps still \
+             ahead, or was this step just harder than the others with nothing wrong \
+             in how the plan divided the work?",
+            escalation.calls,
+            escalation.sibling_mean_calls.unwrap_or(0.0),
+            escalation.siblings.len(),
+        ),
+        EscalationReason::UnverifiedClaim => format!(
+            "This step was marked done. Its own wording reads as claiming something \
+             was tested, verified, or confirmed, but none of its {} tool call(s) \
+             looked like a check — grade the calls, not the claim. Does this look \
+             like the step actually verified what it says, or like an unverified \
+             claim the plan should revisit?",
+            escalation.calls,
+        ),
+    };
+    let siblings = if escalation.siblings.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nOther completed steps in this plan, for context:\n{}",
+            escalation
+                .siblings
+                .iter()
+                .map(|s| format!("- {s}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    format!(
+        "You are reviewing one step of your own plan from outside the run that made \
+         it — you have no tools and cannot act, only judge.\n\n\
+         The step: \"{}\"\n\
+         {question}{siblings}\n\n\
+         Return exactly this JSON and nothing else:\n\
+         {{\n  \"reasoning\": \"one or two sentences\",\n  \
+         \"verdict\": \"accept | revise_plan\"\n}}\n\n\
+         `accept` is the common, correct answer when the work looks sound; \
+         `revise_plan` only when there is a real reason to reconsider the \
+         decomposition.",
+        escalation.step,
+    )
+}
+
+/// Parse what the escalation returned.
+///
+/// The bracket-matching leniency is `frontdoor::parse_extraction`'s: models
+/// wrap JSON in prose and code fences however firmly they are asked not to.
+/// `reasoning`, if present, is logged at `debug` and never returned — see the
+/// module note on why it must not reach [`templated_nudge`].
+pub fn parse_step_verdict(text: &str) -> Result<StepVerdict> {
+    let start = text
+        .find('{')
+        .context("the escalation returned no JSON object")?;
+    let end = text
+        .rfind('}')
+        .context("the escalation returned no JSON object")?;
+    if end <= start {
+        anyhow::bail!("the escalation returned no JSON object");
+    }
+
+    #[derive(Deserialize)]
+    struct Wire {
+        #[serde(default)]
+        reasoning: Option<String>,
+        verdict: String,
+    }
+    let wire: Wire = serde_json::from_str(&text[start..=end]).with_context(|| {
+        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400) + 1);
+        format!("parsing the escalation's verdict: {}", &text[start..cut])
+    })?;
+
+    if let Some(reasoning) = &wire.reasoning {
+        tracing::debug!(%reasoning, "step escalation reasoning (never shown to the model)");
+    }
+    match wire.verdict.as_str() {
+        "accept" => Ok(StepVerdict::Accept),
+        "revise_plan" => Ok(StepVerdict::RevisePlan),
+        other => anyhow::bail!("the escalation returned an unrecognised verdict `{other}`"),
+    }
+}
+
+/// Run the quarantined pass over one escalation candidate.
+///
+/// Same shape as `appraisal::appraise_with_model`: no tools, no history
+/// (`QuarantinedPass`), one retry with the parse error named, and **4096**
+/// tokens — `CLAUDE.md`'s own named trap is `max_tokens` below the local
+/// server's `--reasoning-budget`, and every quarantined pass in this
+/// codebase uses 4096 for exactly that reason.
+pub async fn escalate(
+    provider: &dyn crate::provider::Provider,
+    model: &str,
+    escalation: &StepEscalation,
+) -> Result<StepVerdict> {
+    let prompt = escalation_prompt(escalation);
+    let mut attempt = prompt.clone();
+    let mut last_error = String::new();
+    let pass = crate::quarantine::QuarantinedPass::new(model, 4096);
+
+    for round in 0..2 {
+        let request = pass.ask(attempt.clone());
+        let response = provider.complete(&request, None).await?;
+
+        if response.stop_reason == crate::message::StopReason::Refusal {
+            anyhow::bail!(
+                "the escalation refused the step{}",
+                response
+                    .refusal
+                    .and_then(|r| r.category)
+                    .map(|c| format!(" ({c})"))
+                    .unwrap_or_default()
+            );
+        }
+
+        let truncated = response.stop_reason == crate::message::StopReason::MaxTokens;
+        let text = response.message.text();
+
+        match parse_step_verdict(&text) {
+            Ok(v) => return Ok(v),
+            Err(_) if truncated && text.trim().is_empty() => {
+                last_error = format!(
+                    "the model hit the {} token budget before writing any answer",
+                    request.max_tokens
+                );
+                if round == 0 {
+                    attempt = format!(
+                        "{prompt}\nBe brief. Do not deliberate at length; write the \
+                         JSON object immediately."
+                    );
+                }
+            }
+            Err(e) if round == 0 => {
+                last_error = format!("{e:#}");
+                attempt = format!(
+                    "{prompt}\nYour previous reply could not be parsed: {last_error}\n\
+                     Reply with the JSON object alone — no prose, no code fence."
+                );
+            }
+            Err(e) => last_error = format!("{e:#}"),
+        }
+    }
+    anyhow::bail!("the escalation produced nothing parseable: {last_error}")
+}
+
+/// The nudge folded into the run when the escalation says `revise_plan`.
+///
+/// Fully templated — the model's own free-text reasoning never reaches this
+/// output, on `frontdoor`'s rule one door over: a paraphrase of text the
+/// model just read is the same risk as the text itself, arriving through
+/// the one channel that re-enters context. Wording follows `Finding::line`'s
+/// own discipline: state the fact, offer one continuation.
+pub fn templated_nudge(escalation: &StepEscalation) -> String {
+    let step = ellipsize(&escalation.step, 60);
+    match escalation.reason {
+        EscalationReason::SpanOutlier => format!(
+            "step \"{step}\" took {} tool call(s) against the plan's other completed \
+             steps' average of {:.1} — worth checking whether the remaining steps in \
+             the plan need to be broken down differently, or re-scoped.",
+            escalation.calls,
+            escalation.sibling_mean_calls.unwrap_or(0.0),
+        ),
+        EscalationReason::UnverifiedClaim => format!(
+            "step \"{step}\" reads as claiming something was tested or verified, but \
+             nothing in its tool calls looked like a check — worth confirming it \
+             actually landed before moving on."
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -563,5 +923,270 @@ mod tests {
         let step = "é".repeat(200);
         let line = Finding::Null.line(&step, false).unwrap();
         assert!(line.contains('…'));
+    }
+
+    // --- the model half: escalation ---
+
+    fn shell(command: &str) -> ToolCallTrace {
+        ToolCallTrace {
+            name: "shell".into(),
+            input: json!({"command": command}),
+            is_error: false,
+            denied: false,
+            unknown: false,
+            staged: false,
+        }
+    }
+
+    fn span(calls: u32, verify_like: u32) -> Span {
+        Span {
+            calls,
+            failed: 0,
+            refused: 0,
+            verify_like,
+            last: Some(Outcome::Ok),
+            in_flight: 0,
+            denied: 0,
+        }
+    }
+
+    #[test]
+    fn a_shell_call_matching_a_test_runner_looks_like_verification() {
+        for command in [
+            "cargo test --workspace",
+            "pytest tests/",
+            "npm test",
+            "make test",
+            "CARGO TEST -p mecha-core",
+        ] {
+            assert!(
+                looks_like_verification(&shell(command)),
+                "{command:?} should have matched"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_shell_call_does_not_look_like_verification() {
+        assert!(!looks_like_verification(&shell("cargo build --release")));
+        assert!(!looks_like_verification(&call(false, false, false)));
+    }
+
+    #[test]
+    fn work_folds_verify_like_only_for_successful_calls() {
+        // A failed test invocation did not confirm anything.
+        let mut failing_test = shell("cargo test");
+        failing_test.is_error = true;
+        let work = Work::of(&[shell("cargo test"), failing_test]);
+        assert_eq!(work.verify_like, 1);
+    }
+
+    #[test]
+    fn a_span_far_longer_than_its_siblings_is_a_span_outlier_candidate() {
+        let completed = vec![
+            ("read the config".to_string(), 2),
+            ("write the file".to_string(), 3),
+        ];
+        let escalation = escalation_candidate(span(20, 0), "do the big thing", &completed)
+            .expect("20 calls against a mean of 2.5 should escalate");
+        assert_eq!(escalation.reason, EscalationReason::SpanOutlier);
+        assert_eq!(escalation.calls, 20);
+        assert_eq!(escalation.sibling_mean_calls, Some(2.5));
+        assert_eq!(escalation.siblings.len(), 2);
+    }
+
+    #[test]
+    fn a_tiny_plan_never_fires_the_span_outlier_trigger() {
+        // Only one prior completed step: nothing to compare against yet.
+        let completed = vec![("read the config".to_string(), 2)];
+        assert!(escalation_candidate(span(20, 0), "do the big thing", &completed).is_none());
+    }
+
+    #[test]
+    fn a_step_within_the_floor_never_fires_even_against_a_tiny_mean() {
+        // 3x a mean of 1 is 3, which is under the absolute floor.
+        let completed = vec![("a".to_string(), 1), ("b".to_string(), 1)];
+        assert!(escalation_candidate(span(3, 0), "a small step", &completed).is_none());
+    }
+
+    #[test]
+    fn a_step_only_moderately_bigger_than_its_siblings_does_not_escalate() {
+        let completed = vec![("a".to_string(), 5), ("b".to_string(), 5)];
+        // 2x the mean, not 3x.
+        assert!(escalation_candidate(span(10, 0), "a somewhat bigger step", &completed).is_none());
+    }
+
+    #[test]
+    fn a_step_that_claims_verification_with_none_in_its_span_escalates() {
+        let escalation = escalation_candidate(span(3, 0), "test that the API responds", &[])
+            .expect("a verification claim with no verify-shaped call should escalate");
+        assert_eq!(escalation.reason, EscalationReason::UnverifiedClaim);
+        assert!(escalation.siblings.is_empty());
+        assert_eq!(escalation.sibling_mean_calls, None);
+    }
+
+    #[test]
+    fn a_step_that_claims_verification_and_has_it_does_not_escalate() {
+        assert!(escalation_candidate(span(3, 1), "test that the API responds", &[]).is_none());
+    }
+
+    #[test]
+    fn an_ordinary_step_with_no_claim_and_no_outlier_never_escalates() {
+        let completed = vec![("a".to_string(), 4), ("b".to_string(), 5)];
+        assert!(escalation_candidate(span(4, 0), "write the docs", &completed).is_none());
+    }
+
+    #[test]
+    fn only_the_most_recent_siblings_ride_along() {
+        let completed: Vec<(String, u32)> = (0..20).map(|i| (format!("step {i}"), 2)).collect();
+        let escalation = escalation_candidate(span(30, 0), "a big step", &completed).unwrap();
+        assert_eq!(escalation.siblings.len(), ESCALATION_SIBLING_SAMPLE);
+        // Most recent first.
+        assert_eq!(escalation.siblings[0], "step 19");
+    }
+
+    fn span_outlier_escalation() -> StepEscalation {
+        StepEscalation {
+            reason: EscalationReason::SpanOutlier,
+            step: "do the big thing".into(),
+            siblings: vec!["read the config".into()],
+            calls: 20,
+            sibling_mean_calls: Some(2.5),
+        }
+    }
+
+    #[test]
+    fn the_prompt_asks_for_reasoning_before_the_typed_field() {
+        let prompt = escalation_prompt(&span_outlier_escalation());
+        assert!(prompt.find("\"reasoning\"").unwrap() < prompt.find("\"verdict\"").unwrap());
+        assert!(prompt.contains("do the big thing"));
+        assert!(prompt.contains("read the config"));
+    }
+
+    #[test]
+    fn parsing_an_accept_verdict() {
+        let v = parse_step_verdict(r#"{"reasoning": "looks fine", "verdict": "accept"}"#).unwrap();
+        assert_eq!(v, StepVerdict::Accept);
+    }
+
+    #[test]
+    fn parsing_a_revise_plan_verdict_wrapped_in_prose() {
+        let text = "Here you go:\n```json\n{\"reasoning\": \"too broad\", \"verdict\": \"revise_plan\"}\n```\n";
+        assert_eq!(parse_step_verdict(text).unwrap(), StepVerdict::RevisePlan);
+    }
+
+    #[test]
+    fn an_unrecognised_verdict_is_refused() {
+        assert!(parse_step_verdict(r#"{"reasoning": "x", "verdict": "maybe"}"#).is_err());
+    }
+
+    #[test]
+    fn an_unparseable_reply_is_an_error() {
+        assert!(parse_step_verdict("I could not do that.").is_err());
+    }
+
+    /// The property the whole design turns on: whatever the model wrote as
+    /// `reasoning` must never appear in the nudge shown back to it.
+    #[test]
+    fn the_nudge_never_contains_the_models_own_reasoning() {
+        let escalation = span_outlier_escalation();
+        let nudge = templated_nudge(&escalation);
+        assert!(nudge.contains("do the big thing"));
+        assert!(!nudge.contains("looks fine"));
+        assert!(!nudge.contains("too broad"));
+        // Fully templated: two calls with the same escalation produce the
+        // same nudge regardless of what any model said.
+        assert_eq!(nudge, templated_nudge(&escalation));
+    }
+
+    #[test]
+    fn the_unverified_claim_nudge_names_no_siblings() {
+        let escalation = StepEscalation {
+            reason: EscalationReason::UnverifiedClaim,
+            step: "test that the API responds".into(),
+            siblings: Vec::new(),
+            calls: 3,
+            sibling_mean_calls: None,
+        };
+        let nudge = templated_nudge(&escalation);
+        assert!(nudge.contains("test that the API responds"));
+    }
+
+    // --- the model call itself ---
+
+    struct ScriptedProvider {
+        turns: std::sync::Mutex<Vec<crate::message::CompletionResponse>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for ScriptedProvider {
+        fn id(&self) -> &str {
+            "scripted"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-1"
+        }
+        async fn complete(
+            &self,
+            _req: &crate::message::CompletionRequest,
+            _sink: Option<&crate::provider::StreamSink>,
+        ) -> anyhow::Result<crate::message::CompletionResponse> {
+            let mut turns = self.turns.lock().unwrap();
+            anyhow::ensure!(!turns.is_empty(), "ran out of scripted turns");
+            Ok(turns.remove(0))
+        }
+    }
+
+    fn scripted_reply(text: &str) -> crate::message::CompletionResponse {
+        crate::message::CompletionResponse {
+            message: crate::message::Message::assistant(vec![crate::message::Block::text(text)]),
+            stop_reason: crate::message::StopReason::EndTurn,
+            usage: Default::default(),
+            refusal: None,
+            model: "scripted-1".into(),
+            malformed_tool_args: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_good_reply_needs_no_retry() {
+        let provider = ScriptedProvider {
+            turns: std::sync::Mutex::new(vec![scripted_reply(
+                r#"{"reasoning": "fine", "verdict": "accept"}"#,
+            )]),
+        };
+        let v = escalate(&provider, "scripted-1", &span_outlier_escalation())
+            .await
+            .unwrap();
+        assert_eq!(v, StepVerdict::Accept);
+    }
+
+    #[tokio::test]
+    async fn one_malformed_reply_gets_one_retry_and_then_succeeds() {
+        let provider = ScriptedProvider {
+            turns: std::sync::Mutex::new(vec![
+                scripted_reply("not json at all"),
+                scripted_reply(r#"{"reasoning": "too broad", "verdict": "revise_plan"}"#),
+            ]),
+        };
+        let v = escalate(&provider, "scripted-1", &span_outlier_escalation())
+            .await
+            .unwrap();
+        assert_eq!(v, StepVerdict::RevisePlan);
+    }
+
+    #[tokio::test]
+    async fn two_malformed_replies_is_a_failure_not_a_guess() {
+        let provider = ScriptedProvider {
+            turns: std::sync::Mutex::new(vec![
+                scripted_reply("nope"),
+                scripted_reply("still nope"),
+            ]),
+        };
+        assert!(
+            escalate(&provider, "scripted-1", &span_outlier_escalation())
+                .await
+                .is_err()
+        );
     }
 }
