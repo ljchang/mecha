@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assertion written against the documented contract is ignored entirely by
   `set -e`, so it neither failed nor passed.
 
+- **The MCP environment-allowlist test now accounts for what a child adds to
+  itself.** On macOS the nosy fixture reported `__CF_USER_TEXT_ENCODING`,
+  which CoreFoundation writes into its own environment during initialization —
+  `mcp.rs` calls `env_clear()` before `envs()`, so it never crossed the
+  boundary. Exempted by exact name and target rather than by prefix, and the
+  test asserts each exempted name really is absent from what we hand over, so
+  the exemption cannot come to cover a genuine leak without failing.
+
 - **A test that only passed on Linux.** `an_mcp_file_parses_and_resolves_paths_against_its_own_directory`
   built its expectation from `std::env::temp_dir()` and compared it against a
   path `load_mcp_file` had canonicalized — fine on Linux, and wrong on macOS,
