@@ -546,10 +546,16 @@ pub fn parse_extraction(text: &str) -> Result<Extraction> {
         anyhow::bail!("the extractor returned no JSON object");
     }
     let extraction: Extraction = serde_json::from_str(&text[start..=end]).with_context(|| {
-        format!(
-            "parsing the extraction: {}",
-            &text[start..=end.min(start + 400)]
-        )
+        // A raw byte cutoff panics the instant it lands inside a multi-byte
+        // character, and this text is a stranger's — an em-dash or a curly
+        // quote at exactly the wrong offset in a malformed extraction would
+        // abort the process in the module whose whole job is being the safe
+        // boundary for outside input.
+        // `+ 1`: the helper's `max` is exclusive, and the `..=` slice this
+        // replaces was inclusive — without it the ordinary all-ASCII case
+        // would drop one trailing byte versus the original message.
+        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400) + 1);
+        format!("parsing the extraction: {}", &text[start..cut])
     })?;
     Ok(extraction)
 }
@@ -1202,6 +1208,21 @@ mod tests {
 
         // And a body that is not JSON at all is a failure, not a shrug.
         assert!(parse_extraction("I could not do that.").is_err());
+    }
+
+    /// This call site is a stranger's free text through the front door's own
+    /// extractor — exactly the input the "safe boundary" argument is about.
+    /// A raw byte cutoff in the error-path slice panics the instant it lands
+    /// inside a multi-byte character; `&s[a..=b]` is `&s[a..b + 1]`, so the
+    /// index that needs a boundary is 401, not the 400-byte cutoff itself.
+    #[test]
+    fn a_malformed_extraction_past_400_bytes_does_not_panic_on_a_char_boundary() {
+        let mut text = String::from("{");
+        text.push_str(&"a".repeat(398));
+        text.push('—'); // 3 bytes: 399, 400, 401 — the inclusive slice ends at 401
+        text.push_str("not valid json, just filler past the cutoff}");
+        assert!(!text.is_char_boundary(401));
+        assert!(parse_extraction(&text).is_err());
     }
 
     /// A round trip must not drop a field the other side wrote. The two

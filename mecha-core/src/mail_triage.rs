@@ -1310,6 +1310,20 @@ mod tests {
         assert!(parse_verdict("no json here at all").is_err());
     }
 
+    /// A mail body can carry a multi-byte character at any offset. A raw
+    /// byte cutoff in the error-path slice panics the instant it lands
+    /// inside one; `&s[a..=b]` is `&s[a..b + 1]`, so the index needing a
+    /// boundary is 401, not the 400-byte cutoff itself.
+    #[test]
+    fn a_malformed_verdict_past_400_bytes_does_not_panic_on_a_char_boundary() {
+        let mut text = String::from("{");
+        text.push_str(&"a".repeat(398));
+        text.push('—'); // 3 bytes: 399, 400, 401 — the inclusive slice ends at 401
+        text.push_str("not valid json, just filler past the cutoff}");
+        assert!(!text.is_char_boundary(401));
+        assert!(parse_verdict(&text).is_err());
+    }
+
     /// The instruction to treat the message as data must come *before* the
     /// message. An instruction placed after the payload is one the payload
     /// has already had its turn to argue against.
@@ -2838,10 +2852,13 @@ fn parse_verdict(text: &str) -> Result<Verdict> {
         anyhow::bail!("the classifier returned no JSON object");
     }
     let mut v: Verdict = serde_json::from_str(&text[start..=end]).with_context(|| {
-        format!(
-            "parsing the verdict: {}",
-            &text[start..=end.min(start + 400)]
-        )
+        // A raw byte cutoff panics the instant it lands inside a multi-byte
+        // character, which a mail subject or body can supply at any offset.
+        // `+ 1`: the helper's `max` is exclusive, and the `..=` slice this
+        // replaces was inclusive — without it the ordinary all-ASCII case
+        // would drop one trailing byte versus the original message.
+        let cut = crate::text::char_boundary_at_or_before(text, end.min(start + 400) + 1);
+        format!("parsing the verdict: {}", &text[start..cut])
     })?;
 
     v.tags.retain(|t| TAGS.contains(&t.as_str()));
