@@ -39,6 +39,7 @@ mod mail;
 mod present;
 mod questions;
 mod review;
+mod settings;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -290,6 +291,12 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
             "/api/questions/abandon",
             axum::routing::post(questions::abandon),
         )
+        .route(
+            "/api/settings/charter",
+            get(settings::charter).post(settings::charter_save),
+        )
+        .route("/api/settings/rules", get(settings::rules))
+        .route("/api/settings/voice", get(settings::voice))
         .route("/api/notes", get(board::notes).post(board::note))
         .route("/api/notes/edit", axum::routing::post(board::note_edit))
         .route("/api/frontdoor", get(frontdoor::list))
