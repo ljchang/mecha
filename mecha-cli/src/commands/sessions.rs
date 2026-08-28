@@ -829,14 +829,14 @@ fn health(
     // session(s) read" with nothing wrong, which is exactly the
     // dash-versus-zero inversion the counter was added to close. Said on
     // both paths, empty corpus included — that path most of all.
-    let unreadable_line = (corpus.unreadable > 0)
-        .then(|| {
-            format!(
-                " · {} transcript(s) in the store unreadable",
-                corpus.unreadable
-            )
-        })
-        .unwrap_or_default();
+    let unreadable_line = if corpus.unreadable > 0 {
+        format!(
+            " · {} transcript(s) in the store unreadable",
+            corpus.unreadable
+        )
+    } else {
+        String::new()
+    };
 
     if corpus.is_empty() {
         println!(
