@@ -600,6 +600,33 @@ fn undecline_puts_a_step_back() {
     assert_eq!(step(&s, "docs")["status"], "missing");
 }
 
+/// **`--undecline` is honoured whatever else is on the line.**
+///
+/// It used to sit below the `--json` and `--write` returns, so
+/// `mecha setup --json --undecline all` printed a plan, exited 1, and
+/// undeclined nothing — silently, which is the worst way for a flag to not
+/// work: the exit code even looked like the failure it was not.
+#[test]
+fn undecline_is_not_swallowed_by_another_flag() {
+    let home = Home::new("undecline-json");
+    std::fs::write(
+        home.path().join("setup-declined.json"),
+        r#"{"declined": ["slack"]}"#,
+    )
+    .unwrap();
+
+    let out = mecha(&home, &["setup", "--json", "--undecline", "all"]);
+    assert!(
+        out.status.success(),
+        "an undecline that did its job is not an install with work outstanding"
+    );
+    assert_eq!(
+        step(&steps(&mecha(&home, &["setup", "--json"])), "slack")["status"],
+        "missing",
+        "the flag must act, not be quietly outranked by `--json`"
+    );
+}
+
 /// An unreadable decline store is a read failure, not an empty list — and it
 /// is said out loud, because a checklist that had quietly stopped honouring
 /// your answers is the worse half of this feature.
