@@ -626,6 +626,21 @@ async fn appraise_closure(
 /// gets richer for free as rung 7 lands more reachable labels, with no
 /// change needed here.
 ///
+/// **And `Anger` staging is a decision, not an accident of "non-neutral".**
+/// §5.4's own wording is "a *disappointed* closure may stage a follow-up",
+/// and `Anger` is the label for what nothing here could have acted on — so
+/// gating on any non-`Neutral` looks, at first read, like it stages blame
+/// for a ceiling nobody chose. It stages *work*, not blame: the only free
+/// path to `Anger` on a closure is a ceiling stop (`MaxTurns`, a token or
+/// cost budget), and a ceiling-cut run the owner accepted as `done` anyway
+/// is precisely the closure most likely to have residue worth one task —
+/// the part the ceiling cut off. Since `Neutral` and `Anger` are the free
+/// readout's whole label range, narrowing this gate to the
+/// disappointment-family would also make it dead code until probes run at
+/// closure time, which nothing does. Revisit if a non-ceiling path to
+/// `Anger` ever lands on the closure appraisal (an `Agency::Other` counter,
+/// say) — a provider outage's residue is a retry, not a new task.
+///
 /// **The status.** §5.4's follow-up belongs to the *accepted* case alone:
 /// "the trigger is the owner accepting the work... a disappointed closure —
 /// the owner took it anyway." A `dropped` closure is the owner declining the
@@ -2535,6 +2550,22 @@ mod tests {
         assert!(!worth_a_follow_up(
             "done",
             &appraisal(mecha_core::appraisal::Affect::Neutral)
+        ));
+    }
+
+    /// The one label the free readout can actually put on a closure, pinned
+    /// by name: a ceiling-cut run the owner accepted as `done` anyway is the
+    /// residue-bearing case, and the follow-up captures the cut-off work,
+    /// not blame for the ceiling — `worth_a_follow_up`'s doc carries the
+    /// argument. If this starts failing because someone narrowed the gate to
+    /// the disappointment-family, note that today that makes the gate dead
+    /// code: no probe runs at closure time, so `Disappointment` never
+    /// reaches it.
+    #[test]
+    fn a_ceiling_cut_run_accepted_anyway_stages_the_residue() {
+        assert!(worth_a_follow_up(
+            "done",
+            &appraisal(mecha_core::appraisal::Affect::Anger)
         ));
     }
 
