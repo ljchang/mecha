@@ -14,6 +14,8 @@ mod render;
 mod review_policy;
 mod setup;
 mod slack;
+#[cfg(test)]
+mod testenv;
 mod tui;
 mod voice;
 
