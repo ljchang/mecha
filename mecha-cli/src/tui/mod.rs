@@ -477,6 +477,12 @@ struct App {
     /// on modal actions, and on the idle tick — never per frame, because the
     /// count is a directory read.
     outbox_pending: usize,
+    /// §6.2's readout — how the *live* session's last finished run appraised,
+    /// via `appraisal::live`. Set in `finish_run` beside `usage`; `None`
+    /// before the first run and whenever the label is `Neutral`, which is
+    /// what "show nothing" on the status strip keys off (§16 leaves "what to
+    /// show on neutral" open; resolved here the conservative way).
+    affect: Option<mecha_core::appraisal::Affect>,
     /// Detached work whose outcome should be reported without a reopen: a
     /// release, an extraction, a triage run. Polled from the tick — while any
     /// are live the idle tick tightens to a second — and a resolved watch
@@ -628,6 +634,20 @@ impl App {
         if self.outbox_pending > 0 {
             spans.push(Span::styled(
                 format!(" outbox {} ", self.outbox_pending),
+                Style::new().fg(Color::Black).bg(Color::Yellow),
+            ));
+        }
+
+        // §6.2's readout. `None` covers both "no run has finished yet" and
+        // "the last one was `Neutral`" — the overwhelming common case per
+        // the rung 7 corpus — so the badge only ever appears when there is
+        // something to say. One colour for every reachable label today:
+        // only four exist, and none of them argues for a finer split
+        // without a corpus to measure one from (rung 6's own precedent for
+        // its own thresholds).
+        if let Some(affect) = self.affect {
+            spans.push(Span::styled(
+                format!(" {affect:?} ").to_lowercase(),
                 Style::new().fg(Color::Black).bg(Color::Yellow),
             ));
         }
@@ -852,6 +872,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         pending_trigger_edit: None,
         pending_outbox_edit: None,
         outbox_pending: outbox_pending_count(),
+        affect: None,
         review: command::ReviewMode::default(),
         watches: Vec::new(),
         shell_tx,
@@ -1354,6 +1375,23 @@ fn finish_run(
                 s.record_run(&persisted, &app.convo)?;
                 s.record_outcome(&outcome)?;
                 s.append(&Record::Taint(app.convo.taint))?;
+
+                // §6.2's readout: how this session's just-finished run
+                // appraises, right now — a different question from a
+                // task's goal-closure appraisal (`mecha tasks set`), which
+                // reads a finished session back off disk, possibly from
+                // another process. `Neutral` (the overwhelming common case)
+                // clears the badge rather than showing one.
+                let drafts: Vec<mecha_core::outbox::OutboxItem> =
+                    mecha_core::outbox::OutboxStore::open_existing_default()
+                        .and_then(|store| store.items().ok())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|i| i.session_id.as_deref() == Some(s.meta.id.as_str()))
+                        .collect();
+                let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts.iter().collect();
+                let label = mecha_core::appraisal::live(&s.meta.id, &outcome, &app.convo, &mine);
+                app.affect = (label != mecha_core::appraisal::Affect::Neutral).then_some(label);
             }
         }
         Err(e) => {
@@ -9420,6 +9458,7 @@ mod tests {
             pending_trigger_edit: None,
             pending_outbox_edit: None,
             outbox_pending: 0,
+            affect: None,
             review: command::ReviewMode::default(),
             watches: Vec::new(),
             shell_tx,
@@ -9647,6 +9686,20 @@ mod tests {
         app.outbox_pending = 3;
         let badged = frame_text(&mut app, 110, 12, None);
         assert!(badged.contains("outbox 3"), "{badged}");
+    }
+
+    /// §6.2: `None` — no run yet, or the last one was `Neutral` — clears the
+    /// badge entirely, which is what "show nothing" on neutral means in
+    /// practice.
+    #[test]
+    fn the_affect_badge_appears_only_when_the_label_is_not_neutral() {
+        let mut app = test_app();
+        let clear = frame_text(&mut app, 110, 12, None);
+        assert!(!clear.contains("anger"), "{clear}");
+
+        app.affect = Some(mecha_core::appraisal::Affect::Anger);
+        let badged = frame_text(&mut app, 110, 12, None);
+        assert!(badged.contains("anger"), "{badged}");
     }
 
     fn pending_row(id: &str) -> outbox::OutboxRow {
