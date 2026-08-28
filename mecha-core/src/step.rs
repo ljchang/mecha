@@ -536,9 +536,6 @@ pub enum StepVerdict {
     RevisePlan,
 }
 
-/// The prompt the quarantined pass runs. Reasoning first, the typed field
-/// last — the front door's and the appraiser's own finding: constrained
-/// output degrades reasoning when the answer precedes the thinking.
 /// How much of a step's own text — the model's own prior plan output, but
 /// nothing in `todo`'s schema bounds its length — reaches the quarantined
 /// call. Longer than [`ellipsize`]'s 60-char display cap on
@@ -546,6 +543,9 @@ pub enum StepVerdict {
 /// not a label, so it gets room to be useful while still being bounded.
 const ESCALATION_PROMPT_TEXT_CHARS: usize = 400;
 
+/// The prompt the quarantined pass runs. Reasoning first, the typed field
+/// last — the front door's and the appraiser's own finding: constrained
+/// output degrades reasoning when the answer precedes the thinking.
 pub fn escalation_prompt(escalation: &StepEscalation) -> String {
     let step_text = ellipsize(&escalation.step, ESCALATION_PROMPT_TEXT_CHARS);
     let question = match escalation.reason {
@@ -646,13 +646,6 @@ pub fn parse_step_verdict(text: &str) -> Result<StepVerdict> {
 // `parse_step_verdict` above are what stay pure and testable here; the retry
 // loop that drives them lives beside `compact` in `agent.rs`.
 
-/// The nudge folded into the run when the escalation says `revise_plan`.
-///
-/// Fully templated — the model's own free-text reasoning never reaches this
-/// output, on `frontdoor`'s rule one door over: a paraphrase of text the
-/// model just read is the same risk as the text itself, arriving through
-/// the one channel that re-enters context. Wording follows `Finding::line`'s
-/// own discipline: state the fact, offer one continuation.
 /// Marks a folded nudge as the harness's own words, on `boredom::NOTICE_STEM`'s
 /// exact precedent: `agent::is_harness_voice` is a closed list the learning
 /// miner filters every tool-result message's text through before deciding
@@ -663,6 +656,13 @@ pub fn parse_step_verdict(text: &str) -> Result<StepVerdict> {
 /// future prompt as a `Clean`-origin learned rule derived from nobody's words.
 pub const STEP_ESCALATION_STEM: &str = "A second opinion on your plan:";
 
+/// The nudge folded into the run when the escalation says `revise_plan`.
+///
+/// Fully templated — the model's own free-text reasoning never reaches this
+/// output, on `frontdoor`'s rule one door over: a paraphrase of text the
+/// model just read is the same risk as the text itself, arriving through
+/// the one channel that re-enters context. Wording follows `Finding::line`'s
+/// own discipline: state the fact, offer one continuation.
 pub fn templated_nudge(escalation: &StepEscalation) -> String {
     let step = ellipsize(&escalation.step, 60);
     let body = match escalation.reason {
