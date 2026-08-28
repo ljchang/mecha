@@ -78,11 +78,10 @@ TTS_CFG_WEIGHT = float(os.environ.get("MECHA_VOICE_TTS_CFG_WEIGHT", "0.3"))
 # through the real `openai` SDK's typed models, which drop an unrecognised
 # top-level field before any pipecat frame processor ever sees it.
 AFFECT_URL = f"{FACADE_URL}/mecha-affect"
-# Found on review: 300ms was picked as "generous" without weighing what it
-# costs on the failure path this poll sits in front of *every sentence* of
-# every spoken answer, so a hung (not merely refusing) facade would cost
-# this much per sentence rather than once. Loopback, same machine - a
-# healthy answer takes low single-digit milliseconds.
+# This poll happens once per spoken answer (`LocalTTS.on_turn_context_created`),
+# so a hung (not merely refusing) facade costs this much once per answer, not
+# per sentence. Loopback, same machine - a healthy answer takes low
+# single-digit milliseconds.
 AFFECT_POLL_TIMEOUT_SECONDS = 0.05
 # A single, deliberately conservative nudge for whichever of the four labels
 # reachable today (`Affect::reachable_today`, mecha-core/src/appraisal.rs)
@@ -259,13 +258,15 @@ class LocalTTS(OpenAITTSService):
         self._affect_key = affect_key
         # Loopback, same machine - a healthy facade answers in low single-
         # digit milliseconds. Worth naming as its own constant rather than
-        # matching the TTS server's own timeouts: this poll sits in front
-        # of *every sentence* of every spoken answer (the one path
-        # streaming exists to keep short), so a hung facade must cost this
-        # once per sentence and no more, not the seconds a normal network
-        # timeout would tolerate. Falls back to the baseline on expiry,
-        # same as any other failure here.
+        # matching the TTS server's own timeouts: a hung facade must cost
+        # this once per *answer* and no more (see `on_turn_context_created`),
+        # not the seconds a normal network timeout would tolerate. Falls
+        # back to the baseline on expiry, same as any other failure here.
         self._affect_client = httpx.AsyncClient(timeout=AFFECT_POLL_TIMEOUT_SECONDS)
+        # Latched once per turn by `on_turn_context_created`, never re-polled
+        # per sentence - see that method's docstring for why.
+        self._affect_context_id: str | None = None
+        self._affect_params: tuple[float, float] = (self._exaggeration, self._cfg_weight)
 
     @property
     def speed(self) -> float:
@@ -290,23 +291,38 @@ class LocalTTS(OpenAITTSService):
         time."""
         self._affect_key = key
 
-    async def _tts_params(self) -> tuple[float, float]:
-        """§6.2's voice readout, applied to this one call only - never
-        mutating `self._exaggeration`/`self._cfg_weight`, which stay the
-        owner's configured baseline for every other session. Pipecat
-        aggregates TTS by sentence, so this polls once per sentence of one
-        answer rather than once per turn; the facade's cache is
-        set-and-overwrite for exactly that reason (never take-once).
+    async def on_turn_context_created(self, context_id: str) -> None:
+        """§6.2's voice readout, latched once per answer rather than polled
+        per sentence.
+
+        `context_id` is the base class's own turn boundary — with
+        `reuse_context_id_within_turn` (the default, not overridden here),
+        `create_context_id` reuses one id for every sentence of an answer,
+        and this hook fires exactly once per new id, before any text reaches
+        `run_tts`. Polling from `run_tts` instead polled per sentence against
+        a set-and-overwrite cache, so a slow tail sentence - or the
+        confirmation offer appended after it - could read the *next*
+        answer's label once the facade's `turn.done` had already landed,
+        switching `cfg_weight` mid-utterance instead of lagging by one clean
+        turn.
 
         Lags by one turn, honestly rather than by accident: the facade can
         only cache a label once the turn that earned it has *finished*
         (`Affect` is a function of the completed `RunOutcome`), and this
-        method is called while that turn's own text is still streaming in -
-        before the facade has had a chance to update the cache. So what this
-        reads is the *previous* turn's mood, applied to the current turn's
-        words. There is no way to close that gap without holding speech
-        until the whole answer is known, which defeats the point of
-        streaming - a deliberate trade-off, not a bug.
+        fires while that turn's own text is still streaming in - before the
+        facade has had a chance to update the cache. So what this reads is
+        the *previous* turn's mood, applied to the current turn's words.
+        There is no way to close that gap without holding speech until the
+        whole answer is known, which defeats the point of streaming - a
+        deliberate trade-off, not a bug."""
+        await super().on_turn_context_created(context_id)
+        self._affect_context_id = context_id
+        self._affect_params = await self._poll_affect_params()
+
+    async def _poll_affect_params(self) -> tuple[float, float]:
+        """One fetch of the cached label, applied to the caller's context
+        only - never mutating `self._exaggeration`/`self._cfg_weight`, which
+        stay the owner's configured baseline for every other session.
 
         Failure, timeout, or a `neutral`/absent label all fall back to the
         baseline silently - a harness hiccup must never make a call worse
@@ -332,7 +348,15 @@ class LocalTTS(OpenAITTSService):
         from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
 
         try:
-            exaggeration, cfg_weight = await self._tts_params()
+            # `on_turn_context_created` always fires before `run_tts` for a
+            # given context per the base class's own contract, so the
+            # mismatch arm below should be unreachable - the baseline is
+            # always the safe answer if it somehow is not.
+            exaggeration, cfg_weight = (
+                self._affect_params
+                if context_id == self._affect_context_id
+                else (self._exaggeration, self._cfg_weight)
+            )
             create_params = {
                 "input": text,
                 "model": self._settings.model,
