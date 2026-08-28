@@ -2260,6 +2260,8 @@ mod tests {
         crate::agent::RunOutcome {
             context_overflows: 0,
             boredom_notices: 0,
+            step_escalations_attempted: 0,
+            step_escalations_revised: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),

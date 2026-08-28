@@ -1429,7 +1429,7 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
-### The goal system — rungs 0–10 shipped, out of build order; rung 7's model half of step appraisal and rung 10's charter-driven labelling are what's left, and rung 9's review-queue salience is unverified from this branch
+### The goal system — rungs 0–10 all shipped, out of build order; rung 10's charter-driven labelling is what's left, and rung 9's review-queue salience is unverified from this branch
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the authority and carries a status header
 saying which rungs shipped. The arc's premise, which is what makes the rest
@@ -1437,21 +1437,35 @@ follow: **every evaluative signal mecha had was a cost or a correction**, so a
 run could be recorded as having gone badly and never as having gone well.
 
 Rungs 0–6, rung 7's observation half, and rung 7's quarantined appraiser
-(`--appraise`, below) are in `main`. So are rung 9 (episode tagging + gossip
-seeding, PRs #97/#98 — landed by another lane; not re-verified in this entry)
-and rung 10 (PR #100, 2026-08-28): the charter (`mecha-core/src/charter.rs`,
-`mecha-cli/src/commands/charter.rs`) and the homeostat's aggregate into
-`diagnose::Evidence` shipped as designed, and anticipated guilt
-(`mecha-core/src/guilt.rs`) shipped **as a recorded sensor only** —
-`Homeostat::anticipated_guilt`, with no behavioural consumer, on the same
-observation-first precedent the appraiser above and boredom both used. Rung
-10 landed ahead of rung 8 in build order on purpose: the charter and the
-guilt sensor depend on neither the probe nor the label (see the corrected
-caution below). Everything through rung 7 has no model in it, which is §14's
-ordering and not a coincidence — and the appraiser is the first thing here
-that actually spends a model call, on the observation-first shape every
-other rung took: offline, budgeted, and left without a store until a real
-corpus says it earns one.
+(`--appraise`, below) are in `main`. **Rung 7 shipped in full on 2026-08-28**
+with the model half of step appraisal (§5.5's escalation) — see below. So are
+rung 9 (episode tagging + gossip seeding, PRs #97/#98 — landed by another
+lane; not re-verified in this entry) and rung 10 (PR #100, 2026-08-28): the
+charter (`mecha-core/src/charter.rs`, `mecha-cli/src/commands/charter.rs`)
+and the homeostat's aggregate into `diagnose::Evidence` shipped as designed,
+and anticipated guilt (`mecha-core/src/guilt.rs`) shipped **as a recorded
+sensor only** — `Homeostat::anticipated_guilt`, with no behavioural consumer,
+on the same observation-first precedent the appraiser above and boredom both
+used. Rung 10 landed ahead of rung 8 in build order on purpose: the charter
+and the guilt sensor depend on neither the probe nor the label (see the
+corrected caution below). Everything through rung 6 has no model in it, which
+is §14's ordering and not a coincidence — the appraiser was the first thing
+here that spends a model call at all, on the observation-first shape every
+other rung took: offline, budgeted, left without a store until a real corpus
+says it earns one.
+
+Step escalation is different in kind — it is a *live* concern (a step's plan
+action has to reach the same run before it wastes more turns, so it runs
+inside `agent.rs`'s loop rather than as a CLI pass) but the same posture on
+cost: off by default (`[agent] step_escalation`, `--no-step-escalation`,
+forced off under `mecha eval`), since the pre-filter's thresholds (span ≥3×
+the plan's other completed steps' mean, floor of 6 calls; a
+verification-claiming step with no verify-shaped call in its span) are argued
+rather than measured. Verified live against the local model: a deliberately
+oversized step correctly drove the quarantined call, which judged the size
+intentional rather than a decomposition problem, and its reasoning never
+reached the recorded transcript — only the closed `accept`/`revise_plan`
+verdict can, and only as a fully templated nudge.
 
 **And rung 8 shipped after rung 10 too** (PRs #99, #103, merged 2026-08-28,
 this entry's own work) — the last rung to land against the caution below,
@@ -1754,11 +1768,39 @@ repeated here.
   step, and it is what decides whether the appraisal **store** now earns its
   place, per this rung's own build note in `GOAL-SYSTEM-DESIGN.md`.
 
-  **What's left of rung 7 is the model half of step appraisal** — the
-  escalation, not the common path (see the next item). It costs a model run
-  too, same as the appraiser; until either lands with a store behind it the
-  record stays derived on the spot, which is `runlog`'s rule and a correction
-  to §10.
+  **The model half of step appraisal shipped 2026-08-28, closing rung 7.**
+  Unlike the appraiser it is a live concern, not an offline pass: `agent.rs`'s
+  own loop reads a new `ToolCtx::step_escalation` slot (`compact_requested`'s
+  exact shape) that `tool/todo.rs`'s `Tracked` writes into when a landed
+  step's span is either a clear outlier against the plan's other completed
+  steps (≥3× their mean, floor 6 calls, ≥2 siblings to compare against) or
+  claims a verification its calls never made (`step::looks_like_verification`,
+  a `Work`/`Span` counter beside `calls`/`failed`/`refused`). One quarantined
+  call (`Agent::escalate_step`, routed through the same cancellable
+  `self.complete()` `compact()` uses, so it honours the run's cancellation
+  token and its tokens land in `RunStats`) settles it; the verdict is a closed
+  `accept`/`revise_plan`, folded into the turn via `append_user_text`
+  exactly where boredom's notices land. The step's own text rides in the
+  call — it is this same model's own prior plan output, already trusted
+  in-context every turn, unlike the appraiser's numbers-only evidence — but
+  the model's free-text reasoning about it never reaches the transcript:
+  logged at `debug` only, on `frontdoor`'s "a paraphrase of an injection is
+  the injection rearranged" rule, since a model's paraphrase of text it just
+  read is the same risk arriving through the one channel that re-enters
+  context. Off by default (`[agent] step_escalation`,
+  `--no-step-escalation`, forced off under `mecha eval`) on
+  `compact_at_tokens`'s posture — the pre-filter's thresholds are argued,
+  not measured, and this is the first spend inside the run itself rather
+  than a CLI pass. Verified live against the local model: a deliberately
+  oversized step drove the call, which correctly judged the size
+  intentional rather than a decomposition problem, and confirmed by reading
+  the recorded transcript that the reasoning never landed in it — only the
+  tally would have.
+
+  Still no store for either channel, on the same argument: what either
+  produces is a verdict that needs keeping and not an appraisal, and the
+  assembled record stays derivable regardless. `runlog`'s rule and a
+  correction to §10.
 
 - **Rung 6 shipped with two gaps that are stated reasons, not sequencing.**
   Both are named in `GOAL-SYSTEM-DESIGN.md` §14 rung 6 and in the modules
