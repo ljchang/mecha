@@ -29,6 +29,13 @@ pub struct Args {
     /// disagreement.
     #[arg(long)]
     pub write: bool,
+
+    /// Ask about a step you said "never" to again. `all` clears every one.
+    ///
+    /// The undo half of the `never` answer, and it exists so that answer is
+    /// a preference rather than a door that locks behind you.
+    #[arg(long, value_name = "STEP_ID")]
+    pub undecline: Option<String>,
 }
 
 pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
@@ -49,6 +56,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     };
 
     let home = mecha_core::work::mecha_home()?;
+    let declined = onboarding::read_declined(&home);
     let facts = Facts {
         has_mail_binary: onboarding::on_path("mecha-mail"),
         has_docs_binary: onboarding::on_path("mecha-docs"),
@@ -60,6 +68,12 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         props,
         scheduler_installed: scheduler_installed(),
         trigger_count: trigger_count(&home),
+        charter: onboarding::charter_state(&home.join("charter.toml")),
+        // `None` is the store being unreadable, not empty. Resolved towards
+        // offering everything (see `Facts::declined`), and said out loud
+        // below rather than swallowed — a checklist that quietly stopped
+        // honouring your answers would be the worse half of this feature.
+        declined: declined.clone().unwrap_or_default(),
     };
 
     let steps = onboarding::plan(&cfg, &name, &facts);
@@ -71,15 +85,40 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     if args.write {
         return write_verified(&name, &facts);
     }
+    if let Some(id) = &args.undecline {
+        let one = (id != "all").then_some(id.as_str());
+        onboarding::undecline(&home, one)?;
+        match one {
+            Some(id) => println!("`{id}` will be offered again"),
+            None => println!("every declined step will be offered again"),
+        }
+        return Ok(());
+    }
 
     render(&steps);
+    if declined.is_none() {
+        println!(
+            "\n(the declined-steps file at {} could not be read, so everything is being \n\
+             offered again — that is a read failure, not an empty list)",
+            onboarding::declined_path(&home).display()
+        );
+    }
 
     // Nothing is offered when nobody is there to answer, which is the
     // `doctor` rule: a setup flow that acts with no one watching is the
     // shape this project keeps refusing.
-    let outstanding: Vec<&Step> = steps.iter().filter(|s| s.status != Status::Done).collect();
+    //
+    // **`Declined` is not outstanding**, which is the whole point of it
+    // existing: a scripted `mecha setup` on a machine whose owner does not
+    // want Slack must exit 0, or the check is permanently red over a choice
+    // somebody already made.
+    let outstanding: Vec<&Step> = steps
+        .iter()
+        .filter(|s| !matches!(s.status, Status::Done | Status::Declined))
+        .collect();
     if outstanding.is_empty() {
         println!("\nNothing outstanding.");
+        finished_note(&steps);
         return Ok(());
     }
     if !std::io::stdin().is_terminal() {
@@ -88,7 +127,34 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // same list either way.
         std::process::exit(1);
     }
-    offer(&outstanding)
+    offer(&outstanding, &home)?;
+    finished_note(&steps);
+    Ok(())
+}
+
+/// The last thing a new install is told.
+///
+/// Setup used to end at the checklist, which answers *what is missing* and
+/// never *what now* — so somebody who had just finished had no next move and
+/// no idea that `doctor` is a different question. Three lines, and the
+/// undecline is named here so the way back out of a "never" is never
+/// something to go looking for.
+fn finished_note(steps: &[Step]) {
+    println!("\nNext:");
+    println!("    mecha tools          what this agent can call — no provider needed");
+    println!("    mecha run \"…\"        one task, one answer, in the current directory");
+    println!("    mecha doctor         a different question: what is silently wrong");
+    if steps.iter().any(|s| s.status == Status::Declined) {
+        println!("\n    mecha setup --undecline <id>   ask about a skipped step again");
+    }
+    // The one trap a new install walks into unaided, and the only place a
+    // person is standing when they might. `work.rs` refuses a workspace
+    // containing the mecha home, which is right and arrives as an error —
+    // saying it here turns it into advice instead.
+    println!(
+        "\nRun it from a project directory rather than your home directory: the workspace is\n\
+         the jail, and one rooted over ~/.mecha would cover its own tokens and transcripts."
+    );
 }
 
 fn render(steps: &[Step]) {
@@ -98,6 +164,11 @@ fn render(steps: &[Step]) {
             Status::Missing => ("·", "not set up"),
             Status::Wrong => ("!", "disagrees"),
             Status::Unknown => ("?", "unknown"),
+            // Marked as settled rather than outstanding, because it is: a
+            // person answered this. `mecha setup --undecline <id>` is in the
+            // closing line, so the way back is never something to go looking
+            // for.
+            Status::Declined => ("–", "you said no thanks"),
         };
         println!("\n{mark} {}  [{label}]", s.title);
         for line in s.detail.lines() {
@@ -109,9 +180,28 @@ fn render(steps: &[Step]) {
     }
 }
 
+/// What the person answered at one offer.
+///
+/// `Skip` and `Never` are deliberately different answers to the same
+/// question, and folding them would lose the distinction this whole feature
+/// is: *not now* is about today, *never* is about the install. EOF and a
+/// blank line are `Skip` — silence is not consent, and it is emphatically
+/// not a permanent decision either.
+enum Answer {
+    Yes,
+    Skip,
+    Never,
+}
+
 /// Offer each remedy once, EOF is no — the outbox `send` convention, and
 /// `doctor`'s: silence is not consent.
-fn offer(steps: &[&Step]) -> Result<()> {
+///
+/// `never` records the step id in `~/.mecha/setup-declined.json` so the
+/// question stops being asked. It is only ever offered for a step that has
+/// one: a broken charter or a server that disagrees with its config is a
+/// fault rather than an optional extra, and there is nothing coherent to
+/// decline about being told.
+fn offer(steps: &[&Step], home: &std::path::Path) -> Result<()> {
     let stdin = std::io::stdin();
     let mut offered: Vec<&[String]> = Vec::new();
     for s in steps {
@@ -120,23 +210,51 @@ fn offer(steps: &[&Step]) -> Result<()> {
             continue;
         }
         offered.push(&remedy.argv);
+        // Only an *absent* optional thing can be declined. `Wrong` is
+        // something broken, and "stop telling me this is broken" is not a
+        // preference a setup tool should be able to record — it is the
+        // silently-degrading-guard shape. And `optional` is the step's own
+        // property rather than an inference from `Missing`: a provider with
+        // no credential is missing too, and declining *that* would report
+        // `Nothing outstanding.` on an install that cannot answer a prompt.
+        let declinable = s.optional && s.status == Status::Missing;
         println!("\n{}", remedy.description);
-        print!("run `{}`? [y/N] ", shell_words(&remedy.argv));
+        print!(
+            "run `{}`? [{}] ",
+            shell_words(&remedy.argv),
+            if declinable { "y/N/never" } else { "y/N" }
+        );
         std::io::stdout().flush()?;
         let mut line = String::new();
-        let said_yes = match std::io::BufRead::read_line(&mut stdin.lock(), &mut line) {
+        let answer = match std::io::BufRead::read_line(&mut stdin.lock(), &mut line) {
             Ok(0) => {
                 println!();
-                false
+                Answer::Skip
             }
-            Ok(_) => line.trim().eq_ignore_ascii_case("y"),
-            Err(_) => false,
+            Ok(_) => match line.trim().to_ascii_lowercase().as_str() {
+                "y" | "yes" => Answer::Yes,
+                "never" | "n!" if declinable => Answer::Never,
+                _ => Answer::Skip,
+            },
+            Err(_) => Answer::Skip,
         };
-        if !said_yes {
-            println!("skipped");
-            continue;
+        match answer {
+            Answer::Yes => run(remedy)?,
+            Answer::Skip => println!("skipped — asked again next time"),
+            Answer::Never => match onboarding::decline(home, &s.id) {
+                // Said with the undo in the same breath: a decision nobody
+                // can find their way back out of is one people are right to
+                // hesitate over.
+                Ok(()) => println!(
+                    "noted — `{}` will not be offered again (`mecha setup --undecline {}` undoes it)",
+                    s.id, s.id
+                ),
+                // A store that could not be written must not read as a
+                // recorded answer, or the question silently comes back and
+                // the person believes they already settled it.
+                Err(e) => println!("could not record that: {e} — it will be offered again"),
+            },
         }
-        run(remedy)?;
     }
     Ok(())
 }

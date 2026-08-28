@@ -132,6 +132,10 @@ permit.rs    how many background runs may hold the model at once — seats on
              llama-server, as files in a directory; a latency control, not memory
 frontdoor.rs inbound requests from strangers, and the quarantine over them
 goal.rs      what a run is for: charter, board task, or setpoint, by reference
+charter.rs   the owner's standing priorities, ranked by file order — read-only
+             by construction: no verb, no tool, no configurable path
+guilt.rs     predicted error against another party's expectation, folded from
+             *recorded* commitments only, never claimed ones
 capture.rs   what a typed or spoken capture says about *when* — detected and
              reported, never resolved, and the name handed back untouched
 harness.rs   the self-improvement record: candidates, their judgements, and
@@ -357,7 +361,8 @@ the security model in full · the front door · web search · mecha-mail ·
 documents · the task board · the unified queue (`/queues`) · skills ·
 mecha-slack · the remote control · hooks · the outbox · the work directory ·
 triggers · the run-quality corpus (the gate, diagnosis, harness rumination) ·
-the doctor · context accounting · timezones · compaction · the eval rig.
+the goal system (charter, appraisal, homeostat, boredom) · the doctor ·
+context accounting · timezones · compaction · the eval rig.
 
 Read the section before changing the subsystem — nearly every paragraph in it
 is a bug that already happened. The headlines a session is most likely to
@@ -375,6 +380,10 @@ trip over from *outside* the subsystem:
 - **Compaction**: the cut must land on an assistant message (an orphaned
   `tool_result` is a 400), taint and carried tool state survive it, and the
   session file records a `rewrite` when history is edited.
+- **The goal system**: the charter has **no write path at any privilege level**
+  and no configurable path; `Affect` is a pure function of the record with no
+  way to report one; and the homeostat, boredom's notices and
+  `anticipated_guilt` are all sensors that deliberately ship with no consumer.
 
 ## Testing without credentials
 

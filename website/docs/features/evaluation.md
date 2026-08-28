@@ -243,23 +243,38 @@ let mut opts = GlobalOpts {
 if !args.mcp {
     opts.no_mcp = true;
 }
-opts.no_learned_rules = !with_rules;
+opts.no_learned_rules = !allow_learned_rules;   // the `--ab-rules` lever
 opts.no_hooks = true;
 opts.no_outbox = true;
 opts.no_fallback = true;
+opts.no_messages = true;
+opts.no_skills = true;
+opts.no_charter = true;
+opts.no_compact_tool = true;
+opts.no_step_escalation = true;
 ```
 
 | Forced off | Because |
 |---|---|
 | MCP servers (unless `--mcp` / `--mcp-file`) | the machine's ambient tool surface is not anyone else's |
 | [Hooks](/docs/features/hooks) | local policy scripts firing inside cases grade this machine's config |
-| [Learned rules](/docs/features/learning) | a scorecard shaped by last night's consolidation is not comparable |
+| [Learned rules](/docs/features/learning) | a scorecard shaped by last night's consolidation is not comparable. The **one** deliberate lever: `--ab-rules`' treatment arm turns them back on, and it is a parameter of this function rather than a re-enable at the call site, because that is exactly how it got lost once |
+| [Skills](/docs/features/skills) | the procedures on this box are not the ones on anyone else's, and they change the tool surface |
+| [The charter](/docs/features/appraisal) | standing priorities ride in the cached prefix, so two owners would grade different prompts |
 | [The outbox](/docs/features/outbox) | whether a tool executes or stages must not depend on routing config, and an eval must not fill the real outbox with drafts nobody will release |
+| [Inter-agent messages](/docs/features/queues) | a mailbox delivery mid-case is another session's state leaking into a scorecard |
 | [Provider fallbacks](/docs/features/providers) | a case silently answered by a fallback model is a measurement of nothing |
+| The `compact` tool | **the one that was missed.** It is registered from local `context_window` / `compact_at_tokens` and sits at the front of the cached prefix, so two differently-configured boxes graded different prefixes — it changes the *tool list*, not merely what a run may do |
+| Step escalation | off by default, but a machine's own `config.toml` could turn it on, and a scorecard must not depend on that either |
 
 The workspace is also forced to the fixture and the run to read-only. Sandboxed
 cases get their writes only through their own approver, scoped to their own
 staged copy.
+
+The list is asserted **as a set** in a test rather than flag by flag, because
+the way this breaks is one entry quietly missing from a list written in prose
+across forty lines — which is exactly how `compact` went unnoticed. Anything
+added to the run surface has to be decided about there.
 
 `--ab-rules` is the one deliberate exception to the learned-rules rule; see
 [Learning](/docs/features/learning). It runs the case set rules-free and then

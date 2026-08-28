@@ -64,6 +64,11 @@ What gets pushed:
   "meta": {
     "taint": { "private": true, "untrusted": false },
     "distilled_by": "<model id>",
+    "affect": "anger",
+    "goal_errors": [
+      { "channel": "counter", "sign": -0.5, "agency": "world",
+        "visible": false, "cite": { "kind": "counter", "id": "stop_cause" } }
+    ],
     "corrections": [
       { "wrong": "Priya is at Brown", "right": "Priya is at Yale", "about": "Priya Nair" }
     ]
@@ -91,6 +96,46 @@ Leaving `right` out says you rejected the claim outright rather than replacing
 it, and the graph records the denial so nothing proposes it again. A correction
 the graph cannot match to exactly one belief goes to your review queue instead
 of being guessed at, and `mecha distill` prints how many landed each way.
+
+### Surprises: the world disagreeing with the graph
+
+A **surprise** is one session noticing that what the graph told the agent and
+what the session then found do not match — *"I said the deadline was the 14th
+because the graph says so; the email says the 9th."*
+
+It is deliberately not a correction. Nobody said the graph is wrong, nothing
+proposes a fix, and a surprise therefore names no belief id and carries no
+repair. What it is good for is **seeding a [gossip](/docs/reference/cli#gossip)
+probe** — `mecha gossip --entity <who>` — which is not run automatically: a
+person decides whether a disagreement is worth chasing, from what
+`mecha distill` prints.
+
+A surprise's content is the model's own reading of prose it was shown, not a
+fact the harness computed, so there is nothing stopping a fetched page from
+describing a fabricated disagreement. It is therefore **withheld from the graph
+on the same untrusted-or-unknown timeline rule as a correction**. `mecha distill`
+still prints every one to your terminal — a person reading their own terminal is
+a safe context, the way the front door shows a stranger's prose to you but never
+to a privileged run. The gate is about what may reach a *second automated
+reader*.
+
+### The episode carries how the session went
+
+`affect` and the goal errors are [the appraisal](/docs/features/appraisal) of
+the session, riding on `meta` beside the taint snapshot — never inside the
+episode body, which is the model's prose. They exist to give the graph's review
+queue a **salience ordering**: a session that carried a signed negative error is
+worth a human's attention sooner than one that went cleanly.
+
+Unlike corrections, they are **not** gated on the timeline's trust, and the
+reason is that they are structured facts the harness computed about its own run
+— a sign, an agency, a channel, a pointer — rather than prose a model or a
+fetched page could have authored. There is nothing in them for an injection to
+have written, with exactly one exception, which is redacted: the goal reference
+is the one field the harness did not mint, since it comes from the model's own
+`serves:` argument and only the *kind* word is constrained. So a goal is sent as
+its kind alone, never its id. Both are omitted when the session had nothing to
+appraise, which is ordinary for a transcript predating the sensor.
 
 ## Distillation is not learning
 

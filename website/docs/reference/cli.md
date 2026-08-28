@@ -36,6 +36,7 @@ never build an agent (where they are simply ignored).
 | `--no-thinking` | Turn off reasoning. Cheaper and faster, but noticeably worse on multi-step work. |
 | `--no-skills` | Don't load skills from `~/.mecha/skills` — no `skill` tool, and nothing about them in the system prompt. |
 | `--skill <NAME>` | Only carry these skills. Repeatable, and narrows what `[skills]` already selected — it cannot enable one config withheld. |
+| `--no-charter` | Don't load `~/.mecha/charter.toml` into the system prompt — the run proceeds with no standing priorities. |
 | `--no-learned-rules` | Do not inject learned rules from `~/.mecha/learning` into the system prompt. |
 | `--no-hooks` | Do not run configured `[[hook]]` commands. Config is still validated. |
 | `--no-outbox` | Do not route any tools through the outbox; configured `[outbox]` tools execute directly. |
@@ -296,12 +297,59 @@ mecha skills --json | jq '.skills[] | select(.carried)'
 
 See [Skills](/docs/features/skills).
 
+## `charter`
+
+Print the standing priorities in `~/.mecha/charter.toml`, in rank order, as a
+run would see them.
+
+```
+mecha charter [edit] [--json]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| *(none)* | `--json` | Emit JSON instead of a table — including on failure, so a scripted consumer sees the parse error in the payload rather than only in the exit code. |
+| `edit` | | Open the charter in `$EDITOR`, creating a commented template first if there is no file yet. |
+
+**The owner may edit it; a model never authors a line of it.** That is the
+invariant, and it is worth stating precisely because this page used to state it
+as "there is no `edit` and never will be" — which was a misstatement rather than
+a decision: the TUI's `/charter` already handed the file to `$EDITOR`, and the
+web settings page already took a validated save, so the rule as written made the
+command line the only surface where you could not edit your own document.
+
+So `edit` hands over `$EDITOR` on the file itself. mecha writes exactly one
+thing here ever: the comments-only template, when no file exists yet, because
+`vi` on an empty buffer is how a first charter ends up shaped wrong. There is
+still no `--add`, no `--set` and no tool — nothing that would let a model put a
+sentence in this file.
+
+Editing through this rather than a hand-run `vi` buys **validation feedback**: a
+duplicate id or a typo'd table name is reported the moment the editor closes,
+and `edit` exits non-zero if what you saved will not load — rather than at the
+next run's startup, where the warning scrolls past. Reading the file back is the
+ordinary loader, so what it says is what a run would get.
+
+A charter that fails to parse **exits non-zero** rather than degrading to none,
+because every run would otherwise proceed silently un-chartered. Output
+distinguishes three states a naive reader would conflate: no file at all, a file
+with no lines yet, and a file that did not load.
+
+```bash
+mecha charter
+mecha charter edit
+mecha charter --json | jq -r '.lines[] | "\(.id)\t\(.text)"'
+mecha charter --json | jq '.over_budget'
+```
+
+See [Goals and appraisal](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words).
+
 ## `sessions`
 
 Inspect saved transcripts. Requires a subcommand.
 
 ```
-mecha sessions <list|show|path|stats|health> [OPTIONS]
+mecha sessions <list|show|path|stats|health|appraise> [OPTIONS]
 ```
 
 | Subcommand | Flag | Description |
@@ -315,6 +363,13 @@ mecha sessions <list|show|path|stats|health> [OPTIONS]
 | `health` | `--days <N>` | Only sessions started in the last N days. |
 | `health` | `-n`, `--limit <N>` | Stop after this many sessions, newest first. |
 | `health` | `--json` | Emit JSON instead of a table. |
+| `appraise` | `--days <N>` | Only sessions started in the last N days. |
+| `appraise` | `-n`, `--limit <N>` | Stop after this many sessions, newest first. |
+| `appraise` | `--json` | Emit JSON instead of a table. |
+| `appraise` | `--probe` | Resolve each intervention's agency by counterfactual replay. **Paid** — a model run per intervention. |
+| `appraise` | `--max-probes <N>` | Ceiling on replays across the whole walk. Default `25`. Requires `--probe`. |
+| `appraise` | `--appraise` | Run the quarantined appraiser over each session's numeric evidence. **Paid**, and independent of `--probe`. |
+| `appraise` | `--max-appraisals <N>` | Ceiling on appraisals driven. Default `25`. Requires `--appraise`. |
 
 `stats` totals token usage — and cost, where prices are configured — grouped by
 provider and model. Transcripts live in `~/.mecha/sessions` unless
@@ -327,12 +382,28 @@ describes neither, and a rate with no denominator prints `—` rather than `0%`.
 Transcripts written before the outcome record carry none, so the corpus fills as
 you use it. See [Run quality](/docs/features/run-quality).
 
+`appraise` is the third question: not what runs cost, nor how they went, but how
+they went **against what they were for** — the signed error per channel and the
+label derived from it. Nothing is stored; each appraisal is derived on the spot
+from the transcript, the outbox and the run's own outcome record. The number
+worth reading is the share that come back with no label at all. Both paid passes
+are off by default and are counted apart from each other in `--json`, where
+absent means *did not run* rather than *found nothing*.
+
+`--probe` builds a real agent with a real workspace jail, so run it from a
+project directory or name one with `--workspace`; from a home directory it
+refuses, because the jail would cover `~/.mecha`. See
+[Goals and appraisal](/docs/features/appraisal).
+
 ```bash
 mecha sessions list -n 50
 mecha sessions show 20260805T091500 --json | jq -r 'select(.role == "user") | .content'
 mecha sessions stats --days 30
 mecha sessions health --days 30
 mecha sessions health --json | jq '.by_model'
+mecha sessions appraise --days 30
+mecha sessions appraise --days 7 --probe --max-probes 10
+mecha sessions appraise --json | jq '.labels'
 cat "$(mecha sessions path 20260805T091500)"
 ```
 
@@ -609,6 +680,16 @@ The omit-versus-empty distinction on `set` is the tool's and is passed through
 rather than reinterpreted — a driver that read "unset" as "clear" would wipe a
 due date every time somebody changed a status.
 
+**Closing a task appraises the run that served it.** The transition *into*
+`done` or `dropped` — and only that transition, once — builds an appraisal off
+the session the task was delegated to and prints the verdict. A `done` closure
+whose label is not neutral may stage a follow-up task for the residue; a
+`dropped` one never does, because dropping is you declining the work rather than
+accepting mediocre work, and proposing a follow-up there would override the
+decision you just made. All of it is best-effort: the status change lands
+whether or not the appraisal does. See
+[Goals and appraisal](/docs/features/appraisal#closing-a-task-appraises-it).
+
 ```bash
 mecha tasks
 mecha tasks add --due +3d --context @lab -- Re-run the eval set on the new prefix
@@ -841,6 +922,51 @@ mecha reflect --dry-run
 mecha reflect -p local --limit 20
 ```
 
+## `reflections`
+
+Read the lessons before anything consolidates them. `list` is the default
+subcommand.
+
+```
+mecha reflections [list|show|edit|drop|restore] [ARGS]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `list` | `--domain <D>` | Only `behavior`, `writing` or `triage`. |
+| `list` | `--all` | Include dropped ones, hidden by default. |
+| `list` | `--json` | Machine-readable, for the `/learning` modal. |
+| `show` | `<ID>` `[--json]` | One reflection in full: what was happening, what was said, the lesson, and whether it can become a rule. |
+| `edit` | `<ID>` `[--text <T>]` | Rewrite the lesson in your own words. Without `--text`, opens `$EDITOR` on the lesson alone. |
+| `drop` | `<ID>` `[--reason <R>]` | Refuse one — kept as evidence, never a candidate again. |
+| `restore` | `<ID>` | Undo a drop. |
+
+**The store had no reader before this**, which was the wrong end of the pipeline
+to be blind at: a rule is a *consolidation* of several lessons, so by the time a
+proposal is reviewable the thing to disagree with has already been merged with
+four others and rewritten. The lesson is where a disagreement is cheap and
+precise.
+
+`edit` is a **provenance promotion**, not a text change — a lesson you typed
+yourself skips the model that would otherwise have laundered third-party bytes
+into it, which is how an excluded reflection gets rescued. `drop` is a flag and
+never a deletion, on the same rule retired rules and resolved outbox items
+follow: a store that forgets its refusals lets the same lesson return next pass
+with nothing to say it was already judged.
+
+Nothing here calls a model or touches the network, and every write takes the
+store lock, so it is safe to run against a store the nightly is also using.
+
+```bash
+mecha reflections
+mecha reflections --domain writing --all
+mecha reflections show 20260828T0915
+mecha reflections edit 20260828T0915
+mecha reflections drop 20260828T0915 --reason "specific to one thread"
+```
+
+See [Learning](/docs/features/learning).
+
 ## `learn`
 
 Absorb unprocessed reflections into the consolidated learned rule set.
@@ -987,8 +1113,14 @@ mecha distill -p local --limit 10 --server graph
 What this install still needs, and the one command that fixes each.
 
 ```
-mecha setup [--json] [--write]
+mecha setup [--json] [--write] [--undecline <STEP_ID>]
 ```
+
+| Flag | Description |
+|---|---|
+| `--json` | Print the plan as JSON and exit. Never prompts, even at a terminal. |
+| `--write` | Rewrite the local provider's `model`, `context_window` and `vision` from what its server reports. |
+| `--undecline <STEP_ID>` | Ask about a step you said `never` to again. `all` clears every one. |
 
 Where it differs from [`doctor`](#doctor), and why both exist: doctor answers
 *what is silently broken about a working install*, in one pass with no network
@@ -1024,6 +1156,44 @@ never driven** — mecha reaches the graph through its MCP tools and nothing
 else, and spawning `mecha-graph source` would be exactly the coupling that rule
 prevents. And nothing is scheduled: a trigger runner is offered only once a
 trigger already exists, and it is the runner, never a schedule.
+
+It also offers the **charter** — the ranked standing priorities every run
+carries. That step exists because nothing else named the feature to a new
+install: `doctor` correctly says nothing about a charter that has never been
+written, since not having one is not a fault, so the only ways to discover it
+were the TUI's `/help` and the web settings gear. The remedy hands over
+`$EDITOR`; nothing here composes a priority.
+
+### Saying no, and meaning it
+
+Each offer takes `y`, `N`, or `never`. `N` is *not today* and comes back next
+time; `never` records the step id in `~/.mecha/setup-declined.json`, and it
+then reports as `you said no thanks` rather than as missing.
+
+That distinction is the point: a declined step is **not outstanding**, so an
+install whose every open question has been answered exits 0 and `mecha setup`
+works as your own health check instead of being permanently red over choices
+you already made. `--undecline` is printed alongside, so the way back is never
+something to go looking for.
+
+Three guarantees on it, each structural rather than a matter of the prompt
+being careful:
+
+- **Only genuinely optional things are declinable** — the four integrations and
+  the charter. A provider that cannot answer is not a feature going unused, and
+  declining it would report `Nothing outstanding.` on an install that cannot
+  answer a prompt.
+- **A decline never hides a fault or a fact.** It applies only to a step that
+  is *missing*: something `wrong` stays wrong (declining mail is not declining
+  to be told your mail is broken), something `unknown` stays unknown, and
+  something you later set up anyway reads as **done** — where the machine's
+  state and your recorded preference disagree, the state wins.
+- **The gate is on the plan, not the prompt**, so hand-editing the file in cannot
+  decline a credential either.
+
+An unreadable decline store is reported as a read failure and everything is
+offered again, rather than being silently treated as "you have declined
+nothing".
 
 `--json` prints the plan and never prompts. Exit 1 when anything is
 outstanding, like doctor, so a script can act on it.
@@ -1092,6 +1262,49 @@ be measured parses as nothing.
 mecha diagnose --dry-run                    # see the evidence, pay nothing
 mecha diagnose --model qwen3-moe --days 14
 ```
+
+## `harness`
+
+The self-improvement loop over the harness itself, and the review surface for
+what it did. Requires a subcommand.
+
+```
+mecha harness <ruminate|list|show|accept|reject|revert|overrides> [OPTIONS]
+```
+
+| Subcommand | Flag | Description |
+|---|---|---|
+| `ruminate` | `--sessions <N>` | Replay this many recent sessions per arm. Default `16`. |
+| `ruminate` | `--days <N>` | Only diagnose from sessions started in the last N days. |
+| `ruminate` | `-n`, `--limit <N>` | Scan at most this many sessions for the corpus. Default `200`. |
+| `ruminate` | `--holdout-in <N>` | One episode in this many is held out of selection. Default `3`, minimum `2`. |
+| `list` | `--all` | The whole record, not just what is waiting on you. |
+| `list` | `--json` | Machine-readable, for `/queues`. |
+| `show` | `<ID>` | One candidate, whole: prediction, measurement, evidence. |
+| `accept` | `<ID>` | Accept a staged candidate. |
+| `reject` | `<ID>` `--reason <TEXT>` | Reject one, with a reason the record keeps. |
+| `revert` | `<ID\|KEY>` | Take an accepted override back out. |
+| `overrides` | | The active override layer, with where each entry came from. |
+
+`ruminate` is the nightly verb — diagnose, record, measure by replay, dispose —
+and it exits 0 on "nothing to do", because a skipped night is not a failed
+night. **A config change that wins on selection, is confirmed on the holdout and
+holds the work guardrail auto-accepts** into the override layer; `accept` on
+anything else only marks the record, since the change itself is yours to make.
+A `security`-class proposal is never measured and never applied.
+
+`revert` puts the key back to whatever your config says and keeps the candidate
+record as evidence.
+
+```bash
+mecha harness ruminate --days 7
+mecha harness list
+mecha harness show hc-20260828T0330
+mecha harness overrides
+mecha harness revert max_turns
+```
+
+See [Run quality](/docs/features/run-quality#running-the-whole-loop-unattended).
 
 ## `vet`
 
