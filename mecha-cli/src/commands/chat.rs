@@ -160,12 +160,29 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
         }
 
-        let user = Message::user(input);
-        convo.push(user.clone());
-        if let Some(s) = &session {
-            s.append(&Record::Message(user))?;
+        // Folded, not pushed, when the tail is already a user message — a
+        // Ctrl-C mid-tool-turn keeps the partial turn (cancel's contract),
+        // so the conversation can end on the user message carrying tool
+        // results, and pushing there makes two user messages in a row. When
+        // folding, nothing is appended by hand: `recorded` snapshots the
+        // pre-fold state — what the file holds — and `record_run` expresses
+        // the fold as the rewrite it is (`questions.rs`'s rule).
+        let recorded;
+        if convo
+            .messages
+            .last()
+            .is_some_and(|m| m.role == mecha_core::message::Role::User)
+        {
+            recorded = convo.messages.clone();
+            mecha_core::agent::append_user_text(&mut convo.messages, input.to_string());
+        } else {
+            let user = Message::user(input);
+            convo.push(user.clone());
+            if let Some(s) = &session {
+                s.append(&Record::Message(user))?;
+            }
+            recorded = convo.messages.clone();
         }
-        let recorded = convo.messages.clone();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let renderer = render::spawn(
@@ -218,7 +235,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // still persisted — a failed turn that read a hostile page
                 // still read it.
                 if let Some(s) = &session {
-                    let _ = s.record_run(&recorded, &convo);
+                    // The one write whose failure reproduces the resume-time
+                    // 400 this arm exists to prevent — never silent.
+                    if let Err(e) = s.record_run(&recorded, &convo) {
+                        eprintln!(
+                            "warning: the rollback was not recorded — resuming \
+                             this session will replay the failed turn: {e:#}"
+                        );
+                    }
                     let _ = s.append(&Record::Taint(convo.taint));
                 }
             }

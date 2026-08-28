@@ -1075,18 +1075,35 @@ fn begin_turn(
     };
     ws.last_turn_spoken = opts.spoken;
 
-    // Append the user message to the record *before* the run — the
-    // `record_run` contract: `before` is what the file already holds.
-    let user = Message::user(&text);
-    conversation.push(user.clone());
-    if let Err(e) = ws.session.append(&Record::Message(user)) {
-        // Refuse to run a turn the record did not accept: an unrecorded run
-        // is invisible to distill, recall and the run-quality corpus.
-        conversation.messages.pop();
-        ws.conversation = Some(conversation);
-        return Err(TurnError::Failed(format!("recording: {e:#}")));
+    // Folded, not pushed, when the tail is already a user message — a
+    // barge-in mid-tool-turn (`VoiceHost::speak` cancels the live run and
+    // resubmits through here) leaves the conversation ending on the user
+    // message carrying tool results, and pushing there makes two user
+    // messages in a row. When folding, nothing is appended by hand:
+    // `before` snapshots the pre-fold state — which is what the file holds
+    // — and `record_run` at turn end expresses the fold as the rewrite it
+    // is (`questions.rs`'s rule). The plain case keeps the
+    // append-at-submit contract: `before` is what the file already holds.
+    let before;
+    if conversation
+        .messages
+        .last()
+        .is_some_and(|m| m.role == Role::User)
+    {
+        before = conversation.messages.clone();
+        mecha_core::agent::append_user_text(&mut conversation.messages, text.clone());
+    } else {
+        let user = Message::user(&text);
+        conversation.push(user.clone());
+        if let Err(e) = ws.session.append(&Record::Message(user)) {
+            // Refuse to run a turn the record did not accept: an unrecorded
+            // run is invisible to distill, recall and the run-quality corpus.
+            conversation.messages.pop();
+            ws.conversation = Some(conversation);
+            return Err(TurnError::Failed(format!("recording: {e:#}")));
+        }
+        before = conversation.messages.clone();
     }
-    let before = conversation.messages.clone();
 
     // A typed turn is echoed by the page that typed it; a spoken one has no
     // local echo anywhere, so it is announced — with the voice block
@@ -1226,7 +1243,14 @@ fn begin_turn(
             // and both readers of it (the file, the next request) agree.
             Err(_) => {
                 conversation.roll_back_failed_turn(before.clone());
-                let _ = session.record_run(&before, &conversation);
+                // The one write whose failure reproduces the resume-time 400
+                // this arm exists to prevent — it must not fail silently.
+                if let Err(e) = session.record_run(&before, &conversation) {
+                    tracing::warn!(
+                        "the rollback was not recorded — a resume of this \
+                         session will replay the failed turn: {e:#}"
+                    );
+                }
             }
         }
         // Taint is kept either way — a failed turn that read a hostile page

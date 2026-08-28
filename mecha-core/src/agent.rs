@@ -187,6 +187,24 @@ pub fn append_user_text(messages: &mut Vec<Message>, text: String) {
     }
 }
 
+/// A user message that is the person's own text and nothing else — no tool
+/// results.
+///
+/// The distinction every front-end's interrupt/rollback handling turns on:
+/// tool results ride in a `Role::User` message too, so a bare role check
+/// cannot tell "the owner's dangling text" (safe to trim) from "a completed
+/// tool round" (a valid tail whose removal orphans the assistant's
+/// `tool_use` and 400s every later request). Found as the fifth pop site's
+/// bug in the voice facade and centralised here so no sixth grows its own
+/// wrong copy.
+pub fn is_plain_user_text(m: &Message) -> bool {
+    m.role == Role::User
+        && !m
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::ToolResult { .. }))
+}
+
 /// What the loop consults that is properly per-*run* rather than per-agent:
 /// what tools may touch, who approves the ones that aren't read-only, and what
 /// this particular run is allowed to spend.
@@ -589,6 +607,17 @@ impl Conversation {
     /// as a rewrite), or the failure survives a resume — the file otherwise
     /// keeps the user turn memory just dropped.
     ///
+    /// **The pop is conditional on the tail being the person's own text**
+    /// ([`is_plain_user_text`]), not on its role — because there are two
+    /// ways a turn begins. A plain submit pushes a user message, and the
+    /// snapshot ends with it: popped, or the next request resends it. A
+    /// submit that *folded* into a tool-round tail (the barge-in shape —
+    /// see `append_user_text`'s callers) pushed nothing, and the snapshot
+    /// ends with the tool results of the turn before: restoring the
+    /// snapshot already removed the folded text, and popping would orphan
+    /// that round's `tool_use`. One rule serves both, so a caller does not
+    /// have to carry a flag from its push site to its error arm.
+    ///
     /// Two costs of that recording, known and accepted: the rewrite carries
     /// the **whole** conversation, so a long-lived surface riding out a
     /// flapping provider appends one full history copy per failure — the
@@ -600,7 +629,9 @@ impl Conversation {
     /// never under; the safe direction, deliberately.
     pub fn roll_back_failed_turn(&mut self, before: Vec<Message>) {
         self.messages = before;
-        self.messages.pop();
+        if self.messages.last().is_some_and(is_plain_user_text) {
+            self.messages.pop();
+        }
     }
 
     pub fn is_empty(&self) -> bool {
