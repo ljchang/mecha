@@ -1180,6 +1180,7 @@ fn force_reproducible(opts: &mut GlobalOpts, allow_mcp: bool) {
     opts.no_fallback = true;
     opts.no_messages = true;
     opts.no_skills = true;
+    opts.no_charter = true;
     opts.no_compact_tool = true;
 }
 
@@ -1207,6 +1208,7 @@ mod tests {
             ("fallback", opts.no_fallback),
             ("messages", opts.no_messages),
             ("skills", opts.no_skills),
+            ("the charter", opts.no_charter),
             // The one that was missed. It changes the *tool list*, which is
             // the front of the cached prefix, not merely what a run may do.
             ("the compact tool", opts.no_compact_tool),
