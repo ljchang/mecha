@@ -686,6 +686,13 @@ impl StopCause {
 /// measured ~50% per-attempt recovery rate says have already failed.
 const EMPTY_TURN_RETRIES: u32 = 3;
 
+/// A bound on the step escalation's own spend (`docs/GOAL-SYSTEM-DESIGN.md`
+/// §5.5) — not on how often `todo` flags a candidate. Once reached, further
+/// candidates are silently dropped for the rest of the run rather than the
+/// mechanism asking permission for more. Argued, not measured, same honesty
+/// as `step.rs`'s own thresholds.
+const MAX_STEP_ESCALATIONS_PER_RUN: u32 = 5;
+
 /// What the model is told after a turn that produced nothing.
 ///
 /// Wording is load-bearing, the way `ask_user`'s decline wording was: a vague
@@ -1144,10 +1151,19 @@ impl Agent {
         // fire there at all. The loop is the one place that runs once per run
         // no matter what the caller handed it. Same reason `context_overflows`
         // and the pressure series are loop locals.
+        // `step_escalation`'s slot is minted per run for the identical
+        // reason, one door over: `todo` writes into it and the loop drains it
+        // with a destructive take, so two runs sharing one `Mutex` would let
+        // one run's candidate be read — and cleared — by another.
         let run_scoped;
-        let cx = if cx.tools.compact_requested.is_some() {
+        let cx = if cx.tools.compact_requested.is_some() || cx.tools.step_escalation.is_some() {
             let mut tools = (*cx.tools).clone();
-            tools.compact_requested = Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+            if tools.compact_requested.is_some() {
+                tools.compact_requested = Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+            }
+            if tools.step_escalation.is_some() {
+                tools.step_escalation = Some(Arc::new(std::sync::Mutex::new(None)));
+            }
             run_scoped = RunContext {
                 tools: Arc::new(tools),
                 ..cx.clone()
@@ -1297,6 +1313,8 @@ impl Agent {
         let mut cache_lens = crate::cache_lens::CacheLens::new();
         let mut loop_guard = LoopGuard::new(self.cfg.loop_guard);
         let mut boredom = crate::boredom::Boredom::new(self.cfg.boredom);
+        // See `MAX_STEP_ESCALATIONS_PER_RUN`.
+        let mut step_escalations_used = 0u32;
         let mut loop_detected = false;
         // Consecutive empty turns, reset by any turn that produces something.
         // This used to count across the whole run on the theory that a model
@@ -1994,6 +2012,40 @@ impl Agent {
                     if let Some((rung, tool)) = bored {
                         tracing::debug!(%tool, ?rung, "an approach has stopped moving");
                         append_user_text(messages, rung.notice(&tool, &self.escapes(cx)));
+                    }
+                    // `compact_requested`'s exact shape, one door over: `todo`
+                    // cannot rewrite the transcript or reach a provider, so
+                    // what it can do is ask, and the loop is what acts — a
+                    // read-clear-call-fold, bounded so the mechanism cannot
+                    // spend more than `MAX_STEP_ESCALATIONS_PER_RUN` calls no
+                    // matter how many candidates `todo` flags.
+                    if let Some(slot) = cx.tools.step_escalation.as_ref() {
+                        let candidate = slot.lock().unwrap().take();
+                        if let Some(escalation) = candidate {
+                            if step_escalations_used < MAX_STEP_ESCALATIONS_PER_RUN {
+                                step_escalations_used += 1;
+                                match crate::step::escalate(
+                                    self.provider.as_ref(),
+                                    &self.model,
+                                    &escalation,
+                                )
+                                .await
+                                {
+                                    Ok(crate::step::StepVerdict::RevisePlan) => {
+                                        append_user_text(
+                                            messages,
+                                            crate::step::templated_nudge(&escalation),
+                                        );
+                                    }
+                                    Ok(crate::step::StepVerdict::Accept) => {}
+                                    Err(e) => {
+                                        tracing::debug!(error = %e, "step escalation call failed");
+                                    }
+                                }
+                            } else {
+                                tracing::debug!("step escalation budget exhausted for this run");
+                            }
+                        }
                     }
                 }
                 // A server-side tool loop paused mid-turn. Resending the
@@ -6013,6 +6065,227 @@ mod tests {
         assert_eq!(
             unreachable.delegate, None,
             "a withheld delegate must not be offered as an escape"
+        );
+    }
+
+    // --- step escalation (§5.5's model half) ---
+    //
+    // `step.rs` covers the pure functions and `todo.rs` covers `Tracked`
+    // writing a candidate into a faked `ToolCtx`; what neither can reach is
+    // the loop's own wiring — does it actually read the slot, spend a
+    // scripted call on it, and fold the verdict into the *same* message as
+    // the tool results, the way `a_step_ticked_over_a_failed_call_is_
+    // reported_on_the_plan` above proves the deterministic half's wiring.
+    // So this drives a real `Agent::run` with a test tool standing in for
+    // `todo`'s own detection (already covered) and writing a fixed candidate
+    // straight into the slot.
+
+    /// Stands in for `todo` writing an escalation candidate — the detection
+    /// itself is `todo.rs`'s to test; this tool exists only to get a
+    /// candidate into the slot the way a real `Tracked::advance` would.
+    struct EscalatorTool;
+    #[async_trait]
+    impl Tool for EscalatorTool {
+        fn name(&self) -> &str {
+            "todo"
+        }
+        fn description(&self) -> &str {
+            "Stands in for the real todo tool in these tests."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+            if let Some(slot) = ctx.step_escalation.as_ref() {
+                *slot.lock().unwrap() = Some(crate::step::StepEscalation {
+                    reason: crate::step::EscalationReason::SpanOutlier,
+                    step: "do the big thing".into(),
+                    siblings: vec!["read the config".into()],
+                    calls: 20,
+                    sibling_mean_calls: Some(2.5),
+                });
+            }
+            Ok(ToolOutput::ok("1/1 done"))
+        }
+    }
+
+    fn escalation_reply(text: &str) -> CompletionResponse {
+        CompletionResponse {
+            message: Message::assistant(vec![Block::text(text)]),
+            stop_reason: StopReason::EndTurn,
+            usage: Usage::default(),
+            refusal: None,
+            model: "scripted-1".into(),
+            malformed_tool_args: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_revise_plan_verdict_folds_a_nudge_into_the_same_message_as_the_tool_results() {
+        let (mut agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "todo".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                // Consumed by the escalation call, not the main conversation.
+                escalation_reply(r#"{"reasoning": "too broad", "verdict": "revise_plan"}"#),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EscalatorTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.step_escalation = true;
+        agent.ctx_mut().step_escalation = Some(Arc::new(Mutex::new(None)));
+
+        let mut convo = Conversation::user("go");
+        agent.run(&mut convo, None).await.unwrap();
+
+        // The nudge and the tool result must be the *same* user message —
+        // the same slot steering uses, since there is no legal turn between
+        // a `tool_use` and its result. `Message::text()` only concatenates
+        // `Block::Text`, never `Block::ToolResult`, so the result is found by
+        // content and the nudge is read back off the same message's `text()`.
+        let with_results = convo
+            .messages
+            .iter()
+            .find(|m| {
+                m.role == Role::User
+                    && m.content
+                        .iter()
+                        .any(|b| matches!(b, Block::ToolResult { .. }))
+            })
+            .expect("the tool result must be somewhere in the transcript");
+        assert!(
+            with_results.text().contains("re-scoped")
+                || with_results.text().contains("broken down differently"),
+            "the nudge must land in the same message as the tool result: {:?}",
+            with_results.content
+        );
+        // The model's own free-text reasoning never reaches the transcript.
+        assert!(convo
+            .messages
+            .iter()
+            .all(|m| !m.text().contains("too broad")));
+    }
+
+    #[tokio::test]
+    async fn an_accept_verdict_adds_no_nudge() {
+        let (mut agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "todo".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                escalation_reply(r#"{"reasoning": "fine", "verdict": "accept"}"#),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EscalatorTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.step_escalation = true;
+        agent.ctx_mut().step_escalation = Some(Arc::new(Mutex::new(None)));
+
+        let mut convo = Conversation::user("go");
+        agent.run(&mut convo, None).await.unwrap();
+
+        assert!(convo
+            .messages
+            .iter()
+            .all(|m| !m.text().contains("re-scoped") && !m.text().contains("broken down")));
+    }
+
+    /// The feature defaults off, and "off" must mean byte-identical to a run
+    /// that never heard of this mechanism — not merely "no nudge appears".
+    #[tokio::test]
+    async fn the_feature_off_by_default_never_touches_the_transcript() {
+        let (agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "todo".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EscalatorTool)],
+            PermissionMode::Allow,
+        );
+        assert!(!agent.cfg.step_escalation, "off by default");
+        // No slot on this ctx either — `EscalatorTool` silently does nothing.
+
+        let mut convo = Conversation::user("go");
+        agent.run(&mut convo, None).await.unwrap();
+
+        assert!(convo
+            .messages
+            .iter()
+            .all(|m| !m.text().contains("re-scoped") && !m.text().contains("broken down")));
+    }
+
+    /// The budget is on the escalation's own spend, not on how often a
+    /// candidate is flagged: `MAX_STEP_ESCALATIONS_PER_RUN` calls get made
+    /// and no more, even though `EscalatorTool` re-flags a candidate every
+    /// turn.
+    #[tokio::test]
+    async fn the_per_run_budget_stops_spending_after_its_ceiling() {
+        let main_turns = MAX_STEP_ESCALATIONS_PER_RUN + 2;
+        let mut turns = Vec::new();
+        for i in 0..main_turns {
+            turns.push(assistant(
+                vec![Block::ToolUse {
+                    id: format!("t{i}"),
+                    name: "todo".into(),
+                    input: json!({}),
+                }],
+                StopReason::ToolUse,
+            ));
+            // Only the first `MAX_STEP_ESCALATIONS_PER_RUN` main turns are
+            // followed by an escalation call in the real sequence — once the
+            // budget is spent the loop never asks again, so queuing a reply
+            // after every main turn would let a later main turn consume an
+            // escalation reply meant for nobody and fail on the malformed
+            // "call todo" it expected instead, rather than silently passing.
+            if i < MAX_STEP_ESCALATIONS_PER_RUN {
+                turns.push(escalation_reply(
+                    r#"{"reasoning": "x", "verdict": "accept"}"#,
+                ));
+            }
+        }
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let expected_calls = turns.len();
+
+        let (mut agent, provider) =
+            agent_with_tools(turns, vec![Arc::new(EscalatorTool)], PermissionMode::Allow);
+        agent.cfg.step_escalation = true;
+        agent.cfg.max_turns = main_turns + 5;
+        agent.ctx_mut().step_escalation = Some(Arc::new(Mutex::new(None)));
+
+        let mut convo = Conversation::user("go");
+        agent.run(&mut convo, None).await.unwrap();
+
+        // Every scripted turn was consumed in order — if the loop had spent
+        // an escalation call past the budget, or skipped one it should have
+        // made, a later main turn would have received the wrong reply and
+        // the run would have failed well before reaching "done".
+        let seen = provider.seen.lock().unwrap().len();
+        assert_eq!(
+            seen, expected_calls,
+            "expected exactly the budgeted number of escalation calls"
         );
     }
 

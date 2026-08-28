@@ -485,6 +485,19 @@ pub struct AgentConfig {
     /// latency, with ~90% of catches being omissions. Costs one extra
     /// request per compaction, two when a regeneration is needed.
     pub compact_validate: bool,
+    /// Escalate an ambiguous completed step to a quarantined model call
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §5.5 — a span far longer than its
+    /// siblings, or a step whose own words claim a check its calls never
+    /// made) instead of staying silent.
+    ///
+    /// **Off by default**, unlike `boredom`/`compact_validate`: those ship on
+    /// because each was argued from a measurement (boredom costs nothing;
+    /// compact_validate's omission-catch rate was measured elsewhere). This
+    /// one has no corpus yet — the pre-filter's thresholds are argued, not
+    /// measured, same honesty as `step.rs`'s own constants — so it follows
+    /// `compact_at_tokens`'s posture instead: unset until a person decides to
+    /// spend the model call.
+    pub step_escalation: bool,
 }
 
 impl Default for AgentConfig {
@@ -510,6 +523,7 @@ impl Default for AgentConfig {
             loop_guard: true,
             boredom: true,
             compact_validate: true,
+            step_escalation: false,
         }
     }
 }
@@ -1155,6 +1169,7 @@ struct AgentLayer {
     compact_validate: Option<bool>,
     loop_guard: Option<bool>,
     boredom: Option<bool>,
+    step_escalation: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -1249,6 +1264,9 @@ impl ConfigLayer {
             }
             if let Some(v) = a.loop_guard {
                 t.loop_guard = v;
+            }
+            if let Some(v) = a.step_escalation {
+                t.step_escalation = v;
             }
             if a.timezone.is_some() {
                 t.timezone = a.timezone;

@@ -4,7 +4,8 @@ Decided 2026-08-26. **Rungs 0–5 of §14 shipped the same day** (PRs #61–#72)
 rung 5's model-facing half followed on 2026-08-27 (#78), and **rung 6, rung
 7's observation half, and rung 7's quarantined appraiser all shipped the same
 day** — the observation half with a measurement that argues against the build
-order below. Rung 7's model half of step appraisal and rung 8 both wait on it.
+order below. **Rung 7 shipped in full on 2026-08-28**: the model half of
+step appraisal (§5.5's escalation) closes the rung.
 The body below is the design as proposed and is
 deliberately not rewritten — `docs/HISTORY.md` records what was built, and the
 gap between the two is evidence about how the built thing came to be shaped
@@ -20,7 +21,7 @@ beside the original rather than replacing it (§2.1 and §4.4).
 | 4 | prioritised replay + uniform holdout | shipped, #66 |
 | 5 | predictive compaction and task sizing | shipped, #69/#71/#72 + #78 |
 | 6 | boredom, and the deterministic half of step appraisal | shipped, 2026-08-27 — with §5.5's three comparison signals and §9.1's rung 2 named rather than built |
-| 7 | the appraisal record, the pure `Affect` function, and the quarantined appraiser | **observation half and the quarantined appraiser (§5.1) shipped**, 2026-08-27; the model half of step appraisal is open |
+| 7 | the appraisal record, the pure `Affect` function, the quarantined appraiser, and step appraisal's model half | **shipped in full**, 2026-08-27/28 |
 | 8–11 | consumers of the label, the charter, curiosity | unbuilt, and §14's note below argues the order should change |
 
 Everything shipped so far has no model, no charter and no adversary in it,
@@ -1172,12 +1173,15 @@ Each rung is independently useful and independently measurable.
    guard's "dead". *Built 2026-08-27 (`step.rs`, `boredom.rs`), and building
    it corrected the rung twice.*
 
-   **Step appraisal reads two of §5.5's five signals, not five.** The two are
-   facts about the span — nothing was attempted, and the last attempt did not
-   succeed. The other three are *comparisons*: a span far longer than its
-   siblings and a verify-shaped call that passed each need a threshold or a
-   guess about what a call meant, and the same-target reading turned out to be
-   boredom's rather than step appraisal's, which is where it now lives.
+   **Step appraisal's deterministic `Finding` reads two of §5.5's five
+   signals, not five.** The two are facts about the span — nothing was
+   attempted, and the last attempt did not succeed — and stay model-free.
+   Of the other three: the same-target reading turned out to be boredom's
+   rather than step appraisal's, and belongs one mechanism over; the
+   remaining two — a span far longer than its siblings, a verify-shaped
+   call that passed — are *comparisons* that needed either a threshold or a
+   guess about what a call meant, which is exactly what rung 7's escalation
+   (below) settles with a model call instead of a tuned constant.
 
    **And it is rungs 1 and 3, not 1–3.** Rung 2 — consult — has two halves and
    neither could be built: a §7.4 marker does not exist, and while a skill
@@ -1245,6 +1249,44 @@ Each rung is independently useful and independently measurable.
    measurement that decides the question. Re-running `--appraise` at scale
    over the store, the way the observation half's 120-session measurement was
    taken, is the next thing to do with it before anything is built on top.
+
+   **The model half of step appraisal shipped 2026-08-28, closing rung 7.**
+   Unlike the appraiser, this is a *live* concern — a step's plan action has
+   to reach the same run before it wastes more turns, so it runs inside
+   `agent.rs`'s own loop rather than as an offline pass. `todo.rs`'s
+   `Tracked` gained a rolling history of landed steps' call counts;
+   `step::escalation_candidate` is the pre-filter for two triggers — a span
+   at least 3× the mean of the plan's other completed steps (floor of 6
+   calls, at least 2 siblings to compare against), or a step whose own
+   words read as a verification claim with no verify-shaped call in its
+   span (`step::looks_like_verification`, a `Work`/`Span` counter beside
+   `calls`/`failed`/`refused`). A hit is written into a new `ToolCtx` slot
+   (`step_escalation`, `compact_requested`'s exact shape — presence is the
+   enablement, the loop reads-and-clears it once per turn) and settled by
+   one quarantined call (`step::escalate`), folded into the turn via
+   `append_user_text` exactly where boredom's notices land.
+
+   **The step's own text is fed to the call; the model's reasoning about it
+   is not fed back.** Unlike the appraiser's evidence (numbers only, because
+   it could indirectly reflect untrusted content), a step's text is this
+   same model's own prior plan output, already fully trusted in-context
+   every turn. But the verdict the call returns is a closed
+   `accept`/`revise_plan`, and the nudge shown to the model is fully
+   templated by *which trigger fired* — the model's own free-text reasoning
+   is logged at `debug` and never reaches the transcript, on `frontdoor`'s
+   "a paraphrase of an injection is the injection rearranged" rule: a
+   model's paraphrase of text it just read is the same risk arriving
+   through the one channel that re-enters context.
+
+   **Off by default** (`[agent] step_escalation`, `--no-step-escalation`,
+   forced off under `mecha eval`), on `compact_at_tokens`'s posture rather
+   than `boredom`/`compact_validate`'s: the pre-filter's thresholds are
+   argued, not measured, and this is the first thing in the rung that
+   actually spends a model call mid-run. Verified live against the local
+   model: a deliberately oversized step correctly drove the quarantined
+   call, which judged the size intentional (`accept`) rather than a
+   decomposition problem — and the reasoning it gave never reached the
+   recorded transcript.
 8. **Goal-closure appraisal and the readout surfaces** (§5.4, §6.2).
 9. **Episode tagging, review-queue salience, gossip seeding** (§10).
 

@@ -140,6 +140,14 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_hooks: bool,
 
+    /// Don't escalate an ambiguous completed step to a quarantined model
+    /// call, even if `[agent] step_escalation` is set — an opt-out, since the
+    /// config field is already off by default. Forced by `mecha eval` for the
+    /// same reason `--no-compact-tool` is: a machine's local config must not
+    /// change what a scorecard measures.
+    #[arg(long, global = true)]
+    pub no_step_escalation: bool,
+
     /// Don't route any tools through the outbox — configured [outbox] tools
     /// execute directly under the usual gates instead of being staged.
     #[arg(long, global = true)]
