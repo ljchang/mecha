@@ -916,23 +916,40 @@ impl Session {
     }
 
     /// Sessions in `dir`, newest first.
+    ///
+    /// A transcript whose header cannot be read is skipped so the walk
+    /// stays best-effort — but skipped is not *forgotten*: callers that
+    /// report on the store should use [`Session::list_counting`], because a
+    /// store rotting one file at a time is otherwise invisible from every
+    /// reader at once ("an unreadable store is a finding, not an empty
+    /// queue" — the outbox gets `outbox_unreadable` for exactly this, and
+    /// the session store got nothing).
     pub fn list(dir: &Path) -> Result<Vec<(SessionMeta, PathBuf)>> {
+        Ok(Session::list_counting(dir)?.0)
+    }
+
+    /// [`Session::list`], plus how many `.jsonl` files were skipped because
+    /// no header could be read from them — a torn write, a corrupt file, a
+    /// permissions hole. The count is the reader's to surface; the walk
+    /// itself stays best-effort either way.
+    pub fn list_counting(dir: &Path) -> Result<(Vec<(SessionMeta, PathBuf)>, usize)> {
         if !dir.exists() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
         let mut out = Vec::new();
+        let mut unreadable = 0usize;
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            // A transcript with no header is unusable; skip it quietly.
-            if let Some(meta) = Session::peek_meta(&path) {
-                out.push((meta, path));
+            match Session::peek_meta(&path) {
+                Some(meta) => out.push((meta, path)),
+                None => unreadable += 1,
             }
         }
         out.sort_by_key(|(meta, _)| std::cmp::Reverse(meta.created_at));
-        Ok(out)
+        Ok((out, unreadable))
     }
 
     /// Find a session by full id or unique prefix.
@@ -1545,6 +1562,13 @@ mod tests {
         let listed = Session::list(&dir).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].0.id, "20260101T000000-peek");
+
+        // Skipped is not forgotten: the counting variant reports the same
+        // sessions plus how many files it had to skip, so a reporting
+        // caller can surface the rot the best-effort walk steps over.
+        let (counted, unreadable) = Session::list_counting(&dir).unwrap();
+        assert_eq!(counted.len(), 1);
+        assert_eq!(unreadable, 1);
 
         // And the peek agrees with the full load about what the header says.
         let peeked = Session::peek_meta(&session.path).unwrap();
