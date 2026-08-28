@@ -2161,6 +2161,16 @@ body.** `--json --write` printed a plan, exited 1 and wrote nothing, because
 whichever branch came first won; `conflicts_with` makes clap explain it
 instead of leaving somebody to discover that their command did nothing.
 
+**A child can add variables to *itself* after exec, and that is not a leak.**
+`mcp.rs` calls `env_clear()` before `envs()`, so nothing crosses from the
+parent — but on macOS CoreFoundation writes `__CF_USER_TEXT_ENCODING` into its
+own environment during initialization, and the `python3` running the nosy
+fixture links it. The allowlist test exempts that **by exact name and target,
+never by prefix** ("ignore anything starting with `__`" is a blanket over a
+class nobody enumerated), and it asserts each exempted name is genuinely
+absent from what we hand over — so the exemption cannot grow to cover a real
+leak without failing.
+
 **Two writes that must not be quiet.** `read_declined` answers `None` for an
 unreadable store so a caller can tell *unknown* from *empty* — and the write
 path collapsed it to empty and then **persisted** that, so one `never` over a
