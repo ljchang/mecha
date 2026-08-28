@@ -6599,11 +6599,24 @@ fn suspend_and_edit_charter(
     // nothing, a `:cq` that exited non-zero after a save landed) are exactly
     // the kind that a second copy gets subtly wrong.
     use crate::editor::CharterEdit;
-    let outcome = crate::editor::edit_charter_with(&path, |p| {
-        // Only the hand-over differs between the two callers: this one has
-        // an alternate screen to put down first.
-        with_terminal_suspended(terminal, || crate::editor::edit_file(p))?
-    });
+    // **The suspend wraps the whole thing, and its `?` is at function scope**
+    // — the shape every sibling hand-over keeps, and getting it wrong here
+    // was a real defect rather than a style point.
+    //
+    // `with_terminal_suspended` returns `Result<Result<_>>`: the outer error
+    // is the suspend/restore dance itself (`disable_raw_mode`,
+    // `LeaveAlternateScreen`, and crucially `enable_raw_mode` *after* the
+    // editor returns), the inner one is the editor. Putting the `?` inside a
+    // closure handed to `edit_charter_with` folded the first into the second,
+    // so a failed `enable_raw_mode` — the alternate screen never re-entered,
+    // raw mode off — was classified as `CharterEdit::EditorFailed` and
+    // reported as "charter unchanged: …" while the TUI carried on drawing
+    // into a terminal that no longer takes input. A terminal that could not
+    // be restored is not an editor failure, and the classifier below has no
+    // arm that means it.
+    let outcome = with_terminal_suspended(terminal, || {
+        crate::editor::edit_charter_with(&path, crate::editor::edit_file)
+    })?;
 
     let mut editor_error = None;
     if let Some(modal) = &mut app.charter {
