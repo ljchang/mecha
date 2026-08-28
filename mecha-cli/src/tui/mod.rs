@@ -1396,26 +1396,37 @@ fn finish_run(
                 s.record_run(&persisted, &app.convo)?;
                 s.record_outcome(&outcome)?;
                 s.append(&Record::Taint(app.convo.taint))?;
-
-                // §6.2's readout: how this session's just-finished run
-                // appraises, right now — a different question from a
-                // task's goal-closure appraisal (`mecha tasks set`), which
-                // reads a finished session back off disk, possibly from
-                // another process. `Neutral` (the overwhelming common case)
-                // clears the badge rather than showing one. No drafts here
-                // (`appraisal::live`'s own doc comment) — found on review, a
-                // draft resolved on an earlier or later turn than this one
-                // has nothing to do with how *this* run went.
-                //
-                // `persisted.len()`, not `app.convo.messages.len()`: `live`
-                // needs where *this run's own* messages start, and
-                // `persisted` is exactly that boundary — the conversation as
-                // it stood right after the triggering user turn was
-                // appended, before this run added anything of its own.
-                let label =
-                    mecha_core::appraisal::live(&s.meta.id, &outcome, &app.convo, persisted.len());
-                app.affect = (label != mecha_core::appraisal::Affect::Neutral).then_some(label);
             }
+
+            // §6.2's readout: how this session's just-finished run
+            // appraises, right now — a different question from a
+            // task's goal-closure appraisal (`mecha tasks set`), which
+            // reads a finished session back off disk, possibly from
+            // another process. `Neutral` (the overwhelming common case)
+            // clears the badge rather than showing one. No drafts here
+            // (`appraisal::live`'s own doc comment) — found on review, a
+            // draft resolved on an earlier or later turn than this one
+            // has nothing to do with how *this* run went.
+            //
+            // Outside the `session` block above on purpose: `live` is a
+            // pure function of the outcome and the conversation, both in
+            // hand regardless of whether a transcript is being written, and
+            // the only thing the session contributed was an id stamped on a
+            // record that is immediately discarded. A `--no-session` run
+            // used to silently lose its badge to that accidental coupling.
+            //
+            // `persisted.len()`, not `app.convo.messages.len()`: `live`
+            // needs where *this run's own* messages start, and
+            // `persisted` is exactly that boundary — the conversation as
+            // it stood right after the triggering user turn was
+            // appended, before this run added anything of its own.
+            let label = mecha_core::appraisal::live(
+                session.map(|s| s.meta.id.as_str()).unwrap_or("unsaved"),
+                &outcome,
+                &app.convo,
+                persisted.len(),
+            );
+            app.affect = (label != mecha_core::appraisal::Affect::Neutral).then_some(label);
         }
         Err(e) => {
             app.transcript.push(Entry::Error(format!("error: {e:#}")));
