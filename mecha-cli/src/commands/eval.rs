@@ -1182,6 +1182,7 @@ fn force_reproducible(opts: &mut GlobalOpts, allow_mcp: bool) {
     opts.no_skills = true;
     opts.no_charter = true;
     opts.no_compact_tool = true;
+    opts.no_step_escalation = true;
 }
 
 #[cfg(test)]
@@ -1212,6 +1213,9 @@ mod tests {
             // The one that was missed. It changes the *tool list*, which is
             // the front of the cached prefix, not merely what a run may do.
             ("the compact tool", opts.no_compact_tool),
+            // Off by default, but a machine's own config.toml could still
+            // turn it on — a scorecard must not depend on that either.
+            ("step escalation", opts.no_step_escalation),
         ] {
             assert!(
                 on,
@@ -1225,6 +1229,7 @@ mod tests {
         force_reproducible(&mut with_mcp, true);
         assert!(!with_mcp.no_mcp, "--mcp is opt-in, not overridden");
         assert!(with_mcp.no_compact_tool, "and it opts into nothing else");
+        assert!(with_mcp.no_step_escalation, "including this one");
     }
 
     /// A scratch directory that cleans up after itself, so a failing test
