@@ -27,6 +27,16 @@
 //! `mecha-graph` subprocess, which is fine once a night and too expensive in
 //! the path of every run.
 //!
+//! **Known imprecision, not fixed here**: `Backlog`'s frontdoor count
+//! includes a request parked in `needs_info` — waiting on the *requester* to
+//! answer, not on mecha — which this module has no way to exclude without
+//! reading `Frontdoor` records directly instead of through `Backlog`'s
+//! already-aggregated `Depth`, the one seam this module deliberately mirrors
+//! rather than bypasses. So a request nobody but the requester owes anything
+//! on today still counts toward `waiting`. Narrowing that needs a `Backlog`
+//! (or a sibling) that can tell the two frontdoor states apart, which is a
+//! `backlog.rs` change, not a `guilt.rs` one.
+//!
 //! ## Observation only — there is no consumer yet
 //!
 //! §7.3 is unambiguous that affect may only *narrow* a disposition, never
@@ -61,7 +71,23 @@ const SATURATES_AT_COUNT: usize = 3;
 
 /// How long the oldest recorded commitment can wait before the age term
 /// treats it as maximally so.
-const SATURATES_AT_HOURS: f64 = 24.0;
+///
+/// **A day was the wrong number, found by reading what the three stores this
+/// reads actually hold rather than by guessing.** `questions.rs` exists
+/// precisely because "the honest case is that nobody answers until
+/// morning" — an overnight-parked question is the mechanism working, not
+/// neglect. `read_frontdoor` (`backlog.rs`) counts every request with
+/// `state != CLOSED`, `backlog.rs`'s own canonical fixture ages one 8–9
+/// days, and a `needs_info` request (parked waiting on the *requester*, not
+/// the owner) ages without bound while nothing is actually owed. At a
+/// one-day horizon, a single week-old parked question saturates `age` to
+/// `1.0` — and because the combination is an OR, that alone saturates the
+/// *whole* reading regardless of count or pressure (`1 - (1-1)(1-c)(1-p) ==
+/// 1`), which is a machine reading a constant `anticipated_guilt: 1.0`
+/// forever. A corpus of a constant carries nothing, the same degenerate-label
+/// shape rung 7's own measurement found the hard way. A week gives the
+/// distribution these stores actually produce room to still vary.
+const SATURATES_AT_HOURS: f64 = 24.0 * 7.0;
 
 /// A magnitude in `[0, 1]`, combining three signals as a logical OR —
 /// `1 - (1-a)(1-b)(1-c)` — rather than an average or a product:
@@ -235,9 +261,9 @@ mod tests {
     }
 
     #[test]
-    fn a_day_old_commitment_saturates_the_age_term() {
+    fn a_week_old_commitment_saturates_the_age_term() {
         let now = Utc::now();
-        let old = now - chrono::Duration::hours(48);
+        let old = now - chrono::Duration::hours(SATURATES_AT_HOURS.round() as i64);
         let backlog = Backlog {
             questions: Some(depth(1, Some(&old.to_rfc3339()))),
             ..readable_and_empty()
@@ -245,6 +271,21 @@ mod tests {
         // Pressure known and zero, so age alone is what is being measured.
         let g = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
         assert!((g - 1.0).abs() < 1e-6, "{g}");
+    }
+
+    #[test]
+    fn a_two_day_old_commitment_does_not_saturate_the_age_term() {
+        // The gap a one-day horizon left open: `questions.rs` parks answers
+        // overnight by design, and a two-day-old one is not neglect. This
+        // must read as partial concern, not the maximum.
+        let now = Utc::now();
+        let two_days = now - chrono::Duration::hours(48);
+        let backlog = Backlog {
+            questions: Some(depth(1, Some(&two_days.to_rfc3339()))),
+            ..readable_and_empty()
+        };
+        let g = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
+        assert!(g > 0.0 && g < 0.5, "{g}");
     }
 
     #[test]
@@ -307,12 +348,16 @@ mod tests {
             )),
             questions: Some(depth(
                 1,
-                Some(&(now - chrono::Duration::hours(30)).to_rfc3339()),
+                Some(
+                    &(now - chrono::Duration::hours(SATURATES_AT_HOURS.round() as i64 * 2))
+                        .to_rfc3339(),
+                ),
             )),
             ..readable_and_empty()
         };
         let g = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
-        // 30h saturates the 24h age term regardless of the 1h row beside it.
+        // Two saturation-horizons-old saturates the age term regardless of
+        // the 1h row beside it.
         assert!((g - 1.0).abs() < 1e-6, "{g}");
     }
 
