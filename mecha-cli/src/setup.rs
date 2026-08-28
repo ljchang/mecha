@@ -222,6 +222,21 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // an allowlist, not an inheritance. Do this before the parent takes
     // ownership of the registry.
     let mut registry = tools.registry;
+
+    // Closing a task is the owner's act — §5.4's closure appraisal fires only
+    // inside `tasks set`, so a model-driven `kg_task_update {status: done}`
+    // consumed that one-shot moment silently. The guard refuses exactly the
+    // closing statuses and leaves every other field of the tool alone; see
+    // `closure_guard` for the argument. Wrapped HERE, before the subagent
+    // loop below clones the pool, or a child registry would hold the
+    // unwrapped handle — the delegation hole `withhold_tool`'s own doc names.
+    // The wrapper keeps the inner tool's name and spec, so the re-insert
+    // lands on the same registry key and the cached prefix does not move.
+    // (`tasks set` itself is unaffected: it calls through `prepare_tools`'s
+    // registry directly, which this — the model-facing build — never touches.)
+    if let Some((_, tool)) = withhold_tool(&mut registry, "kg_task_update") {
+        registry.insert(crate::closure_guard::ClosedStatusGuard::wrap(tool));
+    }
     for profile in &cfg.subagents {
         // `--tool` narrows the pool deliberately, and a subagent whose profile
         // names something the narrowing excluded is not a misconfiguration —
