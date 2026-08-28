@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assertion written against the documented contract is ignored entirely by
   `set -e`, so it neither failed nor passed.
 
+- **A test that only passed on Linux.** `an_mcp_file_parses_and_resolves_paths_against_its_own_directory`
+  built its expectation from `std::env::temp_dir()` and compared it against a
+  path `load_mcp_file` had canonicalized — fine on Linux, and wrong on macOS,
+  where `temp_dir()` answers `/var/folders/…` and canonicalizing resolves the
+  symlink to `/private/var/folders/…`. The code was right and the fixture was
+  Linux-shaped. The scratch directory canonicalizes at creation now, so the
+  next fixture that compares a path is correct without anyone remembering
+  why.
+
 - **CI builds and tests the whole workspace on macOS.** The `test` job was
   ubuntu-only on both arms, so *nothing* proved any of the four crates
   compiled anywhere else — the `mecha-cli` break below was found by a job

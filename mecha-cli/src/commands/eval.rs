@@ -1279,6 +1279,15 @@ mod tests {
     /// A scratch directory that cleans up after itself, so a failing test
     /// does not leave litter that changes what the next run's `is_file`
     /// checks see.
+    ///
+    /// **Canonicalized, because `temp_dir()` is not the path the code under
+    /// test will produce.** On macOS it answers `/var/folders/…`, which is a
+    /// symlink to `/private/var/folders/…` — so a fixture that built its
+    /// expectation from `temp_dir()` compared it against a
+    /// `load_mcp_file` result that had (correctly) canonicalized, and failed
+    /// on a difference that is not about the code at all. Resolving here
+    /// rather than at each assertion means the next fixture that compares a
+    /// path is right without anyone remembering why.
     struct Scratch(PathBuf);
 
     impl Scratch {
@@ -1286,6 +1295,8 @@ mod tests {
             let dir =
                 std::env::temp_dir().join(format!("mecha-eval-test-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
+            // After creating it: canonicalize needs the directory to exist.
+            let dir = dir.canonicalize().unwrap_or(dir);
             Scratch(dir)
         }
     }
