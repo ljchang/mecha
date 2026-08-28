@@ -129,8 +129,17 @@ impl Charter {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Charter::default()),
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
-        let raw: RawCharter =
-            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        Charter::parse(&text).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    /// Parse and validate charter TOML that has not been written anywhere
+    /// yet. The seam a surface that *accepts* an edit needs — the web
+    /// settings page validates a proposed charter with exactly the reader
+    /// every run will load it through, and refuses the save on an error,
+    /// so a file that reaches disk is one that will load. `load` goes
+    /// through here so the two can never diverge on what "valid" means.
+    pub fn parse(text: &str) -> Result<Charter> {
+        let raw: RawCharter = toml::from_str(text)?;
         Charter::validate(raw.line)
     }
 

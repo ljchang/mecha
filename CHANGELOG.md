@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A settings page on the web surface** — the gear in the upper-right of
+  Home. Three sections, and exactly one thing on the whole page can write:
+  the **charter** shows the ranked lines and offers an edit whose save is a
+  two-tap confirm, validated server-side by the same `Charter::parse` every
+  run loads through — an invalid document is refused with the parse error
+  and never reaches disk (temp-sibling-and-rename when it does), which is
+  strictly better than the TUI's after-the-fact warning, since here the
+  bytes are still refusable. **Learned rules** is a read of `mecha rules
+  list --json` with the ledger tallies — retiring stays behind its own
+  staged review. **Voice** reports whether the worker answers and where
+  offers go, nothing more. Deliberately absent: anything whose edit widens
+  security posture (`[sandbox]`, `[security]`, `[outbox]` routing) stays in
+  `config.toml` where a diff reviews it.
+
 - **`/charter` in the TUI: see the standing priorities, and edit them without
   leaving the screen.** The list shows the ranked lines (order is rank), enter
   opens a line's full text, and `e` hands the terminal to `$EDITOR` on
