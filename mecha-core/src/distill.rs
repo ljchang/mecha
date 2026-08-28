@@ -258,7 +258,8 @@ pub fn corrections_for(taint: Option<Taint>, corrections: &[Correction]) -> &[Co
     }
 }
 
-/// The same gate as [`corrections_for`], applied to surprises.
+/// The same gate as [`corrections_for`], applied to surprises — for the
+/// automated reader on the other end of `upsert_args`.
 ///
 /// A surprise's `predicted`/`actual`/`about` are free text the distiller
 /// read off the transcript, exactly like a correction's `wrong`/`right` —
@@ -267,6 +268,13 @@ pub fn corrections_for(taint: Option<Taint>, corrections: &[Correction]) -> &[Co
 /// [`upsert_args`] (structured facts the harness computed about its own
 /// run), a surprise's content is the model's own reading of prose it was
 /// shown. Withheld from the same untrusted or unknown timeline.
+///
+/// **This is not the only place a surprise is read.** `mecha distill`'s own
+/// terminal output prints every surprise regardless — a person reading their
+/// own terminal is a safe context, the way the front door's `show` verb
+/// prints a stranger's prose to the owner but never to a privileged run. This
+/// gate is specifically about what may reach *pkg*, a second automated
+/// reader, which is the boundary that matters.
 pub fn surprises_for(taint: Option<Taint>, surprises: &[Surprise]) -> &[Surprise] {
     if matches!(taint, Some(t) if !t.untrusted) {
         surprises

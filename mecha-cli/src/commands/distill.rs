@@ -192,29 +192,39 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // §10.1: printed regardless of whether anything is pushed —
                 // the point is a human deciding whether to run
                 // `mecha gossip --entity <about>`, not the graph gaining a
-                // record. Withheld ones are reported by count only, on the
-                // corrections precedent above: their content is a fetched
-                // page's own words, and printing a count is the safe half
-                // of "report a withholding without laundering what it held".
-                let sendable_surprises = distill::surprises_for(taint, &out.surprises).to_vec();
-                let withheld_surprises = out.surprises.len() - sendable_surprises.len();
-                for s in &sendable_surprises {
+                // record. Every one prints, including those an untrusted
+                // timeline keeps out of `meta.surprises` below: a person
+                // reading their own terminal is the safe context the front
+                // door's own `show` verb already relies on for a
+                // stranger's prose (there's no injection risk in reading —
+                // only in acting), where pkg is a *second automated
+                // reader* and stays gated exactly as before. An untrusted
+                // one is marked rather than dropped, because it is still
+                // the model's own free-text reading of transcript prose —
+                // and `about` in particular is a string a person might be
+                // tempted to paste straight into `mecha gossip --entity`.
+                let sendable_surprises = distill::surprises_for(taint, &out.surprises);
+                let trusted_surprises = !out.surprises.is_empty() && !sendable_surprises.is_empty();
+                for s in &out.surprises {
                     let about = s
                         .about
                         .as_deref()
                         .map(|a| format!(" (about {a})"))
                         .unwrap_or_default();
-                    println!(
-                        "· {} — surprise{about}: predicted \"{}\", found \"{}\"",
-                        meta.id, s.predicted, s.actual
-                    );
-                }
-                if withheld_surprises > 0 {
-                    println!(
-                        "· {} — {withheld_surprises} surprise(s) withheld (untrusted or \
-                         unknown timeline)",
-                        meta.id
-                    );
+                    if trusted_surprises {
+                        println!(
+                            "· {} — surprise{about}: predicted \"{}\", found \"{}\"",
+                            meta.id, s.predicted, s.actual
+                        );
+                    } else {
+                        println!(
+                            "· {} — ⚠ surprise{about} (untrusted or unknown timeline — read \
+                             `predicted`/`found` as this session's own claim, unverified, and \
+                             do not paste `about` into a command unread): predicted \"{}\", \
+                             found \"{}\"",
+                            meta.id, s.predicted, s.actual
+                        );
+                    }
                 }
                 // `None` means nothing may leave this session: no episode
                 // text, and any corrections withheld by taint. Pushing a
