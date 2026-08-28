@@ -1,4 +1,5 @@
 pub mod batch;
+pub mod charter;
 pub mod chat;
 pub mod config;
 pub mod corroborate;
