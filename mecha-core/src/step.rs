@@ -645,9 +645,19 @@ pub fn parse_step_verdict(text: &str) -> Result<StepVerdict> {
 /// model just read is the same risk as the text itself, arriving through
 /// the one channel that re-enters context. Wording follows `Finding::line`'s
 /// own discipline: state the fact, offer one continuation.
+/// Marks a folded nudge as the harness's own words, on `boredom::NOTICE_STEM`'s
+/// exact precedent: `agent::is_harness_voice` is a closed list the learning
+/// miner filters every tool-result message's text through before deciding
+/// whether it is a user's `Steer`/`Followup` intervention. Without an entry
+/// here, `templated_nudge`'s output — folded into the very message
+/// `escalation_candidate` also carries tool results in — would be mined as if
+/// a person had typed it, `escalation.step` and all, and could ride into a
+/// future prompt as a `Clean`-origin learned rule derived from nobody's words.
+pub const STEP_ESCALATION_STEM: &str = "A second opinion on your plan:";
+
 pub fn templated_nudge(escalation: &StepEscalation) -> String {
     let step = ellipsize(&escalation.step, 60);
-    match escalation.reason {
+    let body = match escalation.reason {
         EscalationReason::SpanOutlier => format!(
             "step \"{step}\" took {} tool call(s) against the plan's other completed \
              steps' average of {:.1} — worth checking whether the remaining steps in \
@@ -660,7 +670,8 @@ pub fn templated_nudge(escalation: &StepEscalation) -> String {
              nothing in its tool calls looked like a check — worth confirming it \
              actually landed before moving on."
         ),
-    }
+    };
+    format!("{STEP_ESCALATION_STEM} {body}")
 }
 
 #[cfg(test)]
@@ -1102,6 +1113,29 @@ mod tests {
         };
         let nudge = templated_nudge(&escalation);
         assert!(nudge.contains("test that the API responds"));
+    }
+
+    /// The review finding: a nudge not registered in `agent::is_harness_voice`
+    /// gets mined by the learning miner as if a person had typed it —
+    /// `escalation.step` included — exactly the bug `boredom::NOTICE_STEM`
+    /// and `mailbox::DELIVERY_STEM` were each added to fix for their own
+    /// voice. Both `EscalationReason` variants must be recognised.
+    #[test]
+    fn the_nudge_is_recognised_as_the_harness_own_voice() {
+        assert!(crate::agent::is_harness_voice(&templated_nudge(
+            &span_outlier_escalation()
+        )));
+        let unverified = StepEscalation {
+            reason: EscalationReason::UnverifiedClaim,
+            step: "test that the API responds".into(),
+            siblings: Vec::new(),
+            calls: 3,
+            sibling_mean_calls: None,
+            sibling_count: 0,
+        };
+        assert!(crate::agent::is_harness_voice(&templated_nudge(
+            &unverified
+        )));
     }
 
     // The retry loop that used to live here moved to `agent.rs`'s
