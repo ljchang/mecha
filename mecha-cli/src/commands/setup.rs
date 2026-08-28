@@ -55,6 +55,24 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         None
     };
 
+    // Only when there is no local provider *configured* and no credential to
+    // use — a working install makes no extra call, and this one is loopback,
+    // so nothing leaves the machine. It is what lets the step that blocks
+    // every other one carry a remedy instead of a diagnosis.
+    //
+    // **Keyed on the provider being configured, not on `props` being `None`.**
+    // A configured local server that is merely *down* also has no props and no
+    // api key, and probing there would find whatever else is on 8080 and
+    // announce "a server nothing names" about an install that names one — then
+    // `--write` would take the create-a-table path over the existing table it
+    // should have been correcting. The right answer for a down server is the
+    // `local-server` step's own "start it", which `plan` already gives.
+    let local_server = if pcfg.kind != "local" && pcfg.resolve_api_key().is_none() {
+        probe_for_a_local_server().await
+    } else {
+        None
+    };
+
     let home = mecha_core::work::mecha_home()?;
     let declined = onboarding::read_declined(&home);
     let facts = Facts {
@@ -68,6 +86,8 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         props,
         scheduler_installed: scheduler_installed(),
         trigger_count: trigger_count(&home),
+        config_file: mecha_core::config::Config::global_path().is_some_and(|p| p.is_file()),
+        local_server,
         charter: onboarding::charter_state(&home.join("charter.toml")),
         // `None` is the store being unreadable, not empty. Resolved towards
         // offering everything (see `Facts::declined`), and said out loud
@@ -275,6 +295,24 @@ fn run(remedy: &Remedy) -> Result<()> {
     Ok(())
 }
 
+/// Ask the documented local address whether anything is serving there.
+///
+/// Fail-soft by construction — `preflight::fetch` has a three-second timeout
+/// and answers `None` for anything that is not a llama-server-shaped `/props`,
+/// so a machine with something unrelated on 8080 gets the no-server branch
+/// rather than a wrong provider written into its config.
+async fn probe_for_a_local_server() -> Option<onboarding::LocalServer> {
+    for base_url in onboarding::local_probe_candidates() {
+        if let Some(props) = mecha_core::provider::preflight::fetch(base_url).await {
+            return Some(onboarding::LocalServer {
+                base_url: (*base_url).to_string(),
+                props,
+            });
+        }
+    }
+    None
+}
+
 /// Write back what the server said about itself.
 ///
 /// Deliberately prints the diff and asks, even though the values came from
@@ -282,6 +320,13 @@ fn run(remedy: &Remedy) -> Result<()> {
 /// had reasons for, and the whole argument for reading values off the wire is
 /// weakened if the reading is also unattended.
 fn write_verified(provider: &str, facts: &Facts) -> Result<()> {
+    // The probed case: a server is running that no provider names. Writing it
+    // down is the remedy the blocking step now offers, and it is the same act
+    // as the one below — read the values off the wire, show them, ask — with
+    // one addition, which is that the table does not exist yet.
+    if let Some(found) = &facts.local_server {
+        return write_local_provider(found);
+    }
     let Some(props) = &facts.props else {
         anyhow::bail!("nothing answered, so there is nothing to write down. Start the server.");
     };
@@ -308,6 +353,140 @@ fn write_verified(provider: &str, facts: &Facts) -> Result<()> {
         return Ok(());
     }
     apply(provider, &settings)
+}
+
+/// Write down a local server that was found rather than configured.
+///
+/// **Every value comes off `/props`, and the secret-shaped one does not
+/// exist.** A local provider needs no credential, which is why this is a
+/// remedy at all: the no-server branch of the same step cannot be, because
+/// its fix is an API key and `mecha setup` must never put a key in a file —
+/// the config holds the *name* of an environment variable so that it can be
+/// read, copied and committed without leaking one.
+///
+/// It also moves `default_provider`, which is a bigger change than the three
+/// keys `--write` otherwise touches: it changes what answers. So it is
+/// printed in full and confirmed, and the previous file is kept.
+fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
+    let settings = onboarding::verified_settings(&found.props);
+    println!(
+        "Found a server at {} and nothing in the config names it.\n",
+        found.base_url
+    );
+    println!("    [providers.local]");
+    println!("    kind = \"local\"");
+    println!("    base_url = {:?}", found.base_url);
+    for (k, v) in &settings {
+        println!("    {k} = {v}");
+    }
+    println!("\n    default_provider = \"local\"");
+    println!(
+        "\nRead back from the server rather than asked of you — which is the whole point: \
+         `context_window` is the *per-slot* figure, `-c` divided by `-np`, and it is the \
+         number people get wrong by hand."
+    );
+
+    if !std::io::stdin().is_terminal() {
+        println!("\n(not a terminal, so nothing was written — copy the lines above)");
+        return Ok(());
+    }
+    print!("\nwrite this, and make it the default provider? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
+    if !line.trim().eq_ignore_ascii_case("y") {
+        println!("not written");
+        return Ok(());
+    }
+
+    let path = mecha_core::config::Config::global_path()
+        .context("no global config path — is $HOME set?")?;
+    // A new install may not have one yet, and `--write` is reachable without
+    // having run `mecha config init` first. Seeded from the same starter that
+    // command writes, so there is one commented file in the world rather than
+    // two that drift.
+    if !path.is_file() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, super::config::STARTER)
+            .with_context(|| format!("writing {}", path.display()))?;
+        println!("created {}", path.display());
+    }
+
+    let mut table = vec![
+        String::new(),
+        "# Written by `mecha setup --write` from this server's own /props.".to_string(),
+        "[providers.local]".to_string(),
+        "kind = \"local\"".to_string(),
+        format!("base_url = {:?}", found.base_url),
+    ];
+    table.extend(settings.iter().map(|(k, v)| format!("{k} = {v}")));
+    append_table(&path, "local", &table)?;
+    set_default_provider(&path, "local")?;
+    println!(
+        "written to {} — `mecha setup` again to check it agrees with the server",
+        path.display()
+    );
+    Ok(())
+}
+
+/// Append a provider table, refusing to duplicate one that is already there.
+///
+/// A second `[providers.local]` is not an error TOML reports usefully, and a
+/// config with two of them is the kind of thing somebody debugs for an hour.
+fn append_table(path: &std::path::Path, provider: &str, table: &[String]) -> Result<()> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {path:?}"))?;
+    let header = format!("[providers.{provider}]");
+    anyhow::ensure!(
+        !text.lines().any(|l| l.trim() == header),
+        "{} already has a {header} table — edit it, or `mecha setup --write` against it",
+        path.display()
+    );
+    backup(path)?;
+    let mut out = text;
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&table.join("\n"));
+    out.push('\n');
+    std::fs::write(path, out)?;
+    Ok(())
+}
+
+/// Point `default_provider` at `provider`, in place.
+///
+/// Rewrites the assignment where there is one and inserts it at the top where
+/// there is not — never a parse-and-reserialise, for the reason [`apply`]
+/// gives: the comments in this file are most of it.
+fn set_default_provider(path: &std::path::Path, provider: &str) -> Result<()> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {path:?}"))?;
+    let assignment = format!("default_provider = {provider:?}");
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    match lines
+        .iter()
+        // Only before the first table header: a `default_provider` inside a
+        // `[providers.x]` table would be that table's own key, and rewriting
+        // it would silently edit something else entirely.
+        .take_while(|l| !l.trim_start().starts_with('['))
+        .position(|l| l.split('=').next().map(str::trim) == Some("default_provider"))
+    {
+        Some(i) => lines[i] = assignment,
+        None => lines.insert(0, assignment),
+    }
+    std::fs::write(path, lines.join("\n") + "\n")?;
+    Ok(())
+}
+
+/// Keep the previous file beside the new one. Best-effort by design: a backup
+/// that cannot be made must not stop the write it was protecting, or a
+/// read-only backup path would make the tool useless.
+fn backup(path: &std::path::Path) -> Result<()> {
+    let backup = path.with_extension("toml.bak");
+    if std::fs::copy(path, &backup).is_ok() {
+        println!("previous copy at {}", backup.display());
+    }
+    Ok(())
 }
 
 /// Edit the provider's table in place, preserving every comment.

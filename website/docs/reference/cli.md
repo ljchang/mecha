@@ -1144,9 +1144,39 @@ shorter and discards them, and in a config the comments are usually why a
 number is what it is. It asks first at a terminal and refuses to act when
 nothing is watching; the previous file is kept as `config.toml.bak`.
 
+### The step that blocks every other one
+
+A provider that cannot answer makes everything below it untestable, so it is
+reported first — and it carries a way *out*, which it did not always: the
+remedy used to be `mecha config show`, a command that displays a file and fixes
+nothing. There are two ways out and they are not symmetric, so the step says
+which one your machine is in.
+
+**Something is already serving.** If nothing in the config can answer, setup
+probes `http://127.0.0.1:8080` — loopback only, one address, and only on an
+install that is otherwise stuck, so a working install makes no extra call and
+nothing ever leaves the machine. When a server answers there and no provider
+names it, `mecha setup --write` writes the table from what the server reports
+about itself and points `default_provider` at it. Every value is read back off
+`/props`, so the *existence* of the provider is as much a measured fact as its
+context window.
+
+**Nothing is serving.** Then the fix is an API key, and a key is the one thing
+this tool will not write. mecha stores the **name of an environment variable**,
+never a secret, which is what makes a config file safe to read, copy and commit.
+So the step names the exact variable and both routes forward rather than
+offering a command that could only print what you already know. A provider
+configured with no `api_key_env` at all is told *that*, instead of being told to
+set a variable it does not name.
+
+### Everything else
+
 It also inventories the integrations — mail, documents, Slack, the knowledge
 graph — reporting each as ok, not set up, or **unknown**, and offering the next
-command for the ones it can. Unknown is deliberately not "not set up": a
+command for the ones it can. And it offers `mecha config init` when there is no
+config file: `Config::load_global` tolerating its absence is right, since mecha
+must work before anybody has written one, and is also exactly why nobody ever
+learned about the file that every other step is fixed by editing. Unknown is deliberately not "not set up": a
 credential store that could not be read offers nothing, because telling someone
 their mail is unconfigured when it is merely unreadable sends them through an
 OAuth flow they did not need.

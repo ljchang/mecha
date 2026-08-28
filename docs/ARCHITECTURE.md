@@ -2113,6 +2113,26 @@ suppress a fault is a silently-degrading guard), and `Unknown` survives it
 rather than on the prompt because `setup-declined.json` is a plain file, and a
 guarantee only the prompt enforced is one anybody could edit around.
 
+**The local-server probe is keyed on the provider being *configured*, not on
+`props` being absent.** A configured local server that is merely down also has
+no props and no api key; probing there finds whatever else is on 8080 and
+announces "a server nothing names" about an install that names one — and then
+`--write` takes the create-a-table path over the existing table it should have
+been correcting. The right answer for a down server is the `local-server`
+step's own *start it*, which `plan` already gives. The probe is loopback-only,
+one address rather than a scan (a range would make a setup tool behave like a
+port scanner for the sake of finding a server on a port nobody documented), and
+runs only on an install that is otherwise stuck.
+
+**`mecha setup` may write facts read off a server; it may never write a
+secret.** That asymmetry is why the blocking step has a runnable remedy in one
+branch and prose in the other, and it is not a gap to be closed later: mecha
+stores `api_key_env`, the *name* of a variable, so a config file can be read,
+copied and committed without leaking a key. `no_setup_path_ever_writes_a_key_into_the_config`
+asserts it against a run that has a key in its environment, so a path that
+copied one would have had one to copy. Writing a *provider table* is allowed
+because every value in it — the base URL included — came off `/props`.
+
 **The charter's absence from onboarding was structural.** `doctor::check_charter`
 returns early when the file does not exist — correct, because never having
 written one is not a fault — so no surface named the feature to a new install

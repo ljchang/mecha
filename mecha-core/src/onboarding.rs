@@ -127,6 +127,22 @@ pub struct Facts {
     pub props: Option<crate::provider::preflight::Props>,
     /// Whether the configured provider has a usable credential.
     pub provider_credential: bool,
+    /// Whether a global config file exists at all.
+    ///
+    /// `Config::load_global` tolerates its absence and returns defaults,
+    /// which is right — mecha must work before anybody has written one — but
+    /// it meant a new install was never told the file exists or where it
+    /// lives, and the first thing anyone needs to change lives in it.
+    pub config_file: bool,
+    /// A local server that answered on a well-known address but which no
+    /// provider in the config names.
+    ///
+    /// Sampled only when nothing else can answer (see
+    /// [`local_probe_candidates`]) — the point is to turn *"`anthropic` has no
+    /// usable credential"* into *"there is a server running right here, shall
+    /// I write it down"*, which is the difference between a remedy and a
+    /// diagnosis.
+    pub local_server: Option<LocalServer>,
     /// Whether a trigger scheduler is running or installed.
     pub scheduler_installed: bool,
     pub trigger_count: usize,
@@ -142,6 +158,31 @@ pub struct Facts {
     /// towards *more* noise, because here noise is the safe side. `setup`
     /// still says out loud that the store could not be read.
     pub declined: std::collections::BTreeSet<String>,
+}
+
+/// A local server nobody has configured yet: where it is, and what it says
+/// about itself.
+#[derive(Debug, Clone)]
+pub struct LocalServer {
+    pub base_url: String,
+    pub props: crate::provider::preflight::Props,
+}
+
+/// Where to look for a local server when the configured provider cannot
+/// answer.
+///
+/// **Loopback only, and only on an install that has nothing working.** Every
+/// other network call in this module is to a server the config already names;
+/// this one is a guess, so it is confined to the address the documentation
+/// tells people to serve on and to a machine that is otherwise stuck. Nothing
+/// leaves the box, and a `mecha setup` on a working install makes no extra
+/// call at all.
+///
+/// One address rather than a scan: probing a range would be a port scanner in
+/// a setup tool, and the payoff — finding a server on a port nobody
+/// documented — is not worth a command that behaves like one.
+pub fn local_probe_candidates() -> &'static [&'static str] {
+    &["http://127.0.0.1:8080"]
 }
 
 /// What `~/.mecha/charter.toml` is doing — the five answers a reader has to
@@ -182,24 +223,36 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
         .get(provider_name)
         .filter(|p| p.kind == "local");
 
-    // --- 1. can anything answer at all
-    if !facts.provider_credential && local.is_none() {
+    // --- 0. somewhere to put settings at all
+    //
+    // `Config::load_global` returns defaults when there is no file, which is
+    // right — mecha must work before anybody has written one — but it also
+    // meant nothing ever told a new install that the file exists or where it
+    // lives, while every remaining step here is fixed by editing it.
+    if !facts.config_file {
         steps.push(
             Step::new(
-                "provider-credential",
-                "A provider that can answer",
+                "config-file",
+                "A config file to change things in",
                 Status::Missing,
-                format!(
-                    "`{provider_name}` has no usable credential. Set the environment variable \
-                     its `api_key_env` names, or configure a local server instead."
+                concat!(
+                    "Everything runs on defaults until there is one, and defaults are ",
+                    "fine — but the model, the server and the budgets are all set here, ",
+                    "so the first thing anyone needs is a file to put them in. It is ",
+                    "written commented, so it doubles as the list of what is adjustable."
                 ),
             )
             .with(
-                "Show which providers are configured and what each is missing.",
-                &["mecha", "config", "show"],
+                "Write a commented starter config to ~/.mecha/config.toml.",
+                &["mecha", "config", "init"],
                 false,
             ),
         );
+    }
+
+    // --- 1. can anything answer at all
+    if !facts.provider_credential && local.is_none() {
+        steps.push(provider_step(provider_name, cfg, facts));
     }
 
     // --- 2. a local server, checked against itself
@@ -315,6 +368,108 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     }
 
     steps
+}
+
+/// The one step that blocks every other, and the only one whose remedy used
+/// to be a *viewer*.
+///
+/// It said `anthropic has no usable credential` and offered
+/// `mecha config show` — which displays a file and fixes nothing. The step
+/// that makes all the others untestable was the step with no path forward,
+/// which is precisely backwards.
+///
+/// There are exactly two ways out and they are not symmetric, so the step
+/// says which one this machine is actually in:
+///
+/// - **A local server is already running.** The common case for anybody who
+///   followed the hardware pages first, and a real remedy: every value that
+///   would be written is read back off `/props`, so the *existence* of the
+///   provider is as much a measured fact as its context window.
+/// - **No server.** Then the fix is a secret, and a secret is the one thing
+///   this tool must not write — mecha stores the **name of an environment
+///   variable**, never a key, so a config file can be read, copied or
+///   committed without leaking one. Naming the exact variable and the exact
+///   line is the most a remedy can honestly be here, so the detail carries
+///   both rather than pointing at a command that would only show what is
+///   already known.
+fn provider_step(provider_name: &str, cfg: &Config, facts: &Facts) -> Step {
+    let env_var = cfg
+        .providers
+        .get(provider_name)
+        .and_then(|p| p.api_key_env.clone());
+
+    if let Some(found) = &facts.local_server {
+        let serving = found
+            .props
+            .model_alias
+            .as_deref()
+            .unwrap_or("(an unnamed model)");
+        return Step::new(
+            "provider-credential",
+            "A provider that can answer",
+            Status::Missing,
+            format!(
+                concat!(
+                    "`{provider_name}` has no usable credential — but something is ",
+                    "already serving {serving} at {url}, and nothing in the config names ",
+                    "it. Writing it down reads every value back off the server rather ",
+                    "than asking you for any of them, which is the only way ",
+                    "`context_window` ever gets to be the per-slot figure rather than ",
+                    "`-c`."
+                ),
+                provider_name = provider_name,
+                serving = serving,
+                url = found.base_url
+            ),
+        )
+        .with(
+            "Write the local server down as a provider, from what it reports about itself.",
+            &["mecha", "setup", "--write"],
+            false,
+        );
+    }
+
+    // No credential and nothing answering. Say precisely what to do, because
+    // there is no command that can do it — and be explicit that the secret
+    // itself never lands in a file.
+    let key_line = match &env_var {
+        Some(var) => format!(
+            concat!(
+                "Set `{var}` in your shell (`export {var}=…`) and start a new one — ",
+                "mecha stores the variable's *name* in the config and never the key ",
+                "itself, so nothing here has to hold a secret."
+            ),
+            var = var
+        ),
+        // A provider configured with no `api_key_env` at all cannot be fixed
+        // by exporting anything, and saying "set the variable it names" about
+        // a provider that names none is the kind of instruction that sends
+        // somebody looking for a typo they did not make.
+        None => format!(
+            concat!(
+                "`{provider_name}` names no `api_key_env`, so there is no variable to ",
+                "set — give it one, or point `default_provider` at a local server."
+            ),
+            provider_name = provider_name
+        ),
+    };
+    Step::new(
+        "provider-credential",
+        "A provider that can answer",
+        Status::Missing,
+        format!(
+            concat!(
+                "Nothing can answer a prompt yet, so nothing below this can be tested. ",
+                "Two ways out.\n\n",
+                "1. {key_line}\n\n",
+                "2. Run a model locally — the target rather than the fallback. Serve ",
+                "it, then `mecha setup --write` reads the settings off it. Nothing was ",
+                "answering at {tried} when this ran."
+            ),
+            key_line = key_line,
+            tried = local_probe_candidates().join(", ")
+        ),
+    )
 }
 
 /// The charter: what mecha is for, in the owner's own words.
@@ -744,9 +899,11 @@ mod tests {
             has_graph_binary: true,
             scheduler_installed: true,
             trigger_count: 0,
-            // A complete install has a charter, so `everything_configured…`
-            // keeps meaning what it says.
+            // A complete install has a charter and a config file, so
+            // `everything_configured…` keeps meaning what it says.
             charter: CharterState::Lines(3),
+            config_file: true,
+            local_server: None,
             declined: Default::default(),
         }
     }
@@ -866,6 +1023,115 @@ mod tests {
         assert_eq!(
             after.detail, before.detail,
             "a decline changes whether a step is asked for, never what it says"
+        );
+    }
+
+    /// The step that blocks every other one carries a **remedy**, not a
+    /// viewer, when there is something to run.
+    ///
+    /// It used to say `anthropic has no usable credential` and offer
+    /// `mecha config show`, which displays a file and fixes nothing — the one
+    /// step that makes all the others untestable was the one with no path
+    /// forward.
+    #[test]
+    fn a_running_local_server_turns_the_blocking_step_into_something_runnable() {
+        let cfg = Config::default();
+        let mut f = facts(None);
+        f.provider_credential = false;
+        f.local_server = Some(LocalServer {
+            base_url: "http://127.0.0.1:8080".into(),
+            props: props(32768, 4, false),
+        });
+
+        let s = plan(&cfg, "anthropic", &f);
+        let step = step(&s, "provider-credential");
+        assert_eq!(
+            step.remedy.as_ref().map(|r| r.argv.clone()),
+            Some(vec!["mecha".into(), "setup".into(), "--write".into()]),
+            "a server is running: writing it down is a thing this tool can do"
+        );
+        assert!(
+            step.detail.contains("127.0.0.1:8080") && step.detail.contains("qwen3.6-35b-a3b"),
+            "name what was found, so the offer is checkable: {}",
+            step.detail
+        );
+        // Never declinable, however it is phrased — a credential is not a
+        // feature going unused.
+        assert!(!step.optional);
+    }
+
+    /// With nothing answering, the fix is a secret — and a secret is the one
+    /// thing this tool must not write. So the step names the exact variable
+    /// and says the key never lands in a file, rather than pointing at a
+    /// command that could not help.
+    #[test]
+    fn with_no_server_the_step_names_the_variable_and_promises_not_to_store_it() {
+        let cfg = Config::default();
+        let mut f = facts(None);
+        f.provider_credential = false;
+
+        let s = plan(&cfg, "anthropic", &f);
+        let step = step(&s, "provider-credential");
+        assert!(
+            step.detail.contains("ANTHROPIC_API_KEY"),
+            "name the variable rather than describing it: {}",
+            step.detail
+        );
+        assert!(
+            step.detail.contains("never the key itself"),
+            "say where the secret does *not* go: {}",
+            step.detail
+        );
+        // Both ways out are named, including the one this project is for.
+        assert!(step.detail.contains("locally"), "{}", step.detail);
+        assert!(
+            step.remedy.is_none(),
+            "there is no command that can set somebody's environment for them, \
+             and offering one that only prints is what this replaced"
+        );
+    }
+
+    /// A provider with no `api_key_env` cannot be fixed by exporting
+    /// anything, and telling somebody to "set the variable it names" about a
+    /// provider that names none sends them looking for a typo they did not
+    /// make.
+    #[test]
+    fn a_provider_naming_no_key_variable_is_not_told_to_set_one() {
+        let mut cfg = Config::default();
+        cfg.providers.get_mut("anthropic").unwrap().api_key_env = None;
+        let mut f = facts(None);
+        f.provider_credential = false;
+
+        let detail = step(&plan(&cfg, "anthropic", &f), "provider-credential")
+            .detail
+            .clone();
+        assert!(detail.contains("names no `api_key_env`"), "{detail}");
+        assert!(!detail.contains("export "), "nothing to export: {detail}");
+    }
+
+    /// A new install is told the config file exists and where — nothing did.
+    /// `Config::load_global` tolerating its absence is right, and is also why
+    /// nobody ever learned about it.
+    #[test]
+    fn a_missing_config_file_is_offered_and_a_present_one_is_not_mentioned() {
+        let cfg = Config::default();
+        let mut f = facts(None);
+        f.config_file = false;
+        let s = plan(&cfg, "anthropic", &f);
+        assert_eq!(
+            step(&s, "config-file")
+                .remedy
+                .as_ref()
+                .map(|r| r.argv.clone()),
+            Some(vec!["mecha".into(), "config".into(), "init".into()])
+        );
+
+        f.config_file = true;
+        assert!(
+            !plan(&cfg, "anthropic", &f)
+                .iter()
+                .any(|s| s.id == "config-file"),
+            "a file that exists is not a step"
         );
     }
 

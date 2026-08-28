@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The step that blocks every other one has a way out of it.** `mecha setup`
+  reported `anthropic has no usable credential` and offered `mecha config
+  show` — a command that displays a file and fixes nothing, so the one step
+  that made every other step untestable was the one with no path forward. It
+  now says which of the two situations the machine is actually in. If nothing
+  configured can answer, setup probes `http://127.0.0.1:8080` (loopback only,
+  one address, and only on an install that is otherwise stuck, so a working
+  install makes no extra call); when something is serving there that no
+  provider names, `mecha setup --write` writes the `[providers.local]` table
+  from the server's own `/props` and points `default_provider` at it —
+  the *existence* of the provider being as much a measured fact as its
+  context window. When nothing is serving, the fix is a key, and a key is the
+  one thing this tool will not write: mecha stores the **name** of an
+  environment variable, so the step names the exact variable and both routes
+  forward instead of offering a command that could only print what you
+  already know. A provider with no `api_key_env` is told *that*, rather than
+  told to set a variable it does not name. The probe is keyed on there being
+  no local provider **configured**, not on `props` being absent — a
+  configured server that is merely down also has neither, and probing there
+  would announce "a server nothing names" about an install that names one,
+  then take the create-a-table path over the table it should have corrected.
+  `mecha setup` also now offers `mecha config init` when there is no config
+  file: tolerating its absence is right, and is also why nobody ever learned
+  about the file every other step is fixed by editing.
+
 - **`mecha setup` offers a charter, and you can tell it no.** Two gaps in what
   a new install walks into. The first: nothing anywhere named the charter to
   somebody who had never written one — `doctor` returns early on a file that

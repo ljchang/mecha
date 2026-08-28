@@ -169,6 +169,36 @@ the command asks the server instead of asking you.
 The same comparison runs at startup on every command, so if the two drift apart
 later you hear about it the next time you use mecha at all.
 
+### If a server is already running
+
+`mecha setup` probes `http://127.0.0.1:8080` when nothing in the config can
+answer — loopback only, one address, and only on an install that is otherwise
+stuck. If something is serving there, writing it down is one command:
+
+```bash
+mecha setup --write
+```
+
+That creates `[providers.local]` from what the server reports about itself and
+makes it the default. Every value comes off `/props`, which is the only way
+`context_window` reliably ends up being the **per-slot** figure — `-c` divided
+by `-np` — rather than the number people write down by hand. It shows you the
+lines and asks before writing, and keeps the previous file as `config.toml.bak`.
+
+### If nothing is running
+
+Then you need an API key, and `mecha setup` will not write one. mecha stores the
+**name** of an environment variable rather than a secret:
+
+```toml
+[providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY"
+```
+
+Export the variable and start a new shell. Nothing about your key ever reaches a
+file mecha writes, which is what makes a config safe to copy between machines or
+commit to a dotfiles repo.
+
 ## 4. Wire in personal context
 
 Everything below is optional and independent — mecha is useful with none of it.
