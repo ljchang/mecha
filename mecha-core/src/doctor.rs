@@ -3373,17 +3373,13 @@ mod tests {
     }
 
     #[test]
-    fn a_charter_file_that_parses_to_zero_lines_is_flagged_not_silent() {
-        // `[[lines]]` (plural) is valid TOML that `RawCharter`'s
-        // `#[serde(default)]` turns into an empty charter rather than a
-        // parse error — indistinguishable from never having authored one at
-        // all unless something says so.
-        let home = home("charter-empty-typo");
-        std::fs::write(
-            home.join("charter.toml"),
-            "[[lines]]\nid = \"a\"\ntext = \"protect the owner\"\n",
-        )
-        .unwrap();
+    fn a_genuinely_empty_charter_file_is_flagged_not_silent() {
+        // A file that exists and parses cleanly (a comment, or nothing at
+        // all) to zero `[[line]]` entries — as opposed to a typo'd table
+        // name, which `RawCharter`'s `deny_unknown_fields` now turns into a
+        // load error instead, covered by the next test.
+        let home = home("charter-empty-comment");
+        std::fs::write(home.join("charter.toml"), "# no priorities written yet\n").unwrap();
 
         let findings = check_charter(&home.join("charter.toml"));
         assert_eq!(findings.len(), 1, "{findings:#?}");
@@ -3393,6 +3389,22 @@ mod tests {
             "{}",
             findings[0].summary
         );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_typo_d_table_name_beside_a_real_line_is_broken_not_silently_short() {
+        let home = home("charter-typo-table");
+        std::fs::write(
+            home.join("charter.toml"),
+            "[[line]]\nid = \"a\"\ntext = \"one\"\n\n[[lines]]\nid = \"b\"\ntext = \"two\"\n",
+        )
+        .unwrap();
+
+        let findings = check_charter(&home.join("charter.toml"));
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].severity, Severity::Broken);
 
         let _ = std::fs::remove_dir_all(&home);
     }

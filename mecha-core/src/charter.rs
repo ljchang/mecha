@@ -71,7 +71,15 @@ use std::path::{Path, PathBuf};
 pub const CHARTER_CHAR_BUDGET: usize = 2000;
 
 /// One standing priority.
+///
+/// **Denies unknown fields**, unlike [`crate::skill::Skill`]'s frontmatter —
+/// that leniency is for portability across harnesses that might author a
+/// `SKILL.md`, and nothing else authors a `charter.toml`. A stray `priority`
+/// or `rank` key is exactly the field §11 says there deliberately is none of;
+/// silently dropping it would let an owner write one, believe it did
+/// something, and never find out it didn't.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CharterLine {
     /// What a [`crate::goal::GoalRef::Charter`] names. Unique within a
     /// charter — see [`Charter::load`].
@@ -90,7 +98,15 @@ pub struct Charter {
 }
 
 /// The file's own shape: `[[line]]` tables, in the order they appear.
+///
+/// **Denies unknown top-level tables too** — `[[lines]]` (plural) or any
+/// other typo'd name would otherwise vanish silently rather than parse as an
+/// error, which is worse when it sits *beside* correctly-named lines: the
+/// charter would load non-empty, `over_budget` would be false, and the
+/// owner's ranking would be silently short whatever the typo'd entries were,
+/// with nothing anywhere saying so.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawCharter {
     #[serde(default, rename = "line")]
     line: Vec<CharterLine>,
@@ -219,6 +235,21 @@ mod tests {
         }
     }
 
+    /// Write `raw` to a scratch `charter.toml` and load it, unique per test
+    /// and thread so parallel tests don't collide on the path.
+    fn write_and_load(raw: &str) -> Result<Charter> {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-charter-test-{}-{:?}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+            std::time::Instant::now()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("charter.toml");
+        std::fs::write(&path, raw).unwrap();
+        Charter::load(&path)
+    }
+
     #[test]
     fn the_standard_shape_parses_in_file_order() {
         let raw = r#"
@@ -230,16 +261,7 @@ text = "Protect the owner's interests above all else."
 id = "tell-the-truth-early"
 text = "Tell the owner the truth early, especially when it disappoints."
 "#;
-        let dir = std::env::temp_dir().join(format!(
-            "mecha-charter-test-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("charter.toml");
-        std::fs::write(&path, raw).unwrap();
-
-        let charter = Charter::load(&path).unwrap();
+        let charter = write_and_load(raw).unwrap();
         assert_eq!(
             charter.lines(),
             &[
@@ -261,6 +283,38 @@ text = "Tell the owner the truth early, especially when it disappoints."
         let _ = std::fs::remove_file(&path);
         let charter = Charter::load(&path).unwrap();
         assert!(charter.is_empty());
+    }
+
+    #[test]
+    fn a_typo_d_table_name_is_a_load_error_not_a_silently_short_charter() {
+        // `[[lines]]` (plural) beside a correctly-named `[[line]]` used to
+        // vanish rather than fail — non-empty, under budget, and quietly
+        // missing whatever the typo'd entries were meant to say.
+        let raw = r#"
+[[line]]
+id = "protect-the-owner"
+text = "Protect the owner's interests above all else."
+
+[[lines]]
+id = "tell-the-truth-early"
+text = "Tell the owner the truth early, especially when it disappoints."
+"#;
+        let e = write_and_load(raw).unwrap_err().to_string();
+        assert!(e.contains("parsing"), "{e}");
+    }
+
+    #[test]
+    fn a_stray_priority_field_on_a_line_is_a_load_error() {
+        // §11: rank is file order and there is deliberately no priority
+        // field. Accepting one silently would let an owner write it and
+        // believe it did something.
+        let raw = r#"
+[[line]]
+id = "a"
+text = "one"
+priority = 1
+"#;
+        assert!(write_and_load(raw).is_err());
     }
 
     #[test]
