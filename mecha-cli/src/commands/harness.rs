@@ -312,7 +312,19 @@ async fn measure(
     for (is_selection, label, preps) in slices {
         for prep in preps.iter() {
             n += 1;
-            eprint!("· [{label}] {} ({}/{}) baseline…", prep.id, n, total);
+            // The caveat rides the episode's own line: a later "diverged —
+            // dropped" on a multi-config session is then legible as the
+            // recording being unreplayable-as-one-run, not the candidate or
+            // the replay machinery failing.
+            let caveat = prep
+                .config_caveat
+                .as_deref()
+                .map(|c| format!(" [{c}]"))
+                .unwrap_or_default();
+            eprint!(
+                "· [{label}] {}{caveat} ({}/{}) baseline…",
+                prep.id, n, total
+            );
             let baseline =
                 match harness_probe::drive_episode(&prepared, provider_cfg, model, prep, None)
                     .await?
