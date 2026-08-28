@@ -552,8 +552,7 @@ impl Transcript {
         self.config_positions
             .iter()
             .zip(&self.configs)
-            .filter(|(pos, _)| **pos <= message_index)
-            .last()
+            .rfind(|(pos, _)| **pos <= message_index)
             .map(|(_, cfg)| cfg)
     }
 }
@@ -821,9 +820,7 @@ impl Session {
                 // dropped, per `TaintTimeline::from_records`.
                 Ok(Record::Rewrite { messages: m }) => {
                     messages = m;
-                    for p in &mut config_positions {
-                        *p = 0;
-                    }
+                    config_positions.fill(0);
                     taint_checkpoints.clear();
                 }
                 // Merged rather than replaced: taint only ever grows, and a

@@ -842,9 +842,7 @@ fn health(
         .stop_causes()
         .into_iter()
         .map(|(cause, n)| {
-            let name = cause
-                .map(|c| enum_key(c))
-                .unwrap_or_else(|| "unrecorded".into());
+            let name = cause.map(enum_key).unwrap_or_else(|| "unrecorded".into());
             format!("{name} {n}")
         })
         .collect();
