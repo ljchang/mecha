@@ -382,7 +382,7 @@ async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Res
         HeaderValue::from_static(
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
              img-src 'self' data:; font-src 'self' data:; connect-src 'self'; \
-             frame-ancestors 'none'",
+             media-src 'self' blob:; frame-ancestors 'none'",
         ),
     );
     headers.insert(
@@ -721,6 +721,46 @@ mod tests {
         b.extend_from_slice(&data_len.to_le_bytes());
         b.resize(b.len() + data_len as usize, 0);
         b
+    }
+
+    #[tokio::test]
+    async fn a_valid_charter_save_lands_and_a_refused_one_leaves_the_old_bytes() {
+        // The accepting half, previously untested "because the handler
+        // writes to the developer's real home" — which `$MECHA_HOME` (the
+        // env-locked guard) makes a non-reason. The property most worth
+        // pinning is the second half: a refused save must leave the charter
+        // that was already on disk byte-for-byte intact, because the module
+        // doc's whole claim is that a refusal is a refusal to write.
+        let home = crate::testenv::HomeGuard::new("serve-charter");
+        let good = "[[line]]\nid = \"first\"\ntext = \"tell the truth early\"\n";
+        let save = |raw: &str| {
+            let body = serde_json::json!({ "raw": raw }).to_string();
+            test_router().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings/charter")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+        };
+        let ok = save(good).await.unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let on_disk = home.dir.join("charter.toml");
+        assert_eq!(std::fs::read_to_string(&on_disk).unwrap(), good);
+
+        let refused = save(
+            "[[line]]\nid = \"first\"\ntext = \"a\"\n[[line]]\nid = \"first\"\ntext = \"b\"\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            std::fs::read_to_string(&on_disk).unwrap(),
+            good,
+            "a refused save must leave the old charter byte-for-byte intact"
+        );
     }
 
     #[tokio::test]
