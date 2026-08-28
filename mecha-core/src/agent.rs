@@ -918,6 +918,25 @@ pub struct RunOutcome {
     /// do because no backend gives it a code, and it is not something to
     /// choose when the count is right here.
     pub boredom_notices: u32,
+    /// How many step-escalation candidates (`docs/GOAL-SYSTEM-DESIGN.md`
+    /// §5.5) actually spent a quarantined call this run — `todo` may flag
+    /// more, but `MAX_STEP_ESCALATIONS_PER_RUN` and `stopping_now` both
+    /// silently drop candidates without spending anything, so this counts
+    /// what happened, not what was offered.
+    ///
+    /// The feature's own off-by-default posture is explicitly pending a
+    /// measurement the pre-filter's thresholds have never had (span ≥3× the
+    /// mean, floor of 6 calls — argued, not measured). Without a counter
+    /// recorded per run, that measurement can never be taken from the store:
+    /// `mecha sessions health` cannot say whether the mechanism ever fired,
+    /// and `candidate.rs`'s gate has no metric to move. `boredom_notices`
+    /// just above is the same argument already accepted for a sibling
+    /// mechanism.
+    pub step_escalations_attempted: u32,
+    /// Of those, how many came back `revise_plan` — the run-level shape of
+    /// the same "not every fired check was right" question the appraiser's
+    /// sign/agency split asks elsewhere.
+    pub step_escalations_revised: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -1329,8 +1348,13 @@ impl Agent {
         let mut cache_lens = crate::cache_lens::CacheLens::new();
         let mut loop_guard = LoopGuard::new(self.cfg.loop_guard);
         let mut boredom = crate::boredom::Boredom::new(self.cfg.boredom);
-        // See `MAX_STEP_ESCALATIONS_PER_RUN`.
+        // See `MAX_STEP_ESCALATIONS_PER_RUN`. Both carried into `RunOutcome`
+        // via `emit_done`, on `boredom_notices`'s own argument: a mechanism
+        // whose thresholds are argued rather than measured needs a count in
+        // the store or the measurement that would justify its defaults can
+        // never be taken.
         let mut step_escalations_used = 0u32;
+        let mut step_escalations_revised = 0u32;
         let mut loop_detected = false;
         // Consecutive empty turns, reset by any turn that produces something.
         // This used to count across the whole run on the theory that a model
@@ -1375,7 +1399,14 @@ impl Agent {
                     taint,
                     compactions,
                 );
-                emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
+                emit_done(
+                    &events,
+                    &mut outcome,
+                    *context_overflows,
+                    boredom.notices(),
+                    step_escalations_used,
+                    step_escalations_revised,
+                );
                 return Ok(outcome);
             }
 
@@ -1678,6 +1709,8 @@ impl Agent {
                     homeostat: None,
                     context_overflows: 0,
                     boredom_notices: 0,
+                    step_escalations_attempted: 0,
+                    step_escalations_revised: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -1697,7 +1730,14 @@ impl Agent {
                     compactions,
                     usage_complete: true,
                 };
-                emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
+                emit_done(
+                    &events,
+                    &mut outcome,
+                    *context_overflows,
+                    boredom.notices(),
+                    step_escalations_used,
+                    step_escalations_revised,
+                );
                 return Ok(outcome);
             }
             turns += 1;
@@ -1832,7 +1872,14 @@ impl Agent {
                         taint,
                         compactions,
                     );
-                    emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
+                    emit_done(
+                        &events,
+                        &mut outcome,
+                        *context_overflows,
+                        boredom.notices(),
+                        step_escalations_used,
+                        step_escalations_revised,
+                    );
                     return Ok(outcome);
                 }
             };
@@ -1975,7 +2022,14 @@ impl Agent {
                             taint,
                             compactions,
                         );
-                        emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
+                        emit_done(
+                            &events,
+                            &mut outcome,
+                            *context_overflows,
+                            boredom.notices(),
+                            step_escalations_used,
+                            step_escalations_revised,
+                        );
                         return Ok(outcome);
                     }
 
@@ -2079,6 +2133,7 @@ impl Agent {
                                     StepEscalationOutcome::Verdict(
                                         crate::step::StepVerdict::RevisePlan,
                                     ) => {
+                                        step_escalations_revised += 1;
                                         append_user_text(
                                             messages,
                                             crate::step::templated_nudge(&escalation),
@@ -2131,7 +2186,14 @@ impl Agent {
                         outcome.stop_cause = StopCause::NoOutput;
                         outcome.exhausted = true;
                     }
-                    emit_done(&events, &mut outcome, *context_overflows, boredom.notices());
+                    emit_done(
+                        &events,
+                        &mut outcome,
+                        *context_overflows,
+                        boredom.notices(),
+                        step_escalations_used,
+                        step_escalations_revised,
+                    );
                     return Ok(outcome);
                 }
             }
@@ -2600,6 +2662,8 @@ impl Agent {
             homeostat: None,
             context_overflows: 0,
             boredom_notices: 0,
+            step_escalations_attempted: 0,
+            step_escalations_revised: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -2738,6 +2802,8 @@ impl Agent {
             homeostat: None,
             context_overflows: 0,
             boredom_notices: 0,
+            step_escalations_attempted: 0,
+            step_escalations_revised: 0,
             stop_cause: StopCause::Interrupted,
             compactions,
             cost_usd: self.cost(&usage),
@@ -3420,9 +3486,13 @@ fn emit_done(
     outcome: &mut RunOutcome,
     context_overflows: u32,
     boredom_notices: u32,
+    step_escalations_attempted: u32,
+    step_escalations_revised: u32,
 ) {
     outcome.context_overflows = context_overflows;
     outcome.boredom_notices = boredom_notices;
+    outcome.step_escalations_attempted = step_escalations_attempted;
+    outcome.step_escalations_revised = step_escalations_revised;
     emit(events, AgentEvent::Done(Box::new(outcome.clone())));
 }
 
@@ -5645,6 +5715,8 @@ mod tests {
         let clean = crate::session::RunStats::from(&RunOutcome {
             context_overflows: 0,
             boredom_notices: 0,
+            step_escalations_attempted: 0,
+            step_escalations_revised: 0,
             ..outcome.clone()
         });
         assert_eq!(clean.context_overflows, Some(0));
@@ -6388,6 +6460,39 @@ mod tests {
             .messages
             .iter()
             .all(|m| !m.text().contains("too broad")));
+    }
+
+    /// The review finding: the escalation's own thresholds are argued, not
+    /// measured, and the off-by-default posture is explicitly pending a
+    /// measurement that has nowhere to come from without a count in
+    /// `RunOutcome`/`RunStats` — `boredom_notices`' own argument, for a
+    /// sibling mechanism.
+    #[tokio::test]
+    async fn the_run_outcome_records_how_many_escalations_fired_and_revised() {
+        let (mut agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "todo".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                escalation_reply(r#"{"reasoning": "too broad", "verdict": "revise_plan"}"#),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(EscalatorTool)],
+            PermissionMode::Allow,
+        );
+        agent.cfg.step_escalation = true;
+        agent.ctx_mut().step_escalation = Some(Arc::new(Mutex::new(None)));
+
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.step_escalations_attempted, 1);
+        assert_eq!(outcome.step_escalations_revised, 1);
     }
 
     /// The review finding: the escalation call must carry the run's own

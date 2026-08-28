@@ -316,6 +316,15 @@ pub struct RunStats {
     /// rate it was added to establish.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boredom_notices: Option<u32>,
+    /// How many step-escalation candidates (`GOAL-SYSTEM-DESIGN.md` §5.5)
+    /// actually spent a quarantined call this run. `boredom_notices`'s own
+    /// reason: the pre-filter's thresholds are argued, not measured, and a
+    /// row from before the mechanism existed knows nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_escalations_attempted: Option<u32>,
+    /// Of those, how many came back `revise_plan`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_escalations_revised: Option<u32>,
     /// The conditions this run happened under, when the front-end asked for
     /// them. Recorded here rather than derived later because a run
     /// reconstructed against *today's* machine state is measuring the
@@ -403,6 +412,21 @@ impl RunStats {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
+        // Same shape as boredom_notices, same reason.
+        self.step_escalations_attempted = match (
+            self.step_escalations_attempted,
+            other.step_escalations_attempted,
+        ) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+        self.step_escalations_revised = match (
+            self.step_escalations_revised,
+            other.step_escalations_revised,
+        ) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
         self.taint.merge(other.taint);
     }
 
@@ -452,6 +476,8 @@ impl RunStats {
             // the `None` case exists only for rows written before the sensor.
             context_overflows: Some(o.context_overflows),
             boredom_notices: Some(o.boredom_notices),
+            step_escalations_attempted: Some(o.step_escalations_attempted),
+            step_escalations_revised: Some(o.step_escalations_revised),
             homeostat: o.homeostat.clone(),
             taint: o.taint,
         }
@@ -995,6 +1021,8 @@ mod homeostat_record_tests {
         let bare = || crate::agent::RunOutcome {
             context_overflows: 0,
             boredom_notices: 0,
+            step_escalations_attempted: 0,
+            step_escalations_revised: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),
@@ -1550,6 +1578,8 @@ mod tests {
             homeostat: None,
             context_overflows: 0,
             boredom_notices: 0,
+            step_escalations_attempted: 0,
+            step_escalations_revised: 0,
             text: "done".into(),
             stop_reason: StopReason::EndTurn,
             usage: Usage {
@@ -1615,6 +1645,8 @@ mod tests {
                 homeostat: None,
                 context_overflows: 0,
                 boredom_notices: 0,
+                step_escalations_attempted: 0,
+                step_escalations_revised: 0,
                 text: String::new(),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage {
@@ -1716,6 +1748,8 @@ mod tests {
             homeostat: None,
             context_overflows: 0,
             boredom_notices: 0,
+            step_escalations_attempted: 0,
+            step_escalations_revised: 0,
             text: String::new(),
             stop_reason: StopReason::Other,
             usage: Usage::default(),
