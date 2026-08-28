@@ -414,6 +414,13 @@ pub enum WireEvent {
     Staged {
         ids: Vec<String>,
     },
+    /// §6.2's readout — how the just-finished run appraised. Sent only when
+    /// the label is not `Neutral` (the overwhelming common case per the
+    /// rung 7 corpus), so the page's logo tint has a plain absence to fall
+    /// back to rather than a stream of `"neutral"` events saying nothing.
+    Affect {
+        label: String,
+    },
     Done {
         ok: bool,
         stop: Option<String>,
@@ -1206,6 +1213,35 @@ fn begin_turn(
         }
         let _ = session.append(&Record::Taint(conversation.taint));
 
+        // §6.2's readout: how this session's just-finished run appraises,
+        // right now. Voice rides this same path (`VoiceHost`/`SessionHost`),
+        // so one computation covers both doors — the wire event for the
+        // page's logo, and `affect_label` below for the voice worker's TTS
+        // style, threaded out through `HostedAnswer`. `Neutral` — the
+        // overwhelming common case per the rung 7 corpus — sends no wire
+        // event: the page's "show nothing" convention lives client-side
+        // (mirroring the TUI's), and there is no reason to put an event on
+        // every turn for a label that says nothing.
+        let mut affect_label = None;
+        if let Ok(o) = &outcome {
+            // No drafts here (`appraisal::live`'s own doc comment) — found
+            // on review, a draft resolved on an earlier or later turn than
+            // this one has nothing to do with how *this* run went.
+            //
+            // `before.len()`, not `conversation.messages.len()`: `live`
+            // needs where *this run's own* messages start, and `before` is
+            // exactly that boundary — captured right after the triggering
+            // user turn was appended, before this run added anything.
+            let label =
+                mecha_core::appraisal::live(&session.meta.id, o, &conversation, before.len());
+            if label != mecha_core::appraisal::Affect::Neutral {
+                affect_label = Some(label.wire());
+                let _ = bcast.send(WireEvent::Affect {
+                    label: affect_label.clone().unwrap(),
+                });
+            }
+        }
+
         // Leftover steering that never reached a drain point: dropped with a
         // notice rather than silently (auto-resubmit is the TUI's move and
         // needs a recursion this phase does not want).
@@ -1279,6 +1315,7 @@ fn begin_turn(
                 text: o.text,
                 input_tokens: o.usage.input_tokens,
                 output_tokens: o.usage.output_tokens,
+                affect: affect_label,
             }),
             Err(e) => Err(format!("{e:#}")),
         });
@@ -2011,6 +2048,17 @@ mod wire_tests {
         .unwrap();
         assert_eq!(wire["type"], "mode");
         assert_eq!(wire["mode"], "allow");
+    }
+
+    /// §6.2: the wire shape a `Chat.svelte`'s logo tint keys on.
+    #[test]
+    fn an_affect_event_reaches_the_page_under_the_name_the_logo_switches_on() {
+        let wire = serde_json::to_value(WireEvent::Affect {
+            label: "anger".into(),
+        })
+        .unwrap();
+        assert_eq!(wire["type"], "affect");
+        assert_eq!(wire["label"], "anger");
     }
 
     #[test]

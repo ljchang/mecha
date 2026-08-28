@@ -29,6 +29,13 @@
   let todoOpen = $state(true);
   const MARK = { completed: '[x]', in_progress: '[~]', pending: '[ ]' };
   let taint = $state(null);
+  // §6.2's readout — the logo's tint. `null` means "nothing to say", which
+  // is the overwhelming common case (the server sends an event only when
+  // the label is not neutral, to avoid a wire event on every turn saying
+  // nothing); `sawAffectThisRun` is what tells `done` whether to fall back
+  // to that silence for a run that produced no event.
+  let affect = $state(null);
+  let sawAffectThisRun = false;
   let usage = $state(null);
   let model = $state('');
   let draft = $state('');
@@ -188,6 +195,10 @@
         case 'notice':
           pushEntry({ kind: 'notice', text: ev.text });
           break;
+        case 'affect':
+          affect = ev.label;
+          sawAffectThisRun = true;
+          break;
         case 'mode':
           // The server is the owner of this, not the tap that asked for it:
           // a change made on the phone has to reach the laptop watching the
@@ -224,6 +235,18 @@
           flushStreaming();
           running = false;
           taint = { private: ev.taint_private, untrusted: ev.taint_untrusted };
+          // A run that produced no `affect` event was `Neutral` — the
+          // server never says so out loud, so silence is read as such here.
+          // Reset here rather than at run start: `WireEvent::Affect` is
+          // always sent before `Done` within one `begin_turn`, so by the
+          // time this fires the flag has already done its job for this
+          // run — and resetting only at run-start events (`data.started`,
+          // `'user'`) missed a second tab observing a *typed* turn driven
+          // from elsewhere, which emits neither: that tab's tint from an
+          // earlier run never cleared. Resetting here covers every
+          // observer, not just the one that sent the turn.
+          if (!sawAffectThisRun) affect = null;
+          sawAffectThisRun = false;
           if (!ev.ok && ev.error) pushEntry({ kind: 'notice', text: ev.error });
           entries = entries.map((e) =>
             e.kind === 'tool' && e.pending ? { ...e, pending: false } : e
@@ -299,6 +322,14 @@
     streaming = '';
     usage = null;
     taint = null;
+    // Same rule as everywhere else this readout guards against staleness
+    // (the TUI's `/clear`, voice's `Hosted::Unknown` fall-through): the
+    // tint describes the *previous* conversation's last run, and nothing
+    // else here would clear it — `/api/chat/{key}` carries no affect
+    // field, and the new key's own SSE subscription emits `Affect` only
+    // once a run there finishes.
+    affect = null;
+    sawAffectThisRun = false;
   }
 
   // The drawer: every conversation this process holds, and the recorded
@@ -1053,11 +1084,19 @@
         <button
           class="logo"
           class:tappable={vState.name === 'idle'}
+          class:notable={affect}
           disabled={vState.name !== 'idle'}
           onclick={reconnectVoice}
           aria-label={vState.name === 'idle' ? 'reconnect the call' : `mecha ${vState.label}`}
         >
           <svg viewBox="0 0 63 54" width="112" height="96" aria-hidden="true">
+            <!-- §6.2's readout. `affect` is `null` on the overwhelming
+                 common (neutral) case, which is what leaves the mark alone
+                 — never a word, never a fill change. brand.md: "hazard
+                 amber never fills an area — lines, ticks and single
+                 characters only," so the tint is a thin outline on the
+                 button (see `.logo.notable` below), not the mark's own
+                 solid fill, which an earlier version of this got wrong. -->
             <g fill="var(--accent-700)">
               <path d="M0 0h24l7.5 8.5L39 0h24v16H0z" />
               <path d="M0 20h14v15H0zM49 20h14v15H49zM0 39h14v15H0zM49 39h14v15H49z" />
@@ -1858,6 +1897,15 @@
   }
   .logo.tappable {
     cursor: pointer;
+  }
+  /* §6.2's readout. A line, never a fill — brand.md's own rule for hazard
+     amber, and the reason this is an outline around the mark rather than
+     the mark's own colour. `outline-offset` keeps it a ring around the
+     button, not touching the SVG's paths at all. */
+  .logo.notable {
+    outline: 2px solid var(--hazard);
+    outline-offset: 4px;
+    border-radius: var(--radius);
   }
   .voice-overlay {
     position: absolute;
