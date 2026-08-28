@@ -396,6 +396,18 @@ pub struct ToolCtx {
     /// it can do is ask, and the loop is what acts. `None` where nothing
     /// registered the tool.
     pub compact_requested: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Set by the `todo` tool when a just-completed step is an escalation
+    /// candidate (`docs/GOAL-SYSTEM-DESIGN.md` §5.5); read and cleared by the
+    /// loop between turns, which makes the one quarantined call and folds a
+    /// nudge into the turn if it says to.
+    ///
+    /// `compact_requested`'s exact shape, for the exact same reason: `todo`
+    /// cannot rewrite the transcript or reach a provider, so what it can do
+    /// is ask. `None` — not merely an empty slot — is what "this run has the
+    /// feature off" means; presence is the enablement, like
+    /// `compact_requested`'s own absence-is-the-off-switch.
+    pub step_escalation:
+        Option<std::sync::Arc<std::sync::Mutex<Option<crate::step::StepEscalation>>>>,
 }
 
 impl Default for ToolCtx {
@@ -415,6 +427,7 @@ impl Default for ToolCtx {
             context: None,
             work: None,
             compact_requested: None,
+            step_escalation: None,
         }
     }
 }
