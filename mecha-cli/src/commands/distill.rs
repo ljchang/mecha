@@ -108,15 +108,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // For episode tagging (§10 of GOAL-SYSTEM-DESIGN.md): the affect label
     // and goal errors ride on the episode's `meta`, and a `GoalError` cites
     // an outbox draft (`Cite::Draft`) the same way `mecha sessions appraise`
-    // does. Best-effort like every reader of this store — a failure here
-    // costs the `Edit` channel of the tagging and nothing else, so unlike
-    // that command's own readout there is no separate "could not read" vs
-    // "empty" report to keep honest; the difference is invisible in what
-    // gets pushed either way.
+    // does. Best-effort like every reader of this store, but unlike that
+    // readout — a report you can re-run — this loop's `mark_distilled`
+    // makes the result permanent: a transient read failure here silently
+    // drops every `Edit`-channel row (including the one channel that can
+    // say a run went *well*, `SentUnchanged`) from a `meta.goal_errors` the
+    // session will never be appraised again to correct. Reported rather
+    // than swallowed, matching how the loop below already reports a
+    // session it could not load.
     let drafts: Vec<mecha_core::outbox::OutboxItem> =
         match mecha_core::outbox::OutboxStore::open_existing_default() {
             None => Vec::new(),
-            Some(store) => store.items().unwrap_or_default(),
+            Some(store) => match store.items() {
+                Ok(items) => items,
+                Err(e) => {
+                    eprintln!(
+                        "warning: could not read the outbox ({e:#}) — episode tagging will \
+                         miss the Edit channel for every session distilled this run"
+                    );
+                    Vec::new()
+                }
+            },
         };
 
     let mut distilled = 0usize;
