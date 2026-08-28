@@ -93,6 +93,17 @@ pub struct Work {
     /// is arithmetic, and a tool asking "was there a check in this span"
     /// needs a count, not the calls themselves.
     pub verify_like: u32,
+    /// Every `shell` call, matched or not — the denominator `verify_like`
+    /// needs to mean anything. `looks_like_verification` can only recognise
+    /// a check shaped as `shell`, so `verify_like == 0` is ambiguous on its
+    /// own: it is true both when a step's checks used some other tool (an
+    /// MCP test runner, `cargo check`-via-a-non-`shell` wrapper) and on any
+    /// surface where `shell` is not even registered (a mail-only trigger, a
+    /// `tools:`-narrowed skill, a read-only run) — cases where nothing could
+    /// have set the counter regardless of what actually happened. See
+    /// [`escalation_candidate`]'s `UnverifiedClaim` branch, which reads this
+    /// alongside `verify_like` for exactly that reason.
+    pub shell_calls: u32,
     /// How the most recent attempt ended. `None` before the run makes one.
     pub last: Option<Outcome>,
     /// Calls approved in *this* turn whose results are not back yet — the
@@ -154,6 +165,9 @@ impl Work {
         for call in trace {
             let outcome = Outcome::of(call);
             work.calls += 1;
+            if call.name == "shell" {
+                work.shell_calls += 1;
+            }
             match outcome {
                 Outcome::Failed => work.failed += 1,
                 Outcome::Refused => work.refused += 1,
@@ -222,6 +236,7 @@ impl Work {
             failed: self.failed.saturating_sub(start.failed),
             refused: self.refused.saturating_sub(start.refused),
             verify_like: self.verify_like.saturating_sub(start.verify_like),
+            shell_calls: self.shell_calls.saturating_sub(start.shell_calls),
             last,
             in_flight: self.in_flight,
             denied: self.denied,
@@ -239,6 +254,8 @@ pub struct Span {
     /// [`appraise`] — a verify-shaped call is evidence for the escalation to
     /// weigh, not a fact the deterministic reading changes on.
     pub verify_like: u32,
+    /// See [`Work::shell_calls`].
+    pub shell_calls: u32,
     /// The run's most recent finished attempt — which is the *span's* most
     /// recent one whenever the span holds any, since calls happen in order.
     /// Meaningless when `calls` is zero, and [`appraise`] reads it only after
@@ -416,6 +433,13 @@ fn looks_like_verification(call: &ToolCallTrace) -> bool {
 
 /// A step's own words that read as a checkable claim. Argued, not measured,
 /// same convention as [`looks_like_verification`]'s keyword list.
+///
+/// This is only half the trigger — [`escalation_candidate`] also requires
+/// `span.shell_calls > 0`, because the evidence side
+/// ([`looks_like_verification`]) can only recognise a check shaped as
+/// `shell`. A step verified through some other tool, or a run where `shell`
+/// is not registered at all, is meaningless to compare against a keyword
+/// list that only ever looks at `shell` commands.
 fn reads_as_a_verification_claim(step: &str) -> bool {
     // Single words, matched on a word boundary — `"test"` as a plain
     // substring also matches `"latest"`, `"attest"`, `"contest"`, of which
@@ -515,7 +539,19 @@ pub fn escalation_candidate(
             });
         }
     }
-    if reads_as_a_verification_claim(step) && span.verify_like == 0 {
+    // `span.shell_calls > 0` first: `looks_like_verification` can only
+    // recognise a check shaped as `shell`, so `verify_like == 0` alone is
+    // ambiguous between "a shell call ran and none of them looked like a
+    // check" (the real case this trigger is for) and "no shell call could
+    // have set the counter at all" — a step verified through an MCP test
+    // runner, or a run where `shell` is not even registered (a mail-only
+    // trigger, a `tools:`-narrowed skill, a read-only run). Reading the
+    // second case as a positive would make every claim-shaped step on such
+    // a run escalate, unconditionally, straight to
+    // `MAX_STEP_ESCALATIONS_PER_RUN` — the same "absence of evidence is not
+    // evidence of absence" rule `appraise` already takes on `in_flight`/
+    // `denied`, one door over.
+    if reads_as_a_verification_claim(step) && span.shell_calls > 0 && span.verify_like == 0 {
         return Some(StepEscalation {
             reason: EscalationReason::UnverifiedClaim,
             step: step.to_string(),
@@ -920,12 +956,19 @@ mod tests {
         }
     }
 
+    /// Every existing caller of this helper models a span made of `shell`
+    /// calls (some verify-shaped, some not) — the ordinary case the
+    /// `UnverifiedClaim` trigger is for — so `shell_calls` defaults to
+    /// `calls` here. `a_claim_with_no_shell_call_at_all_does_not_escalate`
+    /// builds its own `Span` literal for the case this helper does not
+    /// model.
     fn span(calls: u32, verify_like: u32) -> Span {
         Span {
             calls,
             failed: 0,
             refused: 0,
             verify_like,
+            shell_calls: calls,
             last: Some(Outcome::Ok),
             in_flight: 0,
             denied: 0,
@@ -1035,6 +1078,28 @@ mod tests {
         }
         // The word-boundary match must still catch the real thing.
         assert!(escalation_candidate(span(3, 0), "test that the API responds", &[]).is_some());
+    }
+
+    /// The review finding: `verify_like == 0` is ambiguous between "a shell
+    /// call ran and didn't look like a check" and "nothing could have set
+    /// the counter" — a step verified through some other tool, or a run
+    /// where `shell` is not even registered. Only the first should escalate.
+    #[test]
+    fn a_claim_with_no_shell_call_at_all_does_not_escalate() {
+        let no_shell_calls = Span {
+            calls: 1,
+            failed: 0,
+            refused: 0,
+            verify_like: 0,
+            shell_calls: 0,
+            last: Some(Outcome::Ok),
+            in_flight: 0,
+            denied: 0,
+        };
+        assert!(
+            escalation_candidate(no_shell_calls, "test that the API responds", &[]).is_none(),
+            "no shell call ran in this span, so absence of a match proves nothing"
+        );
     }
 
     #[test]

@@ -1694,6 +1694,12 @@ mod tests {
                     calls,
                     last,
                     verify_like,
+                    // Every test using this helper models a span made of
+                    // `shell` calls — the ordinary case the UnverifiedClaim
+                    // trigger is for — so `shell_calls` tracks `calls` here,
+                    // same convention as `step.rs`'s own `span()` test
+                    // helper.
+                    shell_calls: calls,
                     ..Work::default()
                 }
                 .in_run(run),
