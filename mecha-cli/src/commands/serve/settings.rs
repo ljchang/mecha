@@ -175,39 +175,48 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
     // Listed from the store itself rather than from any cache, because this
     // is the management view: a file someone dropped in by hand belongs on
     // it exactly as much as one recorded through the page.
+    // A store that could not be read is its own answer — "configured,
+    // nothing cloned yet" and "configured, could not look" are opposite
+    // findings (the dash-versus-zero rule), and folding a read failure into
+    // an empty list would surface the misconfiguration only after someone
+    // has recorded themselves.
+    let mut cloned_error: Option<String> = None;
     let cloned = state.voices_dir.as_ref().map(|dir| {
         let mut out = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(dir.as_ref()) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("wav") {
-                    continue;
+        match std::fs::read_dir(dir.as_ref()) {
+            Err(e) => cloned_error = Some(format!("{}: {e}", dir.display())),
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("wav") {
+                        continue;
+                    }
+                    let Some(name) = path.file_stem().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
+                    // A bounded read: the fmt/data headers live in the first
+                    // few hundred bytes, and slurping every clone's megabytes
+                    // to answer a settings GET would make the page cost more
+                    // the more voices it lists. `wav_seconds` reads declared
+                    // sizes off headers, never the payload.
+                    let seconds = read_head(&path, 64 * 1024)
+                        .ok()
+                        .and_then(|b| wav_seconds(&b).ok());
+                    let created = entry
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs());
+                    out.push(serde_json::json!({
+                        "name": name,
+                        "seconds": seconds,
+                        // Unix seconds, off the mtime — which, for a store only
+                        // ever written by the clone endpoint, is when it was
+                        // recorded.
+                        "created": created,
+                    }));
                 }
-                let Some(name) = path.file_stem().and_then(|n| n.to_str()) else {
-                    continue;
-                };
-                // A bounded read: the fmt/data headers live in the first
-                // few hundred bytes, and slurping every clone's megabytes
-                // to answer a settings GET would make the page cost more
-                // the more voices it lists. `wav_seconds` reads declared
-                // sizes off headers, never the payload.
-                let seconds = read_head(&path, 64 * 1024)
-                    .ok()
-                    .and_then(|b| wav_seconds(&b).ok());
-                let created = entry
-                    .metadata()
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs());
-                out.push(serde_json::json!({
-                    "name": name,
-                    "seconds": seconds,
-                    // Unix seconds, off the mtime — which, for a store only
-                    // ever written by the clone endpoint, is when it was
-                    // recorded.
-                    "created": created,
-                }));
             }
         }
         out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
@@ -221,6 +230,9 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
         // None = cloning unconfigured ([web] voices_dir unset); an empty
         // list = configured, nothing cloned yet. Opposite findings.
         "cloned": cloned,
+        // Set only when the configured directory could not be listed; the
+        // page shows it instead of an empty store.
+        "cloned_error": cloned_error,
         "voices_dir": state.voices_dir.as_ref().map(|d| d.display().to_string()),
     }))
 }
@@ -255,7 +267,19 @@ fn read_head(path: &std::path::Path, cap: usize) -> std::io::Result<Vec<u8>> {
 /// A minimal RIFF walk: `fmt ` for the byte rate, `data` for the payload
 /// size. Refuses anything that is not integer PCM (`format 1`), because
 /// that is what the TTS reads reference clips as.
-fn wav_seconds(bytes: &[u8]) -> anyhow::Result<f64> {
+struct WavInfo {
+    seconds: f64,
+    /// Byte offset one past the declared end of the `data` chunk — what a
+    /// caller holding the *whole* file compares against its real length,
+    /// because the duration above is computed from the header's own claim
+    /// and a liar header (10s declared over a 100-byte payload) would
+    /// otherwise sail past the duration floor. The listing path reads a
+    /// bounded head where the payload is absent by design, so the check is
+    /// the upload path's to make, not this parser's.
+    data_end: usize,
+}
+
+fn wav_info(bytes: &[u8]) -> anyhow::Result<WavInfo> {
     use anyhow::{bail, Context};
     if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         bail!("not a WAV file");
@@ -263,6 +287,7 @@ fn wav_seconds(bytes: &[u8]) -> anyhow::Result<f64> {
     let mut pos = 12usize;
     let mut byte_rate: Option<u32> = None;
     let mut data_len: Option<u32> = None;
+    let mut data_end: Option<usize> = None;
     while pos + 8 <= bytes.len() {
         let id = &bytes[pos..pos + 4];
         let len = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
@@ -280,7 +305,10 @@ fn wav_seconds(bytes: &[u8]) -> anyhow::Result<f64> {
                     bytes[body + 8..body + 12].try_into().unwrap(),
                 ));
             }
-            b"data" => data_len = Some(len as u32),
+            b"data" => {
+                data_len = Some(len as u32);
+                data_end = Some(body + len);
+            }
             _ => {}
         }
         // Chunks are word-aligned: an odd length carries a pad byte.
@@ -291,7 +319,16 @@ fn wav_seconds(bytes: &[u8]) -> anyhow::Result<f64> {
     if rate == 0 {
         bail!("fmt chunk claims a zero byte rate");
     }
-    Ok(f64::from(data) / f64::from(rate))
+    Ok(WavInfo {
+        seconds: f64::from(data) / f64::from(rate),
+        data_end: data_end.context("no data chunk")?,
+    })
+}
+
+/// The duration alone, for a caller that has no payload to check (the
+/// bounded-head listing read).
+fn wav_seconds(bytes: &[u8]) -> anyhow::Result<f64> {
+    Ok(wav_info(bytes)?.seconds)
 }
 
 /// Bounds on a cloning reference, in seconds of audio rather than bytes:
@@ -366,19 +403,29 @@ pub async fn voice_clone(
         )
             .into_response();
     }
-    let seconds = match wav_seconds(&body) {
-        Ok(s) => s,
+    let info = match wav_info(&body) {
+        Ok(i) => i,
         Err(e) => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!(
-                    "{e:#}
-"
-                ),
-            )
-                .into_response()
+            return (StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}\n")).into_response();
         }
     };
+    // The duration came off the header's own claim; make the payload back
+    // it up. A header declaring ten seconds over a hundred bytes would
+    // otherwise clear the floor and land a reference the TTS reads as
+    // near-silence. The in-page recorder writes honest headers, so the only
+    // thing this ever refuses is a hand-crafted or truncated file.
+    if info.data_end > body.len() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!(
+                "the WAV header declares more audio than the file carries ({} of {} bytes)\n",
+                body.len(),
+                info.data_end
+            ),
+        )
+            .into_response();
+    }
+    let seconds = info.seconds;
     if !(MIN_CLONE_SECONDS..=MAX_CLONE_SECONDS).contains(&seconds) {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -522,6 +569,28 @@ mod tests {
         let mut float_wav = wav(48_000, 1, 10.0);
         float_wav[20] = 3; // IEEE float, not integer PCM
         assert!(wav_seconds(&float_wav).is_err());
+    }
+
+    /// A header may not claim audio the payload does not carry: the
+    /// duration floor is computed from the header, so without this check a
+    /// 100-byte file declaring ten seconds would land as a reference the
+    /// TTS reads as near-silence.
+    #[test]
+    fn a_wav_header_claiming_more_audio_than_present_is_detectable() {
+        let mut liar = wav(16_000, 1, 10.0);
+        liar.truncate(200); // header intact, payload gone
+        let info = super::wav_info(&liar).unwrap();
+        assert!(
+            (info.seconds - 10.0).abs() < 0.05,
+            "the header still claims 10s"
+        );
+        assert!(
+            info.data_end > liar.len(),
+            "data_end must expose the shortfall the upload path refuses on"
+        );
+        // And an honest file's declared end fits within it.
+        let honest = wav(16_000, 1, 10.0);
+        assert!(super::wav_info(&honest).unwrap().data_end <= honest.len());
     }
 
     /// The alphabet is closed and `default` is unshadowable — this name
