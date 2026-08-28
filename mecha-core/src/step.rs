@@ -417,16 +417,19 @@ fn looks_like_verification(call: &ToolCallTrace) -> bool {
 /// A step's own words that read as a checkable claim. Argued, not measured,
 /// same convention as [`looks_like_verification`]'s keyword list.
 fn reads_as_a_verification_claim(step: &str) -> bool {
-    const KEYWORDS: &[&str] = &[
-        "test",
-        "verify",
-        "confirm",
-        "check that",
-        "make sure",
-        "ensure",
-    ];
+    // Single words, matched on a word boundary — `"test"` as a plain
+    // substring also matches `"latest"`, `"attest"`, `"contest"`, of which
+    // `"latest"` is the one that actually turns up in plans ("pull the
+    // latest changes"). Multi-word phrases below stay substring matches:
+    // they cannot collide with an unrelated word the same way.
+    const WORDS: &[&str] = &["test", "verify", "confirm", "ensure"];
+    const PHRASES: &[&str] = &["check that", "make sure"];
     let step = step.to_ascii_lowercase();
-    KEYWORDS.iter().any(|k| step.contains(k))
+    let tokens: std::collections::HashSet<&str> = step
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    WORDS.iter().any(|k| tokens.contains(k)) || PHRASES.iter().any(|p| step.contains(p))
 }
 
 /// Which comparison flagged a landed step for a second opinion.
@@ -613,67 +616,16 @@ pub fn parse_step_verdict(text: &str) -> Result<StepVerdict> {
     }
 }
 
-/// Run the quarantined pass over one escalation candidate.
-///
-/// Same shape as `appraisal::appraise_with_model`: no tools, no history
-/// (`QuarantinedPass`), one retry with the parse error named, and **4096**
-/// tokens — `CLAUDE.md`'s own named trap is `max_tokens` below the local
-/// server's `--reasoning-budget`, and every quarantined pass in this
-/// codebase uses 4096 for exactly that reason.
-pub async fn escalate(
-    provider: &dyn crate::provider::Provider,
-    model: &str,
-    escalation: &StepEscalation,
-) -> Result<StepVerdict> {
-    let prompt = escalation_prompt(escalation);
-    let mut attempt = prompt.clone();
-    let mut last_error = String::new();
-    let pass = crate::quarantine::QuarantinedPass::new(model, 4096);
-
-    for round in 0..2 {
-        let request = pass.ask(attempt.clone());
-        let response = provider.complete(&request, None).await?;
-
-        if response.stop_reason == crate::message::StopReason::Refusal {
-            anyhow::bail!(
-                "the escalation refused the step{}",
-                response
-                    .refusal
-                    .and_then(|r| r.category)
-                    .map(|c| format!(" ({c})"))
-                    .unwrap_or_default()
-            );
-        }
-
-        let truncated = response.stop_reason == crate::message::StopReason::MaxTokens;
-        let text = response.message.text();
-
-        match parse_step_verdict(&text) {
-            Ok(v) => return Ok(v),
-            Err(_) if truncated && text.trim().is_empty() => {
-                last_error = format!(
-                    "the model hit the {} token budget before writing any answer",
-                    request.max_tokens
-                );
-                if round == 0 {
-                    attempt = format!(
-                        "{prompt}\nBe brief. Do not deliberate at length; write the \
-                         JSON object immediately."
-                    );
-                }
-            }
-            Err(e) if round == 0 => {
-                last_error = format!("{e:#}");
-                attempt = format!(
-                    "{prompt}\nYour previous reply could not be parsed: {last_error}\n\
-                     Reply with the JSON object alone — no prose, no code fence."
-                );
-            }
-            Err(e) => last_error = format!("{e:#}"),
-        }
-    }
-    anyhow::bail!("the escalation produced nothing parseable: {last_error}")
-}
+// **The quarantined call itself is `agent.rs`'s to make, not this module's.**
+// This is the one place rung 7's two halves genuinely differ: the appraiser
+// (§5.1) is offline, so a bare `&dyn Provider` and a plain retry loop are the
+// whole story. This escalation runs *inside* a live, cancellable run, so it
+// has to go through `Agent::complete` the same way `compact`'s summariser and
+// `compact_validate`'s check already do — that is what wires it into the
+// run's own cancellation token and folds its spend into `RunStats`, neither
+// of which a bare provider call can reach. `escalation_prompt` and
+// `parse_step_verdict` above are what stay pure and testable here; the retry
+// loop that drives them lives beside `compact` in `agent.rs`.
 
 /// The nudge folded into the run when the escalation says `revise_plan`.
 ///
@@ -1036,6 +988,25 @@ mod tests {
         assert!(escalation_candidate(span(4, 0), "write the docs", &completed).is_none());
     }
 
+    /// The bug the review found: `"test"` as a plain substring also matches
+    /// `"latest"`, so an ordinary step about pulling the latest changes read
+    /// as a verification claim with nothing to back it.
+    #[test]
+    fn a_word_containing_test_as_a_substring_is_not_a_verification_claim() {
+        for step in [
+            "pull the latest changes",
+            "read the latest config",
+            "copy the latest bundle",
+        ] {
+            assert!(
+                escalation_candidate(span(3, 0), step, &[]).is_none(),
+                "{step:?} must not read as a verification claim"
+            );
+        }
+        // The word-boundary match must still catch the real thing.
+        assert!(escalation_candidate(span(3, 0), "test that the API responds", &[]).is_some());
+    }
+
     #[test]
     fn only_the_most_recent_siblings_ride_along() {
         let completed: Vec<(String, u32)> = (0..20).map(|i| (format!("step {i}"), 2)).collect();
@@ -1112,81 +1083,8 @@ mod tests {
         assert!(nudge.contains("test that the API responds"));
     }
 
-    // --- the model call itself ---
-
-    struct ScriptedProvider {
-        turns: std::sync::Mutex<Vec<crate::message::CompletionResponse>>,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::provider::Provider for ScriptedProvider {
-        fn id(&self) -> &str {
-            "scripted"
-        }
-        fn default_model(&self) -> &str {
-            "scripted-1"
-        }
-        async fn complete(
-            &self,
-            _req: &crate::message::CompletionRequest,
-            _sink: Option<&crate::provider::StreamSink>,
-        ) -> anyhow::Result<crate::message::CompletionResponse> {
-            let mut turns = self.turns.lock().unwrap();
-            anyhow::ensure!(!turns.is_empty(), "ran out of scripted turns");
-            Ok(turns.remove(0))
-        }
-    }
-
-    fn scripted_reply(text: &str) -> crate::message::CompletionResponse {
-        crate::message::CompletionResponse {
-            message: crate::message::Message::assistant(vec![crate::message::Block::text(text)]),
-            stop_reason: crate::message::StopReason::EndTurn,
-            usage: Default::default(),
-            refusal: None,
-            model: "scripted-1".into(),
-            malformed_tool_args: 0,
-        }
-    }
-
-    #[tokio::test]
-    async fn a_good_reply_needs_no_retry() {
-        let provider = ScriptedProvider {
-            turns: std::sync::Mutex::new(vec![scripted_reply(
-                r#"{"reasoning": "fine", "verdict": "accept"}"#,
-            )]),
-        };
-        let v = escalate(&provider, "scripted-1", &span_outlier_escalation())
-            .await
-            .unwrap();
-        assert_eq!(v, StepVerdict::Accept);
-    }
-
-    #[tokio::test]
-    async fn one_malformed_reply_gets_one_retry_and_then_succeeds() {
-        let provider = ScriptedProvider {
-            turns: std::sync::Mutex::new(vec![
-                scripted_reply("not json at all"),
-                scripted_reply(r#"{"reasoning": "too broad", "verdict": "revise_plan"}"#),
-            ]),
-        };
-        let v = escalate(&provider, "scripted-1", &span_outlier_escalation())
-            .await
-            .unwrap();
-        assert_eq!(v, StepVerdict::RevisePlan);
-    }
-
-    #[tokio::test]
-    async fn two_malformed_replies_is_a_failure_not_a_guess() {
-        let provider = ScriptedProvider {
-            turns: std::sync::Mutex::new(vec![
-                scripted_reply("nope"),
-                scripted_reply("still nope"),
-            ]),
-        };
-        assert!(
-            escalate(&provider, "scripted-1", &span_outlier_escalation())
-                .await
-                .is_err()
-        );
-    }
+    // The retry loop that used to live here moved to `agent.rs`'s
+    // `Agent::escalate_step`, which needs `self.complete` for cancellation
+    // and usage accounting — see the module note above `parse_step_verdict`.
+    // Its tests live beside `agent.rs`'s own `ScriptedProvider`.
 }
