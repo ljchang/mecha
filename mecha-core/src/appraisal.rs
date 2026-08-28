@@ -1035,7 +1035,15 @@ pub async fn appraise_with_model(
     // No tools and no history, structurally — see `quarantine`. The frame is
     // uncached: nothing here shares a prefix with anything else, and this
     // call is rare enough (budgeted, offline) that caching buys nothing.
-    let pass = crate::quarantine::QuarantinedPass::new(model, 2048);
+    //
+    // **4096, matching every other quarantined pass** (`frontdoor::extract`,
+    // `mail_triage::classify_with`), not a smaller number picked for this one.
+    // `CLAUDE.md`'s own named trap: the local server's `--reasoning-budget`
+    // is 4096, and `max_tokens` below that lets thinking consume the whole
+    // reply, returning HTTP 200 with empty content — indistinguishable from
+    // a parse failure here, except it silently exhausts both retry rounds
+    // against the same ceiling instead of recovering on the second attempt.
+    let pass = crate::quarantine::QuarantinedPass::new(model, 4096);
 
     for round in 0..2 {
         let request = pass.ask(attempt.clone());
