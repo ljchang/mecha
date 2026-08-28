@@ -10,7 +10,7 @@ order below. Rung 7's model half of step appraisal is still open.
 rung 8** — see the table and §14 item 10 for what that does and does not
 include. **Rung 8 shipped 2026-08-28 too** (#99, #103), by explicit owner
 ruling *against* this file's own caution below — the affect label was still
-measured degenerate (§7's corpus) at build time, and the ruling was that the
+measured degenerate (§14 item 7's corpus) at build time, and the ruling was that the
 mechanism is worth having correct regardless of how interesting today's label
 is, not that the caution was wrong. See the table for what that bought.
 The body below is the design as proposed and is
