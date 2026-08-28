@@ -630,23 +630,14 @@ fn worth_a_follow_up(new_status: &str, a: &mecha_core::appraisal::Appraisal) -> 
 /// Is `id` exactly one ordinary path component — never a root, a `..`,
 /// empty, or more than one segment?
 ///
-/// **`serve/board.rs::run_summary` has the identical problem — a
-/// store-supplied session id reaching a bare `dir.join` — and, as of this
-/// writing, no guard of its own; the fix for it is PR #103, a sibling to
-/// this one rather than something already on the tree this PR diffs
-/// against.** An earlier version of this comment claimed the two files
-/// already shared this helper, which a review caught by reading
-/// `board.rs` directly rather than trusting the claim — CLAUDE.md's own
-/// rule, applied to this file's own author. Not shared as a function
-/// either way: it is three lines, and the two files do not otherwise
-/// depend on each other, so each guard exists independently of whether
-/// the other PR has landed. A denylist of specific characters was the
-/// first cut here and #103's review caught the deeper gap in *that* copy:
-/// a denylist is complete only for the platform it was checked against.
-/// `std::path::Component::Normal` is what the standard library itself
-/// calls "an ordinary path segment", so asking it directly is correct on
-/// whatever platform this runs on rather than needing its own list of
-/// that platform's separators and prefixes.
+/// A store-supplied session id reaching a bare `dir.join` is the same shape
+/// `serve/board.rs::run_summary` guards, and each file checks it
+/// independently rather than sharing this — it is three lines, and the two
+/// files do not otherwise depend on each other. `std::path::Component::Normal`
+/// is what the standard library itself calls "an ordinary path segment", so
+/// asking it directly is correct on whatever platform this runs on, unlike a
+/// denylist of separator characters, which is only ever complete for the
+/// platform it was checked against.
 fn is_bare_path_component(id: &str) -> bool {
     let mut components = std::path::Path::new(id).components();
     matches!(components.next(), Some(std::path::Component::Normal(_)))
@@ -2468,21 +2459,15 @@ mod tests {
         );
     }
 
-    /// **What this actually proves, stated plainly after a review caught
-    /// the first version overclaiming it.** An earlier comment here said
-    /// `serve/board.rs` has "the full filesystem-escape regression test"
-    /// and this file relies on that instead of repeating it — false: that
-    /// test is PR #103, a sibling still in review, not something already
-    /// on the tree this file sits in. What is actually proved *here*,
-    /// directly and without touching the filesystem or
-    /// `Session::default_dir()`'s global state, is the predicate itself —
-    /// full coverage of the shapes that must be accepted and refused. The
-    /// filesystem-level proof that a hostile id would otherwise have
-    /// reached a real file outside `dir` is #103's (against `board.rs`'s
-    /// copy of the identical join); this function's own version of that
-    /// same proof does not exist yet, and would need `appraise_session` to
-    /// take its directory as a parameter rather than resolving
-    /// `Session::default_dir()` internally to be written safely.
+    /// What this proves is the predicate itself, directly and without
+    /// touching the filesystem or `Session::default_dir()`'s global state —
+    /// full coverage of the shapes that must be accepted and refused. It
+    /// does not prove that a hostile id would otherwise have reached a real
+    /// file outside `dir` (`serve/board.rs`'s sibling test for its own copy
+    /// of this join does prove that, by planting a file and observing the
+    /// escape); doing the same here would need `appraise_session` to take
+    /// its directory as a parameter rather than resolving
+    /// `Session::default_dir()` internally, which it does not yet.
     #[test]
     fn is_bare_path_component_accepts_one_ordinary_segment_and_nothing_else() {
         for real in ["20260826T090000-aaaaaaaa", "task-1a2b3c4d", "x"] {

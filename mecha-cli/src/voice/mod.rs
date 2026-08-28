@@ -226,9 +226,10 @@ struct Shared {
     /// known, which is the latency the streaming exists to avoid — this is
     /// a documented trade-off, not a bug to chase.
     ///
-    /// Set-and-overwrite, never take-once: the worker polls once per
-    /// sentence of one answer (Pipecat aggregates TTS by sentence), and
-    /// consuming semantics would go stale after the first. Cleared on
+    /// Set-and-overwrite, never take-once: the worker latches this once per
+    /// answer (`on_turn_context_created`, not a per-sentence poll — a
+    /// consuming read here would starve every sentence after the first).
+    /// Cleared on
     /// **every** completed turn regardless of outcome — `Neutral` removes
     /// the entry, and so does an error, on the same "silence means neutral"
     /// rule the TUI's `Err` arm and the web page's `sawAffectThisRun` both
