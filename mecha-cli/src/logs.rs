@@ -152,7 +152,17 @@ impl Write for Writer {
 /// anything else beginning `ESC` loses the `ESC` and its successor. There is
 /// nothing here worth being clever about, and an unterminated escape reaching
 /// a terminal is how a session ends up in a mode nobody chose.
-fn strip_ansi(s: &str) -> String {
+///
+/// **A second use, one crate over.** `mecha distill` prints a session's own
+/// `Surprise` text — the model's free-text reading of transcript content,
+/// which can include a fetched page or a mail body — straight to stdout.
+/// The "a person reading their own terminal is a safe context" argument for
+/// that print assumes a live terminal; `scripts/ruminate.sh`'s nightly run
+/// redirects it to a dated logfile instead, which is exactly as exposed to
+/// a screen-clearing or OSC-52 sequence as a live read once someone opens it
+/// later. `pub(crate)` rather than a second copy, on the one-definition rule
+/// this codebase keeps paying to relearn.
+pub(crate) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
