@@ -71,6 +71,12 @@ pub enum Args {
         /// drives one replay of the recorded run *without* the steering text,
         /// which is a model run apiece. That is what fills `controllable` —
         /// the field 100% of the corpus's labels were stuck on.
+        ///
+        /// Unlike the free readout (and unlike `--appraise`, whose
+        /// quarantined call has no tools by construction), a replay builds a
+        /// real agent with a real workspace jail — so run this from a
+        /// project directory, or name one with `--workspace`. From a home
+        /// directory it refuses, correctly: the jail would cover `~/.mecha`.
         #[arg(long)]
         probe: bool,
 
