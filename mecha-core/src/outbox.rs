@@ -29,7 +29,7 @@
 //! a fresh item is a fresh file with a unique id, and the agent loop must
 //! never block on a human's review session.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -369,8 +369,30 @@ impl OutboxStore {
         Ok(item)
     }
 
-    /// Every item, oldest first.
+    /// Every item, oldest first. A file that fails to parse is skipped with
+    /// a `tracing::warn!` rather than failing the whole read — right for a
+    /// listing, which should show what it can. See [`Self::items_strict`]
+    /// for the caller that cannot accept a silent skip.
     pub fn items(&self) -> Result<Vec<OutboxItem>> {
+        self.items_impl(false)
+    }
+
+    /// Every item, oldest first — but a single unparseable file fails the
+    /// whole read instead of being skipped.
+    ///
+    /// `items()`'s skip-and-warn is right for a listing and wrong for a
+    /// caller about to write a permanent record from what it read: a
+    /// half-written `.json` mid-save is arguably the likeliest shape of "the
+    /// outbox is unreadable", and it would otherwise pass `items()` as a
+    /// silently short result — indistinguishable from an outbox that simply
+    /// has fewer drafts. `mecha distill`'s episode tagging is exactly that
+    /// caller, and its own `tracing::warn!` is invisible there anyway (the
+    /// nightly runs with no `MECHA_LOG`).
+    pub fn items_strict(&self) -> Result<Vec<OutboxItem>> {
+        self.items_impl(true)
+    }
+
+    fn items_impl(&self, strict: bool) -> Result<Vec<OutboxItem>> {
         let mut out = Vec::new();
         for entry in std::fs::read_dir(&self.root)? {
             let path = entry?.path();
@@ -379,6 +401,9 @@ impl OutboxStore {
             }
             match serde_json::from_str(&std::fs::read_to_string(&path)?) {
                 Ok(item) => out.push(item),
+                Err(e) if strict => {
+                    bail!("outbox item {} failed to parse: {e}", path.display())
+                }
                 Err(e) => {
                     tracing::warn!("skipping unreadable outbox item {}: {e}", path.display())
                 }
@@ -965,6 +990,35 @@ mod tests {
         assert_eq!(loaded.session_id.as_deref(), Some("sess-1"));
         assert_eq!(loaded.args, loaded.args_before);
         assert!(!loaded.edited());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn items_skips_a_malformed_file_but_items_strict_bails_on_it() {
+        let root = scratch("malformed");
+        let store = OutboxStore::open(&root).unwrap();
+        store
+            .stage(
+                "t",
+                OutboxKind::Message,
+                json!({}),
+                Taint::default(),
+                None,
+                None,
+            )
+            .unwrap();
+        // A half-written save, or any other file that fails to parse.
+        std::fs::write(root.join("zzz-corrupt.json"), "{not json").unwrap();
+
+        let items = store.items().unwrap();
+        assert_eq!(items.len(), 1, "the listing shows what it can");
+
+        let err = store.items_strict().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("zzz-corrupt.json"),
+            "the error names the file that failed: {err:#}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

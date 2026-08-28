@@ -11,7 +11,7 @@
 //! `(source, source_id)` key makes a duplicate push an update anyway), so a
 //! nightly run or a `session_end` hook only ever pays for the new sessions.
 
-use crate::logs::strip_ansi;
+use crate::logs::strip_ansi_and_controls;
 use crate::GlobalOpts;
 use anyhow::{bail, Context, Result};
 use mecha_core::config::Config;
@@ -113,20 +113,25 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // staged a draft) is the ordinary empty case and stays best-effort, same
     // as every other reader of this store.
     //
-    // A genuine `Err`, though, bails the whole run rather than degrading —
-    // deliberately more conservative than `sessions appraise`'s own
-    // best-effort read of the identical store. That readout is a report you
-    // can re-run; this loop's `mark_distilled` makes its result permanent,
-    // so silently continuing would drop every `Edit`-channel row (including
-    // `SentUnchanged`, the one channel that can say a run went *well*) from
-    // a `meta.goal_errors` no later run can ever revisit. A failed run the
-    // operator can retry once the outbox is readable again is the cheap
-    // side of that mistake; a quietly incomplete permanent record is the
-    // expensive one.
+    // A genuine read failure, though — `items_strict`, not `items`: a
+    // half-written `.json` mid-save is arguably the likeliest shape of "the
+    // outbox is unreadable", and `items()`'s own skip-and-warn would pass it
+    // through as a silently short list, indistinguishable from an outbox
+    // that simply has fewer drafts (its `tracing::warn!` is invisible here
+    // too — the nightly runs with no `MECHA_LOG`) — bails the whole run
+    // rather than degrading. Deliberately more conservative than `sessions
+    // appraise`'s own best-effort read of the identical store: that readout
+    // is a report you can re-run; this loop's `mark_distilled` makes its
+    // result permanent, so silently continuing would drop every
+    // `Edit`-channel row (including `SentUnchanged`, the one channel that
+    // can say a run went *well*) from a `meta.goal_errors` no later run can
+    // ever revisit. A failed run the operator can retry once the outbox is
+    // readable again is the cheap side of that mistake; a quietly
+    // incomplete permanent record is the expensive one.
     let drafts: Vec<mecha_core::outbox::OutboxItem> =
         match mecha_core::outbox::OutboxStore::open_existing_default() {
             None => Vec::new(),
-            Some(store) => store.items().context(
+            Some(store) => store.items_strict().context(
                 "could not read the outbox for episode tagging — refusing to distill any \
                  session this run rather than permanently mark one with an incomplete \
                  Edit channel; retry once the outbox is readable",
@@ -210,20 +215,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // `scripts/ruminate.sh` runs this into a dated logfile
                 // instead** — exactly as exposed to a screen-clearing or
                 // OSC-52 escape sequence once opened later as a live read
-                // would have been. `strip_ansi` (shared with the TUI's own
-                // reason to distrust formatted text before it reaches a
-                // terminal) runs on every field, trusted or not: the taint
-                // gate speaks to whether the *claim* is believable, not to
-                // whether its bytes are safe to print.
+                // would have been. `strip_ansi_and_controls` (not plain
+                // `strip_ansi`: this is a whole field, never pre-split at
+                // `\n` the way that function's own call site guarantees)
+                // runs on every field, trusted or not — a bare `\r` at the
+                // end of `actual` would otherwise rewrite the rendered line
+                // from column 0 and erase the very `⚠ untrusted` marker the
+                // untrusted branch exists to print. The taint gate speaks to
+                // whether the *claim* is believable, not to whether its
+                // bytes are safe to render.
                 let sendable_surprises = distill::surprises_for(taint, &out.surprises);
                 let trusted_surprises = !out.surprises.is_empty() && !sendable_surprises.is_empty();
                 for s in &out.surprises {
-                    let predicted = strip_ansi(&s.predicted);
-                    let actual = strip_ansi(&s.actual);
+                    let predicted = strip_ansi_and_controls(&s.predicted);
+                    let actual = strip_ansi_and_controls(&s.actual);
                     let about = s
                         .about
                         .as_deref()
-                        .map(|a| format!(" (about {})", strip_ansi(a)))
+                        .map(|a| format!(" (about {})", strip_ansi_and_controls(a)))
                         .unwrap_or_default();
                     if trusted_surprises {
                         println!(

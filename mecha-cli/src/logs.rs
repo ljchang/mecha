@@ -153,15 +153,11 @@ impl Write for Writer {
 /// nothing here worth being clever about, and an unterminated escape reaching
 /// a terminal is how a session ends up in a mode nobody chose.
 ///
-/// **A second use, one crate over.** `mecha distill` prints a session's own
-/// `Surprise` text — the model's free-text reading of transcript content,
-/// which can include a fetched page or a mail body — straight to stdout.
-/// The "a person reading their own terminal is a safe context" argument for
-/// that print assumes a live terminal; `scripts/ruminate.sh`'s nightly run
-/// redirects it to a dated logfile instead, which is exactly as exposed to
-/// a screen-clearing or OSC-52 sequence as a live read once someone opens it
-/// later. `pub(crate)` rather than a second copy, on the one-definition rule
-/// this codebase keeps paying to relearn.
+/// **Only `ESC`-introduced sequences — every other C0 control passes
+/// through, including `\r` and `\n`.** Safe at the call site above because
+/// `Writer::write` cuts at `\n` before calling this, so a bare `\r` can never
+/// reach it. **Not safe for un-split free text** — see
+/// [`strip_ansi_and_controls`], which is.
 pub(crate) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
@@ -190,6 +186,28 @@ pub(crate) fn strip_ansi(s: &str) -> String {
         }
     }
     out
+}
+
+/// [`strip_ansi`] plus every remaining C0/C1 control except tab.
+///
+/// For a *whole* free-text field rather than a pre-split line — `mecha
+/// distill` prints a session's own `Surprise` text (the model's free-text
+/// reading of transcript content, which can include a fetched page or a
+/// mail body) straight to stdout, and `scripts/ruminate.sh`'s nightly run
+/// redirects that output to a dated logfile rather than a live terminal. A
+/// bare `\r` in `actual` — the last thing on the printed line — rewrites the
+/// rendered line from column 0 in whatever reads the log back, which is
+/// enough to erase the very "untrusted, don't act on this" marker the print
+/// exists to show; a bare `\n` forges an extra line outright. `strip_ansi`
+/// alone does not catch either, because its own call site had already cut
+/// the stream at `\n` before this problem could arise. `pub(crate)` rather
+/// than a second copy of `strip_ansi`'s ESC-handling loop, on the
+/// one-definition rule this codebase keeps paying to relearn.
+pub(crate) fn strip_ansi_and_controls(s: &str) -> String {
+    strip_ansi(s)
+        .chars()
+        .filter(|c| *c == '\t' || !c.is_control())
+        .collect()
 }
 
 /// Installed once in `main`. Every event gets a fresh `Writer`, which is free:
@@ -303,6 +321,35 @@ mod tests {
         assert_eq!(strip_ansi("a\u{1b}[31"), "a");
         assert_eq!(strip_ansi("a\u{1b}"), "a");
         assert_eq!(strip_ansi("plain text"), "plain text");
+    }
+
+    #[test]
+    fn strip_ansi_alone_does_not_catch_a_bare_carriage_return() {
+        // The precondition `strip_ansi` relies on — its own call site cuts
+        // at `\n` first — does not hold for a whole free-text field, and this
+        // is what that gap looks like: a bare `\r` survives and would
+        // overwrite everything before it once rendered.
+        assert_eq!(strip_ansi("safe\rDANGER"), "safe\rDANGER");
+    }
+
+    #[test]
+    fn strip_ansi_and_controls_removes_what_strip_ansi_leaves_behind() {
+        // A `\r` rewrites the line, a `\n` forges an extra one — both are
+        // exactly as effective at defeating a printed warning as the ANSI
+        // sequences `strip_ansi` already handles, for a field nothing has
+        // pre-split at newlines.
+        assert_eq!(strip_ansi_and_controls("safe\rDANGER"), "safeDANGER");
+        assert_eq!(
+            strip_ansi_and_controls("line one\nline two"),
+            "line oneline two"
+        );
+        assert_eq!(
+            strip_ansi_and_controls("a\u{1b}[31mred\u{1b}[0m\rb"),
+            "aredb"
+        );
+        // Tab survives — it is not the threat the others are.
+        assert_eq!(strip_ansi_and_controls("a\tb"), "a\tb");
+        assert_eq!(strip_ansi_and_controls("plain text"), "plain text");
     }
 
     #[test]
