@@ -1071,14 +1071,25 @@ pub struct AppraiserEvidence {
     pub load_avg_1m: Option<f32>,
 }
 
-/// The wire name `Channel`/`Affect` already carry via `#[serde(rename_all =
+/// The wire name a `Serialize` enum already carries via `#[serde(rename_all =
 /// "snake_case")]` — reused rather than a second naming, on `diagnose::
-/// Evidence::of`'s own precedent for `StopCause`.
-fn enum_name<T: Serialize>(v: &T) -> String {
-    serde_json::to_string(v)
-        .unwrap_or_default()
-        .trim_matches('"')
-        .to_string()
+/// Evidence::of`'s own precedent for `StopCause`, and never `{:?}`: Debug and
+/// serde agree on every one-word variant and silently diverge on the first
+/// multi-word one (`Agency::Own` already renders `"self"`, a hand-written
+/// rename).
+///
+/// Public because this had three spellings in reach of one CLI file
+/// (`enum_key`, this, and an inline `trim_matches('"')` in `sessions
+/// health`), and the inline copy degraded to an empty string where the
+/// others said `"unknown"` — the kind of divergence a shared helper exists
+/// to end. `"unknown"` on serialize failure, never `""`: a dash is never
+/// zero, and an empty label reads as a blank cell rather than a fact about
+/// the serializer.
+pub fn enum_name<T: Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 impl AppraiserEvidence {
