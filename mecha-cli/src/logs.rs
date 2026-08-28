@@ -203,10 +203,31 @@ pub(crate) fn strip_ansi(s: &str) -> String {
 /// the stream at `\n` before this problem could arise. `pub(crate)` rather
 /// than a second copy of `strip_ansi`'s ESC-handling loop, on the
 /// one-definition rule this codebase keeps paying to relearn.
+///
+/// **`is_control()` is Unicode category Cc only (C0, DEL, C1), and two other
+/// categories buy the same two effects.** U+2028/U+2029 (line/paragraph
+/// separator, Zl/Zp) render as a line break in most editors and log
+/// viewers — the same forged-extra-line trick as a bare `\n`, through a
+/// character `is_control()` does not name. U+202A–U+202E and U+2066–U+2069
+/// (bidi overrides/isolates, Cf) visually reorder the rest of the line in
+/// any bidi-aware reader, which can move the "⚠ untrusted" marker away from
+/// the text it qualifies — the Trojan Source shape, same field, same
+/// deferred-read scenario. Both are named rather than left to a broader
+/// "printable only" filter: this field is free-text prose that may
+/// legitimately carry non-Latin scripts, and a filter that could not say
+/// which characters it distrusts would be guessing rather than closing a
+/// specific, described class.
 pub(crate) fn strip_ansi_and_controls(s: &str) -> String {
     strip_ansi(s)
         .chars()
-        .filter(|c| *c == '\t' || !c.is_control())
+        .filter(|&c| {
+            c == '\t'
+                || !(c.is_control()
+                    || matches!(c,
+                        '\u{2028}' | '\u{2029}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'))
+        })
         .collect()
 }
 
@@ -350,6 +371,26 @@ mod tests {
         // Tab survives — it is not the threat the others are.
         assert_eq!(strip_ansi_and_controls("a\tb"), "a\tb");
         assert_eq!(strip_ansi_and_controls("plain text"), "plain text");
+    }
+
+    #[test]
+    fn strip_ansi_and_controls_catches_what_is_control_alone_would_miss() {
+        // U+2028/U+2029 are Zl/Zp, not Cc — `is_control()` alone would let
+        // them through to forge an extra rendered line exactly like a bare
+        // `\n` does.
+        assert_eq!(strip_ansi_and_controls("safe\u{2028}DANGER"), "safeDANGER");
+        assert_eq!(strip_ansi_and_controls("safe\u{2029}DANGER"), "safeDANGER");
+        // Bidi overrides/isolates are Cf, not Cc — left in place, a
+        // bidi-aware reader can visually reorder the line around them,
+        // moving a warning marker away from the text it qualifies.
+        assert_eq!(
+            strip_ansi_and_controls("safe\u{202e}DANGER\u{202c}"),
+            "safeDANGER"
+        );
+        assert_eq!(
+            strip_ansi_and_controls("safe\u{2066}DANGER\u{2069}"),
+            "safeDANGER"
+        );
     }
 
     #[test]
