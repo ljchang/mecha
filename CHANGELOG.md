@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assertion written against the documented contract is ignored entirely by
   `set -e`, so it neither failed nor passed.
 
+- **A model name from a server nobody named can no longer produce a config
+  that will not parse.** `verified_settings` rendered the alias with Rust's
+  `Debug` escaping, which is not TOML's — a control character becomes
+  `\u{1b}`, and TOML's `\u` takes four hex digits with no braces. Quotes,
+  backslashes and newlines happen to escape compatibly, so only
+  non-printables bite; what made it matter is that the discovery path added
+  in this release takes those bytes from a server the owner has never named.
+  The value goes through the TOML serializer now, and `setup --write` reads
+  the file back through the loader a run uses before claiming it wrote
+  anything — restoring the backup and saying so if it does not parse, on the
+  same rule as the charter's "saved, but it will NOT load". Without it, every
+  later command died at `Config::load_global` pointing at `mecha config init`,
+  which is the wrong fix.
+
 - **The MCP environment-allowlist test now accounts for what a child adds to
   itself.** On macOS the nosy fixture reported `__CF_USER_TEXT_ENCODING`,
   which CoreFoundation writes into its own environment during initialization —

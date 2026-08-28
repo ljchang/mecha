@@ -820,7 +820,7 @@ fn integration_steps(facts: &Facts) -> Vec<Step> {
 pub fn verified_settings(props: &crate::provider::preflight::Props) -> Vec<(&'static str, String)> {
     let mut out = Vec::new();
     if let Some(alias) = &props.model_alias {
-        out.push(("model", format!("{alias:?}")));
+        out.push(("model", toml_string(alias)));
     }
     // The per-slot figure, which is the one a request actually gets. Reading
     // it back is what makes `-c` versus `-c / -np` a non-question.
@@ -829,6 +829,24 @@ pub fn verified_settings(props: &crate::provider::preflight::Props) -> Vec<(&'st
     }
     out.push(("vision", props.modalities.vision.to_string()));
     out
+}
+
+/// A TOML string literal, escaped the way **TOML** escapes.
+///
+/// **Not `format!("{s:?}")`, which is Rust escaping.** `str`'s `Debug`
+/// renders a control character as `\u{1b}`; TOML's `\u` takes exactly four
+/// hex digits and no braces, so that value is written into a config file that
+/// then fails to parse. Quotes, backslashes, tabs and newlines happen to
+/// escape compatibly, which is why this survived unnoticed — only
+/// non-printables bite.
+///
+/// It matters here more than it looks because of where these bytes come from:
+/// a server's own `/props`, on the discovery path, where the server is one
+/// nobody has named. [`answers_like_a_model_server`] establishes that
+/// something answering `:8080` may be a stranger; this makes sure a stranger's
+/// answer cannot produce a config that no later `mecha` command can load.
+fn toml_string(s: &str) -> String {
+    toml::Value::String(s.to_string()).to_string()
 }
 
 /// Count the per-account directories under a credential root.
@@ -1695,6 +1713,51 @@ mod tests {
         assert!(undecline(&home, None).unwrap().changed);
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A value read off a stranger's `/props` cannot produce a config that
+    /// will not parse.
+    ///
+    /// `format!("{alias:?}")` is *Rust* escaping: a control character renders
+    /// as `\u{1b}`, and TOML's `\u` takes four hex digits with no braces, so
+    /// the written file is a parse error — and every later `mecha` command
+    /// then dies at `Config::load_global` with a message pointing at
+    /// `mecha config init` rather than at what happened.
+    #[test]
+    fn a_model_alias_is_escaped_for_toml_rather_than_for_rust() {
+        use crate::provider::preflight::Props;
+
+        for alias in [
+            "qwen3-14b",
+            "has \"quotes\"",
+            "has\\backslash",
+            // The one that bites: `Debug` writes `\u{1b}`, TOML cannot read it.
+            "esc\u{1b}ape",
+            "new\nline",
+            "tab\there",
+        ] {
+            let props = Props {
+                model_alias: Some(alias.to_string()),
+                ..Props::default()
+            };
+            let rendered = verified_settings(&props)
+                .into_iter()
+                .find(|(k, _)| *k == "model")
+                .expect("a named model is written down")
+                .1;
+
+            // Round-tripped through the parser that will actually read it,
+            // rather than eyeballed: the question is whether a *run* can load
+            // the file, so ask the same reader.
+            let doc: toml::Table = format!("model = {rendered}")
+                .parse()
+                .unwrap_or_else(|e| panic!("{alias:?} rendered as {rendered} — unparseable: {e}"));
+            assert_eq!(
+                doc["model"].as_str(),
+                Some(alias),
+                "value survived the trip"
+            );
+        }
     }
 
     /// `charter_state` answers the question a run would ask, not "is there
