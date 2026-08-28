@@ -37,6 +37,30 @@ pub fn edit_text(initial: &str, scratch_name: &str) -> Result<String> {
     Ok(text)
 }
 
+/// Open `path` itself in `$VISUAL`/`$EDITOR`/`vi` — no scratch file, because
+/// the file *is* the store. For the charter, whose write path is deliberately
+/// "the owner with a text editor" and nothing else: mecha hands the terminal
+/// over and reads the result back through the ordinary load, so a failed
+/// save, a quit-in-anger, or a syntax error all land exactly where a hand-run
+/// `vi ~/.mecha/charter.toml` would have put them.
+///
+/// Blocks until the editor exits — the caller owns the terminal and must have
+/// handed it over first.
+pub fn edit_file(path: &std::path::Path) -> Result<()> {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} {}", shell_quote(&path.to_string_lossy())))
+        .status()
+        .with_context(|| format!("launching {editor}"))?;
+    if !status.success() {
+        bail!("{editor} exited with {status}");
+    }
+    Ok(())
+}
+
 pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }

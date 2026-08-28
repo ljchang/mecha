@@ -430,68 +430,6 @@
     vScroll();
   }
 
-  // Voice picker and rate, over voice-core's `voiceConfig` contract. Three
-  // rules carried from the standalone dock, because two shells over one
-  // module must not disagree about how speech sounds:
-  //
-  //  1. **Render the server's answer, never an optimistic local value.** A
-  //     slider reading 1.6x while the worker refused it would be a control
-  //     describing a voice you are not hearing.
-  //  2. **Preferences are restored once per connection, never re-asserted.**
-  //     A settings echo that re-sends on every reply is a loop, and the
-  //     thing it loops on is speech.
-  //  3. **Unknown is not empty.** A worker that cannot name its voices gets
-  //     no picker, rather than an empty one implying it has none.
-  //
-  // The prefs key is the standalone page's, deliberately shared: one owner,
-  // one box, one idea of what mecha sounds like — a voice picked on the
-  // voice page is the voice this call opens with.
-  const VOICE_PREFS = 'mecha.voice.prefs';
-  let vCfg = $state(null); // the server's last answer: {voices, voice, speed, range}
-  let vRefused = $state(false);
-  let vRestored = false;
-
-  function loadVoicePrefs() {
-    // Storage can throw outright (private mode, blocked site data), so a
-    // failed read degrades to "no preference" and never to a broken call.
-    try {
-      return JSON.parse(localStorage.getItem(VOICE_PREFS)) || {};
-    } catch {
-      return {};
-    }
-  }
-  function saveVoicePrefs(p) {
-    try {
-      localStorage.setItem(VOICE_PREFS, JSON.stringify(p));
-    } catch {
-      /* not worth a word */
-    }
-  }
-
-  function onVoiceConfig(cfg) {
-    if (!cfg.voices || !cfg.voices.length) return; // unknown ≠ empty: stay hidden
-    vCfg = cfg;
-    vRefused = !!cfg.refused;
-    if (cfg.refused) setTimeout(() => (vRefused = false), 1200);
-    if (!vRestored) {
-      vRestored = true;
-      const p = loadVoicePrefs();
-      const patch = {};
-      if (p.voice && p.voice !== cfg.voice && cfg.voices.includes(p.voice)) patch.voice = p.voice;
-      if (p.speed && Math.abs(p.speed - cfg.speed) > 0.01) patch.speed = p.speed;
-      if (Object.keys(patch).length) vSession?.voiceConfig(patch);
-    } else {
-      saveVoicePrefs({ voice: cfg.voice, speed: cfg.speed });
-    }
-  }
-
-  function setVoice(name) {
-    vSession?.voiceConfig({ voice: name });
-  }
-  function setSpeed(value) {
-    vSession?.voiceConfig({ speed: Number(value) });
-  }
-
   // `keep` is the reconnect path: the words already spoken stay on screen,
   // because the call dropping is not the conversation ending — D3 means the
   // session outlived the transport, and clearing the pane would say
@@ -513,13 +451,6 @@
       onLevel: (level) => (vLevel = level),
       onLink: (live) => {
         vLinked = live;
-        if (!live) {
-          // The controls describe a worker that is no longer there; a
-          // picker left on screen after the line drops is a control that
-          // silently stops doing anything.
-          vCfg = null;
-          vRestored = false;
-        }
         if (!live && voiceOpen) {
           // Every idle label offers the same way back, because they are all
           // the same situation to the person looking at them: the call is
@@ -528,10 +459,7 @@
         }
       },
       onBotTurnEnd: () => {},
-      onVoiceConfig,
     });
-    vCfg = null;
-    vRestored = false;
     voiceOpen = true;
     vSession.connect().catch((e) => {
       vState = {
@@ -1132,38 +1060,10 @@
           {/if}
         {/each}
       </div>
-      {#if vCfg}
-        <div class="voice-settings" class:refused={vRefused}>
-          <label class="vset">
-            <span class="vlabel">voice</span>
-            <select
-              class="vselect"
-              value={vCfg.voice}
-              onchange={(e) => setVoice(e.currentTarget.value)}
-            >
-              {#each vCfg.voices as v}
-                <option value={v}>{v}</option>
-              {/each}
-            </select>
-          </label>
-          <label class="vset">
-            <span class="vlabel">rate</span>
-            <!-- The range is the server's, never a literal here: the worker
-                 owns what it can speak at, and a hardcoded bound would be a
-                 second opinion about it. -->
-            <input
-              class="vspeed"
-              type="range"
-              min={vCfg.range?.min ?? 0.5}
-              max={vCfg.range?.max ?? 2}
-              step="0.05"
-              value={vCfg.speed}
-              onchange={(e) => setSpeed(e.currentTarget.value)}
-            />
-            <span class="vspeedval">{Number(vCfg.speed).toFixed(2)}×</span>
-          </label>
-        </div>
-      {/if}
+      <!-- Voice and rate moved to the settings page (the gear on Home):
+           they are preferences, not call controls, and a pane that is
+           mostly a form is a worse call surface. voice-core still applies
+           the remembered choice the moment the data channel opens. -->
       <div class="voice-controls">
         <button class="mutebtn" class:muted={vMuted} onclick={toggleMute} title={vMuted ? 'unmute' : 'mute'}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -1811,77 +1711,6 @@
   .voice {
     background: var(--surface);
     border: 1px solid var(--accent-700);
-  }
-  .voice-settings {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 18px;
-    padding: 0 20px 10px;
-    flex-wrap: wrap;
-  }
-  .vset {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .vlabel {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-  .vselect {
-    background: var(--surface);
-    border: 1px solid var(--accent-900);
-    border-radius: var(--radius-chip);
-    color: var(--text);
-    font-family: var(--mono);
-    font-size: 12px;
-    padding: 8px 10px;
-    min-height: 38px;
-    cursor: pointer;
-  }
-  .vspeed {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 96px;
-    height: 3px;
-    border-radius: 2px;
-    background: var(--accent-900);
-    cursor: pointer;
-  }
-  .vspeed::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 15px;
-    height: 15px;
-    border-radius: 50%;
-    background: var(--accent-400);
-    border: none;
-    cursor: pointer;
-  }
-  .vspeed::-moz-range-thumb {
-    width: 15px;
-    height: 15px;
-    border-radius: 50%;
-    background: var(--accent-400);
-    border: none;
-    cursor: pointer;
-  }
-  .vspeedval {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text-muted);
-    min-width: 3.4em;
-  }
-  /* A refused value flashes rather than silently reverting: the control
-     snapped back to the server's answer, and the owner should see that it
-     did instead of wondering whether the drag registered. */
-  .voice-settings.refused .vspeedval,
-  .voice-settings.refused .vselect {
-    color: var(--hazard);
-    border-color: var(--hazard);
   }
   .logo {
     background: none;

@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Voice and rate moved out of the call pane, and a voice can be cloned.**
+  The in-call picker and slider were preferences wearing call-control
+  clothes; they live on the settings page now (the call pane keeps mute and
+  end-call), reading and writing voice-core's own preference store — which
+  fixes a real bug found in the move: `Chat.svelte` kept a second copy of
+  the prefs machinery under a *different* localStorage key while claiming
+  to share the first, so a voice picked in a call was saved where nothing
+  else looked. One store now, with a one-time read of the legacy key. The
+  page's picker enumerates from the worker's last answer, cached at every
+  call; a preference applies from the next call, which the page says.
+
+  **Cloning**: the TTS (Chatterbox) is a zero-shot cloner whose "voice" is
+  a reference WAV in a directory, so the settings page can record someone
+  reading a passage — it opens with them agreeing out loud, and the clip
+  never leaves the box — name it, and save it as a voice. `[web]
+  voices_dir` names the host side of the directory the TTS container
+  mounts (unset disables the feature); the upload is validated as integer
+  PCM WAV with 5–120s of audio read from its own header, voice names are a
+  closed alphabet with `default` reserved, an existing name is refused
+  rather than overwritten, and deletion is offered where recording is —
+  a botched take that needs a terminal turns the store into a pile, and
+  the file is a recording of somebody's voice. The worker's voice-list
+  cache now revalidates on a miss, so a fresh clone works on the next call
+  instead of after a restart nobody was told about.
+
+- **A settings page on the web surface** — the gear in the upper-right of
+  Home. Three sections, and exactly one thing on the whole page can write:
+  the **charter** shows the ranked lines and offers an edit whose save is a
+  two-tap confirm, validated server-side by the same `Charter::parse` every
+  run loads through — an invalid document is refused with the parse error
+  and never reaches disk (temp-sibling-and-rename when it does), which is
+  strictly better than the TUI's after-the-fact warning, since here the
+  bytes are still refusable. **Learned rules** is a read of `mecha rules
+  list --json` with the ledger tallies — retiring stays behind its own
+  staged review. **Voice** reports whether the worker answers and where
+  offers go, nothing more. Deliberately absent: anything whose edit widens
+  security posture (`[sandbox]`, `[security]`, `[outbox]` routing) stays in
+  `config.toml` where a diff reviews it.
+
+- **`/charter` in the TUI: see the standing priorities, and edit them without
+  leaving the screen.** The list shows the ranked lines (order is rank), enter
+  opens a line's full text, and `e` hands the terminal to `$EDITOR` on
+  `~/.mecha/charter.toml` itself — the charter's write path stays "the owner
+  with a text editor" (§11): no CLI verb, no tool, and no model path writes a
+  line, and the only bytes mecha ever writes are a comments-only template when
+  the file does not exist yet. Validation feedback lands the moment the editor
+  closes — a duplicate id or a typo'd table name is reported in the modal, not
+  at the next session's startup where the alternate screen covers the warning —
+  and the status line says the honest thing about scope: an edit rides in the
+  prompt from the next session (`/model` rebuilds this one), never the
+  conversation already running.
+
 - **`mecha distill` now notices when the world disagreed with the graph.**
   The same quarantined pass that already finds corrections also reports
   SURPRISES: moments where something the agent said, sourced from graph

@@ -203,7 +203,7 @@ class ParakeetSTT(SegmentGatedSTT):
 _voices_cache = None
 
 
-def available_voices():
+def available_voices(refresh=False):
     """What the TTS server can actually speak as, asked once and cached.
 
     Asked rather than configured, for the reason `GET /props` is asked of
@@ -213,8 +213,17 @@ def available_voices():
     None - meaning "unknown", never an empty list, because a picker that
     renders no choices and a picker that could not ask are opposite
     findings and only one of them should hide the control.
+
+    `refresh` drops the cache first. The one caller that passes it is the
+    voice-config handler on a *miss*: a voice can be cloned onto the box
+    while this process runs (the settings page writes a WAV into the same
+    directory the TTS lists), and a forever-cache would refuse the new name
+    until a worker restart nobody was told to do. Refetching only on a miss
+    keeps the happy path at zero extra requests - a known voice never pays.
     """
     global _voices_cache
+    if refresh:
+        _voices_cache = None
     if _voices_cache is not None:
         return _voices_cache
     import json
@@ -596,6 +605,13 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         if "voice" in data:
             want = str(data["voice"])
             known = available_voices()
+            if known is not None and want not in known:
+                # A miss may be a voice cloned since this process last
+                # asked - one revalidation before refusing, so a fresh
+                # clone works on the next call rather than after a worker
+                # restart. A genuinely unknown name costs one extra list
+                # fetch and is then refused exactly as before.
+                known = available_voices(refresh=True)
             # Unknown list means unknown, not permissive: refusing here
             # costs one unchanged voice, where guessing costs a 400 in
             # the middle of a spoken sentence.

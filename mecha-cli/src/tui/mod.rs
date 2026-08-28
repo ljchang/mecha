@@ -13,6 +13,7 @@
 
 mod approve;
 mod ask;
+mod charter;
 mod command;
 mod docs;
 mod doctor;
@@ -432,6 +433,12 @@ struct App {
     tools: Option<tools::ToolsModal>,
     /// The /skills modal, when open. Takes every key while it is up.
     skills: Option<skills::SkillsModal>,
+    /// The /charter modal, when open. Takes every key while it is up.
+    charter: Option<charter::CharterModal>,
+    /// `e` in /charter, deferred to the main loop for the same reason as
+    /// `pending_outbox_edit` — handing the terminal to `$EDITOR` needs the
+    /// terminal, which the key handler does not have.
+    pending_charter_edit: bool,
     learning: Option<learning::LearningModal>,
     /// Where the skill store lives, resolved from `[skills] dir` once at
     /// startup — the same resolution the agent's own set came from, so the
@@ -594,6 +601,7 @@ impl App {
             || self.picker.is_some()
             || self.tools.is_some()
             || self.skills.is_some()
+            || self.charter.is_some()
             || self.scheduled.is_some()
             || self.staged.is_some()
             || self.requests.is_some()
@@ -848,6 +856,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         help_scroll: 0,
         tools: None,
         skills: None,
+        charter: None,
+        pending_charter_edit: false,
         learning: None,
         pending_lesson_edit: None,
         skills_dir: prepared
@@ -1134,6 +1144,13 @@ async fn run_loop(
         // Editing an outbox draft's arguments, same again.
         if let Some(id) = app.pending_outbox_edit.take() {
             suspend_and_edit_outbox(terminal, app, &id)?;
+            continue;
+        }
+
+        // Editing the charter, same suspend dance.
+        if app.pending_charter_edit {
+            app.pending_charter_edit = false;
+            suspend_and_edit_charter(terminal, app)?;
             continue;
         }
 
@@ -2195,6 +2212,7 @@ fn open_scoped_review(app: &mut App, ids: Vec<String>) {
         || app.picker.is_some()
         || app.tools.is_some()
         || app.skills.is_some()
+        || app.charter.is_some()
         || app.scheduled.is_some()
         || app.staged.is_some()
         || app.requests.is_some()
@@ -2578,6 +2596,30 @@ fn on_key(
                     modal.detail = false;
                 } else {
                     app.skills = None;
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    // The charter modal, same keys as /skills — plus `e`, which is the whole
+    // point: it hands the terminal to $EDITOR on the charter file itself.
+    // Deferred to the main loop like every other editor hand-over, because
+    // this handler does not hold the terminal.
+    if let Some(modal) = &mut app.charter {
+        match key.code {
+            KeyCode::Up if !modal.detail => modal.move_by(-1),
+            KeyCode::Down if !modal.detail => modal.move_by(1),
+            KeyCode::Up => modal.scroll_detail(-1),
+            KeyCode::Down => modal.scroll_detail(1),
+            KeyCode::Enter => modal.toggle_detail(),
+            KeyCode::Char('e') => app.pending_charter_edit = true,
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if modal.detail {
+                    modal.detail = false;
+                } else {
+                    app.charter = None;
                 }
             }
             _ => {}
@@ -3151,6 +3193,11 @@ fn run_command(
                 dir: app.skills_dir.clone(),
             });
         }
+
+        Command::Charter => match mecha_core::charter::Charter::default_path() {
+            Ok(path) => app.charter = Some(charter::CharterModal::load(path)),
+            Err(e) => say(format!("charter: {e:#}")),
+        },
 
         Command::Triggers => match triggers::load(5) {
             Ok(rows) => app.scheduled = Some(triggers::TriggersModal::new(rows)),
@@ -6528,6 +6575,88 @@ fn suspend_and_edit_trigger(
     Ok(())
 }
 
+/// Edit the charter in `$EDITOR` — on the file itself — then reload the
+/// modal and say what happened, where "what happened" is read off the file
+/// rather than the editor's exit code.
+///
+/// The one write mecha ever makes here is the comments-only
+/// `charter::TEMPLATE` when the file does not exist yet; every `[[line]]`
+/// is the owner's own typing. Validation feedback is the reason this beats
+/// a hand-run `vi`: a duplicate id or a typo'd table name is reported the
+/// moment the editor closes, not at the next session's startup where the
+/// alternate screen covers the warning.
+fn suspend_and_edit_charter(
+    terminal: &mut Terminal<impl Backend<Error: Send + Sync + 'static>>,
+    app: &mut App,
+) -> Result<()> {
+    let Some(modal) = &app.charter else {
+        return Ok(());
+    };
+    let path = modal.path.clone();
+    let mut created = false;
+    if !path.is_file() {
+        // A store failure here is a status line, never a `?` — every
+        // sibling hand-over routes its store errors into the modal, and a
+        // full disk must not take down the whole session (partial answer
+        // and all) over a template nobody typed.
+        let write = path
+            .parent()
+            .map(std::fs::create_dir_all)
+            .unwrap_or(Ok(()))
+            .and_then(|()| std::fs::write(&path, charter::TEMPLATE));
+        if let Err(e) = write {
+            if let Some(modal) = &mut app.charter {
+                modal.status = Some(format!("could not create {}: {e}", path.display()));
+            }
+            return Ok(());
+        }
+        created = true;
+    }
+    // The file *is* the store (`edit_file` has no scratch copy), so what the
+    // editor did to it is established by looking, not by its exit code: a
+    // clean exit may have saved nothing, and `:cq` may exit non-zero after a
+    // save landed. Bytes before against bytes after is the one honest
+    // answer to "did anything change".
+    let before = std::fs::read(&path).ok();
+    let result = with_terminal_suspended(terminal, || crate::editor::edit_file(&path))?;
+    let changed = std::fs::read(&path).ok() != before;
+
+    if let Some(modal) = &mut app.charter {
+        // The honest clause in every "saved" arm: the charter is rendered
+        // into the system prompt at agent build, so a saved edit changes the
+        // next session (or this one after /model), never this conversation.
+        modal.status = Some(match (&result, changed) {
+            (Ok(_), false) if created => {
+                "the template is in place — no lines yet; e edits it".to_string()
+            }
+            (Ok(_), false) => "unchanged".to_string(),
+            (Ok(_), true) => match mecha_core::charter::Charter::load(&path) {
+                Ok(_) => "saved — rides in the prompt from the next session (/model rebuilds this one)".to_string(),
+                Err(e) => format!(
+                    "saved, but it will NOT load: {e:#} — every run starts uncharted until this is fixed (e re-edits)"
+                ),
+            },
+            // A non-zero exit with the file changed anyway (`:cq` after a
+            // save, a wrapper script) — claiming "unchanged" here would be
+            // wrong about the one file that rides in every prompt, so say
+            // what actually happened and whether what landed loads.
+            (Err(e), true) => match mecha_core::charter::Charter::load(&path) {
+                Ok(_) => format!("the editor exited with an error ({e}), but the file changed and loads"),
+                Err(le) => format!(
+                    "the editor exited with an error ({e}); the file changed and will NOT load: {le:#}"
+                ),
+            },
+            (Err(e), false) => format!("charter unchanged: {e}"),
+        });
+        modal.reload();
+    }
+    if let Err(e) = result {
+        app.transcript
+            .push(Entry::Error(format!("charter editor: {e}")));
+    }
+    Ok(())
+}
+
 /// Edit an outbox draft in `$EDITOR`, then reload the modal.
 ///
 /// Saving goes through `mecha outbox edit`'s own path — which opens the prose
@@ -7295,6 +7424,9 @@ fn draw(
         modal.draw(frame);
     }
     if let Some(modal) = &app.skills {
+        modal.draw(frame);
+    }
+    if let Some(modal) = &app.charter {
         modal.draw(frame);
     }
     if let Some(modal) = &app.learning {
@@ -9453,6 +9585,8 @@ mod tests {
             help_scroll: 0,
             tools: None,
             skills: None,
+            charter: None,
+            pending_charter_edit: false,
             learning: None,
             pending_lesson_edit: None,
             skills_dir: std::path::PathBuf::from("/nonexistent-skills"),

@@ -61,25 +61,60 @@
  * as, and that is what gets written back. A stale preference therefore
  * survives exactly one connection. */
 const PREFS_KEY = "mecha-voice-prefs";
+/* Chat.svelte grew its own copy of this machinery under a *different*
+ * spelling while claiming to share this one — a voice picked in a call was
+ * saved where nothing else looked. That copy is gone (the pickers live on
+ * the settings page now); this read honours what it wrote, once, so a
+ * preference from before the merge is not silently lost. */
+const LEGACY_PREFS_KEY = "mecha.voice.prefs";
 
-function readPrefs() {
+function readStored() {
   try {
-    const raw = localStorage.getItem(PREFS_KEY);
+    const raw = localStorage.getItem(PREFS_KEY) ?? localStorage.getItem(LEGACY_PREFS_KEY);
     if (!raw) return {};
     const p = JSON.parse(raw), out = {};
     if (typeof p.voice === "string") out.voice = p.voice;
     if (typeof p.speed === "number") out.speed = p.speed;
+    if (Array.isArray(p.voices) && p.voices.every(v => typeof v === "string")) out.voices = p.voices;
+    if (typeof p.range?.min === "number" && typeof p.range?.max === "number") out.range = { min: p.range.min, max: p.range.max };
     return out;
   } catch { return {}; }
 }
 
+/* What a connection sends as its opening patch: the preference alone. The
+ * cached voices/range are for a picker with no live call to ask, never
+ * something to send back at a worker that owns both. */
+function readPrefs() {
+  const { voice, speed } = readStored();
+  const out = {};
+  if (voice !== undefined) out.voice = voice;
+  if (speed !== undefined) out.speed = speed;
+  return out;
+}
+
+/* Merge, never overwrite blind: a worker whose TTS list was unreachable
+ * this call answers voices:null, and wiping the cached list over that
+ * would cost the settings page its picker until the next healthy call. */
 function writePrefs(d) {
   try {
-    const out = {};
+    const out = readStored();
     if (typeof d?.voice === "string") out.voice = d.voice;
     if (typeof d?.speed === "number") out.speed = d.speed;
+    if (Array.isArray(d?.voices) && d.voices.every(v => typeof v === "string")) out.voices = d.voices;
+    if (typeof d?.range?.min === "number" && typeof d?.range?.max === "number") out.range = { min: d.range.min, max: d.range.max };
     localStorage.setItem(PREFS_KEY, JSON.stringify(out));
   } catch { /* private window, or storage disabled - not worth a failure */ }
+}
+
+/* The settings page's half: read everything remembered (preference plus the
+ * last call's voices/range), and save a picked voice/speed without touching
+ * the cache. The next call's opening patch carries the change - voice-core
+ * itself sends readPrefs() the moment the data channel opens. */
+export function readVoicePrefs() {
+  return readStored();
+}
+export function writeVoicePrefs(patch) {
+  writePrefs(patch ?? {});
 }
 
 export function createVoiceSession(opts = {}) {

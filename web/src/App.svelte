@@ -6,11 +6,12 @@
   import Mail from './lib/Mail.svelte';
   import Tasks from './lib/Tasks.svelte';
   import Notes from './lib/Notes.svelte';
+  import Settings from './lib/Settings.svelte';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   // A hash may carry a sub-view after a slash (#review/frontdoor), which the
   // view's component interprets; the router only splits it.
-  const views = ['home', 'chat', 'mail', 'review', 'tasks', 'notes'];
+  const views = ['home', 'chat', 'mail', 'review', 'tasks', 'notes', 'settings'];
   const fromHash = () => {
     const [h, s] = location.hash.slice(1).split('/');
     return views.includes(h) ? { view: h, sub: s ?? null } : { view: 'home', sub: null };
@@ -44,6 +45,8 @@
     <Tasks />
   {:else if view === 'notes'}
     <Notes />
+  {:else if view === 'settings'}
+    <Settings />
   {:else}
     <Home {navigate} />
   {/if}

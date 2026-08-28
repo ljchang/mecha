@@ -1040,6 +1040,14 @@ pub struct WebConfig {
     /// Directory holding the built web app (`web/dist`). Unset serves the
     /// API routes only, which is what tests and a headless box want.
     pub assets: Option<PathBuf>,
+    /// Where the TTS server's voice references live — the host side of the
+    /// directory the Chatterbox container mounts read-only as `/voices`
+    /// (each `<name>.wav` is a cloning reference; the file *is* the voice).
+    /// Unset disables voice cloning from the settings page, which is the
+    /// honest default: nothing here can guess where a container's mount
+    /// points, and writing WAVs into a wrong directory would litter it
+    /// silently.
+    pub voices_dir: Option<PathBuf>,
 }
 
 impl Default for WebConfig {
@@ -1049,6 +1057,7 @@ impl Default for WebConfig {
             port: 63242,
             owner_login: None,
             assets: None,
+            voices_dir: None,
         }
     }
 }
@@ -1059,6 +1068,7 @@ struct WebLayer {
     port: Option<u16>,
     owner_login: Option<String>,
     assets: Option<PathBuf>,
+    voices_dir: Option<PathBuf>,
 }
 
 /// A partially-specified config file. Every field is optional so a project file
@@ -1457,6 +1467,9 @@ impl ConfigLayer {
             }
             if x.assets.is_some() {
                 t.assets = x.assets;
+            }
+            if x.voices_dir.is_some() {
+                t.voices_dir = x.voices_dir;
             }
         }
     }
