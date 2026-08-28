@@ -1358,6 +1358,24 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
         }
     };
 
+    // Per-file rot, not the store-level failure above: every reader over
+    // this store is best-effort by design (`Session::list` skips a
+    // headerless file, `Corpus::scan` a torn body), which is right for the
+    // readers and wrong as a *diagnosis* — a store losing one transcript at
+    // a time was invisible from every surface at once. Doctor is the one
+    // reader whose job is the store itself.
+    if corpus.unreadable > 0 {
+        out.push(Finding::unreadable(
+            "runs",
+            &format!("{} transcript(s) in the session store", corpus.unreadable),
+            format!(
+                "{}: files with a .jsonl extension whose header or body \
+                 could not be parsed; every reader silently skips them",
+                sessions.display()
+            ),
+        ));
+    }
+
     let remedy = |what: &str| {
         Some(Remedy {
             description: format!("read the run-quality summary ({what})"),
@@ -2861,6 +2879,30 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(triggers.len(), 1, "{triggers:#?}");
         assert!(triggers[0].detail.contains("provider unreachable"));
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The regression this pins: a corrupt transcript was invisible from
+    /// every surface at once — `Session::list` skips it "quietly",
+    /// `sessions appraise` counts it nowhere, and doctor said "nothing
+    /// wrong". Every reader stays best-effort; doctor is the one whose job
+    /// is the store itself, so the skip count surfaces here.
+    #[test]
+    fn an_unreadable_transcript_is_a_finding_not_an_empty_queue() {
+        let home = home("runs-unreadable");
+        let dir = home.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("20260828T000000-torn.jsonl"), "not json\n").unwrap();
+
+        let all = examine(&home, utc(NOW));
+        let findings = of(&all, "runs");
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert!(
+            findings[0].summary.contains("unreadable") && findings[0].summary.contains('1'),
+            "{}",
+            findings[0].summary
+        );
 
         let _ = std::fs::remove_dir_all(&home);
     }

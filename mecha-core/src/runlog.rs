@@ -54,6 +54,12 @@ pub struct Corpus {
     /// Sessions read, including those that contributed no rows — the
     /// denominator for "how much of the store did this answer come from".
     pub sessions_read: usize,
+    /// Transcripts the scan could not read at all — a headerless file the
+    /// listing skipped, or one whose body failed to parse. Never folded into
+    /// `sessions_read`: an unreadable store is a finding, not an empty
+    /// queue, and a store rotting one file at a time was invisible from
+    /// every reader before this was counted.
+    pub unreadable: usize,
 }
 
 /// How to bound a scan. Both limits are honest about cost rather than about
@@ -74,7 +80,9 @@ impl Corpus {
     /// the ones after it.
     pub fn scan(dir: &Path, scan: &Scan) -> Result<Corpus> {
         let mut out = Corpus::default();
-        for (meta, path) in Session::list(dir)? {
+        let (listed, skipped) = Session::list_counting(dir)?;
+        out.unreadable = skipped;
+        for (meta, path) in listed {
             if scan.since.is_some_and(|t| meta.created_at < t) {
                 continue;
             }
@@ -87,6 +95,7 @@ impl Corpus {
             // header's model would defeat `by_model` in the one case where a
             // corpus genuinely blends two.
             let Ok(rows) = Session::outcomes_attributed(&path) else {
+                out.unreadable += 1;
                 continue;
             };
             for (i, (provider, model, s)) in rows.into_iter().enumerate() {
@@ -112,12 +121,14 @@ impl Corpus {
         self.rows.is_empty()
     }
 
-    /// Keep only the rows a predicate accepts. `sessions_read` is preserved,
-    /// because it describes the scan and not the selection.
+    /// Keep only the rows a predicate accepts. `sessions_read` and
+    /// `unreadable` are preserved, because they describe the scan and not
+    /// the selection.
     pub fn filter(&self, keep: impl Fn(&RunRow) -> bool) -> Corpus {
         Corpus {
             rows: self.rows.iter().filter(|r| keep(r)).cloned().collect(),
             sessions_read: self.sessions_read,
+            unreadable: self.unreadable,
         }
     }
 
