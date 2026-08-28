@@ -191,10 +191,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         // .step_escalation` above (`prepare_tools`), so this is the one
         // place that decides it. `Agent::run_in` mints a fresh `Mutex` per
         // run regardless — this initial one is never actually read from.
-        step_escalation: cfg
-            .agent
-            .step_escalation
-            .then(|| Arc::new(std::sync::Mutex::new(None))),
+        step_escalation: step_escalation_slot(cfg.agent.step_escalation),
         ..ToolCtx::default()
     };
 
@@ -381,6 +378,34 @@ pub fn sandbox_line(sandbox: &mecha_core::sandbox::Sandbox) -> String {
     }
 }
 
+/// Whether this run carries the step-escalation slot, folding
+/// `--no-step-escalation` over the config value the same way every other
+/// flag in `prepare_tools`'s "flags override config" section does.
+///
+/// Pulled out as its own function, and paired with [`step_escalation_slot`]
+/// below, because neither step is exercised by anything else: the loop gates
+/// purely on `ToolCtx::step_escalation.is_some()`, so `cfg.agent
+/// .step_escalation` is read nowhere but here. A `prepare_tools`/`build` run
+/// through a real provider is not a test this crate has anywhere to hang —
+/// see `a_subagent_inherits_the_window_its_compaction_threshold_derives_from`'s
+/// own "skip if this machine cannot build one" escape — so without a plain
+/// unit test on the mapping itself, dropping this fold (or the `.then` in
+/// `step_escalation_slot`) to an unconditional `true`/`Some` would leave the
+/// whole suite green while the feature shipped on for every run, `mecha
+/// eval` included.
+fn step_escalation_enabled(cfg_value: bool, no_step_escalation: bool) -> bool {
+    cfg_value && !no_step_escalation
+}
+
+/// The `ToolCtx` shape `compact_requested` already established: presence is
+/// the enablement. See [`step_escalation_enabled`] for why this is its own
+/// function rather than an inline `.then(...)` at the call site.
+fn step_escalation_slot(
+    enabled: bool,
+) -> Option<Arc<std::sync::Mutex<Option<mecha_core::step::StepEscalation>>>> {
+    enabled.then(|| Arc::new(std::sync::Mutex::new(None)))
+}
+
 /// Resolve config, workspace, tools, and the approval policy.
 pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<PreparedTools> {
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
@@ -406,9 +431,8 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     if opts.compact_at.is_some() {
         cfg.agent.compact_at_tokens = opts.compact_at;
     }
-    if opts.no_step_escalation {
-        cfg.agent.step_escalation = false;
-    }
+    cfg.agent.step_escalation =
+        step_escalation_enabled(cfg.agent.step_escalation, opts.no_step_escalation);
     if opts.no_thinking {
         cfg.agent.thinking = false;
         // Disabling thinking above `high` effort is rejected by the API. The
@@ -1319,7 +1343,41 @@ mod surface_only_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_subagent, excluded_by_allowlist};
+    use super::{
+        build_subagent, excluded_by_allowlist, step_escalation_enabled, step_escalation_slot,
+    };
+
+    /// The review finding this pins: `cfg.agent.step_escalation` is read
+    /// nowhere but `build`'s `ToolCtx` construction, so nothing else would
+    /// catch this mapping breaking. Both directions of the truth table,
+    /// composed end to end through both functions — cfg value and CLI
+    /// override in, slot presence out.
+    #[test]
+    fn the_cli_override_and_the_slot_construction_agree_on_all_four_combinations() {
+        for cfg_value in [false, true] {
+            for no_flag in [false, true] {
+                let enabled = step_escalation_enabled(cfg_value, no_flag);
+                assert_eq!(enabled, cfg_value && !no_flag);
+                assert_eq!(
+                    step_escalation_slot(enabled).is_some(),
+                    enabled,
+                    "cfg={cfg_value} no_step_escalation={no_flag}"
+                );
+            }
+        }
+    }
+
+    /// Named directly, since these are the two behaviours a person actually
+    /// cares about: off by default, and the override always wins.
+    #[test]
+    fn off_by_default_and_the_override_always_wins() {
+        assert!(!step_escalation_enabled(false, false), "off by default");
+        assert!(
+            !step_escalation_enabled(true, true),
+            "--no-step-escalation must win even when config turns it on"
+        );
+        assert!(step_escalation_enabled(true, false));
+    }
 
     /// **A child that cannot compact must not be handed the button for it.**
     ///
