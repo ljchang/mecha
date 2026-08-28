@@ -595,6 +595,52 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         cfg.agent.system_prompt_file = None;
     }
 
+    // The charter, right after skills and before learned rules: standing
+    // priorities the owner wrote once, rendered straight into the prompt —
+    // no progressive disclosure and no tool, unlike skills, because §11 says
+    // this rides in the cached prefix "like RULES_CHAR_BUDGET" rather than
+    // being loaded on demand. Global-only and read-only by construction: see
+    // `mecha_core::charter`'s module doc for why there is no config field to
+    // point this at a project file instead.
+    if !opts.no_charter {
+        let charter_path = mecha_core::charter::Charter::default_path()?;
+        // Best-effort, like skills and learned rules: a genuinely malformed
+        // charter (bad TOML, a duplicate or empty id) must not brick every
+        // run started until it is fixed — `mecha doctor` and `mecha charter`
+        // are where that failure is surfaced as the emergency it is, since
+        // stderr here is covered for a whole TUI session by the alternate
+        // screen. Crossing the character budget is *not* one of these
+        // failures — `Charter::load` still returns the document, on the
+        // learned-rules `over_budget_domains` precedent of warning rather
+        // than dropping what is over cap.
+        let charter = mecha_core::charter::Charter::load(&charter_path).unwrap_or_else(|e| {
+            eprintln!(
+                "mecha: charter at {} did not load — {e:#} — starting with none",
+                charter_path.display()
+            );
+            mecha_core::charter::Charter::default()
+        });
+        if charter.over_budget() {
+            eprintln!(
+                "mecha: charter at {} is {} characters, over the {}-character budget — it \
+                 still rides in the prompt in full, but costs more of the cached prefix than \
+                 argued",
+                charter_path.display(),
+                charter.char_count(),
+                mecha_core::charter::CHARTER_CHAR_BUDGET
+            );
+        }
+        if let Some(block) = mecha_core::charter::prompt_block(&charter) {
+            let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
+            cfg.agent.system_prompt = Some(if base.is_empty() {
+                block
+            } else {
+                format!("{base}\n\n{block}")
+            });
+            cfg.agent.system_prompt_file = None;
+        }
+    }
+
     // Learned rules ride at the end of the system prompt — still inside the
     // cached prefix, and they only change at consolidation time. Read-only:
     // an agent that has learned nothing yet must not create state by starting.

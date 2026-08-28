@@ -2028,8 +2028,10 @@ impl Agent {
                     // cannot rewrite the transcript or reach a provider, so
                     // what it can do is ask, and the loop is what acts — a
                     // read-clear-call-fold, bounded so the mechanism cannot
-                    // spend more than `MAX_STEP_ESCALATIONS_PER_RUN` calls no
-                    // matter how many candidates `todo` flags.
+                    // spend more than `MAX_STEP_ESCALATIONS_PER_RUN`
+                    // *candidates* no matter how many `todo` flags — up to
+                    // twice that many provider calls, since `escalate_step`
+                    // retries once per candidate.
                     if let Some(slot) = cx.tools.step_escalation.as_ref() {
                         // Cancellation is checked here, not only at the top
                         // of the loop: `cx.cancelled()` is read once per turn
