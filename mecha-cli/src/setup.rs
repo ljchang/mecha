@@ -287,6 +287,12 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         registry.insert(Arc::new(child));
     }
 
+    // The guard's presence is a startup invariant, not a hope about line
+    // order: `closure_guard::guard` above is positional, and a refactor
+    // that loses it must fail every start rather than ship a surface where
+    // the model can close tasks around `mecha tasks set`.
+    crate::closure_guard::verify(&registry)?;
+
     let mut agent = Agent::new(
         provider,
         registry,

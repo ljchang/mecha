@@ -23,11 +23,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // The *model-facing* surface, which is what this command exists to
     // audit ("ask the artifact, don't assert"): `setup::build` guards
     // `kg_task_update` on every agent registry, and without the same guard
-    // here the audit view printed the unguarded description — the one
-    // command a person checks to confirm a deployment's surface could not
-    // confirm the guard is installed. Applied to this process's own local
-    // registry only; `tasks set`'s separate `prepare_tools` instance is
-    // untouched as ever.
+    // here the audit view printed the unguarded description. This mirror
+    // cannot itself detect the guard's absence from `build` — what makes
+    // the mirror honest is `closure_guard::verify`, which `build` runs on
+    // every start and which refuses to hand an unguarded surface to any
+    // agent, so the surface this prints is the only one that can exist.
+    // Applied to this process's own local registry only; `tasks set`'s
+    // separate `prepare_tools` instance is untouched as ever.
     crate::closure_guard::guard(&mut prepared.registry);
     let registry = &prepared.registry;
 
