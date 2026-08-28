@@ -31,8 +31,9 @@ change; 0.1.14 shipped 2026-08-25 — voice calls and chat became one
 conversation, three review surfaces stopped hiding what they were asking
 people to approve, and the nightly mail classifier took both mailboxes;
 0.1.13 shipped 2026-08-24 night with the web surface, voice, and the graph
-queue's similarity groups; 0.1.12 on 2026-08-22, 0.1.11 on 2026-08-21, 0.1.10
-on 2026-08-20, and 0.1.7/0.1.8 on 2026-08-19/20 after the mail hold lifted).
+queue's similarity groups; 0.1.12 on 2026-08-22, 0.1.11 and 0.1.10 both on
+2026-08-21, 0.1.9 on 2026-08-20, and 0.1.7/0.1.8 on 2026-08-19/20 after the
+mail hold lifted).
 **`main` carries commits beyond v0.1.15 that are not yet tagged** — rung 9's
 episode tagging, surprise detection and the appraisal-arc PRs before it, all
 in the `Unreleased` section of `CHANGELOG.md` as of 2026-08-28.
@@ -1701,9 +1702,9 @@ fuller argument.
   way.
 
 - **Rung 9's first two pieces shipped 2026-08-27/28** (§10, §10.1 —
-  `appraisal::for_session` at `mecha-core/src/appraisal.rs:736` is now the
+  `appraisal::for_session` (`mecha-core/src/appraisal.rs`) is now the
   one assembly `mecha sessions appraise` and `mecha distill`'s episode
-  tagging both call; `distill::upsert_args` at `mecha-core/src/distill.rs:427`
+  tagging both call; `distill::upsert_args` (`mecha-core/src/distill.rs`)
   writes `meta.affect`/`meta.goal_errors` onto the pushed pkg episode, not
   gated on taint, and the quarantined `Distiller` now also extracts
   `Surprise { predicted, actual, about }` — gated like a correction, printed
