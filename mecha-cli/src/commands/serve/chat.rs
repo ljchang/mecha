@@ -1923,9 +1923,27 @@ mod rollback_tests {
     /// the rollback had removed from memory only. Recording the
     /// *rolled-back* conversation instead makes the file express it as a
     /// `Rewrite`, and a resume loads exactly what memory holds.
+    ///
+    /// **Scope, stated so nobody over-reads a green run:** this re-types
+    /// `begin_turn`'s error-arm sequence by hand and pins the
+    /// *composition* — rollback then `record_run` yields a resumable file.
+    /// It does not drive `begin_turn` itself (that means standing up the
+    /// server), so dropping or reordering the calls at the real site would
+    /// not fail here; the site's own comment carries that contract.
     #[test]
     fn a_failed_turn_s_transcript_resumes_to_the_rolled_back_state() {
-        let dir = std::env::temp_dir().join(format!("mecha-chat-rollback-{}", std::process::id()));
+        // Nanos, not just the pid: `cargo test` runs every test of this
+        // binary in one process, so a pid-keyed dir collides with any
+        // sibling using the same scheme. Leaked on panic, accepted — the
+        // assertion message names the dir's content, not its path.
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-chat-rollback-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let session = mecha_core::session::Session::create(
             &dir,

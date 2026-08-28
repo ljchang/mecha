@@ -519,14 +519,17 @@ pub struct Transcript {
     /// list — parallel to it, and what [`Transcript::config_covering`] reads.
     /// A front-end writes a `Config` at run start, before the run's own
     /// messages, so the config in effect at message `i` is the last one with
-    /// a position at or below `i`. A `Rewrite` clamps every earlier position
-    /// to zero: the rewritten head's original indices are claims about a list
-    /// that no longer exists, and the config in flight at the rewrite — the
-    /// last of the clamped ones — is the honest answer for it (messages the
-    /// rewrite kept from *earlier attaches* were genuinely recorded under
-    /// older configs, but those turns are exactly the "not comparable" case
-    /// `run_configs`'s own doc names, and the replay fidelity caveat is the
-    /// place that says so).
+    /// a position at or below `i`. A *summarising* `Rewrite` clamps every
+    /// earlier position to zero: the rewritten head's original indices are
+    /// claims about a list that no longer exists, and the config in flight
+    /// at the rewrite — the last of the clamped ones — is the honest answer
+    /// for it (messages the rewrite kept from *earlier attaches* were
+    /// genuinely recorded under older configs, but those turns are exactly
+    /// the "not comparable" case `run_configs`'s own doc names, and the
+    /// replay fidelity caveat is the place that says so). A *truncating*
+    /// rewrite — the failed-turn rollback, whose new list is a strict prefix
+    /// of the one in hand — rewrites nothing, so its positions stay exact;
+    /// see the `Rewrite` arm in [`Session::read`].
     pub config_positions: Vec<usize>,
     /// Every recorded outcome, folded into the episode the session describes.
     pub episode: Option<RunStats>,
@@ -796,7 +799,7 @@ impl Session {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
         let mut configs = Vec::new();
-        let mut config_positions = Vec::new();
+        let mut config_positions: Vec<usize> = Vec::new();
         let mut outcomes = Vec::new();
         let mut meta = None;
         let mut messages = Vec::new();
@@ -814,13 +817,50 @@ impl Session {
                 Ok(Record::Message(m)) => messages.push(m),
                 // The conversation state as of the rewrite, wholesale. Taint
                 // is deliberately not touched: summarising away the text of a
-                // hostile page does not un-read it. Config positions recorded
-                // against the replaced list are clamped, not kept — see
-                // `Transcript::config_positions` — and taint checkpoints are
-                // dropped, per `TaintTimeline::from_records`.
+                // hostile page does not un-read it.
+                //
+                // Two kinds of rewrite reach this arm, and they earn opposite
+                // treatment of the positions — found on review, after the
+                // failed-turn rollback started writing rewrites too:
+                //
+                // - **A truncation** (the rolled-back failed turn: the new
+                //   list is a strict prefix of the one in hand) rewrites
+                //   *nothing* — every surviving message keeps its index, so
+                //   every config position at or below the new length is
+                //   still exact. Zeroing them here collapsed
+                //   `config_covering` onto the newest attach for the whole
+                //   head, which made one provider error in a resumed session
+                //   reintroduce the replay-under-the-wrong-config divergence
+                //   the positional lookup exists to prevent. Positions above
+                //   the new length clamp to it: that config's own messages
+                //   are gone, and it correctly covers only what a later turn
+                //   appends (the attach is still in flight).
+                // - **A summarising rewrite** (compaction, eviction) replaces
+                //   the head, so old positions are claims about a list that
+                //   no longer exists — clamped to zero, the config in flight
+                //   covering the rewritten head, per
+                //   `Transcript::config_positions`.
+                //
+                // Taint checkpoints drop in BOTH cases, deliberately, and
+                // for a truncation that is a real (safe-direction) cost: the
+                // failed turn's trailing `Record::Taint` then covers the
+                // whole rolled-back list with the run's *cumulative* taint,
+                // so a clean earlier turn in a session that later read a
+                // hostile page and failed classifies untrusted. Over-taint,
+                // never under — and keeping them would diverge from
+                // `TaintTimeline::from_records`, which cannot see message
+                // content to tell the two rewrites apart; provenance must
+                // not depend on which reader classified it.
                 Ok(Record::Rewrite { messages: m }) => {
+                    let truncation = m.len() <= messages.len() && messages[..m.len()] == m[..];
+                    if truncation {
+                        for p in &mut config_positions {
+                            *p = (*p).min(m.len());
+                        }
+                    } else {
+                        config_positions.fill(0);
+                    }
                     messages = m;
-                    config_positions.fill(0);
                     taint_checkpoints.clear();
                 }
                 // Merged rather than replaced: taint only ever grows, and a
@@ -1572,6 +1612,65 @@ mod tests {
             t.config_covering(2).unwrap().compact_at_tokens,
             Some(1200),
             "message 2 ran under the second attach"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The failed-turn rollback writes a *truncating* rewrite — the new list
+    /// is a strict prefix of the recorded one, nothing rewritten — and the
+    /// review found the zero-clamp collapsing it anyway: one provider error
+    /// in a resumed session made every head message report the newest
+    /// attach's config, reintroducing the replay-under-the-wrong-config
+    /// divergence the positional lookup exists to prevent. A truncation
+    /// keeps its positions exact.
+    #[test]
+    fn a_truncating_rewrite_keeps_config_positions_exact() {
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-trunc")).unwrap();
+        let a = RunConfig::default();
+        let b = RunConfig {
+            compact_at_tokens: Some(1200),
+            ..RunConfig::default()
+        };
+        // Attach A: messages 0-1. Attach B: message 2, a user turn whose run
+        // then fails.
+        session.append(&Record::Config(a)).unwrap();
+        session
+            .append_messages(&[
+                Message::user("first attach"),
+                Message::assistant(vec![Block::text("done")]),
+            ])
+            .unwrap();
+        session.append(&Record::Config(b)).unwrap();
+        session
+            .append_messages(&[Message::user("the turn that fails")])
+            .unwrap();
+        // The failed-turn rollback, exactly as every error arm now runs it:
+        // restore-then-pop, then record the rolled-back state — a strict
+        // prefix, which record_run expresses as a truncating Rewrite.
+        let before = Session::load(&session.path).unwrap().1.messages;
+        let mut convo = crate::agent::Conversation::from(before.clone());
+        convo.roll_back_failed_turn(before.clone());
+        session.record_run(&before, &convo).unwrap();
+
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(
+            t.config_covering(0).unwrap().compact_at_tokens,
+            None,
+            "message 0 ran under attach A and must still say so after the rollback"
+        );
+        assert_eq!(
+            t.config_covering(1).unwrap().compact_at_tokens,
+            None,
+            "message 1 likewise"
+        );
+        // A turn appended after the rollback runs under the attach still in
+        // flight — B.
+        assert_eq!(
+            t.config_covering(2).unwrap().compact_at_tokens,
+            Some(1200),
+            "the next appended turn is attach B's"
         );
 
         std::fs::remove_dir_all(&dir).ok();

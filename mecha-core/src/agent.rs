@@ -588,6 +588,16 @@ impl Conversation {
     /// state (`Session::record_run` with the pre-run snapshot expresses it
     /// as a rewrite), or the failure survives a resume — the file otherwise
     /// keeps the user turn memory just dropped.
+    ///
+    /// Two costs of that recording, known and accepted: the rewrite carries
+    /// the **whole** conversation, so a long-lived surface riding out a
+    /// flapping provider appends one full history copy per failure — the
+    /// only way the format can express a rollback, and failures are rare;
+    /// and the rewrite drops the taint timeline's earlier checkpoints, so
+    /// the trailing taint record covers the whole rolled-back list with the
+    /// run's *cumulative* taint — a clean early turn in a session that later
+    /// read a hostile page and failed classifies untrusted. Over-taint,
+    /// never under; the safe direction, deliberately.
     pub fn roll_back_failed_turn(&mut self, before: Vec<Message>) {
         self.messages = before;
         self.messages.pop();
