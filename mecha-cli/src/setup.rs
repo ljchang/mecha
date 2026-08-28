@@ -568,10 +568,15 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     // point this at a project file instead.
     if !opts.no_charter {
         let charter_path = mecha_core::charter::Charter::default_path()?;
-        // Best-effort, like skills and learned rules: a typo in the one file
-        // that ranks every other priority must not brick every run started
-        // until it is fixed. `mecha charter` is where a parse failure is
-        // treated as the emergency it is.
+        // Best-effort, like skills and learned rules: a genuinely malformed
+        // charter (bad TOML, a duplicate or empty id) must not brick every
+        // run started until it is fixed — `mecha doctor` and `mecha charter`
+        // are where that failure is surfaced as the emergency it is, since
+        // stderr here is covered for a whole TUI session by the alternate
+        // screen. Crossing the character budget is *not* one of these
+        // failures — `Charter::load` still returns the document, on the
+        // learned-rules `over_budget_domains` precedent of warning rather
+        // than dropping what is over cap.
         let charter = mecha_core::charter::Charter::load(&charter_path).unwrap_or_else(|e| {
             eprintln!(
                 "mecha: charter at {} did not load — {e:#} — starting with none",
@@ -579,6 +584,16 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             );
             mecha_core::charter::Charter::default()
         });
+        if charter.over_budget() {
+            eprintln!(
+                "mecha: charter at {} is {} characters, over the {}-character budget — it \
+                 still rides in the prompt in full, but costs more of the cached prefix than \
+                 argued",
+                charter_path.display(),
+                charter.char_count(),
+                mecha_core::charter::CHARTER_CHAR_BUDGET
+            );
+        }
         if let Some(block) = mecha_core::charter::prompt_block(&charter) {
             let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
             cfg.agent.system_prompt = Some(if base.is_empty() {

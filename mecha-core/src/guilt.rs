@@ -45,56 +45,71 @@
 //! ## The formula is argued, not measured
 //!
 //! There is no corpus yet linking any weighting here to a real missed
-//! expectation, so this is a deliberately simple first cut: how long the
-//! oldest recorded commitment has been waiting, folded with how much room the
-//! run had to act on it. Both terms are read directly off already-sensed
-//! values (`Backlog`'s recorded timestamps, `Homeostat`'s own context-pressure
-//! peak) rather than extrapolated — the same discipline §4.4 states for
-//! predictive compaction: nothing here is a growth rate or a guess about the
-//! future, only arithmetic on what was actually measured.
+//! expectation, so this is a deliberately simple first cut over three
+//! directly-sensed values — nothing here is extrapolated or a growth rate,
+//! the same discipline §4.4 states for predictive compaction.
 
 use crate::backlog::{Backlog, Depth};
 use chrono::{DateTime, Utc};
 
-/// A magnitude in `[0, 1]` combining two proxies:
+/// How many recorded commitments make the count term treat "more" as no
+/// worse than this. A single item is not yet "piling up" — the term is zero
+/// at one and ramps linearly from there — so a lone fresh commitment cannot
+/// be read as several stacking up; it saturates at three, past which a
+/// fourth waiting item does not make a run four times as concerning.
+const SATURATES_AT_COUNT: usize = 3;
+
+/// How long the oldest recorded commitment can wait before the age term
+/// treats it as maximally so.
+const SATURATES_AT_HOURS: f64 = 24.0;
+
+/// A magnitude in `[0, 1]`, combining three signals as a logical OR —
+/// `1 - (1-a)(1-b)(1-c)` — rather than an average or a product:
 ///
-/// - **age** — how long the oldest recorded commitment (across outbox,
-///   questions and front-door depths) has sat unresolved, saturating at a day.
-///   A commitment sitting for an hour is not yet guilt-worthy; one sitting for
-///   a day or more is treated as maximally so.
-/// - **pressure** — the run's own [`crate::homeostat::Homeostat::peak_context_pressure`],
-///   as a proxy for "how much room did this run actually have to act on it."
+/// - **age** — how long the oldest recorded commitment has sat unresolved,
+///   saturating at [`SATURATES_AT_HOURS`].
+/// - **count** — how many are recorded as waiting at all, zero at a single
+///   item and saturating at [`SATURATES_AT_COUNT`].
+/// - **pressure** — the run's own
+///   [`crate::homeostat::Homeostat::peak_context_pressure`], a proxy for how
+///   much room the run actually had to act on any of it.
 ///
-/// Combined as `1 - (1 - age) * (1 - pressure)` rather than an average or a
-/// product: a commitment that is both old *and* hit under a run that ran out
-/// of room is worse than either fact alone, and this is the direction that
-/// makes each term able to raise the result on its own without either being
-/// able to lower what the other already established — the same "may only
-/// narrow, never loosen" shape §7.3 gives affect generally, expressed here as
-/// "either signal alone is enough to raise concern, and neither can argue it
-/// back down."
+/// **This is deliberately not an estimate of a true probability.** It is
+/// three independent alarms, any one of which is treated as sufficient to
+/// raise concern on its own — a run that ran out of room at 100% pressure
+/// reads as maximally concerning even against a commitment recorded an hour
+/// ago, and that is intentional rather than a slip: no term may be argued
+/// back down by the others being low, which is the "may only narrow, never
+/// loosen" shape §7.3 gives affect generally, applied here to three inputs
+/// instead of one. A future consumer that wants "old *and* under pressure is
+/// worse than either alone" is a different, stricter function than this one,
+/// and should replace it deliberately rather than by way of this comment.
 ///
-/// Returns `None` only when every relevant store was unreadable — an absent
-/// reading, not a zero one, on [`Backlog`]'s own convention. A charter with
-/// genuinely nothing waiting is a real `Some(0.0)`, because "nothing is
-/// recorded as owed" is a fact, not a sensor failure.
+/// **Returns `None` unless all three stores were read.** A partial reading —
+/// two stores readable and one not — must not collapse into a number that
+/// looks exactly like "nothing is owed"; that is the same reasoning
+/// [`crate::backlog::Waiting`] states for why a backlog total is reported
+/// beside how much of it could not be read rather than silently as a lower
+/// bound. The same applies to a commitment counted but whose timestamp could
+/// not be parsed: `waiting > 0` with no age reachable is unknown, not zero.
 pub fn anticipated_guilt(
     backlog: &Backlog,
     peak_context_pressure: Option<f32>,
     now: DateTime<Utc>,
 ) -> Option<f32> {
-    let depths: [&Option<Depth>; 3] = [&backlog.outbox, &backlog.questions, &backlog.frontdoor];
-    if depths.iter().all(|d| d.is_none()) {
-        return None;
-    }
+    let depths: [&Depth; 3] = [
+        backlog.outbox.as_ref()?,
+        backlog.questions.as_ref()?,
+        backlog.frontdoor.as_ref()?,
+    ];
 
     let mut waiting = 0usize;
-    let mut oldest_hours = 0.0_f64;
-    for depth in depths.into_iter().flatten() {
+    let mut oldest_hours: Option<f64> = None;
+    for depth in depths {
         waiting += depth.waiting;
         if let Some(stamp) = &depth.oldest {
             if let Some(hours) = hours_since(stamp, now) {
-                oldest_hours = oldest_hours.max(hours);
+                oldest_hours = Some(oldest_hours.map_or(hours, |h: f64| h.max(hours)));
             }
         }
     }
@@ -102,11 +117,19 @@ pub fn anticipated_guilt(
         // Genuinely nothing recorded as owed — a real zero, not an absence.
         return Some(0.0);
     }
+    // Something is recorded as waiting, but nothing readable said how long —
+    // an age-blind reading would silently score it as fresh, which is a
+    // guess dressed as a measurement.
+    let oldest_hours = oldest_hours?;
 
-    const SATURATES_AT_HOURS: f64 = 24.0;
     let age = (oldest_hours / SATURATES_AT_HOURS).clamp(0.0, 1.0) as f32;
+    // Zero at one item — a single fresh commitment is not "several piling
+    // up" — ramping linearly from two toward the saturation count.
+    let count =
+        ((waiting.saturating_sub(1)) as f32 / (SATURATES_AT_COUNT - 1) as f32).clamp(0.0, 1.0);
     let pressure = peak_context_pressure.unwrap_or(0.0).clamp(0.0, 1.0);
-    Some((1.0 - (1.0 - age) * (1.0 - pressure)).clamp(0.0, 1.0))
+    let combined = 1.0 - (1.0 - age) * (1.0 - count) * (1.0 - pressure);
+    Some(combined.clamp(0.0, 1.0))
 }
 
 /// Hours between an RFC3339 stamp and `now`. `None` on a stamp this can't
@@ -131,6 +154,20 @@ mod tests {
         }
     }
 
+    /// A fully readable backlog with nothing else set: all three depths
+    /// present and empty. This is the "genuinely nothing waiting" fixture
+    /// every positive test below starts from and overrides one field of,
+    /// rather than the bare `Backlog::default()` — whose fields default to
+    /// `None`, i.e. *unreadable*, which is a different fact entirely.
+    fn readable_and_empty() -> Backlog {
+        Backlog {
+            outbox: Some(Depth::default()),
+            questions: Some(Depth::default()),
+            frontdoor: Some(Depth::default()),
+            ..Backlog::default()
+        }
+    }
+
     #[test]
     fn every_store_unreadable_is_unknown_rather_than_zero() {
         let backlog = Backlog::default();
@@ -138,13 +175,23 @@ mod tests {
     }
 
     #[test]
-    fn nothing_waiting_is_a_real_zero() {
+    fn one_unreadable_store_beside_two_empty_ones_is_still_unknown() {
+        // The partial-read case: outbox and questions came back readable and
+        // empty, front-door did not come back at all. Reporting `Some(0.0)`
+        // here would say "nothing is owed" about a store this never actually
+        // saw.
         let backlog = Backlog {
             outbox: Some(Depth::default()),
             questions: Some(Depth::default()),
-            frontdoor: Some(Depth::default()),
+            frontdoor: None,
             ..Backlog::default()
         };
+        assert_eq!(anticipated_guilt(&backlog, Some(0.9), Utc::now()), None);
+    }
+
+    #[test]
+    fn nothing_waiting_is_a_real_zero() {
+        let backlog = readable_and_empty();
         assert_eq!(
             anticipated_guilt(&backlog, Some(0.9), Utc::now()),
             Some(0.0)
@@ -152,14 +199,14 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_commitment_under_no_pressure_reads_near_zero() {
+    fn a_fresh_lone_commitment_under_no_pressure_reads_near_zero() {
         let now = Utc::now();
         let backlog = Backlog {
             outbox: Some(depth(1, Some(&now.to_rfc3339()))),
-            ..Backlog::default()
+            ..readable_and_empty()
         };
         let g = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
-        assert!(g < 0.05, "{g}");
+        assert!(g < 0.1, "{g}");
     }
 
     #[test]
@@ -168,19 +215,19 @@ mod tests {
         let old = now - chrono::Duration::hours(48);
         let backlog = Backlog {
             questions: Some(depth(1, Some(&old.to_rfc3339()))),
-            ..Backlog::default()
+            ..readable_and_empty()
         };
         let g = anticipated_guilt(&backlog, None, now).unwrap();
         assert!((g - 1.0).abs() < 1e-6, "{g}");
     }
 
     #[test]
-    fn pressure_raises_the_reading_but_age_alone_is_never_lowered_by_its_absence() {
+    fn pressure_alone_can_saturate_the_reading_by_design() {
         let now = Utc::now();
         let recent = now - chrono::Duration::hours(1);
         let backlog = Backlog {
-            frontdoor: Some(depth(2, Some(&recent.to_rfc3339()))),
-            ..Backlog::default()
+            frontdoor: Some(depth(1, Some(&recent.to_rfc3339()))),
+            ..readable_and_empty()
         };
         let low_pressure = anticipated_guilt(&backlog, Some(0.0), now).unwrap();
         let high_pressure = anticipated_guilt(&backlog, Some(1.0), now).unwrap();
@@ -188,9 +235,26 @@ mod tests {
             high_pressure > low_pressure,
             "{low_pressure} vs {high_pressure}"
         );
-        // Full pressure alone still cannot be argued down by having no age at
-        // all — it is the maximum this term can contribute either way.
+        // Full pressure alone still cannot be argued down by having barely
+        // any age at all — that is the OR shape working as documented, not
+        // an accident of the arithmetic.
         assert!((high_pressure - 1.0).abs() < 1e-6, "{high_pressure}");
+    }
+
+    #[test]
+    fn several_waiting_items_saturate_the_count_term_even_when_fresh() {
+        let now = Utc::now();
+        let one = Backlog {
+            outbox: Some(depth(1, Some(&now.to_rfc3339()))),
+            ..readable_and_empty()
+        };
+        let several = Backlog {
+            outbox: Some(depth(SATURATES_AT_COUNT, Some(&now.to_rfc3339()))),
+            ..readable_and_empty()
+        };
+        let g_one = anticipated_guilt(&one, Some(0.0), now).unwrap();
+        let g_several = anticipated_guilt(&several, Some(0.0), now).unwrap();
+        assert!(g_several > g_one, "{g_one} vs {g_several}");
     }
 
     #[test]
@@ -205,7 +269,7 @@ mod tests {
                 1,
                 Some(&(now - chrono::Duration::hours(30)).to_rfc3339()),
             )),
-            ..Backlog::default()
+            ..readable_and_empty()
         };
         let g = anticipated_guilt(&backlog, None, now).unwrap();
         // 30h saturates the 24h age term regardless of the 1h row beside it.
@@ -213,12 +277,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unparseable_stamp_is_skipped_rather_than_failing_the_whole_reading() {
+    fn a_count_with_no_parseable_age_is_unknown_rather_than_fresh() {
         let backlog = Backlog {
             outbox: Some(depth(1, Some("not-a-timestamp"))),
-            ..Backlog::default()
+            ..readable_and_empty()
         };
-        // Count is still real; age just can't be read off this row.
-        assert_eq!(anticipated_guilt(&backlog, None, Utc::now()), Some(0.0));
+        // Scoring this as age-zero would understate a real commitment this
+        // sensor simply failed to date.
+        assert_eq!(anticipated_guilt(&backlog, None, Utc::now()), None);
     }
 }

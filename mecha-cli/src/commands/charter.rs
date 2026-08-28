@@ -36,6 +36,8 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     if args.json {
         let out = serde_json::json!({
             "path": path,
+            "over_budget": charter.over_budget(),
+            "char_count": charter.char_count(),
             "lines": charter.lines().iter().map(|l| serde_json::json!({
                 "id": l.id,
                 "text": l.text,
@@ -57,6 +59,14 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     println!("{}\n", path.display());
     for (i, line) in charter.lines().iter().enumerate() {
         println!("{}. {} — {}", i + 1, line.id, line.text);
+    }
+    if charter.over_budget() {
+        println!(
+            "\n{} characters, over the {}-character budget — it still rides in the prompt \
+             in full, but costs more of the cached prefix than argued",
+            charter.char_count(),
+            mecha_core::charter::CHARTER_CHAR_BUDGET
+        );
     }
     Ok(())
 }
