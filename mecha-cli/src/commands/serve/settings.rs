@@ -197,11 +197,17 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
                     // A bounded read: the fmt/data headers live in the first
                     // few hundred bytes, and slurping every clone's megabytes
                     // to answer a settings GET would make the page cost more
-                    // the more voices it lists. `wav_seconds` reads declared
-                    // sizes off headers, never the payload.
+                    // the more voices it lists. The header's declared size is
+                    // then clamped against the file's true length — a
+                    // streaming writer's placeholder (`0xFFFFFFFF`) otherwise
+                    // lists a 20-second reference as ~89,478s, found live on
+                    // this box's own Kokoro-derived voices.
                     let seconds = read_head(&path, 64 * 1024)
                         .ok()
-                        .and_then(|b| wav_seconds(&b).ok());
+                        .and_then(|b| wav_info(&b).ok())
+                        .and_then(|info| {
+                            entry.metadata().ok().map(|m| info.seconds_within(m.len()))
+                        });
                     let created = entry
                         .metadata()
                         .ok()
@@ -268,7 +274,12 @@ fn read_head(path: &std::path::Path, cap: usize) -> std::io::Result<Vec<u8>> {
 /// size. Refuses anything that is not integer PCM (`format 1`), because
 /// that is what the TTS reads reference clips as.
 struct WavInfo {
+    /// Computed from the header's own declared data length — see
+    /// `seconds_within` for the caller that must not trust it.
     seconds: f64,
+    /// Where the data chunk's payload begins.
+    data_start: usize,
+    byte_rate: u32,
     /// Byte offset one past the declared end of the `data` chunk — what a
     /// caller holding the *whole* file compares against its real length,
     /// because the duration above is computed from the header's own claim
@@ -319,16 +330,28 @@ fn wav_info(bytes: &[u8]) -> anyhow::Result<WavInfo> {
     if rate == 0 {
         bail!("fmt chunk claims a zero byte rate");
     }
+    let data_end = data_end.context("no data chunk")?;
     Ok(WavInfo {
         seconds: f64::from(data) / f64::from(rate),
-        data_end: data_end.context("no data chunk")?,
+        data_start: data_end - data as usize,
+        byte_rate: rate,
+        data_end,
     })
 }
 
-/// The duration alone, for a caller that has no payload to check (the
-/// bounded-head listing read).
-fn wav_seconds(bytes: &[u8]) -> anyhow::Result<f64> {
-    Ok(wav_info(bytes)?.seconds)
+impl WavInfo {
+    /// The duration the file can actually back, given its true length on
+    /// disk. A WAV written by a streaming encoder carries a placeholder
+    /// data size (`0xFFFFFFFF` — the writer did not know the length when it
+    /// wrote the header), and the header-only `seconds` then reads as
+    /// ~89,478s at 48 kB/s; found live, on `af_bella.wav`, minutes after
+    /// the listing shipped. The bytes present are the truth the header may
+    /// only ever overstate.
+    fn seconds_within(&self, file_len: u64) -> f64 {
+        let end = (self.data_end as u64).min(file_len);
+        let present = end.saturating_sub(self.data_start as u64);
+        (present as f64 / f64::from(self.byte_rate)).min(self.seconds)
+    }
 }
 
 /// Bounds on a cloning reference, in seconds of audio rather than bytes:
@@ -530,7 +553,7 @@ async fn probe(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{valid_voice_name, wav_seconds};
+    use super::{valid_voice_name, wav_info};
 
     fn wav(rate: u32, channels: u16, seconds: f64) -> Vec<u8> {
         let byte_rate = rate * u32::from(channels) * 2;
@@ -558,17 +581,17 @@ mod tests {
     #[test]
     fn wav_duration_is_read_from_the_header_not_the_byte_count() {
         for (rate, ch) in [(16_000u32, 1u16), (48_000, 1), (44_100, 2)] {
-            let s = wav_seconds(&wav(rate, ch, 10.0)).unwrap();
+            let s = wav_info(&wav(rate, ch, 10.0)).unwrap().seconds;
             assert!((s - 10.0).abs() < 0.05, "{rate}Hz/{ch}ch read as {s}");
         }
     }
 
     #[test]
     fn a_non_wav_and_a_compressed_wav_are_both_refused() {
-        assert!(wav_seconds(b"OggS not a wav at all, whatever the name says").is_err());
+        assert!(wav_info(b"OggS not a wav at all, whatever the name says").is_err());
         let mut float_wav = wav(48_000, 1, 10.0);
         float_wav[20] = 3; // IEEE float, not integer PCM
-        assert!(wav_seconds(&float_wav).is_err());
+        assert!(wav_info(&float_wav).is_err());
     }
 
     /// A header may not claim audio the payload does not carry: the
@@ -591,6 +614,28 @@ mod tests {
         // And an honest file's declared end fits within it.
         let honest = wav(16_000, 1, 10.0);
         assert!(super::wav_info(&honest).unwrap().data_end <= honest.len());
+    }
+
+    /// A streaming encoder writes the data-chunk size it does not yet know
+    /// as `0xFFFFFFFF`; the header then claims ~89,478s at 48 kB/s of what
+    /// is really a 20-second file. Found live on `af_bella.wav` minutes
+    /// after the listing shipped — the display must repeat what the bytes
+    /// can back, never what the header claims.
+    #[test]
+    fn a_streaming_placeholder_data_size_is_clamped_to_the_file() {
+        let mut placeholder = wav(48_000, 1, 20.0);
+        let true_len = placeholder.len() as u64;
+        placeholder[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
+        let info = wav_info(&placeholder).unwrap();
+        assert!(
+            info.seconds > 40_000.0,
+            "the header really does claim absurdity"
+        );
+        let s = info.seconds_within(true_len);
+        assert!((s - 20.0).abs() < 0.05, "clamped to the bytes present: {s}");
+        // And an honest header is untouched by the clamp.
+        let honest = wav_info(&wav(48_000, 1, 20.0)).unwrap();
+        assert!((honest.seconds_within(true_len) - 20.0).abs() < 0.05);
     }
 
     /// The alphabet is closed and `default` is unshadowable — this name
