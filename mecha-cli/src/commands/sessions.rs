@@ -275,7 +275,10 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
     // caveat is about the scan, not a row, and a machine reader of the rows
     // must still be told a human was.
     if unreadable > 0 {
-        eprintln!("{unreadable} transcript(s) could not be read and appear in no row");
+        // "in the store", because the count is store-wide while the rows may
+        // be windowed by --days: a skipped file has no readable date to
+        // window on, so the honest scope is the whole directory.
+        eprintln!("{unreadable} transcript(s) in the store could not be read and appear in no row");
     }
 
     if json {
@@ -664,9 +667,12 @@ async fn appraise(
     }
     // Same rule for the session store itself: a corrupt transcript is in no
     // count above, and "skipped" must not read as "the store held less".
+    // Store-wide, whatever --days narrowed the rows to — a skipped file has
+    // no readable date to window on.
     if sessions_unreadable > 0 {
         println!(
-            "  ({sessions_unreadable} transcript(s) could not be read and are in no count above)\n"
+            "  ({sessions_unreadable} transcript(s) in the store could not be read and are in \
+             no count above)\n"
         );
     }
     if appraisals.is_empty() {
