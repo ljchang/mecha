@@ -412,56 +412,33 @@ async fn appraise(
             break;
         }
         sessions_read += 1;
-        // One `read`, every reading off the same transcript: the outcome
-        // (`episode_stats`'s own fold, done here in the same pass), the
-        // interventions, and the goal the model's own `serves` argument
-        // named. `Session::read`'s own doc names this exact pattern —
-        // `episode_stats` and `load` each open and walk the file separately —
-        // as the thing it exists to collapse; `Corpus::scan`-style reads with
-        // no `limit` make that a real cost, not a tidiness one.
-        //
-        // `read` fails on an unreadable file where `episode_stats` would
-        // answer `Ok(None)` for one merely lacking an outcome record, so the
-        // "no outcome yet" case still has to be its own `continue` rather
-        // than folding into the `Err` arm.
-        let Ok(transcript) = Session::read(&path) else {
-            continue;
-        };
-        let Some(stats) = transcript.episode else {
-            continue;
-        };
-        let messages = transcript.convo.messages;
-        let interventions = mecha_core::learning::extract_interventions(&messages);
-        // Without a goal, `of_session` never has one to attribute anything
-        // to — `Frustration` needs one on two negatives by construction, so
-        // a session with no goal cannot produce it however it went, and the
-        // neutral share this readout prints would be confusing "the channel
-        // is dead" with "nothing supplied it a goal", which is a different
-        // finding with a different remedy.
-        let goal =
-            mecha_core::tool::todo::TodoTool::plan_from_transcript(&messages).and_then(|p| p.goal);
-        let goals: Vec<_> = goal.into_iter().collect();
-        // The provenance gate's own rule, applied here: `stats.taint` cannot
-        // tell "recorded clean" apart from "recorded before the field
-        // existed", so origin is classified off the timeline's own coverage
-        // instead, which answers `None` rather than guessing clean.
-        let end_taint = Session::taint_timeline(&path)
-            .ok()
-            .and_then(|tl| tl.covering(messages.len().saturating_sub(1)));
+        // `appraisal::for_session` is the one assembly: `Session::read` once
+        // (the outcome, the interventions and the goal all off the same
+        // pass — its own doc names the three-reads mistake this collapses),
+        // the goal from the model's own `serves` argument (absent is
+        // recorded, never guessed, so a goal-less session cannot be
+        // confused with a dead channel), and origin from the timeline's own
+        // coverage rather than `stats.taint`, which cannot tell "recorded
+        // clean" apart from "recorded before the field existed". `None`
+        // covers both an unreadable file and one with no outcome recorded
+        // yet — `Session::read` fails on the former where `episode_stats`
+        // would have answered `Ok(None)` for the latter, so both still land
+        // on one `continue` here, exactly as they did before the extraction.
         let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts
             .iter()
             .filter(|i| i.session_id.as_deref() == Some(meta.id.as_str()))
             .collect();
-        appraisals.push(appraisal::of_session(
-            &meta.id,
-            &stats,
-            &goals,
-            &interventions,
-            &mine,
-            end_taint,
-            meta.created_at.to_rfc3339(),
-        ));
-        per_session_interventions.push(if probe { interventions } else { Vec::new() });
+        let Some(built) =
+            appraisal::for_session(&path, &meta.id, meta.created_at.to_rfc3339(), &mine, None)
+        else {
+            continue;
+        };
+        appraisals.push(built.appraisal);
+        per_session_interventions.push(if probe {
+            built.interventions
+        } else {
+            Vec::new()
+        });
     }
 
     // --- The paid passes ---
