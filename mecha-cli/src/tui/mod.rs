@@ -3282,6 +3282,11 @@ fn run_command(
             app.convo = Conversation::new();
             app.usage = Usage::default();
             app.prompt_tokens = 0;
+            // Same rule, one field over: `affect` describes the *last run
+            // of the conversation just discarded*, and leaving it up would
+            // read as this brand-new conversation's own mood until the
+            // next run finishes.
+            app.affect = None;
             // Whatever the tools were holding for it goes too, for the same
             // reason the taint does. A `skill` narrowing that survived a clear
             // would constrain a task nobody had started yet.

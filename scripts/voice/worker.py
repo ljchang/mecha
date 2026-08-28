@@ -78,6 +78,12 @@ TTS_CFG_WEIGHT = float(os.environ.get("MECHA_VOICE_TTS_CFG_WEIGHT", "0.3"))
 # through the real `openai` SDK's typed models, which drop an unrecognised
 # top-level field before any pipecat frame processor ever sees it.
 AFFECT_URL = f"{FACADE_URL}/mecha-affect"
+# Found on review: 300ms was picked as "generous" without weighing what it
+# costs on the failure path this poll sits in front of *every sentence* of
+# every spoken answer, so a hung (not merely refusing) facade would cost
+# this much per sentence rather than once. Loopback, same machine - a
+# healthy answer takes low single-digit milliseconds.
+AFFECT_POLL_TIMEOUT_SECONDS = 0.05
 # A single, deliberately conservative nudge for whichever of the four labels
 # reachable today (`Affect::reachable_today`, mecha-core/src/appraisal.rs)
 # the harness names - not a full emotion-to-prosody mapping, because nothing
@@ -251,7 +257,15 @@ class LocalTTS(OpenAITTSService):
         # match on both sides of this poll. `None` when there is nothing to
         # poll for (should not happen in practice; `run_bot` always sets one).
         self._affect_key = affect_key
-        self._affect_client = httpx.AsyncClient(timeout=0.3)
+        # Loopback, same machine - a healthy facade answers in low single-
+        # digit milliseconds. Worth naming as its own constant rather than
+        # matching the TTS server's own timeouts: this poll sits in front
+        # of *every sentence* of every spoken answer (the one path
+        # streaming exists to keep short), so a hung facade must cost this
+        # once per sentence and no more, not the seconds a normal network
+        # timeout would tolerate. Falls back to the baseline on expiry,
+        # same as any other failure here.
+        self._affect_client = httpx.AsyncClient(timeout=AFFECT_POLL_TIMEOUT_SECONDS)
 
     @property
     def speed(self) -> float:

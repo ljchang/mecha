@@ -169,7 +169,6 @@
           // started, since nothing local set `running` for it.
           pushEntry({ kind: 'user', text: ev.text, spoken: true });
           running = true;
-          sawAffectThisRun = false;
           break;
         case 'tool':
           pushEntry({ kind: 'tool', name: ev.name, pending: true });
@@ -238,7 +237,16 @@
           taint = { private: ev.taint_private, untrusted: ev.taint_untrusted };
           // A run that produced no `affect` event was `Neutral` — the
           // server never says so out loud, so silence is read as such here.
+          // Reset here rather than at run start: `WireEvent::Affect` is
+          // always sent before `Done` within one `begin_turn`, so by the
+          // time this fires the flag has already done its job for this
+          // run — and resetting only at run-start events (`data.started`,
+          // `'user'`) missed a second tab observing a *typed* turn driven
+          // from elsewhere, which emits neither: that tab's tint from an
+          // earlier run never cleared. Resetting here covers every
+          // observer, not just the one that sent the turn.
           if (!sawAffectThisRun) affect = null;
+          sawAffectThisRun = false;
           if (!ev.ok && ev.error) pushEntry({ kind: 'notice', text: ev.error });
           entries = entries.map((e) =>
             e.kind === 'tool' && e.pending ? { ...e, pending: false } : e
@@ -581,7 +589,6 @@
       if (data.started) {
         pushEntry({ kind: 'user', text });
         running = true;
-        sawAffectThisRun = false;
       } else if (data.steered) {
         pushEntry({ kind: 'user', text, queued: true });
       }
