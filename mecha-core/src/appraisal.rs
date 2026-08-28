@@ -816,22 +816,39 @@ pub fn for_session(
     goal: Option<GoalRef>,
 ) -> Option<SessionAppraisal> {
     let transcript = crate::session::Session::read(path).ok()?;
-    let stats = transcript.episode?;
-    let messages = transcript.convo.messages;
-    let interventions = crate::learning::extract_interventions(&messages);
+    for_transcript(&transcript, session_id, created_at, drafts, goal)
+}
+
+/// The same, for a caller that already read the transcript — `mecha
+/// distill`, which needs the messages again afterwards to render the
+/// distillation, used to pay four complete read-and-parse passes per session
+/// because this seam did not exist (`Session::load`, `Session::
+/// taint_timeline`, then [`for_session`]'s own read and its *second*
+/// timeline read). One `Session::read` now carries everything this needs,
+/// including the positioned taint timeline.
+pub fn for_transcript(
+    transcript: &crate::session::Transcript,
+    session_id: &str,
+    created_at: String,
+    drafts: &[&crate::outbox::OutboxItem],
+    goal: Option<GoalRef>,
+) -> Option<SessionAppraisal> {
+    let stats = transcript.episode.as_ref()?;
+    let messages = &transcript.convo.messages;
+    let interventions = crate::learning::extract_interventions(messages);
     // Without a goal, `of_session` never has one to attribute anything to —
     // see the matching comment in `mecha sessions appraise` for why an
     // absent goal is recorded rather than guessed.
     let goal = goal.or_else(|| {
-        crate::tool::todo::TodoTool::plan_from_transcript(&messages).and_then(|p| p.goal)
+        crate::tool::todo::TodoTool::plan_from_transcript(messages).and_then(|p| p.goal)
     });
     let goals: Vec<_> = goal.into_iter().collect();
-    let end_taint = crate::session::Session::taint_timeline(path)
-        .ok()
-        .and_then(|tl| tl.covering(messages.len().saturating_sub(1)));
+    let end_taint = transcript
+        .taint_timeline
+        .covering(messages.len().saturating_sub(1));
     let appraisal = of_session(
         session_id,
-        &stats,
+        stats,
         &goals,
         &interventions,
         drafts,
