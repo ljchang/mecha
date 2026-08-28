@@ -2887,6 +2887,112 @@ this diff been addressed*. Neither failure was expensive to fix once
 noticed; both were invisible from the outside for as long as nobody looked
 past the PR's own final "looks good."
 
+**2026-08-27/28 — rung 9's first two pieces landed: an episode now carries
+how the session went, and the world disagreeing with the graph is noticed.**
+Two PRs, `docs/GOAL-SYSTEM-DESIGN.md` §10 and §10.1: **#97** (`4d9f27f`,
+episode tagging) and **#98** (`c32eaca`, surprise/gossip-seeding). A third,
+**#101** (`be9e32b`), is four rounds of review fixes on top of both — the
+built-in review bot had hit a transient action-infra failure on every one of
+its last several attempts, so neither #97 nor #98 had actually been reviewed
+before merging, and a Codex-driven review was requested instead.
+
+`appraisal::for_session` (`mecha-core/src/appraisal.rs:736`, returning a
+`SessionAppraisal` at line 714) is the one assembly `mecha sessions appraise`
+and `mecha distill`'s new episode-tagging path now both call — `Session::read`
+once, the outcome/interventions/goal off the same pass, on the three-reads-of-
+one-file rule `Session::read`'s own doc already names. `mecha-cli/src/commands/
+sessions.rs`'s `appraise` function shrank to a call at line 432; `mecha-cli/src/
+commands/distill.rs` gained the same call and threads the result into
+`distill::upsert_args` (`mecha-core/src/distill.rs:427`), which stamps the
+pushed episode's `meta.affect` and, when non-empty, `meta.goal_errors`. Neither
+is gated on the session's taint the way a correction is — they are structured
+facts the harness computed about its own run, not prose a fetched page could
+have authored — with one deliberate exception: a `GoalError`'s `goal` is the
+model's own `serves:` argument, so `upsert_args` redacts it to its bare kind
+word (`task`, never the id) before it crosses into pkg's data, since the id
+itself is unconstrained text an injected plan could have populated.
+
+**#98** extends the same quarantined `Distiller` pass (the one that already
+finds `corrections`) to also report `Surprise { predicted, actual, about }`
+(`mecha-core/src/distill.rs:134`) — a moment where something the agent said,
+sourced from the graph, was contradicted by something else in the same
+session ("I said the 14th because the graph says so; the email says the
+9th"). Unlike affect and goal errors, a surprise **is** gated on taint —
+`surprises_for` (`distill.rs:278`) mirrors `corrections_for` (`distill.rs:253`)
+exactly, because a surprise's `predicted`/`actual`/`about` are the model's own
+free-text reading of transcript prose, indistinguishable in kind from a
+correction's `wrong`/`right`. Deliberately **not** wired to run
+`mecha gossip --entity <about>` automatically — `mecha distill` only prints
+each one, on this project's standing rule that real model spend needs a human
+gate rather than a session's own say-so.
+
+**#101 is four rounds on one PR, and the shape repeats hard enough to be its
+own trap** (see Traps → Review process, below, for the general lesson). Round 1
+(the first Codex review to actually complete, after several transient
+action-infra failures on #97/#98 themselves) found two real gaps: `mecha
+distill`'s surprise print used unescaped `println!`, and the "a person's own
+terminal is a safe context" argument for that assumed a live terminal —
+`scripts/ruminate.sh` actually redirects the nightly run's output to a dated
+logfile, exactly as exposed to a deferred read as any other log. And a
+genuinely unreadable outbox during episode tagging used to warn-and-continue
+(`mecha-cli/src/commands/distill.rs`), after which `mark_distilled` made the
+resulting incomplete `Edit` channel permanent — no later run could ever
+revisit it. Round 1 fixed both: `strip_ansi` (`mecha-cli/src/logs.rs:175`,
+made `pub(crate)`) on every printed field, and a bail via `.context(...)?`
+instead of `eprintln!`-and-continue.
+
+Round 2 (the built-in bot, having finally run) found `strip_ansi` only
+strips ESC-introduced sequences — a bare `\r`/`\n` survives it and can
+rewrite the printed line or forge an extra one, defeating the very "⚠
+untrusted" marker round 1 just added. New `strip_ansi_and_controls`
+(`logs.rs:240`) closes it. And round 1's outbox fix only bailed on a hard
+I/O error; `OutboxStore::items` (`mecha-core/src/outbox.rs:376`) also
+silently *skips* a merely malformed item file behind an invisible
+`tracing::warn!` (the nightly runs with no `MECHA_LOG`) and still returns
+`Ok` — a silently short list indistinguishable from an outbox with fewer
+drafts. New `OutboxStore::items_strict` (`outbox.rs:401`, sharing
+`items_impl` at line 405) bails on that too; `items()` itself is unchanged
+for its other callers.
+
+Round 3 (the bot again, on round 2's fix) found `char::is_control()` is
+Unicode category Cc only — U+2028/U+2029 (line/paragraph separator) forge a
+line break exactly like a bare `\n`, and U+202A–E/U+2066–9 (bidi
+overrides/isolates) can visually reorder the rendered line around the
+warning marker, the Trojan Source shape. `strip_ansi_and_controls` was
+widened to name both categories explicitly, deliberately not generalized to
+a "printable only" filter — the field is free-text prose that may
+legitimately carry non-Latin scripts, and a filter that cannot say which
+characters it distrusts is guessing rather than closing a described class.
+
+Round 4 found two more, both corrections to claims rather than new
+mechanism. `strip_ansi`'s own doc comment claimed its one call site was safe
+because `Writer::write` cuts the stream at `\n` first — untrue even at that
+function's original two call sites (`Writer::write` and `release()` in
+`logs.rs`): `trim_end` only strips a *trailing* `\r`, not an interior one, so
+a server-supplied error string or an unparsed model reply with a `\r` in the
+middle had been reaching the TUI transcript and a live terminal unstripped
+the whole time — a pre-existing bug in the TUI's own log capture, newly
+exposed by a doc comment that had never actually been true. Both original
+call sites now use `strip_ansi_and_controls` too. And the stated rationale
+for `items_strict` — a half-written `.json` mid-save — turned out to be
+structurally impossible in this store: `outbox.rs`'s own module header
+already says temp-sibling-and-rename means a reader never sees a partial
+write. The real cause is persistent, not transient — a stray file, or an
+item written by a schema this binary cannot read — and all four places that
+had repeated the wrong claim (a code comment, a doc comment, the error
+message, and the CHANGELOG) were corrected to say so, including dropping the
+implication that a retry would clear it. **Noted, not built**: a `mecha
+doctor` finding for a stalled distill ledger — today the nightly fails
+silently behind one line in a dated logfile, with no `MECHA_LOG` and no
+doctor check for it.
+
+**What's left of rung 9**: review-queue salience, the rest of §10, needs
+changes in the private `personalized_knowledge_graph` repository — a
+different codebase mecha only reaches through the MCP tool surface — to read
+`meta.affect`/`meta.goal_errors` and reorder pkg's review queue on them. Not
+started, and not scoped beyond `GOAL-SYSTEM-DESIGN.md` §10's own paragraph
+naming it.
+
 **2026-08-28 — rung 10: the charter, and a guilt sensor that shipped
 deliberately unconsumed.** PR #100. Landed ahead of rung 8 in §14's build
 order on purpose — argued from a measurement, same as the probe reordering
@@ -4904,6 +5010,47 @@ and is what finally exercised the path.)
   test a caller against the degraded output, not just the happy one** — the
   partial response is a distinct wire format and nothing was exercising it.
   (2026-08-25.)
+
+### Review process
+
+- **A fix that closes the exact case described leaves the structurally
+  identical sibling standing right beside it, four times running on the
+  same two-function surface.** #101 (rung 9's episode-tagging/surprise-
+  detection review fixes) took four rounds to settle, and every round found
+  a gap of the same *shape* as the one the previous round had just closed,
+  never a new kind of problem. Round 1 made `mecha distill`'s surprise print
+  escape ANSI (`strip_ansi`); round 2 found the same function does not stop
+  a bare `\r`/`\n`, which forges or rewrites a rendered line exactly as
+  effectively as an escape sequence does, and added
+  `strip_ansi_and_controls`; round 3 found `is_control()` — the very check
+  the round-2 fix used — is Unicode category Cc only, so U+2028/U+2029
+  (forge a line break, the round-2 case again, through a character
+  `is_control()` does not name) and bidi overrides (reorder the rendered
+  line, the Trojan Source shape) sailed through the same filter untouched;
+  round 4 found the fix's own doc comment had misdiagnosed *why* it was
+  needed — a claimed precondition ("the caller already splits at `\n`")
+  that was never actually true even at `strip_ansi`'s two pre-existing call
+  sites, exposing a real, unrelated bug in the TUI's own log capture. The
+  store-read half of the same PR repeated the pattern independently: round
+  1 bailed episode tagging on a hard I/O error reading the outbox; round 2
+  found `OutboxStore::items` also silently *skips* a merely malformed item
+  file and still returns `Ok`, needing a new `items_strict`; round 4 found
+  the cause cited for needing it — a half-written file mid-save — was one
+  the store's own temp-sibling-and-rename discipline had already ruled out
+  structurally, so three rounds had been narrating the wrong mechanism for
+  a real fix.
+
+  The general lesson: when a review finds "X doesn't handle case Y," the
+  reflex has to be *"what is the general class Y belongs to, and does this
+  fix cover the whole class or just Y"* — asked before shipping, not
+  rediscovered when the next round finds Z. A fix scoped to the reported
+  instance reliably produces another instance of the same class, and each
+  round here cost a full review cycle to find what one pass of "what else
+  has this shape" would have caught for free. It is the same failure named
+  elsewhere in this file one layer up — a cleanup pass scoped to "the
+  findings I already know about" answers a narrower question than the one
+  that matters (the #89/#94 trap, above) — recurring here one level down,
+  inside a single fix rather than across review rounds of a whole PR.
 
 ### Environment
 

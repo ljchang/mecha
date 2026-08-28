@@ -114,6 +114,10 @@ pub struct HostedAnswer {
     pub text: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// §6.2's readout, lowercase and `None` on `Neutral` — the same value
+    /// the page's `WireEvent::Affect` carries, computed once and threaded
+    /// out through both doors.
+    pub affect: Option<String>,
 }
 
 /// What asking a host to speak can come to.
@@ -208,6 +212,43 @@ struct Shared {
     /// rather than inside one, because a hosted call (D3) has no slot here
     /// and still gets asked.
     confirmations: confirm::Confirmations,
+    /// §6.2's voice readout — the last non-`Neutral` label a hosted turn
+    /// (D3) came back with, per chat session key.
+    ///
+    /// **Lags by one turn, honestly rather than by accident.** `Affect` is a
+    /// function of the *finished* `RunOutcome` (`appraisal::live`), and
+    /// `pump` streams the answer's text — and therefore starts feeding
+    /// Pipecat's TTS, sentence by sentence — before `hosted_completion`
+    /// updates this map, which happens only after `turn.done` resolves. So
+    /// the mood a sentence is spoken with is whichever turn's label was
+    /// cached *before* this one started, not this one's own. There is no
+    /// way to do better without holding speech until the whole answer is
+    /// known, which is the latency the streaming exists to avoid — this is
+    /// a documented trade-off, not a bug to chase.
+    ///
+    /// Set-and-overwrite, never take-once: the worker latches this once per
+    /// answer (`on_turn_context_created`, not a per-sentence poll — a
+    /// consuming read here would starve every sentence after the first).
+    /// Cleared on
+    /// **every** completed turn regardless of outcome — `Neutral` removes
+    /// the entry, and so does an error, on the same "silence means neutral"
+    /// rule the TUI's `Err` arm and the web page's `sawAffectThisRun` both
+    /// follow — so a synthesis for a later turn never inherits a stale
+    /// mood from one that failed.
+    ///
+    /// **Only the `chat:{id}` half of this map's key space is ever
+    /// written.** `hosted_completion` (D3) is the one writer; the
+    /// facade's own unhosted slot path (`voice:{key}`, used when a call
+    /// names no chat session, or falls through on `Hosted::Unknown`) never
+    /// computes an `Affect` at all — that would need `appraisal::live` on
+    /// a conversation this module keeps entirely to itself, which is a
+    /// real feature and not yet built. Found on review: the `Hosted::
+    /// Unknown` fall-through is the one place this matters live, since
+    /// `confirm_key` there is still `chat:{id}` from the call that named a
+    /// session nobody held, and the turn runs unhosted anyway — cleared at
+    /// that fall-through rather than left to answer with an earlier
+    /// hosted turn's mood.
+    affects: Mutex<HashMap<String, String>>,
 }
 
 /// The facade as a mountable component: `mecha voice-serve` builds its own
@@ -241,6 +282,7 @@ impl Facade {
                 config,
                 token,
                 confirmations: confirm::Confirmations::default(),
+                affects: Mutex::new(HashMap::new()),
             }),
         })
     }
@@ -459,11 +501,110 @@ async fn handle(mut stream: TcpStream, shared: Arc<Shared>) -> Result<()> {
         body.extend_from_slice(&chunk[..n]);
     }
 
-    match (head.method.as_str(), head.path.as_str()) {
+    // Routing ignores the query string; `/v1/mecha-affect` is the only
+    // route that reads one, off `head.path` itself.
+    let route = head.path.split('?').next().unwrap_or(&head.path);
+    match (head.method.as_str(), route) {
         ("GET", "/health") => write_json(&mut stream, 200, &json!({"status": "ok"})).await,
         ("POST", "/v1/chat/completions") => completion(&mut stream, &shared, &head, &body).await,
+        ("GET", "/v1/mecha-affect") => affect_status(&mut stream, &shared, &head).await,
         _ => write_json(&mut stream, 404, &json!({"error": "not found"})).await,
     }
+}
+
+/// §6.2's voice side-channel. Not authenticated, matching `/health`: this is
+/// loopback-only like everything else in this module, and the worst a
+/// compromised loopback caller learns is which of four mood words a session
+/// last carried — no more sensitive than the health check already answers
+/// with no token.
+///
+/// A plain HTTP GET rather than piggybacking the OpenAI-compatible
+/// completion response: `worker.py`'s LLM service is a stock
+/// `pipecat.services.openai.llm.OpenAILLMService`, which parses that
+/// response through the real `openai` SDK's typed models — an unrecognised
+/// top-level field there is silently dropped before any pipecat frame
+/// processor ever sees it, so that channel cannot carry this.
+async fn affect_status(stream: &mut TcpStream, shared: &Arc<Shared>, head: &Head) -> Result<()> {
+    let Some(session) = query_param(&head.path, "session") else {
+        return write_json(stream, 400, &json!({"error": "missing ?session="})).await;
+    };
+    // Cloned out from under the lock before the socket write: a `match`
+    // scrutinee temporary lives to the end of the match, so holding the
+    // guard here would keep it locked across `write_json`'s `.await` (and
+    // the 204 arm's `write_all`) — and `hosted_completion` takes this same
+    // lock at the end of every turn, so a caller that stops reading would
+    // stall the completion path, not just its own poll.
+    let label = shared.affects.lock().await.get(session.as_str()).cloned();
+    match label {
+        Some(label) => write_json(stream, 200, &json!({"affect": label})).await,
+        None => {
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n")
+                .await?;
+            Ok(())
+        }
+    }
+}
+
+/// Hand-rolled rather than pulling in a URL/query-string crate: this module
+/// already hand-rolls its whole HTTP surface (it is a raw-socket loopback
+/// facade, not an axum app), and one query parameter does not change that.
+///
+/// **Must decode.** The cache is keyed by `confirm_key` — `"chat:{id}"` or
+/// `"voice:{slot}"` — which contains a colon, and `worker.py` sends it via
+/// httpx's `params=`, which percent-encodes it (`urlencode`'s default
+/// `quote_plus`, `safe=''`) to `chat%3Amain`. A version of this that
+/// returned the raw slice looked right, built, and passed every existing
+/// test — because every test used a colon-free key — while missing every
+/// real lookup in production and always falling back to the baseline
+/// silently, exactly as the caller's own failure path is designed to.
+fn query_param(path: &str, key: &str) -> Option<String> {
+    let (_, query) = path.split_once('?')?;
+    query
+        .split('&')
+        .find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k == key).then_some(v)
+        })
+        .map(percent_decode)
+}
+
+/// `%XX` and `+` only — the two forms a query string actually needs and the
+/// two `urlencode` actually produces. A malformed escape (`%` with fewer
+/// than two hex digits after it, or non-hex digits) is passed through
+/// byte-for-byte rather than dropped, on the same "absent is not zero, and
+/// a caller cannot check for it" fail-safe reasoning as everywhere else in
+/// this codebase that refuses to silently discard bytes.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 3 <= bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 async fn write_json(stream: &mut TcpStream, status: u16, body: &Value) -> Result<()> {
@@ -740,6 +881,34 @@ async fn hosted_completion(
         .done
         .await
         .unwrap_or_else(|_| Err("the run ended without answering".to_string()));
+    // §6.2: cache (or clear) this turn's label. Deliberately *after* `pump`
+    // has already streamed this turn's own text above — the label is a
+    // function of the finished `RunOutcome`, so it cannot exist before this
+    // point, and this turn's own sentences have already gone to the worker
+    // by the time it lands. What this sets is what the *next* turn's
+    // sentences will poll (the `affects` field's own docstring is the honest
+    // account of that lag).
+    //
+    // Cleared on `Err` too, not only on an `Ok` answer with no label — a
+    // failed run has nothing to report, and leaving the previous turn's
+    // entry in place here would be exactly the staleness the rest of this
+    // cache exists to avoid, one arm over.
+    {
+        let mut affects = shared.affects.lock().await;
+        match &answer {
+            Ok(a) => match &a.affect {
+                Some(label) => {
+                    affects.insert(confirm_key.to_string(), label.clone());
+                }
+                None => {
+                    affects.remove(confirm_key);
+                }
+            },
+            Err(_) => {
+                affects.remove(confirm_key);
+            }
+        }
+    }
     // The offer comes after the model's own words and only when the turn
     // produced an answer: a run that failed has staged nothing worth
     // confirming, and asking about drafts on top of an error is a question
@@ -1031,6 +1200,13 @@ async fn completion(
                         "voice call named chat session {chat_key:?}, which no front-end \
                          holds — answering in a conversation of its own instead"
                     );
+                    // `confirm_key` is still `chat:{chat_key}` below — this
+                    // turn runs in the facade's own untracked slot instead,
+                    // so nothing will update that entry for it the way
+                    // `hosted_completion` does. Cleared rather than left
+                    // stale: an earlier hosted turn's label must not be
+                    // spoken over an answer it has nothing to do with.
+                    shared.affects.lock().await.remove(&confirm_key);
                 }
             }
         }
@@ -1272,6 +1448,55 @@ mod tests {
             session_key(&serde_json::json!({"user": "call-7"}), &header),
             "conn-abc"
         );
+    }
+
+    /// §6.2's side channel: the one query parameter this module reads.
+    #[test]
+    fn query_param_reads_the_named_pair_and_nothing_else_matches() {
+        assert_eq!(
+            query_param("/v1/mecha-affect?session=main", "session"),
+            Some("main".to_string())
+        );
+        assert_eq!(
+            query_param("/v1/mecha-affect?other=x&session=main", "session"),
+            Some("main".to_string())
+        );
+        assert_eq!(query_param("/v1/mecha-affect", "session"), None);
+        assert_eq!(
+            query_param("/v1/mecha-affect?session=", "session"),
+            Some(String::new())
+        );
+        assert_eq!(query_param("/v1/mecha-affect?session=main", "other"), None);
+    }
+
+    /// The regression this exists to catch: `hosted_completion`'s
+    /// `confirm_key` is `"chat:{id}"`/`"voice:{slot}"`, both containing a
+    /// colon, and `worker.py` sends it through httpx's `params=`, which
+    /// percent-encodes it. A version of this returning the raw slice passed
+    /// every other case here — none of them used a colon — while missing
+    /// every real lookup in production.
+    #[test]
+    fn query_param_decodes_the_percent_encoded_key_the_worker_actually_sends() {
+        assert_eq!(
+            query_param("/v1/mecha-affect?session=chat%3Amain", "session"),
+            Some("chat:main".to_string())
+        );
+        assert_eq!(
+            query_param("/v1/mecha-affect?session=voice%3Awebrtc-1a2b", "session"),
+            Some("voice:webrtc-1a2b".to_string())
+        );
+    }
+
+    #[test]
+    fn percent_decode_handles_escapes_plus_and_malformed_input_without_dropping_bytes() {
+        assert_eq!(percent_decode("chat%3Amain"), "chat:main");
+        assert_eq!(percent_decode("a+b"), "a b");
+        assert_eq!(percent_decode("plain"), "plain");
+        // A trailing or malformed escape is passed through rather than
+        // dropped — absent is not the same as zero, one door over.
+        assert_eq!(percent_decode("50%"), "50%");
+        assert_eq!(percent_decode("50%2"), "50%2");
+        assert_eq!(percent_decode("50%zz"), "50%zz");
     }
 
     #[test]
