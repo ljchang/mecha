@@ -77,10 +77,15 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     // for a down server is the `local-server` step's own "start it", which
     // `plan` already gives.
     let a_local_provider_is_configured = cfg.providers.values().any(|p| p.kind == "local");
-    let local_server = if !a_local_provider_is_configured && pcfg.resolve_api_key().is_none() {
+    let local_probe = if !a_local_provider_is_configured && pcfg.resolve_api_key().is_none() {
         probe_for_a_local_server().await
     } else {
-        None
+        // **Recorded as "not attempted", never as "nothing answered".** The
+        // step reports what the probe found, and those are different
+        // findings: saying nothing answered at an address nobody asked is a
+        // fact with no observation behind it, which is the rule this module's
+        // header is about, inverted.
+        onboarding::LocalProbe::NotAttempted
     };
 
     let home = mecha_core::work::mecha_home()?;
@@ -97,7 +102,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         scheduler_installed: scheduler_installed(),
         trigger_count: trigger_count(&home),
         config_file: mecha_core::config::Config::global_path().is_some_and(|p| p.is_file()),
-        local_server,
+        local_probe,
         charter: onboarding::charter_state(&home.join("charter.toml")),
         // `None` is the store being unreadable, not empty. Resolved towards
         // offering everything (see `Facts::declined`), and said out loud
@@ -318,22 +323,37 @@ fn run(remedy: &Remedy) -> Result<()> {
     Ok(())
 }
 
-/// Ask the documented local address whether anything is serving there.
+/// Ask the documented local address whether a **model server** is serving
+/// there.
 ///
-/// Fail-soft by construction — `preflight::fetch` has a three-second timeout
-/// and answers `None` for anything that is not a llama-server-shaped `/props`,
-/// so a machine with something unrelated on 8080 gets the no-server branch
-/// rather than a wrong provider written into its config.
-async fn probe_for_a_local_server() -> Option<onboarding::LocalServer> {
+/// Fail-soft: `preflight::fetch` has a three-second timeout and answers `None`
+/// for a connection refused or a non-2xx.
+///
+/// **Parsing is not identification, and this used to conflate them.**
+/// `preflight::Props` defaults every field so that a llama-server version bump
+/// costs a check rather than a parse failure — which means `{}` with a 200
+/// deserializes perfectly, and any JSON service answering on :8080 came back
+/// as `Some`. It was then announced as "already serving (an unnamed model)",
+/// and one `y` would repoint `default_provider` at it with no `model` and no
+/// `context_window`. `answers_like_a_model_server` is the identification step
+/// that tolerance left out; it lives in core beside the claim it supports, so
+/// it is testable without a socket.
+async fn probe_for_a_local_server() -> onboarding::LocalProbe {
     for base_url in onboarding::local_probe_candidates() {
-        if let Some(props) = mecha_core::provider::preflight::fetch(base_url).await {
-            return Some(onboarding::LocalServer {
-                base_url: (*base_url).to_string(),
-                props,
-            });
+        match mecha_core::provider::preflight::fetch(base_url).await {
+            Some(props) if onboarding::answers_like_a_model_server(&props) => {
+                return onboarding::LocalProbe::Found(onboarding::LocalServer {
+                    base_url: (*base_url).to_string(),
+                    props,
+                })
+            }
+            // Something answered, but nothing that identifies itself as a
+            // model server. Keep looking, and report *asked and found
+            // nothing* rather than treating a stranger's 200 as a discovery.
+            _ => continue,
         }
     }
-    None
+    onboarding::LocalProbe::NothingAnswered
 }
 
 /// Write back what the server said about itself.
@@ -347,7 +367,7 @@ fn write_verified(provider: &str, facts: &Facts) -> Result<()> {
     // down is the remedy the blocking step now offers, and it is the same act
     // as the one below — read the values off the wire, show them, ask — with
     // one addition, which is that the table does not exist yet.
-    if let Some(found) = &facts.local_server {
+    if let onboarding::LocalProbe::Found(found) = &facts.local_probe {
         return write_local_provider(found);
     }
     let Some(props) = &facts.props else {

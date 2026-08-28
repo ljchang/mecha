@@ -2137,6 +2137,34 @@ one address rather than a scan (a range would make a setup tool behave like a
 port scanner for the sake of finding a server on a port nobody documented), and
 runs only on an install that is otherwise stuck.
 
+**The probe is three-valued, because two of its outcomes were being reported
+as the third.** `Option<LocalServer>` collapsed *asked and heard nothing* into
+*never asked*, and the step printed the first for both — so somebody with a
+configured-but-unselected `[providers.local]` and a llama-server running on it
+was told "Nothing was answering at http://127.0.0.1:8080 when this ran", a fact
+with no observation behind it. `LocalProbe::{NotAttempted, NothingAnswered,
+Found}` makes the absence visible, and the "nothing answered" sentence is
+printed only in the middle case. Same rule as `Status::Unknown` and
+`Facts::declined`: an absence and an unasked question are different findings.
+That branch also has to exist for its own sake — an install with a local
+provider configured but not selected emits no `local-server` step either (that
+one is gated on the *selected* provider), so before it that person got one step
+telling them to serve a model they were already serving, and was never told the
+one-line fix.
+
+**Parsing a `/props` answer is not identifying a model server.**
+`preflight::Props` defaults every field so a llama-server version bump costs a
+check rather than a parse failure — which means `{}` with a 200 deserializes
+perfectly, and any JSON service on :8080 came back as a discovery, was
+announced as "already serving (an unnamed model)", and one `y` would repoint
+`default_provider` at it with no `model` and no `context_window`. That
+tolerance is right where `fetch` is used against a server the owner has already
+named, and wrong at the *discovery* site, where the whole question is whether
+this is a model server at all — so `answers_like_a_model_server` asks for one
+field only llama-server supplies. A disjunction rather than a required pair, so
+a build reporting one of them differently is not rejected, which is what the
+tolerance was for.
+
 **`mecha setup` may write facts read off a server; it may never write a
 secret.** That asymmetry is why the blocking step has a runnable remedy in one
 branch and prose in the other, and it is not a gap to be closed later: mecha
