@@ -1393,96 +1393,43 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
-### The goal system — rung 7 shipped in full; rungs 8-11 are next
+### The goal system — rungs 0–7, 9 and 10 shipped (10 out of build order); rung 8 is what's left
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the authority and carries a status header
 saying which rungs shipped. The arc's premise, which is what makes the rest
 follow: **every evaluative signal mecha had was a cost or a correction**, so a
 run could be recorded as having gone badly and never as having gone well.
 
-Rungs 0–7 are in `main` as of 2026-08-28 — the quarantined appraiser
-(`--appraise`, §5.1) and the model half of step appraisal (§5.5's escalation)
-both shipped, closing the rung. The appraiser was the first thing here that
-spends a model call at all, on the observation-first shape every other rung
-took: offline, budgeted, left without a store until a real corpus says it
-earns one. Step escalation is different in kind — it is a *live* concern (a
-step's plan action has to reach the same run before it wastes more turns, so
-it runs inside `agent.rs`'s loop rather than as a CLI pass) but the same
-posture on cost: off by default (`[agent] step_escalation`,
-`--no-step-escalation`, forced off under `mecha eval`), since the pre-filter's
-thresholds (span ≥3× the plan's other completed steps' mean, floor of 6
-calls; a verification-claiming step with no verify-shaped call in its span)
-are argued rather than measured. Verified live against the local model: a
-deliberately oversized step correctly drove the quarantined call, which
-judged the size intentional rather than a decomposition problem, and its
-reasoning never reached the recorded transcript — only the closed
-`accept`/`revise_plan` verdict can, and only as a fully templated nudge.
+Rungs 0–6, rung 7's observation half, and rung 7's quarantined appraiser
+(`--appraise`, below) are in `main`. **Rung 7 shipped in full on 2026-08-28**
+with the model half of step appraisal (§5.5's escalation) — see below. So are
+rung 9 (episode tagging + gossip seeding, PRs #97/#98 — landed by another
+lane; not re-verified in this entry) and rung 10 (PR #100, 2026-08-28): the
+charter (`mecha-core/src/charter.rs`, `mecha-cli/src/commands/charter.rs`)
+and the homeostat's aggregate into `diagnose::Evidence` shipped as designed,
+and anticipated guilt (`mecha-core/src/guilt.rs`) shipped **as a recorded
+sensor only** — `Homeostat::anticipated_guilt`, with no behavioural consumer,
+on the same observation-first precedent the appraiser above and boredom both
+used. Rung 10 landed ahead of rung 8 in build order on purpose: the charter
+and the guilt sensor depend on neither the probe nor the label (see the
+corrected caution below). Everything through rung 6 has no model in it, which
+is §14's ordering and not a coincidence — the appraiser was the first thing
+here that spends a model call at all, on the observation-first shape every
+other rung took: offline, budgeted, left without a store until a real corpus
+says it earns one.
 
-**PR-stack status, verified 2026-08-27T22:15Z against `main` at `a0638c8`.**
-The whole appraisal/learning-UI/validation/task-seed stack that was in flight
-when the paragraph below was first written is now merged, nine PRs in the
-order they landed: **#86** (`bcd7d4f`), **#87** (`c81d0fb`), **#93**
-(`4f28221` — carries forward #86's fourth-round fix, which had been pushed
-eight minutes after #86 merged on the round-3 tip and so never reached
-`main`; no open findings), **#88** (`18a6fcf4`), **#89** (`1e04c114`), **#90**
-(`c630ff94`), **#91** (`f0ca8ca`, mecha-80's probe work), **#94** (`2f432b3`,
-see below) and **#92** (`a0638c8`, mecha-4c's task-seed fix — its content is
-already folded into the rung-7 section below, in that PR's own words, so it
-is not repeated here). Every review finding this section once listed as open
-against #86, #88, #89, #90 and #93 is fixed on `main` today, verified by
-reading the merged source rather than trusting a review thread — see
-HISTORY's 2026-08-27 (third pass) for the file:line record of #86/#88/#90/#93,
-and the paragraph below for #89.
-
-**CI on #89's own merge commit shows `cancelled`, not `success`** — checked
-per this file's own rule against `gh api repos/ljchang/mecha/commits/1e04c1143afee84e3bb57c023a75d80f772e9e3a/check-runs`,
-because #90 merged twelve seconds later and superseded it on the same ref
-before its run finished. `main`'s actual tip carries every PR's content and
-its own check-runs are all `success`, so nothing is unverified today — but a
-reader who checks out `1e04c114` in isolation, rather than `main`'s HEAD,
-would find a commit CI never finished grading.
-
-**#89 shipped with real findings nobody circled back to fix, and #94 is the
-fix.** Two of #89's own review rounds flagged problems in the new `/learning`
-modal that a later round did not re-raise, and a first pass at cleanup — this
-document's own earlier draft — found four of them still true on `main` after
-#89 merged. Re-reading *every* review comment on #89, not just the ones that
-first pass covered, turned up two more of the same shape. All six are fixed
-in **#94** (`2f432b3`), verified against the current tree rather than the
-PR's own account of itself:
-
-- `App::a_modal_is_up` now checks `self.learning.is_some()`
-  (`mecha-cli/src/tui/mod.rs:601`), so the modal's mouse capture releases
-  like every sibling's.
-- `reject` on a proposal now passes `--reason "rejected from /learning"`,
-  matching the exact fixed-string pattern `/queues` already used for the same
-  command rather than inventing a new one (`mecha-cli/src/tui/mod.rs:6274`).
-- `doctor`'s starved-learner counter now skips a row with `dropped_at` set
-  when counting `excluded` (`mecha-core/src/doctor.rs:1442`), and `mecha
-  learn` reports its own `dropped_by_owner` count alongside "excluded by
-  origin" instead of folding the two together
-  (`mecha-cli/src/commands/learn.rs:107-150`).
-- `learning_act` no longer calls `self_cli` synchronously from the key
-  handler; every verb now runs through the detached-and-watched shape
-  `/outbox` and `/triggers` already use, polled by a new `Watch::Learning`
-  (`mecha-cli/src/tui/mod.rs:6140-6161`), so a `/learning` mutation made while
-  `reflect`/`learn` holds the store's flock across a model call no longer
-  freezes the whole TUI.
-- `LearningStore::reflexion` carries the same empty-needle guard
-  `rules.rs::find_rule` got in #89's own first review pass, which had never
-  been applied to this sibling lookup (`mecha-core/src/learning.rs:1103-1110`).
-- `/queues`' `move_sel` now clears `review_detail`/`detail_scroll`
-  (`mecha-cli/src/tui/queues.rs:500-508`) — before this, `j`/`k` while a
-  proposal's fetched text was open could move the cursor onto the next
-  proposal while the stale text of the previous one stayed on screen, so an
-  `a`/`r` right after could accept or reject something never actually read.
-
-The general lesson from the first pass missing four of these stands
-regardless of how quickly the fix landed: **a later review round approving a
-PR is not evidence that an earlier round's findings were addressed** — a
-reviewer re-reads the current diff, not the accumulated list of everything
-anyone has said about it. See HISTORY's 2026-08-27 (third pass) for the
-fuller argument.
+Step escalation is different in kind — it is a *live* concern (a step's plan
+action has to reach the same run before it wastes more turns, so it runs
+inside `agent.rs`'s loop rather than as a CLI pass) but the same posture on
+cost: off by default (`[agent] step_escalation`, `--no-step-escalation`,
+forced off under `mecha eval`), since the pre-filter's thresholds (span ≥3×
+the plan's other completed steps' mean, floor of 6 calls; a
+verification-claiming step with no verify-shaped call in its span) are argued
+rather than measured. Verified live against the local model: a deliberately
+oversized step correctly drove the quarantined call, which judged the size
+intentional rather than a decomposition problem, and its reasoning never
+reached the recorded transcript — only the closed `accept`/`revise_plan`
+verdict can, and only as a fully templated nudge.
 
 **Open now:**
 
@@ -1639,8 +1586,18 @@ fuller argument.
   it landed to confirm `validations.jsonl` now gets written for a steer/denial
   probe that used to silently skip.
 
-  **Do not build rungs 8–10 on the label yet.** §8's prioritised replay and
-  §10's memory salience both key off affect, and today affect is a constant.
+  **This caution held for rung 8, and rung 10 shipped anyway — on purpose,
+  and without contradicting it.** §8's prioritised replay still keys off
+  affect being non-degenerate and is still unbuilt for that reason. Rung 10
+  (PR #100, 2026-08-28) shipped ahead of it in build order specifically
+  because its two pieces — the charter and the anticipated-guilt sensor —
+  depend on neither the probe nor the label: the charter is a static,
+  user-authored prompt block, and the sensor is deliberately unconsumed (see
+  the summary paragraph above). What still waits on the label from rung 10
+  is charter-driven `Pride`/`Frustration` — that half is genuinely unbuilt,
+  for the same reason rung 8 is. Whether rung 9's own affect-adjacent pieces
+  (§10's review-queue salience) hit the same wall is not verified in this
+  entry — see whoever shipped #97/#98 for that.
 
 - **The quarantined appraiser (§5.1) shipped 2026-08-27** — no tools, no
   conversation, typed output, offline via `mecha sessions appraise --appraise`
