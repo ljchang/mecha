@@ -1082,8 +1082,7 @@ fn begin_turn(
     // messages in a row. The fold is recorded at submit, so either way
     // `before` is what the file already holds — the `record_run` contract
     // every arm downstream assumes.
-    let before;
-    if conversation
+    let before = if conversation
         .messages
         .last()
         .is_some_and(|m| m.role == Role::User)
@@ -1102,7 +1101,7 @@ fn begin_turn(
             ws.conversation = Some(conversation);
             return Err(TurnError::Failed(format!("recording: {e:#}")));
         }
-        before = conversation.messages.clone();
+        conversation.messages.clone()
     } else {
         let user = Message::user(&text);
         conversation.push(user.clone());
@@ -1113,8 +1112,8 @@ fn begin_turn(
             ws.conversation = Some(conversation);
             return Err(TurnError::Failed(format!("recording: {e:#}")));
         }
-        before = conversation.messages.clone();
-    }
+        conversation.messages.clone()
+    };
 
     // A typed turn is echoed by the page that typed it; a spoken one has no
     // local echo anywhere, so it is announced — with the voice block

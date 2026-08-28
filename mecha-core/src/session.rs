@@ -852,18 +852,38 @@ impl Session {
                 // content to tell the two rewrites apart; provenance must
                 // not depend on which reader classified it.
                 Ok(Record::Rewrite { messages: m }) => {
-                    // Positions survive any rewrite that leaves every shared
-                    // index meaning what it meant: a truncation (the
-                    // rollback's strict prefix) and a fold (same length,
-                    // only the *last* message's content extended — the
-                    // barge-in submit writes these). Both leave message `i`
-                    // as message `i`; only a rewrite that replaces the head
-                    // (a summarising compaction) invalidates them. Checked
-                    // as "everything before the last shared message is
-                    // unchanged": a strict prefix passes it, a tail-extend
-                    // passes it, a replaced head fails on message 0.
-                    let shared = m.len().saturating_sub(1);
-                    let in_place = m.len() <= messages.len() && messages[..shared] == m[..shared];
+                    // Positions survive any rewrite that leaves message `i`
+                    // meaning message `i`. Three writer families produce
+                    // rewrites, and only one shifts indices:
+                    //
+                    // - **Index-preserving, possibly content-changing**: the
+                    //   in-run eviction passes (`evict_superseded_results`,
+                    //   `collapse_repeated_failures`, `thin_old_results` —
+                    //   all `&mut [Message]`, so length-preserving by type),
+                    //   whose recorded list is *at least* as long as the
+                    //   messages persisted so far because it carries the
+                    //   run's unpersisted tail; and the barge-in fold (same
+                    //   length, tail extended). Recognised as `m.len() >=
+                    //   messages.len()` — content comparison would wrongly
+                    //   fail the eviction case, whose whole point is that
+                    //   content changed in place.
+                    // - **A truncation** (the rollback's strict prefix):
+                    //   shorter, head unchanged.
+                    // - **A summarising compaction**: shorter, head
+                    //   *replaced* — the one case indices genuinely die.
+                    //
+                    // A pathological long rewrite could masquerade as
+                    // index-preserving; the bias is deliberate, because the
+                    // two errors are not symmetric — misreading a
+                    // summarising rewrite keeps the *old* positions (the
+                    // pre-positional `configs.first()` behaviour, mildly
+                    // stale), while misreading an in-place one collapses
+                    // every head message onto the newest attach, the exact
+                    // divergence `config_covering` exists to prevent.
+                    let in_place = m.len() >= messages.len() || {
+                        let shared = m.len().saturating_sub(1);
+                        messages[..shared] == m[..shared]
+                    };
                     if in_place {
                         for p in &mut config_positions {
                             *p = (*p).min(m.len());
@@ -1702,6 +1722,26 @@ mod tests {
             t.config_covering(0).unwrap().compact_at_tokens,
             None,
             "a fold rewrite must not collapse the head onto the newest attach"
+        );
+
+        // An eviction-shaped rewrite — content changed *in place* (a
+        // superseded result stubbed out), length at least the persisted
+        // list's — preserves positions too: it changes what a message says,
+        // never which message it is. Found on review: the head-equality
+        // check wrongly failed this exact case, whose whole point is that
+        // content differs.
+        let mut evicted = folded.clone();
+        evicted[1] = Message::assistant(vec![Block::text("[superseded]")]);
+        session
+            .append(&Record::Rewrite {
+                messages: evicted.clone(),
+            })
+            .unwrap();
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(
+            t.config_covering(0).unwrap().compact_at_tokens,
+            None,
+            "an in-place eviction must not collapse the head onto the newest attach"
         );
 
         std::fs::remove_dir_all(&dir).ok();
