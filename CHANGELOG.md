@@ -84,28 +84,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Four findings from two independent review rounds of rung 9's episode
-  tagging and surprise detection (#97, #98), all real.** `mecha distill`
-  printed a `Surprise`'s free-text fields straight to stdout unescaped —
-  the "a person reading their own terminal is a safe context" argument
-  didn't hold for `scripts/ruminate.sh`'s actual nightly path, which
-  redirects that output to a dated logfile instead, exactly as exposed to
-  a screen-clearing or OSC-52 sequence as a live read would have been. The
-  first fix ran `strip_ansi` on every printed field, trusted or not — a
-  second round then found `strip_ansi` alone does not stop a bare `\r`, and
-  a `\r` at the end of `actual` rewrites the rendered line from column 0
-  and erases the very "untrusted, don't act on this" marker the whole fix
-  exists to show. `strip_ansi_and_controls` (`strip_ansi` plus every
-  remaining control byte but tab) closes it. Separately, a genuinely
-  unreadable outbox during episode tagging used to warn and continue,
-  permanently `mark_distilled`-ing every session that run with a silently
-  incomplete `Edit` channel — no later run could ever revisit it. The first
-  fix bailed on a hard I/O error; the second round found `OutboxStore::items`
-  also skips a merely *malformed* item file with only an invisible
-  `tracing::warn!` (the nightly runs with no `MECHA_LOG`) and still returns
-  `Ok`, so the one failure this change was written to close — a
-  half-written `.json` mid-save — survived through the path it didn't
-  check. `items_strict` bails on that too.
+- **Two real gaps in rung 9's episode tagging and surprise detection (#97,
+  #98), each closed across several review rounds that kept finding the
+  sibling case the previous fix missed.** `mecha distill` printed a
+  `Surprise`'s free-text fields straight to stdout unescaped — the "a
+  person reading their own terminal is a safe context" argument didn't
+  hold for `scripts/ruminate.sh`'s actual nightly path, which redirects
+  that output to a dated logfile instead. `strip_ansi` alone doesn't stop
+  a bare `\r`/`\n` (an interior one survives `trim_end`, which is also why
+  this module's *own two* callers — `Writer::write` and `release` — turned
+  out to have the identical gap, now fixed alongside it) or the Unicode
+  categories that buy the same two effects without being `is_control()`
+  (U+2028/U+2029 forge a line break; U+202A–E and U+2066–9 reorder the
+  rendered line around a bidi-aware reader). `strip_ansi_and_controls`
+  closes all three, used everywhere free text reaches a terminal or a log
+  in this module.
+
+  Separately, a genuinely unreadable outbox during episode tagging used to
+  warn and continue, permanently `mark_distilled`-ing every session that
+  run with a silently incomplete `Edit` channel — no later run could ever
+  revisit it. `OutboxStore::items_strict` bails on a read failure instead
+  of skip-and-warn, covering both a hard I/O error and a merely
+  *malformed* item file (`items()`'s own `tracing::warn!` for the latter
+  is invisible on the nightly, which runs with no `MECHA_LOG`). The
+  originally-cited cause — a half-written `.json` mid-save — turned out to
+  be one this store's own temp-sibling-and-rename discipline already rules
+  out structurally; the realistic cause is persistent (a stray file, or an
+  item written by a schema this binary cannot read), which the error
+  message and doc comments now say plainly rather than implying a retry
+  will clear it. A `doctor` finding for a stalled distill ledger would
+  close the remaining gap (the nightly currently fails silently behind one
+  logfile line) and is left for later rather than built here.
 
 - **mecha was mining its own words as the user's corrections.** `agent.rs`
   prefixes a refusal it did not author with `"Denied by the user: "` precisely

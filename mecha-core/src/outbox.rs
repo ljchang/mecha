@@ -381,13 +381,23 @@ impl OutboxStore {
     /// whole read instead of being skipped.
     ///
     /// `items()`'s skip-and-warn is right for a listing and wrong for a
-    /// caller about to write a permanent record from what it read: a
-    /// half-written `.json` mid-save is arguably the likeliest shape of "the
-    /// outbox is unreadable", and it would otherwise pass `items()` as a
-    /// silently short result — indistinguishable from an outbox that simply
-    /// has fewer drafts. `mecha distill`'s episode tagging is exactly that
-    /// caller, and its own `tracing::warn!` is invisible there anyway (the
-    /// nightly runs with no `MECHA_LOG`).
+    /// caller about to write a permanent record from what it read. **Not**
+    /// because of a half-written file mid-save — this module's own header
+    /// names the reason that cannot happen: temp-sibling-and-rename means a
+    /// reader never sees a partial write, and `items_impl` only looks at the
+    /// `.json` extension the rename lands on, so the `.json.tmp` sibling is
+    /// invisible to the walk regardless. The realistic cause is a
+    /// *persistent* one: a stray file, or an item written by a schema this
+    /// binary cannot read (the hand-rolled `Deserialize` on [`OutboxKind`]
+    /// and `Proposed` exists for exactly that skew). Either way, `items()`
+    /// would pass it through as a silently short result — indistinguishable
+    /// from an outbox that simply has fewer drafts. `mecha distill`'s
+    /// episode tagging is exactly the caller that cannot accept that: its
+    /// own `tracing::warn!` is invisible there anyway (the nightly runs
+    /// with no `MECHA_LOG`), and because the cause is persistent rather
+    /// than transient, a caller that reacts to this by only asking the
+    /// operator to retry will keep failing the same way every night; see
+    /// that caller's own handling for how it names the distinction.
     pub fn items_strict(&self) -> Result<Vec<OutboxItem>> {
         self.items_impl(true)
     }
@@ -1008,7 +1018,8 @@ mod tests {
                 None,
             )
             .unwrap();
-        // A half-written save, or any other file that fails to parse.
+        // A stray file, or one written by a schema this binary cannot read —
+        // never a half-written save, which temp-sibling-and-rename rules out.
         std::fs::write(root.join("zzz-corrupt.json"), "{not json").unwrap();
 
         let items = store.items().unwrap();

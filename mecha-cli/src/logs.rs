@@ -93,7 +93,11 @@ pub fn release() -> Vec<String> {
     if let Ok(mut b) = buffer().lock() {
         let tail = std::mem::take(&mut b.partial);
         if !tail.trim().is_empty() {
-            out.push(tail.trim_end().to_string());
+            // Never passed through `Writer::write`'s own stripping (it has
+            // no trailing `\n` to trigger that loop), and this is printed to
+            // the real terminal on the way out — the "unterminated escape
+            // reaching a terminal" case this module's own doc opens with.
+            out.push(strip_ansi_and_controls(tail.trim_end()));
         }
         b.lines = None;
     }
@@ -118,7 +122,11 @@ impl Write for Writer {
         let mut ready: Vec<String> = Vec::new();
         while let Some(i) = b.partial.find('\n') {
             let line: String = b.partial.drain(..=i).collect();
-            let line = strip_ansi(line.trim_end());
+            // `trim_end` only removes a *trailing* `\r`/whitespace — an
+            // interior one (a server-supplied error string, a model reply
+            // that failed to parse) survives it, so this cannot lean on
+            // `strip_ansi` alone the way its own doc comment used to claim.
+            let line = strip_ansi_and_controls(line.trim_end());
             if !line.is_empty() {
                 ready.push(line);
             }
@@ -154,10 +162,16 @@ impl Write for Writer {
 /// a terminal is how a session ends up in a mode nobody chose.
 ///
 /// **Only `ESC`-introduced sequences — every other C0 control passes
-/// through, including `\r` and `\n`.** Safe at the call site above because
-/// `Writer::write` cuts at `\n` before calling this, so a bare `\r` can never
-/// reach it. **Not safe for un-split free text** — see
-/// [`strip_ansi_and_controls`], which is.
+/// through, including `\r` and `\n`.** A private detail of
+/// [`strip_ansi_and_controls`] now, not a guarantee any caller here relies
+/// on directly: this module's own two callers used to lean on "the caller
+/// already cut the stream at `\n`" to excuse a bare `\r`, and that
+/// precondition was never actually true — `trim_end` removes a *trailing*
+/// one, not an interior one, so a server- or model-supplied string with a
+/// `\r` in the middle reached both a terminal and the TUI transcript
+/// unstripped. Use [`strip_ansi_and_controls`] for anything a person will
+/// read; this function exists to be the one place the ESC-handling loop is
+/// written.
 pub(crate) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
@@ -188,21 +202,27 @@ pub(crate) fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// [`strip_ansi`] plus every remaining C0/C1 control except tab.
+/// [`strip_ansi`] plus every remaining C0/C1 control except tab. What both
+/// callers in this module actually need, and what `mecha distill` needs one
+/// crate over.
 ///
-/// For a *whole* free-text field rather than a pre-split line — `mecha
-/// distill` prints a session's own `Surprise` text (the model's free-text
-/// reading of transcript content, which can include a fetched page or a
-/// mail body) straight to stdout, and `scripts/ruminate.sh`'s nightly run
-/// redirects that output to a dated logfile rather than a live terminal. A
-/// bare `\r` in `actual` — the last thing on the printed line — rewrites the
-/// rendered line from column 0 in whatever reads the log back, which is
-/// enough to erase the very "untrusted, don't act on this" marker the print
-/// exists to show; a bare `\n` forges an extra line outright. `strip_ansi`
-/// alone does not catch either, because its own call site had already cut
-/// the stream at `\n` before this problem could arise. `pub(crate)` rather
-/// than a second copy of `strip_ansi`'s ESC-handling loop, on the
-/// one-definition rule this codebase keeps paying to relearn.
+/// Neither of this module's own two sinks — `Writer::write`'s per-line
+/// capture and `release`'s unterminated tail — could actually lean on
+/// "the stream was already cut at `\n`" the way `strip_ansi` alone assumes:
+/// `trim_end` removes a *trailing* `\r`, not an interior one, so a
+/// server-supplied error string or a model reply with a `\r` in the middle
+/// reached a live terminal (or the TUI transcript) with it intact. `mecha
+/// distill`'s case is more direct: it prints a whole free-text field, never
+/// split at newlines at all — a session's own `Surprise` text, which is the
+/// model's free-text reading of transcript content that can include a
+/// fetched page or a mail body — to a nightly logfile
+/// (`scripts/ruminate.sh` redirects `mecha distill`'s output there, not to
+/// a live terminal). A bare `\r` at the end of that field rewrites the
+/// rendered line from column 0 in whatever reads the log back, erasing the
+/// very "untrusted, don't act on this" marker the print exists to show; a
+/// bare `\n` forges an extra line outright. `pub(crate)` rather than a
+/// second copy of `strip_ansi`'s ESC-handling loop, on the one-definition
+/// rule this codebase keeps paying to relearn.
 ///
 /// **`is_control()` is Unicode category Cc only (C0, DEL, C1), and two other
 /// categories buy the same two effects.** U+2028/U+2029 (line/paragraph
