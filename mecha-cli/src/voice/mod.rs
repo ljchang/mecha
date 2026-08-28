@@ -527,7 +527,14 @@ async fn affect_status(stream: &mut TcpStream, shared: &Arc<Shared>, head: &Head
     let Some(session) = query_param(&head.path, "session") else {
         return write_json(stream, 400, &json!({"error": "missing ?session="})).await;
     };
-    match shared.affects.lock().await.get(session.as_str()) {
+    // Cloned out from under the lock before the socket write: a `match`
+    // scrutinee temporary lives to the end of the match, so holding the
+    // guard here would keep it locked across `write_json`'s `.await` (and
+    // the 204 arm's `write_all`) — and `hosted_completion` takes this same
+    // lock at the end of every turn, so a caller that stops reading would
+    // stall the completion path, not just its own poll.
+    let label = shared.affects.lock().await.get(session.as_str()).cloned();
+    match label {
         Some(label) => write_json(stream, 200, &json!({"affect": label})).await,
         None => {
             stream
