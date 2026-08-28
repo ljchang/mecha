@@ -769,6 +769,54 @@ pub fn for_session(
     })
 }
 
+/// The label for a **live** session — a run that just finished in-process,
+/// with its `RunOutcome` and `Conversation` both still in hand. §6.2's
+/// readout surfaces (the TUI status strip, the web logo, voice's TTS style
+/// parameter) all want this: *how is this session going, right now* — a
+/// different question from §5.4's goal-closure appraisal, which is
+/// task-scoped and reads a **finished** session back off disk, possibly from
+/// another process entirely (`mecha tasks set --status done`, run from a
+/// terminal or shelled out to by a modal, appraising whatever conversation
+/// the board's `session` field names — not necessarily this one).
+///
+/// Three front-ends compute this identically — the TUI, the chat REPL, and
+/// `serve/chat.rs` (which voice rides too, via `VoiceHost`/`SessionHost`) —
+/// which is §13.2's "two callers is a pattern; three is a shape that wants
+/// naming," landing for real this time.
+///
+/// No goal is attributed unless the conversation's own plan named one
+/// (`serves:`, via [`crate::tool::todo::TodoTool::plan_from_transcript`]).
+/// Unlike the goal-closure appraisal, nothing calling this already knows
+/// which task the session is about, so there is nothing to override a
+/// missing `serves:` with — an ordinary chat session appraises with no goal
+/// at all, which `of_session` already handles.
+pub fn live(
+    session_id: &str,
+    outcome: &crate::agent::RunOutcome,
+    conversation: &crate::agent::Conversation,
+    drafts: &[&crate::outbox::OutboxItem],
+) -> Affect {
+    let stats = crate::session::RunStats::from(outcome);
+    let interventions = crate::learning::extract_interventions(&conversation.messages);
+    let goal = crate::tool::todo::TodoTool::plan_from_transcript(&conversation.messages)
+        .and_then(|p| p.goal);
+    let goals: Vec<GoalRef> = goal.into_iter().collect();
+    let a = of_session(
+        session_id,
+        &stats,
+        &goals,
+        &interventions,
+        drafts,
+        // The outcome's own taint at run end, not a timeline lookup — there
+        // is no torn-transcript or before-checkpoints-existed case to guard
+        // against here, because this is the object itself, not a file read
+        // back later.
+        Some(outcome.taint),
+        chrono::Utc::now().to_rfc3339(),
+    );
+    a.label
+}
+
 /// What a counterfactual probe found about one intervention.
 ///
 /// The verdict is [`counterfactual::ProbeVerdict`]'s, restated in this
@@ -2126,5 +2174,77 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    // --- §6.2: the live readout ---
+
+    fn bare_outcome() -> crate::agent::RunOutcome {
+        crate::agent::RunOutcome {
+            context_overflows: 0,
+            boredom_notices: 0,
+            text: String::new(),
+            stop_reason: crate::message::StopReason::EndTurn,
+            usage: crate::message::Usage::default(),
+            turns: 1,
+            refusal: None,
+            exhausted: false,
+            ended_on_failed_call: false,
+            tool_calls: Vec::new(),
+            malformed_tool_args: 0,
+            blocked_sends: 0,
+            taint: crate::agent::Taint::default(),
+            homeostat: None,
+            stop_cause: crate::agent::StopCause::Completed,
+            compactions: 0,
+            usage_complete: true,
+            cost_usd: None,
+        }
+    }
+
+    /// The common case — an ordinary chat turn that raised nothing — reads as
+    /// `Neutral`, which is what "show nothing" on every readout surface keys
+    /// off.
+    #[test]
+    fn a_clean_live_turn_is_neutral() {
+        let outcome = bare_outcome();
+        let convo = crate::agent::Conversation::default();
+        assert_eq!(live("s1", &outcome, &convo, &[]), Affect::Neutral);
+    }
+
+    /// A run the harness cut short (`MaxTurns`) is `Agency::World` —
+    /// "nobody here caused it" — which `label_of` reports as `Anger`. This is
+    /// the one condition already reachable today without any goal at all, so
+    /// it is what a manual TUI/web check should force to see the badge.
+    #[test]
+    fn a_run_cut_short_by_a_ceiling_is_not_neutral() {
+        let mut outcome = bare_outcome();
+        outcome.stop_cause = crate::agent::StopCause::MaxTurns;
+        outcome.exhausted = true;
+        let convo = crate::agent::Conversation::default();
+        assert_eq!(live("s1", &outcome, &convo, &[]), Affect::Anger);
+    }
+
+    /// Live and offline agree on the same recorded outcome — `live` is not a
+    /// second, differently-shaped derivation of the same fact `of_session`
+    /// already computes from a finished transcript.
+    #[test]
+    fn live_and_of_session_agree_on_the_same_outcome() {
+        let mut outcome = bare_outcome();
+        outcome.stop_cause = crate::agent::StopCause::Loop;
+        let convo = crate::agent::Conversation::default();
+        let via_live = live("s1", &outcome, &convo, &[]);
+
+        let stats = crate::session::RunStats::from(&outcome);
+        let via_of_session = of_session(
+            "s1",
+            &stats,
+            &[],
+            &[],
+            &[],
+            Some(outcome.taint),
+            "2026-08-27T00:00:00Z".into(),
+        )
+        .label;
+        assert_eq!(via_live, via_of_session);
     }
 }
