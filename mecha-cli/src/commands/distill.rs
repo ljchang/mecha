@@ -177,6 +177,33 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // candidates anyway.
                 let sendable = distill::corrections_for(taint, &out.corrections).to_vec();
                 let withheld = out.corrections.len() - sendable.len();
+                // §10.1: printed regardless of whether anything is pushed —
+                // the point is a human deciding whether to run
+                // `mecha gossip --entity <about>`, not the graph gaining a
+                // record. Withheld ones are reported by count only, on the
+                // corrections precedent above: their content is a fetched
+                // page's own words, and printing a count is the safe half
+                // of "report a withholding without laundering what it held".
+                let sendable_surprises = distill::surprises_for(taint, &out.surprises).to_vec();
+                let withheld_surprises = out.surprises.len() - sendable_surprises.len();
+                for s in &sendable_surprises {
+                    let about = s
+                        .about
+                        .as_deref()
+                        .map(|a| format!(" (about {a})"))
+                        .unwrap_or_default();
+                    println!(
+                        "· {} — surprise{about}: predicted \"{}\", found \"{}\"",
+                        meta.id, s.predicted, s.actual
+                    );
+                }
+                if withheld_surprises > 0 {
+                    println!(
+                        "· {} — {withheld_surprises} surprise(s) withheld (untrusted or \
+                         unknown timeline)",
+                        meta.id
+                    );
+                }
                 // `None` means nothing may leave this session: no episode
                 // text, and any corrections withheld by taint. Pushing a
                 // carrier here would be an episode *about* corrections
@@ -202,6 +229,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     distiller.model(),
                     &sendable,
                     appraisal.as_ref(),
+                    &out.surprises,
                 );
                 match distill::push_episode(&client, push_args).await {
                     Ok(outcome) => {
