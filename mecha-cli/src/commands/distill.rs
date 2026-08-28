@@ -203,8 +203,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         )
         .map(|built| built.appraisal);
 
-        let transcript = distill::render_for_distill(&convo.messages, 6000, 18000);
-        match distiller.distill(&transcript).await {
+        let rendered = distill::render_for_distill(&convo.messages, 6000, 18000);
+        match distiller.distill(&rendered).await {
             Ok(Some(out)) => {
                 // Decide what may leave BEFORE writing the body: a carrier
                 // describing a withheld correction would launder the claim
