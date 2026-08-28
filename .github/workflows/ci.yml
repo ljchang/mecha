@@ -217,6 +217,14 @@ jobs:
           # step, it is simply ignored. A vacuous assertion in CI reads
           # exactly like a passing one, which is the failure this whole job
           # exists to prevent one layer down.
+          #
+          # This note was written here and then not applied to the `! grep`
+          # assertions further down, including the two that check no key
+          # reached the config and no `[[line]]` was authored into a charter —
+          # so **every negative assertion in this job uses `if`**. A `! cmd`
+          # that happens to be the last line of a block does abort, by
+          # accident of the step taking its status; adding a line after it
+          # disarms it silently.
           if $NOKEY mecha setup --json > steps.json; then
             echo "setup --json must exit non-zero while work is outstanding"
             exit 1
@@ -277,8 +285,13 @@ jobs:
           mecha charter edit
           test -f "$MECHA_HOME/charter.toml"
           # No uncommented line: a charter mecha authored is the one thing
-          # every surface here refuses.
-          ! grep -qE '^[[:space:]]*[^#[:space:]]' "$MECHA_HOME/charter.toml"
+          # every surface here refuses — so this is the assertion the whole
+          # feature rests on, and it must be able to fail. `if`, never
+          # `! grep`: see the note in the first-run step above.
+          if grep -qE '^[[:space:]]*[^#[:space:]]' "$MECHA_HOME/charter.toml"; then
+            echo "mecha wrote an uncommented line into a charter"
+            exit 1
+          fi
           mecha charter --json | jq -e '.lines | length == 0'
 
       # The invariant that lets the step above be advice rather than a command:
@@ -294,9 +307,15 @@ jobs:
           mkdir -p "$MECHA_HOME" "${{ runner.temp }}/secret/work"
           cd "${{ runner.temp }}/secret/work"
           mecha config init
-          ! grep -q "sk-secret-value-that-must-not-land" "$MECHA_HOME/config.toml"
+          if grep -q "sk-secret-value-that-must-not-land" "$MECHA_HOME/config.toml"; then
+            echo "a key from the environment reached the config file"
+            exit 1
+          fi
           grep -q "api_key_env" "$MECHA_HOME/config.toml"
-          ! grep -qE '^[[:space:]]*api_key[[:space:]]*=' "$MECHA_HOME/config.toml"
+          if grep -qE '^[[:space:]]*api_key[[:space:]]*=' "$MECHA_HOME/config.toml"; then
+            echo "the config grew a key-valued field, not just a variable name"
+            exit 1
+          fi
 
       - name: A step you decline stops being outstanding, and can be restored
         env:
