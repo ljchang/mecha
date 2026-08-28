@@ -1390,7 +1390,18 @@ fn finish_run(
                         .filter(|i| i.session_id.as_deref() == Some(s.meta.id.as_str()))
                         .collect();
                 let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts.iter().collect();
-                let label = mecha_core::appraisal::live(&s.meta.id, &outcome, &app.convo, &mine);
+                // `persisted.len()`, not `app.convo.messages.len()`: `live`
+                // needs where *this run's own* messages start, and
+                // `persisted` is exactly that boundary — the conversation as
+                // it stood right after the triggering user turn was
+                // appended, before this run added anything of its own.
+                let label = mecha_core::appraisal::live(
+                    &s.meta.id,
+                    &outcome,
+                    &app.convo,
+                    persisted.len(),
+                    &mine,
+                );
                 app.affect = (label != mecha_core::appraisal::Affect::Neutral).then_some(label);
             }
         }

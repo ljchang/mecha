@@ -1232,9 +1232,19 @@ fn begin_turn(
                 .filter(|i| i.session_id.as_deref() == Some(session.meta.id.as_str()))
                 .collect();
             let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts.iter().collect();
-            let label = mecha_core::appraisal::live(&session.meta.id, o, &conversation, &mine);
+            // `before.len()`, not `conversation.messages.len()`: `live`
+            // needs where *this run's own* messages start, and `before` is
+            // exactly that boundary — captured right after the triggering
+            // user turn was appended, before this run added anything.
+            let label = mecha_core::appraisal::live(
+                &session.meta.id,
+                o,
+                &conversation,
+                before.len(),
+                &mine,
+            );
             if label != mecha_core::appraisal::Affect::Neutral {
-                affect_label = Some(format!("{label:?}").to_lowercase());
+                affect_label = Some(label.wire());
                 let _ = bcast.send(WireEvent::Affect {
                     label: affect_label.clone().unwrap(),
                 });

@@ -284,6 +284,16 @@ class LocalTTS(OpenAITTSService):
         answer rather than once per turn; the facade's cache is
         set-and-overwrite for exactly that reason (never take-once).
 
+        Lags by one turn, honestly rather than by accident: the facade can
+        only cache a label once the turn that earned it has *finished*
+        (`Affect` is a function of the completed `RunOutcome`), and this
+        method is called while that turn's own text is still streaming in -
+        before the facade has had a chance to update the cache. So what this
+        reads is the *previous* turn's mood, applied to the current turn's
+        words. There is no way to close that gap without holding speech
+        until the whole answer is known, which defeats the point of
+        streaming - a deliberate trade-off, not a bug.
+
         Failure, timeout, or a `neutral`/absent label all fall back to the
         baseline silently - a harness hiccup must never make a call worse
         or slower than if this did not exist."""

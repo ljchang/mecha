@@ -497,7 +497,14 @@ async fn appraise_closure(global: &GlobalOpts, task_id: &str, before: &Value) {
             return;
         }
     };
-    println!("mecha's appraisal of {task_id}: {}", describe(&a));
+    // Stderr, never stdout: this is a note to the owner, not `set`'s answer.
+    // `set` already printed the one machine-readable document
+    // (`kg_task_update`'s own JSON) above, and Slack's Done tap
+    // (`slack/actions.rs`) parses the whole of stdout as that one document —
+    // a second line here, on *every* closure regardless of label, broke
+    // that read-back for exactly the tasks (delegated, with a session) that
+    // button is offered on.
+    eprintln!("mecha's appraisal of {task_id}: {}", describe(&a));
 
     if !worth_a_follow_up(&a) {
         return;
@@ -652,7 +659,14 @@ async fn stage_follow_up(
         }
         Err(e) => return Err(e),
     };
-    println!(
+    // Stderr, not stdout: `set`'s one machine-readable answer is
+    // `kg_task_update`'s own JSON, printed once at the top of `set`, and
+    // Slack's Done tap parses that whole stream as a single document
+    // (`slack/actions.rs`). A second `println!` here would make every
+    // closure of a task with a linked session — the common case for that
+    // button — read back as "the answer was unreadable" even though it
+    // closed.
+    eprintln!(
         "staged a follow-up: {}  {}",
         out["id"].as_str().unwrap_or("created"),
         out["name"].as_str().unwrap_or("")

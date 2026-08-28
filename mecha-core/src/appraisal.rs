@@ -243,6 +243,21 @@ impl Affect {
             Affect::Neutral | Affect::Anger | Affect::Embarrassment | Affect::Frustration
         )
     }
+
+    /// The wire form — `serde`'s own `rename_all = "snake_case"`, spelled
+    /// out for a caller that needs a bare `String` (a `WireEvent` field, an
+    /// HTTP response body) rather than a value to serialize directly.
+    /// **Not `Debug`**: identical to it for all ten current variants, but a
+    /// future two-word variant (`Excitement` already reads fine either way,
+    /// but nothing guarantees the next one will) would make a page and the
+    /// harness disagree silently the day one caller uses `{:?}` and another
+    /// uses `serde`.
+    pub fn wire(self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| format!("{self:?}").to_lowercase())
+    }
 }
 
 /// What one error on its own says.
@@ -772,17 +787,37 @@ pub fn for_session(
 /// The label for a **live** session — a run that just finished in-process,
 /// with its `RunOutcome` and `Conversation` both still in hand. §6.2's
 /// readout surfaces (the TUI status strip, the web logo, voice's TTS style
-/// parameter) all want this: *how is this session going, right now* — a
+/// parameter) all want this: *how did the run that just finished go* — a
 /// different question from §5.4's goal-closure appraisal, which is
 /// task-scoped and reads a **finished** session back off disk, possibly from
 /// another process entirely (`mecha tasks set --status done`, run from a
 /// terminal or shelled out to by a modal, appraising whatever conversation
 /// the board's `session` field names — not necessarily this one).
 ///
-/// Three front-ends compute this identically — the TUI, the chat REPL, and
-/// `serve/chat.rs` (which voice rides too, via `VoiceHost`/`SessionHost`) —
-/// which is §13.2's "two callers is a pattern; three is a shape that wants
-/// naming," landing for real this time.
+/// **Run-scoped, not session-scoped, and `run_started_at` is what makes that
+/// true rather than aspirational.** `RunStats::from(outcome)` is already this
+/// run alone, but `conversation.messages` is the *whole* session — every
+/// front-end here reuses one `Conversation` across every turn — so handing
+/// `extract_interventions` the full message list and never narrowing its
+/// output would attribute an intervention from turn one to every later,
+/// untouched turn. One early steer would pin every subsequent clean turn's
+/// badge/tint at non-`Neutral` for the rest of the session (found on review:
+/// three call sites all documented this as "the last run," and none of them
+/// were). `run_started_at` is the message count before this run's own turn
+/// began — every caller already has it (`persisted`/`before`, captured right
+/// where the triggering user message was appended) — and interventions are
+/// filtered to `i.at >= run_started_at` after extraction, not by slicing the
+/// message list itself: `extract_interventions` tracks state forward from
+/// message 0 to classify correctly (Followup in particular needs to know
+/// whether a user task was already seen), so narrowing its *input* would risk
+/// misclassifying an intervention right at the boundary; narrowing its
+/// *output* costs nothing and cannot.
+///
+/// Two front-ends compute this — the TUI and `serve/chat.rs` (which voice
+/// rides too, via `VoiceHost`/`SessionHost`) — and the chat REPL (`mecha
+/// chat`) is deliberately not a third: a plain readline REPL has no
+/// persistent surface to tint (no status strip, no logo), so there is
+/// nothing here for it to feed.
 ///
 /// No goal is attributed unless the conversation's own plan named one
 /// (`serves:`, via [`crate::tool::todo::TodoTool::plan_from_transcript`]).
@@ -794,10 +829,14 @@ pub fn live(
     session_id: &str,
     outcome: &crate::agent::RunOutcome,
     conversation: &crate::agent::Conversation,
+    run_started_at: usize,
     drafts: &[&crate::outbox::OutboxItem],
 ) -> Affect {
     let stats = crate::session::RunStats::from(outcome);
-    let interventions = crate::learning::extract_interventions(&conversation.messages);
+    let interventions: Vec<_> = crate::learning::extract_interventions(&conversation.messages)
+        .into_iter()
+        .filter(|i| i.at >= run_started_at)
+        .collect();
     let goal = crate::tool::todo::TodoTool::plan_from_transcript(&conversation.messages)
         .and_then(|p| p.goal);
     let goals: Vec<GoalRef> = goal.into_iter().collect();
@@ -2208,7 +2247,7 @@ mod tests {
     fn a_clean_live_turn_is_neutral() {
         let outcome = bare_outcome();
         let convo = crate::agent::Conversation::default();
-        assert_eq!(live("s1", &outcome, &convo, &[]), Affect::Neutral);
+        assert_eq!(live("s1", &outcome, &convo, 0, &[]), Affect::Neutral);
     }
 
     /// A run the harness cut short (`MaxTurns`) is `Agency::World` —
@@ -2221,7 +2260,7 @@ mod tests {
         outcome.stop_cause = crate::agent::StopCause::MaxTurns;
         outcome.exhausted = true;
         let convo = crate::agent::Conversation::default();
-        assert_eq!(live("s1", &outcome, &convo, &[]), Affect::Anger);
+        assert_eq!(live("s1", &outcome, &convo, 0, &[]), Affect::Anger);
     }
 
     /// Live and offline agree on the same recorded outcome — `live` is not a
@@ -2232,7 +2271,7 @@ mod tests {
         let mut outcome = bare_outcome();
         outcome.stop_cause = crate::agent::StopCause::Loop;
         let convo = crate::agent::Conversation::default();
-        let via_live = live("s1", &outcome, &convo, &[]);
+        let via_live = live("s1", &outcome, &convo, 0, &[]);
 
         let stats = crate::session::RunStats::from(&outcome);
         let via_of_session = of_session(
@@ -2246,5 +2285,58 @@ mod tests {
         )
         .label;
         assert_eq!(via_live, via_of_session);
+    }
+
+    /// The regression this exists to catch: an intervention from an
+    /// *earlier* run of the same session must not keep tinting every later,
+    /// clean run. `extract_interventions` walks the whole conversation —
+    /// every front-end reuses one `Conversation` across every turn — so
+    /// filtering its output to `run_started_at..` is what stops a steer on
+    /// turn one from pinning the badge/tint non-`Neutral` for the rest of
+    /// the session.
+    #[test]
+    fn an_earlier_runs_intervention_does_not_bleed_into_a_later_clean_one() {
+        // The exact fixture shape `learning.rs`'s own
+        // `steering_text_beside_tool_results_is_a_steer` uses: steering text
+        // riding beside a tool result is a `Steer`.
+        let messages = vec![
+            crate::message::Message::user("do the thing"),
+            crate::message::Message::assistant(vec![crate::message::Block::ToolUse {
+                id: "t1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({}),
+            }]),
+            crate::message::Message {
+                role: crate::message::Role::User,
+                content: vec![
+                    crate::message::Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    },
+                    crate::message::Block::text("change of plan: skip the rest"),
+                ],
+            },
+        ];
+        // Sanity: the fixture really does carry the intervention this test
+        // is about, so a future edit to `extract_interventions` that
+        // silently stopped detecting it would fail here, not pass by
+        // accident.
+        assert_eq!(crate::learning::extract_interventions(&messages).len(), 1);
+
+        let run_2_started_at = messages.len();
+        let mut convo = crate::agent::Conversation::from(messages);
+        convo
+            .messages
+            .push(crate::message::Message::user("what's next"));
+        convo.messages.push(crate::message::Message::assistant(vec![
+            crate::message::Block::text("all done"),
+        ]));
+
+        assert_eq!(
+            live("s1", &bare_outcome(), &convo, run_2_started_at, &[]),
+            Affect::Neutral,
+            "a steer from an earlier run must not appear in a later, clean run's live reading"
+        );
     }
 }
