@@ -363,12 +363,26 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
     // correction to the channel that introduces that freedom is what keeps
     // the free readout's own numbers reproducible while still closing the
     // hole this channel opened.
+    // Re-runs the *same* magnitude-first reduce over the non-`Neutral`
+    // subset rather than ranking by `says_more` alone — `max_by_key` would
+    // drop magnitude entirely (a `-0.1` `Embarrassment` beating a `-0.9`
+    // `Anger`, abandoning "the most negative error decides" for the very
+    // subset this correction exists to fix) and break ties on record
+    // position, which is the ordering `says_more`'s own tie-break was written
+    // to replace. Reusing the identical reduce keeps the two orderings from
+    // disagreeing depending on which branch ran.
     let reduced = if reduced == Affect::Neutral && reduced_channel == Channel::Appraisal {
         negatives
             .iter()
-            .map(|e| label_of(e))
-            .filter(|&l| l != Affect::Neutral)
-            .max_by_key(|&l| says_more(l))
+            .map(|e| (e.sign, label_of(e)))
+            .filter(|&(_, l)| l != Affect::Neutral)
+            .reduce(|a, b| match a.0.total_cmp(&b.0) {
+                std::cmp::Ordering::Less => a,
+                std::cmp::Ordering::Greater => b,
+                std::cmp::Ordering::Equal if says_more(b.1) > says_more(a.1) => b,
+                std::cmp::Ordering::Equal => a,
+            })
+            .map(|(_, l)| l)
             .unwrap_or(Affect::Neutral)
     } else {
         reduced
@@ -842,7 +856,11 @@ impl AppraiserEvidence {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let pct = |v: Option<f32>| match v {
+        // Neither reading is a percentage — context pressure is a 0..1
+        // fraction and the load average is a raw count — so this is named
+        // for what it does (an optional number or "unknown") rather than
+        // borrowing `pct`'s name from a sibling formatter elsewhere.
+        let num = |v: Option<f32>| match v {
             Some(v) => format!("{v:.2}"),
             None => "unknown".into(),
         };
@@ -858,8 +876,8 @@ impl AppraiserEvidence {
             self.positive_errors,
             enum_name(&self.current_label),
             if self.goal_named { "yes" } else { "no" },
-            pct(self.context_pressure),
-            pct(self.load_avg_1m),
+            num(self.context_pressure),
+            num(self.load_avg_1m),
         )
     }
 }
@@ -1751,19 +1769,20 @@ mod tests {
     /// The bug the review found: `&text[start..=end.min(start + 400)]` slices
     /// on a raw byte index, and panics the instant that index lands inside a
     /// multi-byte character — an em-dash three bytes in front of the cutoff
-    /// is enough. Constructed so byte 400 (the cutoff, since `start` is the
-    /// opening `{` at index 0) falls on the em-dash's last byte, which is not
-    /// a char boundary; the JSON itself is garbage so parsing reaches the
-    /// error path that does the slicing. The assertion is that this returns
-    /// an error rather than aborting the process.
+    /// is enough. **The first cut of this test checked the wrong index**:
+    /// `&s[a..=b]` is `&s[a..b + 1]`, so the byte the old expression needed a
+    /// boundary at is `end.min(start + 400) + 1` — 401 here, since `start` is
+    /// the opening `{` at index 0 — not 400 itself. Found on review, along
+    /// with the fact that the first version passed against both the old and
+    /// the fixed code, having never exercised the panic it named.
     #[test]
     fn an_unparseable_reply_past_400_bytes_does_not_panic_on_a_char_boundary() {
         let mut text = String::from("{");
-        text.push_str(&"a".repeat(397)); // bytes 0..=397, next free index 398
-        text.push('—'); // 3 bytes: 398, 399, 400 — 400 is mid-character
+        text.push_str(&"a".repeat(398)); // bytes 0..=398, next free index 399
+        text.push('—'); // 3 bytes: 399, 400, 401 — the inclusive slice ends at 401
         text.push_str("not valid json, just filler past the cutoff}");
         assert!(
-            !text.is_char_boundary(400),
+            !text.is_char_boundary(401),
             "the cutoff must land mid-character for this to test anything"
         );
         assert!(parse_appraiser_verdict(&text).is_err());
@@ -1859,6 +1878,40 @@ mod tests {
             Affect::Neutral,
             "no Channel::Appraisal error is present, so the free readout's \
              pre-existing reduce must decide exactly as it always has"
+        );
+    }
+
+    /// The correction re-runs the magnitude-first reduce rather than ranking
+    /// by `says_more` alone: a small `Embarrassment` must not beat a larger
+    /// `Anger` just because it names something more specific. Constructed so
+    /// a `max_by_key(says_more)` implementation picks the wrong one —
+    /// `Embarrassment` outranks `Anger` on informativeness alone — while the
+    /// magnitude-first reduce picks the more negative `Anger` instead.
+    #[test]
+    fn the_correction_still_picks_the_most_negative_label_not_the_most_informative_one() {
+        let mut a = appraisal(vec![
+            GoalError {
+                cite: Cite::Counter("stop_cause".into()),
+                visible: true,
+                ..err(-0.1, Agency::Owner)
+            }, // label_of -> Embarrassment
+            GoalError {
+                cite: Cite::Counter("tool_errors".into()),
+                ..err(-0.9, Agency::Other)
+            }, // label_of -> Anger, more negative than the Embarrassment above
+        ]);
+        apply_appraiser(
+            &mut a,
+            AppraiserVerdict {
+                sign: Some(-1.0),
+                agency: Agency::Own,
+                reasoning: None,
+            }, // reduces to Neutral and wins the initial reduce at -1.0
+        );
+        assert_eq!(
+            a.label,
+            Affect::Anger,
+            "the most negative non-Neutral label must still win, not the most informative one"
         );
     }
 
