@@ -1259,13 +1259,13 @@ Each rung is independently useful and independently measurable.
    the corpus still said the probe was the cheaper half, and this rung was
    built anyway on the owner's explicit ruling that the mechanism earns its
    place independent of how interesting today's label is. §5.4's trigger
-   lives on `tasks set --status done` and gates the follow-up on `done`
-   alone, never `dropped`, on the design's own "the owner took it anyway"
-   framing — a closure the owner walked away from is not one they accepted
-   mediocre work on. §6.2's `live()` reads a compacted run as `Neutral`
-   outright rather than a partial, amplified signal, on the same magnitude-
-   first reduction §5's `affect_of` already uses. `mecha-core/src/
-   appraisal.rs`, `mecha-cli/src/commands/tasks.rs`.
+   lives on `tasks set --status done|dropped`; only the follow-up gate
+   narrows to `done` alone, never `dropped`, on the design's own "the owner
+   took it anyway" framing — a closure the owner walked away from is not
+   one they accepted mediocre work on. §6.2's `live()` reads a compacted run
+   as `Neutral` outright rather than a partial, amplified signal, on the
+   same magnitude-first reduction §5's `affect_of` already uses.
+   `mecha-core/src/appraisal.rs`, `mecha-cli/src/commands/tasks.rs`.
 9. **Episode tagging, review-queue salience, gossip seeding** (§10).
 
    *Episode tagging built 2026-08-28*: `appraisal::for_session` is the one

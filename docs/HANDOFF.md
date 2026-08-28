@@ -124,16 +124,18 @@ and rung 10. Breakdown: **580** in `mecha-cli` with 1 ignored, **983** in
 plus 1 in a mail binary, **75** in `mecha-slack`, and 1 doctest. The **20**
 added over the previous figure (1,768 at `63f88b3`) split `mecha-cli` +15
 and `mecha-core` +5 — confirmed by `git diff --stat 63f88b3..d32b288 --
-'*.rs'` touching only the files #99 and #103 changed (`appraisal.rs`,
-`tasks.rs`, `tui/mod.rs`, `voice/mod.rs`, `serve/board.rs`); the rung 9/10
-handoff PRs (#104, #105) in between are docs-only and moved nothing. Mail,
-Slack and the integration fixtures untouched.
+'*.rs'` touching only the six files #99 and #103 changed (`appraisal.rs`,
+`tasks.rs`, `tui/mod.rs`, `voice/mod.rs`, `serve/board.rs`, and
+`serve/chat.rs` — the last carries `WireEvent::Affect`'s own wire-shape
+test, part of the `mecha-cli` +15); the rung 9/10 handoff PRs (#104, #105)
+in between are docs-only and moved nothing. Mail, Slack and the integration
+fixtures untouched.
 
-Expect **1,768 tests** on the tree *before* rung 8 — measured 2026-08-28 on
-`main` at **63f88b3**, which carries both rung 9 (this entry) and rung 10
-(#100, `e124f8a`, plus its own handoff pass #105) — say which tree, since a
-count taken between the two would have read differently and did, one
-paragraph below. Breakdown: **565** in `mecha-cli` with 1 ignored, **978**
+The previous figure was **1,768**, measured 2026-08-28 on `main` at
+**63f88b3**, which carries both rung 9 and rung 10 (#100, `e124f8a`, plus
+its own handoff pass #105) — the tree *before* rung 8, say which tree,
+since a count taken between the two would have read differently and did,
+one paragraph below. Breakdown: **565** in `mecha-cli` with 1 ignored, **978**
 in `mecha-core`, 6 + 9 in its two integration suites, **133** in
 `mecha-mail` plus 1 in a mail binary, **75** in `mecha-slack`, and 1
 doctest. The **71** added over the previous figure (1,697 at `a0638c8`)
