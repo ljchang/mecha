@@ -600,30 +600,78 @@ fn undecline_puts_a_step_back() {
     assert_eq!(step(&s, "docs")["status"], "missing");
 }
 
-/// **`--undecline` is honoured whatever else is on the line.**
-///
-/// It used to sit below the `--json` and `--write` returns, so
-/// `mecha setup --json --undecline all` printed a plan, exited 1, and
-/// undeclined nothing — silently, which is the worst way for a flag to not
-/// work: the exit code even looked like the failure it was not.
+/// An `--undecline` that restored nothing says so, rather than announcing an
+/// undo it never performed.
 #[test]
-fn undecline_is_not_swallowed_by_another_flag() {
-    let home = Home::new("undecline-json");
+fn undecline_of_an_unknown_id_does_not_claim_to_have_restored_it() {
+    let home = Home::new("undecline-typo");
     std::fs::write(
         home.path().join("setup-declined.json"),
         r#"{"declined": ["slack"]}"#,
     )
     .unwrap();
 
-    let out = mecha(&home, &["setup", "--json", "--undecline", "all"]);
+    let out = mecha(&home, &["setup", "--undecline", "slak"]);
+    assert!(out.status.success(), "a typo is not a crash");
+    let said = String::from_utf8_lossy(&out.stdout);
     assert!(
-        out.status.success(),
-        "an undecline that did its job is not an install with work outstanding"
+        said.contains("was not declined"),
+        "grade the message off the write, not off the argument: {said}"
     );
+    // And the real decline is untouched by the failed attempt.
     assert_eq!(
         step(&steps(&mecha(&home, &["setup", "--json"])), "slack")["status"],
-        "missing",
-        "the flag must act, not be quietly outranked by `--json`"
+        "declined"
+    );
+}
+
+/// **A meaningless flag pair is refused, not silently resolved.**
+///
+/// `--undecline` used to sit below the `--json` and `--write` returns, so
+/// `mecha setup --json --undecline all` printed a plan, exited 1, and
+/// undeclined nothing — the worst way for a flag to not work, since the exit
+/// code even looked like the failure it was not. `--json --write` had the
+/// identical shape.
+///
+/// Rather than pick a winner in the body, the parser refuses the pair. Each
+/// verb still works alone, and nothing is left to be discovered by somebody
+/// wondering why their command did nothing.
+#[test]
+fn a_meaningless_flag_pair_is_refused_rather_than_silently_resolved() {
+    let home = Home::new("flag-conflict");
+    std::fs::write(
+        home.path().join("setup-declined.json"),
+        r#"{"declined": ["slack"]}"#,
+    )
+    .unwrap();
+
+    for pair in [
+        vec!["setup", "--json", "--undecline", "all"],
+        vec!["setup", "--json", "--write"],
+        vec!["setup", "--write", "--undecline", "all"],
+    ] {
+        let out = mecha(&home, &pair);
+        assert!(!out.status.success(), "{pair:?} must not be accepted");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("cannot be used with"),
+            "clap should explain the conflict for {pair:?}"
+        );
+    }
+
+    // Refusing the pair must not have acted on either half.
+    assert_eq!(
+        step(&steps(&mecha(&home, &["setup", "--json"])), "slack")["status"],
+        "declined",
+        "a refused command changes nothing"
+    );
+
+    // And alone it works.
+    assert!(mecha(&home, &["setup", "--undecline", "all"])
+        .status
+        .success());
+    assert_eq!(
+        step(&steps(&mecha(&home, &["setup", "--json"])), "slack")["status"],
+        "missing"
     );
 }
 

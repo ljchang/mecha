@@ -1120,7 +1120,11 @@ mecha setup [--json] [--write] [--undecline <STEP_ID>]
 |---|---|
 | `--json` | Print the plan as JSON and exit. Never prompts, even at a terminal. |
 | `--write` | Rewrite the local provider's `model`, `context_window` and `vision` from what its server reports. |
-| `--undecline <STEP_ID>` | Ask about a step you said `never` to again. `all` clears every one. |
+| `--undecline <STEP_ID>` | Ask about a step you said `never` to again. `all` clears every one. Says so when the id was never declined, rather than reporting an undo it did not perform. |
+
+The three are mutually exclusive: each is a different verb, and a pair used to
+resolve by whichever branch came first — `--json --write` printed a plan,
+exited 1 and wrote nothing. The parser refuses the combination instead.
 
 Where it differs from [`doctor`](#doctor), and why both exist: doctor answers
 *what is silently broken about a working install*, in one pass with no network

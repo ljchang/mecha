@@ -18,16 +18,22 @@ use mecha_core::doctor::Remedy;
 use mecha_core::onboarding::{self, Facts, Status, Step};
 use std::io::{IsTerminal, Write};
 
+/// **The three verbs are mutually exclusive at the parser, not by precedence
+/// in the body.** Each pair is meaningless, and each used to resolve by
+/// whichever branch came first — so `mecha setup --json --write` printed a
+/// plan, exited 1 and wrote nothing, which is the silent-no-op shape a flag
+/// should never have. Saying it in the arg definition makes clap explain it;
+/// leaving it to the body's ordering leaves it to be discovered.
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// Emit the plan as JSON and exit. Never prompts, even at a terminal.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["write", "undecline"])]
     pub json: bool,
 
     /// Rewrite the local provider's `model`, `context_window` and `vision`
     /// from what its server reports, instead of only reporting the
     /// disagreement.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "undecline")]
     pub write: bool,
 
     /// Ask about a step you said "never" to again. `all` clears every one.
@@ -52,12 +58,20 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
     // has no business waiting on a three-second loopback timeout first.
     if let Some(id) = &args.undecline {
         let one = (id != "all").then_some(id.as_str());
-        let salvaged = onboarding::undecline(&home, one)?;
-        match one {
-            Some(id) => println!("`{id}` will be offered again"),
-            None => println!("every declined step will be offered again"),
+        let wrote = onboarding::undecline(&home, one)?;
+        // **Reported off what changed, not off what was asked for.** A typo'd
+        // id used to print "`slak` will be offered again" and exit 0, so the
+        // person believed the way back had been taken and then met
+        // `you said no thanks` on the step they thought they had restored.
+        match (one, wrote.changed) {
+            (Some(id), true) => println!("`{id}` will be offered again"),
+            (Some(id), false) => println!(
+                "`{id}` was not declined — nothing to restore                  (`mecha setup --json` lists every step id)"
+            ),
+            (None, true) => println!("every declined step will be offered again"),
+            (None, false) => println!("nothing was declined — nothing to restore"),
         }
-        report_salvage(salvaged);
+        report_salvage(wrote.salvaged);
         return Ok(());
     }
 
@@ -326,12 +340,12 @@ fn offer(steps: &[&Step], home: &std::path::Path, read: &mut impl std::io::BufRe
                 // Said with the undo in the same breath: a decision nobody
                 // can find their way back out of is one people are right to
                 // hesitate over.
-                Ok(salvaged) => {
+                Ok(wrote) => {
                     println!(
                         "noted — `{}` will not be offered again (`mecha setup --undecline {}` undoes it)",
                         s.id, s.id
                     );
-                    report_salvage(salvaged);
+                    report_salvage(wrote.salvaged);
                 }
                 // A store that could not be written must not read as a
                 // recorded answer, or the question silently comes back and
