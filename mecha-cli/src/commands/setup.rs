@@ -564,6 +564,37 @@ fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
     table.extend(settings.iter().map(|(k, v)| format!("{k} = {v}")));
     append_table(&path, "local", &table)?;
     set_default_provider(&path, "local")?;
+
+    // **Checked, not claimed.** `CharterEdit::SavedButInvalid` exists a few
+    // files over because "saved" must never be said about a document a run
+    // cannot load; the same applies here and harder, because these bytes came
+    // off a server nobody named — `answers_like_a_model_server` establishes
+    // that a stranger can be answering :8080 — and a `config.toml` that does
+    // not parse takes out every later command with an error pointing at
+    // `mecha config init` rather than at what actually happened. Recovery
+    // would be finding `config.toml.bak` by hand.
+    //
+    // Read back through the loader a *run* uses, not a parse written here,
+    // for the reason the charter path gives: there must be one answer to
+    // "would this load".
+    if let Err(e) = mecha_core::config::Config::load_global() {
+        let backup = path.with_extension("toml.bak");
+        let restored = std::fs::copy(&backup, &path).is_ok();
+        eprintln!(
+            "what was written to {} does not parse: {e:#}",
+            path.display()
+        );
+        eprintln!(
+            "{}",
+            if restored {
+                "the previous config has been put back, so nothing is broken —                  please report this, it is a bug here rather than anything you did"
+            } else {
+                "the previous config could NOT be put back; it is at the .bak beside it"
+            }
+        );
+        std::process::exit(1);
+    }
+
     println!(
         "written to {} — `mecha setup` again to check it agrees with the server",
         path.display()
