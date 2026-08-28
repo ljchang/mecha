@@ -566,11 +566,16 @@ fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
 /// longer close one around it: `closure_guard::ClosedStatusGuard` wraps
 /// `kg_task_update` on every model-facing registry (`setup::build`, before
 /// the subagent pool is cloned), refusing exactly a `status` of
-/// `done`/`dropped` and pointing at this command. What remains reachable is
-/// a genuinely out-of-band write — another process talking to the graph
-/// store directly — which no guard in this binary can see; the complete fix
-/// is still a closure claim the board owns, same shape as the atomicity
-/// note below.
+/// `done`/`dropped` and pointing at this command. Two paths remain, and
+/// they differ in kind: `shell: mecha tasks set` — the one the refusal
+/// itself suggests — closes *through* this command, so the appraisal
+/// happens; it is fine for §5.4, and it is also the honest residue of D6
+/// for a delegated run that holds a shell (behind the approver, but a lane
+/// that can run this binary can close its own task). And a genuinely
+/// out-of-band write — another process talking to the graph store directly
+/// — which no guard in this binary can see and which skips the appraisal;
+/// the complete fix for that one is still a closure claim the board owns,
+/// same shape as the atomicity note below.
 ///
 /// **Not atomic, and known rather than fixed.** Two closures of the same
 /// task landing together — a Slack tap and a TUI keypress within the same

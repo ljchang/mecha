@@ -230,8 +230,10 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // `closure_guard` for the argument. Wrapped HERE, before the subagent
     // loop below clones the pool, or a child registry would hold the
     // unwrapped handle — the delegation hole `withhold_tool`'s own doc names.
-    // The wrapper keeps the inner tool's name and spec, so the re-insert
-    // lands on the same registry key and the cached prefix does not move.
+    // The wrapper keeps the inner tool's name and schema (the re-insert
+    // lands on the same registry key) and deliberately extends the
+    // description — the guard is a real capability change, and a
+    // byte-identical spec would read `Match` in `tools_hash` across it.
     // (`tasks set` itself is unaffected: it calls through `prepare_tools`'s
     // registry directly, which this — the model-facing build — never touches.)
     //
