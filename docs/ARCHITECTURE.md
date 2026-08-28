@@ -2137,6 +2137,17 @@ one address rather than a scan (a range would make a setup tool behave like a
 port scanner for the sake of finding a server on a port nobody documented), and
 runs only on an install that is otherwise stuck.
 
+**A terminal that could not be restored is not an editor failure.**
+`with_terminal_suspended` returns `Result<Result<_>>`: the outer error is the
+suspend/restore dance (`disable_raw_mode`, `LeaveAlternateScreen`, and
+crucially `enable_raw_mode` *after* the editor returns), the inner one is the
+editor. Every hand-over `?`s the outer at **function scope** — putting it
+inside a closure folds the first into the second, and a failed
+`enable_raw_mode` then reports as "charter unchanged: …" while the TUI carries
+on drawing into a terminal that no longer takes input. Six call sites keep the
+shape; the consistency is the enforcement, since a restore failure is not
+something a test can stage.
+
 **`offer`'s de-duplication is on what has been *run*, not on what has been
 asked.** `mail` and `docs` carry the identical remedy argv when neither binary
 is on PATH — one `cargo install mecha-mail` satisfies both — so skipping the
