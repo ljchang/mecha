@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assertion written against the documented contract is ignored entirely by
   `set -e`, so it neither failed nor passed.
 
+- **`mecha setup --undecline` no longer announces an undo it did not
+  perform.** A typo'd or unknown step id wrote the set back unchanged and
+  still printed "`slak` will be offered again" and exited 0, so the person
+  believed the way back had been taken and then met `you said no thanks` on
+  the step they thought they had restored. The message is read off what
+  actually changed now, and an id that was never declined is told so. In the
+  same shape: `mecha setup`'s three verbs (`--json`, `--write`,
+  `--undecline`) conflict at the parser rather than resolving by whichever
+  branch came first, so `--json --write` explains itself instead of printing
+  a plan, exiting 1 and writing nothing.
+
 - **Two `mecha setup` writes that were quiet about losing something.** A
   `never` answered over an unreadable `setup-declined.json` rewrote the file
   with just that one id and dropped every earlier answer — `read_declined`

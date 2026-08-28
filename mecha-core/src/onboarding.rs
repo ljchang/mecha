@@ -891,25 +891,46 @@ pub fn read_declined(home: &Path) -> Option<std::collections::BTreeSet<String>> 
 /// rather than overwritten — see [`salvage_unreadable`]. The caller is
 /// expected to say so; losing somebody's recorded answers is not a thing to
 /// do quietly.
-pub fn decline(home: &Path, id: &str) -> std::io::Result<Option<PathBuf>> {
+pub fn decline(home: &Path, id: &str) -> std::io::Result<DeclineWrite> {
     let (mut set, salvaged) = read_for_write(home);
-    set.insert(id.to_string());
+    let changed = set.insert(id.to_string());
     write_declined(home, &set)?;
-    Ok(salvaged)
+    Ok(DeclineWrite { salvaged, changed })
 }
 
 /// Take one back out — the undo, so a decline is a preference rather than a
 /// door that locks behind you. `id` of `None` clears every one.
-pub fn undecline(home: &Path, id: Option<&str>) -> std::io::Result<Option<PathBuf>> {
+pub fn undecline(home: &Path, id: Option<&str>) -> std::io::Result<DeclineWrite> {
     let (mut set, salvaged) = read_for_write(home);
-    match id {
-        Some(id) => {
-            set.remove(id);
+    let changed = match id {
+        Some(id) => set.remove(id),
+        None => {
+            let had = !set.is_empty();
+            set.clear();
+            had
         }
-        None => set.clear(),
-    }
+    };
     write_declined(home, &set)?;
-    Ok(salvaged)
+    Ok(DeclineWrite { salvaged, changed })
+}
+
+/// What a write to the decline store actually did.
+///
+/// **`changed` is graded off the set, never off the argument.** `undecline`
+/// used to discard `BTreeSet::remove`'s answer, so a typo'd id wrote the set
+/// back untouched and the caller still announced *"`slak` will be offered
+/// again"* and exited 0 — the person believed the way back had been taken,
+/// ran `mecha setup`, and saw `you said no thanks` on the step they had just
+/// "restored", with nothing anywhere saying the two disagreed. A claim about
+/// a local write is worth checking against the write, which is the same rule
+/// [`salvage_unreadable`] one line up exists for and the same rule the
+/// harness applies to everything a *model* says about its own work.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DeclineWrite {
+    /// Where an unreadable store was set aside, when it had to be.
+    pub salvaged: Option<PathBuf>,
+    /// Whether the recorded set actually changed.
+    pub changed: bool,
 }
 
 /// The set to modify, and where the previous file went if it could not be
@@ -1603,6 +1624,7 @@ mod tests {
 
         let salvaged = decline(&home, "mail")
             .unwrap()
+            .salvaged
             .expect("the old file is kept");
         assert_eq!(
             std::fs::read_to_string(&salvaged).unwrap(),
@@ -1616,14 +1638,59 @@ mod tests {
 
         // And the ordinary path reports no salvage, so a caller cannot print
         // the warning on every decline.
-        assert_eq!(decline(&home, "slack").unwrap(), None);
+        assert_eq!(decline(&home, "slack").unwrap().salvaged, None);
 
         // `undecline` takes the same care: it also writes the whole document.
         std::fs::write(declined_path(&home), damaged).unwrap();
         assert!(
-            undecline(&home, Some("slack")).unwrap().is_some(),
+            undecline(&home, Some("slack")).unwrap().salvaged.is_some(),
             "the undo path overwrites the same file and must salvage too"
         );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// **`changed` is read off the set, never off the argument.**
+    ///
+    /// `undecline` discarded `BTreeSet::remove`'s answer, so a typo'd id
+    /// wrote the set back untouched while the caller announced the restore
+    /// and exited 0 — the person then met `you said no thanks` on the step
+    /// they thought they had just brought back.
+    #[test]
+    fn a_write_reports_what_changed_rather_than_what_was_asked() {
+        let home = std::env::temp_dir().join(format!(
+            "mecha-declined-changed-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+
+        assert!(
+            decline(&home, "slack").unwrap().changed,
+            "a new decline changes it"
+        );
+        assert!(
+            !decline(&home, "slack").unwrap().changed,
+            "declining twice is idempotent, and the second one changed nothing"
+        );
+
+        // The finding: an id nobody declined.
+        assert!(
+            !undecline(&home, Some("slak")).unwrap().changed,
+            "a typo restores nothing, and must not report that it did"
+        );
+        assert!(
+            undecline(&home, Some("slack")).unwrap().changed,
+            "and a real one does"
+        );
+
+        // `all` over an empty set is vacuous rather than false, but it is
+        // still not a restore — saying so costs a word and saves a wrong
+        // belief.
+        assert!(!undecline(&home, None).unwrap().changed);
+        decline(&home, "docs").unwrap();
+        assert!(undecline(&home, None).unwrap().changed);
 
         let _ = std::fs::remove_dir_all(&home);
     }

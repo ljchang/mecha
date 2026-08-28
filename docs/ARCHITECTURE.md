@@ -2137,6 +2137,19 @@ one address rather than a scan (a range would make a setup tool behave like a
 port scanner for the sake of finding a server on a port nobody documented), and
 runs only on an install that is otherwise stuck.
 
+**A claim about a local write is graded off the write.** `undecline` discarded
+`BTreeSet::remove`'s answer, so a typo'd id wrote the set back untouched while
+the caller announced the restore and exited 0 — the person then met
+`you said no thanks` on the step they thought they had just brought back.
+`DeclineWrite { salvaged, changed }` carries what actually happened. It is the
+same rule the harness applies to a model's account of its own work, one layer
+down: the message is not evidence, the store is.
+
+**`setup`'s three verbs conflict at the parser, not by precedence in the
+body.** `--json --write` printed a plan, exited 1 and wrote nothing, because
+whichever branch came first won; `conflicts_with` makes clap explain it
+instead of leaving somebody to discover that their command did nothing.
+
 **Two writes that must not be quiet.** `read_declined` answers `None` for an
 unreadable store so a caller can tell *unknown* from *empty* — and the write
 path collapsed it to empty and then **persisted** that, so one `never` over a
