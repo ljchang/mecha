@@ -28,12 +28,25 @@ use mecha_core::charter::Charter;
 use crate::editor::CharterEdit;
 use crate::GlobalOpts;
 
+/// **`args_conflicts_with_subcommands`, not `conflicts_with` on the flag.**
+/// A subcommand is not an argument id, so `#[arg(conflicts_with = "cmd")]`
+/// matches nothing and silently keeps the behaviour it was meant to refuse —
+/// a fix that does not fix, which is worse than the no-op it replaces because
+/// it reads as handled.
 #[derive(clap::Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct Args {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
 
     /// Emit JSON instead of a table.
+    ///
+    /// **Refused alongside a subcommand rather than ignored.** clap accepts
+    /// parent arguments before a subcommand, so `mecha charter --json edit`
+    /// parsed, set this, and then `execute` matched on `cmd` and never read
+    /// it — a flag that did nothing and said nothing, which is the shape
+    /// `commands::setup`'s own arg block argues against and fixes the same
+    /// way. `edit` hands over an editor; there is no JSON it could emit.
     #[arg(long)]
     pub json: bool,
 }

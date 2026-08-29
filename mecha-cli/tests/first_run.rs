@@ -655,6 +655,41 @@ fn undecline_of_an_unknown_id_does_not_claim_to_have_restored_it() {
     );
 }
 
+/// `mecha charter --json edit` is refused rather than silently dropping the
+/// flag.
+///
+/// clap accepts parent arguments before a subcommand, so this parsed, set
+/// `json`, and then `execute` matched on the subcommand and never read it —
+/// the same silent no-op `setup`'s own arg block argues against.
+///
+/// The first attempt at the fix was `#[arg(conflicts_with = "cmd")]`, which
+/// matches nothing, because a subcommand is not an argument id: it kept the
+/// exact behaviour it was meant to refuse while reading as handled. That is
+/// why this asserts the **refusal** and not merely that the flag is declared.
+#[test]
+fn charter_json_and_a_subcommand_cannot_be_combined() {
+    let home = Home::new("charter-json-sub");
+
+    let out = mecha(&home, &["charter", "--json", "edit"]);
+    assert!(!out.status.success(), "the pair must not be accepted");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cannot be used with"),
+        "clap should explain it: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // A refused command acts on neither half.
+    assert!(
+        !home.path().join("charter.toml").exists(),
+        "no template was created by a command that was refused"
+    );
+
+    // And each works alone.
+    assert!(mecha(&home, &["charter", "edit"]).status.success());
+    let json = mecha(&home, &["charter", "--json"]);
+    assert!(json.status.success());
+    assert!(serde_json::from_slice::<serde_json::Value>(&json.stdout).is_ok());
+}
+
 /// **A meaningless flag pair is refused, not silently resolved.**
 ///
 /// `--undecline` used to sit below the `--json` and `--write` returns, so
