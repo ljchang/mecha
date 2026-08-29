@@ -699,6 +699,47 @@ pub async fn find(
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct EntityQuery {
+    pub name: String,
+}
+
+/// GET /api/entity — everything the graph knows about one entity, the
+/// `kg_entity` envelope verbatim: node, facts (tier and polarity
+/// included), episodes, interaction recency, coverage. Ambiguity is the
+/// tool's own disambiguation envelope, passed through for the page to
+/// render as a candidate list.
+///
+/// This page existing is itself part of review-on-use: opening an entity
+/// is a review trigger, so the unreviewed (`tier != "reviewed"`) facts it
+/// shows carry verdict buttons — wired to `/api/queue/shadow/verdict`,
+/// the same owner-shaped path the review page uses.
+pub async fn entity(
+    State(state): St,
+    axum::extract::Query(q): axum::extract::Query<EntityQuery>,
+) -> Response {
+    let name = q.name.trim();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "name is required
+",
+        )
+            .into_response();
+    }
+    match self_json(&state, &["kg", "entity", name, "--json"]).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "{e:#}
+"
+            ),
+        )
+            .into_response(),
+    }
+}
+
 /// GET /api/notes — recent notes, the `kg_notes` envelope verbatim.
 pub async fn notes(State(state): St) -> Response {
     match self_json(&state, &["kg", "notes", "--json"]).await {

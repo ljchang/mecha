@@ -357,6 +357,11 @@ pub enum WireEvent {
     ToolResult {
         name: String,
         is_error: bool,
+        /// The result's opening, capped — enough for a person to see what
+        /// the model was just handed without the page holding a transcript
+        /// of its own. Third-party content rides in here (a mail body, a
+        /// web page), so the page must render it as TEXT, never markup.
+        preview: String,
     },
     Denied {
         name: String,
@@ -441,9 +446,15 @@ fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Option<WireEve
         AgentEvent::TextDelta(text) => Some(WireEvent::Delta { text: text.clone() }),
         AgentEvent::QueuedInput(text) => Some(WireEvent::Queued { text: text.clone() }),
         AgentEvent::ToolCall { name, .. } => Some(WireEvent::Tool { name: name.clone() }),
-        AgentEvent::ToolResult { name, is_error, .. } => Some(WireEvent::ToolResult {
+        AgentEvent::ToolResult {
+            name,
+            is_error,
+            content,
+            ..
+        } => Some(WireEvent::ToolResult {
             name: name.clone(),
             is_error: *is_error,
+            preview: result_preview(content),
         }),
         AgentEvent::ToolDenied { name, reason } => Some(WireEvent::Denied {
             name: name.clone(),
@@ -479,7 +490,28 @@ pub enum Entry {
     Tool {
         name: String,
         is_error: Option<bool>,
+        /// What the tool answered, capped by [`result_preview`] — the page
+        /// shows the tool's own words behind a tap, because a chip that
+        /// says only `graph__kg_search` is a claim the reader cannot check.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        preview: Option<String>,
     },
+}
+
+/// The first stretch of a tool result, char-safe, with the cut declared.
+/// 1,500 chars is a screenful on a phone: enough to see what came back,
+/// small enough that a transcript of forty calls stays a page, not a dump.
+fn result_preview(content: &str) -> String {
+    const CAP: usize = 1_500;
+    if content.chars().count() <= CAP {
+        return content.to_string();
+    }
+    let head: String = content.chars().take(CAP).collect();
+    let rest = content.chars().count() - CAP;
+    format!(
+        "{head}
+… (+{rest} more chars)"
+    )
 }
 
 /// The transcript a fresh page load renders, derived from the conversation —
@@ -518,7 +550,7 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                         Block::ToolResult {
                             tool_use_id,
                             is_error,
-                            ..
+                            content,
                         } => {
                             let name = names
                                 .get(tool_use_id)
@@ -527,6 +559,7 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                             entries.push(Entry::Tool {
                                 name,
                                 is_error: Some(*is_error),
+                                preview: Some(result_preview(content)),
                             });
                         }
                         Block::Image { .. } => {
@@ -2186,6 +2219,7 @@ mod wire_tests {
                 Entry::Tool {
                     name: "mail_search".into(),
                     is_error: Some(false),
+                    preview: Some("3 results".into()),
                 },
             ]
         );
@@ -2364,6 +2398,7 @@ mod wire_tests {
             vec![Entry::Tool {
                 name: "tool".into(),
                 is_error: Some(true),
+                preview: Some("…".into()),
             }]
         );
     }

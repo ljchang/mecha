@@ -34,6 +34,8 @@
     'outbox drafts': 'Outbox',
     'front-door requests': 'Front door',
     'graph candidates': 'Graph queue',
+    'graph shadow': 'Shadow verdicts',
+    'graph entities': 'Graph entities',
     'rule proposals': 'Rule proposals',
     'harness changes': 'Harness',
   };
@@ -43,6 +45,7 @@
     'outbox drafts': 'review/outbox',
     'front-door requests': 'review/frontdoor',
     'graph candidates': 'review/graph',
+    'graph shadow': 'review/graph',
   };
 </script>
 

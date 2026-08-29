@@ -76,6 +76,32 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// The graph's surfaced-verdict queue (review-on-use): live shadow
+    /// facts that are about to matter — contradicting a reviewed fact,
+    /// actually served in a context pack, or spot-checked by a sampled
+    /// class. Listing is the default; --confirm/--refute decide one.
+    ///
+    /// The verbs run the owner's own `mecha-graph` binary, like every
+    /// decision in this module: shadow verdicts are deliberately absent
+    /// from the MCP tool surface (`kg_shadow_queue` is read-only), so the
+    /// only path to a verdict runs through whoever is at the keyboard.
+    Shadow {
+        /// Confirm a shadow fact by uid — a human stands behind it.
+        /// Conflicts with --refute: two verdicts in one line is refused
+        /// rather than silently half-done, the module's standing rule.
+        #[arg(long, value_name = "FACT_UID", conflicts_with = "refute")]
+        confirm: Option<String>,
+        /// Refute a shadow fact by uid — it was never true.
+        #[arg(long, value_name = "FACT_UID")]
+        refute: Option<String>,
+        /// Why, for --refute; it feeds the graph's rejection memory.
+        #[arg(long, requires = "refute")]
+        reason: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        #[arg(long, conflicts_with_all = ["confirm", "refute"])]
+        json: bool,
+    },
     /// Individual candidates from one class, drawn at random.
     ///
     /// **The default way to look at items, and the reason is the whole
@@ -237,6 +263,19 @@ pub async fn execute(args: Args) -> Result<()> {
             json,
         } => list(proposer.as_deref(), limit, json),
         Cmd::Proposers { json } => proposers(json),
+        Cmd::Shadow {
+            confirm,
+            refute,
+            reason,
+            limit,
+            json,
+        } => shadow(
+            confirm.as_deref(),
+            refute.as_deref(),
+            reason.as_deref(),
+            limit,
+            json,
+        ),
         Cmd::Sample {
             proposer,
             predicate,
@@ -345,6 +384,38 @@ pub async fn execute(args: Args) -> Result<()> {
             },
         ),
     }
+}
+
+/// The surfaced-verdict queue: list by default, decide with a flag. All
+/// three shapes pass through the graph binary untouched — the graph owns
+/// the rendering, this module owns only the reach.
+fn shadow(
+    confirm: Option<&str>,
+    refute: Option<&str>,
+    reason: Option<&str>,
+    limit: usize,
+    json: bool,
+) -> Result<()> {
+    if let Some(uid) = confirm {
+        print!("{}", graph_cli(&["shadow", "--confirm", uid])?);
+        return Ok(());
+    }
+    if let Some(uid) = refute {
+        let mut args = vec!["shadow", "--refute", uid];
+        if let Some(r) = reason {
+            args.push("--reason");
+            args.push(r);
+        }
+        print!("{}", graph_cli(&args)?);
+        return Ok(());
+    }
+    let limit_s = limit.to_string();
+    let mut args = vec!["shadow", "--limit", limit_s.as_str()];
+    if json {
+        args.push("--json");
+    }
+    print!("{}", graph_cli(&args)?);
+    Ok(())
 }
 
 // ─── The graph binary ────────────────────────────────────────────────────────
@@ -545,6 +616,48 @@ fn collect_queues() -> Vec<Queue> {
         depth,
         detail,
         opens: "mecha-graph proposals list",
+        oldest,
+    });
+
+    // The surfaced-verdict queue (review-on-use): shadow facts that are
+    // about to matter. Its own row because it is the graph's NEW primary
+    // review surface — since extraction mints shadow facts instead of
+    // queueing, "graph candidates" above counts only what cannot become a
+    // fact without a human (commitments, flags, unresolved subjects),
+    // while this row is where retrieval demand asks for verdicts.
+    let (depth, detail, oldest) = match graph_json(&["shadow", "--json"]) {
+        Ok(v) => {
+            let surfaced = v["surfaced"].as_array().cloned().unwrap_or_default();
+            let live = v["shadow_live"].as_u64().unwrap_or(0);
+            let served = v["shadow_served"].as_u64().unwrap_or(0);
+            // The depth is the graph's pre-truncation count, never this
+            // page's length — the `--top` trap, again: a capped listing
+            // read as the whole queue. An older graph without the field
+            // falls back to the page, which is at least a floor.
+            let depth = v["surfaced_total"]
+                .as_u64()
+                .map(|n| n as usize)
+                .unwrap_or(surfaced.len());
+            // `last_served` only: it is the one stamp meaning "started
+            // mattering". Mixing in `ingested_at` made a March fact that
+            // surfaced this morning read as five months of waiting —
+            // origin and recency are not comparable quantities, and rows
+            // surfaced without a serve simply contribute no age.
+            let oldest = oldest_age(surfaced.iter().filter_map(|r| r["last_served"].as_str()));
+            (
+                Some(depth),
+                format!("{live} unreviewed facts live, {served} ever served"),
+                oldest,
+            )
+        }
+        // An older mecha-graph has no `shadow` verb — unreadable, not empty.
+        Err(e) => (None, format!("{e:#}"), None),
+    };
+    out.push(Queue {
+        name: "graph shadow",
+        depth,
+        detail,
+        opens: "mecha review shadow",
         oldest,
     });
 

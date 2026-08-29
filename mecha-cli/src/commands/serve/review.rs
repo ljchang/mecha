@@ -534,6 +534,62 @@ pub(super) fn why_nothing_landed(report: &str) -> String {
 }
 
 #[derive(serde::Deserialize)]
+pub struct ShadowQuery {
+    pub limit: Option<usize>,
+}
+
+/// GET /api/queue/shadow — the graph's surfaced-verdict queue: live shadow
+/// facts that are about to matter, each with the reasons it surfaced.
+/// Passed through from `mecha review shadow --json` (which runs the
+/// owner's `mecha-graph` binary), so the page shows the graph's own
+/// account — counts included: `shadow_live` and `shadow_served` ride the
+/// envelope beside `surfaced`.
+pub async fn shadow(State(state): St, Query(q): Query<ShadowQuery>) -> Response {
+    let limit = q.limit.unwrap_or(10).min(50).to_string();
+    match self_json(&state, &["review", "shadow", "--json", "--limit", &limit]).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "{e:#}
+"
+            ),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ShadowVerdictBody {
+    pub uid: String,
+    /// true = confirm (a human stands behind it, tier → reviewed);
+    /// false = refute (never true; retracted, and the reason feeds the
+    /// graph's rejection memory).
+    pub confirm: bool,
+    pub reason: Option<String>,
+}
+
+/// POST /api/queue/shadow/verdict — decide one surfaced shadow fact.
+///
+/// This is a human surface: the request rides the owner's authenticated
+/// web session and lands in the owner's own `mecha-graph` binary. The
+/// verdict verbs are deliberately absent from the MCP tool surface
+/// (`kg_shadow_queue` is read-only) — the model can show the queue, but
+/// only a hand on an owner surface can settle it.
+pub async fn shadow_verdict(State(state): St, Json(body): Json<ShadowVerdictBody>) -> Response {
+    let mut args: Vec<&str> = vec!["review", "shadow"];
+    if body.confirm {
+        args.extend(["--confirm", &body.uid]);
+    } else {
+        args.extend(["--refute", &body.uid]);
+        if let Some(r) = body.reason.as_deref().filter(|r| !r.trim().is_empty()) {
+            args.extend(["--reason", r]);
+        }
+    }
+    verb(&state, &args).await
+}
+
+#[derive(serde::Deserialize)]
 pub struct BindBody {
     pub id: i64,
     /// Exact display name of the entity to bind to; omitted, the graph takes
