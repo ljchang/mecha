@@ -39,9 +39,13 @@ spot-checked by a sampled class. Its depth is how many are surfaced right
 now (at most ten — review arrives a handful at a time), and
 `mecha review shadow` lists and decides them: `--confirm <uid>` stands
 behind one, `--refute <uid> --reason '…'` retracts it as never true.
-The verdict verbs are deliberately absent from the graph's MCP tool
-surface — the model can *show* the queue (`kg_shadow_queue`, read-only),
-but only a hand on an owner surface can settle it.
+In the `/queues` modal the row is reviewed in place — Enter opens the
+surfaced facts, Enter again shows one in full, and `a`/`r` mean
+confirm/refute there: the same keys carrying the same commitment they
+carry on every other row. The verdict verbs are deliberately absent from
+the graph's MCP tool surface — the model can *show* the queue
+(`kg_shadow_queue`, read-only), but only a hand on an owner surface can
+settle it.
 
 It holds nothing of its own — like [the doctor](../reference/cli#doctor), it
 reads what the other stores own and adds no sixth store that could disagree
