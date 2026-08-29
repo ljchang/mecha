@@ -3240,6 +3240,47 @@ after the edit both proved the config parses and, in its own tls line —
 empties the apex arc entirely, from "Coming Soon" page to done in one
 night.
 
+**2026-08-29 (~13:50 UTC) — settings becomes a place, and the charter is
+edited by hand.** PR #118. The gear moved out of `Home.svelte` into the shell
+(`App.svelte`), so it sits in the same corner on every view — layered *below*
+the app's scrims, sheets and drawers, because a button floating over an open
+drawer is a bug only a phone meets — and settings itself became an index of
+three features rather than one scroll of three stacked sections, each pane
+routed at `#settings/<charter|learning|voice>` so back, forward and reload land
+where they should. The charter is now edited as a list: tap a line, add one,
+delete behind a two-tap arm, and **re-rank by dragging its grip**. That is not
+a convenience but the only rank control there can be — `CharterLine` denies
+unknown fields and §11 gives the charter no rank key, so position in the file
+*is* the ranking, and moving a line is the design's own "only editing gesture
+that cannot produce a tie". Nothing moved on the server: the same route, the
+same 64 KB cap, the same `Charter::parse` before disk, the same two-tap
+confirm, and the owner still authors every line.
+
+Two gates came out of it and outlive it. `check-charter-toml.mjs` reads the
+`WEB_EDITOR_SAMPLE` literal *out of* `charter.rs` by marker comments and
+asserts the web serialiser emits it byte-for-byte, so a regression in either
+language fails the other — the serialiser had to be lifted out of the
+component into `web/src/lib/charter-toml.js` before it could be tested at all,
+which is the general shape: code that can only be exercised by driving a
+browser is code nothing will pin. And `render-check` gained the three
+`settings/<pane>` routes, where nearly all the new code lives; a gate visiting
+only `#settings` was exercising three rows and a chevron. It repaid itself
+inside the same PR, catching a `ReferenceError: unreadable is not defined`
+that the Vite build passed green, because Vite does not resolve identifiers.
+
+Ten review rounds, twenty-eight findings, none disputed. The two that would
+have cost data both concerned an *unread* charter being treated as an empty
+one: a failed GET rendered "No charter yet — add the first priority" over a
+charter that exists, one save from replacing it; and a `parse_error` arriving
+with `raw: ""` (`charter_state` reads the file with `unwrap_or_default()`)
+would have opened an empty TOML buffer whose save truncates a file whose bytes
+were never read. Both fail closed now, in `unreadable` and `blocked`, which
+between them refuse every writing surface on a document the page could not
+fully account for — including a comment sitting among the tables, which the
+regenerating serialiser would otherwise eat. Three of the ten rounds found
+defects in the previous round's fix; that is the honest cost of repairing
+under review, and the reason the last two rounds were smaller than the first.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -3858,6 +3899,29 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**2026-08-29 — six verification steps in one session could not have failed.**
+Across PR #118's ten review rounds: a drag assertion that compared two empty
+strings, because `button.value` is `''` rather than `undefined`; a grep for
+`id="..."` against a production build that minifies attribute quotes away; a
+CI wait loop built on `gh pr checks --json`, a flag that version of `gh` does
+not have, so the condition compared an empty string and exited on its first
+pass — twice reported as "all checks settled" when nothing had settled; check
+scripts whose exit codes were swallowed by `| head`, so a failing gate read as
+passing; four new scanner tests that stayed green when the actual defect was
+reverted, because the bug was in *how the tail was handed to* the scanner and
+every test exercised the scanner; and a back-navigation test that printed the
+symptom in plain text (`chevron #settings -> Back #settings`, a Back that
+moved between two identical entries and did nothing) while being scored a
+pass. Each one looked like evidence. Two of them printed the failure and were
+read past. The general lesson: **a check that cannot go red is not a check,
+and the only way to tell which kind you have is to break the thing and watch
+it fail.** Reverting the fix before trusting the test is seconds of work; not
+one of these survived that step, and every one of them survived until
+something forced it. The corollary for review: when a reviewer's finding
+cannot be reproduced, that is a fact about the harness as often as about the
+finding — the `fillId` defect in the same PR was unreproducible in Chromium
+and fixed anyway, because the browser that mattered would not launch to check.
 
 **2026-08-29 — v0.1.16 shipped a web page that threw on load, past three
 green checks.** `Tasks.svelte`'s `stateOf` called `stalled(t)` where
