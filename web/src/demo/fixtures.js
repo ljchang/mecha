@@ -616,7 +616,11 @@ text = "A refusal on Monday is a kindness. A refusal on Friday is a problem I ha
       text: 'A refusal on Monday is a kindness. A refusal on Friday is a problem I handed to someone else.',
     },
   ],
-  char_count: 612,
+  // What `Charter::char_count` renders for the three lines above —
+  // `prompt_block(..).chars().count()`, not the file length. Measured with
+  // the real code; the pane now shows it unconditionally, so a stale number
+  // here is visible on the docs demo.
+  char_count: 716,
   budget: 2000,
   over_budget: false,
   parse_error: null,
