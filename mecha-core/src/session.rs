@@ -880,10 +880,14 @@ impl Session {
                     // stale), while misreading an in-place one collapses
                     // every head message onto the newest attach, the exact
                     // divergence `config_covering` exists to prevent.
-                    let in_place = m.len() >= messages.len() || {
-                        let shared = m.len().saturating_sub(1);
-                        messages[..shared] == m[..shared]
-                    };
+                    // The shorter case compares the FULL new list, not all
+                    // but its last message: the fold shape that needed the
+                    // one-short comparison is length-preserving and already
+                    // admitted by the `>=` arm, and under-comparing here
+                    // made a compaction down to a single message vacuously
+                    // "in place" (found on review — `shared == 0` compares
+                    // nothing at all).
+                    let in_place = m.len() >= messages.len() || messages[..m.len()] == m[..];
                     if in_place {
                         for p in &mut config_positions {
                             *p = (*p).min(m.len());
@@ -1747,25 +1751,32 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A rewrite replaces the list, so positions recorded against the old one
-    /// are claims about a list that no longer exists — they clamp to zero,
-    /// and the config in flight at the rewrite (the last of them) covers the
-    /// rewritten head. A transcript with no configs at all answers `None`,
-    /// never a default.
+    /// A *summarising* rewrite replaces the list, so positions recorded
+    /// against the old one are claims about a list that no longer exists —
+    /// they clamp to zero, and the config in flight at the rewrite (the
+    /// last of them) covers the rewritten head. This is the `fill(0)`
+    /// branch's own coverage (found missing on review: the truncation test
+    /// exercises only the in-place branch), so the fixture carries two
+    /// configs and asserts the head resolves to the *newest*. A transcript
+    /// with no configs at all answers `None`, never a default.
     #[test]
     fn config_covering_survives_a_rewrite_and_answers_none_without_configs() {
         let dir = tmpdir();
         let session = Session::create(&dir, meta_with_id("20260101T000000-coverrw")).unwrap();
-        session
-            .append(&Record::Config(RunConfig::default()))
-            .unwrap();
+        let a = RunConfig::default();
+        let b = RunConfig {
+            compact_at_tokens: Some(1200),
+            ..RunConfig::default()
+        };
+        session.append(&Record::Config(a)).unwrap();
         session
             .append_messages(&[
                 Message::user("a long history"),
                 Message::assistant(vec![Block::text("...")]),
-                Message::user("more"),
             ])
             .unwrap();
+        session.append(&Record::Config(b)).unwrap();
+        session.append_messages(&[Message::user("more")]).unwrap();
         session
             .append(&Record::Rewrite {
                 messages: vec![Message::user("[summary]")],
@@ -1773,9 +1784,11 @@ mod tests {
             .unwrap();
 
         let t = Session::read(&session.path).unwrap();
-        assert!(
-            t.config_covering(0).is_some(),
-            "the config in flight at the rewrite covers the rewritten head"
+        assert_eq!(
+            t.config_covering(0).unwrap().compact_at_tokens,
+            Some(1200),
+            "a summarising rewrite's head resolves to the config in flight — \
+             the newest of the clamped ones, not the first attach's"
         );
 
         let bare = Session::create(&dir, meta_with_id("20260101T000001-bare")).unwrap();
