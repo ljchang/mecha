@@ -592,6 +592,11 @@
           statement is yours, the rest follow as a labeled machine cascade, and each group names
           every class it touches.
         </div>
+        <div class="footnote warn">
+          Measured against your own verdict record (2026-08-29): cross-class twins agreed with
+          each other only ~63% of the time, at every floor — expect a whole-group verdict here to
+          overwrite ~1 in 3. Prefer “Review each” on mixed groups; within-class groups run ~89%.
+        </div>
       {:else}
         <div class="footnote">
           A group verdict is one human verdict: the shown statement is yours, the rest follow as a
@@ -746,6 +751,7 @@
   .deckfoot { display: flex; justify-content: space-between; }
   .ghost { background: none; border: none; color: var(--text-muted); font-size: 13px; min-height: 44px; cursor: pointer; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; }
+  .footnote.warn { color: var(--hazard); }
   .open { align-self: center; font-size: 13px; color: var(--accent-400); }
   .bindrow { display: flex; gap: 8px; }
   .field { flex: 1; min-height: 42px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 13px; padding: 0 12px; }

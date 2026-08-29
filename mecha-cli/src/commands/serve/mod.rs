@@ -265,6 +265,7 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/queue/groups", get(review::groups))
         .route("/api/queue/items", get(review::items))
         .route("/api/queue/sample", axum::routing::post(review::sample))
+        .route("/api/entity", get(board::entity))
         .route("/api/queue/shadow", get(review::shadow))
         .route(
             "/api/queue/shadow/verdict",

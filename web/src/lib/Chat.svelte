@@ -178,6 +178,7 @@
           if (open) {
             open.pending = false;
             open.is_error = ev.is_error;
+            open.preview = ev.preview;
           }
           // Every plan change already arrives here as a tool call, so the
           // list needs no event of its own — re-read on the one that means
@@ -783,13 +784,25 @@
       {:else if entry.kind === 'assistant'}
         <div class="answer">{entry.text}</div>
       {:else if entry.kind === 'tool'}
+        <!-- The chip names the call; the tap shows what came back — the
+             tool's own words, capped server-side. Rendered as TEXT only
+             (Svelte escapes interpolation): tool results carry third-party
+             content, and this page must display it, never interpret it. -->
         <div class="tool" class:err={entry.is_error} class:blocked={entry.blocked}>
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
           <span>{entry.name}</span>
           {#if entry.pending}<span class="tool-state">running…</span>
           {:else if entry.blocked}<span class="tool-state">blocked (read-only)</span>
           {:else if entry.is_error}<span class="tool-state">failed</span>{/if}
+          {#if entry.preview}
+            <button class="tool-open" onclick={() => (entry.open = !entry.open)}>
+              {entry.open ? 'hide' : 'output'}
+            </button>
+          {/if}
         </div>
+        {#if entry.open && entry.preview}
+          <pre class="toolout">{entry.preview}</pre>
+        {/if}
       {:else if entry.kind === 'notice'}
         <div class="notice">{entry.text}</div>
       {:else if entry.kind === 'draft'}
@@ -1387,6 +1400,8 @@
   .tool svg {
     color: var(--accent-700);
   }
+  .tool-open { background: none; border: none; color: var(--accent-400); font-family: var(--mono); font-size: 10px; cursor: pointer; padding: 2px 6px; min-height: 24px; }
+  .toolout { font-family: var(--mono); font-size: 11px; color: var(--text-muted); line-height: 1.5; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 10px 12px; margin: 2px 0 4px 18px; max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
   .tool-state {
     font-size: 11px;
     color: var(--accent-700);

@@ -260,8 +260,27 @@ pub fn entity_detail(text: &str) -> anyhow::Result<(String, Vec<String>)> {
     if let Some(facts) = e["facts"].as_array().filter(|f| !f.is_empty()) {
         lines.push(String::new());
         lines.push("facts:".into());
+        // ◌ marks a fact nobody has vetted (review-on-use: served, but
+        // rank-discounted and labeled), ✗ a recorded denial. Marked when
+        // the server SAYS the tier — an old server that sends none gets no
+        // mark, because this surface cannot know what it was not told.
+        let mut any_unreviewed = false;
         for f in facts {
-            lines.push(format!("  · {}", f["statement"].as_str().unwrap_or("?")));
+            let unrev = f["tier"].as_str().is_some_and(|t| t != "reviewed");
+            any_unreviewed |= unrev;
+            let mark = match (unrev, f["polarity"].as_str() == Some("negative")) {
+                (true, true) => "◌ ✗ ",
+                (true, false) => "◌ ",
+                (false, true) => "✗ ",
+                (false, false) => "",
+            };
+            lines.push(format!(
+                "  · {mark}{}",
+                f["statement"].as_str().unwrap_or("?")
+            ));
+        }
+        if any_unreviewed {
+            lines.push("  ◌ = unreviewed — verdicts: /queues → graph shadow".into());
         }
     }
     if let Some(eps) = e["episodes"].as_array().filter(|x| !x.is_empty()) {
@@ -321,6 +340,31 @@ mod tests {
         assert!(title.contains("ambiguous"));
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("Courtney Rogers"));
+    }
+
+    /// The detail says which facts nobody vetted (◌) and which were denied
+    /// (✗) — and says nothing when an older server sends no tier at all,
+    /// because a mark this surface invented would be a claim about data it
+    /// never saw.
+    #[test]
+    fn entity_detail_marks_unreviewed_and_denied_facts() {
+        let (_, lines) = entity_detail(
+            r#"{"found":true,"node":{"name":"Vera","type":"person","id":"p-vera"},
+                "facts":[
+                  {"statement":"Vera works at the observatory","tier":"shadow","polarity":"positive"},
+                  {"statement":"Vera plays the oboe","tier":"reviewed","polarity":"positive"},
+                  {"statement":"Vera does NOT work at the annex","tier":"reviewed","polarity":"negative"},
+                  {"statement":"from an older server"}
+                ]}"#,
+        )
+        .unwrap();
+        let joined = lines.join("\n");
+        assert!(joined.contains("· ◌ Vera works at the observatory"));
+        assert!(joined.contains("· Vera plays the oboe"));
+        assert!(joined.contains("· ✗ Vera does NOT work at the annex"));
+        assert!(joined.contains("· from an older server"));
+        assert!(!joined.contains("◌ from an older server"));
+        assert!(joined.contains("verdicts: /queues"));
     }
 
     /// The box must draw at sizes where the naive clamp panics — the shared
