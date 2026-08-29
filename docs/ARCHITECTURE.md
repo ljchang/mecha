@@ -779,7 +779,15 @@ missing from a script. Three decisions on top of that:
   nobody (`openWorldHint: false`), every status is one keystroke from where it
   was, and the tool surface has no delete at all. A confirmation on a
   reversible private change teaches people to hit enter without reading, which
-  is what the outbox's confirmations then have to fight.
+  is what the outbox's confirmations then have to fight. One narrowing since:
+  **"one keystroke from where it was" is the *owner's* property, not the
+  model's** — closing a task consumes §5.4's one-shot closure appraisal, so
+  on every model-facing registry `kg_task_update` is wrapped
+  (`closure_guard::ClosedStatusGuard`, `setup::build`, inherited by
+  subagents) to refuse a `status` of `done`/`dropped` and point at
+  `mecha tasks set`, which closes *and* appraises. Every other field of the
+  tool passes through; D6's outright withholding on delegated runs is
+  unchanged and sits on top.
 - **A reload re-finds the cursor by id.** Changing a status is also the thing
   that *reorders* the board — actionable first, then by due date — so an index
   carried across a reload names a different task to the next keypress, and the

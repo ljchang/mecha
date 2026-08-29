@@ -3,6 +3,7 @@
 mod appraisal_probe;
 mod appraiser_pass;
 mod approve;
+mod closure_guard;
 mod commands;
 mod editor;
 mod exe;
