@@ -46,6 +46,7 @@ something shipped.
 | [`CONTEXT-RESEARCH.md`](CONTEXT-RESEARCH.md) | What is actually established about context management, compaction and distractors |
 | [`DOCS-RESEARCH.md`](DOCS-RESEARCH.md) | Which Google scope buys document access, and what each one costs in review |
 | [`HARNESS-RESEARCH.md`](HARNESS-RESEARCH.md) | Where agent performance actually comes from — planning, the loop, or the tools |
+| [`LEARNING-LOOP-RESEARCH.md`](LEARNING-LOOP-RESEARCH.md) | How the learning loop runs without the owner, what flowmail's two loops actually do, and how anyone would know it is improving |
 | `MAIL-CORPUS-RESEARCH.md` | What a year of this mailbox actually contains. **Gitignored** |
 | [`MAIL-UX-RESEARCH.md`](MAIL-UX-RESEARCH.md) | What the field has converged on for agent-driven email |
 | [`MEMORY-RESEARCH.md`](MEMORY-RESEARCH.md) | Whether agent memory should accumulate or be curated, and what the evidence says |

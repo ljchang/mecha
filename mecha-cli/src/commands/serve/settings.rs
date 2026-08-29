@@ -186,6 +186,20 @@ pub async fn rules(State(_state): St) -> Response {
     }
 }
 
+/// GET /api/settings/learning-report — is the loop improving anything?
+///
+/// The series behind the learning page's charts: correction rate per bucket,
+/// rule-set health, and every consolidation pass. Shelled to the same
+/// `learning-report --json` the terminal reads, so the page and the command
+/// line cannot disagree about whether learning is working — which is the one
+/// question where two answers would be worst.
+pub async fn learning_report(State(_state): St) -> Response {
+    match super::self_cli_json(&["learning-report", "--json"], false).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
 /// GET /api/settings/reflections — every lesson, dropped ones included.
 ///
 /// `--all`, for the reason `load_learning` passes it: `reflections list`

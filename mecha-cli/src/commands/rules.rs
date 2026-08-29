@@ -22,7 +22,7 @@
 
 use anyhow::{bail, Result};
 use mecha_core::learning::{
-    rule_tallies, LearningStore, Proposal, Rule, RuleTally, ValidationRecord,
+    rule_tallies, LeapRun, LearningStore, Proposal, Rule, RuleTally, ValidationRecord,
 };
 use mecha_core::session::Session;
 use std::collections::BTreeMap;
@@ -61,6 +61,15 @@ pub enum Cmd {
     /// bisection keeps convicting. Deterministic; review with `mecha
     /// proposals`.
     ProposeRetirements {
+        /// Apply the retirements directly instead of staging a proposal.
+        ///
+        /// Safe to automate in a way that promotion is not: this scan is a
+        /// deterministic fold over the validation ledger with no model in it,
+        /// it only ever *disables* rules, and a retired rule stays in the file
+        /// as evidence. It is also the precondition for ungated learning —
+        /// promotion without a working NoGo path is a ratchet.
+        #[arg(long)]
+        apply: bool,
         /// Attributed regressions required before a rule is proposed for
         /// retirement.
         #[arg(long, default_value_t = 3)]
@@ -75,7 +84,10 @@ pub async fn execute(args: Args) -> Result<()> {
         Cmd::Retire { id, reason } => retire(&store, &id, reason),
         Cmd::Restore { id } => restore(&store, &id),
         Cmd::Show { id } => show(&store, &id),
-        Cmd::ProposeRetirements { min_attributed } => propose(&store, min_attributed),
+        Cmd::ProposeRetirements {
+            min_attributed,
+            apply,
+        } => propose(&store, min_attributed, apply),
     }
 }
 
@@ -244,7 +256,7 @@ fn show(store: &LearningStore, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn propose(store: &LearningStore, min_attributed: u32) -> Result<()> {
+fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()> {
     let _lock = store.lock()?;
     let records = store.validations()?;
     let tallies = rule_tallies(&records);
@@ -278,7 +290,7 @@ fn propose(store: &LearningStore, min_attributed: u32) -> Result<()> {
                         .any(|r| r.id.as_deref() == Some(*id) && r.retired_at.is_some())
                 })
         });
-        if already {
+        if already && !apply {
             println!("{domain}: retirement already pending — review with `mecha proposals`");
             continue;
         }
@@ -324,6 +336,41 @@ fn propose(store: &LearningStore, min_attributed: u32) -> Result<()> {
                 .filter(|rec: &&ValidationRecord| rec.domain == domain)
                 .count(),
         ));
+
+        // ── the direct path: write the retirement, no queue, no human ──
+        //
+        // A retired rule is disabled in place and keeps `retired_at` /
+        // `retired_reason`, so this removes it from every future prompt
+        // without removing it from the record — the learner is still told it
+        // was tried and measured harmful, which is what stops it being
+        // re-derived. That is the mechanism `git revert` was standing in for,
+        // and unlike a revert it is per-rule and leaves the rest of the store
+        // alone.
+        if apply {
+            store.write_learned_rules(&domain, &rules)?;
+            store.append_run(&LeapRun {
+                id: Session::new_id(),
+                domain: domain.clone(),
+                reflexions_processed: 0,
+                rules_before: before.iter().filter(|r| r.active()).count() as u32,
+                rules_after: rules.iter().filter(|r| r.active()).count() as u32,
+                created_at: now.clone(),
+            })?;
+            store.commit(&format!(
+                "retire[{domain}]: {} rule(s) at {min_attributed}+ attributed regression(s)",
+                convicted.len()
+            ));
+            println!(
+                "{domain}: retired {} rule(s) — {}",
+                convicted.len(),
+                convicted_ids.join(", ")
+            );
+            for line in evidence_lines.iter().take(convicted.len()) {
+                println!("  {}", line.replace('\n', "\n  "));
+            }
+            staged += 1;
+            continue;
+        }
 
         let proposal = Proposal {
             id: Session::new_id(),
@@ -433,13 +480,13 @@ mod tests {
         }
 
         // Below threshold: nothing staged.
-        propose(&store, 4).unwrap();
+        propose(&store, 4, false).unwrap();
         assert!(store.proposals().unwrap().is_empty());
 
         // At threshold: one pending proposal that retires r-bad, keeps r-ok,
         // and consumes no reflections. The live rules must be untouched —
         // only acceptance deploys.
-        propose(&store, 3).unwrap();
+        propose(&store, 3, false).unwrap();
         let all = store.proposals().unwrap();
         assert_eq!(all.len(), 1);
         let p = &all[0];
@@ -470,12 +517,90 @@ mod tests {
         );
 
         // Re-running while the proposal is pending must not stage a twin.
-        propose(&store, 3).unwrap();
+        propose(&store, 3, false).unwrap();
         assert_eq!(store.proposals().unwrap().len(), 1);
 
         std::fs::remove_dir_all(store.root()).ok();
     }
 
+    /// **Retirement removes a rule from the live set with no queue and no
+    /// human.** Until this existed, a rule measured harmful reached
+    /// `retired_at` only inside a *proposal*, and the only thing that ever
+    /// took one out of a prompt was `git revert` over the whole store — a
+    /// whole-store undo standing in for a per-rule mechanism.
+    ///
+    /// Fails on the old behaviour: `--apply` did not exist, so the live rules
+    /// were untouched by any scan and `r-bad` stayed active forever.
+    #[test]
+    fn retirement_applied_directly_disables_the_rule_and_leaves_the_rest_alone() {
+        let store = temp_store();
+        store
+            .write_learned_rules(
+                "behavior",
+                &[rule("Bad rule.", "r-bad"), rule("Fine rule.", "r-ok")],
+            )
+            .unwrap();
+        for i in 0..3 {
+            store
+                .append_validation(&regression(
+                    "r-bad",
+                    &format!("2026-08-0{}T00:00:00Z", i + 1),
+                ))
+                .unwrap();
+        }
+
+        // Below threshold, --apply must be as inert as staging is.
+        propose(&store, 4, true).unwrap();
+        assert!(
+            store
+                .learned_rules("behavior")
+                .unwrap()
+                .iter()
+                .all(|r| r.active()),
+            "an unconvicted rule must survive an --apply scan"
+        );
+
+        propose(&store, 3, true).unwrap();
+
+        // The live file moved, and nothing was queued for anyone to accept.
+        assert!(
+            store.proposals().unwrap().is_empty(),
+            "--apply must not also stage a proposal"
+        );
+        let live = store.learned_rules("behavior").unwrap();
+        let bad = live
+            .iter()
+            .find(|r| r.id.as_deref() == Some("r-bad"))
+            .unwrap();
+        assert!(!bad.active(), "the convicted rule must leave the prompt");
+        assert!(bad.retired_at.is_some());
+        assert!(bad
+            .retired_reason
+            .as_deref()
+            .unwrap()
+            .contains("3 attributed"));
+
+        // Retired, not deleted: it stays as evidence so the learner is told it
+        // was tried and measured harmful, which is what stops re-derivation.
+        assert_eq!(live.len(), 2, "a retired rule stays in the file");
+        assert!(
+            live.iter()
+                .find(|r| r.id.as_deref() == Some("r-ok"))
+                .unwrap()
+                .active(),
+            "retirement must be per-rule, not a whole-store revert"
+        );
+
+        // And it is recorded as a pass, so `git log` in the store reads as the
+        // system's learning history rather than an unexplained file change.
+        let runs = std::fs::read_to_string(store.root().join("runs.jsonl")).unwrap();
+        assert!(
+            runs.contains("\"rules_before\":2") && runs.contains("\"rules_after\":1"),
+            "a retirement pass must leave a LeapRun showing the active count fell: {runs}"
+        );
+
+        std::fs::remove_dir_all(store.root()).ok();
+    }
     #[test]
     fn retire_and_restore_round_trip_by_id_prefix() {
         let store = temp_store();

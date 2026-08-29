@@ -20,7 +20,14 @@
   // process (see serve/settings.rs), so this pane cannot do anything to the
   // store that the command line cannot, and the promotion, the withholding
   // and the git commit behind each write stay in one implementation.
+  import LearningCharts from './LearningCharts.svelte';
+
   let pane = $state('reflections');
+  // The trend view. Loaded lazily like the other panes: it is a fold over
+  // every session filename and the whole reflection log, and the page must
+  // not pay for it to show a list.
+  let report = $state(null);
+  let reportError = $state(null);
   let rules = $state(null);
   let rulesError = $state(null);
   let reflections = $state(null);
@@ -71,6 +78,17 @@
   loadRules();
   loadReflections();
 
+  async function loadReport() {
+    try {
+      const res = await fetch('/api/settings/learning-report');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      report = await res.json();
+      reportError = null;
+    } catch (e) {
+      reportError = String(e?.message ?? e);
+    }
+  }
+
   function setPane(next) {
     pane = next;
     // A different list, and the next tap may be a refusal — nothing armed,
@@ -80,6 +98,7 @@
     detail = null;
     note = null;
     error = null;
+    if (next === 'trend' && report === null) loadReport();
   }
 
   // One verb, and its own report of what it did. The note is the child's
@@ -231,6 +250,9 @@
   </button>
   <button class="tab" class:on={pane === 'rules'} onclick={() => setPane('rules')}>
     rules{#if rules}<span class="n">{rules.length}</span>{/if}
+  </button>
+  <button class="tab" class:on={pane === 'trend'} onclick={() => setPane('trend')}>
+    trend
   </button>
 </div>
 
@@ -403,6 +425,14 @@
     Retiring is a flag, never a deletion: the rule stays in the file as evidence and the learner
     is told it was measured harmful, so restore can undo what erasure could not.
   </div>
+{/if}
+
+{#if pane === 'trend'}
+  {#if reportError}
+    <div class="card notice">{reportError}</div>
+  {:else}
+    <LearningCharts {report} />
+  {/if}
 {/if}
 
 <style>

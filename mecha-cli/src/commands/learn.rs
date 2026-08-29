@@ -225,6 +225,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         return Ok(());
     }
 
+    // The ledger, folded per rule, so the consolidation can drop what has
+    // been measured harmful instead of guessing from the rule text. Read once
+    // for every domain: it is a scan of one append-only file.
+    let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
+
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
     let cfg = Config::load(&cwd)?;
     let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
@@ -247,7 +252,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let learned_before = store.learned_rules(domain)?;
 
         let Some(rules) = learner
-            .learn(domain, &user_rules, &learned_before, reflexions)
+            .learn(domain, &user_rules, &learned_before, reflexions, &tallies)
             .await?
         else {
             eprintln!("{domain}: the learner produced no usable rule set; nothing changed");

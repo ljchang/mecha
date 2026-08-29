@@ -1277,6 +1277,48 @@ pub struct RuleTally {
     pub last_validated: Option<String>,
 }
 
+/// One line per active rule, carrying what the validation ledger measured
+/// about it — the learner's evidence for what to drop.
+///
+/// `attributed` is the number retirement argues from: a bisection pinned that
+/// regression on this rule specifically. Block-level `improved`/`regressed`
+/// only say what the whole rule set did while this rule rode along, which is
+/// context rather than credit.
+///
+/// **Unmeasured is rendered as unmeasured, never as zero.** A rule no probe
+/// has covered has no evidence either way, and printing `0 regressed` would
+/// read as a clean bill of health while printing nothing would read as
+/// harmless. Both are the "a dash is never zero" failure, and collapsing them
+/// would bias the learner against the newest rules — the ones with least
+/// chance to have been probed.
+pub fn render_active(
+    rules: &[&Rule],
+    tallies: &std::collections::BTreeMap<String, RuleTally>,
+) -> String {
+    if rules.is_empty() {
+        return "(none)".to_string();
+    }
+    rules
+        .iter()
+        .map(|r| {
+            let record = r
+                .id
+                .as_deref()
+                .and_then(|id| tallies.get(id))
+                .filter(|t| t.observations > 0)
+                .map(|t| {
+                    format!(
+                        " [measured: {} probe(s), {} improved, {} regressed, {} attributed to this rule]",
+                        t.observations, t.improved, t.regressed, t.attributed_regressions
+                    )
+                })
+                .unwrap_or_else(|| " [unmeasured: no probe has covered it yet]".into());
+            format!("- {}{}", r.text, record)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Fold ledger rows into per-rule tallies.
 pub fn rule_tallies(records: &[ValidationRecord]) -> std::collections::BTreeMap<String, RuleTally> {
     let mut out: std::collections::BTreeMap<String, RuleTally> = Default::default();
@@ -1925,6 +1967,12 @@ The user's own rules are shown for context and are IMMUTABLE — never copy, \
 restate, merge, or contradict them; the learned set only covers what they do \
 not.
 
+Each current rule carries its measured record from replay probes. Weigh it: a \
+rule with regressions attributed to it has been measured to make things worse \
+and should be dropped or narrowed unless the new reflections argue hard for \
+it. A rule marked *unmeasured* is not a bad rule — no probe has covered it \
+yet — so judge it on its merits, never drop it for lacking evidence.
+
 Rules must be reusable directives about *how to behave*, not restatements of \
 one incident. Prefer rules supported by more than one reflection; a single \
 reflection may become a rule only when the lesson is unambiguous. Fewer, \
@@ -2085,12 +2133,30 @@ impl Learner {
         &self.model
     }
 
+    /// Consolidate `reflexions` into a rewritten rule set for `domain`.
+    ///
+    /// `tallies` is the validation ledger folded per rule
+    /// ([`rule_tallies`]), and it is what makes a rewrite *self-correcting*
+    /// rather than merely churning. A consolidation is a full replacement —
+    /// a rule the learner omits simply vanishes, since only retired rules are
+    /// carried forward by [`finalize_rules`] — so dropping is already the
+    /// cheap operation. Without the ledger the learner chose what to drop
+    /// from the rule text alone and was as likely to drop a rule that was
+    /// working as one that was not; the measurement existed and reached
+    /// retirement only, which fires at a threshold and says nothing below it.
+    ///
+    /// **A never-validated rule is not a bad rule.** It is rendered as
+    /// unmeasured and the frame says so, because "no evidence" and "evidence
+    /// of harm" are opposite findings and collapsing them would retire the
+    /// newest rules fastest — the ones that have had least chance to be
+    /// probed.
     pub async fn learn(
         &self,
         domain: &str,
         user_rules: &[Rule],
         learned_rules: &[Rule],
         reflexions: &[Reflexion],
+        tallies: &std::collections::BTreeMap<String, RuleTally>,
     ) -> Result<Option<Vec<Rule>>> {
         let render_rules = |rules: &[Rule]| {
             if rules.is_empty() {
@@ -2157,11 +2223,11 @@ impl Learner {
             "Domain: {domain}\n\n\
              ## User rules (IMMUTABLE, context only)\n{}\n\n\
              {retired_section}\
-             ## Current learned rules (to be rewritten)\n{}\n\n\
+             ## Current learned rules (to be rewritten, with their measured record)\n{}\n\n\
              ## New reflections ({})\n{}\n\n\
              Rewrite the learned rule set. Reply with the JSON object only.",
             render_rules(user_rules),
-            render_rules(&active.iter().map(|r| (*r).clone()).collect::<Vec<_>>()),
+            render_active(&active, tallies),
             reflexions.len(),
             if rendered_reflexions.is_empty() {
                 "(none)"
@@ -3964,5 +4030,67 @@ mod tests {
             "error_type":null,"confidence":null,"created_at":"t","origin":"clean"}"#;
         let r: Reflexion = serde_json::from_str(json).unwrap();
         assert_eq!(r.evidence, Evidence::Full);
+    }
+}
+
+#[cfg(test)]
+mod ledger_in_the_learner_tests {
+    use super::*;
+
+    fn r(text: &str, id: &str) -> Rule {
+        Rule {
+            text: text.into(),
+            id: Some(id.into()),
+            ..Default::default()
+        }
+    }
+
+    /// **The learner is told what each live rule measured**, so a rewrite can
+    /// drop what has been shown to hurt instead of guessing from the text.
+    ///
+    /// Fails on the old behaviour: active rules were rendered as bare text,
+    /// so the ledger reached retirement (a threshold) and nothing else. Below
+    /// that threshold the measurement existed and no consolidation could see
+    /// it — which made a full-replacement rewrite churn rather than correct.
+    #[test]
+    fn active_rules_carry_their_measured_record_and_unmeasured_says_so() {
+        let bad = r("Bad rule.", "r-bad");
+        let fresh = r("New rule.", "r-new");
+        let mut tallies: std::collections::BTreeMap<String, RuleTally> = Default::default();
+        tallies.insert(
+            "r-bad".into(),
+            RuleTally {
+                observations: 9,
+                improved: 1,
+                regressed: 6,
+                attributed_regressions: 3,
+                last_validated: Some("2026-08-29T00:00:00Z".into()),
+            },
+        );
+
+        let out = render_active(&[&bad, &fresh], &tallies);
+
+        // The measured one carries the number retirement argues from.
+        assert!(
+            out.contains("9 probe(s)") && out.contains("3 attributed to this rule"),
+            "a measured rule must show its record: {out}"
+        );
+        // The unmeasured one is marked unmeasured — never rendered as zero,
+        // which would read as a clean bill of health it has not earned.
+        assert!(
+            out.contains("New rule. [unmeasured:"),
+            "an unprobed rule must say so: {out}"
+        );
+        assert!(
+            !out.contains("New rule. [measured"),
+            "absent evidence must never render as measured evidence: {out}"
+        );
+    }
+
+    /// An empty active set renders as `(none)` rather than an empty string,
+    /// so the section never collapses into the one after it.
+    #[test]
+    fn an_empty_active_set_is_explicit() {
+        assert_eq!(render_active(&[], &Default::default()), "(none)");
     }
 }

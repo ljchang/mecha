@@ -12,6 +12,20 @@
 //!   corrections, but re-arguing them nightly against a human's explicit no
 //!   is how a proposal queue becomes spam. The refusal is recorded with its
 //!   reason; the reflections stay in the archive as evidence.
+//! - **supersede** is the one resolution that does **not** consume them. A
+//!   proposal nobody answered is not a refusal, and burning its evidence to
+//!   clear the queue would lose real corrections the owner never ruled on.
+//!   Status leaves `pending`, so `learn`'s claim (`status == "pending"`)
+//!   releases the reflections back to the pool and the next pass argues them
+//!   against the rules that are live *now*.
+//!
+//! **Why a queue needs this at all.** Every proposal is a full rewrite of its
+//! domain measured against `rules_before`, and `accept` refuses to apply one
+//! whose baseline moved. So a second pending proposal is not a second
+//! decision — accepting either one makes the rest unappliable. Four
+//! accumulated over six days on 2026-08-29 holding 27 of 43 reflections
+//! hostage, and `learn` skipped every night for want of three free ones: the
+//! queue had stalled itself, and nothing said so.
 //!
 //! Accepting checks that the live rules still match what the candidate was
 //! diffed (and measured!) against — if a direct learn pass or a hand edit
@@ -52,6 +66,19 @@ pub enum Cmd {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Retire a stale pending proposal, releasing its reflections unconsumed.
+    Supersede {
+        /// The proposal to retire. Omit with --stale to sweep every pending
+        /// proposal whose baseline no longer matches the live rules.
+        id: Option<String>,
+        /// Sweep every pending proposal measured against a baseline that has
+        /// since moved.
+        #[arg(long)]
+        stale: bool,
+        /// Why — recorded on the proposal for the next reader.
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 pub async fn execute(args: Args) -> Result<()> {
@@ -61,6 +88,7 @@ pub async fn execute(args: Args) -> Result<()> {
         Cmd::Show { id } => show(&store, &id),
         Cmd::Accept { id, force } => accept(&store, &id, force),
         Cmd::Reject { id, reason } => reject(&store, &id, reason),
+        Cmd::Supersede { id, stale, reason } => supersede_cmd(&store, id, stale, reason),
     }
 }
 
@@ -231,6 +259,97 @@ fn indent(s: &str) -> String {
         .map(|l| format!("  {l}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Mark one proposal superseded, releasing its reflections **unconsumed**.
+///
+/// The distinction from [`reject`] is the whole point and is the reason this
+/// is a separate verb rather than a flag: reject is the owner saying no, and
+/// marks the reflections processed so the same argument is not made nightly
+/// forever. Supersede is nobody having said anything, and must leave the
+/// evidence exactly as it found it — the reflections were real corrections
+/// the owner never ruled on, and consuming them to tidy the queue would
+/// destroy the only record of them.
+///
+/// Releasing is implicit rather than an edit to the reflections: `learn`
+/// claims on `status == "pending"`, so moving the status is the release.
+fn supersede_one(p: &mut mecha_core::learning::Proposal, reason: &str) {
+    p.status = "superseded".into();
+    p.resolved_at = Some(chrono::Utc::now().to_rfc3339());
+    p.reason = Some(reason.to_string());
+}
+
+/// Whether a pending proposal could still be applied at all.
+///
+/// `accept` refuses a proposal whose measured baseline no longer matches the
+/// live rules, so one that fails this is not a decision awaiting an owner —
+/// it is unappliable paper, and the reflections behind it are being held for
+/// nothing.
+fn is_stale(store: &LearningStore, p: &mecha_core::learning::Proposal) -> Result<bool> {
+    let live = store.learned_rules(&p.domain)?;
+    Ok(!same_rules(&live, &p.rules_before))
+}
+
+fn supersede_cmd(
+    store: &LearningStore,
+    id: Option<String>,
+    stale: bool,
+    reason: Option<String>,
+) -> Result<()> {
+    let _lock = store.lock()?;
+    let mut proposals = store.proposals()?;
+
+    // Which ones this call is about. `--stale` is deliberately not "every
+    // pending proposal": a proposal whose baseline still matches is a real
+    // decision waiting for the owner, and sweeping it away silently would be
+    // this command committing the failure it exists to fix.
+    let targets: Vec<String> = match (&id, stale) {
+        (Some(id), false) => vec![id.clone()],
+        (None, true) => {
+            let mut out = Vec::new();
+            for p in proposals.iter().filter(|p| p.status == "pending") {
+                if is_stale(store, p)? {
+                    out.push(p.id.clone());
+                }
+            }
+            out
+        }
+        (Some(_), true) => bail!("give an id or --stale, not both"),
+        (None, false) => bail!("give a proposal id, or --stale to sweep unappliable ones"),
+    };
+
+    if targets.is_empty() {
+        println!("no stale proposals — nothing to supersede");
+        return Ok(());
+    }
+
+    let why = reason.unwrap_or_else(|| {
+        "superseded: measured against a baseline the live rules have moved past".into()
+    });
+    let mut released: std::collections::BTreeSet<String> = Default::default();
+    let mut done = 0usize;
+    for p in proposals.iter_mut() {
+        if !targets.contains(&p.id) {
+            continue;
+        }
+        if p.status != "pending" {
+            bail!("proposal {} is {}, not pending", p.id, p.status);
+        }
+        released.extend(p.reflexion_ids.iter().cloned());
+        supersede_one(p, &why);
+        store.write_proposal(p)?;
+        done += 1;
+    }
+    store.commit(&format!(
+        "supersede: {done} proposal(s), {} reflection(s) released",
+        released.len()
+    ));
+    println!(
+        "superseded {done} proposal(s); {} reflection(s) released back to the pool \
+         (not consumed — `mecha learn` will argue them against the current rules)",
+        released.len()
+    );
+    Ok(())
 }
 
 #[cfg(test)]

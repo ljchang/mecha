@@ -322,6 +322,10 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         )
         .route("/api/settings/reflections", get(settings::reflections))
         .route(
+            "/api/settings/learning-report",
+            get(settings::learning_report),
+        )
+        .route(
             "/api/settings/reflections/show",
             get(settings::reflection_show),
         )
@@ -754,6 +758,7 @@ mod tests {
             ("POST", "/api/settings/rules/retire"),
             ("POST", "/api/settings/rules/restore"),
             ("GET", "/api/settings/reflections"),
+            ("GET", "/api/settings/learning-report"),
             ("GET", "/api/settings/reflections/show?id=x"),
             ("POST", "/api/settings/reflections/edit"),
             ("POST", "/api/settings/reflections/drop"),

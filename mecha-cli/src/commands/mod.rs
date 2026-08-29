@@ -12,6 +12,7 @@ pub mod gossip;
 pub mod harness;
 pub mod kg;
 pub mod learn;
+pub mod learning_report;
 pub mod mail;
 pub mod msg;
 pub mod outbox;
