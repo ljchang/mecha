@@ -392,6 +392,7 @@ impl McpClient {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             external: true,
+            refusal: false,
         })
     }
 }
