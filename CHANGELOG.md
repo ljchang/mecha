@@ -7,7 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-08-29
+
+Three arcs land together. The appraisal goal system, reviewed end to end
+and hardened — one test-and-review pass produced the findings, nineteen
+rounds with the PR auto-reviewer produced the rest (PRs #111, #112):
+failed-turn transcript integrity across every front-end, positional run
+configs for the counterfactual probe, an instrument that can no longer eat
+its own findings, and a structural guard making task closure the owner's
+act. Onboarding grows the charter step and declines (PR #113), and CI gains
+a macOS arm that found four real bugs on its way in. And the release
+workflow finally creates GitHub Releases — fourteen tags had published
+crates with no release to show for it.
+
 ### Added
+
+- **Closing a task is the owner's act, structurally.** `kg_task_update` on
+  every model-facing registry is wrapped by a closure guard that refuses
+  exactly a `status` of `done`/`dropped`, pointing at `mecha tasks set` —
+  which closes *and* appraises — while every other field of the tool passes
+  through. Presence is a trait answer (`Tool::guards_closures`) no
+  wire-supplied tool can fake, an unguarded surface is a **startup error**
+  (`closure_guard::verify`), subagents inherit the guarded handle through a
+  clone-site belt, and the guard's refusal is classified
+  (`ToolOutput::refusal`) so the harness's own "no" lands beside approver
+  denials rather than in `ended_on_failed_call` and the tool-error rate.
+  `mecha tools` shows the guarded surface, since it is the audit view.
+
+- **An unreadable transcript is a finding, not an empty queue.** The
+  session store could rot one file at a time with no surface saying so:
+  `Session::list` skipped quietly, `sessions appraise` counted nothing,
+  doctor said "nothing wrong". The skip count now exists
+  (`Session::list_counting`, `Corpus.unreadable`, disjoint from
+  `sessions_read` by construction), doctor reports it, and `appraise`,
+  `stats` and `health` all carry it in text and JSON. `appraise` also
+  regains the `named_a_goal` counter lost in the #88/#91 merge overlap, so
+  `serves:` coverage is measurable from the instrument again.
+
+- **The affect readout reaches the typed web surface** — the header carries
+  the same worded chip the TUI badge shows (muted outline, deliberately not
+  the taint chip's hazard amber: a run's mood is not a security posture) —
+  and the TUI badge itself survives `--no-session`.
 
 - **`mecha setup --json` now exits non-zero when work is outstanding**, which
   it had documented ("like doctor") and did not do: the `--json` path returned
@@ -340,7 +380,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flagged, because they ride in the same prompt and a surface showing only the
   learned half misdescribes what a run carries.
 
+### Changed
+
+- **`mecha sessions stats --json` is an object now** — `{rows,
+  sessions_unreadable}` instead of a bare array, matching `appraise` and
+  `health`; no in-repo consumer read the array, and the CLI reference
+  records the change. **`kg_task_update`'s description gained the closure
+  guard's note**, which moves `tools_hash` once — deliberately: a
+  byte-identical spec would have hidden a real capability change from the
+  surface store. And `mecha distill` reads each transcript once instead of
+  four times (`appraisal::for_transcript` is the seam).
+
 ### Fixed
+
+- **A failed or interrupted turn no longer corrupts the conversation or
+  its transcript, on any surface.** One review pass found five divergent
+  rollback sites: the web chat's error arm popped the mutated tail
+  (orphaning a `tool_use` and 400ing every later request on the session),
+  the transcript kept what memory discarded (so the failure survived a
+  resume), and voice's barge-in guard popped a tool-result message because
+  tool results ride in a user-role message. It is one mechanism now:
+  `Conversation::roll_back_failed_turn` (restore the snapshot, then pop
+  only a plain user text), every error arm records the rolled-back state
+  as a rewrite so a resume loads exactly what memory holds, and every
+  submit site folds into a user-message tail instead of pushing two user
+  messages in a row — recording the fold at submit as one direct rewrite.
+
+- **The counterfactual probe replays under the config in effect at the
+  intervention**, not `configs.first()` — a resumed session's later steer
+  no longer replays under the first attach's system prompt and tool list,
+  diverging for reasons that said nothing about the steer and inflating
+  `regret`. `Transcript` carries positional configs built in
+  `Session::read`'s single pass (truncating and in-place rewrites keep
+  positions exact; summarising ones clamp), and the probe reads the path
+  the caller already resolved — one parse per intervention instead of a
+  directory scan plus two — skipping per-item instead of aborting the walk.
+
+- **Closure appraisal's small holes**: a prefix-resolved `--session` no
+  longer silently drops every draft (the id re-keys on the transcript's own
+  header), `tasks set T --session "" --status done` reads the empty string
+  as the documented unlink instead of failing it, and the follow-up's
+  replay caveats reach the stored record whatever became of the episode.
 
 - **`mecha eval --ab-rules` measured nothing, while announcing that it did.**
   Both arms ran rules-free: consolidating eval's forced-off list into
@@ -2572,7 +2652,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.14...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/ljchang/mecha/releases/tag/v0.1.16
 [0.1.14]: https://github.com/ljchang/mecha/releases/tag/v0.1.14
 [0.1.13]: https://github.com/ljchang/mecha/releases/tag/v0.1.13
 [0.1.12]: https://github.com/ljchang/mecha/releases/tag/v0.1.12
