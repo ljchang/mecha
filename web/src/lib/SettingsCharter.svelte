@@ -78,11 +78,33 @@
   /// Split the document at its first `[[line]]`. A `#` that opens a *line* is
   /// a comment; one inside a string value never can be, since the value is on
   /// the right of an `=`.
+  /// A `#` outside a string opens a comment — including one trailing a value,
+  /// which a whole-line regex misses and the regenerating serialiser would
+  /// then drop silently. Tracks basic and literal strings, respecting escapes.
+  /// A `#` inside a multi-line string reads as a comment here and blocks the
+  /// list editor: wrong, but wrong in the direction that keeps the writing.
+  function hasComment(row) {
+    let basic = false;
+    let literal = false;
+    for (let i = 0; i < row.length; i++) {
+      const c = row[i];
+      if (basic) {
+        if (c === '\\') i++;
+        else if (c === '"') basic = false;
+      } else if (literal) {
+        if (c === "'") literal = false;
+      } else if (c === '"') basic = true;
+      else if (c === "'") literal = true;
+      else if (c === '#') return true;
+    }
+    return false;
+  }
+
   function splitHeader(src) {
     const rows = (src ?? '').split('\n');
     const first = rows.findIndex((r) => /^\s*\[\[/.test(r));
     if (first === -1) return { header: rows.join('\n').replace(/\s+$/, ''), blocked: null };
-    const commented = rows.slice(first).some((r) => /^\s*#/.test(r));
+    const commented = rows.slice(first).some(hasComment);
     return {
       header: rows.slice(0, first).join('\n').replace(/\s+$/, ''),
       blocked: commented
@@ -90,6 +112,12 @@
         : null,
     };
   }
+
+  // We have no trustworthy document: the GET failed, or answered with its own
+  // error. Nothing that can write may render — not the list (whose empty state
+  // invites authoring a "first" charter over a real one) and not the TOML
+  // editor (which would seed from an empty buffer).
+  const unreadable = $derived(charterError !== null || charter === null);
 
   const snapshot = () => JSON.stringify(lines.map((l) => [l.id, l.text]));
   const dirty = $derived(snapshot() !== original);
@@ -357,6 +385,19 @@
   </div>
 {:else if charter === null && !charterError}
   <div class="card"><div class="sub">loading…</div></div>
+{:else if unreadable}
+  <!-- The notice above says what failed. Nothing here writes: an empty list
+       whose save replaces the file is the failure mode this branch exists to
+       refuse. -->
+  <div class="card">
+    <div class="sub">
+      The charter could not be read, so it cannot be edited here — what is on disk is
+      untouched.
+    </div>
+  </div>
+  <div class="row-actions">
+    <button class="btn" onclick={load}>Try again</button>
+  </div>
 {:else}
   {#if !blocked}
   <div class="lines" bind:this={listEl}>
@@ -471,7 +512,9 @@
       class="btn"
       class:ghost={!blocked}
       onclick={() => {
-        draft = charter?.raw || charter?.template || '';
+        // Carry unsaved list edits across rather than silently reverting to
+        // what is on disk.
+        draft = !blocked && dirty ? serialize() : charter?.raw || charter?.template || '';
         confirming = false;
         saveError = null;
       }}>Edit as TOML</button

@@ -215,7 +215,13 @@
     }
   }
 
-  const canClone = $derived(voice?.cloned !== null && voice?.cloned !== undefined);
+  // Three states, not two. A route that did not answer leaves `voice` null,
+  // which is *unknown* — asserting "not configured" there states a fact about
+  // the owner's config that nothing checked. `Settings.svelte`'s `voiceLine`
+  // makes the same distinction; this used to, via an `{:else if voice}`.
+  const cloneState = $derived(
+    voice === null ? 'unknown' : voice.cloned === null || voice.cloned === undefined ? 'off' : 'on'
+  );
 </script>
 
 <p class="hint">
@@ -283,7 +289,9 @@
 
 <section>
   <div class="kicker">Voices on this box</div>
-  {#if !canClone}
+  {#if cloneState === 'unknown'}
+    <div class="card"><div class="sub">—</div></div>
+  {:else if cloneState === 'off'}
     <div class="card">
       <div class="sub">
         Voice cloning is not configured — set <code>[web] voices_dir</code> to the host
