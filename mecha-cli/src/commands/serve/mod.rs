@@ -433,9 +433,12 @@ async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Res
 /// store's business rather than this layer's, and a blanket header here
 /// would be this middleware quietly deciding policy for every handler.
 async fn cache_headers(request: Request<axum::body::Body>, next: Next) -> Response {
-    // Taken before the request is consumed. A hash route (`/#graph`) never
-    // reaches the server as anything but `/`, so matching on "not an asset"
-    // rather than on `/` alone is what covers a phone reloading mid-app.
+    // Taken before the request is consumed. Matching on "not an asset"
+    // rather than on `/` alone is what catches the other unhashed entry
+    // paths that do reach the server — `/index.html` itself, and
+    // `/favicon.svg` out of `web/public/`. (A hash route like `/#graph`
+    // arrives as plain `/`; the fragment is never sent, so it needs no help
+    // from the broader match.)
     let is_asset = request.uri().path().starts_with("/assets/");
     let is_api = request.uri().path().starts_with("/api/");
     let mut response = next.run(request).await;
