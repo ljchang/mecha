@@ -442,9 +442,26 @@ async fn cache_headers(request: Request<axum::body::Body>, next: Next) -> Respon
     if is_api {
         return response;
     }
+    // **Only a response that is actually the file gets a freshness policy.**
+    // This layer is the outermost one, so it sees `owner_guard`'s 403 and
+    // `ServeDir`'s 404 as well — and an explicit `max-age` makes any status
+    // storable (RFC 9111 §3), with `immutable` telling the browser not to
+    // revalidate even on a manual reload. Labelling a 404 that way pins a
+    // permanently broken app for a year, past every later deploy.
+    //
+    // The window is opened by the other half of this very fix: once the
+    // document always revalidates, a load landing mid-`rsync` gets the *new*
+    // document, asks for a bundle that has not been written yet, and would
+    // cache that 404 immutably — the same "looks like it is working" failure
+    // this middleware exists to remove, made unrecoverable instead of
+    // self-healing on the next deploy.
+    if !(response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED) {
+        return response;
+    }
     // Set on whatever came back, `304 Not Modified` included: a revalidation
     // that answered without the header would leave the next cache lookup
-    // right back where it started.
+    // right back where it started. (`is_success()` alone would drop it —
+    // 304 is not in the 2xx range.)
     response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         HeaderValue::from_static(match is_asset {
@@ -825,8 +842,10 @@ mod tests {
             Some("no-cache"),
             "the entry document names hashed files the next deploy deletes"
         );
-        // A hash route never reaches the server as anything but `/`, but an
-        // unknown path is served the document too; both must revalidate.
+        // The same document by its own name. A hash route (`/#graph`) never
+        // reaches the server as anything but `/`, which is the case that
+        // matters here; there is no SPA fallback on this router, so an
+        // unknown path is a 404 from `ServeDir` rather than the document.
         assert_eq!(
             cache_control_of(router.clone(), "/index.html")
                 .await
@@ -843,6 +862,48 @@ mod tests {
         // The API is not a static file and this layer must not invent a
         // freshness policy for it.
         assert_eq!(cache_control_of(router, "/api/ping").await, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A response that is not the file must carry no freshness policy at
+    /// all — and the 404 is the one that matters.
+    ///
+    /// This layer is the outermost, so it sees the owner guard's 403 and
+    /// `ServeDir`'s 404 too. An explicit `max-age` makes any status storable
+    /// (RFC 9111 §3) and `immutable` suppresses revalidation even on a manual
+    /// reload, so a 404 labelled that way pins a broken app for a year that
+    /// no later deploy can clear. The other half of this change is what opens
+    /// the window: once the document always revalidates, a load landing
+    /// mid-`rsync` asks for a bundle that has not been written yet.
+    #[tokio::test]
+    async fn a_refusal_or_a_missing_bundle_is_never_labelled_immutable() {
+        let dir = std::env::temp_dir().join(format!("mecha-cache-miss-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let router = test_router_with_assets(&dir);
+
+        // Mid-rsync: the document is new, this bundle has not landed yet.
+        assert_eq!(
+            cache_control_of(router.clone(), "/assets/index-not-yet.js").await,
+            None,
+            "a 404 cached for a year is this bug with a longer fuse"
+        );
+
+        // And the owner guard's refusal, which is not a file either.
+        let refused = router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/index-abc123.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            refused.headers().get("cache-control"),
+            None,
+            "a 403 must not be cached as though it were the bundle"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
