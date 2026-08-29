@@ -146,21 +146,29 @@ worse costume. Loading a charter arms **no taint** — it is your own words, lik
 the system prompt, and the module has no dependency on taint at all so the
 absence is enforcement rather than a rule someone must remember.
 
-### Three surfaces, one write path
+### Four surfaces, one reader
 
 | Surface | What it does |
 |---|---|
 | `mecha charter` (`--json`) | Reads: the lines in rank order, the character count, whether it is over budget. |
 | `mecha charter edit` | Hands the file to `$EDITOR`, creating the template first if there is none, and reports whether what you saved will load. |
 | `/charter` in [the TUI](/docs/features/interfaces) | The same list; `e` hands the terminal to `$EDITOR` on the file itself. |
-| The gear on [the web surface](/docs/features/web) | View, and a validated two-tap edit — the server refuses a save that does not parse. |
+| The gear on [the web surface](/docs/features/web) | Edit as a list: tap a line, add one, drag its grip to re-rank — position is the ranking, so dragging is the rank control. A validated two-tap save; the server refuses one that does not parse. |
 
-All four go through one implementation of "create the template if absent, hand
-over the editor, then decide what actually landed by **looking at the file**".
-The editor's exit code is not the answer to that, and there are two cases where
-they disagree: a clean exit may have saved nothing, and `:cq` exits non-zero
-after a save has landed. Reporting *unchanged* on the second would be a false
-statement about the one file that rides in every prompt.
+The first row only reads. The two that hand over an editor share one
+implementation (`editor::edit_charter_with`): create the commented template
+if absent, hand the file to `$EDITOR`, then decide what actually landed by
+**looking at the file** — the editor's exit code is not the answer to that,
+and there are two cases where they disagree: a clean exit may have saved
+nothing, and `:cq` exits non-zero after a save has landed. Reporting
+*unchanged* on the second would be a false statement about the one file that
+rides in every prompt. The web gear has no editor to hand over, so it shares
+the **rule** rather than the implementation: `serve/settings.rs::charter_save`
+validates the submitted document through the same `Charter::parse` every run
+loads through — a document that reader refuses never reaches disk — and
+lands it by temp-sibling-and-rename, keyed per request so two concurrent
+saves cannot cross. One reader is the invariant all four keep; one editor
+implementation is the two terminal surfaces' own.
 
 Every one of them edits **the file**, never a model-composed line. The only
 bytes mecha itself ever writes there are a comments-only template when no file

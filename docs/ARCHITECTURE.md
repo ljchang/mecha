@@ -2002,10 +2002,18 @@ enforced, and is the part to keep:
   to pick the global loader.
 - **The only bytes mecha writes are `charter::TEMPLATE`'s**, which is comments
   only, with a test that fails on any uncommented `[[line]]` — a template that
-  shipped priorities would be mecha authoring the charter. The write and the
-  did-anything-actually-land classification live once, in
-  `editor::edit_charter_with`, shared by every surface that can create a first
-  charter.
+  shipped priorities would be mecha authoring the charter. The template write
+  and the did-anything-actually-land classification live once, in
+  `editor::edit_charter_with`, shared by the two surfaces that hand over an
+  editor (the CLI and the TUI). The web save is its own write
+  (`serve/settings.rs::charter_save`, temp-sibling-and-rename, keyed per
+  request) and shares the *reader* instead: it validates through the same
+  `Charter::parse` every run loads through, so a document that reader refuses
+  never reaches disk, and the bytes it writes are the owner's own submission,
+  never a template and never a model's. One reader is the invariant every
+  surface keeps; one editor implementation is the terminal surfaces' own —
+  found 2026-08-29, when the page-level docs claimed all surfaces shared the
+  implementation and a grep for callers said otherwise.
 
 **Order is rank, and `deny_unknown_fields` is what enforces it.** There is no
 priority field, because value conflict is the measured cause of goal drift and a
