@@ -857,7 +857,15 @@ export const entity = {
   node: {
     name: 'Priya Raghavan',
     node_type: 'person',
+    aliases: ['Priya R.', 'priya.raghavan'],
   },
+  // Per-source coverage — which stores actually saw this person, and how
+  // often. The graph tab renders it on the head card.
+  sources: [
+    { source: 'mail', episodes: 148, first: '2024-09-03', last: '2026-08-28' },
+    { source: 'calendar', episodes: 61, first: '2024-09-12', last: '2026-08-21' },
+    { source: 'note', episodes: 5, first: '2026-01-19', last: '2026-08-14' },
+  ],
   interaction: {
     interaction_count: 214,
     last_seen_at: '2026-08-28T16:22:00Z',
@@ -907,4 +915,58 @@ export const entity = {
       preview: 'Group meeting — Priya presenting the replication write-up.',
     },
   ],
+};
+
+// The bounded neighborhood the graph tab shows on an entity — 1–2 hops of
+// current facts, never a global view. Chips, each opening its entity.
+export const related = {
+  root: { id: 'n-priya', name: 'Priya Raghavan' },
+  items: [
+    {
+      id: 'n-retrieval',
+      name: 'retrieval-practice replication',
+      type: 'project',
+      depth: 1,
+      via: { predicate: 'led' },
+    },
+    {
+      id: 'n-methods',
+      name: '2025 methods paper',
+      type: 'paper',
+      depth: 1,
+      via: { predicate: 'co_authored' },
+    },
+    {
+      id: 'n-lab',
+      name: 'the lab',
+      type: 'org',
+      depth: 1,
+      via: { predicate: 'member_of' },
+    },
+  ],
+  truncated: false,
+};
+
+// Bi-temporal history: a superseded fact stays visible beside what replaced
+// it, because when things changed is half of what a graph knows.
+export const timeline = {
+  entity: { id: 'n-priya', name: 'Priya Raghavan' },
+  facts: [
+    {
+      uid: 'f-90218',
+      statement: 'Priya Raghavan led the retrieval-practice replication.',
+      valid_from: '2026-02-11T00:00:00Z',
+      valid_to: null,
+      superseded: false,
+    },
+    {
+      uid: 'f-71455',
+      statement: 'Priya Raghavan was a rotation student.',
+      valid_from: '2024-09-01T00:00:00Z',
+      valid_to: '2025-06-01T00:00:00Z',
+      invalidated_at: '2025-06-02T08:00:00Z',
+      superseded: true,
+    },
+  ],
+  episodes: [],
 };

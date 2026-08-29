@@ -5,16 +5,18 @@
   import Review from './lib/Review.svelte';
   import Mail from './lib/Mail.svelte';
   import Tasks from './lib/Tasks.svelte';
-  import Notes from './lib/Notes.svelte';
-  import Entity from './lib/Entity.svelte';
+  import Graph from './lib/Graph.svelte';
   import Settings from './lib/Settings.svelte';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   // A hash may carry a sub-view after a slash (#review/frontdoor), which the
   // view's component interprets; the router only splits it.
-  const views = ['home', 'chat', 'mail', 'review', 'tasks', 'notes', 'graph', 'settings'];
+  const views = ['home', 'chat', 'mail', 'review', 'tasks', 'graph', 'settings'];
   const fromHash = () => {
-    const [h, s] = location.hash.slice(1).split('/');
+    let [h, s] = location.hash.slice(1).split('/');
+    // The notes tab folded into graph (NOTES-GRAPH-DESIGN.md D1); the old
+    // hash keeps working so bookmarks and habits do.
+    if (h === 'notes') h = 'graph';
     return views.includes(h) ? { view: h, sub: s ?? null } : { view: 'home', sub: null };
   };
   let route = $state(fromHash());
@@ -44,10 +46,8 @@
     <Review initial={route.sub} />
   {:else if view === 'tasks'}
     <Tasks />
-  {:else if view === 'notes'}
-    <Notes />
   {:else if view === 'graph'}
-    <Entity initial={route.sub} />
+    <Graph initial={route.sub} />
   {:else if view === 'settings'}
     <Settings />
   {:else}

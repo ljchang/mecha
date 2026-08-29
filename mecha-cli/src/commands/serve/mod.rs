@@ -330,6 +330,8 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/frontdoor/read", get(frontdoor::read))
         .route("/api/frontdoor/act", axum::routing::post(frontdoor::act))
         .route("/api/find", get(board::find))
+        .route("/api/related", get(board::related))
+        .route("/api/timeline", get(board::timeline))
         .route(
             "/api/dictate",
             axum::routing::post(dictate)
@@ -660,6 +662,29 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_graph_routes_sit_behind_the_owner_guard() {
+        // The graph tab reads the owner's whole private store — every
+        // entity, fact and note — so a probe without the header learns
+        // nothing, not even that a graph exists. The two new reads
+        // (`related`, `timeline`) are pinned beside the ones that predate
+        // them, because a route added later is exactly the one a guard
+        // test written earlier cannot be covering.
+        for uri in [
+            "/api/entity?name=x",
+            "/api/find?q=x",
+            "/api/notes",
+            "/api/related?name=x",
+            "/api/timeline?name=x",
+        ] {
+            let response = test_router()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri}");
         }
     }
 
