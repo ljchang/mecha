@@ -309,6 +309,24 @@ pub trait Tool: Send + Sync {
     /// a procedure that has been read cannot be un-read.
     fn forget_conversation_state(&self) {}
 
+    /// Does this handle refuse task closures (`status: done|dropped`) on the
+    /// model's behalf?
+    ///
+    /// `false` for every ordinary tool — the default an MCP-wrapped tool can
+    /// never override, which is the point: the closure guard's presence
+    /// check used to read the tool's *description*, a string the guarded
+    /// MCP server itself supplies, so a server whose description happened to
+    /// end with the guard's own sentence was left unwrapped and still passed
+    /// the startup verification — a fail-open keyed to data from the side
+    /// being guarded. The answer lives in the type instead, where this
+    /// repo's structural properties live; only the in-process wrapper
+    /// returns `true`. Same family as [`carried_state`](Tool::carried_state):
+    /// the loop and the verifier learn that some handle guards, never which
+    /// kind of tool it is.
+    fn guards_closures(&self) -> bool {
+        false
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: self.name().to_string(),

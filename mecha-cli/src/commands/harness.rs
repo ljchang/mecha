@@ -596,11 +596,17 @@ fn show(id: &str) -> Result<()> {
                 m.diverged.join(", ")
             );
         }
-        // The compromise behind a drop, for the person deciding on this
-        // candidate: a multi-config episode's divergence says something
-        // about the replay, not necessarily about the change.
-        for caveat in &m.replay_caveats {
-            println!("  caveat:   {caveat}");
+        // Its own block with its own label, not indented under `diverged:`
+        // — found on review: these cover *every* episode the replay
+        // compromised on, the cleanly paired ones included, and rendering
+        // them as an appendix to the drops read a scored episode as a
+        // dropped one (or, with nothing diverged, hung them under whatever
+        // line came before).
+        if !m.replay_caveats.is_empty() {
+            println!("replay caveats (dropped or scored):");
+            for caveat in &m.replay_caveats {
+                println!("  {caveat}");
+            }
         }
         if m.skipped > 0 {
             println!("skipped:    {}", m.skipped);
