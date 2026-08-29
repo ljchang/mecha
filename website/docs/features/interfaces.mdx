@@ -1,39 +1,47 @@
 ---
 title: Interfaces
 sidebar_position: 1
-description: The four front ends over one agent loop, what each process actually costs, and why only the full-screen one can steer a run in flight.
+description: The five front ends over one agent loop — four in a terminal and one in a browser — what each process actually costs, and why only two of them can steer a run in flight.
 ---
+
+import WebFrame from '@site/src/components/WebFrame';
 
 # Interfaces
 
-One agent loop, four ways to drive it. `mecha run` answers a single task and
-exits. `mecha chat` is a readline REPL. `mecha tui` is full-screen, and the
-input line stays live while the agent works. `mecha batch` fans the same agent
-out over a file of prompts.
+One agent loop, five ways to drive it. Four are in a terminal and one is a
+browser, and the browser is not the lesser of them: it is the only surface
+that runs on a phone, the only one that takes a microphone, and the one most
+of the reviewing actually happens on.
 
-The loop itself is the same code in all four. What differs is who owns the
-terminal, and that single fact decides what each front end can do — most
-visibly, whether you can redirect a run without stopping it.
+| | What it is | Where | Steer a run? |
+|---|---|---|---|
+| [`mecha run`](#mecha-run--one-task-one-answer) | one task, one answer, then exit | terminal | no |
+| [`mecha chat`](#mecha-chat--a-repl) | a readline REPL | terminal | no |
+| [`mecha tui`](#mecha-tui--full-screen-and-steerable) | full-screen; the input line stays live | terminal | **yes** |
+| [`mecha serve`](#mecha-serve--the-web-surface) | the web app on your tailnet — **and the only door voice opens through** | browser, phone | **yes** |
+| [`mecha batch`](#mecha-batch--fan-out) | fan-out over a file of prompts | terminal | n/a |
 
-[Slack](/docs/features/slack) is deliberately not a fifth entry in that list.
-It is a *remote control*: `mecha slack connect` answers in its own threads, and
+The loop itself is the same code in all five. What differs is **who owns the
+input**, and that single fact decides what each front end can do — most
+visibly, whether you can redirect a run without stopping it. A readline REPL
+owns stdin only between runs and so cannot steer; the TUI and the web app each
+have one event loop holding the input for the whole session, and both can. See
+[cancel and steer are different things](#cancel-and-steer-are-different-things).
+
+[Slack](/docs/features/slack) is deliberately not a sixth entry. It is a
+*remote control*: `mecha slack connect` answers in its own threads, and
 `/remote-control` puts an existing terminal session into a named thread so the
 two are one conversation. Which one you get is decided by the same question
 about ownership — see [the remote control is that owner, from somewhere
 else](#the-remote-control-is-that-owner-from-somewhere-else).
 
-Two more doors are not on that list either, for the same reason — they are
-places to reach the agent from, not new loops:
+[Voice](/docs/features/voice) is not a sixth entry either, for a more concrete
+reason: **it is not a separate front end at all.** A call is opened from the
+chat view of the web surface and speaks into the conversation already open
+there. There is no `mecha voice` you can run in a terminal, no phone number,
+and no other way in. If you want to talk to mecha, `mecha serve` is the door.
 
-- **[The web surface](/docs/features/web)** (`mecha serve`) is the same agent
-  behind a small web app on your tailnet, with many conversations on one
-  provider connection. It is where a phone reviews drafts, reads mail and
-  clears queues.
-- **[Voice](/docs/features/voice)** is that door with a microphone in front of
-  it. A call is an ordinary session with the same tools and the same outbox;
-  what differs is that speech is arriving instead of typing.
-
-## One loop, four processes, and no extra models
+## One loop, several processes, and no extra models
 
 A question that comes up the first time a second agent starts: *if I run the
 TUI, a Slack connector and a trigger daemon, am I running three copies of the
@@ -48,12 +56,14 @@ flowchart LR
     direction LR
     subgraph procs["agent processes"]
       tui["mecha tui"]
+      serve["mecha serve<br/>(web + voice)"]
       slack["mecha slack connect"]
       trig["mecha trigger daemon"]
       cron["mecha frontdoor<br/>(hourly, transient)"]
     end
     server[("llama-server<br/>weights + one KV cache")]
     tui -->|HTTP| server
+    serve -->|HTTP| server
     slack -->|HTTP| server
     trig -->|HTTP| server
     cron -->|HTTP| server
@@ -243,6 +253,77 @@ too long for one row, and a drag across a wrapped, bordered box copies the
 border characters too, so `s` there shows the link alone at column 0.
 :::
 
+## `mecha serve` — the web surface
+
+```bash
+mecha serve                          # the door, on [web] port
+mecha serve --voice-port 8990        # with the voice facade mounted
+```
+
+The same agent, behind a small web app bound to `127.0.0.1` and fronted by
+[`tailscale serve`](https://tailscale.com/kb/1242/tailscale-serve). It exists
+because the terminal is where mecha lives and the terminal is not where you
+are: a draft that needs approving, a thread that needs reading and a queue
+that needs clearing were all previously stuck behind a laptop.
+
+This is the app, running. It is the real bundle from `web/`, with invented
+data behind it rather than a box — tap through it, and type into the chat:
+
+<WebFrame
+  page="home"
+  height={720}
+  pages={[
+    {hash: 'home', label: 'home'},
+    {hash: 'chat', label: 'chat'},
+    {hash: 'mail', label: 'mail'},
+    {hash: 'review', label: 'review'},
+    {hash: 'tasks', label: 'tasks'},
+    {hash: 'notes', label: 'notes'},
+    {hash: 'graph/Priya%20Raghavan', label: 'graph'},
+    {hash: 'settings', label: 'settings'},
+  ]}
+  caption={
+    <>
+      The seven pages of <code>mecha serve</code>. Sending in <strong>chat</strong> replays a
+      recorded run — a tool call resolving, then a reply that stages a draft instead of
+      sending it.
+    </>
+  }
+/>
+
+Three properties are worth carrying away from it, all of which
+[the web surface](/docs/features/web) argues in full:
+
+- **Identity is the network, verified.** There is no password and no login
+  page. Every request must carry the `Tailscale-User-Login` header that
+  `tailscale serve` injects, matching `[web] owner_login`; the server refuses
+  to start without one configured. A door with no owner check should not open.
+- **One agent, many conversations.** The agent lives in the serve process, so
+  the phone is a view onto it rather than a second copy — one provider
+  connection and one cached prefix, with each conversation holding its own
+  `RunContext`: its own jail under `~/.mecha/work/web/<key>/`, its own
+  permission mode, its own cancel token and steering queue. Resuming a
+  recorded conversation brings its
+  [taint](/docs/features/security) back with it.
+- **A web session starts read-only.** Reads run; anything that would send is
+  staged in [the outbox](/docs/features/outbox). Switching a session to `ask`
+  turns every other call into an approval card on the page, and entering
+  `allow` asks first while leaving it does not — every other change only adds
+  a gate, and a confirmation on a harmless change is what teaches people to
+  tap through the ones that matter.
+
+The pages are **thin shells over the command line**: reads come from the same
+stores the CLI reads, and every mutation runs `mecha <verb>` as a child
+process. Nothing is reachable from a browser that a script could not do, and
+there is exactly one implementation of each verb.
+
+:::note[The web assets are a build artifact]
+`cargo install` updates the binary and not the pages. `cd web && npm ci && npm
+run build`, then rsync `dist/` to `[web] assets`. Verify the *served* page
+rather than the directory — a stale `dist` next to a fresh binary is the
+failure that looks exactly like nothing happening.
+:::
+
 ## Cancel and steer are different things
 
 This is the distinction the interfaces exist to express.
@@ -301,9 +382,11 @@ becomes its own user message, which is the only legal shape available there.
 The cost is latency: a steer waits for the in-flight model call and the tools it
 asked for. Interrupting sooner would mean discarding a turn already paid for.
 
-### Why only the TUI can steer
+### Why the REPL cannot steer, and the other two can
 
-Steering needs a single owner of stdin.
+Steering needs a **single owner of the input**, for the whole session rather
+than between runs. That is the entire criterion, and it sorts the front ends
+cleanly.
 
 A readline REPL owns stdin only *between* runs. Reading it while a run streams
 would need a second reader on the same file descriptor, and whichever reader is
@@ -319,8 +402,16 @@ than an instruction for the model, and sending it as steering would put a slash
 command into the transcript. Anything else, while a run exists, goes into that
 run's queue.
 
+The web surface qualifies for the same reason by a different route: the page's
+input box is not competing with anything for a file descriptor, and the agent
+is in the serve process holding that conversation's `RunContext`. So text
+posted while a run is in flight lands in that run's queue, and the browser is
+steering on exactly the mechanism the TUI uses.
+
 This is a property of the front end, not of the loop. Any caller that owns its
-own input can call `RunContext::with_queued_input` and get the same behaviour.
+own input can call `RunContext::with_queued_input` and get the same behaviour —
+which is also why [`/remote-control`](#the-remote-control-is-that-owner-from-somewhere-else)
+works by *reaching* an owner rather than becoming a second one.
 
 ### The remote control is that owner, from somewhere else
 
@@ -400,7 +491,7 @@ failed.
 
 ## As a library
 
-All four front ends are thin. `Agent::run` uses the agent's own `RunContext`;
+Every front end is thin — the web surface included, which is why one browser tab and one terminal can watch the same run. `Agent::run` uses the agent's own `RunContext`;
 `Agent::run_in` takes a caller's. One agent — one provider connection, one
 cached prefix — can serve concurrent runs jailed to different directories under
 different permissions.

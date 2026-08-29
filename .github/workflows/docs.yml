@@ -5,11 +5,16 @@ on:
     branches: [main]
     paths:
       - "website/**"
+      # The embedded demo is built from the web app at docs-build time, so a
+      # change to the surface changes the docs. Without this a UI change ships
+      # with the docs still showing the previous one.
+      - "web/**"
       - "CHANGELOG.md"
       - ".github/workflows/docs.yml"
   pull_request:
     paths:
       - "website/**"
+      - "web/**"
       - "CHANGELOG.md"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -37,7 +42,30 @@ jobs:
           cache-dependency-path: website/package-lock.json
 
       - run: npm ci
+
+      # Before the build, not after: this fails when the web app reaches an
+      # endpoint the demo has no fixture for, which otherwise ships as a page
+      # that renders its own error state and reads as a broken feature.
+      - run: npm run check-demo
+
       - run: npm run build
+
+      # The demo embeds the real web app, and neither of the steps above runs
+      # a line of its JavaScript: `check-demo` reads fixtures and route tables,
+      # and `docusaurus build` renders no client code. So a page of the app can
+      # be broken with both green — v0.1.16 shipped exactly that, a `stalled`
+      # ReferenceError that emptied the task board. This loads every page in a
+      # browser and fails on an error, a page that drew almost nothing, or one
+      # of the app's own "could not read that" affordances.
+      - name: Install chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Render the embedded demo
+        # Without this the check downgrades a missing browser to a warning, and
+        # a silently skipped check in CI reads exactly like a passing one.
+        env:
+          MECHA_DOCS_REQUIRE_BROWSER: '1'
+        run: npm run render-check
 
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
