@@ -346,7 +346,11 @@
        learned-rules TOML is not retired and still rides in no prompt. On a
        pane whose job is "what a run actually carries", that reads as spent
        too. -->
-  {#each rules as r (r.id ?? r.title)}
+  <!-- Keyed on domain+text where there is no id — every user rule, and any
+       learned rule minted before ids existed. `rules list --json` iterates
+       the domains, so the same text in two of them would otherwise be two
+       rows with one key, which Svelte 5 raises on. -->
+  {#each rules as r (r.id ?? `${r.domain}:${r.title}`)}
     <div class="rule" class:spent={r.retired || !r.active}>
       <div class="rule-head">
         <span class="chip domain">{r.domain}</span>
