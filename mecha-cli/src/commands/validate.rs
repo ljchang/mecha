@@ -225,6 +225,42 @@ fn select_probe_corpus(
         .collect()
 }
 
+/// Whether an answer can be graded at all.
+///
+/// **An answer that is not there is not a failing answer**, and the
+/// difference decides whether a rule gets blamed. The followup probe re-asks
+/// the corrective turn with `tools: Vec::new()` — no tool surface — so a run
+/// that would naturally have continued by calling one produces either nothing
+/// or a bare `<tool_call>` residue where the text should be. Handed to the
+/// judge that reads as a bad answer, so the arm "fails"; when only the
+/// with-rules arm does it, the comparison reports REGRESSED and the rule is
+/// convicted for an artifact of the harness.
+///
+/// Two of the three regressions in the first full pass over this store
+/// (2026-08-29) were exactly that. It mattered the moment retirement stopped
+/// needing a human: a false regression now retires a rule on its own.
+///
+/// So an ungradeable arm makes the probe *inconclusive* — the same answer
+/// this file already gives a torn transcript or an absent session. The
+/// alternative is not "grade it anyway", it is a ledger that cannot be
+/// trusted by the thing that reads it.
+fn is_gradeable(answer: &str) -> bool {
+    let t = answer.trim();
+    if t.is_empty() {
+        return false;
+    }
+    // Tool-call markup with no prose around it. Hermes-style `<tool_call>` is
+    // what qwen emits here; the check is on what *remains* after the markup
+    // rather than on a list of known markers, so a template that spells it
+    // differently still has to leave something a judge can read.
+    let stripped = t
+        .replace("<tool_call>", "")
+        .replace("</tool_call>", "")
+        .replace("<tool_response>", "")
+        .replace("</tool_response>", "");
+    !stripped.trim().is_empty()
+}
+
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let store = LearningStore::open(LearningStore::default_root()?)?;
     // What a run actually carries, not what the store holds: the ledger is
@@ -464,7 +500,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 system: (!system.is_empty()).then(|| system.clone()),
                 messages: messages.clone(),
                 tools: Vec::new(),
-                max_tokens: 4096,
+                // **Above the reasoning budget, not merely large.** A local
+                // model with thinking on spends this allowance on
+                // `reasoning_content` first and emits the answer from what is
+                // left; at 4096 it routinely spent all of it and returned
+                // HTTP 200 with empty content — `finish_reason: "length"`,
+                // 10k+ reasoning characters, no answer. The judge then graded
+                // an absent answer as a bad one, and where only one arm did it
+                // the probe reported REGRESSED and blamed the rule.
+                //
+                // The same number, for the same reason, as the judge's own
+                // `with_max_tokens` twenty lines up — whose comment already
+                // records that 4096 was measured insufficient. The fix landed
+                // on the judge and not on the probe it grades, which is how a
+                // measured lesson stays half-applied.
+                max_tokens: 16384,
                 effort: None,
                 thinking: false,
                 cache_prompt: true,
@@ -480,6 +530,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
              known expectation: {}",
             r.reflexion_text
         );
+        // Before the judge sees them: an arm with no readable answer cannot
+        // be compared, and pretending otherwise convicts a rule of a harness
+        // artifact.
+        if let Some(i) = answers.iter().position(|a| !is_gradeable(a)) {
+            eprintln!(
+                "· {}: the {} answer has no gradeable text (a tool call with no prose, \
+                 most likely — the followup probe offers no tools); inconclusive",
+                r.id,
+                if i == 0 { "baseline" } else { "with-rules" }
+            );
+            record(r, "inconclusive", None)?;
+            inconclusive += 1;
+            continue;
+        }
+
         let mut verdicts = Vec::new();
         for answer in &answers {
             match judge.assess(&r.intervention, &rubric, answer).await {
@@ -748,5 +813,49 @@ mod tests {
         assert_eq!(outcome_str(&Fail, &Fail), "unchanged_fail");
         assert_eq!(outcome_str(&inc(), &Pass), "inconclusive");
         assert_eq!(outcome_str(&Pass, &inc()), "inconclusive");
+    }
+}
+
+#[cfg(test)]
+mod gradeable_tests {
+    use super::is_gradeable;
+
+    /// **A missing answer is not a failing answer.** The followup probe offers
+    /// no tools, so a run that would have continued with a tool call comes
+    /// back as bare markup — and a judge reads that as bad. When only one arm
+    /// does it the probe reports REGRESSED and the rule wears it.
+    ///
+    /// Fails on the old behaviour: every string here went straight to the
+    /// judge, and two of the three regressions in the first full pass over the
+    /// live store were manufactured this way.
+    #[test]
+    fn tool_call_residue_and_emptiness_are_not_gradeable_answers() {
+        for bad in [
+            "",
+            "   ",
+            "\n\n",
+            "<tool_call>",
+            "  <tool_call>  ",
+            "<tool_call></tool_call>",
+            "<tool_response></tool_response>",
+        ] {
+            assert!(!is_gradeable(bad), "{bad:?} has nothing a judge can read");
+        }
+    }
+
+    /// Real prose grades, including prose that merely *mentions* a tool call
+    /// or carries one alongside an actual answer — the check is on what
+    /// remains, not on whether the marker appears.
+    #[test]
+    fn prose_grades_even_when_a_tool_call_rides_along() {
+        for good in [
+            "I'll populate the sheet now with the Fall 2026 dates.",
+            "Got it. I'll map the same 29 meetings.",
+            "<tool_call>Let me read the file first, then answer.</tool_call>",
+            "Here is the answer.<tool_call></tool_call>",
+            "no",
+        ] {
+            assert!(is_gradeable(good), "{good:?} is readable");
+        }
     }
 }
