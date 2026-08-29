@@ -108,6 +108,18 @@ cd <clean worktree>/web && npm ci && npm run build
 rsync -a --delete dist/ ~/.mecha/web/dist/
 ```
 
+**Before that rsync, ask what is deployed — the dist may be another
+lane's live test.** `git tag -l deployed-local` in the main checkout names
+the commit whose build is on the box when a session deployed something
+other than main (re-point it whenever you deploy; delete it when main is
+deployed). And read the mismatch correctly even when the tag is missing:
+a served bundle hash that matches no tree you can see is far more likely
+to be **another session's deployment than a leftover** — on 2026-08-29 it
+was exactly that, filed as "stale", and the rsync that followed silently
+reverted a surface the owner was live-testing. If the dist is not what
+you are about to install, announce to the live sessions before replacing
+it.
+
 Then restart `mecha-serve.service` (step 2). Verify the *served* page, not
 the directory: the 8443 door returning 200 with the new bundle hash.
 
