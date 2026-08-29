@@ -87,17 +87,19 @@ pub enum Cmd {
     /// only path to a verdict runs through whoever is at the keyboard.
     Shadow {
         /// Confirm a shadow fact by uid — a human stands behind it.
-        #[arg(long, value_name = "FACT_UID")]
+        /// Conflicts with --refute: two verdicts in one line is refused
+        /// rather than silently half-done, the module's standing rule.
+        #[arg(long, value_name = "FACT_UID", conflicts_with = "refute")]
         confirm: Option<String>,
         /// Refute a shadow fact by uid — it was never true.
         #[arg(long, value_name = "FACT_UID")]
         refute: Option<String>,
         /// Why, for --refute; it feeds the graph's rejection memory.
-        #[arg(long)]
+        #[arg(long, requires = "refute")]
         reason: Option<String>,
         #[arg(long, default_value_t = 10)]
         limit: usize,
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["confirm", "refute"])]
         json: bool,
     },
     /// Individual candidates from one class, drawn at random.
@@ -628,13 +630,22 @@ fn collect_queues() -> Vec<Queue> {
             let surfaced = v["surfaced"].as_array().cloned().unwrap_or_default();
             let live = v["shadow_live"].as_u64().unwrap_or(0);
             let served = v["shadow_served"].as_u64().unwrap_or(0);
-            let oldest = oldest_age(surfaced.iter().filter_map(|r| {
-                r["last_served"]
-                    .as_str()
-                    .or(r["fact"]["ingested_at"].as_str())
-            }));
+            // The depth is the graph's pre-truncation count, never this
+            // page's length — the `--top` trap, again: a capped listing
+            // read as the whole queue. An older graph without the field
+            // falls back to the page, which is at least a floor.
+            let depth = v["surfaced_total"]
+                .as_u64()
+                .map(|n| n as usize)
+                .unwrap_or(surfaced.len());
+            // `last_served` only: it is the one stamp meaning "started
+            // mattering". Mixing in `ingested_at` made a March fact that
+            // surfaced this morning read as five months of waiting —
+            // origin and recency are not comparable quantities, and rows
+            // surfaced without a serve simply contribute no age.
+            let oldest = oldest_age(surfaced.iter().filter_map(|r| r["last_served"].as_str()));
             (
-                Some(surfaced.len()),
+                Some(depth),
                 format!("{live} unreviewed facts live, {served} ever served"),
                 oldest,
             )

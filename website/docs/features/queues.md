@@ -19,15 +19,15 @@ deciding to let it.
 
 ```
 $ mecha review
-4,520 item(s) waiting on you
+4,514 item(s) waiting on you
 
-  4,461  graph candidates       3 proposer(s); 12 from mechanisms you have never judged
-     10  graph shadow           2,456 unreviewed facts live, 0 ever served
-     32  graph entities         2 detector(s) with something to say
-     10  outbox drafts          10 drafted with the trifecta armed
-      1  front-door requests    5 closed
-      0  rule proposals         0 decided
-      0  harness changes        0 resolved
+  4,461      9d  graph candidates       3 proposer(s); 12 from mechanisms you have never judged
+     32      2d  graph entities         2 detector(s) with something to say
+     10      1h  graph shadow           2,456 unreviewed facts live, 118 ever served
+     10      9d  outbox drafts          10 drafted with the trifecta armed
+      1      5d  front-door requests    5 closed
+      0          rule proposals         0 decided
+      0          harness changes        0 resolved
 ```
 
 The `graph shadow` row is the graph's *surfaced-verdict* queue
