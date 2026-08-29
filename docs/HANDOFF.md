@@ -478,9 +478,11 @@ deployed binary and dist were built from the branch at `9c2f59c` +
 `aa53174`; after the merges that differs from `main` by zero code, so **a
 deploy from `main` is safe again** — the roll-off caveat that stood from
 01:48 to the merge is retired. `mecha-slack` was deliberately **not**
-restarted (pre-#114 inode; nothing it serves changed) — the stale-process
-sweep will flag it; restart it on the next change that reaches it, not
-because the sweep says so. The private graph repo's main moved twice
+restarted (pre-#114 inode; nothing it serves changed) at the time — then at
+~04:16 the update skill's sweep found it *and* `mecha-triggers` still
+executing deleted binaries (including the `mecha-graph-mcp` child) and both
+were restarted; the sweep is clean since, and the web dist was redeployed
+once more the same pass. The private graph repo's main moved twice
 (`378ab8d` shadow list/show verbs, `bdce6c2` `surfaced_total` in the shadow
 envelope) and both graph binaries were reinstalled — verified by asking the
 artifact (`mecha-graph shadow --help` answers with the surfaced-verdict
