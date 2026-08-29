@@ -238,15 +238,24 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
     let cutoff = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
 
     let mut rows = std::collections::BTreeMap::<(String, String), StatRow>::new();
-    for (meta, path) in Session::list(dir)? {
+    let (listed, mut unreadable) = Session::list_counting(dir)?;
+    for (meta, path) in listed {
         if let Some(cutoff) = cutoff {
             if meta.created_at < cutoff {
                 continue;
             }
         }
-        // A torn transcript still counts what it recorded; one unreadable
-        // file must not sink the report.
-        let (usage, turns) = Session::usage_totals(&path).unwrap_or_default();
+        // A torn transcript still counts what it recorded (`usage_totals`
+        // skips malformed lines itself); a file whose *read* fails is a
+        // different thing — counting it as a session with zero tokens is the
+        // dash-versus-zero inversion, so it is counted apart and said.
+        let (usage, turns) = match Session::usage_totals(&path) {
+            Ok(v) => v,
+            Err(_) => {
+                unreadable += 1;
+                continue;
+            }
+        };
         let pricing = config
             .providers
             .get(&meta.provider)
@@ -260,6 +269,13 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
             row.priced = true;
         }
         row.usage.add(&usage);
+    }
+
+    // "in the store", because the count is store-wide while the rows may
+    // be windowed by --days: a skipped file has no readable date to
+    // window on, so the honest scope is the whole directory.
+    if unreadable > 0 {
+        eprintln!("{unreadable} transcript(s) in the store could not be read and appear in no row");
     }
 
     if json {
@@ -279,7 +295,20 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&items)?);
+        // An object, not the bare array this used to be — found on review:
+        // `appraise --json` and `health --json` both carry
+        // `sessions_unreadable`, and a machine reader of this one surface
+        // was the only consumer left unable to see the rot the whole arc
+        // exists to surface. No in-repo consumer read the array shape.
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "rows": items,
+                // Store-wide, like the scan — a skipped file has no
+                // readable date to window on.
+                "sessions_unreadable": unreadable,
+            }))?
+        );
         return Ok(());
     }
 
@@ -405,45 +434,68 @@ async fn appraise(
     // records a session. `RunStats::fold` collapses a session's runs the way
     // rung 4's episode stats do, through the same fold.
     let mut appraisals = Vec::new();
-    // Kept beside each appraisal only for the probe pass. The free readout
-    // never looks at them again, so this allocates nothing extra when `--probe`
-    // is off — `of_session` has already read what it needs out of them.
-    let mut per_session_interventions: Vec<Vec<mecha_core::learning::Intervention>> = Vec::new();
+    // Kept beside each appraisal only for the probe pass: the transcript's
+    // own path (so the probe never re-resolves an id this walk already
+    // resolved) and its interventions. The free readout never looks at
+    // either again, so this allocates nothing extra when `--probe` is off —
+    // `of_session` has already read what it needs out of them.
+    let mut per_session_probe_input: Vec<(
+        std::path::PathBuf,
+        Vec<mecha_core::learning::Intervention>,
+    )> = Vec::new();
     let mut sessions_read = 0usize;
-    for (meta, path) in Session::list(dir)? {
+    // The listing's skip count, kept apart from "read but nothing to
+    // appraise": a corrupt transcript was invisible from this readout
+    // entirely — it appeared in no count at all, which on this surface of
+    // all surfaces is the dash-versus-zero inversion.
+    let (listed, mut sessions_unreadable) = Session::list_counting(dir)?;
+    for (meta, path) in listed {
         if since.is_some_and(|t| meta.created_at < t) {
             continue;
         }
         if limit.is_some_and(|n| sessions_read >= n) {
             break;
         }
+        // Read first, count second: `for_session` folds "the file could not
+        // be read" and "no outcome recorded yet" into one `None`, which used
+        // to land a body-corrupt transcript in `sessions_read` and no
+        // unreadable count — the half of this readout's own thesis
+        // `Corpus::scan` already closed. Going through `Session::read`
+        // directly (the `for_transcript` seam exists for callers that
+        // already read) is what keeps the two answers apart, and the one
+        // assembly is unchanged: the outcome, the interventions and the
+        // goal all come off the same pass, the goal from the model's own
+        // `serves` argument (absent is recorded, never guessed), and origin
+        // from the carried timeline's coverage — fail-closed, unknown never
+        // clean.
+        let transcript = match Session::read(&path) {
+            Ok(t) => t,
+            Err(_) => {
+                sessions_unreadable += 1;
+                continue;
+            }
+        };
         sessions_read += 1;
-        // `appraisal::for_session` is the one assembly: `Session::read` once
-        // (the outcome, the interventions and the goal all off the same
-        // pass — its own doc names the three-reads mistake this collapses),
-        // the goal from the model's own `serves` argument (absent is
-        // recorded, never guessed, so a goal-less session cannot be
-        // confused with a dead channel), and origin from the timeline's own
-        // coverage rather than `stats.taint`, which cannot tell "recorded
-        // clean" apart from "recorded before the field existed". `None`
-        // covers both an unreadable file and one with no outcome recorded
-        // yet — `Session::read` fails on the former where `episode_stats`
-        // would have answered `Ok(None)` for the latter, so both still land
-        // on one `continue` here, exactly as they did before the extraction.
         let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts
             .iter()
             .filter(|i| i.session_id.as_deref() == Some(meta.id.as_str()))
             .collect();
-        let Some(built) =
-            appraisal::for_session(&path, &meta.id, meta.created_at.to_rfc3339(), &mine, None)
-        else {
+        // `None` now means exactly one thing — no outcome recorded yet —
+        // which is "read, nothing to appraise", counted above.
+        let Some(built) = appraisal::for_transcript(
+            &transcript,
+            &meta.id,
+            meta.created_at.to_rfc3339(),
+            &mine,
+            None,
+        ) else {
             continue;
         };
         appraisals.push(built.appraisal);
-        per_session_interventions.push(if probe {
-            built.interventions
+        per_session_probe_input.push(if probe {
+            (path, built.interventions)
         } else {
-            Vec::new()
+            (std::path::PathBuf::new(), Vec::new())
         });
     }
 
@@ -452,8 +504,11 @@ async fn appraise(
     // Off by default, and the free readout above is byte-for-byte what it was:
     // `appraise` with no flag still costs zero tokens and no model, which is
     // the property that lets it be run over the whole store. `--probe` and
-    // `--appraise` are independent — either, neither, or both — so the
-    // provider is built once for whichever is set rather than twice.
+    // `--appraise` are independent — either, neither, or both. The handle
+    // built here serves the appraiser's calls; the probe path builds its own
+    // provider per arm inside `drive_arm` (each arm builds a whole replay
+    // agent, and `Agent::new` owns its provider) — a real, small cost per
+    // replay, not the "built once" this comment used to claim.
     let mut tally = crate::appraisal_probe::Tally::default();
     let mut appraiser_tally = crate::appraiser_pass::Tally::default();
     let mut budget = if probe { max_probes } else { 0 };
@@ -474,16 +529,16 @@ async fn appraise(
             // `mecha validate` and `mecha replay` do; the agent it builds is
             // discarded and only its registry is borrowed.
             let prepared = crate::setup::prepare(global, false).await?;
-            let wanted: usize = per_session_interventions.iter().map(Vec::len).sum();
+            let wanted: usize = per_session_probe_input.iter().map(|(_, i)| i.len()).sum();
             // The honest ceiling, not `wanted`: `probe_appraisal` checks
             // `replayable(trigger)` before spending budget, so a `followup` or
             // an `edit` — most of an ordinary corpus — costs nothing and was
             // never going to be probed regardless of `max_probes`. Reporting
             // `wanted` here reads as a cap that will bind when it almost never
             // does.
-            let replayable: usize = per_session_interventions
+            let replayable: usize = per_session_probe_input
                 .iter()
-                .flatten()
+                .flat_map(|(_, i)| i)
                 .filter(|i| crate::appraisal_probe::replayable(i.trigger))
                 .count();
             eprintln!(
@@ -491,12 +546,12 @@ async fn appraise(
                  with {model} ({provider_name})",
                 max_probes.min(replayable)
             );
-            for (a, interventions) in appraisals.iter_mut().zip(&per_session_interventions) {
+            for (a, (path, interventions)) in appraisals.iter_mut().zip(&per_session_probe_input) {
                 let t = crate::appraisal_probe::probe_appraisal(
                     &prepared,
                     provider_cfg,
                     &model,
-                    dir,
+                    path,
                     interventions,
                     a,
                     &mut budget,
@@ -559,8 +614,17 @@ async fn appraise(
     let mut labels: std::collections::BTreeMap<String, usize> = Default::default();
     let mut channels: std::collections::BTreeMap<String, usize> = Default::default();
     let mut positive = 0usize;
+    // Whether any session names what it serves is the corpus's own open
+    // question — `serves:` had never carried a value in production when rung
+    // 7's measurement was taken, and the instrument could not say so (#91's
+    // counter did not survive its merge). Derived here so the next honest
+    // read costs a flag, not an archaeology pass.
+    let mut named_a_goal = 0usize;
     for a in &appraisals {
         *labels.entry(enum_key(a.label)).or_default() += 1;
+        if !a.goals.is_empty() {
+            named_a_goal += 1;
+        }
         for e in &a.errors {
             *channels.entry(enum_key(e.channel)).or_default() += 1;
             if e.sign > 0.0 {
@@ -575,6 +639,8 @@ async fn appraise(
             serde_json::to_string_pretty(&serde_json::json!({
                 "appraised": appraisals.len(),
                 "sessions_read": sessions_read,
+                "sessions_unreadable": sessions_unreadable,
+                "named_a_goal": named_a_goal,
                 "labels": labels,
                 "channels": channels,
                 "positive_errors": positive,
@@ -622,6 +688,16 @@ async fn appraise(
     if outbox_unreadable {
         println!("  (the outbox could not be read, so the edit channel is missing — not empty)\n");
     }
+    // Same rule for the session store itself: a corrupt transcript is in no
+    // count above, and "skipped" must not read as "the store held less".
+    // Store-wide, whatever --days narrowed the rows to — a skipped file has
+    // no readable date to window on.
+    if sessions_unreadable > 0 {
+        println!(
+            "  ({sessions_unreadable} transcript(s) in the store could not be read and are in \
+             no count above)\n"
+        );
+    }
     if appraisals.is_empty() {
         return Ok(());
     }
@@ -648,6 +724,14 @@ async fn appraise(
          exposure producer",
         neutral as f64 / appraisals.len() as f64 * 100.0,
         appraisal::Affect::ALL.len(),
+    );
+    // The other number the corpus turns on: frustration and every
+    // goal-attributed label are unreachable for a session that names no
+    // goal, and `serves:` coverage has never been measurable from the
+    // instrument itself since #91's counter was lost in its merge.
+    println!(
+        "  {named_a_goal} of {} named a goal (`serves:`)",
+        appraisals.len()
     );
 
     println!("\n  signed errors, by channel");
@@ -726,18 +810,12 @@ async fn appraise(
     Ok(())
 }
 
-/// A `Serialize` enum's own wire spelling, never `{:?}`. Debug and serde agree
-/// on every variant here today because each is one word, but `Agency::Own`
-/// already diverges (`"self"`, a hand-written rename) — so deriving a JSON key
-/// from Debug is a bug waiting on the first multi-word variant, silently
-/// mismatched the day it lands rather than caught here. `unwrap_or_else`'s
-/// fallback is unreachable for a unit-variant enum in practice; it exists so
-/// this stays a display helper rather than a second thing that can panic.
+/// One spelling of enum-to-wire-name, shared with the core — see
+/// `mecha_core::appraisal::enum_name` for why it is not `{:?}` and why the
+/// fallback is `"unknown"`, never `""`. This alias keeps the call sites
+/// by-value, matching how the tallies above use it.
 fn enum_key<T: serde::Serialize>(v: T) -> String {
-    serde_json::to_value(v)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".into())
+    mecha_core::appraisal::enum_name(&v)
 }
 
 /// `sessions health` — the run-quality corpus, summarised.
@@ -768,9 +846,24 @@ fn health(
         return Ok(());
     }
 
+    // Found on review: this was the one reader of the corpus that never said
+    // `unreadable` — and it is the surface whose stated job is the corpus,
+    // summarised. A store where every file is headerless printed "0
+    // session(s) read" with nothing wrong, which is exactly the
+    // dash-versus-zero inversion the counter was added to close. Said on
+    // both paths, empty corpus included — that path most of all.
+    let unreadable_line = if corpus.unreadable > 0 {
+        format!(
+            " · {} transcript(s) in the store unreadable",
+            corpus.unreadable
+        )
+    } else {
+        String::new()
+    };
+
     if corpus.is_empty() {
         println!(
-            "no recorded run outcomes in {} ({} session(s) read)",
+            "no recorded run outcomes in {} ({} session(s) read{unreadable_line})",
             dir.display(),
             corpus.sessions_read
         );
@@ -782,7 +875,7 @@ fn health(
     }
 
     println!(
-        "{} run(s) across {} session(s){}\n",
+        "{} run(s) across {} session(s){}{unreadable_line}\n",
         corpus.len(),
         corpus.sessions_read,
         days.map(|d| format!(", last {d} day(s)"))
@@ -793,14 +886,7 @@ fn health(
         .stop_causes()
         .into_iter()
         .map(|(cause, n)| {
-            let name = cause
-                .map(|c| {
-                    serde_json::to_string(&c)
-                        .unwrap_or_default()
-                        .trim_matches('"')
-                        .to_string()
-                })
-                .unwrap_or_else(|| "unrecorded".into());
+            let name = cause.map(enum_key).unwrap_or_else(|| "unrecorded".into());
             format!("{name} {n}")
         })
         .collect();
@@ -932,6 +1018,9 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     serde_json::json!({
         "runs": corpus.len(),
         "sessions_read": corpus.sessions_read,
+        // Store-wide, like the scan that produced it — a skipped file has no
+        // readable date to window on.
+        "sessions_unreadable": corpus.unreadable,
         "tool_calls": corpus.tool_calls(),
         "tool_errors": corpus.tool_errors(),
         "tool_error_rate": corpus.tool_error_rate(),

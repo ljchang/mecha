@@ -20,7 +20,7 @@
 //! doc's build order argued from a measurement rather than from the design,
 //! which is what rung 7 existed to produce.
 
-use crate::probe::{drive_arm, prepare_probe_at};
+use crate::probe::{drive_arm, prepare_probe_in};
 use crate::setup::Prepared;
 use anyhow::Result;
 use mecha_core::appraisal::{apply_probe, relabel, Appraisal, Cite, Probe};
@@ -169,7 +169,7 @@ pub async fn probe_appraisal(
     prepared: &Prepared,
     provider_cfg: &ProviderConfig,
     model: &str,
-    sessions_dir: &Path,
+    session_path: &Path,
     interventions: &[Intervention],
     appraisal: &mut Appraisal,
     budget: &mut usize,
@@ -187,12 +187,10 @@ pub async fn probe_appraisal(
             tally.over_budget += 1;
             continue;
         }
-        let prep = match prepare_probe_at(
-            sessions_dir,
-            &appraisal.session_id,
-            i.trigger.as_str(),
-            &i.text,
-        )? {
+        // By path, not by id: the caller walked `Session::list` to get here,
+        // so re-resolving the id would pay a directory scan per intervention
+        // for an answer it already holds.
+        let prep = match prepare_probe_in(session_path, i.trigger.as_str(), &i.text)? {
             Ok(prep) => prep,
             // A skip is never evidence for either arm, so the error keeps the
             // `Owner`/`None` it was assembled with and stays neutral.

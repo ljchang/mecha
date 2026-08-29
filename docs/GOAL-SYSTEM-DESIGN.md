@@ -429,6 +429,20 @@ pub struct GoalError {
 }
 ```
 
+> **Correction (2026-08-28, recorded beside the original per §2.1's own
+> rule).** The shipped record (`mecha-core/src/appraisal.rs`) deliberately
+> departs from this sketch in three places, and each is the safer shape —
+> do not "fix" the code back toward the sketch. `evidence:
+> learning::Evidence` became `cite: Cite`, a **pointer-only** enum (a turn
+> index, a draft id, a counter name — never prose), because an appraisal is
+> read by later rungs that act and a paraphrase of an injection is the
+> injection rearranged — §5.1's own argument, applied to the record itself.
+> `state` is `Option<Homeostat>` (a row from before the sensor is unknown,
+> not zero), and `outcome: RunStats` is not carried at all — the appraisal
+> is derived from records that already exist, and a second copy of
+> `RunStats` inside it would be the second-source-of-truth §10's store
+> correction also refused.
+
 ### 5.1 The appraiser is a quarantined pass
 
 No tools, no conversation, typed output — issued a request with an empty tool
