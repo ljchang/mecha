@@ -277,13 +277,14 @@ pub struct Measurement {
     /// holds here too, and anything resolving an entry back to a session
     /// path must not have to parse annotation out of it first.
     pub diverged: Vec<String>,
-    /// What the replay was compromising on for a dropped episode, when it
-    /// was — "id — attached N times; replayed under the first config".
-    /// Beside `diverged` rather than folded into it, so the ids stay
-    /// joinable; rendered by `mecha harness show`, whose reader — whoever
-    /// decides on a staged candidate — is the one the caveat was written
-    /// for: such a divergence says something about the replay's compromise,
-    /// not necessarily about the change.
+    /// What the replay was compromising on, per episode that carried a
+    /// compromise — "id — attached N times; replayed under the first
+    /// config" — **whatever became of the episode**: a dropped one's
+    /// divergence may say more about the compromise than about the change,
+    /// and a cleanly paired one feeds the tally that gates acceptance,
+    /// which is the more consequential place for the decider reading
+    /// `mecha harness show` to know the replay was compromising. Beside
+    /// `diverged` rather than folded into it, so the ids stay joinable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replay_caveats: Vec<String>,
     /// Sessions that could not be replayed at all (unreadable, no recorded
