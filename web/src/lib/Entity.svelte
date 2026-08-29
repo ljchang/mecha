@@ -173,7 +173,21 @@
 
 <style>
   .pane { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 8px; overflow-y: auto; flex: 1; }
-  .lookuprow { display: flex; gap: 8px; padding-right: 40px; }
+  /* The pane is its own scroll container — unlike the other views, which
+     keep a static header above a `.scroll` — so without this the cards scroll
+     up under the shell's gear and it begins taking taps meant for a fact
+     card's Confirm. Sticky and opaque: content passes *behind* this row, and
+     the 56px gutter keeps the row's own controls clear of the gear. */
+  .lookuprow {
+    display: flex;
+    gap: 8px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--void);
+    margin: -12px -16px 0;
+    padding: 12px 56px 10px 16px;
+  }
   .field { flex: 1; min-height: 44px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; padding: 0 12px; }
   .field.small { min-height: 38px; font-size: 12px; }
   .minibtn { min-height: 44px; padding: 0 16px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); color: var(--text); font-size: 13px; cursor: pointer; }
