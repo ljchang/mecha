@@ -531,7 +531,10 @@ fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
     );
     println!("    [providers.local]");
     println!("    kind = \"local\"");
-    println!("    base_url = {:?}", found.base_url);
+    println!(
+        "    base_url = {}",
+        onboarding::toml_string(&found.base_url)
+    );
     for (k, v) in &settings {
         println!("    {k} = {v}");
     }
@@ -575,7 +578,7 @@ fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
         "# Written by `mecha setup --write` from this server's own /props.".to_string(),
         "[providers.local]".to_string(),
         "kind = \"local\"".to_string(),
-        format!("base_url = {:?}", found.base_url),
+        format!("base_url = {}", onboarding::toml_string(&found.base_url)),
     ];
     table.extend(settings.iter().map(|(k, v)| format!("{k} = {v}")));
     append_table(&path, "local", &table)?;

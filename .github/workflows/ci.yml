@@ -346,7 +346,15 @@ jobs:
           # An install whose every question has been answered exits 0 — which
           # is what makes `mecha setup` usable as somebody's own health check
           # rather than a permanently red one.
-          $WITHKEY mecha setup | tee out.txt
+          # **Not piped into `tee`.** Without `set -o pipefail` a pipeline's
+          # status is the *last* command's, so `mecha setup` exiting 1 here
+          # would be thrown away by `tee` and the step would pass silently —
+          # and this is the one positive exit-code assertion in the job, the
+          # "an answered install exits 0" claim the comment above is about.
+          # Same family as the `! cmd` note further up: a negation and a pipe
+          # both discard the status you meant to assert on.
+          $WITHKEY mecha setup > out.txt
+          cat out.txt
           grep -q "Nothing outstanding" out.txt
           grep -q -- "--undecline" out.txt
 
