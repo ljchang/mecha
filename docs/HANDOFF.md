@@ -964,22 +964,6 @@ one person's mailbox rather than a public fact.
   `tui/mod.rs` has a lost `\`-continuation from `cfa2cc2` on the OSC 52
   clipboard line — cosmetic garbled output.
 
-- **Apex residue, one piece left: a config comment on the droplet that
-  could break renewal if believed.** The *deployed*
-  `/etc/mecha-factory/factory.toml`'s comment above `[listen] http`
-  claims TLS-ALPN-01 answers challenges on 443 and port 80 is never part
-  of issuance. False: issuance is HTTP-01 over port 80
-  (`certificates.rs` sets `UseChallenge::Http01`; the live journal shows
-  `ordering certificates over http-01`), so firewalling 80 on that
-  comment's word would silently break every renewal. This is **drift in
-  the hand-maintained deployed copy, not a repo bug** — the repo's
-  `factory.example.toml` says HTTP-01 correctly, and the comment was
-  true when written (HISTORY records the TLS-ALPN-01 → HTTP-01
-  migration); the fix is an edit on the droplet or a re-sync from the
-  example. A binary deploy does not touch that file, which is why
-  factory 0.2.8 (2026-08-29, which closed the rest of this item — see
-  HISTORY) left it standing.
-
 **As of the evening of 2026-08-07, self-serve is done.** All six steps of the
 factory's `SELF-SERVE.md` are built, deployed, and verified live — a stranger
 with an invite claims a handle, gets a certificate in seconds, pairs their

@@ -3228,9 +3228,17 @@ releases went out over it without anyone noticing, because a lint that
 *always* fails reports nothing about the commit under it: the same shape
 as a silently skipped test reading like a passing one, in mirror image.
 Fixed (`fdfbb7b`, pure rustfmt), and CI on that repo is green for the
-first time in eleven days. The one apex item still open is the droplet's
-stale TLS-ALPN-01 config comment, which a binary deploy structurally
-cannot fix — see HANDOFF.
+first time in eleven days. The one item a binary deploy structurally
+could not fix — the droplet's stale TLS-ALPN-01 config comment, drift in
+the hand-maintained copy that claimed port 80 is never part of issuance
+and could have talked someone into firewalling off every future renewal —
+closed later the same morning on the owner's word: the `[listen] http`
+comment was re-synced to the example config's HTTP-01 wording (backed up
+in place first; comment-only, so no restart), and `factory check` run
+after the edit both proved the config parses and, in its own tls line —
+`acme http-01 for …` — states the fact the stale comment denied. That
+empties the apex arc entirely, from "Coming Soon" page to done in one
+night.
 
 ## The measurement record
 
