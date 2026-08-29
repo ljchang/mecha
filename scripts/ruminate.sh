@@ -77,8 +77,9 @@ echo "· distill (episodes → the knowledge graph; catches whatever a hook miss
 echo "· validate (the measurement: held-out + fresh, before learn consumes them)"
 "$MECHA" validate -p "$PROVIDER" --judge-provider "$JUDGE" --unprocessed-only
 
-echo "· learn (sweep: live consolidation runs per session, this catches the remainder)"
-"$MECHA" learn -p "$PROVIDER" --holdout 0.25
+echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
+echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
+"$MECHA" learn -p "$PROVIDER" --holdout 0.25 --auto
 
 echo "· retirements (deterministic ledger scan; applied, not staged — a rule measured"
 echo "  harmful must leave the prompt without waiting for anyone, and it is the only"
