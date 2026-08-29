@@ -239,7 +239,12 @@
     const path =
       verb === 'drop' ? '/api/settings/reflections/drop' : '/api/settings/rules/retire';
     armed = null;
-    if (await learningAct(path, { id, reason }, `${verb}ped`)) {
+    // Spelled out rather than derived: `${verb}ped` reads "retireped". Both
+    // children print on success today so the fallback never fires, which is
+    // exactly the kind of unreachable string that surfaces the day one of
+    // them goes quiet.
+    const fallback = verb === 'drop' ? 'dropped' : 'retired';
+    if (await learningAct(path, { id, reason }, fallback)) {
       await (verb === 'drop' ? loadReflections() : loadRules());
     }
   }
@@ -705,7 +710,11 @@
             <div class="rule-text">{r.title}</div>
             {#if r.retired && r.retired_reason}
               <div class="sub blocked">retired — {r.retired_reason}</div>
-            {:else if !r.active}
+            {:else if !r.active && !r.user}
+              <!-- Learned rules only: a user rule can carry `enabled = false`
+                   in its own file too, and it has no Retire button to honour
+                   the advice with. The chip above says "disabled" either
+                   way. -->
               <div class="sub blocked">
                 disabled by hand in the rules file — it rides in no prompt, and retiring is the
                 reversible way to say so
