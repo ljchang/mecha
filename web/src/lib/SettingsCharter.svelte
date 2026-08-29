@@ -1,5 +1,6 @@
 <script>
   import { tick } from 'svelte';
+  import { serialize as toToml, slugify, splitHeader } from './charter-toml.js';
 
   // The charter pane. The lines are edited in place — tap one to open it,
   // drag its grip to re-rank — and nothing reaches disk until an explicit
@@ -78,55 +79,20 @@
   /// Split the document at its first `[[line]]`. A `#` that opens a *line* is
   /// a comment; one inside a string value never can be, since the value is on
   /// the right of an `=`.
-  /// A `#` outside a string opens a comment — including one trailing a value,
-  /// which a whole-line regex misses and the regenerating serialiser would
-  /// then drop silently. Tracks basic and literal strings, respecting escapes.
-  /// A `#` inside a multi-line string reads as a comment here and blocks the
-  /// list editor: wrong, but wrong in the direction that keeps the writing.
-  function hasComment(row) {
-    let basic = false;
-    let literal = false;
-    for (let i = 0; i < row.length; i++) {
-      const c = row[i];
-      if (basic) {
-        if (c === '\\') i++;
-        else if (c === '"') basic = false;
-      } else if (literal) {
-        if (c === "'") literal = false;
-      } else if (c === '"') basic = true;
-      else if (c === "'") literal = true;
-      else if (c === '#') return true;
-    }
-    return false;
-  }
-
-  function splitHeader(src) {
-    const rows = (src ?? '').split('\n');
-    const first = rows.findIndex((r) => /^\s*\[\[/.test(r));
-    if (first === -1) return { header: rows.join('\n').replace(/\s+$/, ''), blocked: null };
-    const commented = rows.slice(first).some(hasComment);
-    return {
-      header: rows.slice(0, first).join('\n').replace(/\s+$/, ''),
-      blocked: commented
-        ? 'This charter has comments in among its lines. Editing it as a list would rewrite the tables and drop them, so it opens as TOML instead.'
-        : null,
-    };
-  }
-
   // We have no trustworthy document: the GET failed, or answered with its own
-  // error. Nothing that can write may render — not the list (whose empty state
+  // error, or reported a parse failure over bytes it never managed to read.
+  // Nothing that can write may render — not the list (whose empty state
   // invites authoring a "first" charter over a real one) and not the TOML
   // editor (which would seed from an empty buffer).
   const unreadable = $derived(
     charterError !== null ||
       charter === null ||
       // `charter_state` reads the file with `unwrap_or_default()`, so an I/O
-      // failure arrives as `parse_error` with `raw: ""` and no template. There
-      // is nothing to edit and nothing to seed from: opening the TOML editor
-      // would hand over an empty buffer whose save truncates a charter whose
-      // bytes were never read.
+      // failure arrives as `parse_error` with `raw: ""` and no template.
       (charter.parse_error != null && !charter.raw)
   );
+
+  const serialize = () => toToml(header, lines);
 
   const snapshot = () => JSON.stringify(lines.map((l) => [l.id, l.text]));
 
@@ -139,39 +105,6 @@
     savedNote = null;
   });
   const dirty = $derived(snapshot() !== original);
-
-  // Always a single-line basic string: unambiguous, and it matches how the
-  // file is already written. A control character TOML forbids will be refused
-  // by the server's parse, which is the check that counts.
-  const esc = (s) =>
-    '"' +
-    String(s)
-      .replace(/\\/g, '\\\\')
-      .replace(/"/g, '\\"')
-      .replace(/\n/g, '\\n')
-      .replace(/\r/g, '\\r')
-      .replace(/\t/g, '\\t') +
-    '"';
-
-  function serialize() {
-    const out = [];
-    if (header.trim()) out.push(header, '');
-    for (const l of lines) {
-      out.push('[[line]]', `id = ${esc(l.id.trim())}`, `text = ${esc(l.text.trim())}`, '');
-    }
-    return out.join('\n').replace(/\n+$/, '\n');
-  }
-
-  const slugify = (t) =>
-    String(t)
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .split('-')
-      .filter(Boolean)
-      .slice(0, 5)
-      .join('-')
-      .slice(0, 40);
 
   // The id is a pointer, not a label: `GoalRef::Charter` carries an id and no
   // rank. So it is derived once, when a line is created and still has none,
@@ -253,6 +186,10 @@
       saveError = null;
       editing = null;
       hydrate(charter);
+      // `hydrate` reassigns `lines`, which dirties the effect that clears
+      // `savedNote` — it flushes after this block, so setting the note first
+      // would have it wiped before it ever rendered.
+      await tick();
       savedNote =
         'saved — rides in the prompt of new sessions; this page cannot rebuild ones already running';
     } catch (e) {
