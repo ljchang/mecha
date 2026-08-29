@@ -1076,7 +1076,7 @@
 
 <style>
   .page { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 22px 20px 12px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 22px 56px 12px 20px; }
   .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; }
   .scroll { flex: 1; overflow-y: auto; padding: 2px 20px 90px; display: flex; flex-direction: column; gap: 10px; }
   .row { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 8px; color: var(--text); }

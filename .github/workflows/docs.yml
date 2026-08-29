@@ -9,12 +9,14 @@ on:
       # change to the surface changes the docs. Without this a UI change ships
       # with the docs still showing the previous one.
       - "web/**"
+      - "mecha-core/src/charter.rs"
       - "CHANGELOG.md"
       - ".github/workflows/docs.yml"
   pull_request:
     paths:
       - "website/**"
       - "web/**"
+      - "mecha-core/src/charter.rs"
       - "CHANGELOG.md"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -42,6 +44,11 @@ jobs:
           cache-dependency-path: website/package-lock.json
 
       - run: npm ci
+
+      # The web settings page writes ~/.mecha/charter.toml and mecha-core
+      # reads it; this fails when the two stop agreeing on the bytes. Cheap,
+      # and it needs no build — hence first.
+      - run: npm run check-charter-toml
 
       # Before the build, not after: this fails when the web app reaches an
       # endpoint the demo has no fixture for, which otherwise ships as a page
