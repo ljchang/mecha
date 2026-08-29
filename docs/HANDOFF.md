@@ -962,34 +962,21 @@ one person's mailbox rather than a public fact.
   `tui/mod.rs` has a lost `\`-continuation from `cfa2cc2` on the OSC 52
   clipboard line — cosmetic garbled output.
 
-- **Apex-redirect residue, two pieces waiting on the owner** (the apex fix
-  itself shipped 2026-08-29 ~04:09 UTC — see HISTORY; cached Squarespace
-  records linger until TTL expiry, so a browser may show the old page for
-  up to an hour without anything being wrong). **Piece one: commit and
-  release two fixes sitting uncommitted in `~/Github/mecha-factory`**
-  (working tree on clean main at 0.2.7, 63 lib tests green, clippy clean):
-  the redirect dropped the query string — confirmed live,
-  `/view/ljchang/abc?v=2&x=1` 301'd to `/view/ljchang/abc`, and
-  `/view/<handle>/<id>` documents a `?v=` version menu, so real state was
-  lost — now `http::redirect_target` using `path_and_query()`, with a
-  test verified to fail on the old behaviour; and `factory check` printed
-  identical green output whether `redirect_hosts` parsed or not —
-  `tls::describe()` now names the redirect hosts, with a test pinning
-  that none means no clause. The `redirect_hosts` doc comment's false
-  "ride the base certificate" claim is corrected in the same change.
-  (Known pre-existing, deliberately not folded in: `cargo fmt --check`
-  diffs at `tests/account.rs` on clean main.) **Piece two: a config
-  comment on the droplet that could break renewal if believed** — the
-  *deployed* `/etc/mecha-factory/factory.toml`'s comment above
-  `[listen] http` claims TLS-ALPN-01 answers challenges on 443 and port
-  80 is never part of issuance. False: issuance is HTTP-01 over port 80
+- **Apex residue, one piece left: a config comment on the droplet that
+  could break renewal if believed.** The *deployed*
+  `/etc/mecha-factory/factory.toml`'s comment above `[listen] http`
+  claims TLS-ALPN-01 answers challenges on 443 and port 80 is never part
+  of issuance. False: issuance is HTTP-01 over port 80
   (`certificates.rs` sets `UseChallenge::Http01`; the live journal shows
   `ordering certificates over http-01`), so firewalling 80 on that
   comment's word would silently break every renewal. This is **drift in
   the hand-maintained deployed copy, not a repo bug** — the repo's
-  `factory.example.toml` says HTTP-01 correctly, and the comment was true
-  when written (HISTORY records the TLS-ALPN-01 → HTTP-01 migration);
-  the fix is an edit on the droplet or a re-sync from the example.
+  `factory.example.toml` says HTTP-01 correctly, and the comment was
+  true when written (HISTORY records the TLS-ALPN-01 → HTTP-01
+  migration); the fix is an edit on the droplet or a re-sync from the
+  example. A binary deploy does not touch that file, which is why
+  factory 0.2.8 (2026-08-29, which closed the rest of this item — see
+  HISTORY) left it standing.
 
 **As of the evening of 2026-08-07, self-serve is done.** All six steps of the
 factory's `SELF-SERVE.md` are built, deployed, and verified live — a stranger

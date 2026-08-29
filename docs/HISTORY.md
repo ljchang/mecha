@@ -3213,6 +3213,25 @@ down, holding under its first live test. The same test confirmed the
 query-string drop as a live bug rather than a prediction; that and two
 sibling findings are the "apex-redirect residue" item in HANDOFF.
 
+**2026-08-29 (~04:50 UTC) — factory 0.2.8 closes the apex residue the
+same night it was filed.** The redirect keeps the query
+(`http::redirect_target` on `path_and_query()`, its test verified to fail
+on the old one-liner) and `factory check` names the redirect hosts
+(`tls::describe()`), released as `v0.2.8` and deployed on the owner's
+word — with the pleasing closure that the deploy's own pre-flight `check`
+printed the `describe()` fix working during the very deploy that shipped
+it, and the live confirmation that the request which dropped its query an
+hour earlier (`/view/ljchang/abc?v=2&x=1`) now 301s with it intact. Found
+along the way: **mecha-factory's CI had been red for eleven days** on
+`cargo fmt --check` — four whitespace diffs predating 0.2.7 — and two
+releases went out over it without anyone noticing, because a lint that
+*always* fails reports nothing about the commit under it: the same shape
+as a silently skipped test reading like a passing one, in mirror image.
+Fixed (`fdfbb7b`, pure rustfmt), and CI on that repo is green for the
+first time in eleven days. The one apex item still open is the droplet's
+stale TLS-ALPN-01 config comment, which a binary deploy structurally
+cannot fix — see HANDOFF.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
