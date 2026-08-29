@@ -41,13 +41,16 @@
       rules = await res.json();
       rulesErr = null;
     } catch (e) {
+      rules = null;
       rulesErr = String(e?.message ?? e);
     }
     try {
       const res = await fetch('/api/settings/voice');
-      if (res.ok) voice = await res.json();
+      // A failed re-read is unknown, shown as a dash — never as "down", and
+      // never as the previous answer left standing as though it were current.
+      voice = res.ok ? await res.json() : null;
     } catch {
-      voice = null; // unknown, shown as a dash — never as "down"
+      voice = null;
     }
   }
 
@@ -88,6 +91,7 @@
     const worker = voice.worker_reachable ? 'worker up' : 'worker unreachable';
     if (voice.cloned === null || voice.cloned === undefined)
       return { text: `${worker} · cloning not configured`, bad: !voice.worker_reachable };
+    if (voice.cloned_error) return { text: `${worker} · voices unreadable`, bad: true };
     const n = voice.cloned.length;
     return {
       text: `${worker} · ${n} cloned voice${n === 1 ? '' : 's'}`,

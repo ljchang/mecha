@@ -117,9 +117,27 @@
   // error. Nothing that can write may render — not the list (whose empty state
   // invites authoring a "first" charter over a real one) and not the TOML
   // editor (which would seed from an empty buffer).
-  const unreadable = $derived(charterError !== null || charter === null);
+  const unreadable = $derived(
+    charterError !== null ||
+      charter === null ||
+      // `charter_state` reads the file with `unwrap_or_default()`, so an I/O
+      // failure arrives as `parse_error` with `raw: ""` and no template. There
+      // is nothing to edit and nothing to seed from: opening the TOML editor
+      // would hand over an empty buffer whose save truncates a charter whose
+      // bytes were never read.
+      (charter.parse_error != null && !charter.raw)
+  );
 
   const snapshot = () => JSON.stringify(lines.map((l) => [l.id, l.text]));
+
+  // Reads `lines`, writes neither of the values it sets, so it cannot
+  // re-trigger itself. `save()` arms `confirming` without touching `lines`,
+  // so arming survives until the document actually changes.
+  $effect(() => {
+    snapshot();
+    confirming = false;
+    savedNote = null;
+  });
   const dirty = $derived(snapshot() !== original);
 
   // Always a single-line basic string: unambiguous, and it matches how the
@@ -254,6 +272,10 @@
   let grip = null;
   let pointerY = 0;
   let raf = null;
+
+  $effect(() => () => {
+    if (raf !== null) cancelAnimationFrame(raf);
+  });
 
   function dragStart(e, uid) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
