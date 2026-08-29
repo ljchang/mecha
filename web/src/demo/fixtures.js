@@ -574,36 +574,47 @@ export const questions = {
 // --- settings ------------------------------------------------------------
 
 export const charter = {
+  // The file's real shape: `[[line]]` tables with `id` and `text`, header
+  // comments above them. `CharterLine` denies unknown fields, so the
+  // `[[priority]]`/`name`/`detail` this fixture used to carry is a document
+  // the product refuses — a docs reader who opened the TOML editor was shown
+  // TOML that could never have been saved.
   raw: `# What mecha is for, most important first.
+#
+# Order is rank: when two lines conflict, the higher one wins outright.
+# There is no priority field — moving a line is how you re-rank it.
 
-[[priority]]
-name = "Protect the group's people"
-detail = """
-Students and postdocs come before service work. A deadline that costs me an
-evening is cheaper than one that costs Wen a week.
-"""
+[[line]]
+id = "protect-the-groups-people"
+text = "Students and postdocs come before service work. A deadline that costs me an evening is cheaper than one that costs Wen a week."
 
-[[priority]]
-name = "Keep promises I actually made"
-detail = """
-If the graph records that I said I would do something, that outranks anything
-that merely arrived in the inbox.
-"""
+[[line]]
+id = "keep-promises-i-actually-made"
+text = "If the graph records that I said I would do something, that outranks anything that merely arrived in the inbox."
 
-[[priority]]
-name = "Say no early"
-detail = """
-A refusal on Monday is a kindness. A refusal on Friday is a problem I handed
-to someone else.
-"""
+[[line]]
+id = "say-no-early"
+text = "A refusal on Monday is a kindness. A refusal on Friday is a problem I handed to someone else."
 `,
   template: '',
   exists: true,
   path: '~/.mecha/charter.toml',
+  // `id` is the line's slug, as the route derives it from the name — a bare
+  // ordinal here renders as "1. 1" beside the list marker, which is not what
+  // the page does on a box.
   lines: [
-    { id: 1, text: 'Protect the group’s people' },
-    { id: 2, text: 'Keep promises I actually made' },
-    { id: 3, text: 'Say no early' },
+    {
+      id: 'protect-the-groups-people',
+      text: 'Students and postdocs come before service work. A deadline that costs me an evening is cheaper than one that costs Wen a week.',
+    },
+    {
+      id: 'keep-promises-i-actually-made',
+      text: 'If the graph records that I said I would do something, that outranks anything that merely arrived in the inbox.',
+    },
+    {
+      id: 'say-no-early',
+      text: 'A refusal on Monday is a kindness. A refusal on Friday is a problem I handed to someone else.',
+    },
   ],
   char_count: 612,
   budget: 2000,
@@ -646,7 +657,9 @@ export const voice = {
   worker_reachable: true,
   offer_target: 'http://127.0.0.1:8990/offer',
   cloned: [
-    { name: 'reading-voice', seconds: 42, created: '2026-08-14', length: 42 },
+    // `created` is unix seconds, as the route returns it — a date string here
+  // renders 'Invalid Date' on the demo and nowhere else.
+  { name: 'reading-voice', seconds: 42, created: 1786665600, length: 42 },
   ],
   cloned_error: null,
 };
@@ -721,11 +734,11 @@ export const transcript = {
       // wrong thing about what a reply looks like.
       text: `Three things want you today, and one of them has a deadline.
 
-Tomas Lindqvist wants a review decision by Friday \u2014 a 9,000-word manuscript, with the review due three weeks after you accept. Your calendar is clear that fortnight apart from the Cape Town trip, so I have drafted an acceptance.
+Tomas Lindqvist wants a review decision by Friday — a 9,000-word manuscript, with the review due three weeks after you accept. Your calendar is clear that fortnight apart from the Cape Town trip, so I have drafted an acceptance.
 
 Hollis Barnett needs the Ostrander nomination by Monday. Your notes from March say you meant to nominate Priya, so I have drafted that too, built on the replication work rather than adjectives.
 
-Amara Osei is waiting on Thursday-or-Friday for the Cape Town seminar. Your own note says Thursday, because on the Friday you fly that evening \u2014 so I have staged a hold rather than answering for you.`,
+Amara Osei is waiting on Thursday-or-Friday for the Cape Town seminar. Your own note says Thursday, because on the Friday you fly that evening — so I have staged a hold rather than answering for you.`,
     },
     {
       kind: 'notice',

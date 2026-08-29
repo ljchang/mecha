@@ -503,4 +503,45 @@ priority = 1
         let block = prompt_block(&charter).unwrap();
         assert!(block.contains("not weighted"), "{block}");
     }
+    /// The exact bytes the web settings page writes.
+    ///
+    /// Two languages describe this file — a Svelte serialiser in
+    /// `web/src/lib/SettingsCharter.svelte` emits it and this reader decides
+    /// whether it loads — so the agreement is pinned here rather than
+    /// believed. That editor keeps everything above the first `[[line]]`
+    /// byte-for-byte (the owner's header comments, and the whole template on
+    /// a first charter) and regenerates only the tables, always as
+    /// single-line basic strings, because an escape sequence is unambiguous
+    /// where a bare quote or newline is not.
+    ///
+    /// The order of the tables *is* the ranking — the editor's drag gesture
+    /// writes nothing else — so this asserts file order, not membership.
+    #[test]
+    fn the_web_editors_serialisation_is_what_this_reader_loads() {
+        let written = concat!(
+            "# What mecha is for, most important first.\n",
+            "#\n",
+            "# Order is rank.\n",
+            "\n",
+            "[[line]]\n",
+            "id = \"say-no-early\"\n",
+            "text = \"A refusal on Monday is a kindness.\"\n",
+            "\n",
+            "[[line]]\n",
+            "id = \"quote-and-break\"\n",
+            "text = \"She said \\\"no\\\" early.\\nAnd meant it.\"\n",
+        );
+        let charter = Charter::parse(written).unwrap();
+        let ids: Vec<&str> = charter.lines().iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["say-no-early", "quote-and-break"],
+            "file order is rank"
+        );
+        assert_eq!(
+            charter.lines()[1].text,
+            "She said \"no\" early.\nAnd meant it.",
+            "the editor's escaping must survive the reader"
+        );
+    }
 }
