@@ -9,7 +9,7 @@
   // separate components for the same reason Review's are — the charter's
   // two-tap save and the voice pane's live microphone have no business
   // sharing a scope.
-  let { initial = null, navigate } = $props();
+  let { initial = null, navigate, backTo } = $props();
   const PANES = ['charter', 'learning', 'voice'];
   // Derived, never copied into state: App re-renders this with a new
   // `initial` on back/forward, and a `$state` snapshot would ignore it.
@@ -155,7 +155,7 @@
   </main>
 {:else}
   <header class="detail">
-    <button class="backbtn" onclick={() => navigate('settings', true)} aria-label="back to settings">
+    <button class="backbtn" onclick={() => backTo('settings')} aria-label="back to settings">
       <svg
         viewBox="0 0 24 24"
         width="18"

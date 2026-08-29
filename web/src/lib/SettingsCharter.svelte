@@ -452,8 +452,11 @@
   {/each}
 
     {#if saveError}<div class="card notice">not saved: {saveError}</div>{/if}
-    {#if savedNote}<div class="card ok-note">{savedNote}</div>{/if}
   {/if}
+
+  <!-- Outside `!blocked`: a raw-TOML save whose result carries comments among
+       its lines lands fine, and the owner still has to be told it landed. -->
+  {#if savedNote}<div class="card ok-note">{savedNote}</div>{/if}
 
   <!-- Outside the `!blocked` branch on purpose: a charter that does not parse
        is exactly the one that needs an editor, and the notice above promises
