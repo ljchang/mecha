@@ -110,6 +110,14 @@ export const ROUTES = [
 
   ['GET', /^\/api\/settings\/charter$/, () => fx.charter],
   ['GET', /^\/api\/settings\/rules$/, () => fx.rules],
+  ['GET', /^\/api\/settings\/reflections$/, () => fx.reflections],
+  [
+    'GET',
+    /^\/api\/settings\/reflections\/show$/,
+    (url) =>
+      fx.reflectionDetail[url.searchParams.get('id')] ??
+      fx.reflectionDetail['20260826T143000-7f21a9c4'],
+  ],
   ['GET', /^\/api\/settings\/voice$/, () => fx.voice],
 
   ['GET', /^\/api\/sessions$/, () => fx.sessions],
@@ -169,6 +177,16 @@ export const ROUTES = [
   // Deliberately enumerated rather than a trailing catch-all. A catch-all
   // would also swallow the next endpoint somebody adds, and `check-demo`
   // would go green on a page the demo cannot actually draw.
+  //
+  // The five `settings/(reflections|rules)/…` verbs are the one group here
+  // that `check-demo` cannot see: `SettingsLearning.svelte` reaches them
+  // through its one `act(path, body, fallback)` helper, so the path is a
+  // variable at the `fetch` call and the guard's regex — which reads
+  // literals — never learns of them. They are listed anyway, and this
+  // paragraph is why: without an entry each one falls through to "demo: no
+  // fixture for POST /api/…", which the learning pane renders in its own
+  // error card, and a docs reader sees a broken feature rather than a
+  // declined one.
   [
     '*',
     new RegExp(
@@ -184,6 +202,8 @@ export const ROUTES = [
           'queue/(groups|items|verdict|bind|sample)',
           'queue/shadow/verdict',
           'settings/charter',
+          'settings/reflections/(edit|drop|restore)',
+          'settings/rules/(retire|restore)',
           'settings/voice/clone(/delete)?',
           'resume',
           'dictate',

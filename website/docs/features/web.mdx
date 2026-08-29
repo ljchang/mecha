@@ -110,11 +110,11 @@ and there is exactly one implementation of each verb.
 | **Graph** | One entity, and everything the graph knows about it — facts with their provenance, recent evidence, and Confirm/Refute on anything still unreviewed. Opening an entity is itself a review trigger; see [the graph](/docs/graph/overview#where-you-review-what-it-proposes) |
 | **Review** | [Outbox](/docs/features/outbox), the graph's merge queue, and the [front door](/docs/features/frontdoor) — every approval surface in one place |
 | **Tasks** | The GTD board, with the views in a drawer and one tap per status change |
-| **Settings** | Behind the gear — upper-right on *every* view, since settings is chrome rather than a place to be. An index of three features, each opening its own pane: the [charter](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words) (edited as a list — tap a line, drag its grip to re-rank — behind a validated two-tap save), the learned-rule roster with its ledger tallies, and the [voice](/docs/features/voice) stack's health and preferences. Each row says what is in there — a count, or a dash where the store could not be read |
+| **Settings** | Behind the gear — upper-right on *every* view, since settings is chrome rather than a place to be. An index of three features, each opening its own pane: the [charter](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words) (edited as a list — tap a line, drag its grip to re-rank — behind a validated two-tap save), the [learning](/docs/features/learning) store — reflections and rules, read, edited and refused — and the [voice](/docs/features/voice) stack's health and preferences. Each row says what is in there — a count, or a dash where the store could not be read |
 
 ### Settings, and what a browser may write
 
-Three things on this page write, and each is fenced for what it is putting on
+Four things on this page write, and each is fenced for what it is putting on
 disk. Everything else is a read.
 
 **The charter** is what every run's prompt carries, so its fences are about
@@ -130,6 +130,23 @@ dragging a grip — position in the file is the ranking, and there is no rank
 field to type — but the request is still the whole document through that one
 validated route. The owner authors every line either way: no model composes,
 suggests or edits one.
+
+**The learning store** is the same argument one stage on: a reflection is a
+lesson mined from the owner's own corrections, and a learned rule rides in
+every future prompt's cached prefix, so disagreeing with one is the whole
+reason the store has a reader. The pane carries the two the TUI's `/learning`
+has, with the same verbs — a *reflection* can be edited, dropped or restored, a
+learned *rule* retired or restored. Editing is offered at the reflection
+because that is where disagreeing is cheap: a rule is a consolidation of
+several lessons, so objecting once one exists costs the good ones too. It is
+also a [provenance](/docs/features/learning) promotion rather than a text
+change — a lesson you write is yours, so the gate stops excluding it, and what
+was happening is withheld because that is the field any third-party text was
+in. Which is why an **unchanged** save is refused rather than accepted: the
+promotion's whole justification is that the owner typed the words, and
+re-submitting the model's own sentence would launder them into the rules.
+Neither refusal deletes anything — a drop and a retirement are both flags, both
+stay on the page as evidence, and both undo.
 
 **A cloned voice** is a WAV in the voices directory, and the file *is* the
 voice — the TTS resolves a name to that exact recording as its cloning
@@ -151,11 +168,16 @@ recording of somebody's voice should be as easy to remove as it was to add. The
 same closed alphabet is the containment — the path is built from a validated
 stem, never from anything resolvable.
 
-Everything else is a read. The rule roster is exactly what the TUI's
-`/learning` shows, and retiring a rule still goes through `mecha rules retire`'s
-own staged path — there is no shortcut around it from a browser. The voice
-panel's worker line answers whether the stack is reachable and where this
-process would send an offer; the worker is configured where it runs.
+Two things this page deliberately does not do. Accepting a rule **proposal**
+stays in the [queue](/docs/features/queues) and the TUI, because a proposal is a
+whole rewritten rule set and reject-all is not an objection worth offering on a
+phone. And every learning verb runs as a `mecha reflections …` / `mecha rules …`
+child process, so there is nothing a browser can do to that store which the
+command line cannot — the promotion, the withholding and the git commit behind
+each write all live in one implementation.
+
+The voice panel's worker line answers whether the stack is reachable and where
+this process would send an offer; the worker is configured where it runs.
 
 ### Chat, and what a session is
 

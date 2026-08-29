@@ -207,10 +207,37 @@ fn list(store: &LearningStore, domain: Option<&str>, all: bool, as_json: bool) -
     Ok(())
 }
 
+/// One reflection as JSON: **the record plus the gate's own verdict**,
+/// because the two can disagree and the raw field is not the one anything
+/// acts on.
+///
+/// `origin` is what was *recorded*; `provenance()` recomputes it, and for a
+/// harness-voice reflection stored before `is_harness_voice` existed the
+/// stored field says `clean` while the gate says `derived`. `list --json`
+/// already reports the computed answer and derives `blocked` from it, so a
+/// detail view rendering the raw field would contradict the row directly
+/// above it — on exactly the records a detail view exists to adjudicate. The
+/// stored field is kept, under a name that says which one it is.
+fn detail_payload(r: &Reflexion) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(r)?;
+    if let Some(map) = value.as_object_mut() {
+        if let Some(recorded) = map.remove("origin") {
+            map.insert("recorded_origin".into(), recorded);
+        }
+        map.insert(
+            "provenance".into(),
+            serde_json::json!(format!("{:?}", r.provenance()).to_lowercase()),
+        );
+        map.insert("learnable".into(), serde_json::json!(r.learnable()));
+        map.insert("blocked".into(), serde_json::json!(blocked_because(r)));
+    }
+    Ok(value)
+}
+
 fn show(store: &LearningStore, id: &str, as_json: bool) -> Result<()> {
     let r = store.reflexion(id)?;
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&r)?);
+        println!("{}", serde_json::to_string_pretty(&detail_payload(&r)?)?);
         return Ok(());
     }
     println!("{}  ·  {}  ·  {}", r.id, r.domain, r.trigger);
@@ -353,5 +380,46 @@ mod tests {
         let mut both = r(Origin::Untrusted);
         both.dropped_at = Some("2026-08-27T01:00:00Z".into());
         assert_eq!(blocked_because(&both).as_deref(), Some("dropped"));
+    }
+
+    /// **`show --json` must answer with the gate's verdict, not the stored
+    /// field**, because the two disagree on exactly the records a detail view
+    /// exists to adjudicate: a harness-voice reflection recorded before
+    /// `is_harness_voice` existed stores `clean` and computes `derived`. A
+    /// pane rendering the raw field would contradict the listing right above
+    /// it, which reports `provenance()`.
+    #[test]
+    fn the_detail_payload_reports_the_computed_provenance_not_the_stored_one() {
+        let mut harness_voice = r(Origin::Clean);
+        harness_voice.intervention = "Your previous turn ended without producing anything — the \
+                                      token budget went entirely to reasoning before you began \
+                                      your answer. Do not start the task over and do not \
+                                      re-derive what you already worked out. Either give your \
+                                      answer now, briefly, using what you already know, or make \
+                                      the single next tool call. Keep your reasoning short this \
+                                      turn."
+            .into();
+        assert_eq!(harness_voice.origin, Origin::Clean, "as recorded");
+        assert_eq!(
+            harness_voice.provenance(),
+            Origin::Derived,
+            "as the gate recomputes it — this is the disagreement"
+        );
+
+        let payload = detail_payload(&harness_voice).unwrap();
+        assert_eq!(
+            payload["provenance"], "derived",
+            "the verdict anything acts on"
+        );
+        assert_eq!(payload["recorded_origin"], "clean", "kept, correctly named");
+        assert!(
+            payload.get("origin").is_none(),
+            "the bare name would be read as the gate's answer"
+        );
+        assert_eq!(payload["learnable"], false);
+        assert!(payload["blocked"]
+            .as_str()
+            .unwrap()
+            .contains("mecha's own words"));
     }
 }
