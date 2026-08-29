@@ -39,9 +39,9 @@ pub struct ToolOutput {
     /// `ended_on_failed_call` and the tool-error rate `doctor` thresholds,
     /// exactly as the loop's own comment on that split demands. Only
     /// trusted in-process wrappers set it; nothing constructed from an MCP
-    /// wire ever does (`mcp.rs` builds outputs through `ok`/`err`, which
-    /// leave it false), so a third-party server cannot launder its failures
-    /// into "the harness working".
+    /// wire ever does — `mcp.rs` builds its outputs with the field
+    /// explicitly `false`, and no wire byte reaches it — so a third-party
+    /// server cannot launder its failures into "the harness working".
     pub refusal: bool,
 }
 
@@ -322,7 +322,12 @@ pub trait Tool: Send + Sync {
     /// repo's structural properties live; only the in-process wrapper
     /// returns `true`. Same family as [`carried_state`](Tool::carried_state):
     /// the loop and the verifier learn that some handle guards, never which
-    /// kind of tool it is.
+    /// kind of tool it is. The layering is deliberate and acknowledged: no
+    /// `mecha-core` code reads this, and "task closure" is a CLI-domain
+    /// concept — but the trait is the only channel a wire-supplied tool
+    /// cannot fake, which is the property the check exists for, and
+    /// [`Capabilities`] already carries domain concepts (`external_send`)
+    /// into this trait on the same argument.
     fn guards_closures(&self) -> bool {
         false
     }
