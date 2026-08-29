@@ -347,7 +347,7 @@ impl Distiller {
         Distiller {
             provider,
             model,
-            max_tokens: 4096,
+            max_tokens: crate::provider::LOCAL_MAX_TOKENS,
         }
     }
 

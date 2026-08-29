@@ -1818,7 +1818,7 @@ impl Reflector {
         Reflector {
             provider,
             model,
-            max_tokens: 4096,
+            max_tokens: crate::provider::LOCAL_MAX_TOKENS,
         }
     }
 
@@ -2206,7 +2206,7 @@ impl Learner {
         Learner {
             provider,
             model,
-            max_tokens: 8192,
+            max_tokens: crate::provider::LOCAL_MAX_TOKENS,
         }
     }
 
