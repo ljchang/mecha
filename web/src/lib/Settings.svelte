@@ -192,16 +192,28 @@
     }
   }
 
+  // The editor opens on the existing lesson, so the owner can amend a
+  // sentence rather than retype it — and `original` is kept beside the draft
+  // because an unchanged save must not be offered. An edit is a *provenance
+  // promotion*: saving the model's own words back would mark the record as
+  // the owner's and let it into the rules, which is the one thing the
+  // promotion's argument does not cover. `edit_reflexion` refuses it outright
+  // (that is the guarantee); this only keeps the page from offering a button
+  // whose whole effect would be a refusal.
   function openLesson(r) {
     armed = null;
     detail = null;
     learningNote = null;
     learningError = null;
-    lessonDraft = { id: r.id, text: r.title };
+    lessonDraft = { id: r.id, text: r.title, original: r.title };
   }
 
+  const lessonChanged = $derived(
+    !!lessonDraft?.text.trim() && lessonDraft.text.trim() !== lessonDraft.original.trim()
+  );
+
   async function saveLesson() {
-    if (!lessonDraft?.text.trim()) return;
+    if (!lessonChanged) return;
     const { id, text } = lessonDraft;
     if (await learningAct('/api/settings/reflections/edit', { id, text }, 'edited')) {
       lessonDraft = null;
@@ -601,7 +613,7 @@
                 <div class="row-actions">
                   <button
                     class="btn primary"
-                    disabled={learningBusy || !lessonDraft.text.trim()}
+                    disabled={learningBusy || !lessonChanged}
                     onclick={saveLesson}>{learningBusy ? 'saving…' : 'Save lesson'}</button
                   >
                   <button class="btn" onclick={() => (lessonDraft = null)}>Cancel</button>
@@ -618,8 +630,12 @@
                     <div class="dtext">{detail.record.context}</div>
                     <div class="dlabel">the intervention</div>
                     <div class="dtext">{detail.record.intervention}</div>
+                    <!-- The gate's verdict, never the stored field: for a
+                         record written before the harness-voice check existed
+                         the two disagree, and this block sits directly under
+                         a row that already reports the computed answer. -->
                     <div class="sub">
-                      provenance {detail.record.origin} · evidence {detail.record.evidence} ·
+                      provenance {detail.record.provenance} · evidence {detail.record.evidence} ·
                       session {detail.record.session_id}
                     </div>
                   </div>
@@ -673,17 +689,27 @@
       <div class="card"><div class="sub">No rules yet — `mecha learn` creates them.</div></div>
     {:else}
       <div class="rules">
+        <!-- `active` is `enabled && not retired`, so a rule hand-disabled in
+             the learned-rules TOML is not retired and still rides in no
+             prompt. On a pane whose job is "what a run actually carries",
+             that has to read as spent too. -->
         {#each rules as r (r.id ?? r.title)}
-          <div class="rule" class:spent={r.retired}>
+          <div class="rule" class:spent={r.retired || !r.active}>
             <div class="rule-head">
               <span class="chip domain">{r.domain}</span>
               {#if r.user}<span class="chip mine">yours</span>{/if}
               {#if r.retired}<span class="chip gone">retired</span>{/if}
+              {#if !r.retired && !r.active}<span class="chip gone">disabled</span>{/if}
               <span class="tally">{tally(r)}</span>
             </div>
             <div class="rule-text">{r.title}</div>
             {#if r.retired && r.retired_reason}
               <div class="sub blocked">retired — {r.retired_reason}</div>
+            {:else if !r.active}
+              <div class="sub blocked">
+                disabled by hand in the rules file — it rides in no prompt, and retiring is the
+                reversible way to say so
+              </div>
             {/if}
 
             {#if armed?.verb === 'retire' && armed.id === r.id}
