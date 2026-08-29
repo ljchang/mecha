@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The web notes and graph tabs are one graph tab**
+  (`NOTES-GRAPH-DESIGN.md`). They were two disjoint halves over one store —
+  a note *is* a graph episode — so `Graph.svelte` replaces both: one find
+  field (the graph's own hybrid BM25+vector search; ⌘K focuses it; a search
+  hit naming an entity opens it, and a missed entity lookup falls back to
+  search instead of dead-ending), capture with the CLI's own
+  "entities linked" confirmation, the recent-notes list with in-place edit,
+  and entity pages that now render what the envelope always carried
+  (aliases, per-source coverage) plus the neighborhood (`mecha kg related`
+  → `/api/related`) and bi-temporal history with superseded facts
+  (`mecha kg timeline` → `/api/timeline`). The `#notes` hash still routes.
+
 ### Added
 
 - **The graph's shadow queue reaches every surface an owner holds** (#114).

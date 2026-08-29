@@ -106,8 +106,7 @@ and there is exactly one implementation of each verb.
 | **Home** | The dashboard: what is waiting in each store, plus [doctor](/docs/features/run-quality)'s findings. Cards with a surface behind them navigate there on tap. A store that cannot be read shows a dash, never a zero |
 | **Chat** | A streaming conversation with the agent — steering, cancel, a context gauge, approval cards, and a session drawer holding both live and recorded conversations. The waveform button opens a [voice call](/docs/features/voice) into *this* conversation |
 | **Mail** | Two tabs: the triage queue (what needs you, classified) and a plain inbox (what just arrived). Reading, triaging, and drafting — see [mail](/docs/features/mail) |
-| **Notes** | Capture into the [knowledge graph](/docs/graph/overview) as evidence, a recent list, and a search box |
-| **Graph** | One entity, and everything the graph knows about it — facts with their provenance, recent evidence, and Confirm/Refute on anything still unreviewed. Opening an entity is itself a review trigger; see [the graph](/docs/graph/overview#where-you-review-what-it-proposes) |
+| **Graph** | One surface over the [knowledge graph](/docs/graph/overview): capture a note (typed or dictated) with the graph's own confirmation of what it linked, a recent-notes list with in-place edit, one find field over everything (hybrid keyword + semantic search, ⌘K focuses it), and entity pages — facts with Confirm/Refute on anything unreviewed, aliases, per-source coverage, the connected neighborhood, history with superseded facts, and recent evidence. Opening an entity is itself a review trigger; see [the graph](/docs/graph/overview#where-you-review-what-it-proposes). The old `#notes` address still works |
 | **Review** | [Outbox](/docs/features/outbox), the graph's merge queue, and the [front door](/docs/features/frontdoor) — every approval surface in one place |
 | **Tasks** | The GTD board, with the views in a drawer and one tap per status change |
 | **Settings** | Behind the gear, upper-right: the [charter](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words) (view, and the page's one write), the learned-rule roster with its ledger tallies, and the [voice](/docs/features/voice) stack's health and preferences |
@@ -204,7 +203,8 @@ and HTML served from your own origin would run script against this very API.
 
 ### Dictation
 
-The mic button on the notes and task capture boxes records, encodes the clip
+The mic button on the graph page (capture and find) and the task capture
+boxes records, encodes the clip
 in the page, and posts it to **Parakeet running on your own machine**. The
 audio does not leave the box — which is the entire reason not to use the
 browser's built-in speech APIs, which ship your voice to a third party.

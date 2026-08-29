@@ -60,6 +60,27 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// The bounded neighborhood around one node: 1–2 hops over current
+    /// facts. What an entity connects to, without pretending to be a map.
+    Related {
+        /// Name, alias, or id — the graph resolves it.
+        #[arg(required = true, num_args = 1..)]
+        name: Vec<String>,
+        /// 1 or 2.
+        #[arg(long, default_value_t = 1)]
+        hops: u8,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Bi-temporal history for an entity: superseded facts kept beside what
+    /// replaced them, and the episode timeline.
+    Timeline {
+        /// Name, alias, or id — the graph resolves it.
+        #[arg(required = true, num_args = 1..)]
+        name: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Capture a note as an episode. Entities named in it are linked on
     /// landing; the nightly extractor mines it like any other evidence.
     Note {
@@ -82,6 +103,8 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
     match args.cmd {
         Cmd::Search { query, k, json } => search(global, &query.join(" "), k, json).await,
         Cmd::Entity { name, json } => entity(global, &name.join(" "), json).await,
+        Cmd::Related { name, hops, json } => related(global, &name.join(" "), hops, json).await,
+        Cmd::Timeline { name, json } => timeline(global, &name.join(" "), json).await,
         Cmd::Note { text, edit } => match edit {
             Some(id) => note_edit(global, &id, &text.join(" ")).await,
             None => note(global, &text.join(" ")).await,
@@ -211,6 +234,97 @@ async fn entity(global: &GlobalOpts, name: &str, as_json: bool) -> Result<()> {
                 ep["preview"]
                     .as_str()
                     .unwrap_or("")
+                    .chars()
+                    .take(100)
+                    .collect::<String>(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The neighborhood: `kg_related`, rendered one row per neighbor. Hops are
+/// clamped tool-side (1–2) — this passes what was asked and lets the graph
+/// answer with what it actually did.
+async fn related(global: &GlobalOpts, name: &str, hops: u8, as_json: bool) -> Result<()> {
+    let out = call(global, "kg_related", json!({ "id": name, "hops": hops })).await?;
+    if as_json {
+        println!("{out}");
+        return Ok(());
+    }
+    let root = out["root"]["name"].as_str().unwrap_or(name);
+    let items = out["items"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    if items.is_empty() {
+        println!("nothing connects to `{root}` yet");
+        return Ok(());
+    }
+    println!("around {root}:");
+    for it in items {
+        println!(
+            "  {:<26} {:<10} {}",
+            it["name"].as_str().unwrap_or("?"),
+            it["type"].as_str().unwrap_or("?"),
+            it["via"]["predicate"]
+                .as_str()
+                .map(|p| format!("via {p}"))
+                .unwrap_or_default(),
+        );
+    }
+    Ok(())
+}
+
+/// The history: `kg_timeline`, rendered with superseded facts kept visible.
+/// A fact that stopped being true is evidence about when things changed, and
+/// a listing that hides it re-tells the graph's story with the seams ironed
+/// out.
+async fn timeline(global: &GlobalOpts, name: &str, as_json: bool) -> Result<()> {
+    let out = call(global, "kg_timeline", json!({ "entity": name })).await?;
+    if as_json {
+        println!("{out}");
+        return Ok(());
+    }
+    let who = out["entity"]["name"].as_str().unwrap_or(name);
+    let facts = out["facts"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let eps = out["episodes"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    if facts.is_empty() && eps.is_empty() {
+        println!("no history for `{who}` yet");
+        return Ok(());
+    }
+    let day = |v: &Value| {
+        v.as_str()
+            .map(|d| d.chars().take(10).collect::<String>())
+            .unwrap_or_else(|| "—".into())
+    };
+    if !facts.is_empty() {
+        println!("facts for {who}:");
+        for f in facts {
+            let superseded = f["superseded"].as_bool() == Some(true);
+            println!(
+                "  {} {}  {}{}",
+                if superseded { "✗" } else { "·" },
+                day(&f["valid_from"]),
+                f["statement"].as_str().unwrap_or("?"),
+                if superseded {
+                    format!("  (until {})", day(&f["valid_to"]))
+                } else {
+                    String::new()
+                },
+            );
+        }
+    }
+    if !eps.is_empty() {
+        println!("\nepisodes:");
+        for ep in eps {
+            println!(
+                "  {}  {:<8} {}",
+                day(&ep["occurred_at"]),
+                ep["source"].as_str().unwrap_or("?"),
+                ep["preview"]
+                    .as_str()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
                     .chars()
                     .take(100)
                     .collect::<String>(),

@@ -740,6 +740,56 @@ pub async fn entity(
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct RelatedQuery {
+    pub name: String,
+    pub hops: Option<u8>,
+}
+
+/// GET /api/related — the bounded neighborhood around one node, the
+/// `kg_related` envelope verbatim. This is the one graph *rendering* the
+/// evidence supports: 1–2 hops around the entity being read, never a global
+/// view (`NOTES-GRAPH-DESIGN.md` §2.2 — a graph rendering is a scoped
+/// answer to a question, not a homepage).
+pub async fn related(
+    State(state): St,
+    axum::extract::Query(q): axum::extract::Query<RelatedQuery>,
+) -> Response {
+    let name = q.name.trim();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "name is required\n").into_response();
+    }
+    // Clamped here as well as tool-side, because this string becomes an argv.
+    let hops = q.hops.unwrap_or(1).clamp(1, 2).to_string();
+    match self_json(&state, &["kg", "related", name, "--hops", &hops, "--json"]).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct TimelineQuery {
+    pub name: String,
+}
+
+/// GET /api/timeline — bi-temporal history for one entity, the `kg_timeline`
+/// envelope verbatim: superseded facts beside what replaced them, and the
+/// episode timeline. The entity page shows only `valid_from` without this;
+/// history is the other half of the store's answer.
+pub async fn timeline(
+    State(state): St,
+    axum::extract::Query(q): axum::extract::Query<TimelineQuery>,
+) -> Response {
+    let name = q.name.trim();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "name is required\n").into_response();
+    }
+    match self_json(&state, &["kg", "timeline", name, "--json"]).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
 /// GET /api/notes — recent notes, the `kg_notes` envelope verbatim.
 pub async fn notes(State(state): St) -> Response {
     match self_json(&state, &["kg", "notes", "--json"]).await {
