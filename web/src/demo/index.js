@@ -192,6 +192,7 @@ export const ROUTES = [
           'resume',
           'dictate',
           'offer',
+          'facts(/retract)?',
         ].join('|') +
         ')$',
     ),

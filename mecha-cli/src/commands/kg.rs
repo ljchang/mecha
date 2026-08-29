@@ -9,11 +9,16 @@
 //! MCP tool surface**, exactly as `mecha tasks` does: `kg_search`,
 //! `kg_entity` and `kg_upsert` already answer in JSON, the lookup matches on
 //! the tool suffix so a renamed server keeps working, and `mecha-cli` takes
-//! no dependency on the graph's schema. The one exception to MCP-only remains
-//! `mecha review` (the merge queue needs verbs the tool surface deliberately
-//! lacks); nothing here needs one — search and entity reads are the tools'
-//! own job, and a note is `kg_upsert(kind=episode)`, which links entities on
-//! landing exactly as the graph's own `note` verb does.
+//! no dependency on the graph's schema. Two exceptions to MCP-only, both for
+//! the same reason — verbs the tool surface deliberately lacks: `mecha
+//! review` (the merge queue), and `assert`/`retract` here, which spawn the
+//! `mecha-graph` binary the way review does. An owner stating or retracting
+//! a fact lands live by design (an instruction, not an inference), and that
+//! authority must not exist on the surface a model drives — a model's facts
+//! go through `kg_upsert`, which stages a candidate for review. Everything
+//! else here is the tools' own job: search and entity reads, and a note is
+//! `kg_upsert(kind=episode)`, which links entities on landing exactly as the
+//! graph's own `note` verb does.
 //!
 //! No approver and no interlock, deliberately, as `/tasks` argued it: the
 //! person at the keyboard is the authority, nothing here reaches a third
@@ -60,6 +65,39 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// State a fact yourself. Lands live, never in the review queue — the
+    /// owner asserting something is an instruction, not an inference about
+    /// the world. A connection is a fact too (`edges` is a view over them),
+    /// so this is also how a node gains one, and `retract` how it loses one.
+    Assert {
+        /// Subject: node id, name or alias.
+        subject: String,
+        /// Predicate — prefer the existing vocabulary; a new one is minted
+        /// deliberately, never by typo (D4).
+        predicate: String,
+        /// Object: node id, name or alias. Omit for an attribute-style fact
+        /// and give --value instead.
+        object: Option<String>,
+        /// A literal object, when the object is not a node.
+        #[arg(long)]
+        value: Option<String>,
+        /// The sentence form — what search and a reader see. Composed from
+        /// the parts when omitted.
+        #[arg(long)]
+        statement: Option<String>,
+    },
+    /// Retract a fact by the uid `entity --json` prints — never a text
+    /// match, because retracting the wrong fact off a substring is the
+    /// failure this graph keeps finding.
+    Retract {
+        /// The fact's uid.
+        uid: String,
+        /// When it stopped being true. Omitted, it is invalidated as of now
+        /// — right for a claim that was never right, as against one that has
+        /// simply ended.
+        #[arg(long)]
+        as_of: Option<String>,
+    },
     /// The bounded neighborhood around one node: 1–2 hops over current
     /// facts. What an entity connects to, without pretending to be a map.
     Related {
@@ -105,6 +143,14 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         Cmd::Entity { name, json } => entity(global, &name.join(" "), json).await,
         Cmd::Related { name, hops, json } => related(global, &name.join(" "), hops, json).await,
         Cmd::Timeline { name, json } => timeline(global, &name.join(" "), json).await,
+        Cmd::Assert {
+            subject,
+            predicate,
+            object,
+            value,
+            statement,
+        } => assert_fact(&subject, &predicate, object, value, statement),
+        Cmd::Retract { uid, as_of } => retract_fact(&uid, as_of),
         Cmd::Note { text, edit } => match edit {
             Some(id) => note_edit(global, &id, &text.join(" ")).await,
             None => note(global, &text.join(" ")).await,
@@ -240,6 +286,60 @@ async fn entity(global: &GlobalOpts, name: &str, as_json: bool) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+/// Owner fact-authoring, through the `mecha-graph` binary exactly as
+/// `mecha review` reaches the merge queue — and *not* through MCP, on
+/// purpose: this authority must not exist on the surface a model drives.
+/// The graph's own output passes through verbatim (its refusals name what
+/// went wrong — an unresolvable subject, an unknown uid), so every caller
+/// of this verb relays the one implementation's words.
+///
+/// Options before `--`, positionals after it: a fact's subject is prose and
+/// prose can start with a dash, the same rule note capture learned.
+fn assert_fact(
+    subject: &str,
+    predicate: &str,
+    object: Option<String>,
+    value: Option<String>,
+    statement: Option<String>,
+) -> Result<()> {
+    if subject.trim().is_empty() || predicate.trim().is_empty() {
+        bail!("a fact needs a subject and a predicate");
+    }
+    if object.is_none() && value.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        bail!("a fact needs an object (an entity) or --value (a literal)");
+    }
+    let mut args: Vec<&str> = vec!["assert"];
+    if let Some(v) = value.as_deref() {
+        args.extend(["--value", v]);
+    }
+    if let Some(s) = statement.as_deref() {
+        args.extend(["--statement", s]);
+    }
+    args.push("--");
+    args.push(subject);
+    args.push(predicate);
+    if let Some(o) = object.as_deref() {
+        args.push(o);
+    }
+    print!("{}", crate::commands::review::graph_cli(&args)?);
+    Ok(())
+}
+
+/// Retract by uid, relaying the graph's own account.
+fn retract_fact(uid: &str, as_of: Option<String>) -> Result<()> {
+    if uid.trim().is_empty() {
+        bail!("which fact? `mecha kg entity <name> --json` prints uids");
+    }
+    let mut args: Vec<&str> = vec!["retract"];
+    if let Some(t) = as_of.as_deref() {
+        args.extend(["--as-of", t]);
+    }
+    args.push("--");
+    args.push(uid);
+    print!("{}", crate::commands::review::graph_cli(&args)?);
     Ok(())
 }
 

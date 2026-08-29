@@ -332,6 +332,11 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/find", get(board::find))
         .route("/api/related", get(board::related))
         .route("/api/timeline", get(board::timeline))
+        .route("/api/facts", axum::routing::post(board::fact))
+        .route(
+            "/api/facts/retract",
+            axum::routing::post(board::fact_retract),
+        )
         .route(
             "/api/dictate",
             axum::routing::post(dictate)
@@ -672,19 +677,30 @@ mod tests {
         // nothing, not even that a graph exists. The two new reads
         // (`related`, `timeline`) are pinned beside the ones that predate
         // them, because a route added later is exactly the one a guard
-        // test written earlier cannot be covering.
-        for uri in [
-            "/api/entity?name=x",
-            "/api/find?q=x",
-            "/api/notes",
-            "/api/related?name=x",
-            "/api/timeline?name=x",
+        // test written earlier cannot be covering — and the two fact
+        // writes are the routes most worth pinning: they land live in the
+        // store, by the owner's authority, which is exactly what a probe
+        // must never borrow.
+        for (method, uri) in [
+            ("GET", "/api/entity?name=x"),
+            ("GET", "/api/find?q=x"),
+            ("GET", "/api/notes"),
+            ("GET", "/api/related?name=x"),
+            ("GET", "/api/timeline?name=x"),
+            ("POST", "/api/facts"),
+            ("POST", "/api/facts/retract"),
         ] {
             let response = test_router()
-                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri}");
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
         }
     }
 
