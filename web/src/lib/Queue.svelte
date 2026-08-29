@@ -38,6 +38,16 @@
   const faceOf = (payload) => payload?.statement ?? payload?.what ?? '(no statement)';
 
   let proposers = $state(null);
+  // The surfaced-verdict queue (review-on-use): live UNREVIEWED facts that
+  // are about to matter — served in a pack, contradicting a reviewed fact,
+  // or spot-checked by a sampled class. These are facts, not candidates:
+  // Confirm stands behind one (tier → reviewed, the discount lifts);
+  // Refute retracts it as never true, and the reason feeds the graph's
+  // rejection memory. Verdicts land in the owner's own mecha-graph binary
+  // via the server — the MCP surface deliberately cannot vote.
+  let shadow = $state(null); // { rows, live, served }
+  let shadowOpen = $state(false);
+  let reasons = $state({}); // fact uid → typed refute reason
   let classes = $state(null); // { proposer, rows }
   let tierFilter = $state(null); // null = all
   let groups = $state(null); // { proposer, predicate, threshold, rows }
@@ -57,8 +67,45 @@
     } catch (e) {
       error = String(e?.message ?? e);
     }
+    loadShadow();
+  }
+
+  // Best-effort beside the queue: an older graph binary has no shadow
+  // verb, and this page's candidate views must not vanish with it.
+  async function loadShadow() {
+    try {
+      const res = await fetch('/api/queue/shadow');
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const data = await res.json();
+      shadow = { rows: data.surfaced ?? [], live: data.shadow_live ?? 0, served: data.shadow_served ?? 0 };
+    } catch {
+      shadow = null;
+    }
   }
   load();
+
+  async function shadowVerdict(sf, confirm) {
+    busy = true;
+    try {
+      const res = await fetch('/api/queue/shadow/verdict', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          uid: sf.fact.uid,
+          confirm,
+          reason: reasons[sf.fact.uid]?.trim() || null,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      shadow.rows = shadow.rows.filter((r) => r !== sf);
+      clearNote(sf.fact.uid);
+      error = null;
+    } catch (e) {
+      note(sf.fact.uid, { error: String(e?.message ?? e) });
+    } finally {
+      busy = false;
+    }
+  }
 
   async function openClasses(proposer) {
     try {
@@ -432,6 +479,42 @@
       </div>
       <div class="footnote">These verdicts describe one sample — the seed is printed above.</div>
     {/if}
+  {:else if shadowOpen && shadow}
+    <div class="deckhead">
+      {@render backTo(() => { shadowOpen = false; loadShadow(); }, 'back')}
+      <span class="pname">surfaced for verdict</span>
+      <span class="seed">{shadow.live} unreviewed live · {shadow.served} ever served</span>
+    </div>
+    {#if shadow.rows.length === 0}
+      <div class="empty">Nothing surfaced — no unreviewed fact is about to matter right now.</div>
+    {:else}
+      <div class="footnote">
+        These facts are already live — served rank-discounted and labeled unreviewed. Confirm
+        stands behind one; Refute retracts it as never true, and your reason becomes rejection
+        memory.
+      </div>
+      {#each shadow.rows as sf (sf.fact.uid)}
+        <div class="card candidate">
+          <div class="kicker">{sf.fact.extractor ?? '?'} · {sf.fact.predicate}</div>
+          <div class="statement">{sf.fact.statement}</div>
+          {#each sf.reasons as r}
+            <div class="member">↳ {r}</div>
+          {/each}
+          <input
+            class="field"
+            placeholder="refute reason — feeds rejection memory (optional)"
+            bind:value={reasons[sf.fact.uid]}
+          />
+          <div class="btnrow">
+            <button class="btn" disabled={busy} onclick={() => shadowVerdict(sf, false)}>Refute</button>
+            <button class="btn primary" disabled={busy} onclick={() => shadowVerdict(sf, true)}>Confirm</button>
+          </div>
+          {#if notes[sf.fact.uid]?.error}
+            <div class="cardwarn">{@render hazardGlyph()}<span>{notes[sf.fact.uid].error}</span></div>
+          {/if}
+        </div>
+      {/each}
+    {/if}
   {:else if items}
     <div class="deckhead">
       {@render backTo(closeItems, 'back to groups')}
@@ -580,6 +663,20 @@
   {:else if proposers === null && !error}
     <div class="empty">reading the queue…</div>
   {:else if proposers}
+    {#if shadow}
+      <button class="card row global" onclick={() => (shadowOpen = true)} disabled={busy}>
+        <div class="rowtop">
+          <span class="pname">surfaced for verdict</span>
+          <span class="pcount">{shadow.rows.length}</span>
+        </div>
+        <div class="rowsub">
+          <span
+            >unreviewed facts about to matter — served, contradicting, or spot-checked ·
+            {shadow.live.toLocaleString('en-US')} live in the shadow tier</span
+          >
+        </div>
+      </button>
+    {/if}
     <button class="card row global" onclick={() => openGlobal()} disabled={busy}>
       <div class="rowtop">
         <span class="pname">similar across everything</span>
