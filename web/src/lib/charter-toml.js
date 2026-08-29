@@ -91,6 +91,11 @@ export function hasComment(text) {
 /// Split the document at its first `[[line]]`. Everything above it is the
 /// owner's own writing and survives a save untouched; a comment below it
 /// cannot, so the list editor refuses the document rather than rewriting it.
+/// Tables are found by `/^\s*\[\[/`, so a charter written as an inline array
+/// (`line = [{ id = "a", text = "b" }]`) lands wholly in the "header" and a
+/// save would emit a duplicate `line` key. That fails closed — `Charter::parse`
+/// refuses it with a 422 and the draft stays open — and nothing writes that
+/// shape, so it is left alone rather than handled.
 export function splitHeader(src) {
   const rows = (src ?? '').split('\n');
   const first = rows.findIndex((r) => /^\s*\[\[/.test(r));
