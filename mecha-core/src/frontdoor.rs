@@ -1039,16 +1039,18 @@ mod tests {
     #[test]
     fn the_request_store_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
         // A fresh path, so `open` is what creates the directory. Deliberately
         // world-readable parents: the leaf is the boundary, and a test that
         // passed only because the parent was tight would prove nothing.
+        //
+        // Named from a counter rather than a timestamp: `as_nanos()` is only
+        // as fine-grained as the platform's clock, and on macOS two parallel
+        // tests can land on the same value and share a directory.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir()
             .join("mecha-frontdoor-perms")
-            .join(format!("{}-{nanos}", std::process::id()));
+            .join(format!("{}-{seq}", std::process::id()));
         Frontdoor::open(&dir).unwrap();
 
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode();

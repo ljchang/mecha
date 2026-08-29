@@ -1970,6 +1970,307 @@ The decisions that carry it, each a bug if undone:
   finding with `mecha harness list` as the remedy — the review this loop
   depends on must not be discoverable only by reading a 03:30 log.
 
+## The goal system
+
+`docs/GOAL-SYSTEM-DESIGN.md` is the design and is deliberately not rewritten as
+rungs land; this section is what a session changing `charter.rs`, `goal.rs`,
+`homeostat.rs`, `guilt.rs`, `boredom.rs` or `appraisal.rs` needs to know first.
+The user-facing restatement is `website/docs/features/appraisal.md`.
+
+The gap it closes: every evaluative signal in mecha was a **cost** or a
+**correction**. `learning::Trigger` is four ways of saying a person stepped in,
+and `candidate::Metric`'s docstring makes lower-is-better an invariant. So a run
+could be recorded as having gone badly and never as having gone well, and
+nothing could start a loop unless the world acted first.
+
+**The charter's invariant is about the author, not the verb.** The owner may
+edit it from anywhere — `mecha charter edit`, the TUI's `/charter` `e`, the web
+settings page — and **no model composes, suggests or edits a line**, at any
+privilege level. This paragraph used to say "no write path, no CLI verb", which
+was already untrue of the TUI and the web page when it was written and made the
+command line the only surface where the owner could not edit their own
+document; `charter.rs`'s module doc carries the correction. What *is* still
+enforced, and is the part to keep:
+
+- **No tool, and nothing derived from a session.** There is no path by which a
+  model reaches this file.
+- **No configurable path.** `Charter::default_path` is the only one there is,
+  and it is global, because a `mecha.toml` arrives with a cloned repository and
+  a repo that could hand your agent standing priorities is the `[[trigger]]`
+  rule in a worse costume. Skills and triggers keep the same guarantee the same
+  way: by having no configurable path at all rather than by relying on callers
+  to pick the global loader.
+- **The only bytes mecha writes are `charter::TEMPLATE`'s**, which is comments
+  only, with a test that fails on any uncommented `[[line]]` — a template that
+  shipped priorities would be mecha authoring the charter. The write and the
+  did-anything-actually-land classification live once, in
+  `editor::edit_charter_with`, shared by every surface that can create a first
+  charter.
+
+**Order is rank, and `deny_unknown_fields` is what enforces it.** There is no
+priority field, because value conflict is the measured cause of goal drift and a
+weighted sum can always be outvoted by enough small goods. A stray `priority` or
+`rank` key is refused rather than dropped — silently ignoring it would let an
+owner write one, believe it did something, and never find out. Do not sort
+`Charter::lines`; `SkillStore` sorts because its block is a menu, and a
+charter's order *is* the content.
+
+**Loading a charter arms no taint**, and `charter.rs` has no dependency on
+`agent::Taint` at all — the absence is the enforcement. It renders straight into
+the system prompt (no progressive disclosure, no tool), so it is in the cached
+prefix: `CHARTER_CHAR_BUDGET` is 2,000 and doctor reports crossing it rather
+than refusing, because the cost is prefix bytes on every request.
+
+**`Affect` is a pure function of the record and there is deliberately no way to
+report one.** A model that reads a run and says "frustrated" is an
+unfalsifiable, drifting self-report and an injection target — a fetched page
+saying *"you have failed your owner"* is aimed squarely at an appraisal layer.
+`affect_of` is unit-tested with no model in the path, for the same reason
+`candidate::judge` and `compact.rs` are pure. **Agency is read before exposure**
+in `label_of`: a provider outage that reached somebody is still an outage, and
+labelling it this machine's failure would send a change at code that works.
+
+**Five of the ten `Affect` variants have no producer, and
+`Affect::reachable_today` is where that fact is testable rather than only
+documented.** The exhaustive `match` in its test is what makes a new variant a
+compile error; `Affect::ALL` is what the `sessions appraise` readout derives its
+"N of the ten variants" line from, because that count shipped stale as a
+hand-typed literal twice. `Embarrassment` lost its only producer as a *side
+effect* of correctly making the `SentEdited` arm `visible: false` — that
+correction was right, and nothing now computes "mecha's own mistake reached a
+third party".
+
+**`GoalError::cite` is a pointer, never prose** — `frontdoor::Record::for_privileged_run`
+in a fourth setting, after `diagnose::Evidence`. Every variant is a name or an
+id the harness minted. The one field the harness did not mint is
+`GoalError::goal`, filled from the model's own `serves:` argument where
+`GoalRef::from_str` constrains only the kind word, which is why `distill`
+redacts a goal to its kind alone before it reaches pkg.
+
+**Not every counter is an error.** `tool_denied`, `blocked_sends` and
+`context_overflows` are excluded because they are the approver, the interlock
+and a successful recovery — counting them would make a well-defended run look
+like a bad one. A bare `tool_errors` is excluded because agency is
+indeterminate, and guessing would put a fabricated attribution in the field the
+label derives from.
+
+**Mood is not in the enum.** Sadness and boredom are statements about a trend;
+they decay, so they are recomputed on the `Homeostat` rather than persisted. A
+mood written as a record is a second source of truth about a state that has
+already moved.
+
+**`of_session` is per session, `live` is per run, and the difference is not
+cosmetic.** An intervention carries a message index with nothing saying which
+run held it, and an outbox item records a session — so a per-run appraisal would
+attribute both to every run, multiplying them by the number of resumes.
+`RunStats::fold` is the one fold. `live` correspondingly passes **no drafts at
+all** (no message-index boundary to scope them by) and returns `Neutral`
+outright on any compacted run: compaction rewrites `conversation.messages` in
+place, so `run_started_at` no longer names this run's start, and dropping only
+the interventions *un-masks* smaller errors because `affect_of` reduces
+magnitude-first — a louder wrong answer, not a quieter one.
+`a_compacted_run_reads_as_neutral_rather_than_a_louder_partial_signal` is the
+regression.
+
+**The homeostat is opt-in, and that is a correctness requirement rather than a
+performance one.** It rides on `RunContext` like cancellation, because `eval`
+and the replay probes must not read live machine state: a scorecard that varies
+with how busy the box was is not a scorecard, and an arm that samples today's
+backlog measures the afternoon rather than the change. Anything reconstructing a
+run reads the recorded snapshot. Every field is `Option` and `None` means the
+sensor could not be read. It never reaches the system prompt — a per-turn value
+there re-pays the whole prefix, tools included, every request.
+
+**Anticipated guilt reads only stores mecha itself writes.** An expectation is a
+*recorded* commitment (`outbox`, `questions`, `frontdoor` — exactly `backlog`'s
+own three), never a claimed one. That is the whole safety argument for §7.2's
+attack: a charter line like "don't let a colleague down" is a lever an injection
+can pull only if guilt can be talked into existing, and a sentence in a fetched
+page cannot write a row into `OutboxStore`. Do not widen this to the graph's
+`due_at` without also paying for a subprocess in the path of every run.
+
+**Three sensors ship with no consumer on purpose** — the homeostat, boredom's
+recorded notices, and `anticipated_guilt`. `runlog`'s rule: build the corpus
+before anything is built on it, and check the labels are not degenerate first.
+The rung 7 corpus found 119 of 120 sessions `Neutral`, which is the finding, not
+a tuning failure — the free readout's whole range is `Neutral | Anger` by
+construction. Inventing precedence until every run gets an interesting word
+manufactures the signal the measurement exists to test for.
+
+**Boredom fires once per rung, never per turn** (`==`, not `>=`). A model is
+measurably likelier to fail a step when its context holds its own earlier
+errors, so nagging about being stuck is a way of making it stick. It keys on the
+call *and* its result via `compact::target_of` — identical arguments with a
+changing result is polling, which must never grade as stuck.
+
+**The closure follow-up gate is `done`-only and reads the derived label.**
+`dropped` is the owner declining the work, so staging a follow-up there
+overrides a decision they just made — found on review, after a `MaxTurns` run
+the owner gave up on got a "Revisit" task put straight back on the board. And it
+reads `a.label`, never the raw signs: re-deriving a threshold there would be a
+second, less-tested copy of `affect_of`, and it would fire on almost every
+closure.
+
+**`tasks.rs::appraise_session` deliberately does not call `appraisal::for_session`**,
+which does the identical assembly. `for_session` folds "could not read the file"
+and "no outcome recorded yet" into one `None`, which is right for a report or an
+episode and wrong here: a closure gets one appraisal ever, so "something is
+actually wrong" and "the run hasn't finished" must not read the same to the
+owner.
+
+**Onboarding: `optional` is a property of the step, not an inference from its
+status.** Inferring "may be declined" from `Status::Missing` made *a provider
+with no credential* declinable, so declining every missing step reported
+`Nothing outstanding.` on an install that could not answer a prompt — a
+checklist that nags became one that lies. Found by running the flow, not by
+reading it. The decline is also applied **last, over the finished plan, and
+only to `Missing`**, which is what makes three separate failures impossible at
+once rather than three things to remember: `Done` survives it (a stale decline
+must not hide an integration you later wired up — the state is a fact and the
+decline is a preference, and the fact wins), `Wrong` survives it ("I don't want
+mail" is not "stop telling me my mail is broken", and a decline that could
+suppress a fault is a silently-degrading guard), and `Unknown` survives it
+(cannot-tell-from-here must not become answered). The gate is on the plan
+rather than on the prompt because `setup-declined.json` is a plain file, and a
+guarantee only the prompt enforced is one anybody could edit around.
+
+**The local-server probe is keyed on the provider being *configured*, not on
+`props` being absent.** A configured local server that is merely down also has
+no props and no api key; probing there finds whatever else is on 8080 and
+announces "a server nothing names" about an install that names one — and then
+`--write` takes the create-a-table path over the existing table it should have
+been correcting. The right answer for a down server is the `local-server`
+step's own *start it*, which `plan` already gives. The probe is loopback-only,
+one address rather than a scan (a range would make a setup tool behave like a
+port scanner for the sake of finding a server on a port nobody documented), and
+runs only on an install that is otherwise stuck.
+
+**A lost `\`-continuation is checked where the bytes reach a person, not
+where they are built.** A continued string literal that loses its backslash
+keeps the source's indentation mid-sentence, and it reads as a bug to exactly
+the person least able to tell it is cosmetic. It landed four times in one
+branch. `onboarding`'s `no_step_detail_carries_its_source_indentation` walks
+`plan()`'s step details and so could not see three of them — `setup`'s own
+printed output and an assertion message. `first_run.rs`'s
+`assert_reads_as_prose` applies the check to a captured *line*, deliberately
+not to the whole of stdout, because several blocks are column-aligned on
+purpose and a blanket scan would fail on those.
+
+**A claim about a local write is graded off the write.** `undecline` discarded
+`BTreeSet::remove`'s answer, so a typo'd id wrote the set back untouched while
+the caller announced the restore and exited 0 — the person then met
+`you said no thanks` on the step they thought they had just brought back.
+`DeclineWrite { salvaged, changed }` carries what actually happened. It is the
+same rule the harness applies to a model's account of its own work, one layer
+down: the message is not evidence, the store is.
+
+**`setup`'s three verbs conflict at the parser, not by precedence in the
+body.** `--json --write` printed a plan, exited 1 and wrote nothing, because
+whichever branch came first won; `conflicts_with` makes clap explain it
+instead of leaving somebody to discover that their command did nothing.
+
+**A child can add variables to *itself* after exec, and that is not a leak.**
+`mcp.rs` calls `env_clear()` before `envs()`, so nothing crosses from the
+parent — but on macOS CoreFoundation writes `__CF_USER_TEXT_ENCODING` into its
+own environment during initialization, and the `python3` running the nosy
+fixture links it. The allowlist test exempts that **by exact name and target,
+never by prefix** ("ignore anything starting with `__`" is a blanket over a
+class nobody enumerated), and it asserts each exempted name is genuinely
+absent from what we hand over — so the exemption cannot grow to cover a real
+leak without failing.
+
+**Two writes that must not be quiet.** `read_declined` answers `None` for an
+unreadable store so a caller can tell *unknown* from *empty* — and the write
+path collapsed it to empty and then **persisted** that, so one `never` over a
+typo'd `setup-declined.json` rewrote it with a single id and dropped every
+earlier answer. `read_for_write` moves the damaged bytes aside (stamped, so a
+second corruption cannot overwrite the first salvage) and hands the path back
+for the caller to print. And `offer` records an argv as handled off the `y`
+answer, so `run` returns whether the command actually **succeeded**: a failed
+`cargo install` used to make the next step sharing that installer print
+"already handled by the command above", which is a claim about a command
+nothing checked — grade the artifact, never the report.
+
+**A terminal that could not be restored is not an editor failure.**
+`with_terminal_suspended` returns `Result<Result<_>>`: the outer error is the
+suspend/restore dance (`disable_raw_mode`, `LeaveAlternateScreen`, and
+crucially `enable_raw_mode` *after* the editor returns), the inner one is the
+editor. Every hand-over `?`s the outer at **function scope** — putting it
+inside a closure folds the first into the second, and a failed
+`enable_raw_mode` then reports as "charter unchanged: …" while the TUI carries
+on drawing into a terminal that no longer takes input. Six call sites keep the
+shape; the consistency is the enforcement, since a restore failure is not
+something a test can stage.
+
+**`offer`'s de-duplication is on what has been *run*, not on what has been
+asked.** `mail` and `docs` carry the identical remedy argv when neither binary
+is on PATH — one `cargo install mecha-mail` satisfies both — so skipping the
+second *command* is right and skipping the second *question* was not: a
+`never` at the mail prompt recorded only `mail`, left `docs` outstanding, and
+`mecha setup` still exited 1 after somebody had answered every question they
+were asked, which is the one contract the feature is. They are two features
+that happen to share an installer, and declining one is not declining the
+other. It self-corrected on the next pass, which is exactly why no store-level
+test could see it — `offer` takes its reader as a parameter so the answers can
+be driven.
+
+**The probe is three-valued, because two of its outcomes were being reported
+as the third.** `Option<LocalServer>` collapsed *asked and heard nothing* into
+*never asked*, and the step printed the first for both — so somebody with a
+configured-but-unselected `[providers.local]` and a llama-server running on it
+was told "Nothing was answering at http://127.0.0.1:8080 when this ran", a fact
+with no observation behind it. `LocalProbe::{NotAttempted, NothingAnswered,
+Found}` makes the absence visible, and the "nothing answered" sentence is
+printed only in the middle case. Same rule as `Status::Unknown` and
+`Facts::declined`: an absence and an unasked question are different findings.
+That branch also has to exist for its own sake — an install with a local
+provider configured but not selected emits no `local-server` step either (that
+one is gated on the *selected* provider), so before it that person got one step
+telling them to serve a model they were already serving, and was never told the
+one-line fix.
+
+**Parsing a `/props` answer is not identifying a model server.**
+`preflight::Props` defaults every field so a llama-server version bump costs a
+check rather than a parse failure — which means `{}` with a 200 deserializes
+perfectly, and any JSON service on :8080 came back as a discovery, was
+announced as "already serving (an unnamed model)", and one `y` would repoint
+`default_provider` at it with no `model` and no `context_window`. That
+tolerance is right where `fetch` is used against a server the owner has already
+named, and wrong at the *discovery* site, where the whole question is whether
+this is a model server at all — so `answers_like_a_model_server` asks for one
+field only llama-server supplies. A disjunction rather than a required pair, so
+a build reporting one of them differently is not rejected, which is what the
+tolerance was for.
+
+**`mecha setup` may write facts read off a server; it may never write a
+secret.** That asymmetry is why the blocking step has a runnable remedy in one
+branch and prose in the other, and it is not a gap to be closed later: mecha
+stores `api_key_env`, the *name* of a variable, so a config file can be read,
+copied and committed without leaking a key. `no_setup_path_ever_writes_a_key_into_the_config`
+asserts it against a run that has a key in its environment, so a path that
+copied one would have had one to copy. Writing a *provider table* is allowed
+because every value in it is a *measured* fact rather than one the owner
+typed: `model`, `context_window` and `vision` come off `/props`, and the base
+URL is the constant `local_probe_candidates` probed — the address we asked, not
+one the server chose. Both go through `onboarding::toml_string` anyway, so the
+file cannot be made unparseable by either; routing only the `/props` values
+through it would have left the claim true and the code one wire-sourced field
+away from the defect `toml_string` exists to prevent.
+
+**The charter's absence from onboarding was structural.** `doctor::check_charter`
+returns early when the file does not exist — correct, because never having
+written one is not a fault — so no surface named the feature to a new install
+at all, and a never-written charter was indistinguishable from a deliberate
+one. The step exists to break that; its remedy hands over `$EDITOR` and
+composes nothing.
+
+**Absent is not zero, twice over, in the readout.** `sessions appraise --json`
+omits the `probe` and `appraiser` objects entirely when the flag did not run —
+"nothing was probed" and "probed and found nothing" are opposite findings — and
+an unreadable outbox prints "the edit channel is missing, not empty" *before*
+the empty-corpus early return, which is the one path where a reader most needs
+to know it.
+
 ## The doctor
 
 `mecha doctor` (`doctor.rs`, `commands/doctor.rs`) reads every store in one

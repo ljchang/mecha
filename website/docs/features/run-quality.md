@@ -15,6 +15,7 @@ mecha sessions health --days 30      # the human view
 mecha doctor                         # the alarm, when a rate crosses a threshold
 mecha diagnose                       # one proposed change, with a prediction
 mecha eval --ab-config max_turns=40  # the measurement that would falsify it
+mecha harness ruminate               # all four, nightly, on a timer
 ```
 
 Those four commands are one loop — **detect → diagnose → measure → gate** — and
@@ -307,10 +308,50 @@ candidate override is not comparable to one produced without it, and filing it
 as though it were is how an A/B contaminates a series — the same rule
 `--ab-rules` already followed.
 
+## Running the whole loop unattended
+
+`mecha harness ruminate` is the nightly verb: diagnose one change from the
+corpus, record it as a candidate, measure it by counterfactual replay of recent
+sessions, and dispose of it through the gate — in one pass, on a timer.
+
+```bash
+mecha harness ruminate --sessions 16 --days 7   # the nightly pass
+mecha harness list                              # what is waiting on you
+mecha harness show <id>                         # prediction, measurement, evidence
+mecha harness overrides                         # the active layer, and where each entry came from
+mecha harness revert <id|key>                   # take one back out
+```
+
+**A config change that wins on selection, is confirmed on the holdout, and holds
+the work guardrail auto-accepts** into a revertible override layer. Everything
+else waits for a person: prose and architecture stage unmeasured — prose needs
+the content-sensitive arm (`mecha eval --ab-config`), which is a human's spend —
+and a `security`-class proposal stages with a standing warning and is **never
+measured at all**, because a loop that can argue for widening its own
+confinement will eventually argue well and the metric will agree with it.
+
+The override layer is what makes auto-acceptance reversible rather than merely
+recorded. `mecha harness revert` takes an entry out and the key returns to
+whatever your config says; the candidate record survives as evidence either way.
+Exits 0 on "nothing to do" — a skipped night is not a failed night, and the
+diagnostician declining to propose is a legitimate answer that is never coerced
+into a change.
+
+Everything is recorded, acceptances and rejections alike, so *is this loop
+actually helping* is answerable from the store rather than from impression.
+
 ## What is deliberately not here
 
-Nothing acts on these numbers automatically. The corpus is the sensor; the loop
-above prints and a human decides. That is the open question the design is
-arranged to answer — the finding it starts from is that agents update their
-harnesses without benefiting from it, so the next thing worth learning is
-whether these findings *would* have been acted on, not more code.
+**No model in the gate, and no model applying anything outside the closed set.**
+`mecha diagnose` is the one place a model authors a change, and it is safe there
+precisely because being wrong costs one measurement — automated failure
+attribution is right about which step failed roughly one time in seven. That
+property does not hold at the gate, which is why the gate is a pure function.
+The set of keys an automated proposer may move is exactly the set a run can be
+launched with, so both arms are built by one code path and there is no path from
+a measured win to an arbitrary edit.
+
+**No signal that a run went *well*.** Every metric here is phrased as a cost by
+deliberate constraint, so this corpus can rank two bad runs and cannot rank two
+good ones. That is the gap [goals and appraisal](/docs/features/appraisal)
+exists to close, on the other side of the same records.

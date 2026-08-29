@@ -6651,64 +6651,80 @@ fn suspend_and_edit_charter(
         return Ok(());
     };
     let path = modal.path.clone();
-    let mut created = false;
-    if !path.is_file() {
-        // A store failure here is a status line, never a `?` — every
-        // sibling hand-over routes its store errors into the modal, and a
-        // full disk must not take down the whole session (partial answer
-        // and all) over a template nobody typed.
-        let write = path
-            .parent()
-            .map(std::fs::create_dir_all)
-            .unwrap_or(Ok(()))
-            .and_then(|()| std::fs::write(&path, charter::TEMPLATE));
-        if let Err(e) = write {
-            if let Some(modal) = &mut app.charter {
-                modal.status = Some(format!("could not create {}: {e}", path.display()));
-            }
-            return Ok(());
-        }
-        created = true;
-    }
-    // The file *is* the store (`edit_file` has no scratch copy), so what the
-    // editor did to it is established by looking, not by its exit code: a
-    // clean exit may have saved nothing, and `:cq` may exit non-zero after a
-    // save landed. Bytes before against bytes after is the one honest
-    // answer to "did anything change".
-    let before = std::fs::read(&path).ok();
-    let result = with_terminal_suspended(terminal, || crate::editor::edit_file(&path))?;
-    let changed = std::fs::read(&path).ok() != before;
+    // The template write, the hand-over, and the did-anything-actually-land
+    // classification all live in `editor::edit_charter_with`, shared with
+    // `mecha charter edit` — the two traps in it (a clean exit that saved
+    // nothing, a `:cq` that exited non-zero after a save landed) are exactly
+    // the kind that a second copy gets subtly wrong.
+    use crate::editor::CharterEdit;
+    // **The suspend wraps the whole thing, and its `?` is at function scope**
+    // — the shape every sibling hand-over keeps, and getting it wrong here
+    // was a real defect rather than a style point.
+    //
+    // `with_terminal_suspended` returns `Result<Result<_>>`: the outer error
+    // is the suspend/restore dance itself (`disable_raw_mode`,
+    // `LeaveAlternateScreen`, and crucially `enable_raw_mode` *after* the
+    // editor returns), the inner one is the editor. Putting the `?` inside a
+    // closure handed to `edit_charter_with` folded the first into the second,
+    // so a failed `enable_raw_mode` — the alternate screen never re-entered,
+    // raw mode off — was classified as `CharterEdit::EditorFailed` and
+    // reported as "charter unchanged: …" while the TUI carried on drawing
+    // into a terminal that no longer takes input. A terminal that could not
+    // be restored is not an editor failure, and the classifier below has no
+    // arm that means it.
+    let outcome = with_terminal_suspended(terminal, || {
+        crate::editor::edit_charter_with(&path, crate::editor::edit_file)
+    })?;
 
+    let mut editor_error = None;
     if let Some(modal) = &mut app.charter {
         // The honest clause in every "saved" arm: the charter is rendered
         // into the system prompt at agent build, so a saved edit changes the
         // next session (or this one after /model), never this conversation.
-        modal.status = Some(match (&result, changed) {
-            (Ok(_), false) if created => {
+        modal.status = Some(match &outcome {
+            // A store failure here is a status line, never a `?` — every
+            // sibling hand-over routes its store errors into the modal, and
+            // a full disk must not take down the whole session (partial
+            // answer and all) over a template nobody typed.
+            Err(e) => format!("{e:#}"),
+            Ok(CharterEdit::TemplateCreated) => {
                 "the template is in place — no lines yet; e edits it".to_string()
             }
-            (Ok(_), false) => "unchanged".to_string(),
-            (Ok(_), true) => match mecha_core::charter::Charter::load(&path) {
-                Ok(_) => "saved — rides in the prompt from the next session (/model rebuilds this one)".to_string(),
-                Err(e) => format!(
-                    "saved, but it will NOT load: {e:#} — every run starts uncharted until this is fixed (e re-edits)"
-                ),
-            },
-            // A non-zero exit with the file changed anyway (`:cq` after a
-            // save, a wrapper script) — claiming "unchanged" here would be
-            // wrong about the one file that rides in every prompt, so say
-            // what actually happened and whether what landed loads.
-            (Err(e), true) => match mecha_core::charter::Charter::load(&path) {
-                Ok(_) => format!("the editor exited with an error ({e}), but the file changed and loads"),
-                Err(le) => format!(
-                    "the editor exited with an error ({e}); the file changed and will NOT load: {le:#}"
-                ),
-            },
-            (Err(e), false) => format!("charter unchanged: {e}"),
+            Ok(CharterEdit::Unchanged) => "unchanged".to_string(),
+            Ok(CharterEdit::Saved) => {
+                "saved — rides in the prompt from the next session (/model rebuilds this one)"
+                    .to_string()
+            }
+            Ok(CharterEdit::SavedButInvalid(e)) => format!(
+                "saved, but it will NOT load: {e} — every run starts uncharted until this is fixed (e re-edits)"
+            ),
+            Ok(CharterEdit::EditorFailedButChanged { error, loads }) => {
+                // **Both editor-failure arms reach the transcript**, which
+                // the refactor briefly stopped doing for this one. The old
+                // shape was `if let Err(e) = result`, and that covered a
+                // non-zero exit whether or not the file changed. A modal
+                // status is transient — it goes when the modal closes — and
+                // the transcript is the durable record of a thing that went
+                // wrong, so dropping it here would have quietly narrowed
+                // what a session keeps.
+                editor_error = Some(error.clone());
+                match loads {
+                    None => format!(
+                        "the editor exited with an error ({error}), but the file changed and loads"
+                    ),
+                    Some(le) => format!(
+                        "the editor exited with an error ({error}); the file changed and will NOT load: {le}"
+                    ),
+                }
+            }
+            Ok(CharterEdit::EditorFailed(e)) => {
+                editor_error = Some(e.clone());
+                format!("charter unchanged: {e}")
+            }
         });
         modal.reload();
     }
-    if let Err(e) = result {
+    if let Some(e) = editor_error {
         app.transcript
             .push(Entry::Error(format!("charter editor: {e}")));
     }

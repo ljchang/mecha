@@ -169,10 +169,60 @@ the command asks the server instead of asking you.
 The same comparison runs at startup on every command, so if the two drift apart
 later you hear about it the next time you use mecha at all.
 
+### If a server is already running
+
+`mecha setup` probes `http://127.0.0.1:8080` when nothing in the config can
+answer — loopback only, one address, and only on an install that is otherwise
+stuck. If something is serving there, writing it down is one command:
+
+```bash
+mecha setup --write
+```
+
+That creates `[providers.local]` from what the server reports about itself and
+makes it the default. Every value comes off `/props`, which is the only way
+`context_window` reliably ends up being the **per-slot** figure — `-c` divided
+by `-np` — rather than the number people write down by hand. It shows you the
+lines and asks before writing, and keeps the previous file as `config.toml.bak`.
+
+### If nothing is running
+
+Then you need an API key, and `mecha setup` will not write one. mecha stores the
+**name** of an environment variable rather than a secret:
+
+```toml
+[providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY"
+```
+
+Export the variable and start a new shell. Nothing about your key ever reaches a
+file mecha writes, which is what makes a config safe to copy between machines or
+commit to a dotfiles repo.
+
 ## 4. Wire in personal context
 
 Everything below is optional and independent — mecha is useful with none of it.
 `mecha setup` lists whichever you have not done yet, with the command for each.
+
+**And you can say no.** At each offer the answer is `y`, `N`, or `never`:
+
+```text
+Watch a run from a phone, approve what it wants to send, and hand files in and out.
+run `mecha slack auth`? [y/N/never] never
+noted — `slack` will not be offered again (`mecha setup --undecline slack` undoes it)
+```
+
+`N` means *not today* and the question comes back; `never` records the choice in
+`~/.mecha/setup-declined.json` and the step reads `you said no thanks` from then
+on. That is the difference between a finished install and a permanent defect
+list — a declined step is **not outstanding**, so `mecha setup` exits 0 and is
+usable as your own health check. `mecha setup --undecline <step>` (or `all`)
+asks again.
+
+Two things you cannot decline, deliberately: a provider that can answer, and
+anything that is *broken* rather than merely absent. "I don't want mail" is a
+preference; "stop telling me my mail is broken" is not one a setup tool should
+be able to record.
 
 | | What it gives you | Start with |
 |---|---|---|
@@ -195,7 +245,48 @@ Reading mail or the graph marks the conversation as holding third-party
 content, which is what arms [the trifecta interlock](/docs/features/security).
 That is the intended behaviour, not a misconfiguration.
 
-## 5. What is deliberately not set up
+## 5. Write a charter
+
+The one step that is about you rather than about the machine, and the one most
+people never find:
+
+```bash
+mecha charter edit
+```
+
+A charter is a short, **ranked** list of standing priorities in your own words.
+It rides in every run's prompt, so it is how mecha knows what you actually want
+from it rather than only what you asked for in this sentence.
+
+```toml
+[[line]]
+id = "tell-the-truth-early"
+text = "Tell me the truth early, especially when it disappoints."
+
+[[line]]
+id = "protect-my-attention"
+text = "Do not put something in front of me that I could not act on today."
+```
+
+Order is rank and there is no priority field: when two lines conflict, the
+higher one wins outright, and no amount of urgency on a lower line outranks a
+higher one. Re-ranking is moving a line.
+
+`mecha charter edit` creates a commented template if you have no file yet and
+hands it to `$EDITOR` — the same bytes the TUI's `/charter` and the web settings
+page hand out. **mecha never writes a priority.** The template is comments only,
+there is no generate button anywhere, and no tool a model can call reaches this
+file; a model that could edit its own standing priorities could edit its way
+around every other guardrail.
+
+One authoring trap worth knowing before you start: a line shaped like *"never
+disappoint anyone"* produces sycophancy and withheld bad news. Point it the
+other way, as the first example above does.
+
+See [Goals and appraisal](/docs/features/appraisal) for what the charter is
+part of.
+
+## 6. What is deliberately not set up
 
 **Nothing is scheduled for you.** A scheduled unattended agent run on a machine
 holding your mail is not something to opt anyone into silently — the same
@@ -212,5 +303,6 @@ mecha trigger daemon --print-unit > ~/.config/systemd/user/mecha-triggers.servic
 ## Next
 
 - [First run](/docs/getting-started/first-run) — start it and use it
+- [Goals and appraisal](/docs/features/appraisal) — the charter, in full
 - [Configuration](/docs/getting-started/configuration) — every setting, and what derives from what
 - [Images](/docs/features/images) — if you want it to look at screenshots
