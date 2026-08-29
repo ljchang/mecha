@@ -277,6 +277,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         judge.model()
     );
 
+    // Prove the judge answers before grading anything, and only when this
+    // pass will actually use it — a steer/denial-only run replays and never
+    // judges, so demanding a judge there would refuse work that needs none.
+    if reflexions.iter().any(|r| r.trigger == "followup") {
+        judge.preflight().await?;
+    }
+
     // Steer and denial probes replay against the recorded tool surface, which
     // needs the live registry for specs — builtins, MCP servers, subagents.
     // Built once, only when something will use it; the parent agent it builds

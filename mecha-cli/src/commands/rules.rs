@@ -22,7 +22,8 @@
 
 use anyhow::{bail, Result};
 use mecha_core::learning::{
-    rule_tallies, LeapRun, LearningStore, Proposal, Rule, RuleTally, ValidationRecord,
+    retire_threshold_for, rule_tallies, LeapRun, LearningStore, Proposal, Rule, RuleTally,
+    ValidationRecord,
 };
 use mecha_core::session::Session;
 use std::collections::BTreeMap;
@@ -72,7 +73,7 @@ pub enum Cmd {
         apply: bool,
         /// Attributed regressions required before a rule is proposed for
         /// retirement.
-        #[arg(long, default_value_t = 3)]
+        #[arg(long, default_value_t = mecha_core::learning::DEFAULT_RETIRE_AT)]
         min_attributed: u32,
     },
 }
@@ -115,6 +116,11 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
                     "active": r.active(),
                     "retired": r.retired_at.is_some(),
                     "retired_reason": r.retired_reason,
+                    // Applied without the gate being able to grade it. The
+                    // web roster shows it for the same reason the terminal
+                    // does: "measured clean" and "not measured" are different
+                    // states and only one of them earned its place.
+                    "probation": r.probation,
                     "observations": tally.map(|t| t.observations),
                     "attributed_regressions": tally.map(|t| t.attributed_regressions),
                     "created_at": r.created_at,
@@ -161,6 +167,14 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
         )
     } else if !r.enabled {
         "disabled".into()
+    } else if r.probation {
+        // Visible, because a rule that went live ungraded is a different
+        // thing to read than one that was measured clean, and the roster is
+        // where the owner would notice the difference.
+        format!(
+            "active (probation — applied ungraded, retires at {})",
+            mecha_core::learning::PROBATION_RETIRE_AT
+        )
     } else {
         "active".into()
     };
@@ -264,14 +278,23 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
     let mut staged = 0u32;
 
     for domain in store.domains() {
-        let before = store.learned_rules(&domain)?;
+        let mut before = store.learned_rules(&domain)?;
+        // Probation says "born ungraded", which stops being true the moment a
+        // probe covers it. Cleared before the threshold is chosen, or a rule
+        // the ledger has since measured would still answer to the short leash
+        // — the stale-stamp failure, one store over.
+        mecha_core::learning::clear_probation_when_measured(&mut before, &tallies);
+        let before = before;
         let convicted: Vec<&Rule> = before
             .iter()
             .filter(|r| r.active())
             .filter(|r| {
+                // Per-rule, not per-pass: a probationary rule went live
+                // ungraded and answers to a shorter leash.
+                let threshold = retire_threshold_for(r, min_attributed);
                 r.id.as_deref()
                     .and_then(|id| tallies.get(id))
-                    .is_some_and(|t| t.attributed_regressions >= min_attributed)
+                    .is_some_and(|t| t.attributed_regressions >= threshold)
             })
             .collect();
         if convicted.is_empty() {
@@ -322,8 +345,17 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
                 retired.enabled = false;
                 retired.retired_at = Some(now.clone());
                 retired.retired_reason = Some(format!(
-                    "{} attributed regression(s) in the validation ledger",
-                    t.attributed_regressions
+                    "{} attributed regression(s) in the validation ledger{}",
+                    t.attributed_regressions,
+                    // Name the shorter leash when it is what convicted, or the
+                    // record reads as though the ordinary threshold was met.
+                    match r.probation {
+                        true => format!(
+                            " (probation: retires at {})",
+                            retire_threshold_for(r, min_attributed)
+                        ),
+                        false => String::new(),
+                    }
                 ));
                 retired
             })

@@ -44,8 +44,13 @@ flock -n 9 || exit 0
   "$MECHA" reflect -p "$PROVIDER" --limit 3 2>&1
   # Self-gating: `learn` refuses below --min and says so, so this is a no-op
   # on most sessions and a consolidation on the ones that tip it over.
-  # No --propose: rules go live when they are derived.
-  "$MECHA" learn -p "$PROVIDER" 2>&1
+  #
+  # `--auto`, not bare `learn`: the candidate is replayed against the rules
+  # currently deployed and refused if any probe comes out worse. A batch with
+  # nothing gradeable in it still applies, marked probation and on a shorter
+  # retirement leash — the D1 ruling, and the reason this is not simply
+  # ungated.
+  "$MECHA" learn -p "$PROVIDER" --auto 2>&1
 } >>"$LOG" 2>&1
 
 exit 0

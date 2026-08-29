@@ -43,9 +43,76 @@ pub struct Args {
     #[arg(long)]
     pub propose: bool,
 
+    /// Measure the candidate and apply it when the measurement carries it —
+    /// the ungated path, with the gate still in front.
+    ///
+    /// The middle mode this command was missing. Bare `learn` applies with no
+    /// measurement at all; `--propose` measures and then waits for a human,
+    /// which is how 27 reflections sat behind four unreviewed proposals. This
+    /// runs the same probes and *disposes* of the result:
+    ///
+    /// - any probe worse than the deployed rules → refused, recorded
+    /// - probes ran and none regressed → applied
+    /// - **nothing gradeable in the batch → applied on probation**, marked
+    ///   and retired sooner. The D1 ruling: holding here reproduces the stall,
+    ///   since unmeasurable batches are the common case, and refusing gives up
+    ///   the `writing` and `followup` half of the corpus for good.
+    #[arg(long, conflicts_with = "propose")]
+    pub auto: bool,
+
     /// Show what would run without calling a model or writing anything.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+/// What the gate decided about a candidate, and whether it lands marked.
+#[derive(Debug, PartialEq)]
+pub struct Disposition {
+    /// Recorded on the proposal; also what `git log` in the store reads as.
+    pub status: &'static str,
+    /// Applied without the gate being able to grade it.
+    pub probation: bool,
+}
+
+/// Turn the probe tally into a decision. Pure, so the three-way split is a
+/// unit test rather than a claim about a long function.
+///
+/// The `measured == 0` arm is the one that matters and the one an intuition
+/// gets wrong: it is not a rare near-miss, it is the **common** case, because
+/// only steers and denials have a replayable intervention point at all.
+/// Refusing there would silently discard every batch of edits and followups —
+/// the majority of the corpus — and passing it as though it were clean would
+/// lose the only distinction probation exists to record. So it applies, and
+/// it applies *marked*.
+///
+/// Under `--propose` nothing is ever applied, and `measured == 0` still
+/// reaches a human, who can read the evidence the gate could not grade.
+pub fn dispose(auto: bool, regressed: u32, measured: u32) -> Disposition {
+    // A candidate that makes any probe worse than what is deployed is refused
+    // in both modes, before anything else is considered. Checked first so no
+    // combination of the other two can talk past it.
+    if regressed > 0 {
+        return Disposition {
+            status: "rejected_by_gate",
+            probation: false,
+        };
+    }
+    if !auto {
+        return Disposition {
+            status: "pending",
+            probation: false,
+        };
+    }
+    match measured {
+        0 => Disposition {
+            status: "auto_applied_probation",
+            probation: true,
+        },
+        _ => Disposition {
+            status: "auto_applied",
+            probation: false,
+        },
+    }
 }
 
 /// Which reflection ids this pass leaves alone, given a holdout fraction.
@@ -240,7 +307,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     // The gate replays against the recorded tool surface, which needs the
     // live registry for specs — same borrow `mecha validate` makes.
-    let prepared = if args.propose {
+    let prepared = if args.propose || args.auto {
         Some(setup::prepare(&global.clone(), false).await?)
     } else {
         None
@@ -264,7 +331,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // provenance, retired rules are carried through untouched. The gate
         // below measures exactly what acceptance would deploy.
         let ids: Vec<String> = reflexions.iter().map(|r| r.id.clone()).collect();
-        let rules = mecha_core::learning::finalize_rules(
+        let mut rules = mecha_core::learning::finalize_rules(
             rules,
             &learned_before,
             &ids,
@@ -301,9 +368,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             continue;
         }
 
-        // ── the gate: measure the candidate, stage it, never apply it ──
-        if args.propose {
-            let prepared = prepared.as_ref().expect("built under --propose");
+        // ── the gate: measure the candidate, then dispose of it ──
+        if args.propose || args.auto {
+            let prepared = prepared.as_ref().expect("built under --propose/--auto");
             let candidate_block = wrap_rules_block(
                 domain_rules_section(domain, &user_rules, &rules)
                     .into_iter()
@@ -366,23 +433,46 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             let evidence = lines.join("\n");
 
             // A candidate that makes any probe worse than what is deployed
-            // never reaches a human — recorded with its evidence, though,
+            // is refused in both modes — recorded with its evidence, though,
             // because a gate that leaves no trace teaches nobody anything.
-            let status = if regressed > 0 {
-                "rejected_by_gate"
-            } else {
-                "pending"
-            };
+            //
+            // The three-way split under `--auto` is the D1 ruling made
+            // mechanical. `measured == 0` is not a near-miss to be argued
+            // about: it is the *common* case, because only steers and denials
+            // have a replayable intervention point at all. Treating it as a
+            // refusal would silently discard every batch of edits and
+            // followups; treating it as a pass would lose the distinction
+            // between "measured clean" and "not measured", which is the one
+            // thing probation exists to remember.
+            let Disposition { status, probation } = dispose(args.auto, regressed, measured);
+            if probation {
+                for r in rules.iter_mut().filter(|r| r.retired_at.is_none()) {
+                    r.probation = true;
+                }
+            }
+            let applied = status == "auto_applied" || status == "auto_applied_probation";
+            // The proposal is written whichever way this went. Under `--auto`
+            // nobody is going to read it as a decision — it is the audit
+            // trail, and it is the only record of *why* a rule set landed or
+            // did not, since the gate's probes never reach the validation
+            // ledger.
             let proposal = Proposal {
                 id: Session::new_id(),
                 domain: domain.clone(),
                 status: status.into(),
-                reflexion_ids: ids,
+                reflexion_ids: ids.clone(),
                 rules_before: learned_before.clone(),
                 rules: rules.clone(),
                 evidence: evidence.clone(),
                 created_at: chrono::Utc::now().to_rfc3339(),
-                resolved_at: None,
+                // Resolved at birth when the gate decided: nothing is waiting
+                // on anyone, and leaving it `None` would make every auto pass
+                // read as pending review to `mecha proposals` and to doctor.
+                resolved_at: applied
+                    .then(|| chrono::Utc::now().to_rfc3339())
+                    .or_else(|| {
+                        (status == "rejected_by_gate").then(|| chrono::Utc::now().to_rfc3339())
+                    }),
                 reason: None,
             };
             store.write_proposal(&proposal)?;
@@ -396,8 +486,40 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             if status == "pending" {
                 println!("review with `mecha proposals show {}`", proposal.id);
             }
+
+            if applied {
+                let run = LeapRun {
+                    id: proposal.id.clone(),
+                    domain: domain.clone(),
+                    reflexions_processed: ids.len() as u32,
+                    rules_before: learned_before.len() as u32,
+                    rules_after: rules.len() as u32,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                store.write_learned_rules(domain, &rules)?;
+                store.mark_reflexions_processed(&ids, &run.id)?;
+                store.append_run(&run)?;
+                for r in &rules {
+                    println!(
+                        "  - {}{}",
+                        r.text,
+                        if r.probation { "  [probation]" } else { "" }
+                    );
+                }
+                if probation {
+                    println!(
+                        "  applied on probation: no reflection in this batch had a replayable \
+                         intervention point, so the gate could not grade it. Retires at \
+                         {} attributed regression(s) rather than {}.",
+                        mecha_core::learning::PROBATION_RETIRE_AT,
+                        mecha_core::learning::DEFAULT_RETIRE_AT,
+                    );
+                }
+            }
+
             store.commit(&format!(
-                "propose[{domain}]: {} rule(s) from {} reflection(s), {status}",
+                "{}[{domain}]: {} rule(s) from {} reflection(s), {status}",
+                if applied { "learn" } else { "propose" },
                 proposal.rules.len(),
                 proposal.reflexion_ids.len()
             ));
@@ -439,7 +561,53 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::hold_out;
+    use super::{dispose, hold_out};
+
+    /// **The three-way split, which is the whole of `--auto`.**
+    ///
+    /// Fails on the old behaviour: there were two outcomes, and the only
+    /// non-refusal was `pending` — a human. That is how 27 reflections came
+    /// to sit behind four proposals nobody read.
+    #[test]
+    fn a_regression_is_refused_in_both_modes_and_nothing_else_can_talk_past_it() {
+        for auto in [true, false] {
+            let d = dispose(auto, 1, 9);
+            assert_eq!(d.status, "rejected_by_gate", "auto={auto}");
+            assert!(!d.probation);
+            // Even with nothing else measured, a regression still refuses.
+            assert_eq!(dispose(auto, 2, 0).status, "rejected_by_gate");
+        }
+    }
+
+    #[test]
+    fn measured_clean_applies_unmarked_under_auto_and_still_waits_under_propose() {
+        let auto = dispose(true, 0, 6);
+        assert_eq!(auto.status, "auto_applied");
+        assert!(!auto.probation, "measured clean is not probation");
+
+        let propose = dispose(false, 0, 6);
+        assert_eq!(propose.status, "pending");
+        assert!(!propose.probation);
+    }
+
+    /// The common case, not a corner: only steers and denials are replayable,
+    /// so every batch of edits and followups grades zero. Refusing here would
+    /// discard the majority of the corpus.
+    #[test]
+    fn an_ungradeable_batch_applies_marked_under_auto_and_reaches_a_human_under_propose() {
+        let auto = dispose(true, 0, 0);
+        assert_eq!(auto.status, "auto_applied_probation");
+        assert!(
+            auto.probation,
+            "ungraded rules must be marked or the leash means nothing"
+        );
+
+        // `--propose` never applies, so an ungradeable batch is still a
+        // person's to read rather than something marked and shipped.
+        let propose = dispose(false, 0, 0);
+        assert_eq!(propose.status, "pending");
+        assert!(!propose.probation);
+    }
 
     fn ids(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("r{i:02}")).collect()
