@@ -18,15 +18,31 @@ env:
 
 jobs:
   test:
-    name: test (${{ matrix.rust }})
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         # `stable` is what contributors use; the MSRV pin is what the manifest
         # promises. Breaking either should be a deliberate act, not a surprise.
-        # Keep this arm in step with `rust-version` in the workspace manifest.
-        rust: [stable, "1.89"]
+        # Keep the MSRV arm in step with `rust-version` in the workspace
+        # manifest.
+        #
+        # **macOS is a full arm, not a build-only one.** It was added after
+        # `mecha-cli` turned out not to compile there at all — `exe.rs`
+        # imported `Path` unconditionally and used it only under
+        # `cfg(target_os = "linux")`, which `-D warnings` makes fatal — and
+        # nothing could see it, because every job here ran on ubuntu. The
+        # MSRV arm stays Linux-only: it exists to pin what the manifest
+        # promises, and a second platform does not make that promise more or
+        # less kept.
+        include:
+          - os: ubuntu-latest
+            rust: stable
+          - os: ubuntu-latest
+            rust: "1.89"
+          - os: macos-latest
+            rust: stable
     steps:
       - uses: actions/checkout@v7
 
@@ -37,8 +53,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.rust }}
+          key: ${{ matrix.os }}-${{ matrix.rust }}
 
+      # `--all-targets` so the *tests* have to compile too, not only the
+      # libraries and binaries. A platform where the suite does not build is
+      # one where nothing here is measuring anything.
       - name: Build
         run: cargo build --workspace --all-targets --locked
 
@@ -130,3 +149,242 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo run --locked --bin mecha -- tools
       - run: cargo run --locked --bin mecha -- tools --json
+
+  # What a new user actually does, on the platforms they do it on.
+  #
+  # `cargo test` already runs `mecha-cli/tests/first_run.rs`, which drives the
+  # built binary through the first-run commands. This job exists because that
+  # one cannot fail on the thing most likely to break an install: `cargo test`
+  # builds in the workspace, and a new user runs `cargo install`. A crate that
+  # will not install standalone, a binary that needs a workspace-relative file
+  # at runtime, a dependency that only resolves from the dev lockfile — none of
+  # those are visible from inside the workspace, and all of them land on the
+  # person least equipped to debug them.
+  #
+  # macOS is in the matrix rather than assumed: install-path failures are
+  # exactly the kind that are platform-specific, and "it worked on my Linux
+  # box" is how they ship.
+  first-run:
+    name: first run (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The command the documentation tells people to run, against a prefix
+      # that is not the developer's — so a stale `~/.cargo/bin/mecha` cannot
+      # answer for the code in this commit. `CLAUDE.md`'s rule: ask the
+      # artifact what it can do, and be sure which artifact is answering.
+      - name: Install it the way a new user does
+        run: cargo install --path mecha-cli --locked --root "${{ runner.temp }}/prefix"
+
+      - name: Put the installed binary on PATH
+        run: echo "${{ runner.temp }}/prefix/bin" >> "$GITHUB_PATH"
+
+      - name: It is the binary we just built
+        run: |
+          set -eux
+          command -v mecha
+          mecha --version
+
+      # Everything below runs against an empty home, which is the state that
+      # matters and the one no other job is ever in.
+      - name: A fresh install says what it needs
+        env:
+          MECHA_HOME: ${{ runner.temp }}/fresh/home
+        run: |
+          set -eux
+          mkdir -p "$MECHA_HOME" "${{ runner.temp }}/fresh/work"
+          cd "${{ runner.temp }}/fresh/work"
+
+          # `env -u` rather than trusting the runner to have no key: whether
+          # `provider-credential` appears at all depends on the environment,
+          # so an assertion about it has to control the environment instead
+          # of hoping. A fork that exports a key would otherwise see this
+          # step pass for a reason that has nothing to do with the code.
+          NOKEY="env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY"
+
+          # Outstanding work exits non-zero — doctor's contract — so this is a
+          # check a person can put in their own CI.
+          #
+          # `if`, not `! cmd`: **`set -e` does not apply to an inverted
+          # command**, so `! mecha setup --json` neither fails nor passes the
+          # step, it is simply ignored. A vacuous assertion in CI reads
+          # exactly like a passing one, which is the failure this whole job
+          # exists to prevent one layer down.
+          #
+          # This note was written here and then not applied to the `! grep`
+          # assertions further down, including the two that check no key
+          # reached the config and no `[[line]]` was authored into a charter —
+          # so **every negative assertion in this job uses `if`**. A `! cmd`
+          # that happens to be the last line of a block does abort, by
+          # accident of the step taking its status; adding a line after it
+          # disarms it silently.
+          if $NOKEY mecha setup --json > steps.json; then
+            echo "setup --json must exit non-zero while work is outstanding"
+            exit 1
+          fi
+          jq -e 'type == "array" and length > 0' steps.json
+
+          # Every step a new install is entitled to be told about, by id. A
+          # renamed id is a breaking change for anybody scripting this.
+          for id in config-file mail docs slack graph charter; do
+            jq -e --arg id "$id" 'any(.[]; .id == $id)' steps.json
+          done
+
+          # Ordered by what blocks what: somewhere to put settings, then
+          # something that can answer. A new user wiring up mail against a
+          # provider that cannot answer is an hour spent on the wrong end.
+          jq -e '[.[0].id, .[1].id] == ["config-file", "provider-credential"]' steps.json
+
+          # And the blocking step offers a way *out*, not a viewer. Nothing is
+          # serving on a CI runner, so this is the no-server branch: the fix
+          # is a secret, which no command may set on somebody's behalf, so the
+          # detail has to name the exact variable and promise the key never
+          # lands in a file.
+          jq -e '.[] | select(.id == "provider-credential") | .detail
+                 | test("ANTHROPIC_API_KEY") and test("never the key itself")' steps.json
+
+          # The charter is offered, and the offer hands over an editor rather
+          # than composing anything.
+          jq -e 'any(.[]; .id == "charter" and .remedy.argv == ["mecha","charter","edit"])' steps.json
+
+          # And each one says something about itself and carries a status.
+          jq -e 'all(.[]; (.title | length > 0) and (.detail | length > 0)
+                          and (.status | IN("done","missing","wrong","unknown","declined")))' steps.json
+
+      - name: The credential-free commands work before anything is configured
+        env:
+          MECHA_HOME: ${{ runner.temp }}/fresh/home
+        run: |
+          set -eux
+          cd "${{ runner.temp }}/fresh/work"
+          mecha tools > /dev/null
+          mecha tools --json | jq -e 'type == "array" and length > 0'
+          # Absent stores are not broken ones. A wall of alarm about
+          # directories nobody has created yet is the worst possible first
+          # impression, and the easiest regression to introduce.
+          mecha doctor --json | jq -e 'type == "array" and ([.[] | select(.severity == "broken")] | length) == 0'
+          mecha config show > /dev/null
+
+      - name: A first charter is a template, and mecha writes no priority into it
+        env:
+          MECHA_HOME: ${{ runner.temp }}/fresh/home
+          # Exits 0 having changed nothing, so what lands is exactly what
+          # mecha wrote — and a code path that tried to open a real editor
+          # would hang this job rather than passing quietly.
+          VISUAL: "true"
+        run: |
+          set -eux
+          cd "${{ runner.temp }}/fresh/work"
+          mecha charter edit
+          test -f "$MECHA_HOME/charter.toml"
+          # No uncommented line: a charter mecha authored is the one thing
+          # every surface here refuses — so this is the assertion the whole
+          # feature rests on, and it must be able to fail. `if`, never
+          # `! grep`: see the note in the first-run step above.
+          if grep -qE '^[[:space:]]*[^#[:space:]]' "$MECHA_HOME/charter.toml"; then
+            echo "mecha wrote an uncommented line into a charter"
+            exit 1
+          fi
+          mecha charter --json | jq -e '.lines | length == 0'
+
+      # The invariant that lets the step above be advice rather than a command:
+      # a config file is safe to read, copy and commit because there was never
+      # a key in it. Run with a key in the environment, so a path that copied
+      # one would have had one to copy.
+      - name: No setup path writes a secret into the config
+        env:
+          MECHA_HOME: ${{ runner.temp }}/secret/home
+          ANTHROPIC_API_KEY: sk-secret-value-that-must-not-land
+        run: |
+          set -eux
+          mkdir -p "$MECHA_HOME" "${{ runner.temp }}/secret/work"
+          cd "${{ runner.temp }}/secret/work"
+          mecha config init
+          if grep -q "sk-secret-value-that-must-not-land" "$MECHA_HOME/config.toml"; then
+            echo "a key from the environment reached the config file"
+            exit 1
+          fi
+          grep -q "api_key_env" "$MECHA_HOME/config.toml"
+          if grep -qE '^[[:space:]]*api_key[[:space:]]*=' "$MECHA_HOME/config.toml"; then
+            echo "the config grew a key-valued field, not just a variable name"
+            exit 1
+          fi
+
+      - name: A step you decline stops being outstanding, and can be restored
+        env:
+          MECHA_HOME: ${{ runner.temp }}/fresh/home
+        run: |
+          set -eux
+          cd "${{ runner.temp }}/fresh/work"
+          NOKEY="env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY"
+
+          # A key in the environment, because what remains outstanding then is
+          # exactly the optional half — which is the state this step is about.
+          # It reaches nothing: the default provider is not `local`, so
+          # `setup` opens no socket on this path.
+          WITHKEY="env ANTHROPIC_API_KEY=not-a-real-key"
+
+          # A config file is created, never declined — only genuinely optional
+          # things are declinable, so without this the assertion below would
+          # be claiming a required step can be waved away. (The earlier step
+          # deliberately runs without one, because being *told* the file
+          # exists is the thing it checks.)
+          mecha config init
+
+          # Answer every open question, the way a person would with `never`.
+          $WITHKEY mecha setup --json > steps.json || true
+          jq '{declined: [.[] | select(.status == "missing") | .id]}' steps.json \
+            > "$MECHA_HOME/setup-declined.json"
+
+          # An install whose every question has been answered exits 0 — which
+          # is what makes `mecha setup` usable as somebody's own health check
+          # rather than a permanently red one.
+          # **Not piped into `tee`.** Without `set -o pipefail` a pipeline's
+          # status is the *last* command's, so `mecha setup` exiting 1 here
+          # would be thrown away by `tee` and the step would pass silently —
+          # and this is the one positive exit-code assertion in the job, the
+          # "an answered install exits 0" claim the comment above is about.
+          # Same family as the `! cmd` note further up: a negation and a pipe
+          # both discard the status you meant to assert on.
+          $WITHKEY mecha setup > out.txt
+          cat out.txt
+          grep -q "Nothing outstanding" out.txt
+          grep -q -- "--undecline" out.txt
+
+          # But a credential is NOT declinable, even by editing the store —
+          # otherwise this feature turns a checklist that nags into one that
+          # lies. Without the key, the same declined store must still report
+          # unfinished work.
+          if $NOKEY mecha setup > nokey.txt; then
+            echo "an install that cannot answer a prompt is not a finished one"
+            exit 1
+          fi
+          grep -q "A provider that can answer" nokey.txt
+
+          # And the decision is reversible.
+          mecha setup --undecline all
+          if $WITHKEY mecha setup --json > steps.json; then
+            echo "un-declined steps are outstanding again, so this must exit non-zero"
+            exit 1
+          fi
+          jq -e 'any(.[]; .status == "missing")' steps.json
+
+      # The documentation is verified against the binary rather than against
+      # memory. A command named in the getting-started pages that does not
+      # exist is a new user's first dead end, and it is the failure this
+      # repository has shipped most often.
+      - name: Every command the getting-started docs name exists
+        run: |
+          set -eux
+          for cmd in setup doctor tools charter run chat tui config sessions trigger; do
+            mecha "$cmd" --help > /dev/null
+          done
+          mecha charter edit --help > /dev/null
+          mecha setup --help | grep -q -- --undecline

@@ -24,6 +24,27 @@ const IMAGE: &str = "python:3-slim";
 /// Always passed through: most runtimes cannot start without them.
 const BASE: [&str; 5] = ["PATH", "HOME", "LANG", "LC_ALL", "TZ"];
 
+/// Variables a child process adds to **itself** after exec, which
+/// `env_clear()` therefore cannot prevent and which are not evidence of
+/// anything crossing the boundary.
+///
+/// On macOS, CoreFoundation writes `__CF_USER_TEXT_ENCODING` into its own
+/// environment during initialization, and the `python3` that runs the fixture
+/// links CoreFoundation — so the server reports a variable nobody handed it.
+/// It carries the user's numeric uid, which a child already has from
+/// `getuid()`, so it discloses nothing the process could not ask for.
+///
+/// **Exempted by exact name and by target, never by prefix.** "Ignore
+/// anything starting with `__`" would be a blanket over a class nobody has
+/// enumerated — the silently-degrading-guard shape this test exists to
+/// disprove. And the test asserts that each name here is genuinely absent
+/// from what we hand over, so the exemption cannot come to cover a real leak
+/// without failing.
+#[cfg(target_os = "macos")]
+const SELF_INFLICTED: [&str; 1] = ["__CF_USER_TEXT_ENCODING"];
+#[cfg(not(target_os = "macos"))]
+const SELF_INFLICTED: [&str; 0] = [];
+
 fn unconfined() -> Sandbox {
     Sandbox::new(SandboxConfig::default())
 }
@@ -227,10 +248,31 @@ async fn the_environment_a_server_actually_sees_is_the_allowlist() {
         .chain([passthrough.clone(), "MECHA_EXPLICIT_TOKEN".to_string()])
         .collect();
 
+    // **First, our side of the boundary, which is the part this project
+    // controls.** `mcp.rs` calls `env_clear()` and then hands over exactly
+    // `child_env(passthrough) + cfg.env`, so anything self-inflicted below
+    // must be absent from *that* — otherwise the exemption would be hiding
+    // the very leak this test exists to catch, and the assertion under it
+    // would be measuring the exemption rather than the code.
+    let handed: BTreeSet<String> = Sandbox::child_env(&cfg.env_passthrough)
+        .into_iter()
+        .map(|(k, _)| k)
+        .chain(cfg.env.keys().cloned())
+        .collect();
+    for name in SELF_INFLICTED {
+        assert!(
+            !handed.contains(name),
+            "{name} is exempted below as self-inflicted, but we are handing it over"
+        );
+    }
+
     // Asserted as a subset rather than against a list of known secrets: the
     // bug was never about one variable. `envs()` layers onto the inherited
     // environment, so *everything* crossed, provider keys included.
-    let leaked: Vec<_> = seen.difference(&allowed).collect();
+    let leaked: Vec<_> = seen
+        .difference(&allowed)
+        .filter(|k| !SELF_INFLICTED.contains(&k.as_str()))
+        .collect();
     assert!(
         leaked.is_empty(),
         "the server was handed variables nobody named: {leaked:?}"

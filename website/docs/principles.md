@@ -155,6 +155,17 @@ achieved by doing nothing.
 A corollary: never edit a recorded measurement to match a later result. A
 retracted measurement is evidence about how much to trust the next one.
 
+And the counting has a **sign**, which took a while to notice was missing. Every
+metric above is phrased as a cost, so the system could rank two runs that went
+badly and could not rank two that went well — and every signal that started a
+loop needed the world to act first, because nothing represented what a run was
+*for*. A [charter and a signed goal error](/docs/features/appraisal) are the
+other half: what mecha is for, in your own words, and how far a run landed from
+it. The honest first finding was that almost every run comes back with no label
+at all, and that is published rather than tuned away — inventing precedence until
+every run gets an interesting word manufactures the signal the measurement exists
+to test for.
+
 ## 9. Evidence is kept; belief is gated
 
 The two are stored differently and on purpose. Evidence is append-only and
@@ -216,12 +227,23 @@ had twice:
 - **No escape hatch on the front door's extraction boundary**, no argument that
   returns a stranger's prose to a privileged run, and no fallback to passing the
   prose through when extraction fails — a failed extraction waits for a human.
-- **No harness change that applies itself.** `mecha diagnose` is the one place a
-  model authors a change, and it prints the command that would falsify its own
-  proposal rather than running it. A model is safe there precisely because being
-  wrong costs one measurement — automated failure attribution is right about
-  which step failed roughly one time in seven — and that property does not hold
-  at the gate, which is why there is no model in the gate.
+- **No model in the gate, and nothing outside a closed set that applies itself.**
+  `mecha diagnose` is the one place a model authors a change, and it prints the
+  command that would falsify its own proposal rather than running it. A model is
+  safe there precisely because being wrong costs one measurement — automated
+  failure attribution is right about which step failed roughly one time in
+  seven — and that property does not hold at the gate, which is why there is no
+  model in the gate. A **config** change that clears the whole gate does apply
+  itself, into a revertible override layer, and the keys it may move are exactly
+  the ones a run can be launched with; architecture reaches a person however well
+  it scored, and a `security`-class proposal is never measured at all, because a
+  loop that can argue for widening its own confinement will eventually argue well.
+- **No model-authored charter line, and no model-reported mood.** The charter is
+  edited by a person with a text editor — a model that could edit its own
+  standing priorities could edit its way around every other guardrail — and the
+  affect label is a pure function of the record rather than something a model
+  announces about itself. A self-report is unfalsifiable, drifts, and is exactly
+  what a page saying *"you have failed your owner"* is aiming at.
 - **No significance test on a candidate.** With a few dozen episodes the noise
   is the model's sampling rather than the measurement, and the answer to that is
   repetition, not a p-value over one sample. The raw win/loss/tie counts ride on

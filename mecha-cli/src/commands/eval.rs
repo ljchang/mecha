@@ -256,7 +256,7 @@ async fn run_arm(
     // Everything a scorecard must not depend on, in one call — see
     // `force_reproducible` for why the list is a function rather than forty
     // lines of prose, and which entry that shape lost.
-    force_reproducible(&mut opts, args.mcp);
+    force_reproducible(&mut opts, args.mcp, with_rules);
     // The candidate arm's whole difference from the baseline, applied here so
     // both arms are built by one code path. Empty for every other caller.
     for spec in overrides {
@@ -1170,11 +1170,23 @@ async fn ab_config(
 ///
 /// Named as a function so the answer to *what does eval force off* is one
 /// thing a test can read, rather than a list nobody could see all of.
-fn force_reproducible(opts: &mut GlobalOpts, allow_mcp: bool) {
+///
+/// **Both `allow_*` parameters are deliberate exceptions, and they are
+/// parameters rather than re-enables at the call site for a reason this
+/// function itself demonstrated.** Consolidating the list flattened
+/// `opts.no_learned_rules = !with_rules` — written at `run_arm`'s call
+/// site — into an unconditional `true`, which left `--ab-rules` announcing
+/// *"learned rules INJECTED (A/B treatment arm)"* over an arm that had none:
+/// two identical arms, and every per-case flip it printed was noise. The
+/// set-assertion test below did not catch it, because a test that asserts a
+/// list is complete cannot notice that one member of it was supposed to be a
+/// variable. A lever that lives *inside* the list cannot be lost while
+/// consolidating the list, so it lives here.
+fn force_reproducible(opts: &mut GlobalOpts, allow_mcp: bool, allow_learned_rules: bool) {
     if !allow_mcp {
         opts.no_mcp = true;
     }
-    opts.no_learned_rules = true;
+    opts.no_learned_rules = !allow_learned_rules;
     opts.no_hooks = true;
     opts.no_outbox = true;
     opts.no_fallback = true;
@@ -1200,7 +1212,7 @@ mod tests {
     #[test]
     fn eval_forces_off_everything_a_scorecard_must_not_depend_on() {
         let mut opts = GlobalOpts::default();
-        force_reproducible(&mut opts, false);
+        force_reproducible(&mut opts, false, false);
         for (name, on) in [
             ("mcp", opts.no_mcp),
             ("learned rules", opts.no_learned_rules),
@@ -1226,15 +1238,56 @@ mod tests {
         // `--mcp` is the one deliberate opt-in: the graph case set needs
         // servers in the surface, and says so.
         let mut with_mcp = GlobalOpts::default();
-        force_reproducible(&mut with_mcp, true);
+        force_reproducible(&mut with_mcp, true, false);
         assert!(!with_mcp.no_mcp, "--mcp is opt-in, not overridden");
         assert!(with_mcp.no_compact_tool, "and it opts into nothing else");
         assert!(with_mcp.no_step_escalation, "including this one");
     }
 
+    /// `--ab-rules`' treatment arm must actually carry rules.
+    ///
+    /// The regression this fails on: consolidating the forced-off list turned
+    /// `opts.no_learned_rules = !with_rules` into an unconditional `true`, so
+    /// arm B ran rules-free while printing "learned rules INJECTED (A/B
+    /// treatment arm)" — two identical arms, and every flip reported between
+    /// them was noise. Asserted here rather than only in the set test above,
+    /// because that one asserts the *baseline* and would pass just as happily
+    /// against a lever that had stopped being a lever.
+    #[test]
+    fn the_ab_rules_treatment_arm_actually_carries_rules() {
+        let mut treatment = GlobalOpts::default();
+        force_reproducible(&mut treatment, false, true);
+        assert!(
+            !treatment.no_learned_rules,
+            concat!(
+                "--ab-rules' treatment arm must run with this machine's learned rules, ",
+                "or the A/B measures nothing"
+            )
+        );
+        // And it opts into nothing else — the lever is one flag wide.
+        assert!(treatment.no_mcp, "the rules lever is not an MCP opt-in");
+        assert!(treatment.no_skills);
+        assert!(treatment.no_charter);
+        assert!(treatment.no_hooks);
+        assert!(treatment.no_outbox);
+        assert!(treatment.no_fallback);
+        assert!(treatment.no_messages);
+        assert!(treatment.no_compact_tool);
+        assert!(treatment.no_step_escalation);
+    }
+
     /// A scratch directory that cleans up after itself, so a failing test
     /// does not leave litter that changes what the next run's `is_file`
     /// checks see.
+    ///
+    /// **Canonicalized, because `temp_dir()` is not the path the code under
+    /// test will produce.** On macOS it answers `/var/folders/…`, which is a
+    /// symlink to `/private/var/folders/…` — so a fixture that built its
+    /// expectation from `temp_dir()` compared it against a
+    /// `load_mcp_file` result that had (correctly) canonicalized, and failed
+    /// on a difference that is not about the code at all. Resolving here
+    /// rather than at each assertion means the next fixture that compares a
+    /// path is right without anyone remembering why.
     struct Scratch(PathBuf);
 
     impl Scratch {
@@ -1242,6 +1295,8 @@ mod tests {
             let dir =
                 std::env::temp_dir().join(format!("mecha-eval-test-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
+            // After creating it: canonicalize needs the directory to exist.
+            let dir = dir.canonicalize().unwrap_or(dir);
             Scratch(dir)
         }
     }

@@ -9,6 +9,212 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha setup --json` now exits non-zero when work is outstanding**, which
+  it had documented ("like doctor") and did not do: the `--json` path returned
+  before the exit-code branch, so the machine-readable spelling was the one
+  that always reported success. `doctor --json` prints its findings and then
+  falls through to the shared check; setup now does the same. The cost of the
+  old behaviour was a silent one rather than a wrong answer — a `!`-inverted
+  assertion written against the documented contract is ignored entirely by
+  `set -e`, so it neither failed nor passed.
+
+- **Five test fixtures named their scratch directory from a timestamp, and
+  two could collide.** `format!("{pid}-{nanos}")` assumes the clock is
+  fine-grained enough that two parallel tests never see the same value —
+  measured on this hardware, 11 of 20,000 adjacent `as_nanos()` calls are
+  identical, and on macOS it is coarser still. Two tests then share a
+  directory and the first to finish `remove_dir_all`s the other's store out
+  from under it, surfacing as a bare `No such file or directory` in whichever
+  lost. Found on the macOS CI arm, where it is a race rather than a
+  certainty — it passed twice before it failed. All five now use a
+  process-unique counter, which cannot collide by construction.
+
+- **A model name from a server nobody named can no longer produce a config
+  that will not parse.** `verified_settings` rendered the alias with Rust's
+  `Debug` escaping, which is not TOML's — a control character becomes
+  `\u{1b}`, and TOML's `\u` takes four hex digits with no braces. Quotes,
+  backslashes and newlines happen to escape compatibly, so only
+  non-printables bite; what made it matter is that the discovery path added
+  in this release takes those bytes from a server the owner has never named.
+  The value goes through the TOML serializer now, and `setup --write` reads
+  the file back through the loader a run uses before claiming it wrote
+  anything — restoring the backup and saying so if it does not parse, on the
+  same rule as the charter's "saved, but it will NOT load". Without it, every
+  later command died at `Config::load_global` pointing at `mecha config init`,
+  which is the wrong fix.
+
+- **The MCP environment-allowlist test now accounts for what a child adds to
+  itself.** On macOS the nosy fixture reported `__CF_USER_TEXT_ENCODING`,
+  which CoreFoundation writes into its own environment during initialization —
+  `mcp.rs` calls `env_clear()` before `envs()`, so it never crossed the
+  boundary. Exempted by exact name and target rather than by prefix, and the
+  test asserts each exempted name really is absent from what we hand over, so
+  the exemption cannot come to cover a genuine leak without failing.
+
+- **A test that only passed on Linux.** `an_mcp_file_parses_and_resolves_paths_against_its_own_directory`
+  built its expectation from `std::env::temp_dir()` and compared it against a
+  path `load_mcp_file` had canonicalized — fine on Linux, and wrong on macOS,
+  where `temp_dir()` answers `/var/folders/…` and canonicalizing resolves the
+  symlink to `/private/var/folders/…`. The code was right and the fixture was
+  Linux-shaped. The scratch directory canonicalizes at creation now, so the
+  next fixture that compares a path is correct without anyone remembering
+  why.
+
+- **CI builds and tests the whole workspace on macOS.** The `test` job was
+  ubuntu-only on both arms, so *nothing* proved any of the four crates
+  compiled anywhere else — the `mecha-cli` break below was found by a job
+  added for an unrelated reason, and only because it happened to build one
+  binary. macOS is now a full arm (`--all-targets`, so the tests have to
+  compile too, and then run). The MSRV arm stays Linux-only: it exists to
+  pin what the manifest promises, and a second platform does not make that
+  promise more or less kept.
+
+- **`mecha-cli` did not compile on macOS, and nothing could see it.** `exe.rs`
+  imported `std::path::Path` unconditionally while using it only inside
+  `#[cfg(target_os = "linux")]` branches — an unused import everywhere else,
+  which this repo's `-D warnings` makes a build failure rather than a lint.
+  Every CI job was ubuntu-only, so the break was invisible; the
+  `first run (macos-latest)` job added in this release found it on its first
+  run, which is the whole argument for building on more than the platform you
+  develop on.
+
+- **`mecha setup --undecline` no longer announces an undo it did not
+  perform.** A typo'd or unknown step id wrote the set back unchanged and
+  still printed "`slak` will be offered again" and exited 0, so the person
+  believed the way back had been taken and then met `you said no thanks` on
+  the step they thought they had restored. The message is read off what
+  actually changed now, and an id that was never declined is told so. In the
+  same shape: `mecha setup`'s three verbs (`--json`, `--write`,
+  `--undecline`) conflict at the parser rather than resolving by whichever
+  branch came first, so `--json --write` explains itself instead of printing
+  a plan, exiting 1 and writing nothing.
+
+- **Two `mecha setup` writes that were quiet about losing something.** A
+  `never` answered over an unreadable `setup-declined.json` rewrote the file
+  with just that one id and dropped every earlier answer — `read_declined`
+  distinguishes *unknown* from *empty* precisely so that cannot happen, and
+  the write path collapsed the distinction and persisted it. The damaged
+  bytes are moved aside now, stamped so a later corruption cannot overwrite
+  the salvage, and where they went is printed. Separately, `offer` marked a
+  shared installer as handled off the answer rather than the outcome, so a
+  *failed* `cargo install mecha-mail` made the documents step report "already
+  handled by the command above" — an assertion about a command nothing had
+  checked. It reads the exit status now, and a failed install leaves the next
+  step genuinely outstanding.
+
+- **Two smaller `mecha setup` bugs, both found in review.** `never` and the
+  offer loop's de-duplication disagreed: `mail` and `docs` carry the identical
+  remedy argv when neither binary is on PATH, and the dedup skipped the second
+  *question* as well as the second command — so declining mail recorded only
+  `mail`, left `docs` outstanding, and setup still exited 1 after somebody had
+  answered everything they were asked. It self-corrected on the next pass,
+  which is why no store-level test could see it; the loop takes its reader as
+  a parameter now so the answers can be driven, and the dedup is on what has
+  been *run*. And `--undecline` sat below the `--json`/`--write` returns, so
+  `mecha setup --json --undecline all` printed a plan, exited 1 and undeclined
+  nothing, silently — it is handled first now, ahead of every network call,
+  since a verb that rewrites one local file should not wait on a loopback
+  timeout.
+
+- **Two claims the local-server probe made without establishing them.** Both
+  found in review, both the shape this module's own header is about (*never
+  write down a number the user merely believes*). The probe result was an
+  `Option`, which collapsed *asked and heard nothing* into *never asked* —
+  so an install with a configured-but-unselected `[providers.local]` and a
+  llama-server running on it was told "Nothing was answering at
+  http://127.0.0.1:8080 when this ran" about an address nothing had asked.
+  It is three-valued now, and that install gets a branch of its own naming
+  the provider it already has and the one-line fix, because it emitted no
+  `local-server` step either and previously received a single step telling
+  it to serve a model it was already serving. Separately, `preflight::Props`
+  defaults every field so a version bump costs a check rather than a parse
+  failure — which meant `{}` with a 200 parsed fine and *any* JSON service on
+  :8080 was announced as "already serving (an unnamed model)", one `y` from
+  repointing `default_provider` at it with no `model` and no
+  `context_window`. Discovery now asks for a field only llama-server
+  supplies; `fetch` keeps its tolerance, which is right for a server the
+  owner has already named.
+
+- **The step that blocks every other one has a way out of it.** `mecha setup`
+  reported `anthropic has no usable credential` and offered `mecha config
+  show` — a command that displays a file and fixes nothing, so the one step
+  that made every other step untestable was the one with no path forward. It
+  now says which of the two situations the machine is actually in. If nothing
+  configured can answer, setup probes `http://127.0.0.1:8080` (loopback only,
+  one address, and only on an install that is otherwise stuck, so a working
+  install makes no extra call); when something is serving there that no
+  provider names, `mecha setup --write` writes the `[providers.local]` table
+  from the server's own `/props` and points `default_provider` at it —
+  the *existence* of the provider being as much a measured fact as its
+  context window. When nothing is serving, the fix is a key, and a key is the
+  one thing this tool will not write: mecha stores the **name** of an
+  environment variable, so the step names the exact variable and both routes
+  forward instead of offering a command that could only print what you
+  already know. A provider with no `api_key_env` is told *that*, rather than
+  told to set a variable it does not name. The probe is keyed on there being
+  no local provider **configured**, not on `props` being absent — a
+  configured server that is merely down also has neither, and probing there
+  would announce "a server nothing names" about an install that names one,
+  then take the create-a-table path over the table it should have corrected.
+  `mecha setup` also now offers `mecha config init` when there is no config
+  file: tolerating its absence is right, and is also why nobody ever learned
+  about the file every other step is fixed by editing.
+
+- **`mecha setup` offers a charter, and you can tell it no.** Two gaps in what
+  a new install walks into. The first: nothing anywhere named the charter to
+  somebody who had never written one — `doctor` returns early on a file that
+  does not exist (right, since not having one is not a fault), so the only
+  ways to find the feature were scrolling the TUI's `/help` or noticing the
+  gear on the web page. It is now a step, whose remedy hands over `$EDITOR`
+  and composes nothing. The second: "I haven't done this yet" and "I don't
+  want this" were the same line of output, so somebody who does not use Slack
+  read `not set up` forever and every scripted `mecha setup` exited non-zero
+  over a choice they had already made. Each offer now takes `y`/`N`/`never`;
+  `never` records the step in `~/.mecha/setup-declined.json`, a declined step
+  is not outstanding, and `mecha setup --undecline <id>` (or `all`) asks
+  again. Only genuinely optional things are declinable — found by running the
+  flow rather than reading it, because inferring "declinable" from "missing"
+  made a *provider with no credential* declinable, and declining it reported
+  `Nothing outstanding.` on an install that could not answer a prompt. The
+  gate is on the plan rather than on the prompt, so hand-editing the file in
+  does not work either, and a decline never overrides a step that is `done`,
+  `wrong` or `unknown`. Setup also now closes with where to go next, and with
+  the one trap a new install walks into unaided: run it from a project
+  directory, because a workspace over `~/.mecha` is a jail covering its own
+  tokens.
+
+- **`mecha charter edit`, and the rule said properly.** The charter's own
+  module claimed there was "no `--edit`, and there never will be — the absence
+  is the safety argument". That was a misstatement of the invariant rather
+  than a decision anybody made: the TUI's `/charter` already handed the file
+  to `$EDITOR` and the web settings page already took a validated save, so
+  stating the rule as *no verb writes the file* made the command line the only
+  surface where the owner could not edit their own document, which protects
+  nothing. The invariant is about the **author**: the owner may edit the
+  charter from anywhere, and no model ever composes, suggests or edits a line.
+  `edit` creates the commented template when there is no file, hands over
+  `$EDITOR`, and exits non-zero if what was saved will not load — the
+  validation feedback being the reason to use it over a hand-run `vi`. The
+  template write and the did-anything-actually-land classification are now one
+  implementation shared with the TUI, which is where the two subtle cases live:
+  a clean editor exit that saved nothing, and a `:cq` that exits non-zero
+  *after* a save landed.
+
+- **A first-run test suite, and a CI job that installs mecha the way a new
+  user does.** `mecha-cli/tests/first_run.rs` drives the real binary against
+  an isolated `MECHA_HOME` with nothing in it — the state no other test is
+  ever in, since every unit test starts from a `Config` somebody constructed.
+  It asserts that a fresh install says what it needs in a shape a script can
+  read, that the credential-free commands work before anything is configured,
+  that `doctor` is quiet about stores that merely do not exist yet, that a
+  first charter is a template holding no priorities, and that starting from
+  the directory holding `~/.mecha` is refused *with a reason*. Beside it, a
+  `first run` CI job on Linux and macOS runs `cargo install --path` into a
+  clean prefix and repeats the walkthrough against the installed binary,
+  because a crate that will not install standalone is invisible from inside
+  the workspace and lands on the person least equipped to debug it. That job
+  also checks every command the getting-started pages name actually exists.
+
 - **Voice and rate moved out of the call pane, and a voice can be cloned.**
   The in-call picker and slider were preferences wearing call-control
   clothes; they live on the settings page now (the call pane keeps mute and
@@ -135,6 +341,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   learned half misdescribes what a run carries.
 
 ### Fixed
+
+- **`mecha eval --ab-rules` measured nothing, while announcing that it did.**
+  Both arms ran rules-free: consolidating eval's forced-off list into
+  `force_reproducible` (which existed to stop entries being lost from a list
+  written in prose across forty lines) flattened
+  `opts.no_learned_rules = !with_rules` into an unconditional `true`, so the
+  treatment arm printed *"learned rules INJECTED (A/B treatment arm)"* over an
+  arm that had none — two identical arms, and every per-case flip it reported
+  was noise. The lever is now a parameter of `force_reproducible` rather than
+  a re-enable at the call site, because a lever inside the list cannot be lost
+  while consolidating the list. The existing set-assertion test could not have
+  caught this and did not: a test that asserts a list is complete cannot notice
+  that one member of it was supposed to be a variable, so the regression gets
+  its own test asserting the treatment arm *does* carry rules, and that the
+  lever is one flag wide.
 
 - **`anticipated_guilt` no longer pins at a constant `1.0` under a standing
   backlog.** The first run recorded under the sensor (2026-08-28) read

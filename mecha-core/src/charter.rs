@@ -15,9 +15,25 @@
 //! published Agent Skills carrying a security flaw; Datadog's sharper finding
 //! is that a cloned repository can bring one into a trusted session even
 //! without an install step). A model that could edit its own charter could
-//! edit its way around every other guardrail, so there is deliberately no
-//! write path here at all: the owner edits `charter.toml` with a text editor,
-//! and this module only ever reads it.
+//! edit its way around every other guardrail.
+//!
+//! **The invariant is about the author, not about the verb**, and this file
+//! used to state it as the latter — "there is deliberately no write path here
+//! at all". That was wrong by the time it was written: the TUI's `/charter`
+//! already handed the file to `$EDITOR`, and the web settings page already
+//! POSTed a validated save. What every one of those surfaces has in common is
+//! the thing that actually matters, and it is worth stating positively so the
+//! next surface copies the right rule:
+//!
+//! > **The owner may edit the charter from anywhere. Every `[[line]]` is
+//! > typed by a person, and no model — privileged, quarantined or otherwise —
+//! > ever composes, suggests or edits one.**
+//!
+//! So a surface may create the comments-only [`TEMPLATE`] and hand over an
+//! editor; it may validate and refuse; it may not put words in the file. This
+//! module itself only ever *reads*: the write is the owner's editor or a
+//! validated save at a surface, never a derivation in here, which is what
+//! keeps "a model authored this" impossible rather than merely discouraged.
 //!
 //! **Global only, and there is no config field to point it elsewhere.** A
 //! `mecha.toml` arrives with a cloned repository, and a repo that could hand

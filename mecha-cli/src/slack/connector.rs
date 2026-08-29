@@ -2925,13 +2925,14 @@ mod tests {
     fn a_snapshot_ignores_what_the_user_sent_and_what_is_hidden() {
         // `inbox/` holds the files the *user* attached; posting them back is
         // noise, and it would look like the agent produced them.
+        // Counter, not a timestamp: `as_nanos()` is only as fine-grained as
+        // the platform's clock, and on macOS two parallel tests can land on
+        // the same value and then share a directory.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "mecha-slack-snap-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(dir.join("inbox")).unwrap();
         std::fs::create_dir_all(dir.join("sub")).unwrap();

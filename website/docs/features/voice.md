@@ -97,12 +97,22 @@ you are still finding out whether you like it.
 
 ## The controls
 
-The call overlay carries two controls, and your choices are remembered.
+**The call pane holds call controls only** — mute, and end the call. Voice and
+rate were preferences wearing call-control clothes, so they live on
+[the settings page](/docs/features/web#settings-and-the-one-thing-a-browser-may-write)
+now, reading and writing the voice stack's own preference store. A choice made
+there is the choice the next call opens with.
 
-**Voice.** Seven options: six generated references plus Chatterbox's own
-built-in voice. Chatterbox clones from a few seconds of reference audio, so a
-voice is a `.wav` on disk — adding your own is dropping a five-second clip
-into the voices directory, and the server reads that directory live.
+That move fixed a real bug it found: the chat page kept a second copy of the
+preference machinery under a *different* storage key while claiming to share the
+first, so a voice picked mid-call was saved where nothing else looked. One store
+now, with a one-time read of the legacy key.
+
+**Voice.** Six generated references plus Chatterbox's own built-in voice, and
+any you have cloned. Chatterbox conditions on a few seconds of reference audio,
+so a voice is a `.wav` on disk — the server reads the voices directory live, and
+dropping a clip in by hand works exactly as well as recording one through the
+page.
 
 The six shipped references were synthesised from Kokoro's presets by
 `scripts/voice/make-voices.py`, which is a licensing decision more than a
@@ -111,13 +121,28 @@ a voice can be added or deleted without anyone's consent being the thing that
 made it legal. That script is a **one-off tool, not a service** — it needs a
 Kokoro container running while it generates, and nothing needs one afterwards.
 
+**Cloning your own** needs `[web] voices_dir` pointed at the host directory the
+TTS container mounts as `/voices`; unset, the endpoint answers *not configured*
+rather than failing obscurely. A reference is **5 to 120 seconds** — under five
+Chatterbox has too little voice to condition on, and past two minutes the extra
+audio buys nothing while the file stores that much more of somebody's speech.
+Uploads are capped at 32 MB and refused on size before anything is parsed, must
+arrive as `content-type: audio/wav` (which forces any cross-origin caller
+through a preflight this server never answers), and a name is 1–40 characters of
+`a-z`, `0-9`, `-` or `_` — a closed alphabet rather than a denylist, because the
+string becomes a path on one side and a TTS field on the other. `default` is
+refused: it names the built-in voice and must stay unshadowable.
+
 **Rate.** 0.5× to 2.0×, pitch-preserving — mecha speaks faster without
 sounding like a chipmunk.
 
-Both apply mid-call, at the next sentence. And both render whatever the server
-*confirms*: if a value is refused, the control shows what is actually being
-spoken rather than what you asked for. A slider that lies about the voice you
-are hearing is worse than a slider that snaps back.
+The picker enumerates from the worker's last answer, cached: a picker with no
+live call cannot ask, and showing the remembered answer with a dated note beats
+a hardcoded list or no picker at all. What the settings page lists as *cloned*
+comes from the store itself, and a directory that could not be read is shown as
+such rather than as an empty list — "nothing cloned yet" and "could not look"
+are opposite findings, and folding them together would surface a
+misconfiguration only after someone had recorded themselves.
 
 ## What it feels like, and why
 
@@ -144,6 +169,16 @@ conversation stays wary of it afterwards, however you continue it.
 Practically: start something at the desk, finish it on a walk, read it back at
 the desk. The page fills in as you talk, so you can watch a call from a laptop
 while you speak into a phone.
+
+## A call hears the last turn's mood
+
+The local TTS takes a small per-answer nudge from the
+[affect label](/docs/features/appraisal) of the run that just finished — and it
+**lags one turn by construction**, honestly rather than by accident. The label
+is a function of a *finished* run, so it is computed while the turn that earned
+it is still streaming; a call therefore reflects the previous turn's mood, not
+the current one. Nothing is spoken about it, and there is no path by which the
+label becomes words.
 
 ## What it does not do yet
 

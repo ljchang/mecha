@@ -368,13 +368,27 @@ mod tests {
     use mecha_core::learning::rules_hash;
 
     fn temp_store() -> LearningStore {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        // A process-unique counter, not a timestamp. `as_nanos()` is only as
+        // fine-grained as the platform's clock: on macOS two of these called
+        // from parallel test threads can land on the same value, and then two
+        // tests share one directory — the first to finish `remove_dir_all`s
+        // the other's store out from under it, which surfaces as a bare
+        // `No such file or directory` in whichever test lost. Found on the
+        // macOS CI arm, where it is a race rather than a certainty; it passed
+        // twice before it failed.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir()
             .join("mecha-rules-test")
-            .join(format!("{}-{nanos}", std::process::id()));
+            .join(format!("{}-{seq}", std::process::id()));
+        // **Cleared, not just uniquely named.** The counter guarantees no two
+        // stores in *this* process collide; it says nothing about a directory
+        // a previous run left behind, and `{pid}-{seq}` is deterministic, so a
+        // later run drawing the same pid reopens it. These stores append, so
+        // the leftover records would be counted alongside the new ones — a
+        // confusing count mismatch rather than a clean failure. Removing first
+        // makes the fixture fresh regardless of what any earlier run did.
+        let _ = std::fs::remove_dir_all(&dir);
         LearningStore::open(dir).unwrap()
     }
 

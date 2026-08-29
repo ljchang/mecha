@@ -287,10 +287,11 @@ impl CharterModal {
     }
 }
 
-/// Re-exported so `mod.rs`'s editor hand-over and the tests below need no
-/// second path to it; the constant itself lives in core (`charter::TEMPLATE`)
-/// so the web settings editor hands out the same bytes.
-pub use mecha_core::charter::TEMPLATE;
+// The template re-export used to live here, for `mod.rs`'s own editor
+// hand-over. Both the write and the did-anything-land classification are
+// `editor::edit_charter_with`'s now — one implementation shared with
+// `mecha charter edit` — so this modal no longer touches the constant, and a
+// re-export nothing reads is a second path to a thing that has one.
 
 #[cfg(test)]
 mod tests {

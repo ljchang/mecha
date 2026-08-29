@@ -69,7 +69,7 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
 
 /// A commented starting point rather than a dump of defaults — the point of the
 /// file is to show what's adjustable.
-const STARTER: &str = r#"# mecha configuration.
+pub const STARTER: &str = r#"# mecha configuration.
 #
 # Layered: ~/.mecha/config.toml, then ./mecha.toml, then MECHA_* environment
 # variables, then CLI flags. Each layer overrides only the fields it names.
