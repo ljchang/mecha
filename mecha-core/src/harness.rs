@@ -272,7 +272,23 @@ pub struct Measurement {
     /// Sessions dropped because an arm left the recording — a divergent
     /// replay's stats describe a truncated run, and scoring one would let a
     /// behaviour-visible change be graded on the fraction it tracked.
+    /// **Bare ids, and they stay that way**: `episodes`/`holdout_episodes`'s
+    /// own contract (a sample nobody can redraw is one nobody can check)
+    /// holds here too, and anything resolving an entry back to a session
+    /// path must not have to parse annotation out of it first.
     pub diverged: Vec<String>,
+    /// What the replay was compromising on, per episode that carried a
+    /// compromise — "id — attached N times; replayed under the first
+    /// config" — **whatever became of the episode**, skipped ones included
+    /// (the caveat is computed at prepare time, before any arm drives): a
+    /// dropped one's divergence may say more about the compromise than
+    /// about the change, and a cleanly paired one feeds the tally that
+    /// gates acceptance,
+    /// which is the more consequential place for the decider reading
+    /// `mecha harness show` to know the replay was compromising. Beside
+    /// `diverged` rather than folded into it, so the ids stay joinable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replay_caveats: Vec<String>,
     /// Sessions that could not be replayed at all (unreadable, no recorded
     /// calls, tool surface moved). Never evidence for either arm.
     pub skipped: usize,
@@ -288,6 +304,8 @@ pub struct Drawn {
     pub holdout_episodes: Vec<String>,
     pub seed: u64,
     pub diverged: Vec<String>,
+    /// See [`Measurement::replay_caveats`].
+    pub replay_caveats: Vec<String>,
     pub skipped: usize,
 }
 
@@ -303,6 +321,7 @@ impl Measurement {
             holdout_episodes,
             seed,
             diverged,
+            replay_caveats,
             skipped,
         } = drawn;
         use crate::candidate::Disposition;
@@ -329,6 +348,7 @@ impl Measurement {
             holdout_episodes,
             seed,
             diverged,
+            replay_caveats,
             skipped,
         }
     }

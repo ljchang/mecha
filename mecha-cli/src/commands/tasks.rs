@@ -459,7 +459,7 @@ async fn set(
     // it stood going in.
     let before = if status
         .as_deref()
-        .is_some_and(|s| matches!(s, "done" | "dropped"))
+        .is_some_and(crate::closure_guard::is_closing_status)
     {
         match find_task_with(&prepared, task).await {
             Ok(v) => Some(v),
@@ -536,7 +536,8 @@ async fn find_task_with(prepared: &setup::PreparedTools, task_id: &str) -> Resul
 /// closure.
 fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
     let was = before["status"].as_str().unwrap_or("inbox");
-    matches!(new_status, "done" | "dropped") && !matches!(was, "done" | "dropped")
+    crate::closure_guard::is_closing_status(new_status)
+        && !crate::closure_guard::is_closing_status(was)
 }
 
 /// §5.4's medium-tier appraisal moment. Best-effort throughout: the task is
@@ -558,19 +559,30 @@ fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
 /// is a real design question rather than a line fix — named here so it is
 /// not mistaken for coverage this rung already has.
 ///
-/// **A closure made anywhere but `tasks set` consumes this moment, silently.**
-/// `is_fresh_closure` fires only on the transition *this command* observes.
-/// Every first-party owner surface does route through `tasks set` (the TUI
-/// modal via `self_cli`, the web board's `task_set`, Slack's `Action::
-/// TaskDone`) — but an ordinary chat session's model still holds
-/// `kg_task_update` behind the interactive approver, and any out-of-band
-/// graph write can move a task to `done`; the owner's later `tasks set
-/// --status done` then sees `was == "done"`, not fresh, and the one
-/// appraisal that delegated session was ever going to get is never made,
-/// with nothing saying so. A coverage gap, not an exploit; closing it means
-/// either withholding `kg_task_update` from chat surfaces too (a real
-/// posture change) or a closure claim the board owns, same shape as the
-/// atomicity note below.
+/// **A closure made anywhere but `tasks set` consumes this moment, silently
+/// — and the model-facing path is now closed.** `is_fresh_closure` fires
+/// only on the transition *this command* observes. Every first-party owner
+/// surface routes through `tasks set` (the TUI modal via `self_cli`, the web
+/// board's `task_set`, Slack's `Action::TaskDone`), and the model can no
+/// longer close one around it: `closure_guard::ClosedStatusGuard` wraps
+/// `kg_task_update` on every model-facing registry (`setup::build`, before
+/// the subagent pool is cloned), refusing exactly a `status` of
+/// `done`/`dropped` and pointing at this command. Two paths remain, and
+/// they differ in kind: `shell: mecha tasks set` — the one the refusal
+/// itself suggests — closes *through* this command, so the appraisal
+/// happens; it is fine for §5.4, and it is also the honest residue of D6
+/// for a delegated run that holds a shell (behind the approver, but a lane
+/// that can run this binary can close its own task). And a genuinely
+/// out-of-band write — another process talking to the graph store directly
+/// — which no guard in this binary can see and which skips the appraisal;
+/// the complete fix for that one is still a closure claim the board owns,
+/// same shape as the atomicity note below. One configured cousin of the
+/// out-of-band case, noted on review: a `kg_task_update` routed through
+/// `[outbox] tools` is staged *before* the guard sees it, and the outbox
+/// release surface executes against an unguarded `prepare_tools` registry —
+/// so that path closes without appraising too. It takes deliberate config
+/// and the owner's own release, which is why it sits with the out-of-band
+/// writer rather than with anything the guard should catch.
 ///
 /// **Not atomic, and known rather than fixed.** Two closures of the same
 /// task landing together — a Slack tap and a TUI keypress within the same
@@ -1011,6 +1023,13 @@ pub(crate) const OWNER: &str = "@owner";
 /// Both in one call because they are one fact about the task: "waiting" with
 /// nobody named is the ambiguity this whole phase exists to remove, and two
 /// calls could leave the board in exactly that state if the second failed.
+///
+/// **Never a closing status.** The withheld handle is the
+/// `closure_guard`-wrapped one (`setup::build` wraps before anything is
+/// pulled off the registry), so `done`/`dropped` through here is refused by
+/// construction — deliberately: a closure is the owner's act on every path,
+/// and `tasks set` is its one caller. Every status this function is asked to
+/// carry today is `waiting` or the pre-run status it is restoring.
 pub(crate) async fn move_task(
     update: &std::sync::Arc<dyn mecha_core::tool::Tool>,
     ctx: &mecha_core::tool::ToolCtx,
@@ -1308,7 +1327,7 @@ async fn work(
     let was_waiting_on = task["waiting_on"].as_str().unwrap_or("").to_string();
 
     // A closed task is not work, and reopening it is the owner's decision.
-    if matches!(was.as_str(), "done" | "dropped") {
+    if crate::closure_guard::is_closing_status(was.as_str()) {
         bail!("{task_id} is {was} — `mecha tasks set {task_id} --status next` reopens it first");
     }
     // **D11: one live run per task, and only that.**
