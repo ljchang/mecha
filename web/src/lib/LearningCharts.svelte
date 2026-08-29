@@ -42,14 +42,38 @@
     return [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
   });
 
-  const maxCount = $derived(
-    Math.max(1, ...(report?.buckets ?? []).map((b) => b.reflections))
-  );
-
   const PALETTE = [
     'var(--c1)', 'var(--c2)', 'var(--c3)',
     'var(--c4)', 'var(--c5)', 'var(--c6)',
   ];
+
+  const maxCount = $derived(
+    Math.max(1, ...(report?.buckets ?? []).map((b) => b.reflections))
+  );
+
+  // Stacking is precomputed rather than accumulated during render. The
+  // shorter spelling — a mutable `{@const}` running `y -= h` inside the
+  // inner each — depends on template expressions evaluating in source order
+  // and on that accumulator being fresh per bar, neither of which is a
+  // guarantee worth resting a chart on.
+  const bars = $derived.by(() => {
+    const bs = report?.buckets ?? [];
+    if (bs.length === 0) return [];
+    const slot = plotW / bs.length;
+    const bw = Math.max(6, slot - 6);
+    return bs.map((b, i) => {
+      let y = PAD.t + plotH;
+      const segs = [];
+      types.forEach((t, ti) => {
+        const c = b.error_types?.[t] ?? 0;
+        if (c <= 0) return;
+        const h = (c / maxCount) * plotH;
+        y -= h;
+        segs.push({ t, c, h, y, fill: PALETTE[ti % PALETTE.length] });
+      });
+      return { period: b.period, x: PAD.l + (i + 0.5) * slot - bw / 2, bw, segs };
+    });
+  });
 
   const steps = $derived(report?.steps ?? []);
   const maxRules = $derived(
@@ -97,24 +121,13 @@
     <h4>What needed correcting</h4>
     <p class="sub">Reflections by error type — the composition, not just the count.</p>
     <svg viewBox="0 0 {W} {H}" role="img" aria-label="Error types over time">
-      {#each report.buckets as b, i (b.period)}
-        {@const bw = Math.max(6, plotW / report.buckets.length - 6)}
-        {@const bx = PAD.l + (i + 0.5) * (plotW / report.buckets.length) - bw / 2}
-        {@const stack = { y: PAD.t + plotH }}
-        {#each types as t, ti (t)}
-          {@const c = b.error_types?.[t] ?? 0}
-          {@const h = (c / maxCount) * plotH}
-          {#if c > 0}
-            <rect
-              x={bx} width={bw}
-              y={(stack.y -= h)} height={h}
-              fill={PALETTE[ti % PALETTE.length]}
-            >
-              <title>{b.period} · {t}: {c}</title>
-            </rect>
-          {/if}
+      {#each bars as bar (bar.period)}
+        {#each bar.segs as seg (seg.t)}
+          <rect x={bar.x} width={bar.bw} y={seg.y} height={seg.h} fill={seg.fill}>
+            <title>{bar.period} · {seg.t}: {seg.c}</title>
+          </rect>
         {/each}
-        <text class="ax x" x={bx + bw / 2} y={H - 6}>{short(b.period)}</text>
+        <text class="ax x" x={bar.x + bar.bw / 2} y={H - 6}>{short(bar.period)}</text>
       {/each}
     </svg>
     <ul class="legend">
