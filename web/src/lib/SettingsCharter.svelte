@@ -155,7 +155,6 @@
     return out;
   });
 
-  const charCount = $derived(serialize().length);
   const budget = $derived(charter?.budget ?? 2000);
 
   function addLine() {
@@ -358,7 +357,8 @@
   </div>
 {:else if charter === null && !charterError}
   <div class="card"><div class="sub">loading…</div></div>
-{:else if !blocked}
+{:else}
+  {#if !blocked}
   <div class="lines" bind:this={listEl}>
     {#each lines as line, i (line.uid)}
       <div
@@ -444,15 +444,32 @@
     <div class="sub notice">{p}</div>
   {/each}
 
-  {#if saveError}<div class="card notice">not saved: {saveError}</div>{/if}
-  {#if savedNote}<div class="card ok-note">{savedNote}</div>{/if}
+    {#if saveError}<div class="card notice">not saved: {saveError}</div>{/if}
+    {#if savedNote}<div class="card ok-note">{savedNote}</div>{/if}
+  {/if}
 
+  <!-- Outside the `!blocked` branch on purpose: a charter that does not parse
+       is exactly the one that needs an editor, and the notice above promises
+       it opens as TOML. -->
   <div class="footer">
-    <span class="count" class:over={charCount > budget}>
-      {charCount.toLocaleString()} / {budget.toLocaleString()} characters
-    </span>
+    {#if charter?.char_count != null}
+      <!-- The server's number, not the file's length. `char_count` is
+           `prompt_block(..).chars().count()` — what actually rides in the
+           cached prefix — so it counts the rendered header and per-line
+           formatting and *not* the file's comments, which never reach a
+           prompt. Measuring `serialize().length` against the same budget
+           compared two different quantities. -->
+      <span class="count" class:over={charter.over_budget}>
+        {charter.char_count.toLocaleString()} / {budget.toLocaleString()} characters{dirty
+          ? ' (on disk)'
+          : ''}
+      </span>
+    {:else}
+      <span class="count">&nbsp;</span>
+    {/if}
     <button
-      class="btn ghost"
+      class="btn"
+      class:ghost={!blocked}
       onclick={() => {
         draft = charter?.raw || charter?.template || '';
         confirming = false;
@@ -468,7 +485,7 @@
     </div>
   {/if}
 
-  {#if dirty}
+  {#if dirty && !blocked}
     <div class="row-actions sticky">
       <button
         class="btn primary"
