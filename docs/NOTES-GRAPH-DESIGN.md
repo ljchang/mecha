@@ -4,8 +4,14 @@
 tabs into a single surface for capturing into, finding in, and editing the
 knowledge graph. The evidence behind each choice is in
 `GRAPH-UX-RESEARCH.md`; the current-state audit below was verified against
-source the same day. Owner decisions still open are marked **D1–D5** at the
-end; nothing here is built.*
+source the same day. All five owner decisions are ruled in §8.*
+
+> **Status 2026-08-29: tier 1 built on `feat/graph-tab` (PR #120)** —
+> `Graph.svelte` replaces both tabs, `/api/related` and `/api/timeline`
+> land behind the owner guard, `#notes` redirects. Still unbuilt: the
+> entity half of the drawer interleave and per-fact provenance chips
+> (both need small mecha-graph-side reads, named in §2.1/§2.2), all of
+> tier 2, and tier 3.
 
 ## 1. The problem, verified
 
