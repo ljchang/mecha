@@ -1,14 +1,15 @@
 ---
 title: First run
 sidebar_position: 4
-description: Start mecha three ways — one-shot, as a REPL, and full-screen — and know where it writes things and what to do when a run goes wrong.
+description: Start mecha four ways — one-shot, as a REPL, full-screen, and in a browser — and know where it writes things and what to do when a run goes wrong.
 ---
 
 # First run
 
-Three ways to start it, in increasing order of how much of a conversation you
+Four ways to start it, in increasing order of how much of a conversation you
 want. They share everything that matters — the same agent, the same tools, the
-same session records — and differ in who is holding the keyboard.
+same session records — and differ in who is holding the keyboard, or whether
+anybody is holding one at all.
 
 If `mecha tools` does not yet list what you expect, or a provider is not
 configured, go back to [Setting up](/docs/getting-started/setting-up) first.
@@ -127,6 +128,40 @@ third-party text. When `context_window` is configured, the status line becomes a
 gauge — `context 29.3k/32.8k (89%)` — instead of a token count with nothing to
 compare it against.
 
+## 4. `mecha serve` — the same agent, in a browser
+
+```bash
+mecha serve
+```
+
+The web surface, on your phone or another machine on your tailnet. It needs one
+line of config before it will start, because a door with no owner check should
+not open:
+
+```toml
+[web]
+owner_login = "you@example.com"    # your tailnet identity
+port = 63242
+assets = "~/.mecha/web/dist"
+```
+
+```bash
+cd <checkout>/web && npm ci && npm run build   # the pages are a build artifact
+rsync -a --delete dist/ ~/.mecha/web/dist/
+tailscale serve --bg 63242                     # what makes it reachable
+```
+
+Then it is the dashboard, chat, mail, notes, the review queues, the task board
+and settings — the same stores the CLI reads, and every mutation running
+`mecha <verb>` underneath. A session there starts **read-only**: reads run, and
+anything that would send stages in the outbox instead.
+
+It is also the only door [voice](/docs/features/voice) opens through.
+
+There is a **live, clickable copy of the whole app** on
+[the web surface](/docs/features/web) — worth a minute before you build it, to
+see whether it is what you want.
+
 ## Where things are written
 
 Every run writes an append-only JSONL transcript to `~/.mecha/sessions`
@@ -158,5 +193,7 @@ any one file.
 
 - [Configuration](/docs/getting-started/configuration) — the layered TOML and
   the settings that matter early.
-- [Interfaces](/docs/features/interfaces) — run, chat, tui and batch in depth.
+- [Interfaces](/docs/features/interfaces) — run, chat, tui, serve and batch in
+  depth, and which of them can redirect a run without stopping it.
+- [The web surface](/docs/features/web) — the browser one, live on the page.
 - [Security](/docs/features/security) — what the harness refuses to do, and why.

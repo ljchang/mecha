@@ -122,3 +122,23 @@
 [data-theme='dark'] .sample p {
   color: var(--mecha-text-muted);
 }
+
+/* The live surface block. Its own ground so the framed app reads as an object
+   on the page rather than a hole in it — the same reason WebFrame paints the
+   stage behind the device in the app's own void. */
+.surface {
+  padding: 3rem 0 1rem;
+  background: var(--ifm-color-emphasis-100);
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.surfaceHead {
+  max-width: 44rem;
+  margin: 0 auto 0.5rem;
+  text-align: center;
+}
+
+.surfaceHead p {
+  color: var(--ifm-color-emphasis-800);
+}

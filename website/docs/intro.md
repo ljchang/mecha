@@ -164,6 +164,18 @@ free-form prose. One request type emits the web form, the JSON Schema, and the
 MCP tool at once, so a human with a browser and another agent with a tool call
 both arrive at the same typed object.
 
+**The cockpit — [where you drive it from](/docs/features/interfaces).** Five
+front ends over that one loop. Four are in a terminal: `mecha run` for one
+task, `mecha chat` for a REPL, `mecha tui` full-screen with the input line live
+so you can redirect a run without stopping it, and `mecha batch` to fan out.
+The fifth is **[`mecha serve`](/docs/features/web)** — the same agent behind a
+web app on your tailnet, bound to loopback and opened by your network identity
+rather than a password. That is the one that runs on a phone, where most
+reviewing actually happens, and it is the only door
+[voice](/docs/features/voice) opens through: a call speaks into the
+conversation already on screen. There is a live, clickable copy of it on
+[the web surface page](/docs/features/web).
+
 **The pilot — you.** Anything the agent would send passes through
 [the outbox](/docs/features/outbox) first: tools you name are *staged as drafts*
 rather than executed, so overnight inbox triage leaves you a review queue
@@ -260,6 +272,10 @@ There is no path by which a model edits its own charter, either.
   `mecha setup` read the settings back off the server rather than typing them.
 - [First run](/docs/getting-started/first-run) — one-shot, a REPL, and
   full-screen.
+- [The web surface](/docs/features/web) — `mecha serve` on your tailnet, live
+  on the page and clickable.
+- [Voice](/docs/features/voice) — talking to it out loud, and why that door is
+  narrow.
 - [Configuration](/docs/getting-started/configuration) — the layered TOML, and
   the settings that matter early.
 - [Design principles](/docs/principles) — the rules the code keeps, and what

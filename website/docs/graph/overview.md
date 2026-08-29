@@ -74,6 +74,35 @@ between the two projects — is the [Memory](/docs/features/memory) page's
 story. Any other MCP client wires the same binary with none of this:
 `claude mcp add graph -- mecha-graph-mcp`.
 
+## Where you review what it proposes
+
+The graph stages candidates rather than asserting them, which means there is
+always a queue with your name on it. Several surfaces open onto the same store,
+and none of them is the privileged one:
+
+- **`mecha review sample`** — the command line, and what the others drive
+  underneath.
+- **`/queues` in the TUI** — the graph's merge queue in the same list as every
+  other store waiting on you. See [the unified queue](/docs/features/queues).
+- **Review → Graph queue in [the web surface](/docs/features/web)** — the same
+  deck on a phone.
+- **The graph page itself**, which is the interesting one. Opening an entity
+  shows every fact the graph holds about it, and a fact the graph has *served
+  to a run* but nobody has ruled on carries `Confirm` / `Refute` right there.
+  That is **review-on-use**: the queue comes to you at the moment you are
+  looking at the thing anyway, rather than waiting for you to visit a queue.
+  A refuted fact stays visible, dimmed and marked — a recorded no, not a weak
+  yes, because "we decided against this" and "we never looked" are opposite
+  findings.
+
+There is a live, clickable copy of both pages in
+[the web surface](/docs/features/web) — the `graph` and `review` tabs.
+
+This is the half of the design that does not live in the graph repository: the
+graph decides what to propose, and **a model never accepts its own candidate**
+— acceptance crosses a human, structurally, which is why the queue exists at
+all rather than a confidence threshold.
+
 ## How it improves itself
 
 The graph is designed to get better with minimal oversight: an autonomy

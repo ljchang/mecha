@@ -7,6 +7,7 @@ import Layout from '@theme/Layout';
 import CodeBlock from '@theme/CodeBlock';
 import ThemedImage from '@theme/ThemedImage';
 import HomepageFeatures from '@site/src/components/HomepageFeatures';
+import WebFrame from '@site/src/components/WebFrame';
 import Heading from '@theme/Heading';
 
 import styles from './index.module.css';
@@ -58,6 +59,48 @@ function HomepageHeader() {
   );
 }
 
+// The app, on the front page. A local-first assistant is a hard thing to
+// picture from prose — "it runs on your own machine" describes a negative — and
+// the surface most people would actually touch it through is the one nothing on
+// this site used to show. The frame is the real bundle from `web/` against
+// fixtures; `src/components/WebFrame` says why it cannot be a screenshot.
+function Surface() {
+  return (
+    <section className={styles.surface}>
+      <div className="container">
+        <div className={styles.surfaceHead}>
+          <Heading as="h2">And carry it</Heading>
+          <p>
+            <code>mecha serve</code> puts the same agent behind a web app on your tailnet —
+            bound to loopback, fronted by Tailscale, opened by your network identity rather
+            than a password. It is where drafts get approved, mail gets read and queues get
+            cleared, and it is the only door{' '}
+            <Link to="/docs/features/voice">voice</Link> opens through.
+          </p>
+        </div>
+        <WebFrame
+          page="home"
+          height={700}
+          pages={[
+            {hash: 'home', label: 'home'},
+            {hash: 'chat', label: 'chat'},
+            {hash: 'mail', label: 'mail'},
+            {hash: 'review', label: 'review'},
+            {hash: 'tasks', label: 'tasks'},
+            {hash: 'graph/Priya%20Raghavan', label: 'graph'},
+          ]}
+          caption={
+            <>
+              Live, not a screenshot — the real app with fixtures behind it. More on{' '}
+              <Link to="/docs/features/web">the web surface</Link>.
+            </>
+          }
+        />
+      </div>
+    </section>
+  );
+}
+
 function Sample() {
   return (
     <section className={styles.sample}>
@@ -66,14 +109,17 @@ function Sample() {
           <div className="col col--6">
             <Heading as="h2">Run it</Heading>
             <p>
-              One binary, four front ends. <code>mecha run</code> answers and
-              exits; <code>mecha tui</code> keeps the input line live, so you can
-              redirect a run without stopping it.
+              One binary, five front ends — four in a terminal and{' '}
+              <Link to="/docs/features/web">one in a browser</Link>.{' '}
+              <code>mecha run</code> answers and exits; <code>mecha tui</code> and{' '}
+              <code>mecha serve</code> keep the input live, so you can redirect a run
+              without stopping it.
             </p>
             <CodeBlock language="bash">
               {`mecha tools                     # no provider needed: lists the surface
 mecha run "summarise the notes directory"
 mecha tui                       # full screen; steer a run in flight
+mecha serve                     # the same agent, on your phone
 mecha trigger add briefing --schedule "0 7 * * 1-5" \\
   --prompt "What is on my calendar today?"`}
             </CodeBlock>
@@ -114,6 +160,7 @@ export default function Home(): ReactNode {
       <HomepageHeader />
       <main>
         <HomepageFeatures />
+        <Surface />
         <Sample />
       </main>
     </Layout>

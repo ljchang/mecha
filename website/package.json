@@ -7,9 +7,9 @@
     "sync-changelog": "node scripts/sync-changelog.mjs",
     "sync-gallery": "node scripts/sync-gallery.mjs",
     "sync-graph-docs": "node scripts/sync-graph-docs.mjs",
-    "prestart": "npm run sync-changelog && npm run sync-gallery && npm run sync-graph-docs",
+    "prestart": "npm run sync-changelog && npm run sync-gallery && npm run sync-graph-docs && npm run build-demo",
     "start": "docusaurus start",
-    "prebuild": "npm run sync-changelog && npm run sync-gallery && npm run sync-graph-docs",
+    "prebuild": "npm run sync-changelog && npm run sync-gallery && npm run sync-graph-docs && npm run build-demo",
     "build": "docusaurus build",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
@@ -17,7 +17,10 @@
     "serve": "docusaurus serve",
     "write-translations": "docusaurus write-translations",
     "write-heading-ids": "docusaurus write-heading-ids",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "build-demo": "node scripts/build-demo.mjs",
+    "check-demo": "node scripts/check-demo.mjs",
+    "render-check": "node scripts/render-check.mjs"
   },
   "dependencies": {
     "@docusaurus/core": "3.10.2",
@@ -35,6 +38,7 @@
     "@docusaurus/tsconfig": "3.10.2",
     "@docusaurus/types": "3.10.2",
     "@types/react": "^19.0.0",
+    "playwright": "^1.62.1",
     "typescript": "~6.0.2"
   },
   "browserslist": {
