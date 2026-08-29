@@ -111,6 +111,12 @@ rsync -a --delete dist/ ~/.mecha/web/dist/
 Then restart `mecha-serve.service` (step 2). Verify the *served* page, not
 the directory: the 8443 door returning 200 with the new bundle hash.
 
+When a header probe echoes a value back (`If-Modified-Since` from a
+`Last-Modified` you just grepped), strip carriage returns first —
+`| tr -d '\r'` — or the CR rides into the outgoing header and the server
+answers 400, which reads exactly like a server bug and is your curl. Two
+sessions hit it independently within an hour on 2026-08-29.
+
 ### 2. The long-running services
 
 These hold an open file handle on the old binary and must be restarted *after*
