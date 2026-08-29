@@ -187,6 +187,24 @@ pub fn append_user_text(messages: &mut Vec<Message>, text: String) {
     }
 }
 
+/// A user message that is the person's own text and nothing else — no tool
+/// results.
+///
+/// The distinction every front-end's interrupt/rollback handling turns on:
+/// tool results ride in a `Role::User` message too, so a bare role check
+/// cannot tell "the owner's dangling text" (safe to trim) from "a completed
+/// tool round" (a valid tail whose removal orphans the assistant's
+/// `tool_use` and 400s every later request). Found as the fifth pop site's
+/// bug in the voice facade and centralised here so no sixth grows its own
+/// wrong copy.
+pub fn is_plain_user_text(m: &Message) -> bool {
+    m.role == Role::User
+        && !m
+            .content
+            .iter()
+            .any(|b| matches!(b, Block::ToolResult { .. }))
+}
+
 /// What the loop consults that is properly per-*run* rather than per-agent:
 /// what tools may touch, who approves the ones that aren't read-only, and what
 /// this particular run is allowed to spend.
@@ -564,6 +582,72 @@ impl Conversation {
 
     pub fn push(&mut self, message: Message) {
         self.messages.push(message);
+    }
+
+    /// Roll a failed run back to the messages the request found, minus the
+    /// user message that triggered it — **restore the snapshot, then pop**,
+    /// in that order. `run_in` mutates the list in place and does not roll
+    /// back on `Err`, so a bare pop is wrong twice over: after a failure
+    /// mid-tool-turn the tail is a tool-result message, and popping it
+    /// orphans the assistant's `tool_use` — every later request on the
+    /// session 400s ("a tool result must exist for every `tool_use` id"),
+    /// each failure then eating the user's newly typed message; and after a
+    /// mid-run compaction the list is *shorter* than the snapshot, so the
+    /// pop keeps the very message it exists to drop.
+    ///
+    /// Here rather than in any one front-end because four of them need it
+    /// (the chat REPL, the TUI, the web surface, the voice facade), and the
+    /// fourth was found missing the fix precisely because the first three
+    /// each carried their own copy. Deliberately touches `messages` and
+    /// nothing else: taint stays — a failed turn that read a hostile page
+    /// still read it.
+    ///
+    /// A caller that writes a transcript must also record the rolled-back
+    /// state (`Session::record_run` with the pre-run snapshot expresses it
+    /// as a rewrite), or the failure survives a resume — the file otherwise
+    /// keeps the user turn memory just dropped.
+    ///
+    /// **The pop is conditional on the tail being the person's own text**
+    /// ([`is_plain_user_text`]), not on its role — because there are two
+    /// ways a turn begins, and they earn different failure outcomes. A
+    /// plain submit pushes a user message, and the snapshot ends with it:
+    /// popped, or the next request resends the dangling trigger. A submit
+    /// that *folded* into a tool-round tail (the barge-in shape — see
+    /// `append_user_text`'s callers, all of which record the fold at submit
+    /// and snapshot **after** it) leaves the snapshot ending with the tool
+    /// results *carrying* the folded text: popping would orphan that
+    /// round's `tool_use`, so the utterance survives the failed turn inside
+    /// an already-valid tail and simply waits for the next attempt.
+    /// Asymmetric on purpose — a popped trigger prevents a verbatim resend,
+    /// a kept fold is the owner's words already on the record inside a turn
+    /// the next request may legally carry — and one rule serves both, so a
+    /// caller does not carry a flag from its push site to its error arm.
+    ///
+    /// There is a third shape, and its outcome is chosen, not accidental: a
+    /// fold into a **plain** user tail (an interrupt before the first token
+    /// leaves the previous prompt unanswered; the next submit merges into
+    /// it, since pushing beside it is the invalid shape). On failure the
+    /// snapshot's tail is that merged message — plain user text — so the
+    /// pop removes *both* prompts. Deliberate: they were two unanswered
+    /// requests awaiting the same never-produced reply, and a resend of
+    /// either without the other misquotes the person. The recorded rewrite
+    /// removes them from the loadable state only; `messages_ever` still
+    /// unions them into the corpus, so recall keeps what was said.
+    ///
+    /// Two costs of that recording, known and accepted: the rewrite carries
+    /// the **whole** conversation, so a long-lived surface riding out a
+    /// flapping provider appends one full history copy per failure — the
+    /// only way the format can express a rollback, and failures are rare;
+    /// and the rewrite drops the taint timeline's earlier checkpoints, so
+    /// the trailing taint record covers the whole rolled-back list with the
+    /// run's *cumulative* taint — a clean early turn in a session that later
+    /// read a hostile page and failed classifies untrusted. Over-taint,
+    /// never under; the safe direction, deliberately.
+    pub fn roll_back_failed_turn(&mut self, before: Vec<Message>) {
+        self.messages = before;
+        if self.messages.last().is_some_and(is_plain_user_text) {
+            self.messages.pop();
+        }
     }
 
     pub fn is_empty(&self) -> bool {
