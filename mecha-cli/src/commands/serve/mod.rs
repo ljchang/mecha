@@ -1,6 +1,11 @@
-//! `mecha serve` — the tailnet web surface (Phase 1: read-only).
+//! `mecha serve` — the tailnet web surface.
 //!
 //! One process serves the built web app and a JSON summary of the stores.
+//! It shipped read-only ("Phase 1"), which the header claimed long after it
+//! stopped being true — chat, the outbox, the board, the charter and the
+//! learning store all write from here now. What did not change is *how*: a
+//! write is a `mecha …` child process, on the third rule below.
+//!
 //! Three rules carry the design (`docs/REMOTE-SURFACE-DESIGN.md`):
 //!
 //! - **The bind is 127.0.0.1 and there is no flag to widen it.** Reaching
@@ -12,8 +17,9 @@
 //!   header, wrong value, or unset config fail closed: the server refuses to
 //!   *start* without an owner, because a door with no owner check must not
 //!   open at all.
-//! - **Reads drive the CLI.** The summary shells out to `mecha review queues
-//!   --json` and `mecha doctor --json` as child processes — one
+//! - **The CLI drives both directions.** The summary shells out to `mecha
+//!   review queues --json` and `mecha doctor --json`, and a write shells out
+//!   the same way (`mecha outbox approve`, `mecha rules retire`) — one
 //!   implementation per verb, nothing reachable here that a script cannot
 //!   do, and the `depth: null` convention ("could not look" is not
 //!   "nothing waiting") arrives for free because the verb already speaks it.
@@ -306,6 +312,31 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
             get(settings::charter).post(settings::charter_save),
         )
         .route("/api/settings/rules", get(settings::rules))
+        .route(
+            "/api/settings/rules/retire",
+            axum::routing::post(settings::rule_retire),
+        )
+        .route(
+            "/api/settings/rules/restore",
+            axum::routing::post(settings::rule_restore),
+        )
+        .route("/api/settings/reflections", get(settings::reflections))
+        .route(
+            "/api/settings/reflections/show",
+            get(settings::reflection_show),
+        )
+        .route(
+            "/api/settings/reflections/edit",
+            axum::routing::post(settings::reflection_edit),
+        )
+        .route(
+            "/api/settings/reflections/drop",
+            axum::routing::post(settings::reflection_drop),
+        )
+        .route(
+            "/api/settings/reflections/restore",
+            axum::routing::post(settings::reflection_restore),
+        )
         .route(
             "/api/settings/voice/clone",
             axum::routing::post(settings::voice_clone)
@@ -645,6 +676,13 @@ mod tests {
             ("GET", "/api/settings/charter"),
             ("POST", "/api/settings/charter"),
             ("GET", "/api/settings/rules"),
+            ("POST", "/api/settings/rules/retire"),
+            ("POST", "/api/settings/rules/restore"),
+            ("GET", "/api/settings/reflections"),
+            ("GET", "/api/settings/reflections/show?id=x"),
+            ("POST", "/api/settings/reflections/edit"),
+            ("POST", "/api/settings/reflections/drop"),
+            ("POST", "/api/settings/reflections/restore"),
             ("GET", "/api/settings/voice"),
             ("POST", "/api/settings/voice/clone?name=x"),
             ("POST", "/api/settings/voice/clone/delete"),
@@ -681,6 +719,69 @@ mod tests {
                     .header("Tailscale-User-Login", "owner@example.com")
                     .header("content-type", "application/json")
                     .body(Body::from(dup))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn a_learning_verb_without_a_real_id_is_refused_before_any_child_runs() {
+        // Both learning stores resolve by *prefix*, and `starts_with("")`
+        // matches every record — `LearningStore::reflexion` and
+        // `rules::find_rule` each carry that guard, and this is the third.
+        // The point of measuring it here rather than only in the store is
+        // that it is the one that runs *before* a child process is spawned:
+        // a browser cannot reach the case at all, and a 422 rather than a
+        // 404 is also what pins the route as wired.
+        for (uri, body) in [
+            ("/api/settings/reflections/drop", r#"{"id":""}"#),
+            ("/api/settings/reflections/restore", r#"{"id":""}"#),
+            ("/api/settings/rules/retire", r#"{"id":""}"#),
+            ("/api/settings/rules/restore", r#"{"id":""}"#),
+            (
+                "/api/settings/reflections/edit",
+                r#"{"id":"","text":"a lesson"}"#,
+            ),
+            // And never a leading dash: the id is a positional argument to
+            // a clap command, where one is a flag rather than a value.
+            ("/api/settings/rules/retire", r#"{"id":"--help"}"#),
+        ] {
+            let response = test_router()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("Tailscale-User-Login", "owner@example.com")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{uri} {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_lesson_is_refused_at_the_handler() {
+        // `edit_reflexion` refuses it too; refusing here as well is what
+        // keeps the page from spawning a child to be told so.
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/settings/reflections/edit")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"id":"20260829T014200-ab12cd34","text":"   \n "}"#,
+                    ))
                     .unwrap(),
             )
             .await
