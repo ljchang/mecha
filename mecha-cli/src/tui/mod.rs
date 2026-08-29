@@ -1396,35 +1396,65 @@ fn finish_run(
                 s.record_run(&persisted, &app.convo)?;
                 s.record_outcome(&outcome)?;
                 s.append(&Record::Taint(app.convo.taint))?;
-
-                // §6.2's readout: how this session's just-finished run
-                // appraises, right now — a different question from a
-                // task's goal-closure appraisal (`mecha tasks set`), which
-                // reads a finished session back off disk, possibly from
-                // another process. `Neutral` (the overwhelming common case)
-                // clears the badge rather than showing one. No drafts here
-                // (`appraisal::live`'s own doc comment) — found on review, a
-                // draft resolved on an earlier or later turn than this one
-                // has nothing to do with how *this* run went.
-                //
-                // `persisted.len()`, not `app.convo.messages.len()`: `live`
-                // needs where *this run's own* messages start, and
-                // `persisted` is exactly that boundary — the conversation as
-                // it stood right after the triggering user turn was
-                // appended, before this run added anything of its own.
-                let label =
-                    mecha_core::appraisal::live(&s.meta.id, &outcome, &app.convo, persisted.len());
-                app.affect = (label != mecha_core::appraisal::Affect::Neutral).then_some(label);
             }
+
+            // §6.2's readout: how this session's just-finished run
+            // appraises, right now — a different question from a
+            // task's goal-closure appraisal (`mecha tasks set`), which
+            // reads a finished session back off disk, possibly from
+            // another process. `Neutral` (the overwhelming common case)
+            // clears the badge rather than showing one. No drafts here
+            // (`appraisal::live`'s own doc comment) — found on review, a
+            // draft resolved on an earlier or later turn than this one
+            // has nothing to do with how *this* run went.
+            //
+            // Outside the `session` block above on purpose: `live` is a
+            // pure function of the outcome and the conversation, both in
+            // hand regardless of whether a transcript is being written, and
+            // the only thing the session contributed was an id stamped on a
+            // record that is immediately discarded. A `--no-session` run
+            // used to silently lose its badge to that accidental coupling.
+            //
+            // `persisted.len()`, not `app.convo.messages.len()`: `live`
+            // needs where *this run's own* messages start, and
+            // `persisted` is exactly that boundary — the conversation as
+            // it stood right after the triggering user turn was
+            // appended, before this run added anything of its own.
+            let label = mecha_core::appraisal::live(
+                session.map(|s| s.meta.id.as_str()).unwrap_or("unsaved"),
+                &outcome,
+                &app.convo,
+                persisted.len(),
+            );
+            app.affect = (label != mecha_core::appraisal::Affect::Neutral).then_some(label);
         }
         Err(e) => {
             app.transcript.push(Entry::Error(format!("error: {e:#}")));
             // Drop the dangling user turn so the next request doesn't resend
-            // it. Restored from the snapshot rather than truncated: a mid-run
-            // compaction leaves the list shorter than it started, and
-            // truncating that keeps the very message this exists to drop.
-            app.convo.messages = persisted;
-            app.convo.messages.pop();
+            // it — see `Conversation::roll_back_failed_turn` for why
+            // restore-then-pop, and why a bare pop was wrong twice over.
+            app.convo.roll_back_failed_turn(persisted.clone());
+            // And the transcript must agree, or the failure survives a
+            // resume (serve/chat's review finding, holding here verbatim):
+            // the opening user message was written at submit, so without
+            // this the file ends on a dangling user turn and `--resume`'s
+            // next submit puts two user messages in a row. The rolled-back
+            // list is not an extension of `persisted`, so `record_run`
+            // writes the `Rewrite` that makes a resume load exactly what
+            // memory holds; taint is persisted either way — a failed run
+            // that read a hostile page still read it.
+            if let Some(s) = session {
+                // The one write whose failure reproduces the resume-time 400
+                // this arm exists to prevent — surfaced in the transcript,
+                // never silent.
+                if let Err(e) = s.record_run(&persisted, &app.convo) {
+                    app.transcript.push(Entry::Error(format!(
+                        "the rollback was not recorded — resuming this session \
+                         will replay the failed turn: {e:#}"
+                    )));
+                }
+                let _ = s.append(&Record::Taint(app.convo.taint));
+            }
             // A run with no `RunOutcome` has nothing to appraise — leaving
             // the previous run's badge up would read as *this* run's mood,
             // which is exactly the web page's own `sawAffectThisRun` rule
@@ -3608,19 +3638,47 @@ fn submit(
 
     // Text first, images after: the order both provider families document,
     // and the one `encode_message` preserves.
-    let user = if images.is_empty() {
-        Message::user(&text)
-    } else {
-        let mut content = vec![MsgBlock::text(&text)];
-        content.extend(images);
-        Message {
-            role: mecha_core::message::Role::User,
-            content,
+    let mut blocks = vec![MsgBlock::text(&text)];
+    blocks.extend(images);
+    // Folded, not pushed, when the tail is already a user message — Ctrl-C
+    // mid-tool-turn keeps the partial turn (cancel's contract), so the
+    // conversation can end on the user message carrying tool results, and
+    // pushing there makes two user messages in a row. The fold is recorded
+    // immediately (a rewrite, since it mutates the tail in place): `run`'s
+    // `persisted` snapshot is taken at spawn, *after* this, and every
+    // downstream contract — record_run's diff, the error arm's rollback —
+    // assumes that snapshot is what the file holds.
+    if app
+        .convo
+        .messages
+        .last()
+        .is_some_and(|m| m.role == mecha_core::message::Role::User)
+    {
+        if let Some(last) = app.convo.messages.last_mut() {
+            last.content.extend(blocks);
         }
-    };
-    app.convo.push(user.clone());
-    if let Some(s) = session {
-        s.append(&Record::Message(user))?;
+        if let Some(s) = session {
+            // A direct `Rewrite`, not `record_run` — found on review:
+            // between runs `convo.rewritten` still holds the *previous*
+            // run's compaction states (only `run_in` clears it, at run
+            // start), and `record_run` replays them first, writing
+            // redundant full-history copies whose torn middle resumes at a
+            // stale pre-compaction state. Those states are already on disk
+            // from the previous run's own record; this fold is one mutation
+            // and earns exactly one record.
+            s.append(&Record::Rewrite {
+                messages: app.convo.messages.clone(),
+            })?;
+        }
+    } else {
+        let user = Message {
+            role: mecha_core::message::Role::User,
+            content: blocks,
+        };
+        app.convo.push(user.clone());
+        if let Some(s) = session {
+            s.append(&Record::Message(user))?;
+        }
     }
     // Kept, so the stream can wait for it. Both are posted to the same thread
     // and Slack orders by the timestamp *it* assigns, so firing them
