@@ -76,6 +76,12 @@ const ROUTES = [
   ...[...declared[1].matchAll(/'([^']+)'/g)].map((m) => (m[1] === 'home' ? '' : m[1])),
   'review/graph',
   'review/frontdoor',
+  // Settings' panes are hash suffixes too, and they hold nearly all of the
+  // settings code — a gate that visits only `#settings` checks three rows and
+  // a chevron.
+  'settings/charter',
+  'settings/learning',
+  'settings/voice',
 ];
 
 // Enough that a shell-plus-nav crash cannot clear it. The nav alone is about
