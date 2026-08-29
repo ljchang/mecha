@@ -30,24 +30,49 @@ export function serialize(header, lines) {
   return out.join('\n').replace(/\n+$/, '\n');
 }
 
-/// A `#` outside a string opens a comment — including one trailing a value,
-/// which a whole-line regex misses and the regenerating serialiser would then
-/// drop silently. Tracks basic and literal strings, respecting escapes. A `#`
-/// inside a multi-line string reads as a comment here and blocks the list
-/// editor: wrong, but wrong in the direction that keeps the writing.
-export function hasComment(row) {
-  let basic = false;
-  let literal = false;
-  for (let i = 0; i < row.length; i++) {
-    const c = row[i];
-    if (basic) {
-      if (c === '\\') i++;
-      else if (c === '"') basic = false;
-    } else if (literal) {
-      if (c === "'") literal = false;
-    } else if (c === '"') basic = true;
-    else if (c === "'") literal = true;
-    else if (c === '#') return true;
+/// Does a comment open anywhere in this text?
+///
+/// Takes a whole text rather than a row, because a multi-line string spans
+/// rows and a row read in isolation cannot tell an opening delimiter from a
+/// closing one: `""" # note` looks like a `#` *inside* a string when it is
+/// really the comment after that string ends. `splitHeader` therefore hands
+/// the entire tail below the first `[[line]]` over in one go — applying this
+/// per row was the bug.
+///
+/// A comment below that point cannot survive a save, since the tables are
+/// regenerated, so finding one is what makes the list editor stand down.
+export function hasComment(text) {
+  const s = String(text);
+  let i = 0;
+  const skipTo = (close, escapes) => {
+    while (i < s.length && !s.startsWith(close, i)) {
+      if (escapes && s[i] === '\\') i++;
+      i++;
+    }
+    i += close.length;
+  };
+  while (i < s.length) {
+    if (s[i] === '#') return true;
+    if (s.startsWith('"""', i)) {
+      i += 3;
+      skipTo('"""', true);
+    } else if (s.startsWith("'''", i)) {
+      i += 3;
+      skipTo("'''", false);
+    } else if (s[i] === '"' || s[i] === "'") {
+      // A single-line string ends at a newline as well as at its own quote:
+      // an unterminated one must not swallow the rest of the document and
+      // hide every comment below it.
+      const q = s[i];
+      i++;
+      while (i < s.length && s[i] !== q && s[i] !== '\n') {
+        if (q === '"' && s[i] === '\\') i++;
+        i++;
+      }
+      i++;
+    } else {
+      i++;
+    }
   }
   return false;
 }
@@ -59,7 +84,7 @@ export function splitHeader(src) {
   const rows = (src ?? '').split('\n');
   const first = rows.findIndex((r) => /^\s*\[\[/.test(r));
   if (first === -1) return { header: rows.join('\n').replace(/\s+$/, ''), blocked: null };
-  const commented = rows.slice(first).some(hasComment);
+  const commented = hasComment(rows.slice(first).join('\n'));
   return {
     header: rows.slice(0, first).join('\n').replace(/\s+$/, ''),
     blocked: commented

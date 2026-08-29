@@ -65,6 +65,14 @@ no("text = 'a #literal string'", 'a # inside a literal string');
 no('text = "escaped \\" then #not-a-comment"', 'a # after an escaped quote, still inside the string');
 no('id = "a"', 'no comment at all');
 
+// Multi-line strings span rows, so these are documents rather than rows: a row
+// read alone cannot tell an opening delimiter from a closing one, which is
+// exactly how a comment closing a multi-line string went undetected.
+yes('text = """\nprose\n""" # note', 'a comment after a multi-line string closes');
+no('text = """\na #hash inside the prose\n"""', 'a # inside a multi-line string');
+no("text = '''\na #hash inside a literal block\n'''", 'a # inside a multi-line literal');
+yes('text = "unterminated\n# a real comment below', 'an unterminated string must not hide what follows');
+
 // --- the header is the owner's writing ------------------------------------
 const split = splitHeader('# keep me\n\n[[line]]\nid = "a"\ntext = "t"\n');
 eq(split.header, '# keep me', 'everything above the first [[line]] is kept');
@@ -74,6 +82,17 @@ if (!splitHeader('# h\n[[line]]\nid = "a"\ntext = "t" # note\n').blocked) {
   fail('a comment among the lines must refuse the list editor, not be rewritten away');
 }
 eq(splitHeader('# comments only, no tables').header, '# comments only, no tables', 'a template-only document is all header');
+checks++;
+// At `splitHeader`'s level, not `hasComment`'s: the defect was in how the tail
+// was handed over (row by row), not in the scanner itself, so a check that
+// only exercises `hasComment` would stay green through a regression.
+if (!splitHeader('# h\n\n[[line]]\nid = "a"\ntext = """\nprose\n""" # note\n').blocked) {
+  fail('a comment closing a multi-line string must refuse the list editor, not be rewritten away');
+}
+checks++;
+if (splitHeader('# h\n\n[[line]]\nid = "a"\ntext = """\na #hash in the prose\n"""\n').blocked) {
+  fail('a # inside a multi-line string must not cost the owner the list editor');
+}
 
 // --- ids ------------------------------------------------------------------
 eq(slugify('Say no early'), 'say-no-early', 'a slug from typed text');
