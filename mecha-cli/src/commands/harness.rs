@@ -297,6 +297,7 @@ async fn measure(
     let mut selection_pairs: Vec<Pair> = Vec::new();
     let mut holdout_pairs: Vec<Pair> = Vec::new();
     let mut diverged: Vec<String> = Vec::new();
+    let mut replay_caveats: Vec<String> = Vec::new();
     let mut skipped = unusable;
     let total = draw.selection.len() + draw.holdout.len();
     // The flag decides the slice; the label only decides the column width.
@@ -312,7 +313,27 @@ async fn measure(
     for (is_selection, label, preps) in slices {
         for prep in preps.iter() {
             n += 1;
-            eprint!("· [{label}] {} ({}/{}) baseline…", prep.id, n, total);
+            // The caveat rides the episode's own line: a later "diverged —
+            // dropped" on a multi-config session is then legible as the
+            // recording being unreplayable-as-one-run, not the candidate or
+            // the replay machinery failing.
+            let caveat = prep
+                .config_caveat
+                .as_deref()
+                .map(|c| format!(" [{c}]"))
+                .unwrap_or_default();
+            // Into the stored record for *every* multi-config episode, not
+            // only the dropped ones — found on review: an episode that pairs
+            // cleanly contributes to the tally that gates acceptance, and
+            // that is the more consequential place for the decider reading
+            // `mecha harness show` to know the replay was compromising.
+            if let Some(c) = &prep.config_caveat {
+                replay_caveats.push(format!("{} — {c}", prep.id));
+            }
+            eprint!(
+                "· [{label}] {}{caveat} ({}/{}) baseline…",
+                prep.id, n, total
+            );
             let baseline =
                 match harness_probe::drive_episode(&prepared, provider_cfg, model, prep, None)
                     .await?
@@ -345,6 +366,14 @@ async fn measure(
                 // The recording has nothing truthful to say past a divergence;
                 // stats over the tracked prefix would grade a behaviour-visible
                 // change on the fraction it happened to track.
+                //
+                // The caveat rides into the stored record too, not only the
+                // nightly's stderr — beside the id, never folded into it:
+                // `diverged` is a joinable id list by contract, and the
+                // reader the caveat was written for is `mecha harness
+                // show`'s (whoever decides on a staged candidate) — such a
+                // divergence says something about the replay's compromise,
+                // not necessarily about the change.
                 eprintln!(" diverged — dropped");
                 diverged.push(prep.id.clone());
                 continue;
@@ -365,9 +394,19 @@ async fn measure(
 
     let now = chrono::Utc::now().to_rfc3339();
     if selection_pairs.is_empty() && holdout_pairs.is_empty() {
+        // The caveats ride in the reason here — found on review: this early
+        // return stores no Measurement, which dropped them in exactly the
+        // all-diverged case they exist to explain (a pool of multi-config
+        // episodes that all diverged says "replay compromise", not "the
+        // change cannot hold").
+        let caveats = if replay_caveats.is_empty() {
+            String::new()
+        } else {
+            format!("; replay caveats: {}", replay_caveats.join(", "))
+        };
         cand.reason = Some(format!(
             "nothing measurable: {} diverged, {} skipped — a change the replay cannot hold on \
-             the recording needs the eval arm instead",
+             the recording needs the eval arm instead{caveats}",
             diverged.len(),
             skipped
         ));
@@ -399,6 +438,7 @@ async fn measure(
             holdout_episodes,
             seed: draw.seed,
             diverged,
+            replay_caveats,
             skipped,
         },
     ));
@@ -565,6 +605,18 @@ fn show(id: &str) -> Result<()> {
                 "diverged:   {} (dropped, not scored)",
                 m.diverged.join(", ")
             );
+        }
+        // Its own block with its own label, not indented under `diverged:`
+        // — found on review: these cover *every* episode the replay
+        // compromised on, the cleanly paired ones included, and rendering
+        // them as an appendix to the drops read a scored episode as a
+        // dropped one (or, with nothing diverged, hung them under whatever
+        // line came before).
+        if !m.replay_caveats.is_empty() {
+            println!("replay caveats:");
+            for caveat in &m.replay_caveats {
+                println!("  {caveat}");
+            }
         }
         if m.skipped > 0 {
             println!("skipped:    {}", m.skipped);
