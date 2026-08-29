@@ -143,6 +143,24 @@
 
   const budget = $derived(charter?.budget ?? 2000);
 
+  // Derive the id when the row *closes*, whatever closed it. Hanging this off
+  // the textarea's `blur` alone is a bet on the browser: `dragStart` removes
+  // the textarea by setting `editing = null`, and whether `blur` fires for a
+  // focused node that is removed is not consistent across engines. With a
+  // mouse the grip takes focus first and it works either way; a touch drag
+  // moves no focus at all, and this surface is a phone first. The `onblur`
+  // stays for tab-away; `fillId` only fills an empty id, so both firing is
+  // harmless.
+  let lastEditing = null;
+  $effect(() => {
+    const open = editing;
+    if (lastEditing !== null && lastEditing !== open) {
+      const line = lines.find((l) => l.uid === lastEditing);
+      if (line) fillId(line);
+    }
+    lastEditing = open;
+  });
+
   function addLine() {
     const line = { uid: ++uidSeq, id: '', text: '' };
     lines = [...lines, line];
@@ -215,6 +233,9 @@
   let dragEl = null;
   let grip = null;
   let pointerY = 0;
+  // Where in the row the drag started, measured from its centre. Without it
+  // the row snaps its centre to the pointer and jumps half its height.
+  let grabOffset = 0;
   let raf = null;
 
   $effect(() => () => {
@@ -228,6 +249,8 @@
     dragUid = uid;
     dragDy = 0;
     dragEl = e.currentTarget.closest('.line');
+    const box = dragEl.getBoundingClientRect();
+    grabOffset = e.clientY - (box.top + box.height / 2);
     // Capture on the grip, which is where the move/up handlers are: a
     // captured event is retargeted to the capture element, and an event
     // dispatched at `.line` would never reach a descendant.
@@ -268,7 +291,7 @@
     if (dragUid === null || !dragEl || depth > 24) return;
     const rect = dragEl.getBoundingClientRect();
     const rest = rect.top + rect.height / 2 - dragDy;
-    dragDy = pointerY - rest;
+    dragDy = pointerY - grabOffset - rest;
     const centre = rest + dragDy;
 
     const i = lines.findIndex((l) => l.uid === dragUid);
