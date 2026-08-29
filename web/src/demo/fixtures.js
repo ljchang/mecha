@@ -630,8 +630,14 @@ text = "A refusal on Monday is a kindness. A refusal on Friday is a problem I ha
   error: null,
 };
 
+// A learned rule carries an `id` and a user rule does not — that difference
+// is not decoration here. The settings page offers retire/restore only on a
+// rule it can name, because both stores resolve by prefix and an empty needle
+// matches every record; a fixture without ids would draw the rules pane with
+// no verbs at all and quietly under-describe the surface.
 export const rules = [
   {
+    id: null,
     title: 'Never accept a review without checking the calendar first',
     domain: 'mail',
     active: true,
@@ -641,6 +647,7 @@ export const rules = [
     user: true,
   },
   {
+    id: null,
     title: 'Nominations and letters name the specific work, not the person’s qualities',
     domain: 'writing',
     active: true,
@@ -650,15 +657,174 @@ export const rules = [
     user: true,
   },
   {
+    id: 'r-20260812-4c1f9a02',
+    title: 'Answer a thread before summarising it — the summary is not the reply',
+    domain: 'mail',
+    active: true,
+    retired: false,
+    // Measured and clean. The pane says "N probe(s), none attributed"; a rule
+    // no probe has reached says so instead, which is the next one.
+    observations: 9,
+    attributed_regressions: 0,
+    user: false,
+  },
+  {
+    id: 'r-20260819-b7e3d144',
+    title: 'Offer a specific slot rather than asking what works',
+    domain: 'writing',
+    active: true,
+    retired: false,
+    // Absent, not zero: nothing has ever measured this one, which is a
+    // different finding from a rule that passed every probe.
+    observations: null,
+    attributed_regressions: null,
+    user: false,
+  },
+  {
+    id: 'r-20260722-91ac30de',
     title: 'Summarise threads before quoting them',
     domain: 'mail',
     active: false,
     retired: true,
+    retired_reason: 'the bisection attributed three regressions to it',
     observations: 21,
     attributed_regressions: 3,
     user: false,
   },
 ];
+
+// --- the learning store, one stage earlier -------------------------------
+//
+// A reflection is one lesson mined from one intervention, before anything
+// consolidates several into a rule. The four here are the four states the
+// pane has to draw differently, because each asks something different of the
+// owner: one that can become a rule, one the provenance gate excludes (the
+// case the edit verb exists for), one already rewritten in the owner's own
+// words, and one refused and kept as evidence.
+export const reflections = [
+  {
+    id: '20260826T143000-7f21a9c4',
+    domain: 'mail',
+    trigger: 'steer',
+    title:
+      'When a thread asks a direct question, answer it in the first line — the context belongs underneath, not in front.',
+    origin: 'clean',
+    learnable: true,
+    blocked: null,
+    edited: false,
+    dropped: false,
+    processed: false,
+    created_at: '2026-08-26T14:30:00+00:00',
+    session_id: '20260826T140012-3a8b91cc',
+  },
+  {
+    id: '20260824T091500-2b4e77a1',
+    domain: 'writing',
+    trigger: 'denial',
+    title: 'Check a nomination deadline against the calendar before promising a date.',
+    origin: 'untrusted',
+    learnable: false,
+    blocked: 'third-party content was in context when it was mined (edit to make it yours)',
+    edited: false,
+    dropped: false,
+    processed: false,
+    created_at: '2026-08-24T09:15:00+00:00',
+    session_id: '20260824T085500-11c2f0de',
+  },
+  {
+    id: '20260821T171200-d90c4415',
+    domain: 'behavior',
+    trigger: 'followup',
+    title: 'Say what a run could not finish before saying what it did.',
+    origin: 'clean',
+    learnable: true,
+    blocked: null,
+    edited: true,
+    dropped: false,
+    processed: true,
+    created_at: '2026-08-21T17:12:00+00:00',
+    session_id: '20260821T164400-5e7d2a03',
+  },
+  {
+    id: '20260818T102400-6ac1b8f9',
+    domain: 'behavior',
+    trigger: 'followup',
+    title: 'Prefer shorter replies in the evening.',
+    origin: 'clean',
+    learnable: false,
+    blocked: 'dropped — that was one evening, not a rule',
+    edited: false,
+    dropped: true,
+    processed: false,
+    created_at: '2026-08-18T10:24:00+00:00',
+    session_id: '20260818T100100-cc4419b7',
+  },
+];
+
+// What `reflections show` returns: the lesson plus the evidence a refusal
+// rests on. `context` is the field that holds third-party bytes, so the
+// excluded record shows what an owner would actually be reading when they
+// decide whether to adopt the lesson or drop it — and the edited one shows
+// the withholding that a rewrite performs.
+export const reflectionDetail = {
+  '20260826T143000-7f21a9c4': {
+    id: '20260826T143000-7f21a9c4',
+    domain: 'mail',
+    trigger: 'steer',
+    reflexion_text:
+      'When a thread asks a direct question, answer it in the first line — the context belongs underneath, not in front.',
+    context: 'drafting a reply to Tomas Lindqvist about the review deadline',
+    intervention: 'you buried the answer again — lead with it',
+    provenance: 'clean',
+    recorded_origin: 'clean',
+    evidence: 'full',
+    session_id: '20260826T140012-3a8b91cc',
+    created_at: '2026-08-26T14:30:00+00:00',
+  },
+  '20260824T091500-2b4e77a1': {
+    id: '20260824T091500-2b4e77a1',
+    domain: 'writing',
+    trigger: 'denial',
+    reflexion_text: 'Check a nomination deadline against the calendar before promising a date.',
+    context:
+      '(withheld — the conversation held third-party content; the assistant was working with these tools: mail_read, calendar_list)',
+    intervention: 'Denied by the user: the Ostrander deadline is the 30th, not the 13th',
+    provenance: 'untrusted',
+    recorded_origin: 'untrusted',
+    evidence: 'user_turns',
+    session_id: '20260824T085500-11c2f0de',
+    created_at: '2026-08-24T09:15:00+00:00',
+  },
+  '20260821T171200-d90c4415': {
+    id: '20260821T171200-d90c4415',
+    domain: 'behavior',
+    trigger: 'followup',
+    reflexion_text: 'Say what a run could not finish before saying what it did.',
+    context: '(withheld — the lesson was rewritten by the owner)',
+    intervention: 'I had to read three paragraphs to find out the export failed',
+    provenance: 'clean',
+    recorded_origin: 'clean',
+    evidence: 'user_turns',
+    edited_at: '2026-08-21T18:02:00+00:00',
+    session_id: '20260821T164400-5e7d2a03',
+    created_at: '2026-08-21T17:12:00+00:00',
+  },
+  '20260818T102400-6ac1b8f9': {
+    id: '20260818T102400-6ac1b8f9',
+    domain: 'behavior',
+    trigger: 'followup',
+    reflexion_text: 'Prefer shorter replies in the evening.',
+    context: 'wrapping up a long working session',
+    intervention: 'that is plenty for tonight',
+    provenance: 'clean',
+    recorded_origin: 'clean',
+    evidence: 'full',
+    dropped_at: '2026-08-18T11:00:00+00:00',
+    dropped_reason: 'that was one evening, not a rule',
+    session_id: '20260818T100100-cc4419b7',
+    created_at: '2026-08-18T10:24:00+00:00',
+  },
+};
 
 export const voice = {
   worker_reachable: true,

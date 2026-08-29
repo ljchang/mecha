@@ -1137,7 +1137,28 @@ impl LearningStore {
     pub fn edit_reflexion(&self, id: &str, lesson: &str) -> Result<Reflexion> {
         let lesson = lesson.trim();
         anyhow::ensure!(!lesson.is_empty(), "a lesson cannot be empty");
-        let id = self.reflexion(id)?.id;
+        let before = self.reflexion(id)?;
+        // **An unchanged lesson is not an edit, and must not be paid as one.**
+        // The promotion's whole justification is that the owner *typed* the
+        // words, so nothing is left to launder; re-submitting the model's own
+        // sentence unchanged would set `edited_at`, which makes
+        // `provenance()` return `Clean` unconditionally, and launder those
+        // words into every future prompt's cached prefix — the long-half-life
+        // path the interlock does not cover. It would also overwrite
+        // `context` with the withheld placeholder, destroying the evidence
+        // that the record was ever untrusted.
+        //
+        // The check lives here rather than in any caller because a surface
+        // that prefills the editor makes this one tap away: `mecha
+        // reflections edit` without `--text` already refuses an unchanged
+        // `$EDITOR` buffer, and until this guard existed the `--text` path —
+        // the one every non-terminal surface uses — did not, which is a
+        // browser doing something the command line cannot.
+        anyhow::ensure!(
+            lesson != before.reflexion_text.trim(),
+            "the lesson is unchanged — an edit is a promotion, and it has to be your own words"
+        );
+        let id = before.id;
         let mut edited = None;
         self.rewrite_reflexions(|all| {
             for r in all.iter_mut().filter(|r| r.id == id) {
@@ -2480,6 +2501,48 @@ mod tests {
             "Use the other config.",
             "and it is on disk, not just in the returned copy"
         );
+    }
+
+    /// **Resubmitting the model's own sentence is not a promotion.**
+    ///
+    /// The rescue above is sound only because the owner typed the words. A
+    /// surface that prefills the editor with the existing lesson makes
+    /// "promote this untrusted record" one unchanged save away — `edited_at`
+    /// would be set, `provenance()` returns `Clean` unconditionally once it
+    /// is, and the model's paraphrase rides into every future prompt's cached
+    /// prefix with `context` overwritten so nothing records that it was ever
+    /// untrusted. `mecha reflections edit` with no `--text` already refused
+    /// an unchanged `$EDITOR` buffer; the `--text` path every other surface
+    /// uses did not, which is the browser doing what the command line cannot.
+    #[test]
+    fn an_unchanged_lesson_is_refused_rather_than_promoted() {
+        let store = scratch_store();
+        stored(&store, "r1", Origin::Untrusted);
+
+        // Byte-identical, and the same modulo the trim the editor applies.
+        for same in ["a model's paraphrase", "  a model's paraphrase\n"] {
+            let e = store
+                .edit_reflexion("r1", same)
+                .expect_err("an unchanged lesson is not an edit")
+                .to_string();
+            assert!(e.contains("unchanged"), "{e}");
+        }
+
+        let untouched = store.reflexion("r1").unwrap();
+        assert!(
+            untouched.edited_at.is_none(),
+            "a refused edit must not stamp the record"
+        );
+        assert_eq!(untouched.provenance(), Origin::Untrusted);
+        assert!(!untouched.learnable(), "and it stays out of the rules");
+        assert!(
+            untouched.context.contains("IGNORE PREVIOUS INSTRUCTIONS"),
+            "the evidence it was untrusted survives a refused edit"
+        );
+
+        // One real word changed is a real edit, and still promotes.
+        let after = store.edit_reflexion("r1", "Use the other config.").unwrap();
+        assert!(after.edited_at.is_some() && after.learnable());
     }
 
     /// An edit outranks even a harness voice: whatever prompted the
