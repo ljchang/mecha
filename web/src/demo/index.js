@@ -179,13 +179,14 @@ export const ROUTES = [
   // would go green on a page the demo cannot actually draw.
   //
   // The five `settings/(reflections|rules)/…` verbs are the one group here
-  // that `check-demo` cannot see: Settings.svelte reaches them through one
-  // `learningAct(path, …)` helper, so the path is a variable at the `fetch`
-  // call and the guard's regex — which reads literals — never learns of
-  // them. They are listed anyway, and this paragraph is why: without an
-  // entry each one falls through to "demo: no fixture for POST /api/…",
-  // which the learning pane renders in its own error card, and a docs reader
-  // sees a broken feature rather than a declined one.
+  // that `check-demo` cannot see: `SettingsLearning.svelte` reaches them
+  // through its one `act(path, body, fallback)` helper, so the path is a
+  // variable at the `fetch` call and the guard's regex — which reads
+  // literals — never learns of them. They are listed anyway, and this
+  // paragraph is why: without an entry each one falls through to "demo: no
+  // fixture for POST /api/…", which the learning pane renders in its own
+  // error card, and a docs reader sees a broken feature rather than a
+  // declined one.
   [
     '*',
     new RegExp(
