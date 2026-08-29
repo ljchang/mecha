@@ -79,3 +79,40 @@ jobs:
               echo "== $crate: this version is already on crates.io; fine"
             fi
           done
+
+  # The GitHub Release object, from the tag's own changelog section. Added
+  # 2026-08-29, after fourteen tags had published crates with no release to
+  # show for it: this workflow was never given the job, and its top-level
+  # `contents: read` could not have done it anyway — the two releases that
+  # existed (v0.1.0, v0.1.1) were made by hand during the factory sprint.
+  # Gated on the crates job so a release is never announced for a version
+  # whose crates did not go up, and idempotent so re-running a tag's
+  # workflow does not fail on "already exists".
+  github-release:
+    runs-on: ubuntu-latest
+    needs: crates
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create the release from the changelog section
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          V="${TAG#v}"
+          awk -v ver="$V" '
+            $0 ~ "^## \\["ver"\\]" {grab=1; next}
+            grab && /^## \[/ {exit}
+            grab {print}
+          ' CHANGELOG.md > body.md
+          # A tag with no changelog section still gets a release, honestly
+          # labelled — a silent skip here is how the gap this job closes
+          # opened in the first place.
+          [ -s body.md ] || echo "_No CHANGELOG section found for ${V}._" > body.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; fine"
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file body.md --verify-tag
+          fi
