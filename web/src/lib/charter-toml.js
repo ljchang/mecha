@@ -8,8 +8,15 @@
 // pins the agreement against the sample `charter.rs` reads back.
 
 /// Always a single-line basic string: unambiguous, and it matches how the
-/// file is already written. A control character TOML forbids is refused by
-/// the server's parse, which is the check that counts.
+/// file is already written.
+///
+/// Escapes backslash, quote, newline, carriage return and tab — not the other
+/// control characters TOML forbids in a basic string (U+0000-U+0008,
+/// U+000B-U+000C, U+000E-U+001F, U+007F). That is deliberate rather than
+/// missed: one of those reaching here would be refused by the server's
+/// `Charter::parse` with a 422 that keeps the draft open, so the failure is
+/// closed and nothing typed is lost. Escaping them here would let a
+/// character no owner can type into the file instead.
 export const esc = (s) =>
   '"' +
   String(s)

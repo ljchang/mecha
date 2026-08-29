@@ -155,7 +155,7 @@
   </main>
 {:else}
   <header class="detail">
-    <button class="backbtn" onclick={() => navigate('settings')} aria-label="back to settings">
+    <button class="backbtn" onclick={() => navigate('settings', true)} aria-label="back to settings">
       <svg
         viewBox="0 0 24 24"
         width="18"

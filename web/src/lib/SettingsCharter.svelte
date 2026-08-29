@@ -104,6 +104,13 @@
     confirming = false;
     savedNote = null;
   });
+
+  // The same rule for the raw editor: arming describes the document that was
+  // on screen, and editing the text makes it a different one.
+  $effect(() => {
+    draft;
+    confirming = false;
+  });
   const dirty = $derived(snapshot() !== original);
 
   // The id is a pointer, not a label: `GoalRef::Charter` carries an id and no
@@ -540,7 +547,9 @@
   }
   .line.dragging {
     position: relative;
-    z-index: 2;
+    /* Above the shell's gear (3): the line being dragged is the thing under
+       the finger, and it reaches the top of the list. */
+    z-index: 4;
     border-color: var(--accent-400);
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
   }

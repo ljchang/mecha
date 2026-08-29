@@ -20,9 +20,17 @@
   let route = $state(fromHash());
   const view = $derived(route.view);
 
-  function navigate(to) {
+  // `replace` is for a gesture that *undoes* a navigation — a back chevron
+  // that pushed its own entry would leave browser-Back re-entering the pane
+  // the chevron just left.
+  function navigate(to, replace = false) {
     const [v] = to.split('/');
     route = { view: v, sub: to.split('/')[1] ?? null };
+    if (replace) {
+      const hash = to === 'home' ? '' : `#${to}`;
+      history.replaceState(null, '', `${location.pathname}${location.search}${hash}`);
+      return;
+    }
     location.hash = to === 'home' ? '' : to;
   }
 
