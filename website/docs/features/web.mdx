@@ -1,8 +1,10 @@
 ---
 title: The web surface
-sidebar_position: 23.5
-description: mecha serve — the tailnet web app. What the door is, why it is a network identity rather than a password, and what each page can do that the terminal already could.
+sidebar_position: 1.5
+description: mecha serve — the tailnet web app, live on this page. What the door is, why it is a network identity rather than a password, and what each page can do that the terminal already could.
 ---
+
+import WebFrame from '@site/src/components/WebFrame';
 
 # The web surface
 
@@ -13,7 +15,47 @@ and from nowhere else.
 It exists because the terminal is where mecha lives and the terminal is not
 where you are. A draft that needs approving, a thread that needs reading,
 a queue that needs clearing — none of that wants a laptop, and all of it was
-previously stuck behind one.
+previously stuck behind one. It is also **the only way in to
+[voice](/docs/features/voice)**: a call is opened from the chat view here and
+speaks into the conversation already on screen.
+
+## Try it
+
+The frame below is the app — the real bundle from `web/`, built by the same
+Vite config, with the same components and the same stylesheet. What differs is
+only what comes back over `/api`: fixtures instead of a box.
+
+<WebFrame
+  page="chat"
+  height={740}
+  pages={[
+    {hash: 'chat', label: 'chat'},
+    {hash: 'home', label: 'home'},
+    {hash: 'mail', label: 'mail'},
+    {hash: 'review', label: 'review'},
+    {hash: 'review/frontdoor', label: 'front door'},
+    {hash: 'tasks', label: 'tasks'},
+    {hash: 'graph/Priya%20Raghavan', label: 'graph'},
+    {hash: 'settings', label: 'settings'},
+  ]}
+  caption={
+    <>
+      Type into <strong>chat</strong> and send: a tool call resolves, then the reply stages a
+      draft rather than sending it, and the card that appears is the one you would answer on
+      a phone — including the taint banner, because that run had read a stranger’s mail.
+    </>
+  }
+/>
+
+:::note[Why a demo and not a screenshot]
+There is no public mecha to link to, and there never will be — the server binds
+`127.0.0.1` and refuses any request without your tailnet identity. A screenshot
+of the real one would be a picture of somebody's actual mail, calendar and
+knowledge graph, on a repository that is public. So the docs build compiles the
+app against invented fixtures (`web/src/demo/`) and embeds that. Every name in
+it is fiction and the reply is scripted; everything you can see and click is
+the shipped app.
+:::
 
 ## The door
 
@@ -62,9 +104,10 @@ and there is exactly one implementation of each verb.
 | Page | What it is |
 |---|---|
 | **Home** | The dashboard: what is waiting in each store, plus [doctor](/docs/features/run-quality)'s findings. Cards with a surface behind them navigate there on tap. A store that cannot be read shows a dash, never a zero |
-| **Chat** | A streaming conversation with the agent — steering, cancel, a context gauge, and a session drawer holding both live and recorded conversations |
+| **Chat** | A streaming conversation with the agent — steering, cancel, a context gauge, approval cards, and a session drawer holding both live and recorded conversations. The waveform button opens a [voice call](/docs/features/voice) into *this* conversation |
 | **Mail** | Two tabs: the triage queue (what needs you, classified) and a plain inbox (what just arrived). Reading, triaging, and drafting — see [mail](/docs/features/mail) |
 | **Notes** | Capture into the [knowledge graph](/docs/graph/overview) as evidence, a recent list, and a search box |
+| **Graph** | One entity, and everything the graph knows about it — facts with their provenance, recent evidence, and Confirm/Refute on anything still unreviewed. Opening an entity is itself a review trigger; see [the graph](/docs/graph/overview#where-you-review-what-it-proposes) |
 | **Review** | [Outbox](/docs/features/outbox), the graph's merge queue, and the [front door](/docs/features/frontdoor) — every approval surface in one place |
 | **Tasks** | The GTD board, with the views in a drawer and one tap per status change |
 | **Settings** | Behind the gear, upper-right: the [charter](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words) (view, and the page's one write), the learned-rule roster with its ledger tallies, and the [voice](/docs/features/voice) stack's health and preferences |
