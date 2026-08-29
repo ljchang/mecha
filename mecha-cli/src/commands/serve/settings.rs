@@ -1,18 +1,30 @@
-//! The settings page's backend: the charter, the learned rules, and the
+//! The settings page's backend: the charter, the learning store, and the
 //! voice stack's health, behind the same owner guard as everything else.
 //!
 //! What may be *written* from here is decided by who owns the consequence,
-//! and the answer is: exactly one thing. The charter is the owner's own
-//! document, read by every run and writable by "the owner with a text
+//! and the answer is: the documents the owner owns. The charter is the
+//! owner's own, read by every run and writable by "the owner with a text
 //! editor" (`docs/GOAL-SYSTEM-DESIGN.md` §11) — a validated save from the
-//! owner's authenticated page is that, with a different editor. Everything
-//! else on the page is a read: learned rules mutate through their own gated
-//! verbs (`mecha rules retire` stages through proposals; nothing here
-//! shortcuts that), and the voice stack is configured where it runs.
+//! owner's authenticated page is that, with a different editor. The
+//! learning store is the same argument one stage on: a reflection is a
+//! lesson *about the owner's own corrections*, and a learned rule rides in
+//! every future prompt's cached prefix, so the owner disagreeing with one
+//! is the whole point of the store having a reader. The voice stack is
+//! configured where it runs and stays a read.
 //! Deliberately absent, and not as an oversight: anything whose edit widens
 //! security posture — `[sandbox]`, `[security]`, `[outbox]` routing — stays
 //! in `config.toml` where a diff reviews it, on `names_guarded_setting`'s
 //! own list of the boundaries that always reach a human.
+//!
+//! **The learning verbs are child processes, never store calls** — the TUI
+//! `/learning` modal's rule (`tui/learning.rs`), for its payoff: one
+//! implementation of each verb, and nothing a browser can do to the store
+//! that `mecha reflections`/`mecha rules` cannot. It also means the
+//! provenance promotion an edit performs, the withholding that makes it
+//! sound, and the git commit behind each write all happen in exactly one
+//! place. Note what this page is *not*: acceptance of a rule *proposal*
+//! still lives in `/queues` and the TUI, because a proposal is a rewritten
+//! rule set and reject-all is not the objection worth offering on a phone.
 //!
 //! Two rules on the charter write, both structural:
 //!
@@ -150,15 +162,260 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
     charter_state().into_response()
 }
 
+// ─── The learning store ──────────────────────────────────────────────────
+//
+// Two of the three stages a lesson passes through, in the order it passes
+// them: reflections (one lesson per intervention, before anything merges
+// them) and rules (what a run actually carries). The third — proposals —
+// stays in `/queues` and the TUI, for the reason given in the module doc.
+//
+// Every listing is the *same* `list --json` the TUI reads, so the two
+// surfaces cannot drift into describing the same store differently, and
+// every mutation is the same `mecha …` verb the command line runs.
+
 /// GET /api/settings/rules — the learned-rule roster with its ledger
-/// tallies, exactly what the TUI's `/learning` reads. A read: retiring goes
-/// through `mecha rules retire`'s own staged path, and nothing here offers a
-/// shortcut around it.
+/// tallies, exactly what the TUI's `/learning` reads.
+///
+/// User rules ride in the same prompt and are listed with the learned ones,
+/// flagged: a surface that showed only the learned half would misdescribe
+/// what a run carries. They are not on trial and have no verbs here.
 pub async fn rules(State(_state): St) -> Response {
     match super::self_cli_json(&["rules", "list", "--json"], false).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
     }
+}
+
+/// GET /api/settings/reflections — every lesson, dropped ones included.
+///
+/// `--all`, for the reason `load_learning` passes it: `reflections list`
+/// hides dropped rows by default, and a page that hid them would make
+/// *restore* unreachable — dropping a lesson would remove it from the very
+/// list the page re-reads. A refusal that must stay visible is the whole
+/// argument for `drop` being a flag rather than a deletion, so the surface
+/// shows it as past rather than gone.
+pub async fn reflections(State(_state): St) -> Response {
+    match super::self_cli_json(&["reflections", "list", "--all", "--json"], false).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct IdQuery {
+    id: String,
+}
+
+/// GET /api/settings/reflections/show?id=… — one reflection in full: what
+/// was happening, what was said, the lesson, and why the gate does or does
+/// not exclude it.
+///
+/// The listing carries the lesson but not its evidence, and the evidence is
+/// what a decision rests on — dropping a lesson because it reads oddly, when
+/// what it is really recording is an injection attempt, is the mistake this
+/// avoids. It shows the owner third-party text on purpose: a person reading
+/// quarantined bytes in their own browser is review, which is the only thing
+/// that ever gets to see them unparaphrased.
+pub async fn reflection_show(
+    State(_state): St,
+    axum::extract::Query(q): axum::extract::Query<IdQuery>,
+) -> Response {
+    if !valid_store_id(&q.id) {
+        return bad_id();
+    }
+    match super::self_cli_json(&["reflections", "show", &q.id, "--json"], false).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
+    }
+}
+
+/// An id is a name the harness minted — `20260829T014200-ab12cd34` for a
+/// reflection, `r-20260829-ab12cd34` for a rule — so the alphabet is closed
+/// rather than denylisted, and two properties are load-bearing:
+///
+/// - **Never empty.** Both stores resolve by *prefix*, and `starts_with("")`
+///   matches every record; `LearningStore::reflexion` and `rules::find_rule`
+///   each carry that guard, and this is the third, so a browser cannot reach
+///   the case at all.
+/// - **Never leading `-`.** The id is a positional argument to a clap
+///   command, where a leading dash is a flag rather than a value.
+fn valid_store_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn bad_id() -> Response {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "not an id from this store\n",
+    )
+        .into_response()
+}
+
+/// A lesson is a sentence or two about one intervention. The cap is not a
+/// storage bound — it is the same argument as the charter's: a body orders
+/// of magnitude past what the record is for is not an edit of one.
+const MAX_LESSON_BYTES: usize = 8 * 1024;
+/// And a reason is one line, recorded for the next reader.
+const MAX_REASON_BYTES: usize = 1024;
+
+#[derive(Deserialize)]
+pub struct LessonEdit {
+    id: String,
+    text: String,
+}
+
+#[derive(Deserialize)]
+pub struct IdAndReason {
+    id: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// The reason, in the `--reason=<value>` spelling. `=` is what makes clap
+/// take the rest of the argument verbatim, so a reason that opens with a
+/// dash ("-1 regression, every time") is a reason and not a parse error.
+/// `None` when nothing was typed, which leaves each verb's own default
+/// wording to the CLI — one implementation of "retired by hand".
+fn reason_arg(reason: &Option<String>) -> Option<String> {
+    reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(|r| format!("--reason={r}"))
+}
+
+/// POST /api/settings/reflections/edit — rewrite the lesson in the owner's
+/// own words.
+///
+/// **The important verb, and it lives at the first stage.** A rule is a
+/// consolidation of several lessons, so objecting at the proposal costs the
+/// good ones; here it costs nothing and says exactly what was wrong. It is
+/// also a *provenance promotion*: a lesson the owner typed is the owner's,
+/// so one the gate excluded becomes learnable — and `context` is withheld,
+/// because that is the field that held the third-party text. All of that
+/// happens in `LearningStore::edit_reflexion`, reached the only way this
+/// page reaches the store: through `mecha reflections edit`.
+pub async fn reflection_edit(State(state): St, Json(body): Json<LessonEdit>) -> Response {
+    if !valid_store_id(&body.id) {
+        return bad_id();
+    }
+    if body.text.trim().is_empty() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a lesson cannot be empty\n",
+        )
+            .into_response();
+    }
+    if body.text.len() > MAX_LESSON_BYTES {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!(
+                "{} bytes is not a lesson — the cap is {MAX_LESSON_BYTES}\n",
+                body.text.len()
+            ),
+        )
+            .into_response();
+    }
+    // `--text=…` rather than two arguments: a lesson may legitimately open
+    // with a dash, and the `=` form is what stops clap reading it as a flag.
+    let text = format!("--text={}", body.text);
+    learning_verb(&state, &["reflections", "edit", &body.id, &text]).await
+}
+
+/// POST /api/settings/reflections/drop — refuse a lesson.
+///
+/// Kept as evidence, never a candidate again: a store that forgets its
+/// refusals lets the same lesson come back next pass with nothing to say it
+/// was already judged.
+pub async fn reflection_drop(State(state): St, Json(body): Json<IdAndReason>) -> Response {
+    if !valid_store_id(&body.id) {
+        return bad_id();
+    }
+    if body
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.len() > MAX_REASON_BYTES)
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "that reason is too long\n",
+        )
+            .into_response();
+    }
+    let mut args: Vec<&str> = vec!["reflections", "drop", &body.id];
+    let reason = reason_arg(&body.reason);
+    if let Some(r) = &reason {
+        args.push(r);
+    }
+    learning_verb(&state, &args).await
+}
+
+/// POST /api/settings/reflections/restore — undo a drop.
+pub async fn reflection_restore(State(state): St, Json(body): Json<IdAndReason>) -> Response {
+    if !valid_store_id(&body.id) {
+        return bad_id();
+    }
+    learning_verb(&state, &["reflections", "restore", &body.id]).await
+}
+
+/// POST /api/settings/rules/retire — stop a rule riding in the prompt.
+///
+/// A flag, never a deletion: the rule stays in the file as evidence, the
+/// learner is shown it was measured harmful so the same lesson does not come
+/// back under new wording, and `restore` can undo what erasure could not.
+/// This is the human acting directly — the same standing as `mecha rules
+/// retire` at a terminal, with git as the undo. The *unattended* path
+/// (`propose-retirements`) is the one that stages through the proposal gate,
+/// and nothing here shortcuts it, because nothing here is unattended.
+pub async fn rule_retire(State(state): St, Json(body): Json<IdAndReason>) -> Response {
+    if !valid_store_id(&body.id) {
+        return bad_id();
+    }
+    if body
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.len() > MAX_REASON_BYTES)
+    {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "that reason is too long\n",
+        )
+            .into_response();
+    }
+    let mut args: Vec<&str> = vec!["rules", "retire", &body.id];
+    let reason = reason_arg(&body.reason);
+    if let Some(r) = &reason {
+        args.push(r);
+    }
+    learning_verb(&state, &args).await
+}
+
+/// POST /api/settings/rules/restore — un-retire a rule.
+pub async fn rule_restore(State(state): St, Json(body): Json<IdAndReason>) -> Response {
+    if !valid_store_id(&body.id) {
+        return bad_id();
+    }
+    learning_verb(&state, &["rules", "restore", &body.id]).await
+}
+
+/// Run one learning verb and relay its outcome — the outbox's own
+/// `verb`, because the contract is identical: the CLI's refusal *is* the
+/// API's, arriving as a 409 with the child's own last stderr line, so
+/// "no learned rule matching `abc`" reaches the page as itself rather than
+/// as a generic failure.
+///
+/// It can legitimately wait: every verb here takes `LearningStore::lock()`,
+/// a blocking flock, and the nightly `reflect`/`learn` hold that same lock
+/// across a model call. A page that waits and then says the verb timed out
+/// is telling the truth about a busy store; one that reported success
+/// without the write would not be.
+async fn learning_verb(state: &super::WebState, args: &[&str]) -> Response {
+    super::review::verb(state, args).await
 }
 
 /// GET /api/settings/voice — is the stack there at all, and where this
@@ -553,7 +810,45 @@ async fn probe(url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{valid_voice_name, wav_info};
+    use super::{reason_arg, valid_store_id, valid_voice_name, wav_info};
+
+    /// The ids the two learning stores actually mint, and the two shapes
+    /// that must never reach a child: the empty needle (which prefix-matches
+    /// every record in both stores) and a leading dash (which clap reads as
+    /// a flag rather than as the record to act on).
+    #[test]
+    fn a_store_id_is_a_minted_name_and_nothing_else() {
+        assert!(valid_store_id("20260829T014200-ab12cd34")); // a reflection
+        assert!(valid_store_id("r-20260829-ab12cd34")); // a rule
+        assert!(valid_store_id("r-2026")); // a prefix, which both stores resolve
+
+        assert!(!valid_store_id(""));
+        assert!(!valid_store_id(" "));
+        assert!(!valid_store_id("--help"));
+        assert!(!valid_store_id("-r-2026"));
+        assert!(!valid_store_id("../../etc/passwd"));
+        assert!(!valid_store_id("r 2026"));
+        assert!(!valid_store_id(&"a".repeat(129)));
+    }
+
+    /// `--reason=<value>`, because `=` is what makes clap take the rest
+    /// verbatim — a reason that opens with a dash is a reason, not a parse
+    /// error. Nothing typed passes no flag at all, which leaves each verb's
+    /// own default wording ("retired by hand") in the one place it is
+    /// written.
+    #[test]
+    fn a_reason_is_passed_in_the_form_that_survives_a_leading_dash() {
+        assert_eq!(
+            reason_arg(&Some("-1 regression, every time".into())).as_deref(),
+            Some("--reason=-1 regression, every time")
+        );
+        assert_eq!(
+            reason_arg(&Some("  spaced  ".into())).as_deref(),
+            Some("--reason=spaced")
+        );
+        assert_eq!(reason_arg(&None), None);
+        assert_eq!(reason_arg(&Some("   ".into())), None);
+    }
 
     fn wav(rate: u32, channels: u16, seconds: f64) -> Vec<u8> {
         let byte_rate = rate * u32::from(channels) * 2;
