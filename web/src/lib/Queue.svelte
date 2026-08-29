@@ -45,7 +45,13 @@
   // Refute retracts it as never true, and the reason feeds the graph's
   // rejection memory. Verdicts land in the owner's own mecha-graph binary
   // via the server — the MCP surface deliberately cannot vote.
-  let shadow = $state(null); // { rows, live, served }
+  let shadow = $state(null); // { rows, total, live, served }
+  // The shadow queue failing to load is a FINDING, not an absence: the CLI
+  // row it mirrors answers a dash plus the reason on the same failure, and
+  // a card that silently vanishes makes a broken reader look like an
+  // install with no shadow queue. Kept separate from `error` so the
+  // candidate views survive it.
+  let shadowError = $state(null);
   let shadowOpen = $state(false);
   let reasons = $state({}); // fact uid → typed refute reason
   let classes = $state(null); // { proposer, rows }
@@ -70,16 +76,26 @@
     loadShadow();
   }
 
-  // Best-effort beside the queue: an older graph binary has no shadow
-  // verb, and this page's candidate views must not vanish with it.
+  // Beside the queue, failure reported: an older graph binary has no
+  // shadow verb, and the candidate views must not vanish with it — but
+  // the row must say it could not look, not disappear.
   async function loadShadow() {
     try {
       const res = await fetch('/api/queue/shadow');
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
-      shadow = { rows: data.surfaced ?? [], live: data.shadow_live ?? 0, served: data.shadow_served ?? 0 };
-    } catch {
+      shadow = {
+        rows: data.surfaced ?? [],
+        // The graph's pre-truncation count — the page length is not a
+        // depth. Older servers without the field get the page as a floor.
+        total: data.surfaced_total ?? (data.surfaced ?? []).length,
+        live: data.shadow_live ?? 0,
+        served: data.shadow_served ?? 0,
+      };
+      shadowError = null;
+    } catch (e) {
       shadow = null;
+      shadowError = String(e?.message ?? e);
     }
   }
   load();
@@ -98,8 +114,13 @@
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       shadow.rows = shadow.rows.filter((r) => r !== sf);
+      shadow.total = Math.max(0, shadow.total - 1);
       clearNote(sf.fact.uid);
       error = null;
+      // The deck refills when this page empties: the fetch was one page of
+      // at most ten, and "you judged your page" is not "nothing surfaced".
+      // The empty state below renders only when a FRESH fetch returns none.
+      if (shadow.rows.length === 0) await loadShadow();
     } catch (e) {
       note(sf.fact.uid, { error: String(e?.message ?? e) });
     } finally {
@@ -483,7 +504,9 @@
     <div class="deckhead">
       {@render backTo(() => { shadowOpen = false; loadShadow(); }, 'back')}
       <span class="pname">surfaced for verdict</span>
-      <span class="seed">{shadow.live} unreviewed live · {shadow.served} ever served</span>
+      <span class="seed"
+        >{shadow.total} surfaced · {shadow.live} unreviewed live · {shadow.served} ever served</span
+      >
     </div>
     {#if shadow.rows.length === 0}
       <div class="empty">Nothing surfaced — no unreviewed fact is about to matter right now.</div>
@@ -672,7 +695,7 @@
       <button class="card row global" onclick={() => (shadowOpen = true)} disabled={busy}>
         <div class="rowtop">
           <span class="pname">surfaced for verdict</span>
-          <span class="pcount">{shadow.rows.length}</span>
+          <span class="pcount">{shadow.total.toLocaleString('en-US')}</span>
         </div>
         <div class="rowsub">
           <span
@@ -681,6 +704,14 @@
           >
         </div>
       </button>
+    {:else if shadowError}
+      <div class="card row global">
+        <div class="rowtop">
+          <span class="pname">surfaced for verdict</span>
+          <span class="pcount">—</span>
+        </div>
+        <div class="rowsub"><span>could not read the shadow queue: {shadowError}</span></div>
+      </div>
     {/if}
     <button class="card row global" onclick={() => openGlobal()} disabled={busy}>
       <div class="rowtop">

@@ -86,7 +86,7 @@
 
   {#if entity?.found === false}
     <div class="empty">no entity matches “{entity.query}”</div>
-  {:else if entity?.ambiguous}
+  {:else if entity?.ambiguous?.length}
     <div class="footnote">several entities answer to this name — pick one:</div>
     {#each entity.ambiguous as c}
       <button class="card row" onclick={() => lookup(c.id)}>
