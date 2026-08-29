@@ -27,7 +27,11 @@ export const esc = (s) =>
     .replace(/\t/g, '\\t') +
   '"';
 
-/// `header` is kept byte-for-byte; only the `[[line]]` tables are generated.
+/// The header is preserved — every comment and its text — and only the
+/// `[[line]]` tables are generated. Not quite byte-for-byte: `splitHeader`
+/// trims trailing whitespace and exactly one blank line is re-emitted before
+/// the tables, so a header ending in several blank lines comes back with one.
+/// The promise that matters is that nothing the owner wrote is lost.
 export function serialize(header, lines) {
   const out = [];
   if (header.trim()) out.push(header, '');

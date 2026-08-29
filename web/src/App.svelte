@@ -30,7 +30,13 @@
     route = { view: v, sub: to.split('/')[1] ?? null };
     const url = `${location.pathname}${location.search}${to === 'home' ? '' : `#${to}`}`;
     const depth = history.state?.mechaDepth ?? 0;
-    if (replace) history.replaceState({ mechaDepth: depth }, '', url);
+    // Navigating to where you already are must not add an entry. Assigning
+    // `location.hash` used to dedup this for free; `pushState` does not, and
+    // the nav bar fires on the active tab while the gear falls through to
+    // here on the settings index — so without this, one tap on either buys a
+    // dead Back press, the very thing this function's depth exists to avoid.
+    const here = `${location.pathname}${location.search}${location.hash}`;
+    if (replace || url === here) history.replaceState({ mechaDepth: depth }, '', url);
     else history.pushState({ mechaDepth: depth + 1 }, '', url);
   }
 
