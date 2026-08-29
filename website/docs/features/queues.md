@@ -19,14 +19,29 @@ deciding to let it.
 
 ```
 $ mecha review
-6,445 item(s) waiting on you
+4,520 item(s) waiting on you
 
-  6,434  graph candidates       8 proposer(s); 1,116 from mechanisms you have never judged
+  4,461  graph candidates       3 proposer(s); 12 from mechanisms you have never judged
+     10  graph shadow           2,456 unreviewed facts live, 0 ever served
+     32  graph entities         2 detector(s) with something to say
      10  outbox drafts          10 drafted with the trifecta armed
       1  front-door requests    5 closed
       0  rule proposals         0 decided
       0  harness changes        0 resolved
 ```
+
+The `graph shadow` row is the graph's *surfaced-verdict* queue
+(review-on-use): extracted facts no longer wait in the candidate queue —
+they go live as **shadow facts**, retrievable but rank-discounted and
+labeled `unreviewed`, and earn a human verdict only when they are about to
+matter: served in a context pack, contradicting a reviewed fact, or
+spot-checked by a sampled class. Its depth is how many are surfaced right
+now (at most ten — review arrives a handful at a time), and
+`mecha review shadow` lists and decides them: `--confirm <uid>` stands
+behind one, `--refute <uid> --reason '…'` retracts it as never true.
+The verdict verbs are deliberately absent from the graph's MCP tool
+surface — the model can *show* the queue (`kg_shadow_queue`, read-only),
+but only a hand on an owner surface can settle it.
 
 It holds nothing of its own — like [the doctor](../reference/cli#doctor), it
 reads what the other stores own and adds no sixth store that could disagree
@@ -213,6 +228,7 @@ mecha-owned stores without it.
 ```
 mecha review                  # the summary (also: mecha review queues)
 mecha review proposers        # the queue by proposing mechanism
+mecha review shadow           # the surfaced-verdict queue  [--confirm U | --refute U --reason S]
 mecha review list             # pending classes  [--proposer X]
 mecha review sample           # a random draw    [--proposer X --predicate Y -n 12 --seed S]
 mecha review items            # queue order — not a rate
