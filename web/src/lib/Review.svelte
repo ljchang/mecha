@@ -36,7 +36,7 @@
   .tabs {
     display: flex;
     gap: 8px;
-    padding: 22px 20px 0;
+    padding: 14px 56px 0 20px;
   }
   .tab {
     font-family: var(--mono);

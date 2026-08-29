@@ -35,12 +35,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the four appraisal moments, the consumer map, and the previously
   undocumented step-appraisal mechanism.
 
+### Changed
+
+- **The charter is edited as a list, and re-ranked by dragging.** The web
+  editor was a raw TOML textarea — the shape it inherited from
+  `mecha charter edit` handing the file to `$EDITOR` — so adding a priority
+  or changing its rank meant writing TOML by hand. Lines are now tapped to
+  edit, added with a button, deleted behind a two-tap arm, and re-ranked by
+  dragging a grip. **Dragging is not a convenience: it is the only rank
+  control there can be**, since `CharterLine` denies unknown fields and §11
+  gives the charter no rank key at all, making position in the file the whole
+  ranking — the design's own "the only editing gesture that cannot produce a
+  tie". Pointer events rather than HTML5 drag-and-drop, because the surface is
+  a phone first. Everything above the first `[[line]]` is preserved,
+  so header comments and the first-charter template survive a save (trailing
+  blank lines normalise; nothing written is lost); a charter
+  with comments *between* its lines, or one that does not parse, opens as TOML
+  instead of being silently rewritten. Nothing changes on the server: the same
+  route, the same two-tap confirm, the same `Charter::parse` validation, and
+  the invariant that matters is untouched — the owner authors every line and
+  no model composes one. `the_web_editors_serialisation_is_what_this_reader_loads`
+  pins the format across the two languages that describe it.
+
+- **Settings is an index, and its gear is on every view.** The page was one
+  scroll of three stacked sections, reachable only from Home — so a charter
+  editor, a rule roster and a live microphone shared one screen, and settings
+  could not be opened from the other six views at all. Each feature now opens
+  its own pane at `#settings/<charter|learning|voice>` (`SettingsCharter`,
+  `SettingsLearning`, `SettingsVoice`), routed through the hash router the
+  rest of the app already uses, so back, forward and reload land where they
+  should; each index row carries what is actually in there — a count, or a
+  dash where the store could not be read. The gear moves out of `Home.svelte`
+  into the shell (`App.svelte`): one button, the same corner on every view,
+  layered *below* the app's scrims, sheets and drawers so it can never float
+  over an open one. Every view's header reserves that corner.
+
 ### Fixed
 
 - **The `/tasks` web page rendered no tasks at all** on any non-empty board
   (#116): `stateOf` called `stalled(t)` where `stalled` is a *field* the
   server stamps (`serve/board.rs`), not a function — a `ReferenceError` on
   every card. Shipped broken in 0.1.16; caught by #117's render gate.
+- **Two demo fixtures did not match the shape their routes return**, so the
+  docs demo rendered what a box never would: a cloned voice's `created` was a
+  date string where the route sends unix seconds (`Invalid Date`), and charter
+  line ids were bare ordinals where the route sends slugs (`1. 1` beside the
+  list marker). A fixture that disagrees with its route is a demo that lies
+  about the product.
+- **The charter docs overstated what the surfaces share** (366a9ca): the
+  appraisal page and ARCHITECTURE both claimed every charter surface goes
+  through `editor::edit_charter_with`; a grep for callers says only the two
+  editor-handing surfaces do, and the web save is its own validated
+  temp-sibling-and-rename write sharing `Charter::parse` instead. Both docs
+  now say what the code does.
 
 ## [0.1.16] - 2026-08-29
 

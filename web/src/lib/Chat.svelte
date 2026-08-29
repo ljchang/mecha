@@ -1116,7 +1116,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 22px 20px 6px;
+    padding: 22px 56px 6px 20px;
   }
   .title {
     font-weight: 500;
