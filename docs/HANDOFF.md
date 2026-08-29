@@ -962,28 +962,34 @@ one person's mailbox rather than a public fact.
   `tui/mod.rs` has a lost `\`-continuation from `cfa2cc2` on the OSC 52
   clipboard line — cosmetic garbled output.
 
-- **Apex-redirect residue: three `mecha-factory` findings, none blocking**
-  (the apex fix itself shipped 2026-08-29 ~04:09 UTC — see HISTORY; the
-  cached Squarespace records linger until their TTL runs out, so a browser
-  may show the old page for up to an hour after the change without
-  anything being wrong). What the live test surfaced, all in the
-  `mecha-factory` repo: **the redirect drops the query string** —
-  `http/mod.rs` builds the target from `request.uri().path()` where
-  `path_and_query()` would keep it, confirmed live
-  (`/view/ljchang/abc?v=2&x=1` 301s to `/view/ljchang/abc`), and
-  `/view/<handle>/<id>` is documented as carrying a `?v=` version menu, so
-  this now loses real state. **A config comment that could break renewal
-  if believed**: the deployed `factory.toml`'s comment above
-  `[listen] http` claims TLS-ALPN-01 answers challenges on 443 and port 80
-  is never part of issuance — false; `certificates.rs` sets
-  `UseChallenge::Http01`, `tls.rs` binds 80 for challenges, and the live
-  journal shows `ordering certificates over http-01`. Firewalling 80 on
-  that comment's word would silently break every future renewal —
-  `tls.rs`'s own test says `check` names the challenge type precisely so
-  that sentence is read before such a decision. **`factory check` is blind
-  to `redirect_hosts`**: `tls::describe()` builds its line from
-  `config.origins.names()` alone, so the command a deploy runs before
-  restarting prints identical green output whether the key loaded or not.
+- **Apex-redirect residue, two pieces waiting on the owner** (the apex fix
+  itself shipped 2026-08-29 ~04:09 UTC — see HISTORY; cached Squarespace
+  records linger until TTL expiry, so a browser may show the old page for
+  up to an hour without anything being wrong). **Piece one: commit and
+  release two fixes sitting uncommitted in `~/Github/mecha-factory`**
+  (working tree on clean main at 0.2.7, 63 lib tests green, clippy clean):
+  the redirect dropped the query string — confirmed live,
+  `/view/ljchang/abc?v=2&x=1` 301'd to `/view/ljchang/abc`, and
+  `/view/<handle>/<id>` documents a `?v=` version menu, so real state was
+  lost — now `http::redirect_target` using `path_and_query()`, with a
+  test verified to fail on the old behaviour; and `factory check` printed
+  identical green output whether `redirect_hosts` parsed or not —
+  `tls::describe()` now names the redirect hosts, with a test pinning
+  that none means no clause. The `redirect_hosts` doc comment's false
+  "ride the base certificate" claim is corrected in the same change.
+  (Known pre-existing, deliberately not folded in: `cargo fmt --check`
+  diffs at `tests/account.rs` on clean main.) **Piece two: a config
+  comment on the droplet that could break renewal if believed** — the
+  *deployed* `/etc/mecha-factory/factory.toml`'s comment above
+  `[listen] http` claims TLS-ALPN-01 answers challenges on 443 and port
+  80 is never part of issuance. False: issuance is HTTP-01 over port 80
+  (`certificates.rs` sets `UseChallenge::Http01`; the live journal shows
+  `ordering certificates over http-01`), so firewalling 80 on that
+  comment's word would silently break every renewal. This is **drift in
+  the hand-maintained deployed copy, not a repo bug** — the repo's
+  `factory.example.toml` says HTTP-01 correctly, and the comment was true
+  when written (HISTORY records the TLS-ALPN-01 → HTTP-01 migration);
+  the fix is an edit on the droplet or a re-sync from the example.
 
 **As of the evening of 2026-08-07, self-serve is done.** All six steps of the
 factory's `SELF-SERVE.md` are built, deployed, and verified live — a stranger
