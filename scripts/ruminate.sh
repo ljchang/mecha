@@ -29,7 +29,19 @@ set -uo pipefail
 
 MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
 PROVIDER="${MECHA_RUMINATE_PROVIDER:-local}"
-JUDGE="${MECHA_RUMINATE_JUDGE:-gemma26}"
+# **The judge is the model under test, deliberately and provisionally.**
+# A different family is the better methodology — a model grading trajectories
+# it produced shares the blind spot that caused them, which is why
+# `validate --judge-provider` exists at all. But gemma26 is served on :8082
+# and nothing has been listening there, so the independent judge was grading
+# *nothing*: 22 of 39 reflections skipped on transport failures. An available
+# correlated judge beats an unavailable independent one, and this is Luke's
+# call (2026-08-29) rather than a discovery.
+#
+# Set MECHA_RUMINATE_JUDGE=gemma26 after starting scripts/start-gemma26.sh to
+# put the independence back. Judge-graded rows in the ledger are only as good
+# as this line.
+JUDGE="${MECHA_RUMINATE_JUDGE:-local}"
 HEALTH="${MECHA_RUMINATE_HEALTH:-http://127.0.0.1:8080/health}"
 
 LOG_DIR="${MECHA_LEARNING_DIR:-$HOME/.mecha/learning}/logs"
