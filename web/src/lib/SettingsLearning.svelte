@@ -357,13 +357,17 @@
       considered and refused, so the same one cannot come back next pass unjudged.
     </div>
   {/if}
-{:else if rulesError}
+<!-- Each arm below is guarded by the pane it belongs to, not left as a bare
+     `{:else}` of the reflections branch. A third pane fell into that else and
+     rendered the rules list under the trend tab — the failure a chain of
+     `{:else if}`s over one variable invites the moment a value is added. -->
+{:else if pane === 'rules' && rulesError}
   <div class="card notice">could not read the rules: {rulesError}</div>
-{:else if rules === null}
+{:else if pane === 'rules' && rules === null}
   <div class="card"><div class="sub">loading…</div></div>
-{:else if rules.length === 0}
+{:else if pane === 'rules' && rules.length === 0}
   <div class="card"><div class="sub">No rules yet — <code>mecha learn</code> creates them.</div></div>
-{:else}
+{:else if pane === 'rules'}
   <!-- `active` is `enabled && not retired`, so a rule hand-disabled in the
        learned-rules TOML is not retired and still rides in no prompt. On a
        pane whose job is "what a run actually carries", that reads as spent
