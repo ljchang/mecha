@@ -44,6 +44,18 @@ pub struct EpisodePrep {
     /// on the prep because the read that produced the trajectory had it in
     /// hand; asking for it separately is another walk of the same file.
     episode: Option<mecha_core::session::RunStats>,
+    /// The compromise this replay is making, when it is making one — today,
+    /// a session attached several times (a resume, or a mid-session
+    /// `/provider`/`/mode` switch) replayed under its first config.
+    /// A whole-session replay has no better single choice (`first()` is
+    /// exactly right for the opening turns, and the driver cannot rebuild
+    /// the agent at a config boundary mid-drive), but the compromise raises
+    /// the odds of a divergence that says nothing about the candidate, and a
+    /// dropped pair with no stated reason reads as the replay failing rather
+    /// than the recording being unreplayable-as-one-run. `mecha replay`
+    /// already caveats the same choice; this carries it to the probe's
+    /// per-episode lines.
+    pub config_caveat: Option<String>,
 }
 
 /// Load one session as a replayable episode. `Err(reason)` in the inner
@@ -69,11 +81,28 @@ pub fn prepare_episode(path: &Path, id: &str) -> Result<Result<EpisodePrep, Stri
     let Some(recorded) = read.configs.first().cloned() else {
         return Ok(Err("no RunConfig recorded".into()));
     };
+    // `first()`, deliberately, unlike the intervention probe's point-scoped
+    // `config_covering`: this replay runs the whole session from turn one as
+    // a single drive, so no one config is right for all of it, and first is
+    // exactly right for the opening turns where a divergence would land
+    // first. The compromise is carried as a caveat rather than silently —
+    // see `EpisodePrep::config_caveat`. "Attached", matching `mecha
+    // replay`'s own line, not "resumed" — found on review: a `/provider`
+    // or `/mode` switch mid-session also appends a `Config`, and that case
+    // (the *worse* compromise: the session's later half ran under another
+    // model) would have read as a resume it never was.
+    let config_caveat = (read.configs.len() > 1).then(|| {
+        format!(
+            "attached {} times; replayed under the first config",
+            read.configs.len()
+        )
+    });
     Ok(Ok(EpisodePrep {
         id: id.to_string(),
         trajectory,
         recorded,
         episode: read.episode,
+        config_caveat,
     }))
 }
 
@@ -351,6 +380,71 @@ mod tests {
         // than a retuning.
         assert_eq!(slice_sizes(16, 3, 64), (5, 11));
         assert_eq!(slice_sizes(16, 3, 16), (5, 11));
+    }
+
+    /// A resumed session replays under its first config — the only choice a
+    /// single whole-session drive can make — and the compromise must be said
+    /// on the prep rather than read later as the replay machinery failing.
+    /// A single-config session carries no caveat: a caveat on the common
+    /// case would train the reader to skip it.
+    #[test]
+    fn a_multi_config_session_carries_the_first_config_caveat() {
+        use mecha_core::message::{Block, Message};
+        use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
+
+        let dir = std::env::temp_dir().join(format!("mecha-probe-caveat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let meta = |id: &str| SessionMeta {
+            id: id.into(),
+            created_at: chrono::Utc::now(),
+            provider: "local".into(),
+            model: "m".into(),
+            workspace: std::path::PathBuf::from("/tmp"),
+            title: None,
+        };
+        // One tool call, so the "no recorded tool calls" skip does not fire.
+        let turns = |s: &Session| {
+            s.append(&Record::Config(RunConfig::default())).unwrap();
+            s.append_messages(&[
+                Message::user("do the thing"),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "shell".into(),
+                    input: serde_json::json!({}),
+                }]),
+                Message {
+                    role: mecha_core::message::Role::User,
+                    content: vec![Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    }],
+                },
+                Message::assistant(vec![Block::text("done")]),
+            ])
+            .unwrap();
+        };
+
+        let resumed = Session::create(&dir, meta("20260101T000000-multi")).unwrap();
+        turns(&resumed);
+        resumed
+            .append(&Record::Config(RunConfig::default()))
+            .unwrap();
+        let prep = prepare_episode(&resumed.path, "multi").unwrap().unwrap();
+        assert_eq!(
+            prep.config_caveat.as_deref(),
+            // "Attached", not "resumed": a mid-session `/provider` or
+            // `/mode` switch also writes a Config, and that case must not
+            // read as a resume it never was.
+            Some("attached 2 times; replayed under the first config")
+        );
+
+        let single = Session::create(&dir, meta("20260101T000001-single")).unwrap();
+        turns(&single);
+        let prep = prepare_episode(&single.path, "single").unwrap().unwrap();
+        assert_eq!(prep.config_caveat, None);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
