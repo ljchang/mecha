@@ -14,7 +14,10 @@ see the table and §14 item 10 for what that does and does not include.
 measured degenerate (§14 item 7's corpus) at build time, and the ruling was
 that the mechanism is worth having correct regardless of how interesting
 today's label is, not that the caution was wrong. See the table for what
-that bought.
+that bought. **2026-08-29: the whole appraisal system was reviewed and
+hardened end to end (PRs #111/#112 — failed-turn transcript integrity,
+positional configs for the probe, unreadable-store accounting, the
+owner-closure guard); `docs/HISTORY.md`'s 2026-08-29 entry is the record.**
 The body below is the design as proposed and is
 deliberately not rewritten — `docs/HISTORY.md` records what was built, and the
 gap between the two is evidence about how the built thing came to be shaped

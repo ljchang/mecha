@@ -381,6 +381,14 @@ mod tests {
         let dir = std::env::temp_dir()
             .join("mecha-rules-test")
             .join(format!("{}-{seq}", std::process::id()));
+        // **Cleared, not just uniquely named.** The counter guarantees no two
+        // stores in *this* process collide; it says nothing about a directory
+        // a previous run left behind, and `{pid}-{seq}` is deterministic, so a
+        // later run drawing the same pid reopens it. These stores append, so
+        // the leftover records would be counted alongside the new ones — a
+        // confusing count mismatch rather than a clean failure. Removing first
+        // makes the fixture fresh regardless of what any earlier run did.
+        let _ = std::fs::remove_dir_all(&dir);
         LearningStore::open(dir).unwrap()
     }
 

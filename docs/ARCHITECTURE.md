@@ -2249,7 +2249,13 @@ stores `api_key_env`, the *name* of a variable, so a config file can be read,
 copied and committed without leaking a key. `no_setup_path_ever_writes_a_key_into_the_config`
 asserts it against a run that has a key in its environment, so a path that
 copied one would have had one to copy. Writing a *provider table* is allowed
-because every value in it — the base URL included — came off `/props`.
+because every value in it is a *measured* fact rather than one the owner
+typed: `model`, `context_window` and `vision` come off `/props`, and the base
+URL is the constant `local_probe_candidates` probed — the address we asked, not
+one the server chose. Both go through `onboarding::toml_string` anyway, so the
+file cannot be made unparseable by either; routing only the `/props` values
+through it would have left the claim true and the code one wire-sourced field
+away from the defect `toml_string` exists to prevent.
 
 **The charter's absence from onboarding was structural.** `doctor::check_charter`
 returns early when the file does not exist — correct, because never having

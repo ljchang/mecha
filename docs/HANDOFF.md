@@ -406,6 +406,21 @@ unit still exists at the *system* level (voice arc's; healthy per their
 2026-08-24 check, no longer the STT seat) — query it with plain
 `systemctl`, not `--user`, or it misreads as inactive.
 
+**2026-08-29 (00:25 UTC) — deployed at `main` = `e8cd549` (#111 + #112),
+verified by capability, not version.** `mecha` reinstalled from a worktree
+pinned to that merge (the main checkout was a peer's mid-merge feature
+branch and was left untouched); web assets rebuilt and rsynced; all five
+long-running units restarted and each verified by its startup line. The
+workspace version did not bump, so verification asked the artifact:
+`sessions appraise --json` carries `sessions_unreadable`/`named_a_goal`,
+`stats --json` is the new `{rows, sessions_unreadable}` object, `mecha
+tools --json` shows the closure-guard note on `kg_task_update` — and
+`mecha-serve` starting at all proves `closure_guard::verify` accepted the
+model-facing registry. The stale-process sweep found nothing. Note for the
+next reader: `mecha sessions stats --json` **changed shape** (bare array →
+object); no in-repo consumer read the array, and the CLI reference records
+the change.
+
 **2026-08-26 (00:12 UTC) — installed and restarted again, and one commit
 of deliberate skew.** `mecha` reinstalled and all five long-running units
 restarted during the day's work, each verified by its own startup line;
@@ -1500,13 +1515,17 @@ argument was wrong. Two pieces:
   structurally" — `shell` is universal and ARCHITECTURE.md already documents
   taint tracking's own blind spot inside a command, so a shell-capable run
   invoking `mecha tasks set --status done` as a subprocess is the same known
-  gap, inherited here rather than introduced by it. A narrower, second gap:
-  `kg_task_update` itself is on an ordinary run's tool surface — withheld
-  only for a *task* session closing its own task (D6's actual scope), not
-  for a chat/TUI run holding the graph MCP tools closing some *other* task
-  directly. Not a D6 violation and not a wrong appraisal, only a missed
-  one — bypassing `tasks set` bypasses `is_fresh_closure` too, same as the
-  `shell` case. `appraise_closure`
+  gap, inherited here rather than introduced by it. A narrower, second gap —
+  `kg_task_update` on an ordinary run's tool surface closing a task
+  directly, bypassing `is_fresh_closure` and the appraisal — **closed in
+  #112 (2026-08-29)**: `closure_guard::ClosedStatusGuard` wraps the tool on
+  every model-facing registry (`setup::build`, inherited by subagents via a
+  clone-site belt), refusing exactly a `status` of `done`/`dropped`;
+  presence is a trait answer (`Tool::guards_closures`) a wire tool cannot
+  fake, and `closure_guard::verify` makes an unguarded surface a startup
+  error. The `shell: mecha tasks set` residue *appraises* and so stays
+  honest; the remaining true bypasses (an out-of-band graph writer, an
+  `[outbox]`-routed release) are documented on `appraise_closure`. `appraise_closure`
   resolves the task's linked session (D9),
   builds an `Appraisal` the same four-step way `mecha sessions appraise`
   does for one session instead of a whole-store scan, and prints the label
@@ -1673,9 +1692,14 @@ repeated here.
   `named_a_goal` counter and `· 0 named a goal` print line did not survive:
   confirmed absent from the current tree by grep, same as before #91
   merged. Presumably dropped resolving overlap with #88's independent fix,
-  since both touch the same call site. If that measurement matters, it
-  still needs building from scratch against the current code, not assumed
-  to already exist because the commit that once added it is now merged.
+  since both touch the same call site. **Rebuilt and shipped in #111
+  (2026-08-29)**: `appraise` derives `named_a_goal` from the assembled
+  appraisals and prints the `N of M named a goal (\`serves:\`)` line, with
+  a matching JSON field — verified by asking the installed artifact
+  (`mecha sessions appraise --json` carries `named_a_goal`). `serves:`
+  coverage since the seed-binding fix is *still unmeasured for delegated
+  runs* — as of 2026-08-28 evening, zero delegated runs had happened since
+  it landed, so the honest read still waits on one.
 
   **A second, more consequential bug was fixed in the same pass, and already
   landed** (`acceaea`, #88's review — this is a record of what shipped, not

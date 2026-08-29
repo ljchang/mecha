@@ -3121,6 +3121,44 @@ early, but effort and the failure-log level were each separate, later
 findings in the same category, arriving well after the first pair looked
 like it had closed the class.
 
+**2026-08-29 — the appraisal-system review arc lands whole: PRs #111 and
+#112, nineteen reviewer rounds deep.** A test-and-review pass over the
+appraisal goal system (three parallel review agents plus hands-on runs of
+the free readout, the quarantined appraiser and the counterfactual probe
+against the live store) produced one high, three medium and a tail of
+smaller findings; fixing them, then iterating with the PR auto-reviewer
+until it came back clean, produced the rest. What shipped, by family:
+**failed-turn integrity** — `Conversation::roll_back_failed_turn`
+(restore-then-pop, popping only a plain user text per `is_plain_user_text`)
+replaced five divergent pop sites across the REPL, TUI, web and voice
+surfaces, every error arm now records the rolled-back state so a resume
+loads what memory holds, and every submit site folds into a user tail
+(recording the fold at submit as one direct `Rewrite`) instead of pushing
+two user messages in a row. **Positional configs** — `Transcript` carries
+`config_positions` and a `taint_timeline` built in `Session::read`'s one
+pass; `config_covering` replaced `configs.first()` in the counterfactual
+probe (a resumed attach's steer no longer replays under the wrong system
+prompt and reads as inflated `regret`), with the rewrite arm
+distinguishing index-preserving rewrites (truncation, fold, in-run
+eviction) from summarising ones. **The instrument stops eating its own
+findings** — unreadable transcripts are counted at every layer
+(`Session::list_counting`, `Corpus.unreadable`, a doctor finding,
+caveats/fields on `appraise`, `stats` and `health`), `sessions_read` and
+`unreadable` are disjoint by construction, and the `named_a_goal` counter
+lost in #88/#91's merge overlap is rebuilt. **The owner-closure guard**
+(#112) — `closure_guard::ClosedStatusGuard` wraps `kg_task_update` on
+every model-facing registry so a closing `status` is refused toward
+`mecha tasks set` (which appraises); presence is `Tool::guards_closures`,
+a trait answer a wire tool cannot fake, `closure_guard::verify` makes an
+unguarded surface a startup error, and the guard's refusal is classified
+(`ToolOutput::refusal` → the trace's `denied`) so the harness's own "no"
+never counts as a failed run. Plus the affect chip on the typed web
+surface (muted, deliberately not taint-amber), the TUI badge surviving
+`--no-session`, `for_transcript` collapsing distill's four reads to one,
+and the closure path's smaller repairs (prefix re-key, empty `--session`,
+follow-up caveats). Deployed the same night; the environment note in
+HANDOFF carries the capability-level verification.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -5067,6 +5105,39 @@ and is what finally exercised the path.)
   (2026-08-25.)
 
 ### Review process
+
+- **A PR can merge "successfully" into the wrong branch, and every signal
+  reads green while it does.** Landing #112 (2026-08-29): `gh pr edit 112
+  --base main` failed with a GraphQL error that scrolled past as a
+  Projects-classic deprecation notice, so the retarget never happened —
+  and `gh pr merge` then merged the PR, state MERGED, into its *original*
+  base branch, twenty seconds after that branch itself had merged to main
+  as #111. Checks green, PR closed, `origin/main` silently missing the
+  entire change; the deploy under way would have shipped a binary without
+  the closure guard while `mecha tools` and the suite on the merge branch
+  both read current. Caught by pinning the deploy worktree to
+  `origin/main` and noticing the tip was #111's commit, confirmed
+  independently by a peer session reading the compare API. The general
+  lesson is the skill's own rule pointed at git: **verify the retarget
+  from the API before merging, and verify the merge landed on the branch
+  you meant from the branch itself** — a merge's success message names the
+  PR, not the base you believed it had, and an error dressed as a
+  deprecation warning is still an error.
+
+- **A guard's presence check must never read data the guarded side
+  supplies.** The closure guard's `wrap` and `verify` first keyed
+  "already guarded" off `description().ends_with(GUARD_NOTE)` — and a
+  `kg_task_update`'s description arrives over the MCP wire, so a server
+  whose description happened (or was crafted) to end with the guard's own
+  sentence was left unwrapped *and* passed the startup verification: a
+  fail-open in the very check built to make the guard's presence
+  structural. The fix put the answer in the type
+  (`Tool::guards_closures`, default false, overridden only by the
+  in-process wrapper), leaving the description cosmetic. The transferable
+  form: any "is the protection installed?" check is itself part of the
+  attack surface, and it must key off something the protected party
+  cannot author — the same reason `Capabilities` are declared in code
+  rather than parsed from a server's self-description.
 
 - **A fix that closes the exact case described leaves the structurally
   identical sibling standing right beside it, four times running on the

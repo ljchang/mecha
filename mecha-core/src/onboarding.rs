@@ -845,7 +845,7 @@ pub fn verified_settings(props: &crate::provider::preflight::Props) -> Vec<(&'st
 /// nobody has named. [`answers_like_a_model_server`] establishes that
 /// something answering `:8080` may be a stranger; this makes sure a stranger's
 /// answer cannot produce a config that no later `mecha` command can load.
-fn toml_string(s: &str) -> String {
+pub fn toml_string(s: &str) -> String {
     toml::Value::String(s.to_string()).to_string()
 }
 
