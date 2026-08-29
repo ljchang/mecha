@@ -496,8 +496,17 @@ async fn set(
             // and a second read would race against the very thing
             // `is_fresh_closure` above is guarding. Without this, linking and
             // closing a task in one command silently skipped appraisal.
-            if let Some(s) = &session {
-                before["session"] = json!(s);
+            //
+            // `""` is the CLI's documented "clear this field", so
+            // unlink-while-closing patches the session *out* — the owner
+            // just said that session does not belong to this task, and
+            // appraising it anyway (or refusing `""` as "not a session id",
+            // which is what patching it in verbatim produced) both read a
+            // bookkeeping gesture as something it is not.
+            match session.as_deref() {
+                Some("") => before["session"] = Value::Null,
+                Some(s) => before["session"] = json!(s),
+                None => {}
             }
             appraise_closure(&prepared, task, status, &before).await;
         }
@@ -549,6 +558,20 @@ fn is_fresh_closure(new_status: &str, before: &Value) -> bool {
 /// is a real design question rather than a line fix — named here so it is
 /// not mistaken for coverage this rung already has.
 ///
+/// **A closure made anywhere but `tasks set` consumes this moment, silently.**
+/// `is_fresh_closure` fires only on the transition *this command* observes.
+/// Every first-party owner surface does route through `tasks set` (the TUI
+/// modal via `self_cli`, the web board's `task_set`, Slack's `Action::
+/// TaskDone`) — but an ordinary chat session's model still holds
+/// `kg_task_update` behind the interactive approver, and any out-of-band
+/// graph write can move a task to `done`; the owner's later `tasks set
+/// --status done` then sees `was == "done"`, not fresh, and the one
+/// appraisal that delegated session was ever going to get is never made,
+/// with nothing saying so. A coverage gap, not an exploit; closing it means
+/// either withholding `kg_task_update` from chat surfaces too (a real
+/// posture change) or a closure claim the board owns, same shape as the
+/// atomicity note below.
+///
 /// **Not atomic, and known rather than fixed.** Two closures of the same
 /// task landing together — a Slack tap and a TUI keypress within the same
 /// `is_fresh_closure` window — can both see the pre-mutation state and both
@@ -568,7 +591,10 @@ async fn appraise_closure(
 ) {
     // Never delegated — the ordinary case for a hand-typed task. There is
     // nothing here for D9's index to point at, and that is not an error.
-    let Some(session_id) = before["session"].as_str() else {
+    // `""` lands here too, belt over the caller's braces: the CLI spells
+    // "clear this field" as an empty string, and an empty id is no session,
+    // not a malformed one.
+    let Some(session_id) = before["session"].as_str().filter(|s| !s.is_empty()) else {
         return;
     };
     // Closing while the run is still live is reachable from the terminal or
@@ -715,14 +741,24 @@ fn appraise_session(
         mecha_core::session::Session::find(&dir, session_id)?
     };
     let transcript = mecha_core::session::Session::read(&path)?;
+    // Re-keyed on the transcript's own header, not the string the board
+    // carried: `Session::find` accepts a unique *prefix*, and the outbox
+    // join below matches ids exactly — a hand-typed `--session 20260826T09`
+    // used to appraise the right transcript while silently losing every
+    // draft, `SentUnchanged` (the one positive signal) included, for a
+    // decision that never gets rerun.
+    let session_id = transcript.meta.id.as_str();
     let Some(stats) = transcript.episode else {
         return Ok(None);
     };
-    let messages = transcript.convo.messages;
-    let interventions = mecha_core::learning::extract_interventions(&messages);
-    let end_taint = mecha_core::session::Session::taint_timeline(&path)
-        .ok()
-        .and_then(|tl| tl.covering(messages.len().saturating_sub(1)));
+    let messages = &transcript.convo.messages;
+    let interventions = mecha_core::learning::extract_interventions(messages);
+    // Off the transcript already in hand — `Session::read` positions the
+    // timeline in the same pass now, so the second full read this used to
+    // pay is gone.
+    let end_taint = transcript
+        .taint_timeline
+        .covering(messages.len().saturating_sub(1));
     // `sessions.rs`'s own scan keeps "the store could not be read" apart
     // from "the store has nothing in it" (`outbox_unreadable`) for the same
     // reason this needs to: a read failure here silently undercounts the
@@ -846,6 +882,13 @@ async fn stage_follow_up(
         // `tool_rejected_prefix` rather than a second copy of that literal —
         // nothing else `call_with` (or `Tool::call`'s errors, or
         // `find_tool`'s) can produce shares this prefix.
+        //
+        // One assumption rides on the *store*, not on this code: that an
+        // `is_error` rejection means nothing was created. A `kg_task_create`
+        // that ever creates-then-errors (failing to link `project` after the
+        // insert, say) would make this retry stage a duplicate. That is a
+        // contract the graph server has to keep, not one this caller can
+        // enforce; blast radius if it slips is one extra advisory task.
         Err(e)
             if e.to_string()
                 .starts_with(&tool_rejected_prefix("kg_task_create")) =>

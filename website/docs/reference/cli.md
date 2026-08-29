@@ -359,7 +359,7 @@ mecha sessions <list|show|path|stats|health|appraise> [OPTIONS]
 | `show` | `--json` | Emit the raw JSONL records instead of formatted text. |
 | `path` | `<ID>` | Print the path to a session file. |
 | `stats` | `--days <N>` | Only sessions started in the last N days. |
-| `stats` | `--json` | Emit JSON instead of a table. |
+| `stats` | `--json` | Emit JSON instead of a table — an object `{rows, sessions_unreadable}` (changed from a bare array in v0.1.16: the unreadable-transcript count belongs beside the rows it is missing from). |
 | `health` | `--days <N>` | Only sessions started in the last N days. |
 | `health` | `-n`, `--limit <N>` | Stop after this many sessions, newest first. |
 | `health` | `--json` | Emit JSON instead of a table. |

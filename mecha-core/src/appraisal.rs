@@ -816,22 +816,39 @@ pub fn for_session(
     goal: Option<GoalRef>,
 ) -> Option<SessionAppraisal> {
     let transcript = crate::session::Session::read(path).ok()?;
-    let stats = transcript.episode?;
-    let messages = transcript.convo.messages;
-    let interventions = crate::learning::extract_interventions(&messages);
+    for_transcript(&transcript, session_id, created_at, drafts, goal)
+}
+
+/// The same, for a caller that already read the transcript — `mecha
+/// distill`, which needs the messages again afterwards to render the
+/// distillation, used to pay four complete read-and-parse passes per session
+/// because this seam did not exist (`Session::load`, `Session::
+/// taint_timeline`, then [`for_session`]'s own read and its *second*
+/// timeline read). One `Session::read` now carries everything this needs,
+/// including the positioned taint timeline.
+pub fn for_transcript(
+    transcript: &crate::session::Transcript,
+    session_id: &str,
+    created_at: String,
+    drafts: &[&crate::outbox::OutboxItem],
+    goal: Option<GoalRef>,
+) -> Option<SessionAppraisal> {
+    let stats = transcript.episode.as_ref()?;
+    let messages = &transcript.convo.messages;
+    let interventions = crate::learning::extract_interventions(messages);
     // Without a goal, `of_session` never has one to attribute anything to —
     // see the matching comment in `mecha sessions appraise` for why an
     // absent goal is recorded rather than guessed.
     let goal = goal.or_else(|| {
-        crate::tool::todo::TodoTool::plan_from_transcript(&messages).and_then(|p| p.goal)
+        crate::tool::todo::TodoTool::plan_from_transcript(messages).and_then(|p| p.goal)
     });
     let goals: Vec<_> = goal.into_iter().collect();
-    let end_taint = crate::session::Session::taint_timeline(path)
-        .ok()
-        .and_then(|tl| tl.covering(messages.len().saturating_sub(1)));
+    let end_taint = transcript
+        .taint_timeline
+        .covering(messages.len().saturating_sub(1));
     let appraisal = of_session(
         session_id,
-        &stats,
+        stats,
         &goals,
         &interventions,
         drafts,
@@ -1071,14 +1088,25 @@ pub struct AppraiserEvidence {
     pub load_avg_1m: Option<f32>,
 }
 
-/// The wire name `Channel`/`Affect` already carry via `#[serde(rename_all =
+/// The wire name a `Serialize` enum already carries via `#[serde(rename_all =
 /// "snake_case")]` — reused rather than a second naming, on `diagnose::
-/// Evidence::of`'s own precedent for `StopCause`.
-fn enum_name<T: Serialize>(v: &T) -> String {
-    serde_json::to_string(v)
-        .unwrap_or_default()
-        .trim_matches('"')
-        .to_string()
+/// Evidence::of`'s own precedent for `StopCause`, and never `{:?}`: Debug and
+/// serde agree on every one-word variant and silently diverge on the first
+/// multi-word one (`Agency::Own` already renders `"self"`, a hand-written
+/// rename).
+///
+/// Public because this had three spellings in reach of one CLI file
+/// (`enum_key`, this, and an inline `trim_matches('"')` in `sessions
+/// health`), and the inline copy degraded to an empty string where the
+/// others said `"unknown"` — the kind of divergence a shared helper exists
+/// to end. `"unknown"` on serialize failure, never `""`: a dash is never
+/// zero, and an empty label reads as a blank cell rather than a fact about
+/// the serializer.
+pub fn enum_name<T: Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 impl AppraiserEvidence {

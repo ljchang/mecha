@@ -644,6 +644,18 @@
     </button>
     <span class="title">{key === 'main' ? 'Chat' : key}</span>
     <div class="meta">
+      <!-- §6.2's readout on the typed surface. The voice logo's tint only
+           renders inside the voice overlay, so a typed run that earned a
+           label used to broadcast an affect event nothing displayed. Same
+           contract as the TUI badge: the wire word, shown only when a run
+           earned one (null — neutral — is the overwhelming common case and
+           shows nothing), cleared by the next clean run. -->
+      {#if affect}
+        <span
+          class="chip affect"
+          title="how the last run went, by mecha's own appraisal of its record — clears on the next clean run"
+        >{affect}</span>
+      {/if}
       {#if taint?.untrusted || taint?.private}
         <span
           class="chip taint"
@@ -1105,6 +1117,18 @@
   }
   .chip.taint {
     color: var(--hazard);
+  }
+  /* Deliberately NOT hazard amber — found on review: this chip sits in the
+     same row as the taint chip, and two amber chips side by side make "this
+     conversation holds untrusted content" (a security posture) and "the
+     last run went badly" (a mood) read as the same class of signal.
+     brand.md scopes amber to held sends, read-only, and the called-out
+     rule; the appraisal readout is none of those, so it takes the muted
+     outline instead. Outline-only either way — no fills. */
+  .chip.affect {
+    color: var(--text-muted);
+    border: 1px solid var(--text-muted);
+    background: none;
   }
   .menubtn {
     background: none;
