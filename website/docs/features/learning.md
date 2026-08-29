@@ -90,7 +90,10 @@ next pass with nothing to say it was already judged; `restore` undoes it.
 Nothing in these verbs calls a model or touches the network, and every write
 takes the store lock, so they are safe against a store the nightly is also
 using. The `/learning` modal in the TUI drives exactly them, alongside
-`mecha rules list --json`.
+`mecha rules list --json`, and so does the
+[web settings page](/docs/features/web#settings-and-what-a-browser-may-write) —
+the same two panes, the same verbs as child processes, so no surface can do
+something to the store that the command line cannot.
 
 ## `mecha learn` — reflections become rules
 
