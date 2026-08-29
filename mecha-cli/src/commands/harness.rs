@@ -394,9 +394,19 @@ async fn measure(
 
     let now = chrono::Utc::now().to_rfc3339();
     if selection_pairs.is_empty() && holdout_pairs.is_empty() {
+        // The caveats ride in the reason here — found on review: this early
+        // return stores no Measurement, which dropped them in exactly the
+        // all-diverged case they exist to explain (a pool of multi-config
+        // episodes that all diverged says "replay compromise", not "the
+        // change cannot hold").
+        let caveats = if replay_caveats.is_empty() {
+            String::new()
+        } else {
+            format!("; replay caveats: {}", replay_caveats.join(", "))
+        };
         cand.reason = Some(format!(
             "nothing measurable: {} diverged, {} skipped — a change the replay cannot hold on \
-             the recording needs the eval arm instead",
+             the recording needs the eval arm instead{caveats}",
             diverged.len(),
             skipped
         ));
@@ -603,7 +613,7 @@ fn show(id: &str) -> Result<()> {
         // dropped one (or, with nothing diverged, hung them under whatever
         // line came before).
         if !m.replay_caveats.is_empty() {
-            println!("replay caveats (dropped or scored):");
+            println!("replay caveats:");
             for caveat in &m.replay_caveats {
                 println!("  {caveat}");
             }

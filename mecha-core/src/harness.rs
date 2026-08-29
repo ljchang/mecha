@@ -279,9 +279,11 @@ pub struct Measurement {
     pub diverged: Vec<String>,
     /// What the replay was compromising on, per episode that carried a
     /// compromise — "id — attached N times; replayed under the first
-    /// config" — **whatever became of the episode**: a dropped one's
-    /// divergence may say more about the compromise than about the change,
-    /// and a cleanly paired one feeds the tally that gates acceptance,
+    /// config" — **whatever became of the episode**, skipped ones included
+    /// (the caveat is computed at prepare time, before any arm drives): a
+    /// dropped one's divergence may say more about the compromise than
+    /// about the change, and a cleanly paired one feeds the tally that
+    /// gates acceptance,
     /// which is the more consequential place for the decider reading
     /// `mecha harness show` to know the replay was compromising. Beside
     /// `diverged` rather than folded into it, so the ids stay joinable.
