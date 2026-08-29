@@ -1,6 +1,6 @@
 ---
 title: Voice
-sidebar_position: 25
+sidebar_position: 1.6
 description: Talking to mecha out loud — what it needs, how to turn it on, and why it is owners-only.
 ---
 
@@ -10,6 +10,13 @@ You can talk to mecha and it answers out loud, from a browser on your own
 network. The conversation is an ordinary session: same agent, same tools,
 same jail, same outbox. Speaking is a different door onto the assistant you
 already have, not a second assistant.
+
+**Voice is reached through [the web surface](/docs/features/web) and nowhere
+else.** There is no `mecha voice` to run in a terminal, no phone number, and no
+separate app: you open the chat view of `mecha serve`, tap the waveform button,
+and speak into the conversation already on screen. If the web surface is not
+running, there is no voice mode — which makes `mecha serve` the prerequisite
+rather than an alternative to it.
 
 ## Before anything else: voice is not in the crate
 

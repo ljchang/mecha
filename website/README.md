@@ -70,3 +70,57 @@ mermaid syntax error compiles fine and ships — `@docusaurus/theme-mermaid`
 renders client-side, so the failure surfaces as an error box in the reader's
 browser behind a green build and a green deploy. Check a new diagram by
 rendering it, not by building the site.
+
+## The embedded web demo
+
+The docs embed a **live, clickable copy of the `mecha serve` web app** — on the
+homepage, on `features/web`, and on `features/interfaces`. It is the real
+bundle from `web/`, built by the same Vite config, with fixtures answering
+`/api` instead of a box.
+
+It cannot be a screenshot. `mecha serve` binds loopback and refuses any request
+without the owner's tailnet identity, so there is no public instance to link,
+and a screenshot of a real one would be a picture of somebody's actual mail on
+a public repository. So `web/src/demo/fixtures.js` invents a cast, and
+`web/src/demo/index.js` replaces `fetch` and `EventSource` with a table of
+routes over it.
+
+```bash
+npm run build-demo     # builds web/ in demo mode into static/demo/ (a prebuild step)
+npm run check-demo     # fails if the app reaches an endpoint the demo cannot answer
+npm run render-check   # loads every page in chromium and fails if one breaks
+```
+
+`static/demo/` is gitignored, like `static/factory/gallery/`: `web/` is in this
+repository, so there is a source tree and a build of it rather than two sources
+of truth.
+
+Five things to know when changing either side:
+
+- **Adding a page or an endpoint to `web/` means adding a fixture.** Otherwise
+  the demo answers `501`, the component renders its own error state, and a docs
+  reader sees what looks like a broken feature. `check-demo` fails the build on
+  exactly that, and runs in CI before the docs build.
+- **Fixture *shapes* are not invented.** Each was read off the handler in
+  `mecha-cli/src/commands/serve/` and the component that renders it. Getting one
+  wrong does not throw — it draws an empty pane — so the way to verify a fixture
+  is to load the page and look at it.
+- **`render-check` is the step that does that looking**, and it is the only one
+  here that executes the app. `check-demo` reads fixtures and route tables;
+  `docusaurus build` renders no client JavaScript. A page can be broken with
+  both green, and v0.1.16 shipped exactly that — a `stalled` ReferenceError
+  that emptied the task board, invisible to the Rust suite because the defect
+  was entirely in the Svelte. It fails on three things: an uncaught or console
+  error, a page that drew almost nothing (a component that throws still leaves
+  the shell and nav behind, which looks like a page), and any of the app's own
+  "could not read that" affordances. It also drives one scripted chat turn,
+  because the docs claim a reader can watch a run happen and a static load does
+  not check that claim. Its route list is parsed out of `App.svelte`, so a new
+  page is covered without anyone remembering to add it.
+- **A missing browser skips locally and fails in CI.** `MECHA_DOCS_REQUIRE_BROWSER=1`
+  turns the skip into a failure and the workflow sets it — same rule as
+  `MECHA_TEST_REQUIRE_BACKENDS=1` in the Rust integration tests, because a
+  silently skipped check in CI reads exactly like a passing one.
+- **The demo must not reach the shipped bundle.** It is behind
+  `import.meta.env.VITE_MECHA_DEMO`, so Rollup drops it from `npm run build`.
+  `check-demo` greps `web/dist` for a fixture string when one has been built.
