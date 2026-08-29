@@ -36,6 +36,69 @@ worth reading first is **how many runs come back with no label at all**. On the
 [the finding](#the-finding-most-runs-have-no-label) before building on it.
 :::
 
+## When appraisal happens
+
+Four moments, three timescales. Each one reads only records that already
+exist, and none of them writes an appraisal store — an appraisal is derived on
+read, so a change to the derivation replays over the whole corpus instead of
+being lost with it.
+
+| Moment | Trigger | What runs | A model in the path? |
+|---|---|---|---|
+| **A plan step is ticked off** — turn by turn, inside the run | the model marks a `todo` item completed | a deterministic reading of what the step actually did — [below](#a-step-is-checked-the-moment-it-is-ticked-off) | one quarantined call, only when a pre-filter finds real ambiguity |
+| **A run finishes** | every run | the free per-run readout, a pure function over the run's own records — it feeds [the badge, the tint and the voice nudge](#where-a-label-actually-shows-up) | never |
+| **The owner closes a board task** | `mecha tasks set --status done` (or `dropped`) | [one closure appraisal, ever](#closing-a-task-appraises-it); a disappointed `done` may stage one follow-up | never |
+| **On demand, offline** | `mecha sessions appraise` | the free scan over transcripts, outbox and outcome records; [`--probe` and `--appraise`](#the-two-paid-passes) are the paid opt-ins | only behind those two flags |
+
+**Nothing is scheduled.** There is no nightly job: the paid passes run when
+you run them, and the design's "periodic" moment is exactly the free scan
+above. The asymmetry across the table is the design — the checks that fire
+often are deterministic and free; a model appears only where the free signals
+are genuinely ambiguous, and then always as a quarantined one-shot.
+
+[Boredom](#boredom-naming-an-approach-that-has-stopped-teaching-the-run-anything)
+also fires inside the run, but it is a different kind of object — a mood, a
+statement about a trend, named while there is still something to do about it —
+and it is covered at the end of this page.
+
+## What appraisal is for
+
+The record exists so that five things can happen. Three already do:
+
+- **You can see how a run went without asking the model how it felt.** The
+  [readout surfaces](#where-a-label-actually-shows-up) and
+  `mecha sessions appraise` are display over derived facts — there is no
+  self-report anywhere in the path.
+- **Closing a task can turn residue into work.** A closure the owner accepted
+  but the record says went badly is invisible to every counter, and it is
+  precisely the closure most likely to have one task's worth of residue —
+  [the follow-up](#closing-a-task-appraises-it) is that signal acting.
+- **Episodes carry how-it-went into memory.** The label and the signed errors
+  ride on a [distilled episode's](/docs/features/distillation) `meta`, beside —
+  not inside — its content, so the knowledge graph can weight what a session
+  said by how the session went.
+
+Two more are what the *sign* makes possible, and both deliberately wait on
+[the finding](#the-finding-most-runs-have-no-label) below:
+
+- **A positive half for learning.** Today `learn` consolidates the writing
+  domain from edited drafts only — it can learn what displeased and never what
+  landed. A draft **sent unchanged** is a positive signal, authored by the
+  owner rather than the agent, recorded for the whole life of the outbox with
+  nothing reading it. The sign is what lets it count.
+- **Priority for the self-improvement loop's paid replays.** Replay minutes are
+  the scarce resource in [the harness loop](/docs/features/run-quality), and
+  the appraisal is designed to be the priority function that spends them — a
+  *priority* function, never an objective one. Nothing optimises toward the
+  label, and `visible` is computed exposure rather than a feeling, precisely so
+  this never becomes *the agent optimises to feel good*.
+
+The pattern across all five is the same one the homeostat and boredom shipped
+under: **the sensor ships first and earns a behavioural consumer later**,
+rather than backing into one under time pressure. Affect may eventually narrow
+a disposition; it may never loosen one; and today it does not reach the model
+at all.
+
 ## The charter — what mecha is for, in your own words
 
 `~/.mecha/charter.toml` is a short, ordered list of standing priorities. It is
@@ -318,13 +381,17 @@ mecha sessions appraise --days 30
 
 Nothing is stored. Appraisals are derived on the spot from the transcripts, the
 outbox and each run's own outcome record, and `--json` emits the same figures
-for a script. Two reporting rules to notice, because both are the difference
+for a script. Three reporting rules to notice, because each is the difference
 between an absence and a zero:
 
 - *"The outbox could not be read, so the edit channel is missing — not empty"*
   is printed whenever the store failed to open, and printed **before** the early
   return, because a store that could not be read is a fact about this run
   whether or not anything was left to appraise.
+- The same rule covers the transcripts themselves: **sessions read and sessions
+  unreadable are disjoint counts**, carried on `appraise`, `stats` and `health`
+  alike, and an unreadable transcript is a `mecha doctor` finding rather than a
+  silently smaller denominator. An instrument must not eat its own findings.
 - Probe and appraiser statistics are **absent** from `--json` when the flag did
   not run, rather than zero. *"Nothing was probed"* and *"probed and found
   nothing"* are opposite findings.
@@ -376,6 +443,12 @@ refuses, correctly — the jail would cover `~/.mecha`. An inconclusive probe an
 a skipped one are counted apart on purpose: the first cost a model run and posed
 no question, the second cost nothing and had none to pose.
 
+One positional subtlety the replay gets right so you do not have to: a
+transcript records **where** each system prompt took effect, so a steer given
+after a session was resumed under a different configuration replays under the
+prompt that actually covered it. Replaying it under the session's *first*
+config would misread an ordinary resumed steer as inflated `regret`.
+
 ### `--appraise` — the quarantined appraiser
 
 ```bash
@@ -400,8 +473,8 @@ opinion without knowing which store it came from.
 
 | Surface | What it does |
 |---|---|
-| [TUI](/docs/features/interfaces) | A badge in the status strip after a run, **only** when the label is not neutral. Cleared when the next run starts and by `/clear`. |
-| [Web](/docs/features/web) | The logo tints — as a CSS *outline*, never a fill. The event is sent only for a non-neutral label, so the page has a plain absence to fall back to rather than a stream of `"neutral"` saying nothing. |
+| [TUI](/docs/features/interfaces) | A badge in the status strip after a run, **only** when the label is not neutral — and it survives `--no-session`, because the label is a function of the run, not of whether a transcript was kept. Cleared when the next run starts and by `/clear`. |
+| [Web](/docs/features/web) | A muted affect chip beside the answer — deliberately not the amber the taint chip owns, because "how it went" and "what it touched" must never be confusable — and the logo tints as a CSS *outline*, never a fill. The event is sent only for a non-neutral label, so the page has a plain absence to fall back to rather than a stream of `"neutral"` saying nothing. |
 | [Voice](/docs/features/voice) | A per-answer weight nudge on the local TTS. It **lags one turn by construction** — the label is a function of a *finished* run, so a call hears the previous turn's mood. |
 | `mecha tasks set --status done` | Appraises the session that served the task, prints the verdict, and may stage a follow-up. |
 | [`mecha distill`](/docs/features/distillation) | The label and the goal errors ride on an episode's `meta`, beside — not inside — its content. |
@@ -450,6 +523,69 @@ mail), so copying it verbatim into a new record the harness is signing would
 launder exactly that provenance. Citing the id costs the reader one lookup and
 costs nothing here.
 
+**And the trigger itself is owner-only, structurally.** A model cannot close a
+board task: on every model-facing registry the graph's task tool is wrapped so
+a `status` moving into `done` or `dropped` is refused and pointed back at
+`mecha tasks set` — the verbs a person holds. The wrapper's presence is a trait
+answer a wire tool cannot fake, a surface that registers the tool unguarded is
+a **startup error** rather than a warning, and the refusal is classified as the
+harness's own "no" — so the guard doing its job is a denial on the record,
+never a failed run. Closure appraisal therefore always appraises work somebody
+actually accepted, which is the property the whole moment depends on.
+
+## A step is checked the moment it is ticked off
+
+The three moments above all appraise finished work from outside the run. The
+fourth happens **inside** it, turn by turn: a plan step moving to *completed*
+is a claim the model makes about its own work, and — the same rule one tier up
+— a self-report is exactly the thing never to trust. At the board tier the
+owner is the check; at the todo tier there is no person, so the check is
+structural.
+
+**The deterministic half is a pure function of what the step actually did.**
+The harness already traces every tool call, so the span between a step going
+*in progress* and being marked done is arithmetic — no model, no threshold, no
+tuned constant. Four findings:
+
+| Finding | The span says |
+|---|---|
+| **landed** | the common case, and it renders *nothing* — a line per honest step would be bulk carried in the transcript for the rest of the run in exchange for confirming what the model already believes |
+| **the null step** | zero tool calls: the box was ticked and nothing was attempted |
+| **ended on failure** | the last thing tried failed, and nothing after it succeeded — a failure *among* successes is recovery, and recovery is the model working |
+| **ended on refusal** | the last thing tried was refused: the step was **blocked**, not botched — telling the model otherwise would send it to fix code that is working |
+
+Ambiguity reads as *no finding*: a sibling call still in flight may be the work
+the span looks empty without, and a denial in the same batch cannot be
+attributed to this step over any other, so both silence the check. An absence
+is not evidence, and a reading that fires on honest work is a line the model
+learns to skip — which is how a check that protects nothing survives.
+
+**The finding is rendered onto the `todo` result; the response is the
+model's.** The harness names what happened and never rewrites the plan, because
+the plan is the model's — accept, revise the step, revise the plan, or ask, and
+a step already revised once escalates rather than looping.
+
+**A model is consulted only where the free signals cannot decide, and the
+pre-filter never decides the answer — only whether to ask.** Two triggers, both
+comparisons rather than facts about one span:
+
+- **A span outlier** — a step that took at least three times the plan's mean
+  call count (and six calls outright, so a plan of tiny steps cannot escalate
+  on noise). The question is whether the *decomposition* should change for the
+  steps still ahead, or this step was simply harder — a threshold cannot tell
+  those apart, and a model can.
+- **An unverified claim** — the step's own words read as checkable ("tests
+  pass", "builds clean") but nothing in its span looks like a check. The eval
+  rig's rule, one tier down: grade the artifact, never the claim.
+
+The escalation is one quarantined call, live in the loop — it has to reach
+*this* run before more turns are spent on a bad plan, so it has no CLI surface
+of its own. Its free-text reasoning **never re-enters the conversation**: what
+comes back to the run is a fully templated nudge, because a model's paraphrase
+of text it just judged is the paraphrase risk arriving through the one channel
+that does reach context. The model decides one binary — carry on, or revise the
+plan — and nothing else.
+
 ## Boredom: naming an approach that has stopped teaching the run anything
 
 The loop guard was the crudest possible version of this, and until recently the
@@ -484,6 +620,9 @@ often it fired.
   into, and no path by which one reaches the system prompt as free text.
 - **No optimisation against the label.** `visible` is computed exposure, not a
   feeling, precisely so nothing here becomes *the agent optimises to feel good*.
+- **No schedule.** Both paid passes are commands you run, not jobs that run
+  themselves — a nightly pass that quietly spent replays and model calls would
+  be a bill discovered rather than decided.
 - **No weights on the charter.** Order is rank; see above for why a weighted
   sum is the thing an injection can outvote.
 - **No model-authored charter line, at any privilege level.** You edit it from
