@@ -106,7 +106,7 @@ you are still finding out whether you like it.
 
 **The call pane holds call controls only** — mute, and end the call. Voice and
 rate were preferences wearing call-control clothes, so they live on
-[the settings page](/docs/features/web#settings-and-the-one-thing-a-browser-may-write)
+[the settings page](/docs/features/web#settings-and-what-a-browser-may-write)
 now, reading and writing the voice stack's own preference store. A choice made
 there is the choice the next call opens with.
 

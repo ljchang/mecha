@@ -503,4 +503,54 @@ priority = 1
         let block = prompt_block(&charter).unwrap();
         assert!(block.contains("not weighted"), "{block}");
     }
+    /// The exact bytes the web settings page writes, verbatim.
+    ///
+    /// **This literal is a shared fixture, not a copy.** The Svelte
+    /// serialiser (`web/src/lib/charter-toml.js`) must produce these bytes
+    /// and this reader must load them, and neither half proves the agreement
+    /// alone: a hand-copied expectation here stays green through any
+    /// regression in `esc` or `serialize`. So
+    /// `website/scripts/check-charter-toml.mjs` reads *this* string out of
+    /// *this* file and asserts the serialiser emits it byte-for-byte, which
+    /// is what makes an edit to either side fail the other. Keep the markers
+    /// intact; that script finds the literal by them.
+    ///
+    /// The editor keeps everything above the first `[[line]]` untouched (the
+    /// owner's header comments, and the whole template on a first charter)
+    /// and regenerates only the tables, always as single-line basic strings,
+    /// because an escape sequence is unambiguous where a bare quote or
+    /// newline is not.
+    // web-editor-sample:begin
+    const WEB_EDITOR_SAMPLE: &str = r#"# What mecha is for, most important first.
+#
+# Order is rank.
+
+[[line]]
+id = "say-no-early"
+text = "A refusal on Monday is a kindness."
+
+[[line]]
+id = "quote-and-break"
+text = "She said \"no\" early.\nAnd meant it."
+"#;
+    // web-editor-sample:end
+
+    /// The order of the tables *is* the ranking — the editor's drag gesture
+    /// writes nothing else — so this asserts file order, not membership, and
+    /// that the serialiser's escaping survives the reader.
+    #[test]
+    fn the_web_editors_serialisation_is_what_this_reader_loads() {
+        let charter = Charter::parse(WEB_EDITOR_SAMPLE).unwrap();
+        let ids: Vec<&str> = charter.lines().iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["say-no-early", "quote-and-break"],
+            "file order is rank"
+        );
+        assert_eq!(
+            charter.lines()[1].text,
+            "She said \"no\" early.\nAnd meant it.",
+            "the editor's escaping must survive the reader"
+        );
+    }
 }

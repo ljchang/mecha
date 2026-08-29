@@ -381,7 +381,7 @@
 
 <style>
   .page { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
-  header { display: flex; align-items: center; gap: 10px; padding: 14px 20px 12px; border-bottom: 1px solid var(--accent-900); }
+  header { display: flex; align-items: center; gap: 10px; padding: 14px 56px 12px 20px; border-bottom: 1px solid var(--accent-900); }
   header .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .backbtn { background: none; border: none; color: var(--text-muted); min-width: 44px; min-height: 44px; margin: -12px 0 -12px -12px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   .scroll { flex: 1; overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; }
