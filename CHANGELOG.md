@@ -47,8 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gives the charter no rank key at all, making position in the file the whole
   ranking — the design's own "the only editing gesture that cannot produce a
   tie". Pointer events rather than HTML5 drag-and-drop, because the surface is
-  a phone first. Everything above the first `[[line]]` is kept byte-for-byte,
-  so header comments and the first-charter template survive a save; a charter
+  a phone first. Everything above the first `[[line]]` is preserved,
+  so header comments and the first-charter template survive a save (trailing
+  blank lines normalise; nothing written is lost); a charter
   with comments *between* its lines, or one that does not parse, opens as TOML
   instead of being silently rewritten. Nothing changes on the server: the same
   route, the same two-tap confirm, the same `Charter::parse` validation, and

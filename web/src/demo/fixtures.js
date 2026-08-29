@@ -617,9 +617,12 @@ text = "A refusal on Monday is a kindness. A refusal on Friday is a problem I ha
     },
   ],
   // What `Charter::char_count` renders for the three lines above —
-  // `prompt_block(..).chars().count()`, not the file length. Measured with
-  // the real code; the pane now shows it unconditionally, so a stale number
-  // here is visible on the docs demo.
+  // `prompt_block(..).chars().count()`, not the file length. Measured by
+  // building a `Charter` from those lines and printing `char_count()`.
+  //
+  // Deliberately ungated, unlike the TOML shape beside it: nothing in CI
+  // re-derives this, so editing `prompt_block`'s header prose will drift it
+  // silently. Re-measure rather than adjust by eye if that happens.
   char_count: 716,
   budget: 2000,
   over_budget: false,
