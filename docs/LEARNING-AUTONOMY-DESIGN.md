@@ -5,6 +5,16 @@ A rule goes live when it is derived, not when someone approves it. This
 document is what has to be true for that to be safe, what changes per domain,
 and what is deliberately not being built.*
 
+**Status, 2026-08-29: decided, largely unbuilt.** What shipped is the
+`PASS_DOMAINS`/`routed_domains()` split, `normalized_rule_key` retirement
+inheritance and `finalize_rules` carry-forward. **The gate itself did not** —
+`scripts/ruminate.sh` still runs `learn --propose`, per-domain cadence and the
+stricter per-domain retirement thresholds of §1–§2 are not implemented, and on
+2026-08-29 the store held 43 reflections, 0 rules and 4 pending proposals.
+`LEARNING-LOOP-RESEARCH.md` has the measurement, the flowmail prior art behind
+this document, and the one thing it does not cover — how anyone would know the
+loop is improving.
+
 Companion documents: `MEMORY-RESEARCH.md` is the evidence behind the current
 learning system, `MAIL-UX-DESIGN.md` §5 is the triage correction loop this
 enables, and `dev_docs/CORRECTION_SYSTEM.md` in the **flowmail** repository is
