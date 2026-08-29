@@ -109,25 +109,52 @@ and there is exactly one implementation of each verb.
 | **Graph** | One surface over the [knowledge graph](/docs/graph/overview): capture a note (typed or dictated) with the graph's own confirmation of what it linked, a recent-notes list with in-place edit, one find field over everything (hybrid keyword + semantic search, ⌘K focuses it), and entity pages — facts with Confirm/Refute on anything unreviewed, aliases, per-source coverage, the connected neighborhood, history with superseded facts, and recent evidence. Opening an entity is itself a review trigger; see [the graph](/docs/graph/overview#where-you-review-what-it-proposes). The old `#notes` address still works |
 | **Review** | [Outbox](/docs/features/outbox), the graph's merge queue, and the [front door](/docs/features/frontdoor) — every approval surface in one place |
 | **Tasks** | The GTD board, with the views in a drawer and one tap per status change |
-| **Settings** | Behind the gear, upper-right: the [charter](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words) (view, and the page's one write), the learned-rule roster with its ledger tallies, and the [voice](/docs/features/voice) stack's health and preferences |
+| **Settings** | Behind the gear — upper-right on *every* view, since settings is chrome rather than a place to be. An index of three features, each opening its own pane: the [charter](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words) (edited as a list — tap a line, drag its grip to re-rank — behind a validated two-tap save), the learned-rule roster with its ledger tallies, and the [voice](/docs/features/voice) stack's health and preferences. Each row says what is in there — a count, or a dash where the store could not be read |
 
-### Settings, and the one thing a browser may write
+### Settings, and what a browser may write
 
-The charter save is the only mutation on the whole page, and it is fenced in
-four ways. The body is **refused above 64 KB before the TOML parser sees it** —
-a document orders of magnitude past a 2,000-character rendered budget is not an
-edit of one, whatever it parses as. It is then **validated by the same reader
-every run loads through**, so a document the server would not load never reaches
-disk. The write is a temp-sibling-and-rename in the same directory, so a crash
-between the two leaves the old charter whole. And the save is **two taps**,
-because the charter rides in every run's prompt and one stray tap must not
-rewrite it.
+Three things on this page write, and each is fenced for what it is putting on
+disk. Everything else is a read.
 
-Everything else on the page is a read. The rule roster is exactly what the TUI's
+**The charter** is what every run's prompt carries, so its fences are about
+what a valid charter *is*. The body is **refused above 64 KB before the TOML
+parser sees it** — a document orders of magnitude past a 2,000-character
+rendered budget is not an edit of one, whatever it parses as. It is then
+**validated by the same reader every run loads through**, so a document the
+server would not load never reaches disk. The write is a temp-sibling-and-rename
+in the same directory, so a crash between the two leaves the old charter whole.
+And the save is **two taps**, because one stray tap must not rewrite what rides
+in every prompt. The page edits the lines as a list and re-ranks them by
+dragging a grip — position in the file is the ranking, and there is no rank
+field to type — but the request is still the whole document through that one
+validated route. The owner authors every line either way: no model composes,
+suggests or edits one.
+
+**A cloned voice** is a WAV in the voices directory, and the file *is* the
+voice — the TTS resolves a name to that exact recording as its cloning
+reference — so its fences are about what lands. `audio/wav` is required, which
+is deliberately **not** one of CORS's "simple" content types: requiring it
+forces any cross-origin caller through a preflight this server never answers,
+which a raw-bytes route would otherwise not get. A **closed name alphabet**
+(lowercase, digits, `-` and `_`, at most 40 characters, never `default`) is
+what stops a name being a path. 32 MB is refused before any parsing; then
+integer-PCM only, a header the payload has to back up, and **5–120 seconds**,
+because a reference the model cannot condition on is a voice that speaks
+garbage. An existing name is **refused rather than overwritten**, and the write
+is the same temp-and-rename, so a dropped connection cannot leave half a
+reference the TTS would happily read.
+
+**Deleting a cloned voice** is offered where recording is, on purpose: a
+botched take removable only at a terminal turns the store into a pile, and a
+recording of somebody's voice should be as easy to remove as it was to add. The
+same closed alphabet is the containment — the path is built from a validated
+stem, never from anything resolvable.
+
+Everything else is a read. The rule roster is exactly what the TUI's
 `/learning` shows, and retiring a rule still goes through `mecha rules retire`'s
-own staged path — there is no shortcut around it from a browser. The voice panel
-answers whether the stack is reachable and where this process would send an
-offer; the worker is configured where it runs.
+own staged path — there is no shortcut around it from a browser. The voice
+panel's worker line answers whether the stack is reachable and where this
+process would send an offer; the worker is configured where it runs.
 
 ### Chat, and what a session is
 

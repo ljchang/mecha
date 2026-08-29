@@ -8,11 +8,10 @@
     ['graph', 'M5 7a2 2 0 104 0 2 2 0 10-4 0M15 17a2 2 0 104 0 2 2 0 10-4 0M15 5.5a2 2 0 104 0 2 2 0 10-4 0M8.7 8.2l5.4 7.4M9 6.7l4-0.5', true],
     ['review', 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5', true],
     ['tasks', 'M4 6h2M4 12h2M4 18h2M9 6h11M9 12h11M9 18h11', true],
-    // Settings was reachable only through Home's gear, which made it vanish
-    // the moment you were anywhere else. The nav is the one chrome every
-    // view shares, so this is the one place a settings door covers them all.
-    ['settings', 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6', true],
   ];
+  // Settings deliberately takes no slot here: it is chrome, and the shell
+  // owns one gear in the same corner of every view (#118) — which is what
+  // makes it reachable from anywhere without being a seventh place to be.
 </script>
 
 <nav>

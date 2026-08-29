@@ -624,7 +624,9 @@
 
 <style>
   .page { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 22px 20px 12px; }
+  /* The right gutter leaves the corner clear for the shell's gear, the
+     agreement every view's header keeps (#118). */
+  header { display: flex; align-items: center; justify-content: space-between; padding: 22px 56px 12px 20px; }
   .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; }
   .scroll { flex: 1; overflow-y: auto; padding: 2px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
   .findrow { display: flex; gap: 8px; }
