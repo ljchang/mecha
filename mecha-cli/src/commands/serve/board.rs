@@ -790,6 +790,90 @@ pub async fn timeline(
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct FactBody {
+    pub subject: String,
+    pub predicate: String,
+    pub object: Option<String>,
+    pub value: Option<String>,
+    pub statement: Option<String>,
+}
+
+/// POST /api/facts — the owner states a fact, through `mecha kg assert`.
+///
+/// Lands live, never in the review queue: the owner asserting something is
+/// an instruction, not an inference — the CLI's rule, relayed not
+/// re-implemented. The response carries the graph's own account (the
+/// composed statement, or its refusal naming the unresolvable subject), so
+/// the page shows the store's words. A connection is a fact whose object is
+/// a node, so this route is also "connect these two" — `edges` is a view.
+pub async fn fact(State(state): St, Json(body): Json<FactBody>) -> Response {
+    let subject = body.subject.trim();
+    let predicate = body.predicate.trim();
+    if subject.is_empty() || predicate.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "a fact needs a subject and a predicate\n",
+        )
+            .into_response();
+    }
+    let object = body
+        .object
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let value = body
+        .value
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if object.is_none() && value.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "a fact needs an object (an entity) or a value (a literal)\n",
+        )
+            .into_response();
+    }
+    let mut args: Vec<&str> = vec!["kg", "assert"];
+    if let Some(v) = value {
+        args.extend(["--value", v]);
+    }
+    if let Some(s) = body
+        .statement
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        args.extend(["--statement", s]);
+    }
+    args.push("--");
+    args.push(subject);
+    args.push(predicate);
+    if let Some(o) = object {
+        args.push(o);
+    }
+    verb(&state, &args).await
+}
+
+#[derive(serde::Deserialize)]
+pub struct RetractBody {
+    pub uid: String,
+}
+
+/// POST /api/facts/retract — retract one fact by uid, through
+/// `mecha kg retract`. Never a text match: the uid came off the entity
+/// envelope the owner is looking at, so what is retracted is what was
+/// tapped. The reviewed-tier deliberately has no other web mutation — a
+/// refute is for shadow facts, and this is the owner ending or correcting
+/// a belief the store holds.
+pub async fn fact_retract(State(state): St, Json(body): Json<RetractBody>) -> Response {
+    let uid = body.uid.trim();
+    if uid.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which fact?\n").into_response();
+    }
+    verb(&state, &["kg", "retract", "--", uid]).await
+}
+
 /// GET /api/notes — recent notes, the `kg_notes` envelope verbatim.
 pub async fn notes(State(state): St) -> Response {
     match self_json(&state, &["kg", "notes", "--json"]).await {

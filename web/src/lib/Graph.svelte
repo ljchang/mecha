@@ -43,6 +43,18 @@
   let notes_ = $state({}); // fact uid → verdict error
   let said = $state(null); // one-line confirmation of the last verdict
 
+  // ---- fact authoring ----
+  // The owner states a fact; it lands live, never in the review queue —
+  // relayed through `mecha kg assert`, whose refusal (an unresolvable
+  // subject, say) comes back as the error text here. A connection is a
+  // fact whose object is a node, so this one form is also "connect these".
+  let addingFact = $state(false);
+  let factPredicate = $state('');
+  let factObject = $state('');
+  let factLiteral = $state(false); // object is a literal value, not a node
+  let factBusy = $state(false);
+  let openFact = $state(null); // uid of the expanded reviewed-fact row
+
   // ---- capture ----
   let draft = $state('');
   let capturing = $state(false);
@@ -173,6 +185,59 @@
       notes_ = { ...notes_, [f.uid]: String(e?.message ?? e) };
     } finally {
       busy = false;
+    }
+  }
+
+  async function addFact() {
+    const predicate = factPredicate.trim();
+    const object = factObject.trim();
+    if (!predicate || !object || !entity?.node?.id) return;
+    factBusy = true;
+    try {
+      const res = await fetch('/api/facts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          // The id, not the name: the page is looking at one resolved node,
+          // and an ambiguous name must not re-roll which one this lands on.
+          subject: entity.node.id,
+          predicate,
+          object: factLiteral ? null : object,
+          value: factLiteral ? object : null,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      said = (await res.json())?.output ?? 'asserted';
+      addingFact = false;
+      factPredicate = '';
+      factObject = '';
+      factLiteral = false;
+      error = null;
+      await lookup(entity?.node?.name ?? query);
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      factBusy = false;
+    }
+  }
+
+  async function retractFact(uid) {
+    factBusy = true;
+    try {
+      const res = await fetch('/api/facts/retract', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ uid }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      said = (await res.json())?.output ?? 'retracted';
+      openFact = null;
+      error = null;
+      await lookup(entity?.node?.name ?? query);
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      factBusy = false;
     }
   }
 
@@ -370,21 +435,43 @@
         </div>
       {/if}
 
-      {#if entity.facts?.length}
-        <div class="sect">facts</div>
-        {#each entity.facts as f (f.uid)}
+      <div class="sect">facts</div>
+        {#each entity.facts ?? [] as f (f.uid)}
           <div class="card fact" class:denied={f.polarity === 'negative'}>
-            <div class="factline">
-              {#if unreviewed(f)}<span class="unrev" title="unreviewed">◌</span>{/if}
-              {#if f.polarity === 'negative'}<span class="neg">✗</span>{/if}
-              <span class="statement">{f.statement}</span>
-            </div>
+            {#if !unreviewed(f)}
+              <!-- Tap to expand, then Retract: the destructive verb sits
+                   behind two taps, and what is retracted is the uid of the
+                   row that was tapped — never a text match. -->
+              <button class="factbtn" onclick={() => (openFact = openFact === f.uid ? null : f.uid)}>
+                <div class="factline">
+                  {#if f.polarity === 'negative'}<span class="neg">✗</span>{/if}
+                  <span class="statement">{f.statement}</span>
+                </div>
+              </button>
+            {:else}
+              <div class="factline">
+                <span class="unrev" title="unreviewed">◌</span>
+                {#if f.polarity === 'negative'}<span class="neg">✗</span>{/if}
+                <span class="statement">{f.statement}</span>
+              </div>
+            {/if}
             <div class="meta">
               <span>{f.predicate}</span>
               {#if f.valid_from}<span>· as of {day(f.valid_from)}</span>{/if}
               <span>· {f.extractor ?? '?'}</span>
               {#if unreviewed(f)}<span class="unrevword">· unreviewed</span>{/if}
             </div>
+            {#if !unreviewed(f) && openFact === f.uid}
+              <div class="btnrow">
+                <button class="minibtn" disabled={factBusy} onclick={() => retractFact(f.uid)}>
+                  Retract
+                </button>
+              </div>
+              <div class="editfoot">
+                Ends or corrects this belief as of now — it moves to history, it is not erased.
+                To restate it differently, retract and add the fact again.
+              </div>
+            {/if}
             {#if unreviewed(f)}
               <input
                 class="field small"
@@ -403,7 +490,44 @@
             {/if}
           </div>
         {/each}
-      {/if}
+
+        {#if addingFact}
+          <div class="card">
+            <div class="factform">
+              <span class="subjname">{n.name}</span>
+              <input
+                class="field small"
+                placeholder="predicate — works_at, met_via, advises…"
+                bind:value={factPredicate}
+                autocapitalize="off"
+              />
+              <input
+                class="field small"
+                placeholder={factLiteral ? 'value — a date, a title, a number…' : 'object — an entity, by name'}
+                bind:value={factObject}
+              />
+              <button
+                class="entchip"
+                onclick={() => (factLiteral = !factLiteral)}
+                title="whether the object is another entity or a literal value"
+              >{factLiteral ? 'a value' : 'an entity'}</button>
+            </div>
+            <div class="btnrow">
+              <button class="minibtn" disabled={factBusy} onclick={() => (addingFact = false)}>Cancel</button>
+              <button
+                class="minibtn primary"
+                disabled={factBusy || !factPredicate.trim() || !factObject.trim()}
+                onclick={addFact}
+              >{factBusy ? 'stating…' : 'State it'}</button>
+            </div>
+            <div class="editfoot">
+              Lands live — your word, not a proposal. An object that names an entity becomes a
+              connection; a predicate with no existing match is minted as new.
+            </div>
+          </div>
+        {:else}
+          <button class="sectbtn" onclick={() => (addingFact = true)}>+ add a fact or connection</button>
+        {/if}
 
       <button class="sectbtn" onclick={toggleHistory}>
         {historyOpen ? 'history —' : 'history +'}
@@ -524,6 +648,10 @@
   .chip { font-family: var(--mono); font-size: 10px; color: var(--text-muted); background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); padding: 3px 8px; margin-left: auto; }
   .sect { font-family: var(--mono); font-size: 11px; color: var(--text-muted); margin-top: 4px; }
   .sectbtn { font-family: var(--mono); font-size: 11px; color: var(--text-muted); background: none; border: none; text-align: left; cursor: pointer; padding: 4px 0 0; }
+  .factbtn { background: none; border: none; padding: 0; margin: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; width: 100%; }
+  .factform { display: flex; flex-direction: column; gap: 8px; }
+  .factform .field.small { min-height: 42px; }
+  .subjname { font-size: 14px; font-weight: 500; }
   .factline { display: flex; gap: 7px; align-items: baseline; }
   .statement { font-size: 14px; line-height: 1.5; }
   .fact.denied .statement { color: var(--text-muted); }
