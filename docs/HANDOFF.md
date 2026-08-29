@@ -421,6 +421,19 @@ next reader: `mecha sessions stats --json` **changed shape** (bare array →
 object); no in-repo consumer read the array, and the CLI reference records
 the change.
 
+**2026-08-29 (01:45 UTC) — v0.1.16 released, and every update surface
+verified in one pass.** The tag published the four crates (crates.io
+answers 0.1.16) and — first time ever — the workflow created the GitHub
+Release itself: release.yml had never been given that job (fourteen tags
+published crates with no release; `contents: read` could not have made
+one), and the new `github-release` job builds it from the tag's changelog
+section. Binaries reinstalled (`mecha --version` → 0.1.16, and this time
+the version string is evidence), all five services restarted with verified
+startup lines, benchmark musl rebuilt (was Aug 23 / 0.1.12 — a scorecard
+would have measured six-day-old code), graph nightly binary current (that
+lane's own install, same night), factory client and droplet both at 0.2.7,
+sandbox toolchain matches host, stale sweep clean.
+
 **2026-08-26 (00:12 UTC) — installed and restarted again, and one commit
 of deliberate skew.** `mecha` reinstalled and all five long-running units
 restarted during the day's work, each verified by its own startup line;
@@ -882,6 +895,14 @@ one person's mailbox rather than a public fact.
 ---
 
 ## What to do next
+
+- **Two macOS residues from #113's CI arm, parked deliberately** (that
+  lane's own flag, so they are not lost): `homeostat.rs` reads
+  `/proc/loadavg` and `/proc/meminfo` unconditionally, so on macOS load
+  and memory are permanently `None` — degrades honestly, but CI now says
+  macOS is supported and that is a silently reduced feature there. And
+  `tui/mod.rs` has a lost `\`-continuation from `cfa2cc2` on the OSC 52
+  clipboard line — cosmetic garbled output.
 
 **As of the evening of 2026-08-07, self-serve is done.** All six steps of the
 factory's `SELF-SERVE.md` are built, deployed, and verified live — a stranger
