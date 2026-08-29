@@ -313,6 +313,30 @@ machine from starting is one people turn off.
   silence graded as a bad answer, and manufactured two of three rule
   regressions before anyone looked.
 
+- **Upgrading llama.cpp: the build tree *is* the deployment.**
+  `~/.local/bin/llama-server` is a 72 KB dynamically-linked stub that resolves
+  `libllama.so` / `libggml.so` from **`~/llama.cpp/build/bin/`**, not from
+  `~/.local/lib` — whose copies are stale and load nothing. So `cmake --build`
+  replaces what a restart will run, and "rebuild" and "deploy" are not
+  separable steps here. Roll back by restoring `build/bin.prev` (the whole 75 MB
+  library set, with a `VERSION.txt` naming the commit) and
+  `~/.local/bin/llama-server.prev` — a rollback has to be a file you restore,
+  not a commit you would have to rebuild under pressure.
+
+  **Replace the stub with `mv`, never `cp`.** Both units — `llama-local`
+  (:8080) and `llama-embed` (:8081) — run the same binary path, so stopping
+  one still leaves the file busy and `cp` fails `ETXTBSY`. A rename swaps the
+  directory entry and leaves the running process's inode alive, so the
+  embedding server keeps serving old code until its own restart rather than
+  being taken down for an unrelated upgrade.
+
+  Measured on the 2026-08-29 jump, `a4ce259` → `c841aee` (674 commits): all six
+  sampling flags plus `--reasoning-budget`, `--spec-type`, `-cram` and
+  `--mmproj` survived, `/props` reported the same geometry, and throughput was
+  99.4–101.6 tok/s against 95–103 before — no regression. **Check tok/s, not
+  that it came back up**, and check `--version` rather than the binary's mtime:
+  the stub is byte-identical in size across builds.
+
 - **Sampling already matches the card, and `/props` is how you know.** The
   GGUF carries Qwen's published thinking-mode values and the server adopts
   them without a flag: temperature 1.0, top_p 0.95, top_k 20, repeat_penalty
