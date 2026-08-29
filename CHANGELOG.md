@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The graph's shadow queue reaches every surface an owner holds** (#114).
+  `mecha review shadow` lists the surfaced-verdict queue (review-on-use:
+  live shadow facts about to matter) and decides one with
+  `--confirm`/`--refute` through the mecha-graph child; `mecha serve` gains
+  `/api/queue/shadow` and `/api/queue/shadow/verdict`
+  (`serve/review.rs::shadow`/`shadow_verdict`), the web review page a
+  surfaced-verdict deck, the `/queues` modal a graph-shadow row with
+  in-place verdicts, and `/find`'s entity detail per-fact tier marks.
+- **A web entity page** (#114): `/api/entity` (`serve/board.rs::entity`)
+  and `Entity.svelte`, nav entry `graph`, marking unreviewed and denied
+  facts as such (`entity_detail_marks_unreviewed_and_denied_facts`).
+- **Chat tool-result previews** (#114): `WireEvent::ToolResult` and
+  `Entry::Tool` carry a capped preview of what a tool answered, so the web
+  transcript shows results rather than only calls.
+- **The docs site embeds a fixture-backed demo of the web surface** (#117)
+  — built from `web/` against invented fixtures (`web/src/demo/`), since
+  the real surface is loopback-only behind a tailnet identity and can never
+  be linked or screenshotted. Two CI gates ride the docs build:
+  `check-demo` fails on any `/api` endpoint the app reaches without a
+  fixture, and `render-check` loads every page in headless chromium and
+  fails on an error or a page that drew almost nothing. The docs workflow
+  now triggers on `web/**`.
+- **The appraisal docs page answers when it runs and what it feeds** (#115):
+  the four appraisal moments, the consumer map, and the previously
+  undocumented step-appraisal mechanism.
+
+### Fixed
+
+- **The `/tasks` web page rendered no tasks at all** on any non-empty board
+  (#116): `stateOf` called `stalled(t)` where `stalled` is a *field* the
+  server stamps (`serve/board.rs`), not a function — a `ReferenceError` on
+  every card. Shipped broken in 0.1.16; caught by #117's render gate.
+
 ## [0.1.16] - 2026-08-29
 
 Three arcs land together. The appraisal goal system, reviewed end to end

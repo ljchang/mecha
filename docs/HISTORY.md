@@ -3159,6 +3159,43 @@ and the closure path's smaller repairs (prefix re-key, empty `--session`,
 follow-up caveats). Deployed the same night; the environment note in
 HANDOFF carries the capability-level verification.
 
+**2026-08-29 (later the same night) — four merges from three concurrent
+sessions, and an incident threaded through them.** #114 put the graph's
+*shadow* queue (review-on-use surfaced verdicts) on every surface an owner
+holds: `mecha review shadow` with `--confirm`/`--refute` through the
+mecha-graph child, `/api/queue/shadow` + `/verdict`
+(`serve/review.rs::shadow`/`shadow_verdict`), a surfaced-verdict deck on
+the web review page, a graph-shadow row with in-place verdicts in
+`/queues`, and per-fact tier marks in `/find` — plus, grown along the way,
+a web entity page (`serve/board.rs::entity`, `Entity.svelte`, with
+`entity_detail_marks_unreviewed_and_denied_facts` pinning that unreviewed
+and denied facts say so) and chat tool-result previews
+(`WireEvent::ToolResult`, a capped preview of what a tool answered). #116
+repaired the `/tasks` page v0.1.16 shipped broken (the trap under
+Measuring); the fix was committed independently on the #114 branch
+(`aa53174`) and deployed within half an hour of the report, after a second
+session verified the broken call in the *served* bundle — a free
+identifier survives minification under its own name, which made the
+artifact decisive where ancestry was only suggestive. #115 reworked the
+appraisal docs page around the questions a cold reader actually asks —
+when each appraisal moment runs, what consumes the record — and documented
+step appraisal for the first time. #117 gave the docs site a fixture-backed
+demo of the web surface (structurally the only option: the real surface is
+loopback-only behind a tailnet identity, so there is nothing public to
+link, and a screenshot of the real one is a picture of the owner's actual
+mail) through one shim — the app reaches the server through bare `fetch`
+and one `EventSource`, so the demo replaces exactly those two and no
+component knows it exists — and the two CI gates now on every docs build.
+The gates were proven against the defect, not assumed: `render-check` was
+confirmed to fail on the pre-#116 tree with the real `ReferenceError` and
+pass after, and the bundle-purity check by deliberately building a demo
+bundle into `web/dist` and watching it fail. The coordination itself held
+up: single-writer docs were claimed and sequenced, every peer claim was
+re-verified against an artifact before being acted on, and the one
+mid-write flag ("someone is editing the main checkout") turned out to
+describe both flagger and flagged — resolved by both lanes committing
+through worktrees and restoring the shared tree clean.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -3777,6 +3814,26 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**2026-08-29 — v0.1.16 shipped a web page that threw on load, past three
+green checks.** `Tasks.svelte`'s `stateOf` called `stalled(t)` where
+`stalled` is a *field* the server stamps (`serve/board.rs`), never a
+function — a `ReferenceError` on every card, so the `/tasks` board rendered
+its header and no tasks on any non-empty board. Three mechanisms were green
+while it shipped: the Rust suite (the defect is entirely in Svelte), the
+Docusaurus build (it renders no client JavaScript), and CI overall (the
+docs workflow's paths filter named `website/**` and not `web/**`, so a
+web-only change ran no docs build at all — which is why the fix PR itself
+showed no `build` check). Loading the page in headless chromium found it in
+one run, and that gate (#117's `render-check`) now rides every docs build.
+The general lesson: **a guard that never executes the thing cannot see a
+runtime error in it, and three green checks over the same blind spot are
+one check.** A corollary from building that gate's fixtures the same night:
+a wrong response shape does not throw — five wrong fixture shapes each drew
+an empty pane indistinguishable from "this feature does nothing", because a
+component that fails still leaves the shell and nav looking like a page. So
+shapes are verified by *rendering* them, and "drew almost nothing" is a
+failure condition in its own right.
 
 **Three tests written in one session passed on both arms, and the third was
 caught only because the second had been.** One asserted a queued instruction
