@@ -403,6 +403,22 @@ fn run(remedy: &Remedy) -> Result<bool> {
     })
 }
 
+/// What `--write` says after putting a bad config back.
+///
+/// Constants rather than literals inline, so they are **reachable from a
+/// test**. They are printed only when a written `config.toml` fails to parse,
+/// which needs a server answering `/props` with a hostile model name — not
+/// something a unit test can stage — so the strings would otherwise be the
+/// one piece of user-facing prose here that nothing ever reads. That is
+/// exactly how the lost-`\`-continuation defect landed on this line: five
+/// occurrences in this branch, and each guard added for it only covered the
+/// producer the last one came from.
+const RESTORED: &str = concat!(
+    "the previous config has been put back, so nothing is broken — please report ",
+    "this, it is a bug here rather than anything you did"
+);
+const NOT_RESTORED: &str = "the previous config could NOT be put back; it is at the .bak beside it";
+
 /// Say when an unreadable decline store was moved aside rather than
 /// overwritten.
 ///
@@ -584,14 +600,7 @@ fn write_local_provider(found: &onboarding::LocalServer) -> Result<()> {
             "what was written to {} does not parse: {e:#}",
             path.display()
         );
-        eprintln!(
-            "{}",
-            if restored {
-                "the previous config has been put back, so nothing is broken —                  please report this, it is a bug here rather than anything you did"
-            } else {
-                "the previous config could NOT be put back; it is at the .bak beside it"
-            }
-        );
+        eprintln!("{}", if restored { RESTORED } else { NOT_RESTORED });
         std::process::exit(1);
     }
 
@@ -933,6 +942,30 @@ mod tests {
             "`never` on a required step is not an answer this may record"
         );
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The prose this module prints reads as prose.
+    ///
+    /// **Fifth occurrence of the same defect in one branch**, and the fourth
+    /// guard: a `\`-continued literal that loses its backslash keeps the
+    /// source's indentation mid-sentence. Each previous guard covered the
+    /// producer the last instance came from — `plan()`'s step details, then
+    /// named lines of `setup`'s stdout — and this one landed on a path
+    /// neither reaches, printed only when a written config will not parse.
+    ///
+    /// Listed by name rather than scanned from source: the intentional
+    /// column alignment elsewhere in this file (`finished_note`'s command
+    /// list) is indistinguishable from the defect by any pattern simple
+    /// enough to keep, and a check that fires on correct code gets deleted.
+    #[test]
+    fn the_prose_this_module_prints_carries_no_source_indentation() {
+        for (name, text) in [("RESTORED", RESTORED), ("NOT_RESTORED", NOT_RESTORED)] {
+            assert!(
+                !text.contains("   "),
+                "{name} carries indentation from its source literal: {text:?}"
+            );
+            assert!(!text.is_empty());
+        }
     }
 
     /// A new top-level key goes *under* the file's own header comment, not
