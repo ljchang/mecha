@@ -131,6 +131,20 @@ impl QueueRow {
             "graph entities" => owned("entity proposals", &["proposals"], true),
             "rule proposals" => owned("rule proposals", &["proposals"], false),
             "harness changes" => owned("harness candidates", &["harness"], false),
+            // The surfaced-verdict queue rides the same generic level with
+            // hand-built argv: its verdict verbs are confirm/refute (a
+            // fact was never a candidate to accept), and the graph's flag
+            // spelling takes the uid appended exactly where accept/reject
+            // take an id. `a` = confirm, `r` = refute — one keystroke, one
+            // human verdict, the same keys meaning the same commitment.
+            "graph shadow" => Some(ReviewSource {
+                label: "shadow verdicts".to_string(),
+                list: vec!["shadow".into(), "list".into(), "--json".into()],
+                show: vec!["shadow".into(), "show".into()],
+                accept: vec!["shadow".into(), "--confirm".into()],
+                reject: vec!["shadow".into(), "--refute".into()],
+                graph: true,
+            }),
             _ => None,
         }
     }

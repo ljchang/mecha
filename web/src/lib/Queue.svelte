@@ -38,6 +38,22 @@
   const faceOf = (payload) => payload?.statement ?? payload?.what ?? '(no statement)';
 
   let proposers = $state(null);
+  // The surfaced-verdict queue (review-on-use): live UNREVIEWED facts that
+  // are about to matter — served in a pack, contradicting a reviewed fact,
+  // or spot-checked by a sampled class. These are facts, not candidates:
+  // Confirm stands behind one (tier → reviewed, the discount lifts);
+  // Refute retracts it as never true, and the reason feeds the graph's
+  // rejection memory. Verdicts land in the owner's own mecha-graph binary
+  // via the server — the MCP surface deliberately cannot vote.
+  let shadow = $state(null); // { rows, total, live, served }
+  // The shadow queue failing to load is a FINDING, not an absence: the CLI
+  // row it mirrors answers a dash plus the reason on the same failure, and
+  // a card that silently vanishes makes a broken reader look like an
+  // install with no shadow queue. Kept separate from `error` so the
+  // candidate views survive it.
+  let shadowError = $state(null);
+  let shadowOpen = $state(false);
+  let reasons = $state({}); // fact uid → typed refute reason
   let classes = $state(null); // { proposer, rows }
   let tierFilter = $state(null); // null = all
   let groups = $state(null); // { proposer, predicate, threshold, rows }
@@ -57,8 +73,60 @@
     } catch (e) {
       error = String(e?.message ?? e);
     }
+    loadShadow();
+  }
+
+  // Beside the queue, failure reported: an older graph binary has no
+  // shadow verb, and the candidate views must not vanish with it — but
+  // the row must say it could not look, not disappear.
+  async function loadShadow() {
+    try {
+      const res = await fetch('/api/queue/shadow');
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const data = await res.json();
+      shadow = {
+        rows: data.surfaced ?? [],
+        // The graph's pre-truncation count — the page length is not a
+        // depth. Older servers without the field get the page as a floor.
+        total: data.surfaced_total ?? (data.surfaced ?? []).length,
+        live: data.shadow_live ?? 0,
+        served: data.shadow_served ?? 0,
+      };
+      shadowError = null;
+    } catch (e) {
+      shadow = null;
+      shadowError = String(e?.message ?? e);
+    }
   }
   load();
+
+  async function shadowVerdict(sf, confirm) {
+    busy = true;
+    try {
+      const res = await fetch('/api/queue/shadow/verdict', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          uid: sf.fact.uid,
+          confirm,
+          reason: reasons[sf.fact.uid]?.trim() || null,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      shadow.rows = shadow.rows.filter((r) => r !== sf);
+      shadow.total = Math.max(0, shadow.total - 1);
+      clearNote(sf.fact.uid);
+      error = null;
+      // The deck refills when this page empties: the fetch was one page of
+      // at most ten, and "you judged your page" is not "nothing surfaced".
+      // The empty state below renders only when a FRESH fetch returns none.
+      if (shadow.rows.length === 0) await loadShadow();
+    } catch (e) {
+      note(sf.fact.uid, { error: String(e?.message ?? e) });
+    } finally {
+      busy = false;
+    }
+  }
 
   async function openClasses(proposer) {
     try {
@@ -432,6 +500,44 @@
       </div>
       <div class="footnote">These verdicts describe one sample — the seed is printed above.</div>
     {/if}
+  {:else if shadowOpen && shadow}
+    <div class="deckhead">
+      {@render backTo(() => { shadowOpen = false; loadShadow(); }, 'back')}
+      <span class="pname">surfaced for verdict</span>
+      <span class="seed"
+        >{shadow.total} surfaced · {shadow.live} unreviewed live · {shadow.served} ever served</span
+      >
+    </div>
+    {#if shadow.rows.length === 0}
+      <div class="empty">Nothing surfaced — no unreviewed fact is about to matter right now.</div>
+    {:else}
+      <div class="footnote">
+        These facts are already live — served rank-discounted and labeled unreviewed. Confirm
+        stands behind one; Refute retracts it as never true, and your reason becomes rejection
+        memory.
+      </div>
+      {#each shadow.rows as sf (sf.fact.uid)}
+        <div class="card candidate">
+          <div class="kicker">{sf.fact.extractor ?? '?'} · {sf.fact.predicate}</div>
+          <div class="statement">{sf.fact.statement}</div>
+          {#each sf.reasons as r}
+            <div class="member">↳ {r}</div>
+          {/each}
+          <input
+            class="field"
+            placeholder="refute reason — feeds rejection memory (optional)"
+            bind:value={reasons[sf.fact.uid]}
+          />
+          <div class="btnrow">
+            <button class="btn" disabled={busy} onclick={() => shadowVerdict(sf, false)}>Refute</button>
+            <button class="btn primary" disabled={busy} onclick={() => shadowVerdict(sf, true)}>Confirm</button>
+          </div>
+          {#if notes[sf.fact.uid]?.error}
+            <div class="cardwarn">{@render hazardGlyph()}<span>{notes[sf.fact.uid].error}</span></div>
+          {/if}
+        </div>
+      {/each}
+    {/if}
   {:else if items}
     <div class="deckhead">
       {@render backTo(closeItems, 'back to groups')}
@@ -509,6 +615,11 @@
           statement is yours, the rest follow as a labeled machine cascade, and each group names
           every class it touches.
         </div>
+        <div class="footnote warn">
+          Measured against your own verdict record (2026-08-29): cross-class twins agreed with
+          each other only ~63% of the time, at every floor — expect a whole-group verdict here to
+          overwrite ~1 in 3. Prefer “Review each” on mixed groups; within-class groups run ~89%.
+        </div>
       {:else}
         <div class="footnote">
           A group verdict is one human verdict: the shown statement is yours, the rest follow as a
@@ -580,6 +691,28 @@
   {:else if proposers === null && !error}
     <div class="empty">reading the queue…</div>
   {:else if proposers}
+    {#if shadow}
+      <button class="card row global" onclick={() => (shadowOpen = true)} disabled={busy}>
+        <div class="rowtop">
+          <span class="pname">surfaced for verdict</span>
+          <span class="pcount">{shadow.total.toLocaleString('en-US')}</span>
+        </div>
+        <div class="rowsub">
+          <span
+            >unreviewed facts about to matter — served, contradicting, or spot-checked ·
+            {shadow.live.toLocaleString('en-US')} live in the shadow tier</span
+          >
+        </div>
+      </button>
+    {:else if shadowError}
+      <div class="card row global">
+        <div class="rowtop">
+          <span class="pname">surfaced for verdict</span>
+          <span class="pcount">—</span>
+        </div>
+        <div class="rowsub"><span>could not read the shadow queue: {shadowError}</span></div>
+      </div>
+    {/if}
     <button class="card row global" onclick={() => openGlobal()} disabled={busy}>
       <div class="rowtop">
         <span class="pname">similar across everything</span>
@@ -649,6 +782,7 @@
   .deckfoot { display: flex; justify-content: space-between; }
   .ghost { background: none; border: none; color: var(--text-muted); font-size: 13px; min-height: 44px; cursor: pointer; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; }
+  .footnote.warn { color: var(--hazard); }
   .open { align-self: center; font-size: 13px; color: var(--accent-400); }
   .bindrow { display: flex; gap: 8px; }
   .field { flex: 1; min-height: 42px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 13px; padding: 0 12px; }
