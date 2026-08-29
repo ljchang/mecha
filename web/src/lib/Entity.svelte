@@ -172,8 +172,8 @@
 </div>
 
 <style>
-  .pane { display: flex; flex-direction: column; gap: 10px; padding: 16px 16px 8px; overflow-y: auto; flex: 1; }
-  .lookuprow { display: flex; gap: 8px; }
+  .pane { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 8px; overflow-y: auto; flex: 1; }
+  .lookuprow { display: flex; gap: 8px; padding-right: 40px; }
   .field { flex: 1; min-height: 44px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; padding: 0 12px; }
   .field.small { min-height: 38px; font-size: 12px; }
   .minibtn { min-height: 44px; padding: 0 16px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); color: var(--text); font-size: 13px; cursor: pointer; }
