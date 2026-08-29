@@ -962,26 +962,28 @@ one person's mailbox rather than a public fact.
   `tui/mod.rs` has a lost `\`-continuation from `cfa2cc2` on the OSC 52
   clipboard line — cosmetic garbled output.
 
-- **The apex domain serves a Squarespace "Coming Soon", not the gate**
-  (diagnosed 2026-08-29, blocked on the owner). `mecha-factory.ai` and
-  `www` resolve to Squarespace's nameservers and answer HTTP 200 with a
-  placeholder, while the real landing page — the gate — is only reachable
-  by whoever already knows its host. The fix exists unused:
-  `mecha-factory`'s `redirect_hosts` config field, whose `docs/DEPLOY.md`
-  section "The apex, and `www`" describes this exact symptom; the droplet
-  runs factory 0.2.7 with no `redirect_hosts` key set (confirmed
-  read-only). Two steps, order load-bearing: repoint DNS at Squarespace
-  first (the owner's browser login), then the config line and a restart.
-  Safe on two counts, both checked: `certificates.rs::redirect_group`
-  gives a redirect host its own certificate group, so adding one cannot
-  take the gate's cert down; and the apex has no MX and no TXT, so
-  repointing risks no mail or domain verification. Two small
-  `mecha-factory` bugs found while reading, left alone in that repo:
-  the redirect target is built from `path()` and drops the query string
-  (`path_and_query()` keeps it — harmless until the apex carries
-  traffic), and `redirect_hosts`' doc comment still claims redirect hosts
-  "ride the base certificate", contradicting `redirect_group` and its own
-  test. Host/key specifics are `docs/OPERATIONS.md`'s, not this file's.
+- **Apex-redirect residue: three `mecha-factory` findings, none blocking**
+  (the apex fix itself shipped 2026-08-29 ~04:09 UTC — see HISTORY; the
+  cached Squarespace records linger until their TTL runs out, so a browser
+  may show the old page for up to an hour after the change without
+  anything being wrong). What the live test surfaced, all in the
+  `mecha-factory` repo: **the redirect drops the query string** —
+  `http/mod.rs` builds the target from `request.uri().path()` where
+  `path_and_query()` would keep it, confirmed live
+  (`/view/ljchang/abc?v=2&x=1` 301s to `/view/ljchang/abc`), and
+  `/view/<handle>/<id>` is documented as carrying a `?v=` version menu, so
+  this now loses real state. **A config comment that could break renewal
+  if believed**: the deployed `factory.toml`'s comment above
+  `[listen] http` claims TLS-ALPN-01 answers challenges on 443 and port 80
+  is never part of issuance — false; `certificates.rs` sets
+  `UseChallenge::Http01`, `tls.rs` binds 80 for challenges, and the live
+  journal shows `ordering certificates over http-01`. Firewalling 80 on
+  that comment's word would silently break every future renewal —
+  `tls.rs`'s own test says `check` names the challenge type precisely so
+  that sentence is read before such a decision. **`factory check` is blind
+  to `redirect_hosts`**: `tls::describe()` builds its line from
+  `config.origins.names()` alone, so the command a deploy runs before
+  restarting prints identical green output whether the key loaded or not.
 
 **As of the evening of 2026-08-07, self-serve is done.** All six steps of the
 factory's `SELF-SERVE.md` are built, deployed, and verified live — a stranger

@@ -3196,6 +3196,23 @@ mid-write flag ("someone is editing the main checkout") turned out to
 describe both flagger and flagged — resolved by both lanes committing
 through worktrees and restoring the shared tree clean.
 
+**2026-08-29 (~04:09 UTC) — the apex finally points at the factory.** The
+open item filed an hour earlier closed the same night: the owner repointed
+DNS at Squarespace (deleting the whole "Defaults" preset group, which is
+what also removes the HTTPS/SVCB record — see the trap under Environment),
+and `redirect_hosts = ["mecha-factory.ai", "www.mecha-factory.ai"]` went
+live on the droplet with a restart. Verified at the authority and at the
+socket, twice over by two sessions: the authoritative nameservers answer
+one droplet A record and no HTTPS record, and `curl --resolve` against the
+droplet gets `301 → https://gate.mecha-factory.ai/` with the path
+preserved. The redirect certificate was issued into **its own** group
+(`CN=mecha-factory.ai`, SAN apex + `www`) with the base group untouched at
+exactly `art, compute, gate` — `certificates.rs::redirect_group`'s design
+claim, that adding a redirect host cannot take the gate's certificate
+down, holding under its first live test. The same test confirmed the
+query-string drop as a live bug rather than a prediction; that and two
+sibling findings are the "apex-redirect residue" item in HANDOFF.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -5236,6 +5253,25 @@ and is what finally exercised the path.)
   inside a single fix rather than across review rounds of a whole PR.
 
 ### Environment
+
+**2026-08-29 — deleting the A records would have left browsers on the old
+page while every terminal check looked right.** Squarespace's DNS preset
+carried an **HTTPS (SVCB) record** beside the A records, with an
+`ipv4hint` naming all four Squarespace addresses. Modern browsers consult
+the HTTPS record and can connect from its hints; `dig` and `curl` do not
+unless asked (`dig HTTPS`). So repointing only the A records would have
+produced a state where `dig A` and `curl` proved the migration done while
+Chrome and Safari kept landing on the Squarespace page — two truthful
+instruments disagreeing because they read different record types. Deleting
+the whole preset *group* is what removes the SVCB record. Two general
+lessons: **check the record types your clients actually consult, not the
+ones your tools default to**; and after any DNS change, the authority and
+every cache disagree for a full TTL — the first post-change check must be
+against the authoritative nameserver (`dig @nsd1…`), because a cached
+answer that contradicts a fresh claim is evidence about the cache, not the
+claim (this pass hit exactly that: the local resolver held the four old A
+records with an hour of TTL left while the authority already answered the
+droplet).
 
 **An edit tool that silently does nothing shipped three dead features in one
 day.** Patches applied with python's `str.replace` return the string
