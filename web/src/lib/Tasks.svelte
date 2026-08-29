@@ -279,7 +279,11 @@
     // question check, because a question parked by a run that has since been
     // killed is still answerable, and *answer needed* is the more actionable
     // of the two things that are true.
-    if (stalled(t)) return questionFor(t) ? 'needs' : 'stalled';
+    // `stalled` is a FIELD the server stamps (serve/board.rs: the board
+    // names the agent and no run marker corroborates) — calling it threw
+    // ReferenceError and rendered every non-empty board as header-and-no-
+    // tasks, since one bad row takes the whole map down.
+    if (t.stalled) return questionFor(t) ? 'needs' : 'stalled';
     if (working(t)) {
       const plan = plans[t.id];
       // No list yet is not "no plan" while a run is starting — it is the
