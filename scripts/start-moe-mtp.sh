@@ -202,9 +202,45 @@ CRAM="${MECHA_LLAMA_CRAM:-32768}"
 # test — a multi-turn conversation with a large stable prefix — and the metric
 # is `prompt eval time = ... / N tokens` staying small, not tok/s.
 
+# **Qwen3.6-35B-A3B's published PRECISE-CODING thinking recipe**, spelled out
+# in full rather than inherited, for parity with start-qwen38.sh — which has
+# always set all six and is the reason the drift below was visible at all.
+#
+# The card gives two thinking profiles: *general* (temp 1.0, presence 1.5) and
+# *precise coding / WebDev* (temp 0.6, presence 0.0). This server is the second
+# one. Almost everything mecha asks it for is structured or exacting — tool
+# calls in the agent loop, and JSON verdicts out of the reflector, learner,
+# judge and distiller — and it was already serving presence_penalty 0.0, which
+# is half of that profile arriving from the GGUF.
+#
+# Before this it served the GGUF's metadata defaults (temp 1.0, top_p 0.95,
+# top_k 20, repeat 1.0, min_p 0.05) — the *general* profile with an off-spec
+# min_p — while `[providers.local] temperature = 0.8` overrode the temperature
+# from the client with a value belonging to neither profile. Set explicitly so
+# a requantisation cannot move any of them quietly.
+#
+# **`--temp` here is overridden by `[providers.local] temperature`**, because
+# mecha sends temperature on every request; the two must agree or the model is
+# silently un-tuned. The other five have no client-side equivalent —
+# `ProviderConfig` carries only `temperature` and `seed` — so they can only be
+# set here. Same trap start-qwen38.sh documents.
+#
+# presence_penalty stays 0.0. The card lists 1.5 for *general* thinking and
+# 0.0 for the precise-coding profile, and Qwen3.8-27B lists 0.0 for thinking
+# throughout; agentic tool use is the second shape, not the first. Worth
+# knowing when reading the ollama post-mortem above, which lists an inherited
+# `presence_penalty 1.5` among that setup's costs: the complaint was that
+# nobody chose it, not that the number was wrong for every profile.
+#
+# **Sampling is measured, not assumed.** `curl -s localhost:8080/props` prints
+# what the server will actually use; a flag here only means something if it
+# shows up there after a restart.
+
 exec ${LLAMA_SERVER:-llama-server} -m "$M" \
   --mmproj "$MMPROJ" \
   --host 127.0.0.1 --port 8080 -ngl 999 -c "$CTX" -np "$NP" --alias qwen3.6-35b-a3b --jinja \
   -cram "$CRAM" \
   --reasoning-budget 4096 \
+  --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0 \
+  --presence-penalty 0.0 --repeat-penalty 1.0 \
   --spec-type draft-mtp

@@ -283,6 +283,44 @@ machine from starting is one people turn off.
   to say". Measured: at `max_tokens` 1024, 1024 tokens of reasoning and no
   answer; at 8192, `finish_reason: stop` and valid output. Any client here
   should refuse an empty completion by name rather than treat it as data.
+
+  **"Comfortably" is 32,768, and it is free.** That is Qwen3.6-35B-A3B's own
+  recommended output length for most queries (81,920 for hard ones);
+  Qwen3.8-27B budgets the halves separately — 262,144 reasoning, 131,072 final
+  response — which is the same split `--reasoning-budget` and `max_tokens`
+  make, with numbers two orders of magnitude larger than this repository was
+  using. `provider::LOCAL_MAX_TOKENS` is the one place it is written down,
+  because four call sites had four different literals and the reflector, the
+  distiller and the eval judge all sat at exactly 4,096 — the worst possible
+  value, leaving nothing for an answer once thinking has run.
+
+  Measured here 2026-08-29, eight samples on a deliberation-shaped task:
+
+  | `max_tokens` | completion tokens | empty replies |
+  |---|---|---|
+  | 2048 | 2048, `finish_reason: length` | **1 of 1** |
+  | 4096 | 1453–2876 | 0 of 5 |
+  | 16384 | 2154–2855 | 0 of 2 |
+  | 32768 | 2187–2707 | 0 of 2 |
+
+  **The distribution does not move with the cap**, so raising it buys headroom
+  and costs no latency. An early two-sample read suggested reasoning expands to
+  fill whatever it is given; eight samples say that was variance, and the
+  cheap-to-hold belief would have argued against the fix. What the cap changes
+  is only whether a *long* input overflows: a modest task already spent 70% of
+  4,096 in its worst sample, and `validate`'s followup probe — which re-asks a
+  whole mid-task conversation — overflowed on nearly every call, had its
+  silence graded as a bad answer, and manufactured two of three rule
+  regressions before anyone looked.
+
+- **Sampling already matches the card, and `/props` is how you know.** The
+  GGUF carries Qwen's published thinking-mode values and the server adopts
+  them without a flag: temperature 1.0, top_p 0.95, top_k 20, repeat_penalty
+  1.0. The single deviation was `min_p` (0.05 served against 0.0
+  recommended), now set explicitly in `start-moe-mtp.sh` so a requantisation
+  cannot move it quietly. `presence_penalty` stays 0.0: the card lists 1.5 for
+  *general* thinking and 0.0 for precise coding, and Qwen3.8-27B lists 0.0
+  throughout — agentic tool use is the second shape.
 - **`response_format: json_schema` and thinking coexist.** llama.cpp applies
   the grammar *lazily*, after the thinking block closes — measured at 3,240
   chars of reasoning followed by schema-valid JSON. So a closed vocabulary can

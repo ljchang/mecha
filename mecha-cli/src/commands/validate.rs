@@ -303,10 +303,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         mecha_core::provider::build(judge_cfg)?,
         args.judge_model.clone().or_else(|| judge_cfg.model.clone()),
     )
-    // These rubrics carry more context than eval's, and the judge reasons
-    // about the whole exchange before the JSON appears. 4096 was measured
-    // insufficient on the very first probe.
-    .with_max_tokens(16384);
+    // The override is gone: `Judge::new` now defaults to
+    // `provider::LOCAL_MAX_TOKENS`, which is above what this call site raised
+    // it to. The lesson this comment recorded — that 4096 was measured
+    // insufficient on the very first probe — is why that constant exists, and
+    // keeping a second number here is how the fix stayed applied in one place
+    // and not the others for as long as it did.
+    ;
     eprintln!(
         "probing {} reflection(s) with {model} ({provider_name}), judged by {} ({judge_name})",
         reflexions.len(),
@@ -514,7 +517,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // records that 4096 was measured insufficient. The fix landed
                 // on the judge and not on the probe it grades, which is how a
                 // measured lesson stays half-applied.
-                max_tokens: 16384,
+                max_tokens: mecha_core::provider::LOCAL_MAX_TOKENS,
                 effort: None,
                 thinking: false,
                 cache_prompt: true,
