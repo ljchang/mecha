@@ -551,7 +551,15 @@ fn setup_exits_zero_once_everything_outstanding_has_been_answered() {
         "a decision nobody can find their way back out of is one to hesitate over:\n{text}"
     );
     // The closing advice is prose, unlike the aligned command list above it.
-    assert_reads_as_prose(line_containing(&text, "workspace is"));
+    //
+    // **Anchored on the *continued* line, not the first one.** The message is
+    // one `\`-continuation, so the defect can only land on the line *after*
+    // it — checking the line that ends `…the workspace is` passes whether or
+    // not the backslash survives, which made this guard unable to fail on the
+    // thing it was added for. Both lines are checked now, so neither end of
+    // the join can rot.
+    assert_reads_as_prose(line_containing(&text, "the workspace is"));
+    assert_reads_as_prose(line_containing(&text, "the jail, and one rooted"));
 }
 
 /// **The step that makes everything else work cannot be declined**, not even
