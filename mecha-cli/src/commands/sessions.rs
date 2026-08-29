@@ -271,13 +271,10 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
         row.usage.add(&usage);
     }
 
-    // Stderr in both modes, so the JSON array's shape is untouched: the
-    // caveat is about the scan, not a row, and a machine reader of the rows
-    // must still be told a human was.
+    // "in the store", because the count is store-wide while the rows may
+    // be windowed by --days: a skipped file has no readable date to
+    // window on, so the honest scope is the whole directory.
     if unreadable > 0 {
-        // "in the store", because the count is store-wide while the rows may
-        // be windowed by --days: a skipped file has no readable date to
-        // window on, so the honest scope is the whole directory.
         eprintln!("{unreadable} transcript(s) in the store could not be read and appear in no row");
     }
 
@@ -298,7 +295,20 @@ fn stats(dir: &std::path::Path, days: Option<i64>, json: bool) -> Result<()> {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&items)?);
+        // An object, not the bare array this used to be — found on review:
+        // `appraise --json` and `health --json` both carry
+        // `sessions_unreadable`, and a machine reader of this one surface
+        // was the only consumer left unable to see the rot the whole arc
+        // exists to surface. No in-repo consumer read the array shape.
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "rows": items,
+                // Store-wide, like the scan — a skipped file has no
+                // readable date to window on.
+                "sessions_unreadable": unreadable,
+            }))?
+        );
         return Ok(());
     }
 
