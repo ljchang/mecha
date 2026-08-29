@@ -32,6 +32,17 @@ pub struct ToolOutput {
     /// guards is not third-party content, and labelling it as such makes the
     /// model invent explanations for its own harness's behaviour.
     pub external: bool,
+    /// This error is mecha's own in-process guard refusing the call, not
+    /// the tool failing — the harness working. The loop reads it into the
+    /// trace's `denied`, so it lands on the same side of the failure
+    /// accounting as an approver or hook denial: excluded from
+    /// `ended_on_failed_call` and the tool-error rate `doctor` thresholds,
+    /// exactly as the loop's own comment on that split demands. Only
+    /// trusted in-process wrappers set it; nothing constructed from an MCP
+    /// wire ever does — `mcp.rs` builds its outputs with the field
+    /// explicitly `false`, and no wire byte reaches it — so a third-party
+    /// server cannot launder its failures into "the harness working".
+    pub refusal: bool,
 }
 
 impl ToolOutput {
@@ -40,6 +51,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: false,
             external: false,
+            refusal: false,
         }
     }
 
@@ -48,6 +60,18 @@ impl ToolOutput {
             content: content.into(),
             is_error: true,
             external: false,
+            refusal: false,
+        }
+    }
+
+    /// An expected failure that is the harness refusing, not the tool
+    /// failing — see the `refusal` field for what that changes.
+    pub fn refusal(content: impl Into<String>) -> Self {
+        ToolOutput {
+            content: content.into(),
+            is_error: true,
+            external: false,
+            refusal: true,
         }
     }
 
@@ -284,6 +308,29 @@ pub trait Tool: Send + Sync {
     /// Note what this is *not*: an unload verb. Nothing calls it mid-run, and
     /// a procedure that has been read cannot be un-read.
     fn forget_conversation_state(&self) {}
+
+    /// Does this handle refuse task closures (`status: done|dropped`) on the
+    /// model's behalf?
+    ///
+    /// `false` for every ordinary tool — the default an MCP-wrapped tool can
+    /// never override, which is the point: the closure guard's presence
+    /// check used to read the tool's *description*, a string the guarded
+    /// MCP server itself supplies, so a server whose description happened to
+    /// end with the guard's own sentence was left unwrapped and still passed
+    /// the startup verification — a fail-open keyed to data from the side
+    /// being guarded. The answer lives in the type instead, where this
+    /// repo's structural properties live; only the in-process wrapper
+    /// returns `true`. Same family as [`carried_state`](Tool::carried_state):
+    /// the loop and the verifier learn that some handle guards, never which
+    /// kind of tool it is. The layering is deliberate and acknowledged: no
+    /// `mecha-core` code reads this, and "task closure" is a CLI-domain
+    /// concept — but the trait is the only channel a wire-supplied tool
+    /// cannot fake, which is the property the check exists for, and
+    /// [`Capabilities`] already carries domain concepts (`external_send`)
+    /// into this trait on the same argument.
+    fn guards_closures(&self) -> bool {
+        false
+    }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {

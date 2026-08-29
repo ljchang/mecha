@@ -162,6 +162,7 @@ impl Tool for ReplayTool {
                 content,
                 is_error,
                 external: false,
+                refusal: false,
             }),
             Action::Refuse(msg) => Ok(ToolOutput::err(msg)),
             Action::Live => self.inner.call(input, ctx).await,

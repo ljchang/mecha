@@ -3527,11 +3527,18 @@ impl Agent {
                     .await;
             }
 
+            // `out.refusal` is an in-process guard's "no" — the harness
+            // working, exactly as an approver or hook denial is — so it
+            // lands on the denied side of the failure accounting rather
+            // than in `ended_on_failed_call` and the tool-error rate.
+            // (`denied_this_turn` is deliberately not incremented: it was
+            // consumed earlier in the turn, before execution, and a dead
+            // add here would claim an effect it cannot have.)
             trace.push(ToolCallTrace {
                 name: name.clone(),
                 input: calls[i].2.clone(),
                 is_error: out.is_error,
-                denied: false,
+                denied: out.refusal,
                 unknown: false,
                 staged: false,
             });
@@ -6991,6 +6998,75 @@ mod tests {
         assert!(
             !outcome.ended_on_failed_call,
             "a refusal is not the environment failing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_output_lands_beside_denials_not_failed_calls() {
+        // The sibling of the test above, one classification channel over: an
+        // *executed* tool can also say "no" as the harness working — an
+        // in-process guard returning `ToolOutput::refusal` — and the loop
+        // must read that into the trace's `denied`, or the guard's own
+        // refusal inflates `ended_on_failed_call` and the tool-error rate
+        // exactly as an approver denial would have. Found on review:
+        // reverting the `denied: out.refusal` mapping left the whole suite
+        // green, and its consumers are the corpus that gates harness
+        // acceptance.
+        struct RefusingTool;
+        #[async_trait::async_trait]
+        impl crate::tool::Tool for RefusingTool {
+            fn name(&self) -> &str {
+                "guarded_update"
+            }
+            fn description(&self) -> &str {
+                "an update whose closing form the harness refuses"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            async fn call(
+                &self,
+                _input: Value,
+                _ctx: &crate::tool::ToolCtx,
+            ) -> anyhow::Result<crate::tool::ToolOutput> {
+                Ok(crate::tool::ToolOutput::refusal(
+                    "closing is the owner's act",
+                ))
+            }
+        }
+
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t0".into(),
+                    name: "guarded_update".into(),
+                    input: json!({"status": "done"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(
+                vec![Block::text("That path is the owner's — telling them.")],
+                StopReason::EndTurn,
+            ),
+        ];
+        let (mut agent, _) =
+            agent_with_tools(turns, vec![Arc::new(RefusingTool)], PermissionMode::Allow);
+        agent.cfg.force_final_answer = false;
+
+        let mut convo = Conversation::user("close the task");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert!(
+            outcome
+                .tool_calls
+                .iter()
+                .any(|c| c.denied && c.is_error && !c.unknown),
+            "the refusal must land on the denied side of the trace: {:?}",
+            outcome.tool_calls
+        );
+        assert!(
+            !outcome.ended_on_failed_call,
+            "the harness's own no is not the environment failing"
         );
     }
 
