@@ -347,6 +347,7 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
 
     app.layer(middleware::from_fn_with_state(state.clone(), owner_guard))
         .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn(cache_headers))
         .with_state(state)
 }
 
@@ -397,6 +398,80 @@ async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Res
     );
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    response
+}
+
+/// `Cache-Control` for the built app — and the two halves take opposite
+/// rules, because they are opposite kinds of file.
+///
+/// **The entry document is a pointer, and a cached pointer is a whole old
+/// build.** `index.html` names content-hashed bundles that the next deploy's
+/// `rsync --delete` removes, so a browser reusing it does not show a broken
+/// page: it shows the *previous* app, rendering perfectly, missing whatever
+/// shipped since. Reported 2026-08-29 as the settings page's learning
+/// section being "gone" on the owner's phone, minutes after that section
+/// deployed — nothing had regressed, and nothing looked wrong, which is the
+/// silently-degrading shape rather than a failure anyone could act on.
+///
+/// It was reachable because the response carried **no `Cache-Control` at
+/// all**, only `Last-Modified`, and a cache with no explicit freshness is
+/// permitted to invent one (RFC 9111 §4.2.2 — conventionally a fraction of
+/// the age since that date). `no-cache` is not "do not store": it is
+/// "revalidate before reuse", and `ServeDir` already answers `304` to a
+/// conditional request, so the cost is one round trip and no bytes.
+///
+/// **The hashed assets take the opposite rule for the same reason.** Their
+/// names change whenever their bytes do, so they cannot go stale, and
+/// leaving them unlabelled was costing a full re-download of the bundle on
+/// every page load — ~200 kB of JS and ~88 kB of CSS, on a phone, over a
+/// tailnet. `private` rather than `public` because every response here is
+/// behind the owner guard; the browser caches either way, and a shared cache
+/// has no business holding this box's bytes.
+///
+/// `/api/` is deliberately untouched. Those responses carry no
+/// `Last-Modified` for a heuristic to work from, their freshness is the
+/// store's business rather than this layer's, and a blanket header here
+/// would be this middleware quietly deciding policy for every handler.
+async fn cache_headers(request: Request<axum::body::Body>, next: Next) -> Response {
+    // Taken before the request is consumed. Matching on "not an asset"
+    // rather than on `/` alone is what catches the other unhashed entry
+    // paths that do reach the server — `/index.html` itself, and
+    // `/favicon.svg` out of `web/public/`. (A hash route like `/#graph`
+    // arrives as plain `/`; the fragment is never sent, so it needs no help
+    // from the broader match.)
+    let is_asset = request.uri().path().starts_with("/assets/");
+    let is_api = request.uri().path().starts_with("/api/");
+    let mut response = next.run(request).await;
+    if is_api {
+        return response;
+    }
+    // **Only a response that is actually the file gets a freshness policy.**
+    // This layer is the outermost one, so it sees `owner_guard`'s 403 and
+    // `ServeDir`'s 404 as well — and an explicit `max-age` makes any status
+    // storable (RFC 9111 §3), with `immutable` telling the browser not to
+    // revalidate even on a manual reload. Labelling a 404 that way pins a
+    // permanently broken app for a year, past every later deploy.
+    //
+    // The window is opened by the other half of this very fix: once the
+    // document always revalidates, a load landing mid-`rsync` gets the *new*
+    // document, asks for a bundle that has not been written yet, and would
+    // cache that 404 immutably — the same "looks like it is working" failure
+    // this middleware exists to remove, made unrecoverable instead of
+    // self-healing on the next deploy.
+    if !(response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED) {
+        return response;
+    }
+    // Set on whatever came back, `304 Not Modified` included: a revalidation
+    // that answered without the header would leave the next cache lookup
+    // right back where it started. (`is_success()` alone would drop it —
+    // 304 is not in the 2xx range.)
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static(match is_asset {
+            true => "private, max-age=31536000, immutable",
+            false => "no-cache",
+        }),
+    );
     response
 }
 
@@ -707,6 +782,182 @@ mod tests {
             },
             None,
         )
+    }
+
+    /// A router with a built app behind it: an entry document and one
+    /// content-hashed asset, which is the whole shape the cache rule is
+    /// about.
+    fn test_router_with_assets(dir: &std::path::Path) -> Router {
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(
+            dir.join("index.html"),
+            "<!doctype html><script src=/assets/index-abc123.js></script>",
+        )
+        .unwrap();
+        std::fs::write(dir.join("assets/index-abc123.js"), "console.log(1)").unwrap();
+        router(
+            WebState {
+                owner_login: Arc::new("owner@example.com".into()),
+                chat: None,
+                offer_target: None,
+                voices_dir: None,
+                review: Arc::new(review::ReviewState {
+                    outbox_root: std::env::temp_dir().join("mecha-serve-test-outbox"),
+                    sessions_dir: None,
+                }),
+            },
+            Some(dir),
+        )
+    }
+
+    async fn cache_control_of(router: Router, uri: &str) -> Option<String> {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        response
+            .headers()
+            .get("cache-control")
+            .map(|v| v.to_str().unwrap().to_string())
+    }
+
+    /// The entry document must revalidate and the hashed assets must not.
+    ///
+    /// The bug this pins: served with no `Cache-Control` at all, `index.html`
+    /// is heuristically cacheable, and a browser reusing it renders the
+    /// *previous* build — correctly, and missing whatever shipped since.
+    /// Found on the owner's phone on 2026-08-29, minutes after a deploy, as
+    /// a feature that had "gone".
+    #[tokio::test]
+    async fn the_entry_document_revalidates_and_the_hashed_assets_do_not() {
+        let dir = std::env::temp_dir().join(format!("mecha-cache-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let router = test_router_with_assets(&dir);
+
+        assert_eq!(
+            cache_control_of(router.clone(), "/").await.as_deref(),
+            Some("no-cache"),
+            "the entry document names hashed files the next deploy deletes"
+        );
+        // The same document by its own name. A hash route (`/#graph`) never
+        // reaches the server as anything but `/`, which is the case that
+        // matters here; there is no SPA fallback on this router, so an
+        // unknown path is a 404 from `ServeDir` rather than the document.
+        assert_eq!(
+            cache_control_of(router.clone(), "/index.html")
+                .await
+                .as_deref(),
+            Some("no-cache")
+        );
+        assert_eq!(
+            cache_control_of(router.clone(), "/assets/index-abc123.js")
+                .await
+                .as_deref(),
+            Some("private, max-age=31536000, immutable"),
+            "a content-hashed name cannot go stale"
+        );
+        // The API is not a static file and this layer must not invent a
+        // freshness policy for it.
+        assert_eq!(cache_control_of(router, "/api/ping").await, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A response that is not the file must carry no freshness policy at
+    /// all — and the 404 is the one that matters.
+    ///
+    /// This layer is the outermost, so it sees the owner guard's 403 and
+    /// `ServeDir`'s 404 too. An explicit `max-age` makes any status storable
+    /// (RFC 9111 §3) and `immutable` suppresses revalidation even on a manual
+    /// reload, so a 404 labelled that way pins a broken app for a year that
+    /// no later deploy can clear. The other half of this change is what opens
+    /// the window: once the document always revalidates, a load landing
+    /// mid-`rsync` asks for a bundle that has not been written yet.
+    #[tokio::test]
+    async fn a_refusal_or_a_missing_bundle_is_never_labelled_immutable() {
+        let dir = std::env::temp_dir().join(format!("mecha-cache-miss-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let router = test_router_with_assets(&dir);
+
+        // Mid-rsync: the document is new, this bundle has not landed yet.
+        assert_eq!(
+            cache_control_of(router.clone(), "/assets/index-not-yet.js").await,
+            None,
+            "a 404 cached for a year is this bug with a longer fuse"
+        );
+
+        // And the owner guard's refusal, which is not a file either.
+        let refused = router
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/index-abc123.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            refused.headers().get("cache-control"),
+            None,
+            "a 403 must not be cached as though it were the bundle"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The header has to survive the revalidation it asks for. A `304` that
+    /// answered without it would leave the next cache lookup exactly where
+    /// this fix started.
+    #[tokio::test]
+    async fn a_revalidated_entry_document_still_carries_the_header() {
+        let dir = std::env::temp_dir().join(format!("mecha-cache-304-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let router = test_router_with_assets(&dir);
+
+        let first = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let last_modified = first
+            .headers()
+            .get("last-modified")
+            .expect("ServeDir dates what it serves")
+            .clone();
+
+        let again = router
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("If-Modified-Since", last_modified)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            again.status(),
+            StatusCode::NOT_MODIFIED,
+            "the no-cache round trip must cost no bytes"
+        );
+        assert_eq!(
+            again.headers().get("cache-control").unwrap(),
+            "no-cache",
+            "a 304 that drops the header undoes the fix on the next lookup"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn tiny_wav(rate: u32, seconds: f64) -> Vec<u8> {
