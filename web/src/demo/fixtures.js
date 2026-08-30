@@ -1205,22 +1205,27 @@ export const timeline = {
 // a `show` per item. Shapes mirror serve/proposals.rs (StoreRow, Listing of
 // ReviewRow, Detail) — and `depth` is a count or null, never an invented
 // zero.
+// The `opens` verbs and depths MUST agree with the `queues` fixture above —
+// serve's `stores` reads the same `mecha review queues` the home page does,
+// so a demo where the two disagree shows one queue with two depths, and an
+// `opens` line that names a command that does not exist teaches a docs
+// reader a verb that will fail.
 export const proposalStores = [
   {
     store: 'harness',
     label: 'harness candidates',
-    depth: 1,
-    detail: 'awaiting a person: 1 config change',
-    oldest: '2026-08-27 06:10:00',
-    opens: 'mecha harness review',
+    depth: 0,
+    detail: 'nothing accepted since Tuesday',
+    oldest: null,
+    opens: 'mecha harness list',
   },
   {
     store: 'rules',
     label: 'rule proposals',
-    depth: 0,
-    detail: '',
-    oldest: null,
-    opens: 'mecha learn review',
+    depth: 1,
+    detail: '1 retirement proposed',
+    oldest: '2026-08-27 06:10:00',
+    opens: 'mecha proposals',
   },
   {
     store: 'entities',
