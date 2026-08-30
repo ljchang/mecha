@@ -31,7 +31,7 @@ __pycache__/
 venv/
 
 # Documentation site (website/ is a Docusaurus project).
-node_modules/
+node_modules
 /website/build/
 /website/.docusaurus/
 /website/.cache-loader/
