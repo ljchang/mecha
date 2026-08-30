@@ -1348,18 +1348,22 @@ pub fn render_active(
     rules
         .iter()
         .map(|r| {
+            // Gated on graded, not observations: a rule covered only by
+            // inconclusive probes has been *ran against*, never measured,
+            // and rendering it "0 regressed" hands the learner a clean bill
+            // of health from rows that graded nothing.
             let record = r
                 .id
                 .as_deref()
                 .and_then(|id| tallies.get(id))
-                .filter(|t| t.observations > 0)
+                .filter(|t| t.graded > 0)
                 .map(|t| {
                     format!(
-                        " [measured: {} probe(s), {} improved, {} regressed, {} attributed to this rule]",
-                        t.observations, t.improved, t.regressed, t.attributed_regressions
+                        " [measured: {} probe(s), {} graded, {} improved, {} regressed, {} attributed to this rule]",
+                        t.observations, t.graded, t.improved, t.regressed, t.attributed_regressions
                     )
                 })
-                .unwrap_or_else(|| " [unmeasured: no probe has covered it yet]".into());
+                .unwrap_or_else(|| " [unmeasured: no probe has graded it yet]".into());
             format!("- {}{}", r.text, record)
         })
         .collect::<Vec<_>>()

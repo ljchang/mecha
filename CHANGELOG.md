@@ -93,6 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to grade the rule *beyond its convictions* (`graded >
   attributed_regressions`, counting verdict-bearing rows only — an
   inconclusive probe ran but graded nothing and releases nothing).
+- **The `/tasks` web page rendered no tasks at all** on any non-empty board
   (#116): `stateOf` called `stalled(t)` where `stalled` is a *field* the
   server stamps (`serve/board.rs`), not a function — a `ReferenceError` on
   every card. Shipped broken in 0.1.16; caught by #117's render gate.

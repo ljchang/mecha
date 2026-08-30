@@ -122,6 +122,10 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
                     // states and only one of them earned its place.
                     "probation": r.probation,
                     "observations": tally.map(|t| t.observations),
+                    // Beside observations, because they answer different
+                    // questions and the gap between them is the roster's
+                    // only way to explain a covered rule still on probation.
+                    "graded": tally.map(|t| t.graded),
                     "attributed_regressions": tally.map(|t| t.attributed_regressions),
                     "created_at": r.created_at,
                 }));
@@ -178,16 +182,27 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
     } else {
         "active".into()
     };
+    // Three states, no two rendering alike: graded, ran-but-graded-nothing,
+    // and never probed. Collapsing the middle into the first printed
+    // "0 improved, 0 regressed" for inconclusive-only coverage — a clean
+    // bill of health from rows that graded nothing, and the reason a
+    // covered rule can still be on probation.
     let measured = match r.id.as_deref().and_then(|id| tallies.get(id)) {
-        Some(t) => format!(
-            "{} probe(s): {} improved, {} regressed, {} attributed to this rule; last {}",
+        Some(t) if t.graded > 0 => format!(
+            "{} probe(s), {} graded: {} improved, {} regressed, {} attributed to this rule; last {}",
             t.observations,
+            t.graded,
             t.improved,
             t.regressed,
             t.attributed_regressions,
             t.last_validated.as_deref().unwrap_or("never")
         ),
-        None => "never validated".into(),
+        Some(t) if t.observations > 0 => format!(
+            "{} probe(s) ran, none graded — inconclusive coverage measures nothing; last {}",
+            t.observations,
+            t.last_validated.as_deref().unwrap_or("never")
+        ),
+        _ => "never validated".into(),
     };
     format!(
         "[{state}] {}\n      id {id} · created {} · {measured}",
