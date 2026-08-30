@@ -1064,6 +1064,10 @@ export const entity = {
   found: true,
   query: 'Priya Raghavan',
   node: {
+    // The id rides in the real envelope and the page's write paths key on
+    // it (facts, unalias, merge) — a fixture without it makes those forms
+    // silently inert in the demo, which reads as a broken feature.
+    id: 'person-priya-demo',
     name: 'Priya Raghavan',
     node_type: 'person',
     aliases: ['Priya R.', 'priya.raghavan'],
