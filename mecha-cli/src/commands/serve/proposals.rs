@@ -103,7 +103,13 @@ fn graph_bin() -> String {
 /// not a 500 and not an empty list: this pane's whole reason for existing is
 /// that a queue grew unnoticed, and a reader that rendered its own inability
 /// to look as "nothing waiting" would reproduce exactly that.
-async fn run(src: &ReviewSource, argv: &[String]) -> Result<String, Response> {
+///
+/// Boxed for the same reason [`source_of`] is, and this one is why the rule
+/// is written down: an `async fn` hides the `Result` inside a future, so the
+/// 1.97 clippy on this box saw nothing while CI's 1.98 failed the build on
+/// it. Reach for `cargo +1.98.0 clippy --workspace --all-targets
+/// --all-features` before believing a green local lint.
+async fn run(src: &ReviewSource, argv: &[String]) -> Result<String, Box<Response>> {
     let bin = if src.graph {
         std::path::PathBuf::from(graph_bin())
     } else {
@@ -118,25 +124,31 @@ async fn run(src: &ReviewSource, argv: &[String]) -> Result<String, Response> {
             .await
         {
             Err(_) => {
-                return Err((StatusCode::GATEWAY_TIMEOUT, "the verb timed out\n").into_response())
+                return Err(Box::new(
+                    (StatusCode::GATEWAY_TIMEOUT, "the verb timed out\n").into_response(),
+                ))
             }
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound && src.graph => {
                 let bin = graph_bin();
-                return Err((
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    format!(
-                        "`{bin}` not found — install mecha-graph, or set MECHA_GRAPH_BIN \
-                     to its path. The other stores work without it.\n"
-                    ),
-                )
-                    .into_response());
+                return Err(Box::new(
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!(
+                            "`{bin}` not found — install mecha-graph, or set MECHA_GRAPH_BIN \
+                         to its path. The other stores work without it.\n"
+                        ),
+                    )
+                        .into_response(),
+                ));
             }
             Ok(Err(e)) => {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("spawning: {e:#}\n"),
-                )
-                    .into_response())
+                return Err(Box::new(
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("spawning: {e:#}\n"),
+                    )
+                        .into_response(),
+                ))
             }
             Ok(Ok(out)) => out,
         };
@@ -156,7 +168,9 @@ async fn run(src: &ReviewSource, argv: &[String]) -> Result<String, Response> {
         .or_else(|| stdout.trim().lines().last())
         .unwrap_or("failed")
         .to_string();
-    Err((StatusCode::CONFLICT, format!("{reason}\n")).into_response())
+    Err(Box::new(
+        (StatusCode::CONFLICT, format!("{reason}\n")).into_response(),
+    ))
 }
 
 #[derive(Serialize)]
@@ -229,7 +243,7 @@ pub async fn list(State(_state): St, UrlPath(store): UrlPath<String>) -> Respons
     };
     let raw = match run(&src, &src.list).await {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     match review_from_json(&raw) {
         Ok(rows) => Json(Listing {
@@ -266,8 +280,31 @@ pub async fn detail(
     argv.push(id);
     match run(&src, &argv).await {
         Ok(text) => Json(Detail { text }).into_response(),
-        Err(r) => r,
+        Err(r) => *r,
     }
+}
+
+/// Did the graph's own report say the item was not decided, on a run that
+/// still exited 0?
+///
+/// `mecha-graph`'s `proposals accept` applies first and decides second, on
+/// purpose — "a proposal marked accepted whose repair then failed is a lie
+/// the queue keeps telling". But its failure arms `println!` and fall
+/// through, so the process exits 0 and every exit-code check calls it a
+/// success. The web surface then toasts the child's own line — which reads
+/// `#125: NOT applied — …` — as if it were the report of a success, closes
+/// the detail, and shows the item still sitting in the reloaded list.
+///
+/// So the markers are read rather than the status. Coupled to another
+/// binary's wording deliberately and narrowly: these two strings are the
+/// whole of its error vocabulary here, `graph_failure_markers_match_the_
+/// graphs_own_arms` pins them, and a marker that stops matching fails
+/// closed the safe way — back to trusting the exit code, which is where
+/// every other store already is.
+fn graph_item_failed(out: &str) -> Option<&str> {
+    out.lines()
+        .map(str::trim)
+        .find(|l| l.contains("NOT applied") || l.contains("no such proposal"))
 }
 
 #[derive(Deserialize)]
@@ -313,16 +350,22 @@ async fn decide(store: &str, id: &str, accepting: bool, body: DecideBody) -> Res
         argv.push(reason.to_string());
     }
     match run(&src, &argv).await {
-        // The child's own first line, never a sentence composed here: an
-        // accept can *apply* something — an override layer entry, a merge —
-        // and what it did is the child's to report.
-        Ok(out) => Json(serde_json::json!({
-            "ok": true,
-            "output": out.trim(),
-            "said": out.trim().lines().next().unwrap_or("").to_string(),
-        }))
-        .into_response(),
-        Err(r) => r,
+        // A zero exit is not the graph's answer — see `graph_item_failed`.
+        // Checked before the success shape is built, so a refusal can never
+        // be dressed as one.
+        Ok(out) => match graph_item_failed(&out).filter(|_| src.graph) {
+            Some(line) => (StatusCode::CONFLICT, format!("{line}\n")).into_response(),
+            // The child's own first line, never a sentence composed here: an
+            // accept can *apply* something — an override layer entry, a merge
+            // — and what it did is the child's to report.
+            None => Json(serde_json::json!({
+                "ok": true,
+                "output": out.trim(),
+                "said": out.trim().lines().next().unwrap_or("").to_string(),
+            }))
+            .into_response(),
+        },
+        Err(r) => *r,
     }
 }
 
@@ -374,6 +417,73 @@ mod tests {
                 review_source(queue).is_some(),
                 "queue {queue:?} has no argv in `review_source` — the pane \
                  would list it and then fail to open it"
+            );
+        }
+    }
+
+    /// The two strings `graph_item_failed` keys on are `mecha-graph`'s own
+    /// error arms, quoted from its `ProposalAction::Accept` loop. If it ever
+    /// rewords them this test still passes — nothing here can see that repo —
+    /// so the value is the opposite direction: it pins OUR side, so a
+    /// well-meant tidy of the markers cannot quietly restore the bug where a
+    /// failed merge toasted as a success.
+    #[test]
+    fn graph_failure_markers_match_the_graphs_own_arms() {
+        // Verbatim from `mecha-graph`'s accept loop.
+        assert_eq!(
+            graph_item_failed("#125: NOT applied — node 4021 has no such alias"),
+            Some("#125: NOT applied — node 4021 has no such alias"),
+        );
+        assert_eq!(
+            graph_item_failed("#900: no such proposal"),
+            Some("#900: no such proposal"),
+        );
+        // A failure anywhere in a multi-item report is still a failure — the
+        // first line being fine is what made this look like a success.
+        assert_eq!(
+            graph_item_failed("#1: merged 12 facts\n#2: NOT applied — busy"),
+            Some("#2: NOT applied — busy"),
+        );
+        // And the success arms must not read as failures, or every decision
+        // 409s and the queue cannot be worked at all.
+        assert_eq!(graph_item_failed("#125: merged 12 facts, 3 aliases"), None);
+        assert_eq!(graph_item_failed("#125: rejected"), None);
+        assert_eq!(graph_item_failed(""), None);
+    }
+
+    /// The graph's `proposals list` defaults to `--limit 20` while the depth
+    /// beside it counts every pending row, so an unlimited-looking call shows
+    /// 20 of 45 and says nothing. Only the graph store needs it: the other
+    /// two answer with their whole store.
+    #[test]
+    fn the_graph_listing_asks_for_more_than_the_default_twenty() {
+        let src =
+            review_source("graph entities").expect("the graph store must still be reviewable");
+        let argv = src.list.join(" ");
+        assert!(
+            argv.contains("--limit"),
+            "the graph listing must name a limit, or it silently takes 20: {argv}"
+        );
+        // Read back out of the argv rather than compared as a constant:
+        // asserting on the const directly is a comparison the compiler folds,
+        // which clippy calls out as an assertion with a constant value — and
+        // it would also pass while the argv named something else entirely.
+        let limit: usize = src
+            .list
+            .iter()
+            .skip_while(|a| *a != "--limit")
+            .nth(1)
+            .and_then(|v| v.parse().ok())
+            .expect("--limit must be followed by a number");
+        assert!(
+            limit > 20,
+            "a limit at or under the verb's own default is ceremony around the same truncation"
+        );
+        for store in ["harness changes", "rule proposals"] {
+            let src = review_source(store).expect(store);
+            assert!(
+                !src.list.join(" ").contains("--limit"),
+                "{store} takes no --limit; passing one would make the verb fail to parse"
             );
         }
     }
