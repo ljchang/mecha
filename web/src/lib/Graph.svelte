@@ -1,4 +1,5 @@
 <script>
+  import { tick } from 'svelte';
   import Dictate from './Dictate.svelte';
   // The graph tab: one surface over one store (NOTES-GRAPH-DESIGN.md).
   // The old notes and graph tabs were two disjoint halves of this — capture
@@ -79,10 +80,15 @@
   let saving = $state(false);
 
   // The full notebook, not a taste of it: 200 is the graph side's own cap
-  // on `kg_notes`, so this asks for everything it will give.
+  // on `kg_notes` (and the serve route mirrors it), so this asks for
+  // everything it will give. A page holding exactly FETCH notes cannot tell
+  // "all of them" from "the first 200 of more", so every count rendered from
+  // this list says so with a `+`.
+  const FETCH = 200;
+  const atCap = $derived(recent?.length === FETCH);
   async function loadRecent() {
     try {
-      const res = await fetch('/api/notes?limit=200');
+      const res = await fetch(`/api/notes?limit=${FETCH}`);
       if (res.ok) recent = (await res.json()).notes ?? [];
     } catch {
       // the list is a convenience; the capture is the point
@@ -275,7 +281,7 @@
       // paraphrase of it. Capture visibly feeding the graph is the loop.
       landed = (await res.json())?.output ?? 'noted';
       draft = '';
-      if (draftBox) draftBox.style.height = '';
+      tick().then(grow); // measure after the DOM has the emptied value
       error = null;
       loadRecent();
     } catch (e) {
@@ -330,11 +336,14 @@
   }
 
   // The textarea grows with the note, up to a cap — a capture field should
-  // feel like a line that stretches, not a form that waits.
-  function grow(e) {
-    const t = e.target;
-    t.style.height = 'auto';
-    t.style.height = `${Math.min(t.scrollHeight, 160)}px`;
+  // feel like a line that stretches, not a form that waits. A function of
+  // the element, not the event: `draft` is also assigned programmatically
+  // (Dictate, and the reset after capture), and those paths never fire
+  // `oninput`.
+  function grow() {
+    if (!draftBox) return;
+    draftBox.style.height = 'auto';
+    draftBox.style.height = `${Math.min(draftBox.scrollHeight, 160)}px`;
   }
 
   $effect(() => {
@@ -343,7 +352,10 @@
         e.preventDefault();
         findField?.focus();
       } else if (e.key === 'Escape' && sheetOpen) {
-        sheetOpen = false;
+        // Nearest thing first: with a note editor open, Escape reads as
+        // "cancel this edit", not "close the notebook".
+        if (editing) cancelEdit();
+        else sheetOpen = false;
       }
     };
     window.addEventListener('keydown', onKey);
@@ -649,7 +661,7 @@
             }
           }}
         ></textarea>
-        <Dictate onText={(text, err) => { if (text) draft = draft ? `${draft} ${text}` : text; if (err) error = err; }} />
+        <Dictate onText={(text, err) => { if (text) { draft = draft ? `${draft} ${text}` : text; tick().then(grow); } if (err) error = err; }} />
         <button
           class="round send"
           class:armed={!!draft.trim()}
@@ -669,7 +681,7 @@
         <div class="handle" aria-hidden="true"></div>
         <div class="peekhead">
           <span class="sect">notebook</span>
-          <span class="peekcount">{recent === null ? '…' : recent.length}</span>
+          <span class="peekcount">{recent === null ? '…' : atCap ? `${FETCH}+` : recent.length}</span>
         </div>
         {#if recent === null}
           <div class="empty">reading the notebook…</div>
@@ -695,7 +707,7 @@
       </button>
       <div class="sheethead">
         <span class="sheettitle">Notebook</span>
-        <span class="peekcount">{shown.length}{filter.trim() ? ` of ${recent?.length ?? 0}` : ''}</span>
+        <span class="peekcount">{filter.trim() ? `${shown.length} of ${atCap ? `${FETCH}+` : (recent?.length ?? 0)}` : atCap ? `${FETCH}+` : shown.length}</span>
         <div class="sortrow">
           <button class="sortchip" class:on={sort === 'newest'} onclick={() => (sort = 'newest')}>newest</button>
           <button class="sortchip" class:on={sort === 'oldest'} onclick={() => (sort = 'oldest')}>oldest</button>
@@ -717,7 +729,10 @@
 </div>
 
 <style>
-  .page { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  /* position: relative so the notebook scrim and sheet can sit in the
+     app's sheet band (z 4-6, absolute within the page — Tasks.svelte's
+     idiom) rather than the drawer band; the bottom nav stays reachable. */
+  .page { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
   /* The right gutter leaves the corner clear for the shell's gear, the
      agreement every view's header keeps (#118). */
   header { display: flex; align-items: center; justify-content: space-between; padding: 22px 56px 12px 20px; }
@@ -773,8 +788,8 @@
   .peekhead { display: flex; align-items: baseline; gap: 8px; }
   .peekcount { font-family: var(--mono); font-size: 11px; color: var(--accent-400); }
   .peekrow { display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--accent-900); padding-top: 9px; }
-  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 40; }
-  .sheet { position: fixed; left: 0; right: 0; bottom: 0; margin-inline: auto; max-width: 680px; height: auto; max-height: 86dvh; background: var(--bg); border: 1px solid var(--accent-700); border-bottom: none; border-radius: 14px 14px 0 0; z-index: 41; display: flex; flex-direction: column; gap: 10px; padding: 6px 14px 0; animation: sheet-in 0.2s ease-out; }
+  .scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 5; }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; margin-inline: auto; max-width: 680px; height: auto; max-height: calc(100% - 12px); background: var(--bg); border: 1px solid var(--accent-700); border-bottom: none; border-radius: 14px 14px 0 0; z-index: 6; display: flex; flex-direction: column; gap: 10px; padding: 6px 14px 0; animation: sheet-in 0.2s ease-out; }
   @keyframes sheet-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
   @media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }
   .sheetlip { background: none; border: none; padding: 8px 0 2px; cursor: pointer; width: 100%; flex-shrink: 0; }
