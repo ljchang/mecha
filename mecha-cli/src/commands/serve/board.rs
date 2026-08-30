@@ -881,9 +881,11 @@ pub struct NotesQuery {
 
 /// GET /api/notes — recent notes, the `kg_notes` envelope verbatim.
 ///
-/// `?limit=` rides through to `kg notes --limit`; the graph side clamps it
-/// (200 today), so this handler passes the number along rather than invent a
-/// second ceiling that could drift from the real one.
+/// `?limit=` rides through to `kg notes --limit`, clamped to 200 the way
+/// `shadow` clamps its own. The enforcement point is the graph side's —
+/// `kg_notes` in mecha-graph-mcp does `args["limit"].min(200)` (read there
+/// 2026-08-30, not inferred) — and the clamp here only mirrors it so the two
+/// repos drifting cannot turn this handler into an unbounded child read.
 pub async fn notes(
     State(state): St,
     axum::extract::Query(query): axum::extract::Query<NotesQuery>,
@@ -891,7 +893,7 @@ pub async fn notes(
     let limit;
     let mut args = vec!["kg", "notes", "--json"];
     if let Some(n) = query.limit {
-        limit = n.to_string();
+        limit = n.min(200).to_string();
         args.extend(["--limit", &limit]);
     }
     match self_json(&state, &args).await {
