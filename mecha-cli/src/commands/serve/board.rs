@@ -874,9 +874,178 @@ pub async fn fact_retract(State(state): St, Json(body): Json<RetractBody>) -> Re
     verb(&state, &["kg", "retract", "--", uid]).await
 }
 
+/// Spawn `mecha-graph` and relay its own words — the owner's curation lane
+/// (merge, and the proposals family), deliberately NOT on the MCP tool
+/// surface the model sees. `$MECHA_GRAPH_BIN` overrides the `PATH` lookup,
+/// the same convention as `serve/proposals.rs`.
+///
+/// Unlike `verb`, a refusal relays the child's whole stderr, not its last
+/// line: `resolve_one` refuses an ambiguous name with the candidate list,
+/// and on a no-undo verb that list is the answer, not noise around it.
+async fn graph_verb(args: &[&str]) -> Response {
+    let bin = std::env::var("MECHA_GRAPH_BIN").unwrap_or_else(|_| "mecha-graph".into());
+    let mut cmd = tokio::process::Command::new(&bin);
+    if let Some(dir) = super::child_cwd() {
+        cmd.current_dir(dir);
+    }
+    let out =
+        // 120s, matching `verb_output` for far cheaper verbs — and the
+        // timeout message tells the truth about what a timeout here means:
+        // dropping the `output()` future does NOT kill the child (no
+        // `kill_on_drop`, deliberately — killing a no-undo merge mid-write
+        // risks partial state), so the verb may well complete after the page
+        // gave up. The first version said "timed out" and let the owner
+        // believe the merge had not happened while it quietly finished.
+        match tokio::time::timeout(std::time::Duration::from_secs(120), cmd.args(args).output())
+            .await
+        {
+            Err(_) => {
+                return (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "timed out waiting — the verb may still be finishing in the background. \
+                     Re-open the entity and check what actually happened before retrying.\n",
+                )
+                    .into_response()
+            }
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!(
+                    "`{bin}` not found — install mecha-graph, or set MECHA_GRAPH_BIN to its path\n"
+                ),
+                )
+                    .into_response()
+            }
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("spawning {bin}: {e:#}\n"),
+                )
+                    .into_response()
+            }
+            Ok(Ok(out)) => out,
+        };
+    if out.status.success() {
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return Json(serde_json::json!({ "output": stdout })).into_response();
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let reason = stderr.trim();
+    let reason = if reason.is_empty() { "failed" } else { reason };
+    (StatusCode::CONFLICT, format!("{reason}\n")).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreateEntityBody {
+    pub name: String,
+    /// One of the graph's closed type set; empty means person, the common
+    /// case for a create-on-miss.
+    #[serde(default)]
+    pub node_type: String,
+}
+
+/// POST /api/entity/create — a node nothing in the graph proposed, created
+/// from the lookup's own dead end. Relays `mecha-graph new-person` /
+/// `new-node`, whose refusals carry the graph's rules verbatim: an existing
+/// name is refused with the node that holds it, and an unknown type with
+/// the closed set.
+pub async fn entity_create(State(state): St, Json(body): Json<CreateEntityBody>) -> Response {
+    let name = body.name.trim();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "a name, at least\n").into_response();
+    }
+    let _ = &state;
+    let t = body.node_type.trim();
+    if t.is_empty() || t == "person" {
+        graph_verb(&["new-person", "--", name]).await
+    } else {
+        graph_verb(&["new-node", "--type", t, "--", name]).await
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct MergeBody {
+    /// The node that stays — the open page's node, by id.
+    pub keep_id: String,
+    /// The duplicate to fold into it: name, alias or id, resolved graph-side.
+    pub dup: String,
+}
+
+/// POST /api/entity/merge — fold a duplicate into the open entity, through
+/// `mecha-graph proposals file-merge --accept`: the owner's one-gesture
+/// merge, and the graph's one no-undo verb always leaves a decided proposal
+/// behind it. An ambiguous duplicate name is refused with the candidate
+/// list — on a no-undo verb, a guessed resolution is the worst outcome, so
+/// the refusal is the feature.
+pub async fn entity_merge(State(state): St, Json(body): Json<MergeBody>) -> Response {
+    let keep = body.keep_id.trim();
+    let dup = body.dup.trim();
+    if keep.is_empty() || dup.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "which node stays, and which folds in?\n",
+        )
+            .into_response();
+    }
+    let _ = &state;
+    graph_verb(&["proposals", "file-merge", "--accept", "--", keep, dup]).await
+}
+
+/// POST /api/entity/alias — the add direction, symmetric with unalias: the
+/// owner stating another way of saying this node's name. Same id-only
+/// contract, same verbatim relay.
+pub async fn entity_alias(State(state): St, Json(body): Json<UnaliasBody>) -> Response {
+    let id = body.node_id.trim();
+    let alias = body.alias.trim();
+    if id.is_empty() || alias.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which node, and what name?\n").into_response();
+    }
+    verb(&state, &["kg", "alias", "--", id, alias]).await
+}
+
+#[derive(serde::Deserialize)]
+pub struct UnaliasBody {
+    /// The node's id — an id, never a name. On a conflation repair a name
+    /// lookup could resolve through the very alias being removed.
+    pub node_id: String,
+    pub alias: String,
+}
+
+/// POST /api/entity/unalias — remove an alias from a node: the repair for a
+/// name that belonged to somebody else, reachable the moment the entity
+/// page surfaces it. Relays `mecha kg unalias` verbatim, refusals included.
+pub async fn entity_unalias(State(state): St, Json(body): Json<UnaliasBody>) -> Response {
+    let id = body.node_id.trim();
+    let alias = body.alias.trim();
+    if id.is_empty() || alias.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which node, and which alias?\n").into_response();
+    }
+    verb(&state, &["kg", "unalias", "--", id, alias]).await
+}
+
+#[derive(serde::Deserialize)]
+pub struct NotesQuery {
+    pub limit: Option<u64>,
+}
+
 /// GET /api/notes — recent notes, the `kg_notes` envelope verbatim.
-pub async fn notes(State(state): St) -> Response {
-    match self_json(&state, &["kg", "notes", "--json"]).await {
+///
+/// `?limit=` rides through to `kg notes --limit`, clamped to 200 the way
+/// `shadow` clamps its own. The enforcement point is the graph side's —
+/// `kg_notes` in mecha-graph-mcp does `args["limit"].min(200)` (read there
+/// 2026-08-30, not inferred) — and the clamp here only mirrors it so the two
+/// repos drifting cannot turn this handler into an unbounded child read.
+pub async fn notes(
+    State(state): St,
+    axum::extract::Query(query): axum::extract::Query<NotesQuery>,
+) -> Response {
+    let limit;
+    let mut args = vec!["kg", "notes", "--json"];
+    if let Some(n) = query.limit {
+        limit = n.min(200).to_string();
+        args.extend(["--limit", &limit]);
+    }
+    match self_json(&state, &args).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
     }

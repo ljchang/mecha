@@ -1,4 +1,5 @@
 <script>
+  import { tick } from 'svelte';
   import Dictate from './Dictate.svelte';
   // The graph tab: one surface over one store (NOTES-GRAPH-DESIGN.md).
   // The old notes and graph tabs were two disjoint halves of this — capture
@@ -42,6 +43,35 @@
   let reasons = $state({}); // fact uid → typed refute reason
   let notes_ = $state({}); // fact uid → verdict error
   let said = $state(null); // one-line confirmation of the last verdict
+  let armedAlias = $state(null); // alias awaiting its second, confirming tap
+  let addingAlias = $state(false);
+  let newAlias = $state('');
+
+  // The add direction: the owner stating another way of saying this name.
+  // Direct write, like answering a disambiguation — and the reason the whole
+  // repair loop closes in place: see a wrong alias, remove it; miss a right
+  // one, add it.
+  async function addAlias() {
+    const a = newAlias.trim();
+    if (!a || !entity?.node?.id) return;
+    busy = true;
+    try {
+      const res = await fetch('/api/entity/alias', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ node_id: entity.node.id, alias: a }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      said = (await res.json())?.output ?? 'aliased';
+      addingAlias = false;
+      newAlias = '';
+      await lookup(entity?.node?.name ?? query);
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      busy = false;
+    }
+  }
 
   // ---- fact authoring ----
   // The owner states a fact; it lands live, never in the review queue —
@@ -55,30 +85,114 @@
   let factBusy = $state(false);
   let openFact = $state(null); // uid of the expanded reviewed-fact row
 
+  // ---- create (a node nothing in the graph proposed) ----
+  // The graph's closed type set, person first because a create-on-miss is
+  // usually a person (the type set stays closed by design — §7).
+  const NODE_TYPES = ['person', 'org', 'place', 'project', 'goal', 'area', 'task', 'event', 'event_series', 'topic', 'artifact', 'document'];
+  let createType = $state('person');
+  let createBusy = $state(false);
+
+  async function createEntity(name) {
+    if (!name?.trim()) return;
+    createBusy = true;
+    try {
+      const res = await fetch('/api/entity/create', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), node_type: createType }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      said = (await res.json())?.output ?? 'created';
+      error = null;
+      createType = 'person';
+      await lookup(name.trim());
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      createBusy = false;
+    }
+  }
+
+  // ---- merge (fold a duplicate into the open entity) ----
+  let mergeOpen = $state(false);
+  let dupName = $state('');
+  let mergeBusy = $state(false);
+
+  // The one-gesture merge: files an owner proposal and accepts it in the
+  // same breath, so the graph's one no-undo verb always leaves a decided
+  // proposal behind it. An ambiguous name comes back as the CLI's own
+  // candidate list in the error line — paste the id it shows.
+  async function mergeDup() {
+    const dup = dupName.trim();
+    if (!dup || !entity?.node?.id) return;
+    mergeBusy = true;
+    try {
+      const res = await fetch('/api/entity/merge', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ keep_id: entity.node.id, dup }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      said = (await res.json())?.output ?? 'merged';
+      mergeOpen = false;
+      dupName = '';
+      error = null;
+      await lookup(entity?.node?.name ?? query);
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      mergeBusy = false;
+    }
+  }
+
   // ---- capture ----
   let draft = $state('');
+  let draftBox = $state(null); // the textarea element, for autogrow reset
   let capturing = $state(false);
   let landed = $state(null); // the CLI's own confirmation line
 
-  // ---- recent (the drawer) ----
+  // ---- the notebook (peek + sheet) ----
   // Notes only, for now: recently touched entities belong interleaved here
   // (frecency — the store already counts access), but the graph has no
   // recent-entities read yet; that is recorded residue, not a decision.
+  // Likewise each row should carry the entities the note linked — the
+  // rendering below is ready for a `note.entities` array, but `kg_notes`
+  // does not return one yet (uid, source_id, body, occurred_at only), so
+  // until that envelope grows the chips simply never appear.
   let recent = $state(null);
+  let sheetOpen = $state(false);
+  let sort = $state('newest'); // the envelope arrives newest-first
+  let filter = $state('');
   let open_ = $state(null); // uid of the expanded row
   let editing = $state(null); // uid being rewritten
   let editText = $state('');
   let saving = $state(false);
 
+  // The full notebook, not a taste of it: 200 is the graph side's own cap
+  // on `kg_notes` (and the serve route mirrors it), so this asks for
+  // everything it will give. A page holding exactly FETCH notes cannot tell
+  // "all of them" from "the first 200 of more", so every count rendered from
+  // this list says so with a `+`.
+  const FETCH = 200;
+  const atCap = $derived(recent?.length === FETCH);
   async function loadRecent() {
     try {
-      const res = await fetch('/api/notes');
+      const res = await fetch(`/api/notes?limit=${FETCH}`);
       if (res.ok) recent = (await res.json()).notes ?? [];
     } catch {
       // the list is a convenience; the capture is the point
     }
   }
   loadRecent();
+
+  // Sorting and filtering are presentation over the fetched envelope — the
+  // store's order is the truth, this is just how it is read.
+  let shown = $derived.by(() => {
+    let list = recent ?? [];
+    const needle = filter.trim().toLowerCase();
+    if (needle) list = list.filter((n) => (n.body ?? '').toLowerCase().includes(needle));
+    return sort === 'oldest' ? [...list].reverse() : list;
+  });
 
   async function find(q) {
     const text = (q ?? query).trim();
@@ -93,7 +207,11 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
       results = Array.isArray(data) ? data : (data.items ?? []);
-      hitEntities = Array.isArray(data?.entities) ? data.entities : [];
+      // The pack's entities are objects ({name, node_id, …}); render the
+      // name, open by the id — an interpolated object is "[object Object]".
+      hitEntities = (Array.isArray(data?.entities) ? data.entities : [])
+        .map((e) => (typeof e === 'string' ? { name: e } : e))
+        .filter((e) => e?.name);
       error = null;
     } catch (e) {
       error = String(e?.message ?? e);
@@ -107,6 +225,9 @@
     if (!n) return;
     busy = true;
     said = null;
+    armedAlias = null;
+    addingAlias = false;
+    newAlias = '';
     historyOpen = false;
     timeline = null;
     related = null;
@@ -161,6 +282,46 @@
     timeline = null;
     historyOpen = false;
     said = null;
+  }
+
+  // The conflation repair: a shared first name links strangers to this
+  // node, and removing the alias is what stops the next mention from
+  // landing here too. Two taps — the first arms, the second removes — and
+  // the id, never the name, names the node: a name lookup could resolve
+  // through the very alias being removed.
+  async function unalias(nodeId, alias) {
+    if (armedAlias !== alias) {
+      armedAlias = alias;
+      return;
+    }
+    busy = true;
+    try {
+      const res = await fetch('/api/entity/unalias', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ node_id: nodeId, alias }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      said = (await res.json())?.output ?? 'removed';
+      armedAlias = null;
+      await lookup(entity?.node?.name ?? query);
+    } catch (e) {
+      error = String(e?.message ?? e);
+      armedAlias = null;
+    } finally {
+      busy = false;
+    }
+  }
+
+  // One gesture back to the resting page: clears the query, the results,
+  // and any open entity in one go.
+  function clearFind() {
+    query = '';
+    results = null;
+    hitEntities = [];
+    error = null;
+    closeEntity();
+    findField?.focus();
   }
 
   // One verdict, in place: the same route as the review page, because two
@@ -242,6 +403,10 @@
   }
 
   async function capture() {
+    // Re-entrancy: the button disables on `capturing` but ⌘⏎ does not, and
+    // `kg note` mints a fresh source_id per call — so a double press was two
+    // identical episodes, both mined by the nightly extractor.
+    if (capturing) return;
     const text = draft.trim();
     if (!text) return;
     capturing = true;
@@ -256,6 +421,7 @@
       // paraphrase of it. Capture visibly feeding the graph is the loop.
       landed = (await res.json())?.output ?? 'noted';
       draft = '';
+      tick().then(grow); // measure after the DOM has the emptied value
       error = null;
       loadRecent();
     } catch (e) {
@@ -309,11 +475,27 @@
     }
   }
 
+  // The textarea grows with the note, up to a cap — a capture field should
+  // feel like a line that stretches, not a form that waits. A function of
+  // the element, not the event: `draft` is also assigned programmatically
+  // (Dictate, and the reset after capture), and those paths never fire
+  // `oninput`.
+  function grow() {
+    if (!draftBox) return;
+    draftBox.style.height = 'auto';
+    draftBox.style.height = `${Math.min(draftBox.scrollHeight, 160)}px`;
+  }
+
   $effect(() => {
     const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         findField?.focus();
+      } else if (e.key === 'Escape' && sheetOpen) {
+        // Nearest thing first: with a note editor open, Escape reads as
+        // "cancel this edit", not "close the notebook".
+        if (editing) cancelEdit();
+        else sheetOpen = false;
       }
     };
     window.addEventListener('keydown', onKey);
@@ -322,12 +504,56 @@
 
   const unreviewed = (f) => f.tier !== 'reviewed';
   const day = (ts) => (ts ?? '').slice(0, 10);
+  const stamp = (ts) => (ts ?? '').slice(0, 16).replace('T', ' ');
 </script>
 
 {#snippet hazardGlyph(size = 12)}
   <svg viewBox="0 0 24 24" width={size} height={size} style="flex-shrink: 0" fill="none" stroke="var(--hazard)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M12 4l9 16H3z" /><path d="M12 11v4M12 17.5v.5" />
   </svg>
+{/snippet}
+
+{#snippet noteRow(note)}
+  <div class="card noterow">
+    {#if editing === note.uid}
+      <textarea class="editbox" rows="6" bind:value={editText}></textarea>
+      <div class="editrow">
+        <button class="btn slim" disabled={saving} onclick={cancelEdit}>Cancel</button>
+        <button
+          class="btn primary grow"
+          disabled={saving || !editText.trim()}
+          onclick={() => saveEdit(note)}
+        >{saving ? 'saving…' : 'Save'}</button>
+      </div>
+      <div class="editfoot">
+        Rewrites the note in place, keeping when it happened. Anything the graph already
+        derived from the old wording stays in your review queue — an edit is not a retraction.
+      </div>
+    {:else}
+      <button class="notehead" onclick={() => toggle(note)}>
+        <div class="notetext" class:clamp={open_ !== note.uid}>{note.body}</div>
+        <div class="notemeta">{stamp(note.occurred_at)}</div>
+      </button>
+      {#if note.entities?.length}
+        <!-- Same normalization as the search chips above: the graph's
+             entity lists are objects ({node_id, name, …}), and an
+             interpolated object is "[object Object]". -->
+        <div class="chiprow">
+          {#each note.entities as ent (typeof ent === 'string' ? ent : (ent.node_id ?? ent.name))}
+            <button
+              class="entchip"
+              onclick={() => { sheetOpen = false; lookup(typeof ent === 'string' ? ent : (ent.node_id ?? ent.name)); }}
+            >{typeof ent === 'string' ? ent : ent.name}</button>
+          {/each}
+        </div>
+      {/if}
+      {#if open_ === note.uid}
+        <div class="editrow">
+          <button class="btn slim grow" onclick={() => startEdit(note)}>Edit</button>
+        </div>
+      {/if}
+    {/if}
+  </div>
 {/snippet}
 
 <div class="page">
@@ -346,13 +572,18 @@
         lookup();
       }}
     >
-      <input
-        class="field"
-        placeholder="find — an entity opens, anything else searches (⌘K)"
-        bind:value={query}
-        bind:this={findField}
-        autocapitalize="off"
-      />
+      <div class="findwrap">
+        <input
+          class="field"
+          placeholder="find — an entity opens, anything else searches (⌘K)"
+          bind:value={query}
+          bind:this={findField}
+          autocapitalize="off"
+        />
+        {#if query || results !== null || entity}
+          <button type="button" class="clearbtn" onclick={clearFind} aria-label="clear the search">✕</button>
+        {/if}
+      </div>
       <Dictate onText={(text, err) => { if (text) { query = query ? `${query} ${text}` : text; lookup(); } if (err) error = err; }} />
       <button class="minibtn" disabled={busy || searching || !query.trim()}>Open</button>
     </form>
@@ -360,14 +591,14 @@
     {#if results !== null}
       {#if hitEntities.length}
         <div class="chiprow">
-          {#each hitEntities as name}
-            <button class="entchip" onclick={() => lookup(name)}>{name}</button>
+          {#each hitEntities as e}
+            <button class="entchip" onclick={() => lookup(e.node_id ?? e.name)}>{e.name}</button>
           {/each}
         </div>
       {/if}
       {#each results as r}
         <div class="card noterow">
-          <div class="notetext">{r.statement ?? r.name ?? r.text ?? JSON.stringify(r).slice(0, 140)}</div>
+          <div class="notetext clamp">{r.statement ?? r.name ?? r.text ?? JSON.stringify(r).slice(0, 140)}</div>
           <div class="notemeta">{r.kind ?? ''}{r.occurred_at ? ` · ${day(r.occurred_at)}` : ''}</div>
         </div>
       {:else}
@@ -377,6 +608,30 @@
 
     {#if entity?.found === false}
       <div class="footnote">no entity matches “{entity.query}” — the search above answers instead</div>
+      <!-- Create-on-miss (design §2.3): the dead end is exactly where the
+           missing node is discovered, so the door out of it is here. A name
+           already held is refused graph-side, naming its holder. -->
+      <div class="card">
+        <div class="factform">
+          <span class="subjname">create “{entity.query}”</span>
+          <select class="field small" bind:value={createType}>
+            {#each NODE_TYPES as t (t)}
+              <option value={t}>{t}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="btnrow">
+          <button
+            class="minibtn primary"
+            disabled={createBusy}
+            onclick={() => createEntity(entity.query)}
+          >{createBusy ? 'creating…' : `Create ${createType}`}</button>
+        </div>
+        <div class="editfoot">
+          A node nothing in the graph proposed — for someone or something with evidence but no
+          entity of its own. Facts already filed under other nodes stay where they are.
+        </div>
+      </div>
     {:else if entity?.ambiguous?.length}
       <div class="footnote">several entities answer to this name — pick one:</div>
       {#each entity.ambiguous as c}
@@ -399,16 +654,86 @@
           <span class="ename">{n.name}</span>
           <span class="chip">{n.node_type ?? n.type}</span>
         </div>
-        {#if n.aliases?.length}
-          <div class="rowsub">aka {n.aliases.join(' · ')}</div>
+        <!-- Every alias, each removable in place, and a slot to add one: a
+             bare first name here is a conflation magnet, and both repairs
+             should be reachable the moment the gap is spotted (aliases are
+             re-addable, so a mistake costs one more tap than the fix). -->
+        <div class="chiprow aliasrow">
+          <span class="tinylabel">aka</span>
+          {#each n.aliases ?? [] as a (a)}
+              <button
+                class="entchip aliaschip"
+                class:armed={armedAlias === a}
+                disabled={busy}
+                title={armedAlias === a
+                  ? 'tap again to remove — future mentions of this name land elsewhere'
+                  : 'this name belongs to somebody else? tap twice to remove it'}
+                onclick={() => unalias(n.id, a)}
+              >
+                {a}<span class="aliasx">{armedAlias === a ? ' — remove?' : ' ✕'}</span>
+              </button>
+            {/each}
+            {#if addingAlias}
+              <!-- svelte-ignore a11y_autofocus — the input exists because the
+                   owner just asked for it; focus is the point. -->
+              <input
+                class="field small aliasinput"
+                placeholder="another name for {n.name}…"
+                bind:value={newAlias}
+                autocapitalize="off"
+                autofocus
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addAlias();
+                  } else if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    addingAlias = false;
+                    newAlias = '';
+                  }
+                }}
+              />
+            {:else}
+              <button
+                class="entchip addalias"
+                title="add another way of saying this name — it resolves here from now on"
+                onclick={() => (addingAlias = true)}
+              >+ alias</button>
+            {/if}
+          </div>
+        {#if n.identifiers?.length}
+          <!-- The deterministic keys, shown apart from the aliases on
+               purpose: an alias is how the node is spoken of, an identifier
+               is how sources reach it — and it decides where future ingest
+               lands, so a split that leaves one behind re-merges on the
+               next sync. Read-only here; moving one is `mecha-graph
+               move-identifier`. -->
+          <div class="chiprow aliasrow">
+            <span class="tinylabel">reaches</span>
+            {#each n.identifiers as i (i.kind + i.value)}
+              <span
+                class="idchip"
+                title="{i.kind} — a deterministic key: future {i.kind} ingest lands on this node. Moving it to another node is `mecha-graph move-identifier`."
+              >{i.value}</span>
+            {/each}
+          </div>
         {/if}
         {#if entity.interaction}
-          <div class="rowsub">
-            <span>
-              {entity.interaction.interaction_count} interactions · last seen
-              {day(entity.interaction.last_seen_at) || '—'} via
-              {entity.interaction.last_channel ?? '—'}
-            </span>
+          <!-- A stat row, not a sentence: the three numbers the old line ran
+               together, each under its own label. -->
+          <div class="statrow">
+            <div class="stat">
+              <span class="statval">{entity.interaction.interaction_count}</span>
+              <span class="tinylabel">interactions</span>
+            </div>
+            <div class="stat">
+              <span class="statval">{day(entity.interaction.last_seen_at) || '—'}</span>
+              <span class="tinylabel">last seen</span>
+            </div>
+            <div class="stat">
+              <span class="statval">{entity.interaction.last_channel ?? '—'}</span>
+              <span class="tinylabel">via</span>
+            </div>
           </div>
         {/if}
         {#if entity.sources?.length}
@@ -416,9 +741,12 @@
                returned by the store since the beginning, dropped by the old
                page. A source with no coverage is why two answers about the
                same person can differ. -->
-          <div class="rowsub srcline">
-            {#each entity.sources as s}
-              <span>{s.source} ×{s.episodes}</span>
+          <div class="chiprow aliasrow">
+            <span class="tinylabel">seen in</span>
+            {#each entity.sources as s (s.source)}
+              <span class="srcchip" title="{s.source}: {s.episodes} episode(s), {s.first ?? '?'} → {s.last ?? '?'}">
+                {s.source} <b>×{s.episodes}</b>
+              </span>
             {/each}
           </div>
         {/if}
@@ -529,6 +857,35 @@
           <button class="sectbtn" onclick={() => (addingFact = true)}>+ add a fact or connection</button>
         {/if}
 
+        {#if mergeOpen}
+          <div class="card">
+            <div class="factform">
+              <span class="subjname">fold a duplicate into {n.name}</span>
+              <input
+                class="field small"
+                placeholder="the duplicate — a name, or an id when names collide"
+                bind:value={dupName}
+                autocapitalize="off"
+              />
+            </div>
+            <div class="btnrow">
+              <button class="minibtn" disabled={mergeBusy} onclick={() => { mergeOpen = false; dupName = ''; }}>Cancel</button>
+              <button
+                class="minibtn primary"
+                disabled={mergeBusy || !dupName.trim()}
+                onclick={mergeDup}
+              >{mergeBusy ? 'merging…' : 'Merge — no undo'}</button>
+            </div>
+            <div class="editfoot">
+              Everything the duplicate carries — facts, mentions, aliases — moves onto this entity,
+              and the merge is recorded as a decided proposal. There is no unmerge. A name two
+              entities share is refused with the candidates; answer with the id it lists.
+            </div>
+          </div>
+        {:else}
+          <button class="sectbtn" onclick={() => (mergeOpen = true)}>⇤ merge a duplicate into this</button>
+        {/if}
+
       <button class="sectbtn" onclick={toggleHistory}>
         {historyOpen ? 'history —' : 'history +'}
       </button>
@@ -563,73 +920,111 @@
     {/if}
 
     {#if !entity?.node}
-      <div class="capture card">
+      <!-- The composer, not a form: the field is the star and the send
+           affordance earns its color only once there is something to send.
+           Enter stays a newline — a note is prose — so capture is the
+           button or ⌘⏎. -->
+      <div class="composer">
         <textarea
-          rows="3"
-          placeholder="Capture a note — entities named in it are linked on landing"
+          rows="1"
+          placeholder="Capture a note…"
           bind:value={draft}
+          bind:this={draftBox}
+          oninput={grow}
+          onkeydown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              e.preventDefault();
+              capture();
+            }
+          }}
         ></textarea>
-        <div class="capturerow">
-          <Dictate onText={(text, err) => { if (text) draft = draft ? `${draft} ${text}` : text; if (err) error = err; }} />
-          <button class="btn primary grow" disabled={capturing || !draft.trim()} onclick={capture}>
-            {capturing ? 'staging…' : 'Capture'}
-          </button>
-        </div>
-        {#if landed}<div class="saidline">{landed}</div>{/if}
+        <Dictate onText={(text, err) => { if (text) { draft = draft ? `${draft} ${text}` : text; tick().then(grow); } if (err) error = err; }} />
+        <button
+          class="round send"
+          class:armed={!!draft.trim()}
+          disabled={capturing || !draft.trim()}
+          onclick={capture}
+          title="capture — entities named in the note are linked on landing (⌘⏎)"
+          aria-label="capture the note"
+        >
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+        </button>
       </div>
-
-      <div class="kicker">Recent</div>
-      {#if recent === null}
-        <div class="empty">reading the notebook…</div>
-      {:else}
-        {#each recent as note}
-          <div class="card noterow">
-            {#if editing === note.uid}
-              <textarea class="editbox" rows="6" bind:value={editText}></textarea>
-              <div class="editrow">
-                <button class="btn slim" disabled={saving} onclick={cancelEdit}>Cancel</button>
-                <button
-                  class="btn primary grow"
-                  disabled={saving || !editText.trim()}
-                  onclick={() => saveEdit(note)}
-                >{saving ? 'saving…' : 'Save'}</button>
-              </div>
-              <div class="editfoot">
-                Rewrites the note in place, keeping when it happened. Anything the graph already
-                derived from the old wording stays in your review queue — an edit is not a retraction.
-              </div>
-            {:else}
-              <button class="notehead" onclick={() => toggle(note)}>
-                <div class="notetext" class:clamp={open_ !== note.uid}>{note.body}</div>
-                <div class="notemeta">{(note.occurred_at ?? '').slice(0, 16).replace('T', ' ')}</div>
-              </button>
-              {#if open_ === note.uid}
-                <div class="editrow">
-                  <button class="btn slim grow" onclick={() => startEdit(note)}>Edit</button>
-                </div>
-              {/if}
-            {/if}
-          </div>
-        {:else}
-          <div class="empty">Nothing captured yet.</div>
-        {/each}
-      {/if}
-
-      <div class="footnote">
-        A note is evidence — what the graph derives from it waits in your review queue.
-      </div>
+      {#if landed}<div class="saidline">{landed}</div>{/if}
     {/if}
   </div>
+
+  <!-- The notebook: one drawer, pinned to the bottom edge of the page.
+       Collapsed it is the drawer's lid — a handle and the newest notes
+       showing through, sitting in layout like a footer, not floating in
+       the scroll. Open it lifts into the sheet band over a scrim. -->
+  {#if !entity?.node}
+    {#if sheetOpen}
+      <div class="scrim" onclick={() => (sheetOpen = false)} aria-hidden="true"></div>
+    {/if}
+    <aside class="sheet" class:open={sheetOpen}>
+      {#if !sheetOpen}
+        <button type="button" class="lid" onclick={() => (sheetOpen = true)} aria-label="open the notebook">
+          <div class="handle" aria-hidden="true"></div>
+          <div class="peekhead">
+            <span class="sect">notebook</span>
+            <span class="peekcount">{recent === null ? '…' : atCap ? `${FETCH}+` : recent.length}</span>
+          </div>
+          {#if recent === null}
+            <div class="empty">reading the notebook…</div>
+          {:else}
+            {#each recent.slice(0, 2) as note (note.uid)}
+              <div class="peekrow">
+                <div class="notetext clamp">{note.body}</div>
+                <div class="notemeta">{stamp(note.occurred_at)}</div>
+              </div>
+            {:else}
+              <div class="empty">Nothing captured yet — the first note starts it.</div>
+            {/each}
+          {/if}
+        </button>
+      {:else}
+      <button class="sheetlip" onclick={() => (sheetOpen = false)} aria-label="close the notebook">
+        <div class="handle" aria-hidden="true"></div>
+      </button>
+      <div class="sheethead">
+        <span class="sheettitle">Notebook</span>
+        <span class="peekcount">{filter.trim() ? `${shown.length} of ${atCap ? `${FETCH}+` : (recent?.length ?? 0)}` : atCap ? `${FETCH}+` : shown.length}</span>
+        <div class="sortrow">
+          <button class="sortchip" class:on={sort === 'newest'} onclick={() => (sort = 'newest')}>newest</button>
+          <button class="sortchip" class:on={sort === 'oldest'} onclick={() => (sort = 'oldest')}>oldest</button>
+        </div>
+      </div>
+      <input class="field small" placeholder="filter notes…" bind:value={filter} />
+      <div class="sheetscroll">
+        {#each shown as note (note.uid)}
+          {@render noteRow(note)}
+        {:else}
+          <div class="empty">{filter.trim() ? 'No note contains that.' : 'Nothing captured yet.'}</div>
+        {/each}
+        <div class="footnote">
+          A note is evidence — what the graph derives from it waits in your review queue.
+        </div>
+      </div>
+      {/if}
+    </aside>
+  {/if}
 </div>
 
 <style>
-  .page { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  /* position: relative so the notebook scrim and sheet can sit in the
+     app's sheet band (z 4-6, absolute within the page — Tasks.svelte's
+     idiom) rather than the drawer band; the bottom nav stays reachable. */
+  .page { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
   /* The right gutter leaves the corner clear for the shell's gear, the
      agreement every view's header keeps (#118). */
   header { display: flex; align-items: center; justify-content: space-between; padding: 22px 56px 12px 20px; }
   .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; }
-  .scroll { flex: 1; overflow-y: auto; padding: 2px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 2px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
   .findrow { display: flex; gap: 8px; }
+  .findwrap { position: relative; flex: 1; display: flex; min-width: 0; }
+  .findwrap .field { padding-right: 38px; }
+  .clearbtn { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 32px; height: 32px; background: none; border: none; color: var(--text-muted); font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   .field { flex: 1; min-height: 44px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; padding: 0 12px; min-width: 0; }
   .field.small { min-height: 38px; font-size: 12px; background: var(--bg); }
   .field:focus { outline: 1px solid var(--accent-500); }
@@ -638,24 +1033,44 @@
   .minibtn:disabled { opacity: 0.5; }
   .chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
   .entchip { background: var(--bg); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); color: var(--accent-400); font-family: var(--mono); font-size: 11px; padding: 6px 10px; cursor: pointer; }
+  .aliasrow { align-items: center; }
+  /* One left edge for the head card's labeled rows — aka, reaches, seen in. */
+  .aliasrow .tinylabel { min-width: 58px; flex-shrink: 0; }
+  .aliaschip { color: var(--text-muted); border-color: var(--accent-900); }
+  .aliaschip .aliasx { color: var(--accent-700); }
+  .aliaschip.armed { color: var(--hazard); border-color: var(--hazard); }
+  .aliaschip.armed .aliasx { color: var(--hazard); }
+  .aliaschip:disabled { opacity: 0.5; }
+  .addalias { color: var(--accent-400); border-style: dashed; }
+  .aliasinput { flex: 1 1 150px; min-width: 130px; min-height: 34px; }
   .card { background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; }
   .row { text-align: left; cursor: pointer; color: var(--text); font: inherit; }
   .rowtop { display: flex; align-items: center; gap: 8px; }
   .rowsub { font-size: 11px; color: var(--text-muted); }
-  .srcline { display: flex; gap: 10px; flex-wrap: wrap; font-family: var(--mono); font-size: 10px; }
-  .head { border-color: var(--accent-700); }
+  .statrow { display: flex; gap: 22px; border-top: 1px solid var(--accent-900); padding-top: 10px; margin-top: 2px; }
+  .stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .statval { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+  .srcchip { background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); color: var(--text-muted); font-family: var(--mono); font-size: 10px; padding: 5px 8px; }
+  .srcchip b { color: var(--accent-400); font-weight: 500; }
+  /* The hub gets a touch more presence than the cards below it: a faint
+     accent wash and a larger name — hierarchy by weight, not decoration. */
+  .head { border-color: var(--accent-700); background: color-mix(in srgb, var(--accent-900) 28%, var(--surface)); gap: 9px; }
   .backbtn { background: none; border: none; color: var(--text-muted); font-size: 16px; cursor: pointer; padding: 0 4px 0 0; }
-  .ename { font-size: 16px; font-weight: 500; }
+  .ename { font-size: 18px; font-weight: 500; letter-spacing: -0.02em; }
+  /* Eyebrow labels: what a row IS, distinct from lowercase action buttons. */
+  .tinylabel { font-family: var(--mono); font-size: 10px; color: var(--accent-700); text-transform: uppercase; letter-spacing: 0.08em; }
+  /* Identifiers read as keys, not buttons: dashed, muted, inert. */
+  .idchip { border: 1px dashed color-mix(in srgb, var(--accent-700) 60%, transparent); border-radius: var(--radius-chip); color: var(--text-muted); font-family: var(--mono); font-size: 11px; padding: 6px 10px; overflow-wrap: anywhere; }
   .pname { font-family: var(--mono); font-size: 13px; color: var(--accent-400); }
   .chip { font-family: var(--mono); font-size: 10px; color: var(--text-muted); background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); padding: 3px 8px; margin-left: auto; }
-  .sect { font-family: var(--mono); font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+  .sect { font-family: var(--mono); font-size: 10px; color: var(--accent-700); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 8px; }
   .sectbtn { font-family: var(--mono); font-size: 11px; color: var(--text-muted); background: none; border: none; text-align: left; cursor: pointer; padding: 4px 0 0; }
   .factbtn { background: none; border: none; padding: 0; margin: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; width: 100%; }
   .factform { display: flex; flex-direction: column; gap: 8px; }
   .factform .field.small { min-height: 42px; }
   .subjname { font-size: 14px; font-weight: 500; }
   .factline { display: flex; gap: 7px; align-items: baseline; }
-  .statement { font-size: 14px; line-height: 1.5; }
+  .statement { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
   .fact.denied .statement { color: var(--text-muted); }
   .unrev { color: var(--accent-400); font-weight: 600; }
   .neg { color: var(--hazard); }
@@ -663,12 +1078,42 @@
   .meta { display: flex; gap: 6px; flex-wrap: wrap; font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
   .btnrow { display: flex; gap: 8px; }
   .btnrow .minibtn { flex: 1; }
-  .preview { font-size: 12px; color: var(--text-muted); line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; }
-  .capture { padding: 12px; }
-  .capturerow { display: flex; gap: 8px; }
+  .preview { font-size: 12px; color: var(--text-muted); line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow-wrap: anywhere; }
+  .card { min-width: 0; }
+  .composer { display: flex; align-items: flex-end; gap: 8px; }
+  .composer textarea { flex: 1; min-height: 44px; max-height: 160px; resize: none; overflow-y: auto; min-width: 0; }
+  .round { width: 44px; height: 44px; border-radius: var(--radius); border: 1px solid var(--accent-900); background: var(--bg); color: var(--text-muted); display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+  /* Armed by content: the send affordance stays quiet until there is a note
+     to send, then takes the accent — attention follows the words in. */
+  .round.send.armed { background: var(--accent-400); color: var(--void); border-color: var(--accent-400); }
+  .round:disabled { opacity: 0.5; cursor: default; }
   .grow { flex: 1; }
   textarea { background: var(--surface); border: none; border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; padding: 12px 14px; resize: vertical; }
   textarea:focus { outline: 1px solid var(--accent-500); }
+  .handle { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-700); margin: 0 auto; }
+  .lid { background: none; border: none; padding: 0 0 12px; margin: 0; color: inherit; font: inherit; text-align: left; display: flex; flex-direction: column; gap: 9px; cursor: pointer; width: 100%; }
+  .peekhead { display: flex; align-items: baseline; gap: 8px; }
+  .peekcount { font-family: var(--mono); font-size: 11px; color: var(--accent-400); }
+  .peekrow { display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--accent-900); padding-top: 9px; }
+  .scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 5; }
+  /* Two states, one element. Collapsed: a footer in layout — the drawer's
+     lid at the page's bottom edge. Open: lifted into the sheet band over
+     the scrim. */
+  .sheet { flex-shrink: 0; width: 100%; max-width: 680px; margin-inline: auto; background: var(--surface); border: 1px solid var(--accent-900); border-bottom: none; border-radius: 14px 14px 0 0; display: flex; flex-direction: column; gap: 10px; padding: 6px 14px 0; }
+  .sheet.open { position: absolute; left: 0; right: 0; bottom: 0; height: auto; max-height: calc(100% - 12px); background: var(--bg); border-color: var(--accent-700); z-index: 6; animation: sheet-in 0.2s ease-out; }
+  @keyframes sheet-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }
+  .sheetlip { background: none; border: none; padding: 8px 0 2px; cursor: pointer; width: 100%; flex-shrink: 0; }
+  .sheethead { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .sheettitle { font-weight: 500; font-size: 16px; letter-spacing: -0.02em; }
+  .sortrow { display: flex; gap: 6px; margin-left: auto; }
+  .sortchip { font-family: var(--mono); font-size: 11px; color: var(--text-muted); background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); padding: 6px 10px; cursor: pointer; }
+  .sortchip.on { color: var(--accent-400); border-color: var(--accent-700); }
+  /* `.field` is flex: 1 for row layouts; in the sheet's column it must not
+     grow into the empty space. */
+  .sheet .field.small { flex: 0 0 auto; }
+  .sheetscroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px 0 calc(14px + env(safe-area-inset-bottom)); }
+  .sheetscroll > * { flex-shrink: 0; }
   .btn { min-height: 46px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; }
   .btn.primary { background: var(--accent-400); color: var(--void); font-weight: 500; border: none; }
   .btn.slim { min-width: 72px; }
@@ -677,16 +1122,19 @@
   /* The whole row is the target — a tap that only lands on the text is a
      tap most thumbs miss. */
   .notehead { background: none; border: none; padding: 0; margin: 0; color: inherit; font: inherit; text-align: left; display: flex; flex-direction: column; gap: 6px; cursor: pointer; width: 100%; }
-  .notetext { font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+  /* overflow-wrap: an unbroken run (a safelink URL in a mail episode) must
+     wrap inside the card, or it drags the whole page sideways. */
+  .notetext { font-size: 14px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
   .notetext.clamp { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .editbox { background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; padding: 12px 14px; resize: vertical; }
   .editbox:focus { outline: 1px solid var(--accent-500); }
   .editrow { display: flex; gap: 8px; }
   .editfoot { font-size: 11px; color: var(--text-muted); line-height: 1.45; }
   .notemeta { font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
-  .warnline { display: flex; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
+  /* pre-line: a refusal can be a list (resolve_one's ambiguity candidates),
+     and its line breaks are the answer's structure. */
+  .warnline { display: flex; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; }
   .saidline { font-family: var(--mono); font-size: 11px; color: var(--accent-400); }
   .empty { color: var(--text-muted); font-size: 13px; padding: 8px 0; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; padding-top: 6px; }
-  .kicker { margin-top: 8px; }
 </style>

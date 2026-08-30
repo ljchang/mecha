@@ -43,6 +43,7 @@ mod files;
 mod frontdoor;
 mod mail;
 mod present;
+mod proposals;
 mod questions;
 mod review;
 mod settings;
@@ -279,6 +280,21 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         )
         .route("/api/queue/verdict", axum::routing::post(review::verdict))
         .route("/api/queue/bind", axum::routing::post(review::bind))
+        // The proposal stores: harness candidates, rule proposals, the
+        // graph's entity proposals. One generic surface over
+        // `commands::review::review_source`, so a store added to that table
+        // reaches the phone without another handler.
+        .route("/api/proposals", get(proposals::stores))
+        .route("/api/proposals/{store}", get(proposals::list))
+        .route("/api/proposals/{store}/{id}", get(proposals::detail))
+        .route(
+            "/api/proposals/{store}/{id}/accept",
+            axum::routing::post(proposals::accept),
+        )
+        .route(
+            "/api/proposals/{store}/{id}/reject",
+            axum::routing::post(proposals::reject),
+        )
         .route("/api/mail", get(mail::list))
         .route("/api/mail/inbox", get(mail::inbox))
         .route("/api/mail/compose", axum::routing::post(mail::compose))
@@ -367,6 +383,22 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/find", get(board::find))
         .route("/api/related", get(board::related))
         .route("/api/timeline", get(board::timeline))
+        .route(
+            "/api/entity/alias",
+            axum::routing::post(board::entity_alias),
+        )
+        .route(
+            "/api/entity/unalias",
+            axum::routing::post(board::entity_unalias),
+        )
+        .route(
+            "/api/entity/merge",
+            axum::routing::post(board::entity_merge),
+        )
+        .route(
+            "/api/entity/create",
+            axum::routing::post(board::entity_create),
+        )
         .route("/api/facts", axum::routing::post(board::fact))
         .route(
             "/api/facts/retract",
@@ -807,6 +839,22 @@ mod tests {
             ("GET", "/api/timeline?name=x"),
             ("POST", "/api/facts"),
             ("POST", "/api/facts/retract"),
+            ("POST", "/api/entity/alias"),
+            ("POST", "/api/entity/unalias"),
+            ("POST", "/api/entity/merge"),
+            ("POST", "/api/entity/create"),
+            // The proposal stores, and the higher-stakes half: an accept on
+            // `harness` writes an entry into the override layer every future
+            // run reads its config through, and one on `entities` applies a
+            // merge with no undo. The guard is a whole-router layer, so these
+            // are covered today and this pins that they stay so — which is
+            // this test's own argument, since a route added later is exactly
+            // the one an earlier guard test cannot be covering.
+            ("GET", "/api/proposals"),
+            ("GET", "/api/proposals/harness"),
+            ("GET", "/api/proposals/harness/1"),
+            ("POST", "/api/proposals/harness/1/accept"),
+            ("POST", "/api/proposals/harness/1/reject"),
         ] {
             let response = test_router()
                 .oneshot(

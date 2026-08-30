@@ -1064,9 +1064,16 @@ export const entity = {
   found: true,
   query: 'Priya Raghavan',
   node: {
+    // The id rides in the real envelope and the page's write paths key on
+    // it (facts, unalias, merge) — a fixture without it makes those forms
+    // silently inert in the demo, which reads as a broken feature.
+    id: 'person-priya-demo',
     name: 'Priya Raghavan',
     node_type: 'person',
     aliases: ['Priya R.', 'priya.raghavan'],
+    // Deterministic keys — how sources reach the node, rendered apart from
+    // the aliases (how it is spoken of).
+    identifiers: [{ kind: 'email', value: 'priya.raghavan@ostrander.edu' }],
   },
   // Per-source coverage — which stores actually saw this person, and how
   // often. The graph tab renders it on the head card.
@@ -1194,6 +1201,73 @@ export const timeline = {
 //   *entirely* unvalidated means the ledger is not running.
 // - A retirement step (`rules_after < rules_before`, no reflections) renders
 //   differently from a consolidation, so both appear.
+// The Proposals pane: three stores off one summary read, then a listing and
+// a `show` per item. Shapes mirror serve/proposals.rs (StoreRow, Listing of
+// ReviewRow, Detail) — and `depth` is a count or null, never an invented
+// zero.
+// The `opens` verbs and depths MUST agree with the `queues` fixture above —
+// serve's `stores` reads the same `mecha review queues` the home page does,
+// so a demo where the two disagree shows one queue with two depths, and an
+// `opens` line that names a command that does not exist teaches a docs
+// reader a verb that will fail.
+export const proposalStores = [
+  {
+    store: 'harness',
+    label: 'harness candidates',
+    depth: 0,
+    detail: 'nothing accepted since Tuesday',
+    oldest: null,
+    opens: 'mecha harness list',
+  },
+  {
+    store: 'rules',
+    label: 'rule proposals',
+    depth: 1,
+    detail: '1 retirement proposed',
+    oldest: '2026-08-27 06:10:00',
+    opens: 'mecha proposals',
+  },
+  {
+    store: 'entities',
+    label: 'graph entities',
+    depth: 2,
+    detail: '2 proposals: 1 rename, 1 merge',
+    oldest: '2026-08-25 09:40:00',
+    opens: 'mecha-graph proposals list',
+  },
+];
+
+export const proposalList = {
+  label: 'graph entities',
+  rows: [
+    {
+      id: '41',
+      kind: 'rename',
+      title: 'priya.raghavan@ostrander.edu → Priya Raghavan',
+      detail: 'named by an address; already aliased "Priya Raghavan" (148 mentions)',
+    },
+    {
+      id: '42',
+      kind: 'merge',
+      title: 'fold P. Raghavan into Priya Raghavan',
+      detail: 'near-duplicate person: same mail identifier, 9 shared episodes',
+    },
+  ],
+};
+
+export const proposalDetail = {
+  text: `#42 · merge · pending
+  keep  Priya Raghavan (person-priya-demo)
+  fold  P. Raghavan (person-priya-dup-demo)
+
+evidence: near-duplicate person — the same mail identifier reaches both,
+and 9 episodes mention the pair within a minute of each other.
+
+accepting moves every fact, mention and alias onto the kept node and
+records the decision; rejecting files a durable no the detector will
+not re-ask.`,
+};
+
 export const learningReport = {
   buckets: [
     {

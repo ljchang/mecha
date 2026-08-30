@@ -119,6 +119,27 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Add an alias to an entity: another way of saying the same name.
+    /// Takes the node id `entity --json` prints, symmetric with `unalias` —
+    /// an ambiguous name is exactly what an alias edit must not resolve
+    /// through.
+    Alias {
+        /// The node's id, from `entity --json`
+        node_id: String,
+        /// The alias to add
+        alias: String,
+    },
+    /// Remove an alias from an entity — the conflation repair, for a name
+    /// that belonged to somebody else. Takes the node id `entity --json`
+    /// prints, never a name: on this verb a name lookup could resolve
+    /// through the very alias being removed. (Adding an alias stays where
+    /// it always was: answering the disambiguation prompt.)
+    Unalias {
+        /// The node's id, from `entity --json`
+        node_id: String,
+        /// The alias to remove
+        alias: String,
+    },
     /// Capture a note as an episode. Entities named in it are linked on
     /// landing; the nightly extractor mines it like any other evidence.
     Note {
@@ -156,7 +177,42 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             None => note(global, &text.join(" ")).await,
         },
         Cmd::Notes { limit, json } => notes(global, limit, json).await,
+        Cmd::Alias { node_id, alias } => alias_add(global, &node_id, &alias).await,
+        Cmd::Unalias { node_id, alias } => unalias(global, &node_id, &alias).await,
     }
+}
+
+/// The other direction of the same repair surface: the owner stating that a
+/// name is another way of saying this node. Direct write, no review queue —
+/// the same rule that lets a disambiguation answer land as an alias.
+async fn alias_add(global: &GlobalOpts, node_id: &str, alias: &str) -> Result<()> {
+    call(
+        global,
+        "kg_upsert",
+        json!({ "kind": "alias", "node_id": node_id, "alias": alias, "source": "user" }),
+    )
+    .await?;
+    println!("aliased — {alias:?} now resolves to {node_id}");
+    Ok(())
+}
+
+/// The conflation repair, relayed to `kg_upsert{kind=alias, remove}` — the
+/// graph decides and reports; this only refuses to guess. The two output
+/// lines are deliberately distinct: a no-op on a repair verb must not read
+/// as success on the wrong node.
+async fn unalias(global: &GlobalOpts, node_id: &str, alias: &str) -> Result<()> {
+    let out = call(
+        global,
+        "kg_upsert",
+        json!({ "kind": "alias", "node_id": node_id, "alias": alias, "remove": true }),
+    )
+    .await?;
+    if out["removed"].as_bool() == Some(true) {
+        println!("removed alias {alias:?} from {node_id} — future mentions of it land elsewhere");
+    } else {
+        println!("no alias {alias:?} on {node_id} — nothing removed");
+    }
+    Ok(())
 }
 
 /// Call one `kg_*` tool and return its parsed answer — `tasks::call`'s twin.

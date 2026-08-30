@@ -12,6 +12,39 @@ source the same day. All five owner decisions are ruled in §8.*
 > entity half of the drawer interleave and per-fact provenance chips
 > (both need small mecha-graph-side reads, named in §2.1/§2.2), all of
 > tier 2, and tier 3.
+>
+> **Status 2026-08-30: the §2.1 drawer shipped as a bottom sheet
+> (`feat/graph-notebook`)** — capture became a composer (send armed by
+> content, ⌘⏎), the resting page shows the notebook's lid, and the sheet
+> holds the whole envelope (`?limit=` rides through to `kg notes`),
+> sortable by date both ways with a text filter. Note rows render a
+> `note.entities` chip row the moment `kg_notes` returns one; that
+> envelope field and the frecency interleave remain the mecha-graph-side
+> residue.
+>
+> **Status 2026-08-30, later: the first curation rung shipped** — the
+> entity page's aliases became removable in place (two taps; the repair
+> for a first-name conflation magnet, ruled by the owner: expose repairs
+> through mecha, "easy to enter, easy to correct in place").
+> `kg_upsert kind=alias` grew `remove` graph-side, `mecha kg unalias`
+> relays it (id-only, like `retract`), `POST /api/entity/unalias` sits
+> behind the owner guard.
+>
+> **Status 2026-08-30, evening: the rest of the curation rung shipped,
+> under a recorded ruling.** The owner ruled the authority question
+> merge raised: web merges ride the *proposals record* — `mecha-graph
+> proposals file-merge --accept`, filed under detector `owner`, so the
+> graph's one no-undo verb always leaves a decided proposal behind it —
+> and the model's MCP tool surface gains nothing (still true; the owner
+> lane is serve spawning `mecha-graph` directly). Shipped on that
+> ruling: `POST /api/entity/merge` and the entity page's merge form,
+> alias *add* (`mecha kg alias` over the existing `kind=alias` write),
+> create-on-miss (`new-person`/`new-node`), identifiers in the
+> `kg_entity` envelope rendered as the card's `reaches` row, and the
+> three-store `/api/proposals` pane (harness · rules · entities).
+> Still CLI-only: rename, retype, `relink-aliases` (retracting already
+> mis-filed mentions), `move-identifier`, and a reject *reason* for the
+> graph's proposal store.
 
 ## 1. The problem, verified
 
