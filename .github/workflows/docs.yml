@@ -21,9 +21,21 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
+# A pull-request build must not share a queue with main's deploy. GitHub holds
+# only one *pending* run per concurrency group, so a third arrival evicts the
+# one that is waiting — and on 2026-08-29 a PR build evicted the main-push
+# deploy of PR #118 (run 33256024329 ran no jobs at all, created 13:50:09 and
+# cancelled 13:54:56, the second the next PR run was created). It self-healed
+# because the next push to main rebuilt from a fresh checkout, but that is
+# luck: the `paths` filter above means a run of pushes touching only Rust or
+# `docs/` re-triggers nothing, and the site sits stale behind a history that
+# shows no failure — a cancelled run reads as neither pass nor fail.
+#
+# So deploys serialise only against each other, and PR builds serialise
+# per-branch and supersede their own earlier runs.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.ref) || 'pages-deploy' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Runs on every pull request too. `onBrokenLinks` is set to 'throw', so a
@@ -31,6 +43,11 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    # A hung runner must not hold the deploy queue open. On 2026-08-29 this job
+    # sat 45 minutes with every step reporting an empty conclusion — no step
+    # ever completed — and that is what made the queue deep enough to start
+    # evicting. A green build here takes ~1m30s.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: website
