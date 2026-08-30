@@ -27,7 +27,30 @@ export const OWNER = 'demo@example.com';
 
 export const summary = {
   owner: OWNER,
+  // All eight rows `collect_queues()` pushes, in its order, with its `opens`
+  // strings verbatim. The depths and details are invented; the names and the
+  // commands are not, because the home page now *prints* `opens` on any queue
+  // with no page behind it — a fixture that made one up would be teaching the
+  // demo's reader a command that does not exist.
   queues: [
+    {
+      queue: 'graph candidates',
+      depth: 12,
+      detail: 'from last night’s extraction',
+      opens: 'mecha review list',
+    },
+    {
+      queue: 'graph entities',
+      depth: 4,
+      detail: '2 detector(s) with something to say',
+      opens: 'mecha-graph proposals list',
+    },
+    {
+      queue: 'graph shadow',
+      depth: 2,
+      detail: '31 unreviewed facts live, 2 ever served',
+      opens: 'mecha review shadow',
+    },
     {
       queue: 'outbox drafts',
       depth: 3,
@@ -35,22 +58,22 @@ export const summary = {
       opens: 'mecha outbox',
     },
     {
+      queue: 'blocked questions',
+      depth: 1,
+      detail: '1 asked with third-party content in the conversation',
+      opens: 'mecha questions',
+    },
+    {
       queue: 'front-door requests',
       depth: 1,
       detail: 'a speaking invitation, extracted',
-      opens: 'mecha frontdoor',
-    },
-    {
-      queue: 'graph candidates',
-      depth: 12,
-      detail: 'from last night’s extraction',
-      opens: 'mecha review sample',
+      opens: 'mecha frontdoor list',
     },
     {
       queue: 'rule proposals',
       depth: 1,
       detail: '1 retirement proposed',
-      opens: 'mecha learn',
+      opens: 'mecha proposals',
     },
     {
       queue: 'harness changes',

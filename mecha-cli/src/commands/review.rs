@@ -1459,6 +1459,149 @@ mod tests {
         }
     }
 
+    /// Pull the strings out of a `const NAME = ['a', 'b'];` literal in a
+    /// Svelte file, however it is wrapped.
+    ///
+    /// It reads bracket-to-bracket rather than line-by-line on purpose. The
+    /// first version matched the one line the declaration sat on, which
+    /// quietly made "keep this array on one line" a requirement of files this
+    /// test does not own — unenforced by anything (the web app has no
+    /// prettier and no eslint), undocumented at the declaration, and load
+    /// bearing only inside a Rust test three directories away. A peer about
+    /// to reformat `App.svelte` offered to work around it, which is what
+    /// showed it up: a guard that constrains how other people may format
+    /// their code has overreached, and the fix belongs in the guard.
+    ///
+    /// It still panics rather than returning an empty set, because an empty
+    /// allowlist would make every assertion below vacuously true.
+    fn js_string_array(src: &str, decl: &str) -> Vec<String> {
+        let from = src
+            .find(decl)
+            .unwrap_or_else(|| panic!("`{decl}` is gone — this guard is reading nothing"));
+        let rest = &src[from..];
+        let open = rest
+            .find('[')
+            .unwrap_or_else(|| panic!("`{decl}` is no longer an array literal"));
+        let close = open
+            + rest[open..]
+                .find(']')
+                .unwrap_or_else(|| panic!("`{decl}` has no closing bracket"));
+        let out: Vec<String> = rest[open + 1..close]
+            .split(',')
+            .map(|s| s.trim().trim_matches(['\'', '"']).to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert!(!out.is_empty(), "`{decl}` parsed as empty");
+        out
+    }
+
+    /// The web home page renders `review queues --json` through two hardcoded
+    /// maps: queue name to title, and queue name to destination. Both are
+    /// readers of *this* function's output living in another language, so
+    /// nothing links them — `blocked questions` was added here and the home
+    /// page went on rendering it under its raw wire name with nowhere to go,
+    /// while the tasks tab had been showing those very items all along.
+    ///
+    /// **Both halves are checked, because the first version of this test
+    /// checked only titles and that was not enough.** A missing title is
+    /// loud: the card shows a lowercase wire name. A wrong *destination* is
+    /// silent — `navigate("reviw/outbox")` leaves the router with no matching
+    /// view, so the card keeps its chevron, lands you back on home, lights no
+    /// nav tab, and puts `#reviw/outbox` in the URL. Measured rather than
+    /// assumed: with that typo in place, the title-only version passed.
+    ///
+    /// Every file is read with `include_str!`, so this cannot pass by
+    /// checking a path that does not exist. It verifies *naming and
+    /// reachability* only — whether a queue **should** have a page is a
+    /// product judgement (three are genuinely CLI-only), and the page states
+    /// that per card by printing the command that does open it.
+    #[test]
+    fn every_queue_the_backlog_reports_is_named_and_reachable_from_the_web_home() {
+        let home = include_str!("../../../web/src/lib/Home.svelte");
+        let block = |after: &str| -> String {
+            home.split_once(after)
+                .unwrap_or_else(|| panic!("Home.svelte must still declare `{after}`"))
+                .1
+                .split_once("};")
+                .expect("the map must still close with `};`")
+                .0
+                .to_string()
+        };
+        let labels = block("const queueLabels");
+        let targets_src = block("const queueTargets");
+
+        // The router's own tables, so a destination is checked against what
+        // actually resolves rather than against a copy of it kept here.
+        let views = js_string_array(include_str!("../../../web/src/App.svelte"), "const views =");
+        let review_panes = js_string_array(
+            include_str!("../../../web/src/lib/Review.svelte"),
+            "const panes =",
+        );
+        let settings_panes = js_string_array(
+            include_str!("../../../web/src/lib/Settings.svelte"),
+            "const PANES =",
+        );
+
+        // Every `name: "…"` in this file is a Queue row; keep it that way, or
+        // this reads a literal that is not a queue.
+        let names: Vec<&str> = include_str!("review.rs")
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("name: \""))
+            .filter_map(|l| l.split_once('"'))
+            .map(|(n, _)| n)
+            .collect();
+        // A sentinel, not just a count: a count still passes when the
+        // extraction breaks and finds a different eight things.
+        assert!(
+            names.contains(&"outbox drafts") && names.len() >= 8,
+            "the queue-row extraction found {names:?} — did the rows move?"
+        );
+
+        let targets: Vec<(&str, &str)> = targets_src
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix('\''))
+            .filter_map(|l| l.split_once("': '"))
+            .filter_map(|(q, rest)| rest.split_once('\'').map(|(t, _)| (q, t)))
+            .collect();
+        assert!(!targets.is_empty(), "queueTargets parsed as empty");
+
+        for name in &names {
+            assert!(
+                labels.contains(&format!("'{name}':")),
+                "queue {name:?} has no entry in Home.svelte's queueLabels — the \
+                 card renders under its wire name. Add a title, and a \
+                 queueTargets entry if a page on the phone shows it."
+            );
+        }
+
+        for (queue, target) in &targets {
+            assert!(
+                names.contains(queue),
+                "queueTargets routes {queue:?}, which no longer exists — a \
+                 renamed queue leaves its destination behind as dead config."
+            );
+            let (view, sub) = target.split_once('/').unwrap_or((target, ""));
+            assert!(
+                views.contains(&view.to_string()),
+                "queue {queue:?} points at {target:?}, but the router knows no \
+                 view named {view:?} ({views:?}) — the card keeps its chevron \
+                 and silently lands on home with no nav tab lit."
+            );
+            let panes = match view {
+                "review" => &review_panes,
+                "settings" => &settings_panes,
+                // `graph`'s sub-hash is a search term, not a fixed pane.
+                _ => continue,
+            };
+            assert!(
+                sub.is_empty() || panes.contains(&sub.to_string()),
+                "queue {queue:?} points at {target:?}, but {view:?} has no pane \
+                 {sub:?} ({panes:?}) — it opens the view's default instead, \
+                 which is the wrong page arrived at quietly."
+            );
+        }
+    }
+
     /// The fan-out count comes off the child's own cascade line — the only
     /// process that knows what it did — and absence reads as absence.
     #[test]
