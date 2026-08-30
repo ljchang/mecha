@@ -34,17 +34,20 @@ people to approve, and the nightly mail classifier took both mailboxes;
 queue's similarity groups; 0.1.12 on 2026-08-22, 0.1.11 and 0.1.10 both on
 2026-08-21, 0.1.9 on 2026-08-20, and 0.1.7/0.1.8 on 2026-08-19/20 after the
 mail hold lifted).
-**`main` carries five merges beyond v0.1.16 that are not yet tagged**:
-#122 (2026-08-30, fifteen commits — **the learning loop runs itself and the
-instruments that grade it were fixed**: `learn --auto` with probation,
-nightly direct retirement, branched counterfactual probes, the surface
-rebuild from recorded specs; deployed to this machine the same night, so
-the installed binary is `main`); and the 2026-08-29 four — #114, the
-shadow queue on every owner surface (plus a web entity page and chat
-tool-result previews); #116, the `/tasks` page repair; #115, the appraisal
-docs-page rework; #117, the docs site's fixture-backed web demo and its
-two CI gates. All in the `Unreleased` section of `CHANGELOG.md`; the next
-tag is v0.1.17.
+**`main` carries eight merges beyond v0.1.16 that are not yet tagged**:
+the 2026-08-30 three — #124 (**the retirement drill ran the NoGo path
+whole, and fixed the probation leash it proved unreachable** — deployed
+the same hour, so the installed binary is `main` at `6987bc5`); #120, the
+notes and graph tabs become one graph tab; #123, the docs deploy stops
+being evictable by a PR build — then #122 (2026-08-30, fifteen commits —
+**the learning loop runs itself and the instruments that grade it were
+fixed**: `learn --auto` with probation, nightly direct retirement,
+branched counterfactual probes, the surface rebuild from recorded specs);
+and the 2026-08-29 four — #114, the shadow queue on every owner surface
+(plus a web entity page and chat tool-result previews); #116, the
+`/tasks` page repair; #115, the appraisal docs-page rework; #117, the
+docs site's fixture-backed web demo and its two CI gates. All in the
+`Unreleased` section of `CHANGELOG.md`; the next tag is v0.1.17.
 
 **0.1.14 is thirty-one commits from three sessions working the same day**,
 which is the thing to know about reading its history: the lanes interleave,
@@ -137,13 +140,21 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,980 tests**, no failures — measured 2026-08-30 on
+Expect **1,981 tests**, no failures — measured 2026-08-30 in this checkout
+on `main` at **6987bc5** (the #124 merge, which also folds in #120 and
+#123): **655** in `mecha-cli` with 1 ignored, **1,081** in `mecha-core`,
+the rest unchanged. The **4** added over 1,977 at `4c7a0e2` are fully
+attributed: `mecha-cli` +2 (#124's probationary-conviction-at-2 test in
+`commands/rules.rs`, and #120's `the_graph_routes_sit_behind_the_owner_guard`
+in `commands/serve`) and `mecha-core` +2 (#124's probation release tests in
+`learning.rs`). A caution from chasing that split: two lanes measuring
+trees at *different commits* both reached for a provisioning explanation
+before a `--list` diff named the one test and the commit it rode in on —
+diff the test lists before theorising about the environment.
+
+The previous figure was **1,980**, measured 2026-08-30 on
 `feat/retirement-drill` (the retirement-drill arc, three commits on
-`4c7a0e2`): **654** in `mecha-cli` with 1 ignored, **1,081** in
-`mecha-core`, the rest unchanged. The **3** added over the previous figure
-split `mecha-cli` +1 (the probationary-conviction-at-2 test in
-`commands/rules.rs`) and `mecha-core` +2 (the probation release tests in
-`learning.rs`).
+`4c7a0e2`, before the merge picked up #120's test).
 
 The previous figure was **1,977**, measured 2026-08-30 on `main` at
 **4c7a0e2** (the learning-loop-autonomy merge, PR #122: **653** in
@@ -284,15 +295,15 @@ id.
 | Suite | Count |
 |---|---:|
 | `mecha-core` unit | 1,081 |
-| `mecha-cli` unit | 654 (1 ignored) |
+| `mecha-cli` unit | 655 (1 ignored) |
 | `mecha-cli` `first_run` integration | 20 |
 | `mecha-mail` unit | 133 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
 
-Measured 2026-08-30 on `feat/retirement-drill`, same tree as the first
-prose figure above (1,980). The table had drifted two counts behind the
+Measured 2026-08-30 on `main` at `6987bc5`, same tree as the first
+prose figure above (1,981). The table had drifted two counts behind the
 prose once already, which is the failure mode of stating one fact twice — read
 the prose if they ever disagree again, and fix the table.
 
@@ -509,6 +520,27 @@ the published bundle. Branch state: `worktree-shadow-queue-surfaces` still
 exists on the remote (its session holds the worktree; left for cleanup
 after that session ends); `fix/tasks-stalled-field`, `docs/appraisal-page-
 rework` and `docs/web-surface-demo` are merged and deleted.
+
+**2026-08-30 (~12:45 UTC) — deployed at `main` = `6987bc5` (#124 + #120 +
+#123), every claim verified by capability.** `mecha` reinstalled from this
+checkout (pulled to the merge first) and proven current by asking the
+artifact — `mecha rules list --json` answers with the new `graded` field —
+because the version string reads 0.1.16 on both sides of the install and
+proves nothing. Web dist rebuilt from `main` and rsynced to
+`~/.mecha/web/dist`; the `:63242` door serves the new bundle hash. That
+rsync *superseded* the graph-tab lane's `deployed-local` test build
+(`67022e5`) — checked first, found to be an ancestor of the merge, so
+nothing unmerged was reverted — and the tag is deleted, per the update
+skill. All five long-running units restarted and each verified by its
+startup line (Slack reconnected with 1 owner / 16 threads; triggers
+ticking; both serve doors; Uvicorn on 7860); the stale-process sweep found
+nothing. The benchmark musl binary was rebuilt the same hour
+(`bench/build-portable.sh`, dated Aug 30, answers `graded` too), so
+scorecards measure current code. Deliberately untouched, each for a
+verified reason: `mecha-mail` binaries (no diff in `4c7a0e2..6987bc5`),
+both graph binaries (different repo, no movement), `mecha-parakeet` (its
+script unchanged; a restart costs a model load), the factory client and
+droplet (different version line, not part of this deploy).
 
 **2026-08-26 (00:12 UTC) — installed and restarted again, and one commit
 of deliberate skew.** `mecha` reinstalled and all five long-running units
