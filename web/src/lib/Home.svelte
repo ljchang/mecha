@@ -35,8 +35,11 @@
   // questions` shipped titled "blocked questions" and going nowhere for as
   // long as it took someone to tap it: this map is a hardcoded reader of a
   // list produced in Rust, so the drift is silent in both directions.
-  // `every_queue_the_backlog_reports_is_named_by_the_web_home` fails the
-  // build instead.
+  // `every_queue_the_backlog_reports_is_named_and_reachable_from_the_web_home`
+  // (mecha-cli/src/commands/review.rs) fails `cargo test` instead — it checks
+  // both maps against this file *and* against the router's own view and pane
+  // lists, because a wrong destination is the silent half: the card keeps its
+  // chevron and quietly lands on home.
   const queueLabels = {
     'outbox drafts': 'Outbox',
     'blocked questions': 'Questions',
@@ -88,7 +91,7 @@
     <span class="count">{dash(q.depth)}</span>
   </div>
   <div class="sub" title={q.detail}>{q.detail}</div>
-  {#if !target}<div class="opens">{q.opens}</div>{/if}
+  {#if !target}<div class="opens">{q.opens ?? '—'}</div>{/if}
 {/snippet}
 
 <header>
