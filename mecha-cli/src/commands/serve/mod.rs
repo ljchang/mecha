@@ -387,6 +387,10 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
             "/api/entity/unalias",
             axum::routing::post(board::entity_unalias),
         )
+        .route(
+            "/api/entity/merge",
+            axum::routing::post(board::entity_merge),
+        )
         .route("/api/facts", axum::routing::post(board::fact))
         .route(
             "/api/facts/retract",
@@ -828,6 +832,7 @@ mod tests {
             ("POST", "/api/facts"),
             ("POST", "/api/facts/retract"),
             ("POST", "/api/entity/unalias"),
+            ("POST", "/api/entity/merge"),
         ] {
             let response = test_router()
                 .oneshot(
