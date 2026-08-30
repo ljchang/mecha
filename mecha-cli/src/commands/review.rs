@@ -1459,6 +1459,53 @@ mod tests {
         }
     }
 
+    /// The web home page renders `review queues --json` through a hardcoded
+    /// map of queue name → title and destination. That map is a reader of
+    /// *this* function's output living in another language, so nothing links
+    /// the two: `blocked questions` was added here and the home page went on
+    /// rendering it under its raw wire name, with no destination, even though
+    /// the tasks tab had shown those items all along. Adding a queue below
+    /// now fails here instead of shipping a card that does nothing when
+    /// tapped.
+    ///
+    /// Both files are read at compile time, so this cannot pass by looking
+    /// somewhere that does not exist. It checks naming only — whether a queue
+    /// *should* navigate is a product judgement (three of them are genuinely
+    /// CLI-only), and the page states that per card by printing `opens`.
+    #[test]
+    fn every_queue_the_backlog_reports_is_named_by_the_web_home() {
+        let home = include_str!("../../../web/src/lib/Home.svelte");
+        let (labels, _) = home
+            .split_once("const queueTargets")
+            .expect("Home.svelte must still declare queueTargets");
+        let labels = labels
+            .split_once("const queueLabels")
+            .expect("Home.svelte must still declare queueLabels")
+            .1;
+
+        // Every `name: "…"` in this file is a Queue row; keep it that way, or
+        // this reads a literal that is not a queue.
+        let names: Vec<&str> = include_str!("review.rs")
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("name: \""))
+            .filter_map(|l| l.split_once('"'))
+            .map(|(n, _)| n)
+            .collect();
+        assert!(
+            names.len() >= 8,
+            "found only {names:?} — did the rows move?"
+        );
+
+        for name in names {
+            assert!(
+                labels.contains(&format!("'{name}':")),
+                "queue {name:?} has no entry in Home.svelte's queueLabels — the \
+                 card renders under its wire name. Add a title, and a \
+                 queueTargets entry if a page on the phone shows it."
+            );
+        }
+    }
+
     /// The fan-out count comes off the child's own cascade line — the only
     /// process that knows what it did — and absence reads as absence.
     #[test]
