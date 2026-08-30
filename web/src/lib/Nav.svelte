@@ -5,11 +5,13 @@
     ['home', 'M4 11l8-7 8 7M6 10v10h12V10', true],
     ['chat', 'M4 5h16v11H9l-5 4z', true],
     ['mail', 'M3 7l9 6 9-6M3 5h18v14H3z', true],
-    ['notes', 'M4 4h16v16H4zM8 9h8M8 13h5', true],
     ['graph', 'M5 7a2 2 0 104 0 2 2 0 10-4 0M15 17a2 2 0 104 0 2 2 0 10-4 0M15 5.5a2 2 0 104 0 2 2 0 10-4 0M8.7 8.2l5.4 7.4M9 6.7l4-0.5', true],
     ['review', 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5', true],
     ['tasks', 'M4 6h2M4 12h2M4 18h2M9 6h11M9 12h11M9 18h11', true],
   ];
+  // Settings deliberately takes no slot here: it is chrome, and the shell
+  // owns one gear in the same corner of every view (#118) — which is what
+  // makes it reachable from anywhere without being a seventh place to be.
 </script>
 
 <nav>
