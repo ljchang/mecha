@@ -383,6 +383,27 @@ A working agent harness, used and measured rather than just compiled.
 > worktree advice rather than a contradiction of it — the arc that owns the
 > service-referenced path stays put and everyone else moves.
 >
+> **The prohibition above got violated twice on 2026-08-30, by two sessions,
+> and the mitigation is what held — not either session's care.** Both branched
+> in this checkout (`git checkout -b`) without checking, because the rule as
+> written is absolute and branch work is not optional, so in practice it gets
+> read as advice. Nothing broke: `scripts/start-moe-mtp.sh` hashed
+> `d76da36c` identically on `main` and on all three live branches, and
+> `llama-local` stayed active. That is the 2026-08-21 fix working, not luck
+> being careful. So the rule is worth carrying as a **check** rather than a
+> ban, because a check is a thing a session can actually satisfy:
+>
+> ```
+> git rev-parse <branch>:scripts/start-moe-mtp.sh
+> git rev-parse main:scripts/start-moe-mtp.sh      # equal => the switch cannot move the server
+> ```
+>
+> Equal hashes mean a branch switch here is invisible to systemd. Unequal —
+> or a *dirty* working copy of that path, which no branch comparison can see —
+> means stop and use a worktree. Check before the switch: afterwards the file
+> has already changed, and it fails by coming back healthy and behaving
+> differently.
+>
 > The general lesson is in HISTORY under Environment: **"move it to a worktree"
 > assumes nothing outside the repository points at a path inside it**, and here
 > systemd does.
