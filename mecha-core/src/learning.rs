@@ -418,6 +418,25 @@ pub struct Rule {
     pub retired_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retired_reason: Option<String>,
+    /// **The gate could not measure this rule at birth.**
+    ///
+    /// `mecha learn --auto` applies a batch whose probes all skipped rather
+    /// than holding it — the D1 ruling, and the only alternative that is not
+    /// either today's stall (hold, when unmeasurable batches are the common
+    /// case) or giving up the `writing` and `followup` half of the corpus
+    /// permanently. What makes that defensible is that the rule is *marked*
+    /// and retires sooner: acting without certainty is the bet, and a shorter
+    /// leash is the hedge.
+    ///
+    /// **Distinct from "the ledger has not covered it yet"**, which is a
+    /// property of `rule_tallies` and true of every new rule for a while. This
+    /// records that the counterfactual gate ran and *could not grade it* —
+    /// the gate's probes never reach the validation ledger, so nothing else
+    /// remembers that. Cleared by [`clear_probation_when_measured`] once real
+    /// observations exist, because a rule the ledger has since graded is no
+    /// longer unmeasured whatever was true at birth.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub probation: bool,
 }
 
 impl Rule {
@@ -442,6 +461,11 @@ impl Default for Rule {
             created_at: None,
             retired_at: None,
             retired_reason: None,
+            // A rule is not on probation unless a gate says so, which is the
+            // fail-*open* direction here on purpose: probation shortens a
+            // rule's leash, so defaulting it on would retire hand-written and
+            // measured rules early.
+            probation: false,
         }
     }
 }
@@ -501,6 +525,15 @@ pub fn finalize_rules(
                 }
                 r.retired_at = prev.retired_at.clone();
                 r.retired_reason = prev.retired_reason.clone();
+                // The leash survives the rewrite. A rule born ungraded stays
+                // on the stricter threshold until the *ledger* clears it
+                // (`clear_probation_when_measured` owns the release
+                // direction, and only it) — without this line, one gradeable
+                // batch after an ungradeable one re-emitted the same rule
+                // with `probation: false` via `..Default::default()`, and
+                // the D1 hedge evaporated within a session or two while
+                // staying printed and documented.
+                r.probation = prev.probation;
             }
             // Retirement survives a reworded re-derivation, which exact text
             // equality above does not catch. Checked only against *retired*
@@ -548,6 +581,13 @@ fn mint_rule_id() -> String {
         chrono::Utc::now().format("%Y%m%d"),
         &uuid::Uuid::new_v4().to_string()[..8]
     )
+}
+
+/// serde hands `skip_serializing_if` a `&bool`, and `std::ops::Not::not`
+/// resolves to the by-value impl — which compiles, never matches, and writes
+/// the field anyway. Spelled out so the omission is actually tested.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn default_true() -> bool {
@@ -1277,6 +1317,98 @@ pub struct RuleTally {
     pub last_validated: Option<String>,
 }
 
+/// One line per active rule, carrying what the validation ledger measured
+/// about it — the learner's evidence for what to drop.
+///
+/// `attributed` is the number retirement argues from: a bisection pinned that
+/// regression on this rule specifically. Block-level `improved`/`regressed`
+/// only say what the whole rule set did while this rule rode along, which is
+/// context rather than credit.
+///
+/// **Unmeasured is rendered as unmeasured, never as zero.** A rule no probe
+/// has covered has no evidence either way, and printing `0 regressed` would
+/// read as a clean bill of health while printing nothing would read as
+/// harmless. Both are the "a dash is never zero" failure, and collapsing them
+/// would bias the learner against the newest rules — the ones with least
+/// chance to have been probed.
+pub fn render_active(
+    rules: &[&Rule],
+    tallies: &std::collections::BTreeMap<String, RuleTally>,
+) -> String {
+    if rules.is_empty() {
+        return "(none)".to_string();
+    }
+    rules
+        .iter()
+        .map(|r| {
+            let record = r
+                .id
+                .as_deref()
+                .and_then(|id| tallies.get(id))
+                .filter(|t| t.observations > 0)
+                .map(|t| {
+                    format!(
+                        " [measured: {} probe(s), {} improved, {} regressed, {} attributed to this rule]",
+                        t.observations, t.improved, t.regressed, t.attributed_regressions
+                    )
+                })
+                .unwrap_or_else(|| " [unmeasured: no probe has covered it yet]".into());
+            format!("- {}{}", r.text, record)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Drop the probation mark from any rule the ledger has since graded.
+///
+/// Probation says "born unmeasured", and that stops being true the moment a
+/// probe covers it — leaving the mark would retire a rule sooner on evidence
+/// that no longer applies, which is the stale-stamp failure one store over.
+/// Separate from [`finalize_rules`] because it is a function of the *ledger*
+/// rather than of the rewrite, and runs whenever tallies are read.
+pub fn clear_probation_when_measured(
+    rules: &mut [Rule],
+    tallies: &std::collections::BTreeMap<String, RuleTally>,
+) {
+    for r in rules.iter_mut().filter(|r| r.probation) {
+        let measured =
+            r.id.as_deref()
+                .and_then(|id| tallies.get(id))
+                .is_some_and(|t| t.observations > 0);
+        if measured {
+            r.probation = false;
+        }
+    }
+}
+
+/// Attributed regressions before an ordinary rule is retired.
+///
+/// Named rather than a bare 3 in the CLI's default, because
+/// [`PROBATION_RETIRE_AT`] is defined relative to it and a threshold that
+/// drifts from the one it is "stricter than" says nothing.
+pub const DEFAULT_RETIRE_AT: u32 = 3;
+
+/// Attributed regressions before a **probationary** rule is retired.
+///
+/// The other half of the D1 bet. A rule the gate could not grade went live on
+/// no evidence, so it must not need as much evidence to leave: acting without
+/// certainty is only defensible next to a shorter leash. Two rather than one
+/// because a single attributed regression is one bisection's opinion on one
+/// probe, and `LEARNING-AUTONOMY-DESIGN.md` §2 asks for *stricter where
+/// evidence is weaker*, not for a hair trigger.
+pub const PROBATION_RETIRE_AT: u32 = 2;
+
+/// The threshold this rule retires at, given the pass's ordinary one.
+///
+/// Never above `ordinary`: an operator lowering the global threshold must not
+/// accidentally raise it for the rules with the least evidence behind them.
+pub fn retire_threshold_for(rule: &Rule, ordinary: u32) -> u32 {
+    match rule.probation {
+        true => PROBATION_RETIRE_AT.min(ordinary),
+        false => ordinary,
+    }
+}
+
 /// Fold ledger rows into per-rule tallies.
 pub fn rule_tallies(records: &[ValidationRecord]) -> std::collections::BTreeMap<String, RuleTally> {
     let mut out: std::collections::BTreeMap<String, RuleTally> = Default::default();
@@ -1695,7 +1827,7 @@ impl Reflector {
         Reflector {
             provider,
             model,
-            max_tokens: 4096,
+            max_tokens: crate::provider::LOCAL_MAX_TOKENS,
         }
     }
 
@@ -1925,6 +2057,12 @@ The user's own rules are shown for context and are IMMUTABLE — never copy, \
 restate, merge, or contradict them; the learned set only covers what they do \
 not.
 
+Each current rule carries its measured record from replay probes. Weigh it: a \
+rule with regressions attributed to it has been measured to make things worse \
+and should be dropped or narrowed unless the new reflections argue hard for \
+it. A rule marked *unmeasured* is not a bad rule — no probe has covered it \
+yet — so judge it on its merits, never drop it for lacking evidence.
+
 Rules must be reusable directives about *how to behave*, not restatements of \
 one incident. Prefer rules supported by more than one reflection; a single \
 reflection may become a rule only when the lesson is unambiguous. Fewer, \
@@ -2077,7 +2215,7 @@ impl Learner {
         Learner {
             provider,
             model,
-            max_tokens: 8192,
+            max_tokens: crate::provider::LOCAL_MAX_TOKENS,
         }
     }
 
@@ -2085,12 +2223,30 @@ impl Learner {
         &self.model
     }
 
+    /// Consolidate `reflexions` into a rewritten rule set for `domain`.
+    ///
+    /// `tallies` is the validation ledger folded per rule
+    /// ([`rule_tallies`]), and it is what makes a rewrite *self-correcting*
+    /// rather than merely churning. A consolidation is a full replacement —
+    /// a rule the learner omits simply vanishes, since only retired rules are
+    /// carried forward by [`finalize_rules`] — so dropping is already the
+    /// cheap operation. Without the ledger the learner chose what to drop
+    /// from the rule text alone and was as likely to drop a rule that was
+    /// working as one that was not; the measurement existed and reached
+    /// retirement only, which fires at a threshold and says nothing below it.
+    ///
+    /// **A never-validated rule is not a bad rule.** It is rendered as
+    /// unmeasured and the frame says so, because "no evidence" and "evidence
+    /// of harm" are opposite findings and collapsing them would retire the
+    /// newest rules fastest — the ones that have had least chance to be
+    /// probed.
     pub async fn learn(
         &self,
         domain: &str,
         user_rules: &[Rule],
         learned_rules: &[Rule],
         reflexions: &[Reflexion],
+        tallies: &std::collections::BTreeMap<String, RuleTally>,
     ) -> Result<Option<Vec<Rule>>> {
         let render_rules = |rules: &[Rule]| {
             if rules.is_empty() {
@@ -2157,11 +2313,11 @@ impl Learner {
             "Domain: {domain}\n\n\
              ## User rules (IMMUTABLE, context only)\n{}\n\n\
              {retired_section}\
-             ## Current learned rules (to be rewritten)\n{}\n\n\
+             ## Current learned rules (to be rewritten, with their measured record)\n{}\n\n\
              ## New reflections ({})\n{}\n\n\
              Rewrite the learned rule set. Reply with the JSON object only.",
             render_rules(user_rules),
-            render_rules(&active.iter().map(|r| (*r).clone()).collect::<Vec<_>>()),
+            render_active(&active, tallies),
             reflexions.len(),
             if rendered_reflexions.is_empty() {
                 "(none)"
@@ -2896,6 +3052,7 @@ mod tests {
             created_at: None,
             retired_at: None,
             retired_reason: None,
+            probation: false,
         }
     }
 
@@ -3964,5 +4121,175 @@ mod tests {
             "error_type":null,"confidence":null,"created_at":"t","origin":"clean"}"#;
         let r: Reflexion = serde_json::from_str(json).unwrap();
         assert_eq!(r.evidence, Evidence::Full);
+    }
+}
+
+#[cfg(test)]
+mod ledger_in_the_learner_tests {
+    use super::*;
+
+    fn r(text: &str, id: &str) -> Rule {
+        Rule {
+            text: text.into(),
+            id: Some(id.into()),
+            ..Default::default()
+        }
+    }
+
+    /// **The learner is told what each live rule measured**, so a rewrite can
+    /// drop what has been shown to hurt instead of guessing from the text.
+    ///
+    /// Fails on the old behaviour: active rules were rendered as bare text,
+    /// so the ledger reached retirement (a threshold) and nothing else. Below
+    /// that threshold the measurement existed and no consolidation could see
+    /// it — which made a full-replacement rewrite churn rather than correct.
+    #[test]
+    fn active_rules_carry_their_measured_record_and_unmeasured_says_so() {
+        let bad = r("Bad rule.", "r-bad");
+        let fresh = r("New rule.", "r-new");
+        let mut tallies: std::collections::BTreeMap<String, RuleTally> = Default::default();
+        tallies.insert(
+            "r-bad".into(),
+            RuleTally {
+                observations: 9,
+                improved: 1,
+                regressed: 6,
+                attributed_regressions: 3,
+                last_validated: Some("2026-08-29T00:00:00Z".into()),
+            },
+        );
+
+        let out = render_active(&[&bad, &fresh], &tallies);
+
+        // The measured one carries the number retirement argues from.
+        assert!(
+            out.contains("9 probe(s)") && out.contains("3 attributed to this rule"),
+            "a measured rule must show its record: {out}"
+        );
+        // The unmeasured one is marked unmeasured — never rendered as zero,
+        // which would read as a clean bill of health it has not earned.
+        assert!(
+            out.contains("New rule. [unmeasured:"),
+            "an unprobed rule must say so: {out}"
+        );
+        assert!(
+            !out.contains("New rule. [measured"),
+            "absent evidence must never render as measured evidence: {out}"
+        );
+    }
+
+    /// An empty active set renders as `(none)` rather than an empty string,
+    /// so the section never collapses into the one after it.
+    #[test]
+    fn an_empty_active_set_is_explicit() {
+        assert_eq!(render_active(&[], &Default::default()), "(none)");
+    }
+}
+
+#[cfg(test)]
+mod probation_tests {
+    use super::*;
+
+    fn r(id: &str, probation: bool) -> Rule {
+        Rule {
+            text: format!("rule {id}"),
+            id: Some(id.into()),
+            probation,
+            ..Default::default()
+        }
+    }
+
+    fn tally(observations: u32) -> RuleTally {
+        RuleTally {
+            observations,
+            improved: 0,
+            regressed: 0,
+            attributed_regressions: 0,
+            last_validated: None,
+        }
+    }
+
+    /// **A probationary rule retires sooner**, which is the entire hedge
+    /// behind letting an ungraded batch go live at all (D1). Without it,
+    /// `--auto` applies unmeasured rules on exactly the same terms as
+    /// measured ones and the probation mark is decoration.
+    #[test]
+    fn probation_shortens_the_leash_but_never_lengthens_it() {
+        assert_eq!(retire_threshold_for(&r("a", false), DEFAULT_RETIRE_AT), 3);
+        assert_eq!(retire_threshold_for(&r("b", true), DEFAULT_RETIRE_AT), 2);
+
+        // An operator lowering the global threshold must not accidentally
+        // *raise* it for the rules with the least evidence behind them.
+        assert_eq!(retire_threshold_for(&r("c", true), 1), 1);
+        assert_eq!(retire_threshold_for(&r("d", false), 1), 1);
+    }
+
+    /// Probation records "born ungraded", not "never graded" — so a probe
+    /// covering the rule clears it. Leaving the mark would keep a measured
+    /// rule on a short leash forever on evidence that no longer applies.
+    #[test]
+    fn a_probe_clears_probation_and_an_empty_ledger_does_not() {
+        let mut rules = vec![
+            r("measured", true),
+            r("still-unmeasured", true),
+            r("plain", false),
+        ];
+        let mut tallies: std::collections::BTreeMap<String, RuleTally> = Default::default();
+        tallies.insert("measured".into(), tally(4));
+        // Present but with nothing observed is not evidence of anything.
+        tallies.insert("still-unmeasured".into(), tally(0));
+
+        clear_probation_when_measured(&mut rules, &tallies);
+
+        assert!(!rules[0].probation, "a graded rule leaves probation");
+        assert!(
+            rules[1].probation,
+            "a zero-observation tally grades nothing"
+        );
+        assert!(!rules[2].probation);
+    }
+
+    /// The leash survives a consolidation. The learner's rules are built with
+    /// `..Default::default()`, so without the carry-forward one gradeable
+    /// batch after an ungradeable one re-emitted the same rule unmarked and
+    /// the D1 hedge evaporated within a session or two — while
+    /// `PROBATION_RETIRE_AT` and the field's doc went on describing a
+    /// protection that no longer applied. Fails on that behaviour. Release
+    /// stays the ledger's alone (`clear_probation_when_measured`).
+    #[test]
+    fn probation_survives_a_consolidation_that_reemits_the_rule() {
+        let marked = Rule {
+            text: "Born ungraded.".into(),
+            id: Some("r-marked".into()),
+            created_at: Some("2026-08-29T00:00:00Z".into()),
+            probation: true,
+            ..Default::default()
+        };
+        let out = finalize_rules(
+            vec![Rule {
+                text: marked.text.clone(),
+                ..Default::default()
+            }],
+            &[marked],
+            &[],
+            "2026-08-30T00:00:00Z",
+        );
+        assert!(
+            out[0].probation,
+            "the ledger never graded this rule; a rewrite must not un-mark it"
+        );
+        assert_eq!(out[0].id.as_deref(), Some("r-marked"));
+    }
+
+    /// The field defaults off, and rule files written before it existed load
+    /// unchanged — the same wire-format rule every other `Rule` field follows.
+    #[test]
+    fn probation_defaults_off_and_older_rule_files_still_load() {
+        let old = r#"{"text":"written before the field existed","enabled":true}"#;
+        let rule: Rule = serde_json::from_str(old).unwrap();
+        assert!(!rule.probation);
+        assert!(rule.enabled);
+        // And it is omitted when false, so an ordinary rule file gains nothing.
+        assert!(!serde_json::to_string(&rule).unwrap().contains("probation"));
     }
 }

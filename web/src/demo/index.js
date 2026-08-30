@@ -117,6 +117,11 @@ export const ROUTES = [
   ['GET', /^\/api\/settings\/reflections$/, () => fx.reflections],
   [
     'GET',
+    /^\/api\/settings\/learning-report$/,
+    () => fx.learningReport,
+  ],
+  [
+    'GET',
     /^\/api\/settings\/reflections\/show$/,
     (url) =>
       fx.reflectionDetail[url.searchParams.get('id')] ??

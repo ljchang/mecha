@@ -1156,3 +1156,95 @@ export const timeline = {
   ],
   episodes: [],
 };
+
+// What `learning-report --json` returns: the four series behind the trend
+// pane. Shaped to exercise the chart's edge cases rather than merely fill it —
+// a fixture that only shows the happy path lets a regression through on the
+// paths that actually bite.
+//
+// - A bucket with sessions and **no** reflections is a real, good measurement:
+//   nothing needed correcting. It must draw at zero, not be dropped.
+// - A bucket with `rate: null` (no sessions ran) must be **skipped entirely**.
+//   Drawing a rate over an empty denominator as 0.0 shows a perfect week where
+//   there was no week at all — the "a dash is never zero" rule, in a chart.
+// - `never_validated` non-zero exercises the warning style; a rule set that is
+//   *entirely* unvalidated means the ledger is not running.
+// - A retirement step (`rules_after < rules_before`, no reflections) renders
+//   differently from a consolidation, so both appear.
+export const learningReport = {
+  buckets: [
+    {
+      period: '2026-07-30',
+      sessions: 96,
+      reflections: 4,
+      rate: 0.042,
+      error_types: { 'wrong-approach': 2, 'missed-context': 2 },
+    },
+    {
+      period: '2026-08-06',
+      sessions: 52,
+      reflections: 0,
+      rate: 0,
+      error_types: {},
+    },
+    {
+      period: '2026-08-13',
+      sessions: 0,
+      reflections: 0,
+      rate: null,
+      error_types: {},
+    },
+    {
+      period: '2026-08-20',
+      sessions: 268,
+      reflections: 29,
+      rate: 0.108,
+      error_types: {
+        'wrong-approach': 11,
+        'missed-context': 9,
+        overreach: 5,
+        other: 3,
+      },
+    },
+    {
+      period: '2026-08-27',
+      sessions: 33,
+      reflections: 5,
+      rate: 0.152,
+      error_types: { 'missed-context': 3, 'premature-action': 1, style: 1 },
+    },
+  ],
+  steps: [
+    {
+      at: '2026-08-04T03:03:21Z',
+      domain: 'behavior',
+      rules_before: 0,
+      rules_after: 1,
+      reflections: 1,
+    },
+    {
+      at: '2026-08-29T17:33:43Z',
+      domain: 'behavior',
+      rules_before: 0,
+      rules_after: 12,
+      reflections: 28,
+    },
+    {
+      at: '2026-08-29T21:10:02Z',
+      domain: 'behavior',
+      rules_before: 12,
+      rules_after: 11,
+      reflections: 0,
+    },
+  ],
+  health: {
+    behavior: {
+      active: 11,
+      retired: 1,
+      never_validated: 3,
+      attributed_regressions: 2,
+    },
+  },
+  caveat:
+    'Observational, over one owner’s real work: the task mix moves under the metric, so a falling correction rate may mean better rules or an easier week. Use `mecha eval --ab-rules` for a controlled comparison.',
+};

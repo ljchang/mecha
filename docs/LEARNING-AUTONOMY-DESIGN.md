@@ -5,6 +5,21 @@ A rule goes live when it is derived, not when someone approves it. This
 document is what has to be true for that to be safe, what changes per domain,
 and what is deliberately not being built.*
 
+**Status, 2026-08-30: decided and shipped; the residue is per-domain
+cadence.** `learn --auto` is the ungated path and both unattended callers use
+it — `scripts/ruminate.sh` (nightly) and `scripts/learn-live.sh` (per session
+close) run `learn --auto`, with the counterfactual gate still in front:
+regression refuses, measured-clean applies, ungradeable applies **on
+probation** (`Rule::probation`, retiring at `PROBATION_RETIRE_AT` = 2 against
+the ordinary 3 — the per-rule form of §1–§2's stricter thresholds; the
+per-domain *cadence* split is what remains unbuilt). Retirement fires without
+a human too: `rules propose-retirements --apply` runs nightly, from the
+ledger's attributed regressions alone. First consolidation under this landed
+2026-08-29 — 28 reflections → 12 live rules, after 25 days at zero.
+`LEARNING-LOOP-RESEARCH.md` has the measurement and the flowmail prior art;
+its §4 tracking layer (`mecha learning-report`) is how anyone knows the loop
+is improving.
+
 Companion documents: `MEMORY-RESEARCH.md` is the evidence behind the current
 learning system, `MAIL-UX-DESIGN.md` §5 is the triage correction loop this
 enables, and `dev_docs/CORRECTION_SYSTEM.md` in the **flowmail** repository is

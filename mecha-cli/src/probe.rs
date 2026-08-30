@@ -1,12 +1,22 @@
 //! The counterfactual replay probe, shared by `mecha validate` and the
 //! proposal gate in `mecha learn --propose`.
 //!
-//! One reflection, two arms: rebuild the recorded run up to the intervention
-//! (recorded tool results, no steering text), drive it once per system
-//! prompt, and grade each trace with [`mecha_core::counterfactual`]. The
-//! caller chooses what the arms mean — validate compares no-rules against the
-//! live rules; the gate compares the live rules against a candidate set that
-//! exists nowhere but in memory yet.
+//! One reflection, two arms: resubmit the recorded run up to the intervention
+//! verbatim (recorded messages and tool results, no steering text), let the
+//! model continue from the branch point once per system prompt, and grade
+//! each trace with [`mecha_core::counterfactual`]. The caller chooses what
+//! the arms mean — validate compares no-rules against the live rules; the
+//! gate compares the live rules against a candidate set that exists nowhere
+//! but in memory yet.
+//!
+//! **Branched, never regenerated.** An earlier version drove the recorded
+//! user turns from scratch and required the model to reproduce every call
+//! before the intervention exactly; on the live store that lost 11 of 12
+//! steer probes to pre-point divergence (typically at call #1, against
+//! points at #10–#28), because every open choice before the point is a
+//! chance to fork. [`mecha_core::counterfactual::branch_at`] and
+//! [`mecha_core::replay_run::drive_branch`] make pre-point divergence
+//! structurally impossible instead.
 //!
 //! Split into [`prepare_probe`] (load and slice the recording, once) and
 //! [`drive_arm`] (one system prompt, one drive, one verdict) so a caller can
@@ -19,11 +29,12 @@ use anyhow::Result;
 use mecha_core::agent::{Agent, RunContext};
 use mecha_core::config::{PermissionMode, ProviderConfig};
 use mecha_core::counterfactual::{
-    locate_denial, locate_steer, truncate_after_run, verdict, ProbePoint, ProbeVerdict,
+    branch_at, locate_denial, locate_steer, truncate_after_run, verdict, Branch, ProbePoint,
+    ProbeVerdict,
 };
 use mecha_core::learning::{strip_rules_block, Reflexion, Trigger};
 use mecha_core::replay::{extract, Trajectory};
-use mecha_core::replay_run::{drive, replay_registry, OnDivergence};
+use mecha_core::replay_run::{drive_branch, replay_registry, OnDivergence};
 use mecha_core::session::{RunConfig, Session};
 use mecha_core::tool::ModeApprover;
 use std::path::Path;
@@ -44,7 +55,14 @@ pub enum ProbeResult {
 pub struct ProbePrep {
     trajectory: Trajectory,
     point: ProbePoint,
+    /// The forced prefix and the position it hands the model the controls at.
+    branch: Branch,
     recorded: RunConfig,
+    /// The exact specs the recording was sent, when the surface store still
+    /// holds the blob its `tools_hash` cites. Empty for recordings from
+    /// before the store. Loaded once here because bisection drives many arms
+    /// off one prep.
+    recorded_specs: Vec<mecha_core::message::ToolSpec>,
     base_system: String,
     recorded_system: String,
 }
@@ -88,6 +106,13 @@ impl ProbePrep {
     /// is a recording from before the field existed, not a match.
     pub fn tools_hash(&self) -> Option<&str> {
         self.recorded.tools_hash.as_deref()
+    }
+
+    /// The recorded specs themselves, when the surface store still holds
+    /// them — what a fidelity check must hand [`replay_surface_specs`] so it
+    /// fingerprints the surface a replay would actually send.
+    pub fn recorded_specs(&self) -> &[mecha_core::message::ToolSpec] {
+        &self.recorded_specs
     }
 }
 
@@ -159,6 +184,9 @@ pub fn prepare_probe_in(
     if trajectory.turns.is_empty() {
         return Ok(Err("no user turns before the intervention".into()));
     }
+    let Some(branch) = branch_at(slice, &point) else {
+        return Ok(Err("could not rebuild the branch prefix".into()));
+    };
     // The config in effect *at the intervention*, not `first()`: a resumed
     // session's later attach ran under its own system prompt and tool list,
     // and replaying its turns under the first attach's diverges for reasons
@@ -173,10 +201,21 @@ pub fn prepare_probe_in(
     // generations.
     let recorded_system = recorded.system_prompt.clone().unwrap_or_default();
     let base_system = strip_rules_block(&recorded_system);
+    // The recorded surface, recovered from the store the recording cites. An
+    // unreadable store or a missing blob degrades to "no specs" — the replay
+    // then offers today's surface exactly as it always did, and the fidelity
+    // check labels the gap rather than this silently pretending to a match.
+    let recorded_specs = recorded
+        .tools_hash
+        .as_deref()
+        .and_then(|h| mecha_core::surface::SurfaceStore::open_default()?.load(h))
+        .unwrap_or_default();
     Ok(Ok(ProbePrep {
         trajectory,
         point,
+        branch,
         recorded,
+        recorded_specs,
         base_system,
         recorded_system,
     }))
@@ -198,6 +237,16 @@ pub async fn drive_arm(
 ) -> Result<Result<ProbeVerdict, String>> {
     let recorded = &prep.recorded;
     let cancel = CancellationToken::new();
+    // The recording the registry answers from starts at the branch base: the
+    // calls before it were already resolved inside the forced prefix, and
+    // handing them to the cursor again would answer the first regenerated
+    // call with a result the model has already read.
+    let tail_calls = prep
+        .trajectory
+        .calls
+        .get(prep.branch.call_base..)
+        .unwrap_or_default()
+        .to_vec();
     let registry = match replay_registry(
         &recorded.tools,
         prepared.agent.registry(),
@@ -206,7 +255,8 @@ pub async fn drive_arm(
         // of every interactive session, which is every session that contains a
         // steer. Without this, every steer and denial probe skips.
         Some(&crate::setup::surface_only_registry()),
-        prep.trajectory.calls.clone(),
+        &prep.recorded_specs,
+        tail_calls,
         OnDivergence::Stop,
         cancel.clone(),
     ) {
@@ -250,7 +300,15 @@ pub async fn drive_arm(
     let cx = RunContext::new(tool_ctx, approver)
         .with_cancel(cancel)
         .with_compact_at(recorded.compact_at_tokens);
-    match drive(&agent, &cx, &prep.trajectory).await {
+    match drive_branch(
+        &agent,
+        &cx,
+        prep.branch.seed.clone(),
+        &prep.trajectory,
+        prep.branch.call_base,
+    )
+    .await
+    {
         // Which rule grades this is carried by the point itself, so a kind
         // the caller has not heard of cannot be graded as a denial by default.
         Ok(report) => Ok(Ok(verdict(&report, &prep.point))),

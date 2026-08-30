@@ -15,6 +15,41 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// What to ask a local reasoning model for, when nothing better is known.
+///
+/// **The number is the vendor's, and the reason it is a constant is that four
+/// call sites had four different literals.** Qwen3.6-35B-A3B's card asks for
+/// an output length of 32,768 tokens for most queries (81,920 for hard ones);
+/// Qwen3.8-27B goes further and budgets the two halves separately — 262,144
+/// for reasoning content, 131,072 for the final response. Both are far above
+/// anything this repository was asking for: the reflector, the distiller and
+/// the eval judge all sat at 4,096 against a server running
+/// `--reasoning-budget 4096`, which leaves *nothing* for an answer once
+/// thinking has run.
+///
+/// **Measured on this box before being adopted** (2026-08-29, qwen3.6-35b-a3b,
+/// eight samples on a deliberation-shaped task):
+///
+/// | max_tokens | completion tokens | empty replies |
+/// |---|---|---|
+/// | 2048 | 2048, `finish_reason: length` | **1 of 1** |
+/// | 4096 | 1453–2876 | 0 of 5 |
+/// | 16384 | 2154–2855 | 0 of 2 |
+/// | 32768 | 2187–2707 | 0 of 2 |
+///
+/// The distribution does **not** move with the cap. An early two-sample read
+/// suggested reasoning expands to fill the budget; eight samples say that was
+/// variance. So this is a pure safety margin — raising it costs no latency and
+/// buys headroom on exactly the inputs that overflow, which are the long ones.
+/// A modest task already spent 70% of 4,096 in its worst sample; the followup
+/// probe in `mecha validate`, which re-asks a whole mid-task conversation,
+/// overflowed on nearly every call and had its silence graded as a bad answer.
+///
+/// Not a floor for every provider — an Anthropic request is priced per token
+/// and bounded differently. This is the local-server contract, where the cap
+/// is free until it binds.
+pub const LOCAL_MAX_TOKENS: u32 = 32_768;
+
 /// Incremental output, emitted only when a sink is supplied.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {

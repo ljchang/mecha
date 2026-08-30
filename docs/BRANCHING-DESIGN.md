@@ -1,5 +1,13 @@
 # Branching sessions — design, for review before any code
 
+> **Addendum 2026-08-30:** the *mechanic* this doc rests on shipped, in
+> memory, for the probes: `counterfactual::branch_at` +
+> `replay_run::drive_branch` fork a recorded conversation at an
+> intervention, force the prefix verbatim, and sample only the continuation
+> (HISTORY, 2026-08-29/30). What this doc adds on top — `Record::Branch`,
+> chain-aware `load`, the TUI walk-back, `replay --compare-chains` — remains
+> unbuilt; a builder starts from `drive_branch` rather than from scratch.
+
 Written 2026-08-05, alongside the TUI feature batch that deliberately did
 *not* build this. The TUI survey (`TUI-RESEARCH.md` §4) found two independent
 implementations of the idea — codex's `Esc Esc` walk-back plus `/fork`, and

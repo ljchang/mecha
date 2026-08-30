@@ -20,7 +20,14 @@
   // process (see serve/settings.rs), so this pane cannot do anything to the
   // store that the command line cannot, and the promotion, the withholding
   // and the git commit behind each write stay in one implementation.
+  import LearningCharts from './LearningCharts.svelte';
+
   let pane = $state('reflections');
+  // The trend view. Loaded lazily like the other panes: it is a fold over
+  // every session filename and the whole reflection log, and the page must
+  // not pay for it to show a list.
+  let report = $state(null);
+  let reportError = $state(null);
   let rules = $state(null);
   let rulesError = $state(null);
   let reflections = $state(null);
@@ -71,6 +78,17 @@
   loadRules();
   loadReflections();
 
+  async function loadReport() {
+    try {
+      const res = await fetch('/api/settings/learning-report');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      report = await res.json();
+      reportError = null;
+    } catch (e) {
+      reportError = String(e?.message ?? e);
+    }
+  }
+
   function setPane(next) {
     pane = next;
     // A different list, and the next tap may be a refusal — nothing armed,
@@ -80,6 +98,7 @@
     detail = null;
     note = null;
     error = null;
+    if (next === 'trend' && report === null) loadReport();
   }
 
   // One verb, and its own report of what it did. The note is the child's
@@ -232,6 +251,9 @@
   <button class="tab" class:on={pane === 'rules'} onclick={() => setPane('rules')}>
     rules{#if rules}<span class="n">{rules.length}</span>{/if}
   </button>
+  <button class="tab" class:on={pane === 'trend'} onclick={() => setPane('trend')}>
+    trend
+  </button>
 </div>
 
 {#if error}
@@ -335,13 +357,17 @@
       considered and refused, so the same one cannot come back next pass unjudged.
     </div>
   {/if}
-{:else if rulesError}
+<!-- Each arm below is guarded by the pane it belongs to, not left as a bare
+     `{:else}` of the reflections branch. A third pane fell into that else and
+     rendered the rules list under the trend tab — the failure a chain of
+     `{:else if}`s over one variable invites the moment a value is added. -->
+{:else if pane === 'rules' && rulesError}
   <div class="card notice">could not read the rules: {rulesError}</div>
-{:else if rules === null}
+{:else if pane === 'rules' && rules === null}
   <div class="card"><div class="sub">loading…</div></div>
-{:else if rules.length === 0}
+{:else if pane === 'rules' && rules.length === 0}
   <div class="card"><div class="sub">No rules yet — <code>mecha learn</code> creates them.</div></div>
-{:else}
+{:else if pane === 'rules'}
   <!-- `active` is `enabled && not retired`, so a rule hand-disabled in the
        learned-rules TOML is not retired and still rides in no prompt. On a
        pane whose job is "what a run actually carries", that reads as spent
@@ -357,6 +383,11 @@
         {#if r.user}<span class="chip mine">yours</span>{/if}
         {#if r.retired}<span class="chip gone">retired</span>{/if}
         {#if !r.retired && !r.active}<span class="chip gone">disabled</span>{/if}
+        <!-- Applied without the gate being able to grade it: live, but on the
+             shorter retirement leash until the ledger clears it. "Measured
+             clean" and "not measured" are different states, and only one of
+             them earned its place — the roster exists to keep them apart. -->
+        {#if r.probation && r.active}<span class="chip probation">ungraded</span>{/if}
         <span class="tally">{tally(r)}</span>
       </div>
       <div class="rule-text">{r.title}</div>
@@ -403,6 +434,14 @@
     Retiring is a flag, never a deletion: the rule stays in the file as evidence and the learner
     is told it was measured harmful, so restore can undo what erasure could not.
   </div>
+{/if}
+
+{#if pane === 'trend'}
+  {#if reportError}
+    <div class="card notice">{reportError}</div>
+  {:else}
+    <LearningCharts {report} />
+  {/if}
 {/if}
 
 <style>
@@ -485,6 +524,13 @@
   .chip.gone {
     color: var(--hazard);
     border-color: var(--hazard);
+  }
+  /* Probation is caution, not loss: the rule is live, on a shorter leash.
+     Dashed where `gone` is solid, so the two amber states stay tellable. */
+  .chip.probation {
+    color: var(--hazard);
+    border-color: var(--hazard);
+    border-style: dashed;
   }
   .tally {
     margin-left: auto;
