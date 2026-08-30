@@ -337,14 +337,19 @@ machine from starting is one people turn off.
   that it came back up**, and check `--version` rather than the binary's mtime:
   the stub is byte-identical in size across builds.
 
-- **Sampling already matches the card, and `/props` is how you know.** The
-  GGUF carries Qwen's published thinking-mode values and the server adopts
-  them without a flag: temperature 1.0, top_p 0.95, top_k 20, repeat_penalty
-  1.0. The single deviation was `min_p` (0.05 served against 0.0
-  recommended), now set explicitly in `start-moe-mtp.sh` so a requantisation
-  cannot move it quietly. `presence_penalty` stays 0.0: the card lists 1.5 for
-  *general* thinking and 0.0 for precise coding, and Qwen3.8-27B lists 0.0
-  throughout — agentic tool use is the second shape.
+- **Sampling is the card's *precise-coding* profile, set explicitly, and
+  `/props` is how you know.** `start-moe-mtp.sh` passes all six values (temp
+  0.6, top_p 0.95, top_k 20, min_p 0.0, presence 0.0, repeat 1.0) and its
+  comment block is the authority on why that profile and not *general*
+  (temp 1.0, presence 1.5) — almost everything this server is asked for is
+  structured or exacting. Before that, the GGUF's metadata supplied the
+  general profile with an off-spec `min_p` 0.05 while
+  `[providers.local] temperature = 0.8` overrode the temperature from the
+  client — a served-vs-requested blend belonging to neither profile. The
+  client override is the part that bites from here: mecha **sends**
+  temperature on every request, so `--temp` and the config value must agree
+  or the model is silently un-tuned; both say 0.6 now, and only `/props`
+  plus a request log can prove it stayed that way.
 - **`response_format: json_schema` and thinking coexist.** llama.cpp applies
   the grammar *lazily*, after the thinking block closes — measured at 3,240
   chars of reasoning followed by schema-valid JSON. So a closed vocabulary can

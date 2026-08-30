@@ -257,16 +257,39 @@ fn is_gradeable(answer: &str) -> bool {
     if t.is_empty() {
         return false;
     }
-    // Tool-call markup with no prose around it. Hermes-style `<tool_call>` is
-    // what qwen emits here; the check is on what *remains* after the markup
-    // rather than on a list of known markers, so a template that spells it
-    // differently still has to leave something a judge can read.
-    let stripped = t
-        .replace("<tool_call>", "")
-        .replace("</tool_call>", "")
-        .replace("<tool_response>", "")
-        .replace("</tool_response>", "");
+    // Tool-call markup with no prose *outside* it. Hermes-style `<tool_call>`
+    // is what qwen emits here, and the whole span goes, payload included: a
+    // call's JSON body is not an answer, and stripping only the delimiters
+    // let `<tool_call>{"name":"fs_read",…}</tool_call>` reach the judge as
+    // one — the manufactured-regression path this function exists to close,
+    // with retirement now automatic behind it. An unclosed opening tag (a
+    // stop-string truncation, the shape observed live) swallows to the end
+    // for the same reason: everything after it is call, not prose.
+    let stripped = strip_spans(
+        &strip_spans(t, "<tool_call>", "</tool_call>"),
+        "<tool_response>",
+        "</tool_response>",
+    );
     !stripped.trim().is_empty()
+}
+
+/// Remove every `open`…`close` span, the markers and everything between
+/// them; an unclosed `open` removes through the end of the string.
+fn strip_spans(s: &str, open: &str, close: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find(open) {
+        out.push_str(&rest[..i]);
+        rest = &rest[i + open.len()..];
+        match rest.find(close) {
+            Some(j) => rest = &rest[j + close.len()..],
+            None => {
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -868,21 +891,31 @@ mod gradeable_tests {
             "  <tool_call>  ",
             "<tool_call></tool_call>",
             "<tool_response></tool_response>",
+            // The payload survives delimiter-stripping, which is how a real
+            // tool-call emission used to reach the judge as an answer: the
+            // span goes whole, JSON body included.
+            "<tool_call>{\"name\":\"fs_read\",\"arguments\":{\"path\":\"a.md\"}}</tool_call>",
+            // An unclosed tag is a stop-string truncation mid-call; what
+            // follows it is call, not prose.
+            "<tool_call>{\"name\":\"fs_read\",\"argu",
+            // Anything *inside* the markers is being emitted as a call, not
+            // said to the user — prose-shaped or not.
+            "<tool_call>Let me read the file first, then answer.</tool_call>",
         ] {
             assert!(!is_gradeable(bad), "{bad:?} has nothing a judge can read");
         }
     }
 
-    /// Real prose grades, including prose that merely *mentions* a tool call
-    /// or carries one alongside an actual answer — the check is on what
-    /// remains, not on whether the marker appears.
+    /// Real prose grades, including prose that carries a call alongside an
+    /// actual answer — the check is on what remains outside the spans, not on
+    /// whether the marker appears.
     #[test]
     fn prose_grades_even_when_a_tool_call_rides_along() {
         for good in [
             "I'll populate the sheet now with the Fall 2026 dates.",
             "Got it. I'll map the same 29 meetings.",
-            "<tool_call>Let me read the file first, then answer.</tool_call>",
             "Here is the answer.<tool_call></tool_call>",
+            "Here is the answer.<tool_call>{\"name\":\"fs_read\"}</tool_call>",
             "no",
         ] {
             assert!(is_gradeable(good), "{good:?} is readable");

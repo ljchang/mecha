@@ -115,6 +115,29 @@ pub fn dispose(auto: bool, regressed: u32, measured: u32) -> Disposition {
     }
 }
 
+/// Mark a probation pass's rules as applied-ungraded — but only the ones the
+/// ledger has never graded.
+///
+/// A consolidation is a full replacement, so `rules` carries forward
+/// long-standing rules with measured records; stamping those "applied
+/// ungraded" would contradict `Rule::probation`'s own doc ("the gate ran and
+/// *could not grade it*") and put a rule with dozens of clean observations on
+/// the stricter retirement leash for an accident of this batch's contents.
+/// Stamp everything active, then let the ledger take back what it has
+/// graded — one predicate for "measured", deliberately shared with retirement
+/// (`clear_probation_when_measured`) rather than spelled a second time here.
+/// The clear also *persists* through this pass's write, where retirement's
+/// own call lands only when a domain has a conviction to record.
+fn stamp_probation(
+    rules: &mut [mecha_core::learning::Rule],
+    tallies: &BTreeMap<String, mecha_core::learning::RuleTally>,
+) {
+    for r in rules.iter_mut().filter(|r| r.retired_at.is_none()) {
+        r.probation = true;
+    }
+    mecha_core::learning::clear_probation_when_measured(rules, tallies);
+}
+
 /// Which reflection ids this pass leaves alone, given a holdout fraction.
 ///
 /// Deterministic by construction: sort by id, then take every k-th. A random
@@ -252,7 +275,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // gate rejection whose reflections rightly returned to the pool — is not
     // argued again until the pool changes. Without this, an unchanged pool
     // means a fresh near-identical proposal (and its probe cost) every night.
-    if args.propose {
+    // `--auto` needs the brake most: its `rejected_by_gate` arm leaves the
+    // reflections unprocessed, and `learn-live.sh` runs per *session*, so an
+    // unguarded identical batch re-pays a learner call plus a probe pair per
+    // steer/denial on every session close until the pool changes.
+    if args.propose || args.auto {
         by_domain.retain(|domain, rs| {
             let batch: std::collections::BTreeSet<&str> =
                 rs.iter().map(|r| r.id.as_str()).collect();
@@ -446,9 +473,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // thing probation exists to remember.
             let Disposition { status, probation } = dispose(args.auto, regressed, measured);
             if probation {
-                for r in rules.iter_mut().filter(|r| r.retired_at.is_none()) {
-                    r.probation = true;
-                }
+                stamp_probation(&mut rules, &tallies);
             }
             let applied = status == "auto_applied" || status == "auto_applied_probation";
             // The proposal is written whichever way this went. Under `--auto`
@@ -561,7 +586,74 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dispose, hold_out};
+    use super::{dispose, hold_out, stamp_probation};
+
+    /// Probation marks what this pass could not grade — never a rule the
+    /// ledger has already measured. A consolidation is a full replacement, so
+    /// the candidate set carries forward long-standing rules with records; on
+    /// the old behaviour every one of them was stamped "applied ungraded" and
+    /// `rules list` reported measured-clean rules as probationary
+    /// indefinitely, since the retirement-side clear only persists when a
+    /// domain has a conviction to write.
+    #[test]
+    fn probation_lands_only_on_rules_the_ledger_never_graded() {
+        use mecha_core::learning::{Rule, RuleTally};
+        let rule = |id: Option<&str>, probation: bool| Rule {
+            text: "r".into(),
+            id: id.map(Into::into),
+            probation,
+            ..Default::default()
+        };
+        let mut rules = vec![
+            rule(Some("measured"), false),
+            // Probationary from an earlier pass, since graded: the shared
+            // predicate clears it, and this write persists the clear.
+            rule(Some("measured-probationary"), true),
+            rule(Some("unmeasured"), false),
+            // Pre-identity: no id, so no tally can exist — unmeasured.
+            rule(None, false),
+        ];
+        let retired = Rule {
+            retired_at: Some("2026-08-01T00:00:00Z".into()),
+            ..rule(Some("retired"), false)
+        };
+        rules.push(retired);
+
+        let mut tallies = std::collections::BTreeMap::new();
+        for id in ["measured", "measured-probationary"] {
+            tallies.insert(
+                id.to_string(),
+                RuleTally {
+                    observations: 4,
+                    ..Default::default()
+                },
+            );
+        }
+
+        stamp_probation(&mut rules, &tallies);
+
+        let by_id = |want: Option<&str>| {
+            rules
+                .iter()
+                .find(|r| r.id.as_deref() == want)
+                .unwrap()
+                .probation
+        };
+        assert!(!by_id(Some("measured")), "a graded rule is not ungraded");
+        assert!(
+            !by_id(Some("measured-probationary")),
+            "the ledger takes back what it has graded"
+        );
+        assert!(
+            by_id(Some("unmeasured")),
+            "never graded — the leash applies"
+        );
+        assert!(by_id(None), "no id means no tally can ever exist: ungraded");
+        assert!(
+            !by_id(Some("retired")),
+            "a retired rule rides in no prompt and wears no leash"
+        );
+    }
 
     /// **The three-way split, which is the whole of `--auto`.**
     ///
