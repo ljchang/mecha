@@ -312,30 +312,52 @@ deliberately no knob — a switch that lets third-party text into every future
 prompt is the silently-degrading-sandbox shape. Excluded reflections stay in
 the archive as evidence; they are simply never candidates.
 
-**Acceptance is not tenure.** A rule that clears the proposal gate rides in
-every future prompt's cached prefix, so it keeps earning that seat or loses
-it. Rules carry `id`/`sources`/`created_at` (minted by `finalize_rules`,
-carried by text-match across consolidations; pre-identity TOML loads
-unchanged). `mecha validate` appends every probe's outcome to the
-**validation ledger** (`validations.jsonl`, keyed to the exact rule set
-measured), and a regressed trace-graded probe **bisects** the active learned
-rules against the same recorded prefix to name the rule that flips it — user
-rules ride in every test arm (they are not on trial), a regression they
-cause alone attributes to nothing, and an inconclusive arm aborts the
-attribution rather than guessing. `mecha rules` folds the ledger into
-per-rule tallies; `rules propose-retirements` (nightly, after learn) stages
-`enabled = false` + `retired_*` through the same proposal gate as any other
-rule change once a rule accumulates 3 attributed regressions — a
-deterministic ledger scan, no model anywhere. Retirement is a flag, never a
+**Learning is ungated, and the gate that remains is a measurement.** The
+owner's 2026-08-19 ruling (`LEARNING-AUTONOMY-DESIGN.md`, shipped 2026-08-30):
+a rule goes live when it is derived, not when someone approves it. `learn
+--auto` is the path both unattended callers take — `ruminate.sh` nightly and
+`learn-live.sh` on every session close — with the counterfactual gate still
+in front of the write: a candidate that regresses any probe is refused; one
+that measures clean applies; one the gate **could not grade** applies on
+**probation** (`Rule::probation`), live but on the shorter retirement leash
+until the ledger grades it. Probation marks only rules the ledger has never
+graded (`stamp_probation` shares `clear_probation_when_measured`'s one
+predicate), survives consolidations (`finalize_rules` carries it), and only
+the ledger releases it. Every pass still writes a proposal record — the audit
+trail, resolved at birth — and a new proposal for a domain **supersedes** its
+pending predecessors, releasing their reflections unconsumed (`proposals
+supersede`; reject is the owner's no and consumes them — the difference is
+the whole verb). `measured` counts probe pairs that *graded*, never pairs
+that merely ran: "no evidence" and "evidence of clean" are opposite findings.
+
+**Acceptance is not tenure.** A live rule rides in every future prompt's
+cached prefix, so it keeps earning that seat or loses it. Rules carry
+`id`/`sources`/`created_at` (minted by `finalize_rules`, carried by
+text-match across consolidations; pre-identity TOML loads unchanged). `mecha
+validate` appends every probe's outcome to the **validation ledger**
+(`validations.jsonl`, keyed to the exact rule set measured), and a regressed
+trace-graded probe **bisects** the active learned rules against the same
+recorded prefix to name the rule that flips it — user rules ride in every
+test arm (they are not on trial), a regression they cause alone attributes
+to nothing, and an inconclusive arm aborts the attribution rather than
+guessing. `mecha rules` folds the ledger into per-rule tallies;
+`rules propose-retirements --apply` (nightly, after learn) **retires
+directly** — no queue, no human — once a rule accumulates the attributed
+regressions its leash allows: 3 ordinarily, 2 on probation
+(`PROBATION_RETIRE_AT`) — a deterministic ledger scan, no model anywhere,
+and it resolves any pending retirement proposal it overtakes as superseded.
+Retirement is the brake ungated learning leans on and it is a flag, never a
 deletion: the rule stays in the file as evidence, the learner is shown it as
-"measured harmful — never re-derive", and `rules restore` undoes it.
+"measured harmful — never re-derive" (surviving even a reworded
+re-derivation, by `normalized_rule_key`), and `rules restore` undoes it.
 Deliberately absent: decay, TTLs, usage-based eviction (the rarely-fired
 rule that must never expire), and any policy built on model-rated
-confidence — only measured harm argues for retirement, and a human accepts
-the argument. `mecha eval --ab-rules` is the coarse complement: the case set
-runs rules-free then rules-on and the per-case flips are their own artifact,
-never a comparable scorecard. The evidence behind all of this is
-`docs/MEMORY-RESEARCH.md`.
+confidence — only measured harm argues for retirement. `mecha
+learning-report` is how anyone knows the loop is improving; `mecha eval
+--ab-rules` is the coarse complement: the case set runs rules-free then
+rules-on and the per-case flips are their own artifact, never a comparable
+scorecard. The evidence behind all of this is `docs/MEMORY-RESEARCH.md` and
+`docs/LEARNING-LOOP-RESEARCH.md`.
 
 **The budget is per domain, and a run carries only the domains it names.**
 `MAX_ACTIVE_RULES_PER_DOMAIN` (25, raised from 15 on 2026-08-18) is the count

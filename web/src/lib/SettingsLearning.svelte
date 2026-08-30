@@ -383,6 +383,11 @@
         {#if r.user}<span class="chip mine">yours</span>{/if}
         {#if r.retired}<span class="chip gone">retired</span>{/if}
         {#if !r.retired && !r.active}<span class="chip gone">disabled</span>{/if}
+        <!-- Applied without the gate being able to grade it: live, but on the
+             shorter retirement leash until the ledger clears it. "Measured
+             clean" and "not measured" are different states, and only one of
+             them earned its place — the roster exists to keep them apart. -->
+        {#if r.probation && r.active}<span class="chip probation">ungraded</span>{/if}
         <span class="tally">{tally(r)}</span>
       </div>
       <div class="rule-text">{r.title}</div>
@@ -519,6 +524,13 @@
   .chip.gone {
     color: var(--hazard);
     border-color: var(--hazard);
+  }
+  /* Probation is caution, not loss: the rule is live, on a shorter leash.
+     Dashed where `gone` is solid, so the two amber states stay tellable. */
+  .chip.probation {
+    color: var(--hazard);
+    border-color: var(--hazard);
+    border-style: dashed;
   }
   .tally {
     margin-left: auto;

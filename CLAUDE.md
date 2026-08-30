@@ -326,7 +326,10 @@ re-deriving the rule. Each has at least one named incident in
   privileged runs get typed extractions and pointers, never the prose.
 - **A lane must not promote itself.** No model can accept graph candidates,
   release outbox drafts, or measure a `Security`-class harness change;
-  acceptance always crosses a human, structurally.
+  there acceptance crosses a human, structurally. The two exceptions are
+  the owner's written rulings, not precedents: config rumination and
+  learned rules self-accept behind a measurement gate with a revertible
+  brake (`harness revert`, retirement).
 
 ## Conventions
 

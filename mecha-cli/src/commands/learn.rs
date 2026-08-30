@@ -434,21 +434,42 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         lines.push(format!("{} [{}]: skipped — {why}", r.id, r.trigger));
                     }
                     probe::ProbeResult::Verdicts(b, t) => {
-                        measured += 1;
-                        let label = probe::compare(
+                        // Counted only when the pair *graded* — `compare`
+                        // returns `None` on an inconclusive arm. A pair that
+                        // ran and concluded nothing is not evidence, and
+                        // counting it let an all-inconclusive batch reach
+                        // `dispose` as measured-clean and land unmarked on
+                        // zero actual verdicts — the exact conflation ("not
+                        // measured" read as "measured clean") probation
+                        // exists to prevent.
+                        match probe::compare(
                             &b,
                             &t,
                             &mut improved,
                             &mut regressed,
                             &mut unchanged,
                             &mut inconclusive,
-                        )
-                        .unwrap_or("inconclusive");
-                        lines.push(format!("{} [{}]: {label}", r.id, r.trigger));
+                        ) {
+                            Some(label) => {
+                                measured += 1;
+                                lines.push(format!("{} [{}]: {label}", r.id, r.trigger));
+                            }
+                            None => {
+                                lines.push(format!("{} [{}]: inconclusive", r.id, r.trigger));
+                            }
+                        }
                     }
                 }
             }
-            lines.push(if measured == 0 {
+            lines.push(if measured == 0 && inconclusive > 0 {
+                // Ran and graded nothing is a different fact from had nothing
+                // to run — both land as probation, but the evidence must say
+                // which happened.
+                format!(
+                    "{inconclusive} probe pair(s) ran and none graded (inconclusive); \
+                     review by reading"
+                )
+            } else if measured == 0 {
                 "no trace-gradeable reflections in this batch; review by reading".into()
             } else {
                 format!(

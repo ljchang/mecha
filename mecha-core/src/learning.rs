@@ -525,6 +525,15 @@ pub fn finalize_rules(
                 }
                 r.retired_at = prev.retired_at.clone();
                 r.retired_reason = prev.retired_reason.clone();
+                // The leash survives the rewrite. A rule born ungraded stays
+                // on the stricter threshold until the *ledger* clears it
+                // (`clear_probation_when_measured` owns the release
+                // direction, and only it) — without this line, one gradeable
+                // batch after an ungradeable one re-emitted the same rule
+                // with `probation: false` via `..Default::default()`, and
+                // the D1 hedge evaporated within a session or two while
+                // staying printed and documented.
+                r.probation = prev.probation;
             }
             // Retirement survives a reworded re-derivation, which exact text
             // equality above does not catch. Checked only against *retired*
@@ -4238,6 +4247,38 @@ mod probation_tests {
             "a zero-observation tally grades nothing"
         );
         assert!(!rules[2].probation);
+    }
+
+    /// The leash survives a consolidation. The learner's rules are built with
+    /// `..Default::default()`, so without the carry-forward one gradeable
+    /// batch after an ungradeable one re-emitted the same rule unmarked and
+    /// the D1 hedge evaporated within a session or two — while
+    /// `PROBATION_RETIRE_AT` and the field's doc went on describing a
+    /// protection that no longer applied. Fails on that behaviour. Release
+    /// stays the ledger's alone (`clear_probation_when_measured`).
+    #[test]
+    fn probation_survives_a_consolidation_that_reemits_the_rule() {
+        let marked = Rule {
+            text: "Born ungraded.".into(),
+            id: Some("r-marked".into()),
+            created_at: Some("2026-08-29T00:00:00Z".into()),
+            probation: true,
+            ..Default::default()
+        };
+        let out = finalize_rules(
+            vec![Rule {
+                text: marked.text.clone(),
+                ..Default::default()
+            }],
+            &[marked],
+            &[],
+            "2026-08-30T00:00:00Z",
+        );
+        assert!(
+            out[0].probation,
+            "the ledger never graded this rule; a rewrite must not un-mark it"
+        );
+        assert_eq!(out[0].id.as_deref(), Some("r-marked"));
     }
 
     /// The field defaults off, and rule files written before it existed load
