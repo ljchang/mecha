@@ -8,11 +8,13 @@
 //! correction of a wrong trajectory from a change of the owner's mind. That
 //! lands in the one branch of `label_of` with no word for it.
 //!
-//! A replay can tell them apart, and that is the whole of this module: rebuild
-//! the recorded run up to the intervention, drive it **without** the steering
-//! text, and see whether it gets there anyway. `mecha_core::appraisal::Probe`
-//! is what the answer is called and `apply_probe` is what it means; nothing
-//! here decides a label.
+//! A replay can tell them apart, and that is the whole of this module:
+//! resubmit the recorded run up to the intervention verbatim, let the model
+//! continue **without** the steering text, and see whether it gets there
+//! anyway ([`mecha_core::replay_run::drive_branch`], via `drive_arm` — so a
+//! pre-point divergence cannot eat the probe; it used to, on nearly every
+//! mid-run point). `mecha_core::appraisal::Probe` is what the answer is
+//! called and `apply_probe` is what it means; nothing here decides a label.
 //!
 //! **Why this is worth its cost, when the charter is not yet.** The corpus
 //! says a counterfactual verdict labels 102 intervention errors where the
@@ -232,6 +234,7 @@ pub async fn probe_appraisal(
                 prep.recorded_tools(),
                 prepared.agent.registry(),
                 Some(&crate::setup::surface_only_registry()),
+                prep.recorded_specs(),
             ) {
                 Ok(live) => annotate_with_fidelity(reason, prep.tools_hash(), &live),
                 Err(_) => reason.clone(),

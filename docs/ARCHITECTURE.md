@@ -1970,6 +1970,42 @@ The decisions that carry it, each a bug if undone:
   finding with `mecha harness list` as the remedy — the review this loop
   depends on must not be discoverable only by reading a 03:30 log.
 
+### Counterfactual probes branch, never regenerate
+
+The steer/denial probes behind `mecha validate`, the proposal gate and the
+appraisal probe do **not** use harness rumination's whole-trajectory replay.
+They branch (`counterfactual::branch_at` + `replay_run::drive_branch`): the
+recorded messages before the intervention are resubmitted verbatim — a
+steer's message keeps its tool results and loses only the steering text — and
+the model generates from the intervention on. Regenerating the prefix made
+reaching a mid-run point a lottery over every open choice before it: measured
+2026-08-29, 11 of 12 steer probes in the live store came back inconclusive,
+diverging at call #1 against points at #10–#28, which starved the gate of
+exactly the trace-graded evidence it allowlists. Rumination's full replay is
+still right for *its* question — it grades whole-run `RunStats`, not a moment.
+
+The contract that carries it, a bug if any half is undone: the replay
+registry is built over the recording's **tail** (`calls[call_base..]`), the
+report's divergence indices come back rebased into the full recording's
+coordinates (`replay::diff_from`), and `ReplayReport::call_base` records the
+floor — a divergence below it cannot come from the model, so the verdicts
+refuse it as a report/point mismatch rather than grading it. A denial's
+branch cuts before the assistant turn that *proposed* the refused call and
+regenerates the whole turn, so its verdict scans every replayed call for the
+exact refused `(name, input)` — the old "skip the prefix" guard would let a
+regenerated sibling slot walk into the refusal ungraded.
+
+And one narrowing, the sandbox's rule pointed the other way: under the
+non-executing modes (`Stop`/`Error`) the replay wrapper drops
+`external_send` from a tool's declared capabilities, because a replayed
+"send" sends nothing — its answer comes from the recording. Declaring it let
+the loop's trifecta interlock block mid-replay calls the recording executed
+(`docs__sheets_write`, `web_search` — three of twelve arms on 2026-08-29),
+and a blocked call never reaches the cursor, so the arm died one call later
+for a harness reason graded as the model's. `private_data` stays, or the
+replay under-taints; under `Live`, where tools genuinely run, nothing
+narrows.
+
 ## The goal system
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the design and is deliberately not rewritten as
