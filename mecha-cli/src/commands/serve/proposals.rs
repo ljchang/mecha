@@ -92,6 +92,18 @@ fn source_of(store: &str) -> Result<(&'static str, ReviewSource), Box<Response>>
 
 /// Where `mecha-graph` lives, on `commands::review`'s rule: `$MECHA_GRAPH_BIN`
 /// first, then the name on `PATH`, and never `mecha.toml`.
+/// The budget for one child. Named rather than spelled inline because the
+/// paragraph in [`run`] argues for a number, and an argument beside a literal
+/// is two things that can disagree — which they promptly did: the prose said
+/// 120 and the call said 60 for a whole commit, and the reviewer trusted the
+/// prose, as a reader should.
+///
+/// Matches `board.rs::graph_verb` and `verb_output` deliberately: `graph_verb`
+/// reaches the *same* `mecha-graph` merge from the entity page, and a merge
+/// that succeeds from one surface and reports a timeout from the other is the
+/// worst answer available on the one store whose verb has no undo.
+const VERB_TIMEOUT_SECS: u64 = 120;
+
 fn graph_bin() -> String {
     std::env::var("MECHA_GRAPH_BIN").unwrap_or_else(|_| "mecha-graph".into())
 }
@@ -119,53 +131,55 @@ async fn run(src: &ReviewSource, argv: &[String]) -> Result<String, Box<Response
     if let Some(dir) = super::child_cwd() {
         cmd.current_dir(dir);
     }
-    let out =
-        match tokio::time::timeout(std::time::Duration::from_secs(60), cmd.args(argv).output())
-            .await
-        {
-            // Dropping `output()` does NOT kill the child — `tokio::process`
-            // sets no `kill_on_drop` — so the verb behind this is still
-            // running, and for `entities` it can be a merge with no undo.
-            // Reporting a bare timeout invites the owner to accept again
-            // something that has already applied. Say what is actually known,
-            // the way `board.rs::graph_verb` does over the same child. The
-            // budget matches it and `verb_output` too: 120s, because the
-            // slowest work on this surface lives here.
-            Err(_) => {
-                return Err(Box::new(
-                    (
-                        StatusCode::GATEWAY_TIMEOUT,
-                        "the verb is still running — it was not cancelled, and it may yet \
+    let out = match tokio::time::timeout(
+        std::time::Duration::from_secs(VERB_TIMEOUT_SECS),
+        cmd.args(argv).output(),
+    )
+    .await
+    {
+        // Dropping `output()` does NOT kill the child — `tokio::process`
+        // sets no `kill_on_drop` — so the verb behind this is still
+        // running, and for `entities` it can be a merge with no undo.
+        // Reporting a bare timeout invites the owner to accept again
+        // something that has already applied. Say what is actually known,
+        // the way `board.rs::graph_verb` does over the same child. The
+        // budget matches it and `verb_output` too: 120s, because the
+        // slowest work on this surface lives here.
+        Err(_) => {
+            return Err(Box::new(
+                (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "the verb is still running — it was not cancelled, and it may yet \
                          finish. Re-open this queue to see what actually happened before \
                          deciding it again.\n",
-                    )
-                        .into_response(),
-                ))
-            }
-            Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound && src.graph => {
-                let bin = graph_bin();
-                return Err(Box::new(
-                    (
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        format!(
-                            "`{bin}` not found — install mecha-graph, or set MECHA_GRAPH_BIN \
+                )
+                    .into_response(),
+            ))
+        }
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound && src.graph => {
+            let bin = graph_bin();
+            return Err(Box::new(
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!(
+                        "`{bin}` not found — install mecha-graph, or set MECHA_GRAPH_BIN \
                          to its path. The other stores work without it.\n"
-                        ),
-                    )
-                        .into_response(),
-                ));
-            }
-            Ok(Err(e)) => {
-                return Err(Box::new(
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("spawning: {e:#}\n"),
-                    )
-                        .into_response(),
-                ))
-            }
-            Ok(Ok(out)) => out,
-        };
+                    ),
+                )
+                    .into_response(),
+            ));
+        }
+        Ok(Err(e)) => {
+            return Err(Box::new(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("spawning: {e:#}\n"),
+                )
+                    .into_response(),
+            ))
+        }
+        Ok(Ok(out)) => out,
+    };
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).to_string());
     }
@@ -344,6 +358,33 @@ pub struct DecideBody {
     pub read: bool,
 }
 
+/// The argv for one decision, as a function so it can be tested — the bug
+/// that forced this out of the handler could not be reached by any test that
+/// did not spawn a child, and so shipped under a green suite.
+///
+/// **Order is the whole content.** `--` is clap's escape: everything after it
+/// matches *positionals only*, option parsing off for the remainder. Both
+/// reject verbs take one positional and `--reason` as a flag, so a `--reason`
+/// pushed after the separator arrives as an unexpected second positional and
+/// the verb exits non-zero — which made reject fail 100% of the time on the
+/// two stores that require a reason, i.e. every reject this handler can
+/// perform. The separator still earns its place, because the id arrives from
+/// a URL; it just has to come last, with every flag ahead of it.
+fn decide_argv(src: &ReviewSource, id: &str, accepting: bool, reason: &str) -> Vec<String> {
+    let mut argv = if accepting {
+        src.accept.clone()
+    } else {
+        src.reject.clone()
+    };
+    if !accepting && !src.graph {
+        argv.push("--reason".into());
+        argv.push(reason.to_string());
+    }
+    argv.push("--".into()); // caller-controlled, exactly as in `detail`
+    argv.push(id.to_string());
+    argv
+}
+
 async fn decide(store: &str, id: &str, accepting: bool, body: DecideBody) -> Response {
     let (_, src) = match source_of(store) {
         Ok(v) => v,
@@ -360,17 +401,7 @@ async fn decide(store: &str, id: &str, accepting: bool, body: DecideBody) -> Res
     if !accepting && !src.graph && reason.is_empty() {
         return (StatusCode::BAD_REQUEST, "a reject needs a reason\n").into_response();
     }
-    let mut argv = if accepting {
-        src.accept.clone()
-    } else {
-        src.reject.clone()
-    };
-    argv.push("--".into()); // caller-controlled, exactly as in `detail`
-    argv.push(id.to_string());
-    if !accepting && !src.graph {
-        argv.push("--reason".into());
-        argv.push(reason.to_string());
-    }
+    let argv = decide_argv(&src, id, accepting, reason);
     match run(&src, &argv).await {
         // A zero exit is not the graph's answer — see `graph_item_failed`.
         // Checked before the success shape is built, so a refusal can never
@@ -508,6 +539,58 @@ mod tests {
                 "{store} takes no --limit; passing one would make the verb fail to parse"
             );
         }
+    }
+
+    /// Nothing after clap's `--` may look like a flag, or it is read as a
+    /// positional and the verb refuses the whole call. This is the test the
+    /// second wave did not have: the argv lived inside an async handler, no
+    /// test in this module spawns a child, and so `--reason` sat after the
+    /// separator through a fully green suite while every reject 400ed at the
+    /// child. Asserting on the composed argv is what makes it reachable.
+    #[test]
+    fn no_flag_is_ever_pushed_after_the_separator() {
+        for store in ["harness changes", "rule proposals", "graph entities"] {
+            let src = review_source(store).expect(store);
+            for accepting in [true, false] {
+                let argv = decide_argv(&src, "the-id", accepting, "because");
+                let Some(sep) = argv.iter().position(|a| a == "--") else {
+                    panic!("{store}: the separator must be present — the id comes from a URL");
+                };
+                assert_eq!(
+                    sep,
+                    argv.len() - 2,
+                    "{store} (accepting={accepting}): `--` must be second-to-last so only \
+                     the id follows it, got {argv:?}"
+                );
+                assert!(
+                    !argv[sep + 1..].iter().any(|a| a.starts_with('-')),
+                    "{store} (accepting={accepting}): {argv:?} puts a flag after `--`, which \
+                     clap reads as an unexpected positional and refuses"
+                );
+            }
+        }
+    }
+
+    /// A reject on the two stores that keep one must actually carry it, and
+    /// ahead of the separator. The graph store takes no `--reason` at all.
+    #[test]
+    fn a_reason_rides_ahead_of_the_separator_and_only_where_it_is_kept() {
+        for store in ["harness changes", "rule proposals"] {
+            let src = review_source(store).expect(store);
+            let argv = decide_argv(&src, "id", false, "the evidence does not support it");
+            let at = argv.iter().position(|a| a == "--reason").expect(store);
+            assert_eq!(argv[at + 1], "the evidence does not support it");
+            assert!(
+                at < argv.iter().position(|a| a == "--").unwrap(),
+                "{argv:?}"
+            );
+        }
+        let graph = review_source("graph entities").expect("graph entities");
+        let argv = decide_argv(&graph, "125", false, "typed but not kept");
+        assert!(
+            !argv.iter().any(|a| a == "--reason"),
+            "mecha-graph takes no --reason; passing one makes the verb refuse: {argv:?}"
+        );
     }
 
     /// The pane's URL segments are what `Home.svelte` routes to and what
