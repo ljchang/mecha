@@ -311,7 +311,25 @@ pub async fn drive_arm(
     {
         // Which rule grades this is carried by the point itself, so a kind
         // the caller has not heard of cannot be graded as a denial by default.
-        Ok(report) => Ok(Ok(verdict(&report, &prep.point))),
+        Ok(report) => {
+            let v = verdict(&report, &prep.point);
+            // What the arm actually did, for `MECHA_LOG=debug` — a verdict
+            // that surprises is unreadable from Pass/Fail alone, and the
+            // retirement drill's first run was diagnosed blind for want of
+            // exactly this line.
+            tracing::debug!(
+                verdict = ?v,
+                calls = ?report
+                    .replayed_calls
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>(),
+                divergences = report.divergences.len(),
+                text = %report.final_text,
+                "probe arm"
+            );
+            Ok(Ok(v))
+        }
         Err(e) => Ok(Err(format!("replay failed: {e:#}"))),
     }
 }
