@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The retirement end-to-end drill** (`scripts/retirement-drill.sh` +
+  `mecha-core/examples/retirement_drill_seed.rs`) — the ungating
+  precondition `LEARNING-LOOP-RESEARCH.md` named, finally run whole: in an
+  isolated world (`MECHA_SESSION_DIR`/`MECHA_LEARNING_DIR`), an honest
+  recording is seeded with a steer, a probationary bad rule and a
+  bystander, then real probe passes against the live model must regress,
+  bisect to the right rule, hold at one conviction, and retire at the
+  probation leash of 2 — bystander untouched. Its first run found the
+  probation-release bug below, which every unit test under the path had
+  passed over. `drive_arm` now traces each arm's verdict, calls and final
+  text under `MECHA_LOG=debug`.
 - **The graph's shadow queue reaches every surface an owner holds** (#114).
   `mecha review shadow` lists the surfaced-verdict queue (review-on-use:
   live shadow facts about to matter) and decides one with
@@ -72,7 +83,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The `/tasks` web page rendered no tasks at all** on any non-empty board
+- **The probation leash could never convict.** Probation released on
+  `observations > 0` — but an attributed regression always arrives inside
+  an observation, so `propose-retirements` stripped the leash in the same
+  scan that read the convictions and every probationary rule answered to
+  the ordinary threshold of 3: `PROBATION_RETIRE_AT` = 2, the entire D1
+  hedge behind applying ungraded rules, was structurally unreachable.
+  Release (`release_probation_when_measured_clean`) now requires the ledger
+  to grade the rule *beyond its convictions* (`graded >
+  attributed_regressions`, counting verdict-bearing rows only — an
+  inconclusive probe ran but graded nothing and releases nothing).
   (#116): `stateOf` called `stalled(t)` where `stalled` is a *field* the
   server stamps (`serve/board.rs`), not a function — a `ReferenceError` on
   every card. Shipped broken in 0.1.16; caught by #117's render gate.
