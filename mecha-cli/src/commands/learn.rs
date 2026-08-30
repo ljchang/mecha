@@ -123,19 +123,36 @@ pub fn dispose(auto: bool, regressed: u32, measured: u32) -> Disposition {
 /// ungraded" would contradict `Rule::probation`'s own doc ("the gate ran and
 /// *could not grade it*") and put a rule with dozens of clean observations on
 /// the stricter retirement leash for an accident of this batch's contents.
-/// Stamp everything active, then let the ledger take back what it has
-/// graded — one predicate for "measured", deliberately shared with retirement
-/// (`clear_probation_when_measured`) rather than spelled a second time here.
-/// The clear also *persists* through this pass's write, where retirement's
-/// own call lands only when a domain has a conviction to record.
+///
+/// **Stamping and releasing answer different questions, so they use
+/// different predicates.** Stamping asks "was this rule born ungraded?" —
+/// any verdict-bearing row in the ledger answers no, whatever the verdicts
+/// were, so a rule with graded history keeps whatever probation state
+/// `finalize_rules` carried for it. Releasing asks "has a probationary rule
+/// earned its way off the leash?" — which its own convictions must not
+/// answer (`release_probation_when_measured_clean`). An earlier version
+/// shared one predicate for both, and once the release stopped keying on
+/// bare coverage that stamped a *born-graded* rule whose only verdicts were
+/// its convictions: threshold silently 3 → 2 and a `retired_reason` naming
+/// a probation it never had — the mirror image of the leash bug.
+///
+/// The trailing release also *persists* through this pass's write, where
+/// retirement's own call lands only when a domain has a conviction to
+/// record.
 fn stamp_probation(
     rules: &mut [mecha_core::learning::Rule],
     tallies: &BTreeMap<String, mecha_core::learning::RuleTally>,
 ) {
     for r in rules.iter_mut().filter(|r| r.retired_at.is_none()) {
-        r.probation = true;
+        let ever_graded =
+            r.id.as_deref()
+                .and_then(|id| tallies.get(id))
+                .is_some_and(|t| t.graded > 0);
+        if !ever_graded {
+            r.probation = true;
+        }
     }
-    mecha_core::learning::clear_probation_when_measured(rules, tallies);
+    mecha_core::learning::release_probation_when_measured_clean(rules, tallies);
 }
 
 /// Which reflection ids this pass leaves alone, given a holdout fraction.
@@ -627,12 +644,22 @@ mod tests {
         };
         let mut rules = vec![
             rule(Some("measured"), false),
-            // Probationary from an earlier pass, since graded: the shared
-            // predicate clears it, and this write persists the clear.
+            // Probationary from an earlier pass, since graded clean: the
+            // release clears it, and this write persists the clear.
             rule(Some("measured-probationary"), true),
             rule(Some("unmeasured"), false),
             // Pre-identity: no id, so no tally can exist — unmeasured.
             rule(None, false),
+            // Born graded, and its only verdicts are its convictions. The
+            // stamp must not leash it: stamping asks "born ungraded?", and
+            // any graded row answers no — while the *release* predicate,
+            // which its convictions fail, must not be the one deciding.
+            // Fails on the shared-predicate version, where this rule came
+            // out probationary with threshold 3 silently dropped to 2.
+            rule(Some("convicted-born-graded"), false),
+            // Probationary and convicted: the leash it is on must survive
+            // both the stamp and the trailing release.
+            rule(Some("convicted-probationary"), true),
         ];
         let retired = Rule {
             retired_at: Some("2026-08-01T00:00:00Z".into()),
@@ -644,8 +671,24 @@ mod tests {
         for id in ["measured", "measured-probationary"] {
             tallies.insert(
                 id.to_string(),
+                // Graded, not merely covered: release keys on verdicts, and
+                // observations alone would read as four probes that ran and
+                // graded nothing — which releases no leash.
                 RuleTally {
                     observations: 4,
+                    graded: 4,
+                    ..Default::default()
+                },
+            );
+        }
+        for id in ["convicted-born-graded", "convicted-probationary"] {
+            tallies.insert(
+                id.to_string(),
+                RuleTally {
+                    observations: 1,
+                    graded: 1,
+                    regressed: 1,
+                    attributed_regressions: 1,
                     ..Default::default()
                 },
             );
@@ -673,6 +716,14 @@ mod tests {
         assert!(
             !by_id(Some("retired")),
             "a retired rule rides in no prompt and wears no leash"
+        );
+        assert!(
+            !by_id(Some("convicted-born-graded")),
+            "a born-graded rule must not be leashed by its own convictions"
+        );
+        assert!(
+            by_id(Some("convicted-probationary")),
+            "a convicted probationary rule stays on the leash its convictions argue to"
         );
     }
 
