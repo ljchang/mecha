@@ -125,7 +125,7 @@ pub fn dispose(auto: bool, regressed: u32, measured: u32) -> Disposition {
 /// the stricter retirement leash for an accident of this batch's contents.
 /// Stamp everything active, then let the ledger take back what it has
 /// graded — one predicate for "measured", deliberately shared with retirement
-/// (`clear_probation_when_measured`) rather than spelled a second time here.
+/// (`release_probation_when_measured_clean`) rather than spelled a second time here.
 /// The clear also *persists* through this pass's write, where retirement's
 /// own call lands only when a domain has a conviction to record.
 fn stamp_probation(
@@ -135,7 +135,7 @@ fn stamp_probation(
     for r in rules.iter_mut().filter(|r| r.retired_at.is_none()) {
         r.probation = true;
     }
-    mecha_core::learning::clear_probation_when_measured(rules, tallies);
+    mecha_core::learning::release_probation_when_measured_clean(rules, tallies);
 }
 
 /// Which reflection ids this pass leaves alone, given a holdout fraction.
@@ -644,8 +644,12 @@ mod tests {
         for id in ["measured", "measured-probationary"] {
             tallies.insert(
                 id.to_string(),
+                // Graded, not merely covered: release keys on verdicts, and
+                // observations alone would read as four probes that ran and
+                // graded nothing — which releases no leash.
                 RuleTally {
                     observations: 4,
+                    graded: 4,
                     ..Default::default()
                 },
             );
