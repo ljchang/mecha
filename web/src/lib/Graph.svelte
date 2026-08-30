@@ -57,6 +57,34 @@
   let factBusy = $state(false);
   let openFact = $state(null); // uid of the expanded reviewed-fact row
 
+  // ---- create (a node nothing in the graph proposed) ----
+  // The graph's closed type set, person first because a create-on-miss is
+  // usually a person (the type set stays closed by design — §7).
+  const NODE_TYPES = ['person', 'org', 'place', 'project', 'goal', 'area', 'task', 'event', 'event_series', 'topic', 'artifact', 'document'];
+  let createType = $state('person');
+  let createBusy = $state(false);
+
+  async function createEntity(name) {
+    if (!name?.trim()) return;
+    createBusy = true;
+    try {
+      const res = await fetch('/api/entity/create', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), node_type: createType }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      said = (await res.json())?.output ?? 'created';
+      error = null;
+      createType = 'person';
+      await lookup(name.trim());
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      createBusy = false;
+    }
+  }
+
   // ---- merge (fold a duplicate into the open entity) ----
   let mergeOpen = $state(false);
   let dupName = $state('');
@@ -540,6 +568,30 @@
 
     {#if entity?.found === false}
       <div class="footnote">no entity matches “{entity.query}” — the search above answers instead</div>
+      <!-- Create-on-miss (design §2.3): the dead end is exactly where the
+           missing node is discovered, so the door out of it is here. A name
+           already held is refused graph-side, naming its holder. -->
+      <div class="card">
+        <div class="factform">
+          <span class="subjname">create “{entity.query}”</span>
+          <select class="field small" bind:value={createType}>
+            {#each NODE_TYPES as t (t)}
+              <option value={t}>{t}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="btnrow">
+          <button
+            class="minibtn primary"
+            disabled={createBusy}
+            onclick={() => createEntity(entity.query)}
+          >{createBusy ? 'creating…' : `Create ${createType}`}</button>
+        </div>
+        <div class="editfoot">
+          A node nothing in the graph proposed — for someone or something with evidence but no
+          entity of its own. Facts already filed under other nodes stay where they are.
+        </div>
+      </div>
     {:else if entity?.ambiguous?.length}
       <div class="footnote">several entities answer to this name — pick one:</div>
       {#each entity.ambiguous as c}
