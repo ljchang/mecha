@@ -1459,21 +1459,34 @@ mod tests {
         }
     }
 
-    /// Pull a one-line `const NAME = ['a', 'b'];` literal out of a Svelte
-    /// file. Deliberately dumb — all three of these are written on one line —
-    /// and it panics rather than returning an empty set, because an empty
+    /// Pull the strings out of a `const NAME = ['a', 'b'];` literal in a
+    /// Svelte file, however it is wrapped.
+    ///
+    /// It reads bracket-to-bracket rather than line-by-line on purpose. The
+    /// first version matched the one line the declaration sat on, which
+    /// quietly made "keep this array on one line" a requirement of files this
+    /// test does not own — unenforced by anything (the web app has no
+    /// prettier and no eslint), undocumented at the declaration, and load
+    /// bearing only inside a Rust test three directories away. A peer about
+    /// to reformat `App.svelte` offered to work around it, which is what
+    /// showed it up: a guard that constrains how other people may format
+    /// their code has overreached, and the fix belongs in the guard.
+    ///
+    /// It still panics rather than returning an empty set, because an empty
     /// allowlist would make every assertion below vacuously true.
     fn js_string_array(src: &str, decl: &str) -> Vec<String> {
-        let line = src
-            .lines()
-            .find(|l| l.contains(decl))
+        let from = src
+            .find(decl)
             .unwrap_or_else(|| panic!("`{decl}` is gone — this guard is reading nothing"));
-        let body = line
-            .split_once('[')
-            .and_then(|(_, rest)| rest.split_once(']'))
-            .unwrap_or_else(|| panic!("`{decl}` is no longer a one-line array literal"))
-            .0;
-        let out: Vec<String> = body
+        let rest = &src[from..];
+        let open = rest
+            .find('[')
+            .unwrap_or_else(|| panic!("`{decl}` is no longer an array literal"));
+        let close = open
+            + rest[open..]
+                .find(']')
+                .unwrap_or_else(|| panic!("`{decl}` has no closing bracket"));
+        let out: Vec<String> = rest[open + 1..close]
             .split(',')
             .map(|s| s.trim().trim_matches(['\'', '"']).to_string())
             .filter(|s| !s.is_empty())
