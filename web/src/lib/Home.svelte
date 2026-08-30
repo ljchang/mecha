@@ -30,8 +30,19 @@
 
   const dash = (v) => (v === null || v === undefined ? '—' : v.toLocaleString('en-US'));
 
+  // Every name `collect_queues()` can push, in its order. A queue missing
+  // from here renders under its raw wire name, which is how `blocked
+  // questions` shipped titled "blocked questions" and going nowhere for as
+  // long as it took someone to tap it: this map is a hardcoded reader of a
+  // list produced in Rust, so the drift is silent in both directions.
+  // `every_queue_the_backlog_reports_is_named_and_reachable_from_the_web_home`
+  // (mecha-cli/src/commands/review.rs) fails `cargo test` instead — it checks
+  // both maps against this file *and* against the router's own view and pane
+  // lists, because a wrong destination is the silent half: the card keeps its
+  // chevron and quietly lands on home.
   const queueLabels = {
     'outbox drafts': 'Outbox',
+    'blocked questions': 'Questions',
     'front-door requests': 'Front door',
     'graph candidates': 'Graph queue',
     'graph shadow': 'Shadow verdicts',
@@ -40,9 +51,14 @@
     'harness changes': 'Harness',
   };
   // A card that has a surface on this phone navigates to it; the ones that
-  // are CLI-only stay flat rather than pretending.
+  // are CLI-only stay flat rather than pretending — and a flat card prints
+  // the command that *does* open it, because a card you can tap and a card
+  // you cannot have to be told apart before the tap, not after it. The
+  // `opens` string used to live only in a `title` tooltip, which on the
+  // phone this page is for is the same as not saying it at all.
   const queueTargets = {
     'outbox drafts': 'review/outbox',
+    'blocked questions': 'tasks',
     'front-door requests': 'review/frontdoor',
     'graph candidates': 'review/graph',
     'graph shadow': 'review/graph',
@@ -64,6 +80,18 @@
     <path d="M12 4l9 16H3z" />
     <path d="M12 11v4M12 17.5v.5" />
   </svg>
+{/snippet}
+
+{#snippet queueCard(q, target)}
+  <div class="row">
+    <span class="label"
+      >{queueLabels[q.queue] ?? q.queue}{#if target}<span class="chev" aria-hidden="true">›</span
+        >{/if}</span
+    >
+    <span class="count">{dash(q.depth)}</span>
+  </div>
+  <div class="sub" title={q.detail}>{q.detail}</div>
+  {#if !target}<div class="opens">{q.opens ?? '—'}</div>{/if}
 {/snippet}
 
 <header>
@@ -101,7 +129,7 @@
     <div class="grid">
       <button class="card stat tappable" onclick={() => navigate('mail')}>
         <div class="row">
-          <span class="label">Mail</span>
+          <span class="label">Mail<span class="chev" aria-hidden="true">›</span></span>
           <span class="count">{dash(mailNeeds)}</span>
         </div>
         <div class="sub">threads that need you</div>
@@ -109,19 +137,11 @@
       {#each summary?.queues ?? [] as q}
         {#if queueTargets[q.queue]}
           <button class="card stat tappable" onclick={() => navigate(queueTargets[q.queue])}>
-            <div class="row">
-              <span class="label">{queueLabels[q.queue] ?? q.queue}</span>
-              <span class="count">{dash(q.depth)}</span>
-            </div>
-            <div class="sub" title={q.opens}>{q.detail}</div>
+            {@render queueCard(q, queueTargets[q.queue])}
           </button>
         {:else}
-          <div class="card stat">
-            <div class="row">
-              <span class="label">{queueLabels[q.queue] ?? q.queue}</span>
-              <span class="count">{dash(q.depth)}</span>
-            </div>
-            <div class="sub" title={q.opens}>{q.detail}</div>
+          <div class="card stat flat">
+            {@render queueCard(q, null)}
           </div>
         {/if}
       {:else}
@@ -230,6 +250,34 @@
     font-size: 22px;
     font-weight: 500;
     color: var(--accent-400);
+  }
+  /* The accent means "this one opens something" — so a card with nowhere
+     to go gives it up, and says what does open it instead. Before this the
+     eight cards were one shape in one colour and four of them silently did
+     nothing when tapped. */
+  .chev {
+    margin-left: 5px;
+    color: var(--accent-400);
+    font-size: 15px;
+    line-height: 1;
+  }
+  .flat .count {
+    color: var(--text-muted);
+  }
+  .opens {
+    /* Sits on the card's floor, so the rule reads as a footer however tall
+       the grid row stretches. It wraps rather than ellipsing: `.sub` above
+       may clip its prose and still be understood, but a command with its
+       tail cut off is one you cannot run, which is the whole point of
+       printing it. */
+    margin-top: auto;
+    padding-top: 7px;
+    border-top: 1px solid var(--accent-900);
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1.5;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
   }
   .sub {
     font-size: 11px;
