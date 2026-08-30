@@ -28,10 +28,23 @@ source the same day. All five owner decisions are ruled in §8.*
 > through mecha, "easy to enter, easy to correct in place").
 > `kg_upsert kind=alias` grew `remove` graph-side, `mecha kg unalias`
 > relays it (id-only, like `retract`), `POST /api/entity/unalias` sits
-> behind the owner guard. Still CLI-only: merge, rename, retype, and the
-> `proposals` queue (20 pending at the time of writing) — the next rung,
-> and merge needs an authority decision (it is no-undo, and today it is
-> deliberately not on the model's tool surface).
+> behind the owner guard.
+>
+> **Status 2026-08-30, evening: the rest of the curation rung shipped,
+> under a recorded ruling.** The owner ruled the authority question
+> merge raised: web merges ride the *proposals record* — `mecha-graph
+> proposals file-merge --accept`, filed under detector `owner`, so the
+> graph's one no-undo verb always leaves a decided proposal behind it —
+> and the model's MCP tool surface gains nothing (still true; the owner
+> lane is serve spawning `mecha-graph` directly). Shipped on that
+> ruling: `POST /api/entity/merge` and the entity page's merge form,
+> alias *add* (`mecha kg alias` over the existing `kind=alias` write),
+> create-on-miss (`new-person`/`new-node`), identifiers in the
+> `kg_entity` envelope rendered as the card's `reaches` row, and the
+> three-store `/api/proposals` pane (harness · rules · entities).
+> Still CLI-only: rename, retype, `relink-aliases` (retracting already
+> mis-filed mentions), `move-identifier`, and a reject *reason* for the
+> graph's proposal store.
 
 ## 1. The problem, verified
 
