@@ -277,10 +277,20 @@ pub async fn drive_episode(
 ) -> Result<Result<ArmOutcome, String>> {
     let recorded = &prep.recorded;
     let cancel = CancellationToken::new();
+    // The recorded specs, when the surface store still holds them. Loaded per
+    // arm rather than on the prep: both arms of one episode read the same
+    // small blob, and the prep's own doc says it exists to avoid re-walking
+    // the *session* file — the store is a different, deduped read.
+    let recorded_specs = recorded
+        .tools_hash
+        .as_deref()
+        .and_then(|h| mecha_core::surface::SurfaceStore::open_default()?.load(h))
+        .unwrap_or_default();
     let registry = match replay_registry(
         &recorded.tools,
         prepared.agent.registry(),
         Some(&crate::setup::surface_only_registry()),
+        &recorded_specs,
         prep.trajectory.calls.clone(),
         OnDivergence::Stop,
         cancel.clone(),

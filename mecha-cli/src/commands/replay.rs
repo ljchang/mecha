@@ -127,6 +127,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     agent_cfg.compact_keep_recent = recorded.compact_keep_recent;
 
     let cancel = CancellationToken::new();
+    // The exact specs the recording was sent, when the surface store still
+    // holds them — under stop/error they override today's descriptions and
+    // stand in for tools nothing today can construct; under live they are
+    // ignored, because live tools genuinely run and deserve their own words.
+    let recorded_specs = recorded
+        .tools_hash
+        .as_deref()
+        .and_then(|h| mecha_core::surface::SurfaceStore::open_default()?.load(h))
+        .unwrap_or_default();
     let registry = replay_registry(
         &recorded.tools,
         prepared.agent.registry(),
@@ -134,6 +143,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // under both non-executing modes, `Stop` and `Error` alike — see
         // `replay_registry`.
         Some(&crate::setup::surface_only_registry()),
+        &recorded_specs,
         trajectory.calls.clone(),
         mode,
         cancel.clone(),

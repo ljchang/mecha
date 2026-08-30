@@ -176,6 +176,20 @@ reading`. Sixteen rules, zero evidence. Two causes:
 - **Structural.** `Trigger::Edit` has no replayable intervention point and
   never will; `Trigger::Followup` is judge-graded only. The gate's allowlist is
   steers and denials.
+- **The pre-point lottery** (found and closed 2026-08-29, after the two
+  above). Even with the registry fixed, the probe *regenerated* the whole
+  prefix and required the model to reproduce it call-for-call before the
+  intervention: on a sampled model the odds decay with the point's depth, and
+  the first full pass lost 11 of 12 steer probes to `inconclusive: diverged
+  at call #1` against points at #10–#28. Closed by branching
+  (`counterfactual::branch_at` + `replay_run::drive_branch`): the recorded
+  prefix is resubmitted verbatim, steering text stripped, and the model
+  generates only the continuation — pre-point divergence is now structurally
+  impossible, and the forced prefix reads from the server's KV cache instead
+  of being re-decided. Known residual sensitivity: a steer *pass* still
+  requires tracking the steered continuation call-for-call, so long
+  post-steer windows bias toward `Fail`/`Fail` — but both arms carry the same
+  bias, and the comparison between them is what the ledger keys on.
 
 This is the decision that actually forks the build, and §5 puts it plainly.
 

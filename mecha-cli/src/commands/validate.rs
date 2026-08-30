@@ -7,13 +7,15 @@
 //!   conversation, with and without the rules, and a judge grades both
 //!   answers. Judge-graded, so a single flip is a prompt to read the two
 //!   answers, not a result.
-//! - **Steers and denials** land mid-run, so their probes *replay* the
-//!   recorded prefix — recorded tool results, seeded sampler, no steering
-//!   text (extraction drops it, which makes the replay the no-steer
-//!   counterfactual by construction) — once per arm, and the verdict is
-//!   structural: did the model do the steered thing without the steer, did
-//!   it repeat the exact call the user refused. Trace-graded, no judge. See
-//!   [`mecha_core::counterfactual`] for the verdict semantics.
+//! - **Steers and denials** land mid-run, so their probes *branch* the
+//!   recording at the intervention — the recorded messages before it are
+//!   resubmitted verbatim, steering text stripped, and the model generates
+//!   only the continuation, which makes the replay the no-steer
+//!   counterfactual by construction and pre-point divergence impossible —
+//!   once per arm, and the verdict is structural: did the model do the
+//!   steered thing without the steer, did it repeat the exact call the user
+//!   refused. Trace-graded, no judge. See [`mecha_core::counterfactual`]
+//!   for the verdict semantics.
 //!
 //! A rule set that does not move these verdicts on reflections it did not
 //! train on is prompt clutter, and `mecha learn --holdout` exists to keep
@@ -221,6 +223,12 @@ fn select_probe_corpus(
         .into_iter()
         .filter(|r| wanted_triggers.contains(&r.trigger.as_str()))
         .filter(|r| !unprocessed_only || !r.is_processed)
+        // Dropped is the owner saying no, and it outranks measurement the
+        // same way it outranks candidacy (`learnable()`'s own first clause):
+        // a probe over a refused reflection still writes ledger rows, and a
+        // regression there can bisect to — and help retire — a real rule on
+        // evidence the owner already rejected.
+        .filter(|r| r.dropped_at.is_none())
         .filter(|r| r.provenance() != Origin::Derived)
         .collect()
 }
@@ -730,6 +738,25 @@ mod tests {
 
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].intervention, real.intervention);
+    }
+
+    /// Dropped is the owner saying no, and it outranks measurement the same
+    /// way it outranks candidacy: a dropped reflection must not keep being
+    /// probed, writing ledger rows, and feeding bisection with evidence the
+    /// owner already rejected. `learnable()` is deliberately not the gate
+    /// here, so its dropped clause did not come along for free.
+    #[test]
+    fn a_dropped_reflection_never_reaches_the_probe_corpus() {
+        let kept = reflexion("please use tabs, not spaces", Origin::Clean);
+        let mut dropped = reflexion("use the old google tool", Origin::Clean);
+        dropped.dropped_at = Some("2026-08-30T00:00:00Z".into());
+        dropped.dropped_reason = Some("recorded surface unrecoverable".into());
+        let triggers = [Trigger::Steer.as_str()];
+
+        let selected = select_probe_corpus(vec![kept.clone(), dropped], &triggers, false);
+
+        assert_eq!(selected.len(), 1, "the dropped reflection must be excluded");
+        assert_eq!(selected[0].intervention, kept.intervention);
     }
 
     #[test]

@@ -170,6 +170,28 @@ impl Divergence {
     }
 }
 
+/// [`diff`], for a replay that joined the recording mid-stream: `recorded` is
+/// the tail from `base` onward, and every reported index comes back shifted
+/// into the *full* recording's coordinates. A probe point is located in those
+/// coordinates, so a branched replay's divergences must land there too, or
+/// "before the steer point" compares indices from two different countings.
+pub fn diff_from(
+    base: usize,
+    recorded: &[RecordedCall],
+    replayed: &[ToolCallTrace],
+) -> Vec<Divergence> {
+    let mut out = diff(recorded, replayed);
+    for d in &mut out {
+        match d {
+            Divergence::Tool { index, .. }
+            | Divergence::Arguments { index, .. }
+            | Divergence::Extra { index, .. }
+            | Divergence::Missing { index, .. } => *index += base,
+        }
+    }
+    out
+}
+
 /// Compare a replayed trace against its recording, call by call.
 ///
 /// Positional rather than set-based on purpose: the order tools are called in
@@ -479,6 +501,44 @@ mod tests {
         );
 
         assert_eq!(d.len(), 2, "a reordering went unreported");
+    }
+
+    /// A branched replay diffs the recording's tail, but a probe point lives
+    /// in the full recording's coordinates — reported indices must land there.
+    #[test]
+    fn diff_from_reports_indices_in_the_full_recordings_coordinates() {
+        let recorded_tail = vec![
+            RecordedCall {
+                name: "fs_read".into(),
+                input: json!({}),
+                output: String::new(),
+                is_error: false,
+            },
+            RecordedCall {
+                name: "fs_read".into(),
+                input: json!({}),
+                output: String::new(),
+                is_error: false,
+            },
+        ];
+        let replayed = vec![trace("fs_read", json!({})), trace("shell", json!({}))];
+
+        let d = diff_from(10, &recorded_tail, &replayed);
+
+        assert_eq!(
+            d,
+            vec![Divergence::Tool {
+                index: 11,
+                expected: "fs_read".into(),
+                actual: "shell".into()
+            }],
+            "a divergence at tail position 1 sits at recording position 11"
+        );
+        // And a zero base is exactly `diff`.
+        assert_eq!(
+            diff_from(0, &recorded_tail, &replayed),
+            diff(&recorded_tail, &replayed)
+        );
     }
 
     #[test]
