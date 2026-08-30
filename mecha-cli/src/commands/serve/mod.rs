@@ -384,6 +384,10 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/related", get(board::related))
         .route("/api/timeline", get(board::timeline))
         .route(
+            "/api/entity/alias",
+            axum::routing::post(board::entity_alias),
+        )
+        .route(
             "/api/entity/unalias",
             axum::routing::post(board::entity_unalias),
         )
@@ -835,6 +839,7 @@ mod tests {
             ("GET", "/api/timeline?name=x"),
             ("POST", "/api/facts"),
             ("POST", "/api/facts/retract"),
+            ("POST", "/api/entity/alias"),
             ("POST", "/api/entity/unalias"),
             ("POST", "/api/entity/merge"),
             ("POST", "/api/entity/create"),

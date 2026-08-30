@@ -991,6 +991,18 @@ pub async fn entity_merge(State(state): St, Json(body): Json<MergeBody>) -> Resp
     graph_verb(&["proposals", "file-merge", "--accept", "--", keep, dup]).await
 }
 
+/// POST /api/entity/alias — the add direction, symmetric with unalias: the
+/// owner stating another way of saying this node's name. Same id-only
+/// contract, same verbatim relay.
+pub async fn entity_alias(State(state): St, Json(body): Json<UnaliasBody>) -> Response {
+    let id = body.node_id.trim();
+    let alias = body.alias.trim();
+    if id.is_empty() || alias.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which node, and what name?\n").into_response();
+    }
+    verb(&state, &["kg", "alias", "--", id, alias]).await
+}
+
 #[derive(serde::Deserialize)]
 pub struct UnaliasBody {
     /// The node's id — an id, never a name. On a conflation repair a name
