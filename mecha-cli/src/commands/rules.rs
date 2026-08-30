@@ -279,11 +279,15 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
 
     for domain in store.domains() {
         let mut before = store.learned_rules(&domain)?;
-        // Probation says "born ungraded", which stops being true the moment a
-        // probe covers it. Cleared before the threshold is chosen, or a rule
-        // the ledger has since measured would still answer to the short leash
-        // — the stale-stamp failure, one store over.
-        mecha_core::learning::clear_probation_when_measured(&mut before, &tallies);
+        // Probation says "born ungraded", which stops being true once the
+        // ledger grades the rule beyond its convictions. Released before the
+        // threshold is chosen, or a rule with a real clean record would still
+        // answer to the short leash — the stale-stamp failure, one store
+        // over. The release deliberately does not key on bare coverage: an
+        // attributed regression always arrives inside an observation, so
+        // that release stripped the leash on the very rows that convict and
+        // made PROBATION_RETIRE_AT unreachable from this scan.
+        mecha_core::learning::release_probation_when_measured_clean(&mut before, &tallies);
         let before = before;
         let convicted: Vec<&Rule> = before
             .iter()
@@ -703,6 +707,64 @@ mod tests {
 
         std::fs::remove_dir_all(store.root()).ok();
     }
+    /// **The D1 leash is reachable: a probationary rule convicts at 2, and
+    /// an ordinary rule with the same evidence survives.** Fails on the old
+    /// release predicate (`observations > 0`): the two conviction rows were
+    /// themselves observations, so probation was stripped in the same scan
+    /// that read them and the rule answered to the ordinary threshold of 3 —
+    /// `PROBATION_RETIRE_AT` could never be the operative threshold, and the
+    /// only brake in front of an ungraded rule was two-thirds longer than
+    /// every document said.
+    #[test]
+    fn a_probationary_rule_convicts_at_the_shorter_leash() {
+        let store = temp_store();
+        let mut bad = rule("Bad ungraded rule.", "r-probation");
+        bad.probation = true;
+        store
+            .write_learned_rules("behavior", &[bad, rule("Plain rule.", "r-plain")])
+            .unwrap();
+        // Two attributed regressions each — conviction evidence and nothing
+        // else, so the probationary rule's graded history is exactly its
+        // convictions and the leash must hold.
+        for i in 0..2 {
+            store
+                .append_validation(&regression(
+                    "r-probation",
+                    &format!("2026-08-3{}T00:00:00Z", i),
+                ))
+                .unwrap();
+            store
+                .append_validation(&regression("r-plain", &format!("2026-08-3{}T12:00:00Z", i)))
+                .unwrap();
+        }
+
+        propose(&store, mecha_core::learning::DEFAULT_RETIRE_AT, true).unwrap();
+
+        let live = store.learned_rules("behavior").unwrap();
+        let bad = live
+            .iter()
+            .find(|r| r.id.as_deref() == Some("r-probation"))
+            .unwrap();
+        assert!(
+            !bad.active(),
+            "two attributed regressions retire a probationary rule"
+        );
+        assert!(
+            bad.retired_reason.as_deref().unwrap().contains("probation"),
+            "the record names the shorter leash, not the ordinary threshold: {:?}",
+            bad.retired_reason
+        );
+        assert!(
+            live.iter()
+                .find(|r| r.id.as_deref() == Some("r-plain"))
+                .unwrap()
+                .active(),
+            "the same evidence leaves an ordinary rule below its threshold"
+        );
+
+        std::fs::remove_dir_all(store.root()).ok();
+    }
+
     #[test]
     fn retire_and_restore_round_trip_by_id_prefix() {
         let store = temp_store();
