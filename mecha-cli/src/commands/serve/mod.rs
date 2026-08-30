@@ -43,6 +43,7 @@ mod files;
 mod frontdoor;
 mod mail;
 mod present;
+mod proposals;
 mod questions;
 mod review;
 mod settings;
@@ -279,6 +280,21 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         )
         .route("/api/queue/verdict", axum::routing::post(review::verdict))
         .route("/api/queue/bind", axum::routing::post(review::bind))
+        // The proposal stores: harness candidates, rule proposals, the
+        // graph's entity proposals. One generic surface over
+        // `commands::review::review_source`, so a store added to that table
+        // reaches the phone without another handler.
+        .route("/api/proposals", get(proposals::stores))
+        .route("/api/proposals/{store}", get(proposals::list))
+        .route("/api/proposals/{store}/{id}", get(proposals::detail))
+        .route(
+            "/api/proposals/{store}/{id}/accept",
+            axum::routing::post(proposals::accept),
+        )
+        .route(
+            "/api/proposals/{store}/{id}/reject",
+            axum::routing::post(proposals::reject),
+        )
         .route("/api/mail", get(mail::list))
         .route("/api/mail/inbox", get(mail::inbox))
         .route("/api/mail/compose", axum::routing::post(mail::compose))

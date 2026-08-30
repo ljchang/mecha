@@ -62,6 +62,11 @@
     'front-door requests': 'review/frontdoor',
     'graph candidates': 'review/graph',
     'graph shadow': 'review/graph',
+    // The three proposal stores share one pane and one component; the pane
+    // name is the store, so a card lands on the store it names.
+    'harness changes': 'review/harness',
+    'rule proposals': 'review/rules',
+    'graph entities': 'review/entities',
   };
 </script>
 
