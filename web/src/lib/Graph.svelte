@@ -118,7 +118,11 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
       results = Array.isArray(data) ? data : (data.items ?? []);
-      hitEntities = Array.isArray(data?.entities) ? data.entities : [];
+      // The pack's entities are objects ({name, node_id, …}); render the
+      // name, open by the id — an interpolated object is "[object Object]".
+      hitEntities = (Array.isArray(data?.entities) ? data.entities : [])
+        .map((e) => (typeof e === 'string' ? { name: e } : e))
+        .filter((e) => e?.name);
       error = null;
     } catch (e) {
       error = String(e?.message ?? e);
@@ -186,6 +190,17 @@
     timeline = null;
     historyOpen = false;
     said = null;
+  }
+
+  // One gesture back to the resting page: clears the query, the results,
+  // and any open entity in one go.
+  function clearFind() {
+    query = '';
+    results = null;
+    hitEntities = [];
+    error = null;
+    closeEntity();
+    findField?.focus();
   }
 
   // One verdict, in place: the same route as the review page, because two
@@ -426,13 +441,18 @@
         lookup();
       }}
     >
-      <input
-        class="field"
-        placeholder="find — an entity opens, anything else searches (⌘K)"
-        bind:value={query}
-        bind:this={findField}
-        autocapitalize="off"
-      />
+      <div class="findwrap">
+        <input
+          class="field"
+          placeholder="find — an entity opens, anything else searches (⌘K)"
+          bind:value={query}
+          bind:this={findField}
+          autocapitalize="off"
+        />
+        {#if query || results !== null || entity}
+          <button type="button" class="clearbtn" onclick={clearFind} aria-label="clear the search">✕</button>
+        {/if}
+      </div>
       <Dictate onText={(text, err) => { if (text) { query = query ? `${query} ${text}` : text; lookup(); } if (err) error = err; }} />
       <button class="minibtn" disabled={busy || searching || !query.trim()}>Open</button>
     </form>
@@ -440,14 +460,14 @@
     {#if results !== null}
       {#if hitEntities.length}
         <div class="chiprow">
-          {#each hitEntities as name}
-            <button class="entchip" onclick={() => lookup(name)}>{name}</button>
+          {#each hitEntities as e}
+            <button class="entchip" onclick={() => lookup(e.node_id ?? e.name)}>{e.name}</button>
           {/each}
         </div>
       {/if}
       {#each results as r}
         <div class="card noterow">
-          <div class="notetext">{r.statement ?? r.name ?? r.text ?? JSON.stringify(r).slice(0, 140)}</div>
+          <div class="notetext clamp">{r.statement ?? r.name ?? r.text ?? JSON.stringify(r).slice(0, 140)}</div>
           <div class="notemeta">{r.kind ?? ''}{r.occurred_at ? ` · ${day(r.occurred_at)}` : ''}</div>
         </div>
       {:else}
@@ -674,34 +694,39 @@
         </button>
       </div>
       {#if landed}<div class="saidline">{landed}</div>{/if}
-
-      <!-- The notebook's closed lid: the newest notes showing through, the
-           whole thing one target that opens the sheet. -->
-      <button class="peek card" onclick={() => (sheetOpen = true)} aria-label="open the notebook">
-        <div class="handle" aria-hidden="true"></div>
-        <div class="peekhead">
-          <span class="sect">notebook</span>
-          <span class="peekcount">{recent === null ? '…' : atCap ? `${FETCH}+` : recent.length}</span>
-        </div>
-        {#if recent === null}
-          <div class="empty">reading the notebook…</div>
-        {:else}
-          {#each recent.slice(0, 2) as note (note.uid)}
-            <div class="peekrow">
-              <div class="notetext clamp">{note.body}</div>
-              <div class="notemeta">{stamp(note.occurred_at)}</div>
-            </div>
-          {:else}
-            <div class="empty">Nothing captured yet — the first note starts it.</div>
-          {/each}
-        {/if}
-      </button>
     {/if}
   </div>
 
-  {#if sheetOpen}
-    <div class="scrim" onclick={() => (sheetOpen = false)} aria-hidden="true"></div>
-    <aside class="sheet">
+  <!-- The notebook: one drawer, pinned to the bottom edge of the page.
+       Collapsed it is the drawer's lid — a handle and the newest notes
+       showing through, sitting in layout like a footer, not floating in
+       the scroll. Open it lifts into the sheet band over a scrim. -->
+  {#if !entity?.node}
+    {#if sheetOpen}
+      <div class="scrim" onclick={() => (sheetOpen = false)} aria-hidden="true"></div>
+    {/if}
+    <aside class="sheet" class:open={sheetOpen}>
+      {#if !sheetOpen}
+        <button type="button" class="lid" onclick={() => (sheetOpen = true)} aria-label="open the notebook">
+          <div class="handle" aria-hidden="true"></div>
+          <div class="peekhead">
+            <span class="sect">notebook</span>
+            <span class="peekcount">{recent === null ? '…' : atCap ? `${FETCH}+` : recent.length}</span>
+          </div>
+          {#if recent === null}
+            <div class="empty">reading the notebook…</div>
+          {:else}
+            {#each recent.slice(0, 2) as note (note.uid)}
+              <div class="peekrow">
+                <div class="notetext clamp">{note.body}</div>
+                <div class="notemeta">{stamp(note.occurred_at)}</div>
+              </div>
+            {:else}
+              <div class="empty">Nothing captured yet — the first note starts it.</div>
+            {/each}
+          {/if}
+        </button>
+      {:else}
       <button class="sheetlip" onclick={() => (sheetOpen = false)} aria-label="close the notebook">
         <div class="handle" aria-hidden="true"></div>
       </button>
@@ -724,6 +749,7 @@
           A note is evidence — what the graph derives from it waits in your review queue.
         </div>
       </div>
+      {/if}
     </aside>
   {/if}
 </div>
@@ -737,8 +763,11 @@
      agreement every view's header keeps (#118). */
   header { display: flex; align-items: center; justify-content: space-between; padding: 22px 56px 12px 20px; }
   .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; }
-  .scroll { flex: 1; overflow-y: auto; padding: 2px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 2px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
   .findrow { display: flex; gap: 8px; }
+  .findwrap { position: relative; flex: 1; display: flex; min-width: 0; }
+  .findwrap .field { padding-right: 38px; }
+  .clearbtn { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 32px; height: 32px; background: none; border: none; color: var(--text-muted); font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
   .field { flex: 1; min-height: 44px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; padding: 0 12px; min-width: 0; }
   .field.small { min-height: 38px; font-size: 12px; background: var(--bg); }
   .field:focus { outline: 1px solid var(--accent-500); }
@@ -764,7 +793,7 @@
   .factform .field.small { min-height: 42px; }
   .subjname { font-size: 14px; font-weight: 500; }
   .factline { display: flex; gap: 7px; align-items: baseline; }
-  .statement { font-size: 14px; line-height: 1.5; }
+  .statement { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
   .fact.denied .statement { color: var(--text-muted); }
   .unrev { color: var(--accent-400); font-weight: 600; }
   .neg { color: var(--hazard); }
@@ -772,7 +801,8 @@
   .meta { display: flex; gap: 6px; flex-wrap: wrap; font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
   .btnrow { display: flex; gap: 8px; }
   .btnrow .minibtn { flex: 1; }
-  .preview { font-size: 12px; color: var(--text-muted); line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; }
+  .preview { font-size: 12px; color: var(--text-muted); line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow-wrap: anywhere; }
+  .card { min-width: 0; }
   .composer { display: flex; align-items: flex-end; gap: 8px; }
   .composer textarea { flex: 1; min-height: 44px; max-height: 160px; resize: none; overflow-y: auto; min-width: 0; }
   .round { width: 44px; height: 44px; border-radius: var(--radius); border: 1px solid var(--accent-900); background: var(--bg); color: var(--text-muted); display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
@@ -784,12 +814,16 @@
   textarea { background: var(--surface); border: none; border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; padding: 12px 14px; resize: vertical; }
   textarea:focus { outline: 1px solid var(--accent-500); }
   .handle { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-700); margin: 0 auto; }
-  .peek { text-align: left; color: inherit; font: inherit; cursor: pointer; gap: 9px; margin-top: 6px; }
+  .lid { background: none; border: none; padding: 0 0 12px; margin: 0; color: inherit; font: inherit; text-align: left; display: flex; flex-direction: column; gap: 9px; cursor: pointer; width: 100%; }
   .peekhead { display: flex; align-items: baseline; gap: 8px; }
   .peekcount { font-family: var(--mono); font-size: 11px; color: var(--accent-400); }
   .peekrow { display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--accent-900); padding-top: 9px; }
   .scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 5; }
-  .sheet { position: absolute; left: 0; right: 0; bottom: 0; margin-inline: auto; max-width: 680px; height: auto; max-height: calc(100% - 12px); background: var(--bg); border: 1px solid var(--accent-700); border-bottom: none; border-radius: 14px 14px 0 0; z-index: 6; display: flex; flex-direction: column; gap: 10px; padding: 6px 14px 0; animation: sheet-in 0.2s ease-out; }
+  /* Two states, one element. Collapsed: a footer in layout — the drawer's
+     lid at the page's bottom edge. Open: lifted into the sheet band over
+     the scrim. */
+  .sheet { flex-shrink: 0; width: 100%; max-width: 680px; margin-inline: auto; background: var(--surface); border: 1px solid var(--accent-900); border-bottom: none; border-radius: 14px 14px 0 0; display: flex; flex-direction: column; gap: 10px; padding: 6px 14px 0; }
+  .sheet.open { position: absolute; left: 0; right: 0; bottom: 0; height: auto; max-height: calc(100% - 12px); background: var(--bg); border-color: var(--accent-700); z-index: 6; animation: sheet-in 0.2s ease-out; }
   @keyframes sheet-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
   @media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }
   .sheetlip { background: none; border: none; padding: 8px 0 2px; cursor: pointer; width: 100%; flex-shrink: 0; }
@@ -811,7 +845,9 @@
   /* The whole row is the target — a tap that only lands on the text is a
      tap most thumbs miss. */
   .notehead { background: none; border: none; padding: 0; margin: 0; color: inherit; font: inherit; text-align: left; display: flex; flex-direction: column; gap: 6px; cursor: pointer; width: 100%; }
-  .notetext { font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+  /* overflow-wrap: an unbroken run (a safelink URL in a mail episode) must
+     wrap inside the card, or it drags the whole page sideways. */
+  .notetext { font-size: 14px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
   .notetext.clamp { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .editbox { background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; padding: 12px 14px; resize: vertical; }
   .editbox:focus { outline: 1px solid var(--accent-500); }
