@@ -119,6 +119,7 @@ pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     findings.extend(check_runs(&home.join("sessions")));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
     findings.extend(check_learning(&home.join("learning"), now));
+    findings.extend(check_proposal_review(&home.join("learning"), now));
     // The graph store is `~/.mecha-graph`, a hidden sibling of the mecha home
     // by that store's own convention — resolved relative to `home` so a test
     // (or a relocated home) carries its sibling with it.
@@ -1477,6 +1478,229 @@ const GRAPH_NIGHTLIES: &[(&str, &str)] = &[
     ("mecha-nightly-", "the mecha half (vet, precheck, gossip)"),
 ];
 
+/// A consolidation this recent means the empty clean pool is a pass having
+/// just consumed it, not evidence never arriving.
+///
+/// Two days: `learn` now runs per session, so a gap this long means nothing
+/// has consolidated across many sessions — which is the starvation the check
+/// next door exists to report.
+const RECENT_CONSOLIDATION: chrono::Duration = chrono::Duration::hours(48);
+
+/// Did any domain consolidate within `window`? Read from the store's own pass
+/// log rather than inferred from rule timestamps: a pass that produced *no*
+/// rules still consumed its reflections, and that is exactly the case an
+/// inference from rule mtimes would miss.
+///
+/// "Consolidate" means **consumed reflections**. A retirement pass appends a
+/// `LeapRun` too, with `reflexions_processed: 0` — and it runs nightly, so
+/// without the filter a retirement was enough to suppress the starved-learner
+/// finding for 48h while the pool sat exactly as unconsumed as before.
+fn learned_within(root: &Path, now: DateTime<Utc>, window: chrono::Duration) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join("runs.jsonl")) else {
+        return false;
+    };
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["reflexions_processed"].as_u64().unwrap_or(0) > 0)
+        .filter_map(|v| {
+            v["created_at"]
+                .as_str()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        })
+        .any(|t| now.signed_duration_since(t.with_timezone(&Utc)) < window)
+}
+
+/// Read a domain's learned rules **without constructing a store**.
+///
+/// `LearningStore::open` creates directories, runs `git init` and writes a
+/// `.gitignore`. Doctor reports on stores; it must not bring one into being,
+/// or running the health check on a machine that has never learned anything
+/// leaves a store behind that says it has.
+///
+/// **An absent file is an empty rule set, not an unknown one** — a domain that
+/// has never consolidated has no learned rules, and that is a fact `accept`
+/// acts on. `None` is reserved for a file that exists and cannot be read or
+/// parsed, where the honest answer is that we do not know and must not claim
+/// a proposal is unappliable.
+fn read_learned_rules(root: &Path, domain: &str) -> Option<Vec<crate::learning::Rule>> {
+    let path = root.join("rules").join(format!("{domain}.learned.toml"));
+    if !path.exists() {
+        return Some(Vec::new());
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    #[derive(serde::Deserialize)]
+    struct File {
+        #[serde(default)]
+        rules: Vec<crate::learning::Rule>,
+    }
+    toml::from_str::<File>(&text).ok().map(|f| f.rules)
+}
+
+/// `proposals::accept`'s staleness test, restated: positional over every
+/// rule, comparing `text` and `enabled`.
+///
+/// Duplicated rather than shared because `accept` lives in the CLI crate and
+/// this is core — but it is a duplication with a test
+/// (`the_stale_predicate_matches_accepts`) pinning the two together, since a
+/// doctor that disagrees with the verb it recommends is worse than silence.
+fn same_rules_as_accept(a: &[crate::learning::Rule], b: &[crate::learning::Rule]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.text == y.text && x.enabled == y.enabled)
+}
+
+/// A pending rule proposal older than this is a review nobody knows is due.
+///
+/// Two nights, deliberately: the nightly is daily, so one unreviewed pass is
+/// ordinary and two is a pattern. Shorter would fire on every proposal staged
+/// after the owner went to bed.
+const STALE_PROPOSAL_AFTER: chrono::Duration = chrono::Duration::hours(48);
+
+/// **The proposal queue stalling itself**, which is invisible from every
+/// other angle.
+///
+/// Every proposal is a full rewrite measured against `rules_before`, and
+/// `proposals accept` refuses one whose baseline has moved — so a second
+/// pending proposal is not a second decision: accepting either makes the rest
+/// unappliable. They also *claim* their reflections, which `learn` then skips,
+/// so an unreviewed queue starves the very pass that would replace it.
+///
+/// On 2026-08-29 four had accumulated over six days holding 27 of 43
+/// reflections, `learn` skipped every night for want of three free ones, and
+/// `doctor` said nothing — the starved-learner check next door measures
+/// *origin exclusion*, so review latency read exactly like a healthy loop.
+/// "Nothing went wrong" and "nothing happened" are opposite findings and this
+/// is the second, which is why it is a separate check rather than another
+/// clause in that one.
+fn check_proposal_review(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let dir = root.join("proposals");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        // No proposals directory is a store that has never staged one, not a
+        // fault. An unreadable one *is* — but read_dir cannot tell us which
+        // without a second syscall, and a missing directory is overwhelmingly
+        // the common case on a young install.
+        return out;
+    };
+
+    let mut pending: Vec<(String, DateTime<Utc>, usize, bool)> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            out.push(Finding::unreadable(
+                "learning",
+                "a rule proposal",
+                entry.path().display().to_string(),
+            ));
+            continue;
+        };
+        let Ok(p) = serde_json::from_str::<crate::learning::Proposal>(&text) else {
+            continue;
+        };
+        if p.status != "pending" {
+            continue;
+        }
+        let Ok(at) = DateTime::parse_from_rfc3339(&p.created_at) else {
+            continue;
+        };
+        // Whether `accept` would still take it — and it must be the *same*
+        // predicate, or doctor tells the owner to supersede something that
+        // would have applied fine.
+        //
+        // Two things were wrong here. `LearningStore::open` is a **writing**
+        // constructor (it creates `root` and `root/rules`, runs `git init`,
+        // writes `.gitignore`), and a check that reports on a store must not
+        // create one — the rule this module states two checks up about
+        // `Charter::load`. And the comparison was an order-insensitive set of
+        // *active* rule texts, where `accept`'s `same_rules` compares
+        // positionally over every rule, `text` **and** `enabled` — so a
+        // rewrite that reordered the same texts, or one that only flipped a
+        // rule's `enabled`, read as unchanged here and as changed there.
+        let unappliable = read_learned_rules(root, &p.domain)
+            .map(|live| !same_rules_as_accept(&live, &p.rules_before))
+            .unwrap_or(false);
+        pending.push((
+            p.id.clone(),
+            at.with_timezone(&Utc),
+            p.reflexion_ids.len(),
+            unappliable,
+        ));
+    }
+
+    if pending.is_empty() {
+        return out;
+    }
+    pending.sort_by_key(|(_, at, _, _)| *at);
+
+    let held: usize = pending.iter().map(|(_, _, n, _)| n).sum();
+    let oldest = pending[0].1;
+    let age = now.signed_duration_since(oldest);
+    let unappliable: Vec<&str> = pending
+        .iter()
+        .filter(|(_, _, _, stale)| *stale)
+        .map(|(id, _, _, _)| id.as_str())
+        .collect();
+
+    // Dead paper first: it needs no judgement, and its remedy is exact.
+    if !unappliable.is_empty() {
+        out.push(Finding {
+            component: "learning".to_string(),
+            severity: Severity::Attention,
+            summary: format!(
+                "{} rule proposal(s) can no longer be applied — the live rules moved \
+                 after they were measured",
+                unappliable.len()
+            ),
+            detail: format!(
+                "`proposals accept` refuses a proposal whose baseline has changed, so these \
+                 are not decisions waiting on you — they are paper, and they still hold \
+                 their reflections out of `learn`. Superseding releases that evidence \
+                 *unconsumed*; rejecting would mark it processed and lose corrections you \
+                 never ruled on. Affected: {}.",
+                unappliable.join(", ")
+            ),
+            remedy: Some(Remedy {
+                description: "release their reflections back to the pool".to_string(),
+                argv: vec![
+                    "mecha".into(),
+                    "proposals".into(),
+                    "supersede".into(),
+                    "--stale".into(),
+                ],
+                needs_terminal: false,
+            }),
+        });
+    }
+
+    // Then latency, for whatever is genuinely still appliable.
+    if age > STALE_PROPOSAL_AFTER && unappliable.len() < pending.len() {
+        out.push(Finding {
+            component: "learning".to_string(),
+            severity: Severity::Attention,
+            summary: format!(
+                "{} rule proposal(s) awaiting review, oldest {} day(s) — holding {held} \
+                 reflection(s) out of `learn`",
+                pending.len(),
+                age.num_days().max(1),
+            ),
+            detail: "A pending proposal claims its reflections, and `learn` skips claimed \
+                     ones — so an unreviewed queue starves the pass that would replace it, \
+                     and every night reports success with nothing to show. Only one of \
+                     several can ever be applied: each is a full rewrite measured against \
+                     the rules that were live when it was staged."
+                .to_string(),
+            remedy: Some(Remedy {
+                description: "read what is waiting".to_string(),
+                argv: vec!["mecha".into(), "proposals".into()],
+                needs_terminal: false,
+            }),
+        });
+    }
+
+    out
+}
+
 /// A staged harness candidate older than this is the nightly loop waiting on
 /// a review nobody knows is due — the same shape as a stuck draft, one store
 /// over. Not blocking anything, hence the longer leash.
@@ -1568,6 +1792,16 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     // Any domain at the floor means learn will consolidate on its next pass:
     // not starved, whatever the exclusion count says.
     if waiting.values().any(|&n| n >= floor) {
+        return out;
+    }
+    // **A loop that just ran is the opposite of starved**, and without this
+    // it reports starvation loudest immediately after succeeding: a
+    // consolidation marks its reflections processed, so the clean pool it
+    // leaves behind is *empty by construction* and every remaining exclusion
+    // is suddenly the whole picture. Latent while `learn` staged proposals
+    // and consumed nothing; live consolidation (2026-08-29) made it the
+    // normal state. An empty pool after a pass is the pass working.
+    if learned_within(root, now, RECENT_CONSOLIDATION) {
         return out;
     }
     if excluded < STARVED_LEARNER_MIN_EXCLUDED {
@@ -2270,6 +2504,86 @@ mod tests {
         let dir = home.join("learning");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("reflections.jsonl"), lines.join("\n")).unwrap();
+    }
+
+    /// **A loop that just consolidated is not starved**, and this is the
+    /// case that reports starvation loudest without the guard: `learn` marks
+    /// its reflections processed, so the clean pool it leaves is empty by
+    /// construction and every remaining exclusion becomes the whole picture.
+    ///
+    /// Latent while learning staged proposals and consumed nothing; live
+    /// consolidation made it the normal state on 2026-08-29, when `doctor`
+    /// called the learner starved minutes after it turned 28 reflections
+    /// into 12 rules.
+    #[test]
+    fn a_learner_that_just_ran_is_not_starved() {
+        let home = home("learning-just-ran");
+        let root = home.join("learning");
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Twelve exclusions and an empty clean pool: the starved shape.
+        let mut lines = String::new();
+        for i in 0..12 {
+            lines.push_str(&format!(
+                r#"{{"id":"x{i}","domain":"behavior","session_id":"s","trigger":"steer","context":"c","intervention":"i","reflexion_text":"t","error_type":null,"confidence":null,"is_processed":false,"leap_run_id":null,"created_at":"2026-08-28T00:00:00Z","origin":"untrusted","evidence":"full"}}
+"#
+            ));
+        }
+        std::fs::write(root.join("reflections.jsonl"), &lines).unwrap();
+
+        let now = DateTime::parse_from_rfc3339("2026-08-29T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // With no pass on record, that is genuine starvation.
+        assert!(
+            check_learning(&root, now)
+                .iter()
+                .any(|f| f.summary.contains("starved")),
+            "an unfed learner with no recent pass is starved"
+        );
+
+        // A pass hours ago explains the empty pool, and the finding goes.
+        std::fs::write(
+            root.join("runs.jsonl"),
+            "{\"id\":\"r1\",\"domain\":\"behavior\",\"reflexions_processed\":28,\"rules_before\":0,\"rules_after\":12,\"created_at\":\"2026-08-29T09:00:00Z\"}\n",
+        )
+        .unwrap();
+        assert!(
+            check_learning(&root, now).is_empty(),
+            "a consolidation nine hours ago is the pool being consumed, not starvation"
+        );
+
+        // A pass from last month does not explain today's empty pool.
+        std::fs::write(
+            root.join("runs.jsonl"),
+            "{\"id\":\"r1\",\"domain\":\"behavior\",\"reflexions_processed\":28,\"rules_before\":0,\"rules_after\":12,\"created_at\":\"2026-07-20T09:00:00Z\"}\n",
+        )
+        .unwrap();
+        assert!(
+            check_learning(&root, now)
+                .iter()
+                .any(|f| f.summary.contains("starved")),
+            "a pass five weeks old explains nothing about today"
+        );
+
+        // A *retirement* pass hours ago consumed nothing — `rules
+        // propose-retirements --apply` appends a LeapRun with
+        // `reflexions_processed: 0`, nightly — so it must not read as the
+        // pool having been consumed.
+        std::fs::write(
+            root.join("runs.jsonl"),
+            "{\"id\":\"r2\",\"domain\":\"behavior\",\"reflexions_processed\":0,\"rules_before\":12,\"rules_after\":11,\"created_at\":\"2026-08-29T09:00:00Z\"}\n",
+        )
+        .unwrap();
+        assert!(
+            check_learning(&root, now)
+                .iter()
+                .any(|f| f.summary.contains("starved")),
+            "a retirement pass consumed no reflections and must not silence starvation"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
     }
 
     #[test]
@@ -3478,5 +3792,150 @@ mod tests {
         assert_eq!(findings[0].severity, Severity::Broken);
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+#[cfg(test)]
+mod proposal_review_tests {
+    use super::*;
+
+    fn store_at(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir()
+            .join("mecha-doctor-proposals")
+            .join(format!("{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("proposals")).unwrap();
+        dir
+    }
+
+    fn write_proposal(root: &Path, id: &str, created: &str, before: &[&str], reflexions: usize) {
+        let p = serde_json::json!({
+            "id": id,
+            "domain": "behavior",
+            "status": "pending",
+            "reflexion_ids": (0..reflexions).map(|i| format!("r-{i}")).collect::<Vec<_>>(),
+            "rules_before": before.iter().map(|t| serde_json::json!({"text": t})).collect::<Vec<_>>(),
+            "rules": [{"text": "a new rule"}],
+            "evidence": "e",
+            "created_at": created,
+            "resolved_at": null,
+            "reason": null,
+        });
+        std::fs::write(
+            root.join("proposals").join(format!("{id}.json")),
+            serde_json::to_string(&p).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn now() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-08-29T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    /// **Doctor's staleness test must be `proposals accept`'s**, or it tells
+    /// the owner to supersede a proposal that would have applied fine.
+    ///
+    /// Fails on the old behaviour: that compared an order-insensitive set of
+    /// *active* rule texts, so a rewrite that reordered the same rules read as
+    /// unchanged here and as changed by `accept`, and a rule merely disabled
+    /// read as unchanged here and as changed there.
+    #[test]
+    fn the_stale_predicate_matches_accepts() {
+        let r = |text: &str, enabled: bool| crate::learning::Rule {
+            text: text.into(),
+            enabled,
+            ..Default::default()
+        };
+        let base = vec![r("alpha", true), r("beta", true)];
+
+        assert!(same_rules_as_accept(&base, &base.clone()));
+        // Order is part of it — a set comparison would call this unchanged.
+        assert!(!same_rules_as_accept(
+            &base,
+            &[r("beta", true), r("alpha", true)]
+        ));
+        // So is `enabled` — an active-only filter would drop the disabled one
+        // from both sides and call these equal.
+        assert!(!same_rules_as_accept(
+            &base,
+            &[r("alpha", true), r("beta", false)]
+        ));
+        assert!(!same_rules_as_accept(&base, &[r("alpha", true)]));
+    }
+
+    /// **Doctor must not bring a learning store into being.** Reporting on a
+    /// machine that has never learned anything must leave it looking like a
+    /// machine that has never learned anything.
+    #[test]
+    fn checking_an_absent_store_creates_nothing() {
+        let root =
+            std::env::temp_dir().join(format!("mecha-doctor-nostore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // An absent store reads as an empty rule set — a fact — rather than
+        // as unknown, and reading it creates nothing.
+        assert!(read_learned_rules(&root, "behavior").is_some_and(|r| r.is_empty()));
+        assert!(
+            !root.exists(),
+            "reading rules must not create the store directory"
+        );
+    }
+
+    /// **A queue nobody has answered is a finding.** Before this, review
+    /// latency was invisible: the starved-learner check next door measures
+    /// origin exclusion, so four proposals sitting six days while `learn`
+    /// skipped every night read exactly like a healthy loop.
+    #[test]
+    fn an_unreviewed_queue_is_reported_with_what_it_is_holding() {
+        let root = store_at("stale");
+        write_proposal(&root, "p-old", "2026-08-23T12:00:00Z", &[], 10);
+
+        let out = check_proposal_review(&root, now());
+        assert_eq!(out.len(), 1, "one latency finding: {out:?}");
+        assert!(out[0].summary.contains("6 day(s)"), "{}", out[0].summary);
+        assert!(
+            out[0].summary.contains("holding 10 reflection(s)"),
+            "the cost is the held evidence, not the count of proposals: {}",
+            out[0].summary
+        );
+    }
+
+    /// A proposal staged last night is ordinary, not a finding — or the check
+    /// fires every morning and trains the reader to skip the component.
+    #[test]
+    fn a_fresh_proposal_is_not_a_finding() {
+        let root = store_at("fresh");
+        write_proposal(&root, "p-new", "2026-08-29T03:30:00Z", &[], 4);
+        assert!(check_proposal_review(&root, now()).is_empty());
+    }
+
+    /// A proposal measured against rules that have since moved is not a
+    /// decision waiting on anyone — `accept` would refuse it. Reported
+    /// separately, because its remedy is exact where latency's is a judgement.
+    #[test]
+    fn an_unappliable_proposal_is_named_with_the_verb_that_frees_it() {
+        let root = store_at("unappliable");
+        // Live rules are empty (no rules file), so a proposal measured against
+        // a non-empty baseline can no longer be applied.
+        write_proposal(&root, "p-stale", "2026-08-29T03:30:00Z", &["was live"], 7);
+
+        let out = check_proposal_review(&root, now());
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].summary.contains("can no longer be applied"));
+        assert!(out[0].detail.contains("p-stale"));
+        // Supersede, never reject: rejecting marks the reflections processed
+        // and loses corrections the owner never ruled on.
+        let argv = &out[0].remedy.as_ref().unwrap().argv;
+        assert!(argv.contains(&"supersede".to_string()), "{argv:?}");
+        assert!(!argv.contains(&"reject".to_string()), "{argv:?}");
+    }
+
+    /// No proposals directory is a young install, not a fault.
+    #[test]
+    fn a_store_that_has_never_staged_one_is_silent() {
+        let dir = std::env::temp_dir().join("mecha-doctor-proposals-absent");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(check_proposal_review(&dir, now()).is_empty());
     }
 }

@@ -43,9 +43,99 @@ pub struct Args {
     #[arg(long)]
     pub propose: bool,
 
+    /// Measure the candidate and apply it when the measurement carries it —
+    /// the ungated path, with the gate still in front.
+    ///
+    /// The middle mode this command was missing. Bare `learn` applies with no
+    /// measurement at all; `--propose` measures and then waits for a human,
+    /// which is how 27 reflections sat behind four unreviewed proposals. This
+    /// runs the same probes and *disposes* of the result:
+    ///
+    /// - any probe worse than the deployed rules → refused, recorded
+    /// - probes ran and none regressed → applied
+    /// - **nothing gradeable in the batch → applied on probation**, marked
+    ///   and retired sooner. The D1 ruling: holding here reproduces the stall,
+    ///   since unmeasurable batches are the common case, and refusing gives up
+    ///   the `writing` and `followup` half of the corpus for good.
+    #[arg(long, conflicts_with = "propose")]
+    pub auto: bool,
+
     /// Show what would run without calling a model or writing anything.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+/// What the gate decided about a candidate, and whether it lands marked.
+#[derive(Debug, PartialEq)]
+pub struct Disposition {
+    /// Recorded on the proposal; also what `git log` in the store reads as.
+    pub status: &'static str,
+    /// Applied without the gate being able to grade it.
+    pub probation: bool,
+}
+
+/// Turn the probe tally into a decision. Pure, so the three-way split is a
+/// unit test rather than a claim about a long function.
+///
+/// The `measured == 0` arm is the one that matters and the one an intuition
+/// gets wrong: it is not a rare near-miss, it is the **common** case, because
+/// only steers and denials have a replayable intervention point at all.
+/// Refusing there would silently discard every batch of edits and followups —
+/// the majority of the corpus — and passing it as though it were clean would
+/// lose the only distinction probation exists to record. So it applies, and
+/// it applies *marked*.
+///
+/// Under `--propose` nothing is ever applied, and `measured == 0` still
+/// reaches a human, who can read the evidence the gate could not grade.
+pub fn dispose(auto: bool, regressed: u32, measured: u32) -> Disposition {
+    // A candidate that makes any probe worse than what is deployed is refused
+    // in both modes, before anything else is considered. Checked first so no
+    // combination of the other two can talk past it.
+    if regressed > 0 {
+        return Disposition {
+            status: "rejected_by_gate",
+            probation: false,
+        };
+    }
+    if !auto {
+        return Disposition {
+            status: "pending",
+            probation: false,
+        };
+    }
+    match measured {
+        0 => Disposition {
+            status: "auto_applied_probation",
+            probation: true,
+        },
+        _ => Disposition {
+            status: "auto_applied",
+            probation: false,
+        },
+    }
+}
+
+/// Mark a probation pass's rules as applied-ungraded — but only the ones the
+/// ledger has never graded.
+///
+/// A consolidation is a full replacement, so `rules` carries forward
+/// long-standing rules with measured records; stamping those "applied
+/// ungraded" would contradict `Rule::probation`'s own doc ("the gate ran and
+/// *could not grade it*") and put a rule with dozens of clean observations on
+/// the stricter retirement leash for an accident of this batch's contents.
+/// Stamp everything active, then let the ledger take back what it has
+/// graded — one predicate for "measured", deliberately shared with retirement
+/// (`clear_probation_when_measured`) rather than spelled a second time here.
+/// The clear also *persists* through this pass's write, where retirement's
+/// own call lands only when a domain has a conviction to record.
+fn stamp_probation(
+    rules: &mut [mecha_core::learning::Rule],
+    tallies: &BTreeMap<String, mecha_core::learning::RuleTally>,
+) {
+    for r in rules.iter_mut().filter(|r| r.retired_at.is_none()) {
+        r.probation = true;
+    }
+    mecha_core::learning::clear_probation_when_measured(rules, tallies);
 }
 
 /// Which reflection ids this pass leaves alone, given a holdout fraction.
@@ -185,7 +275,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // gate rejection whose reflections rightly returned to the pool — is not
     // argued again until the pool changes. Without this, an unchanged pool
     // means a fresh near-identical proposal (and its probe cost) every night.
-    if args.propose {
+    // `--auto` needs the brake most: its `rejected_by_gate` arm leaves the
+    // reflections unprocessed, and `learn-live.sh` runs per *session*, so an
+    // unguarded identical batch re-pays a learner call plus a probe pair per
+    // steer/denial on every session close until the pool changes.
+    if args.propose || args.auto {
         by_domain.retain(|domain, rs| {
             let batch: std::collections::BTreeSet<&str> =
                 rs.iter().map(|r| r.id.as_str()).collect();
@@ -225,6 +319,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         return Ok(());
     }
 
+    // The ledger, folded per rule, so the consolidation can drop what has
+    // been measured harmful instead of guessing from the rule text. Read once
+    // for every domain: it is a scan of one append-only file.
+    let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
+
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
     let cfg = Config::load(&cwd)?;
     let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
@@ -235,7 +334,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     // The gate replays against the recorded tool surface, which needs the
     // live registry for specs — same borrow `mecha validate` makes.
-    let prepared = if args.propose {
+    let prepared = if args.propose || args.auto {
         Some(setup::prepare(&global.clone(), false).await?)
     } else {
         None
@@ -247,7 +346,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let learned_before = store.learned_rules(domain)?;
 
         let Some(rules) = learner
-            .learn(domain, &user_rules, &learned_before, reflexions)
+            .learn(domain, &user_rules, &learned_before, reflexions, &tallies)
             .await?
         else {
             eprintln!("{domain}: the learner produced no usable rule set; nothing changed");
@@ -259,7 +358,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // provenance, retired rules are carried through untouched. The gate
         // below measures exactly what acceptance would deploy.
         let ids: Vec<String> = reflexions.iter().map(|r| r.id.clone()).collect();
-        let rules = mecha_core::learning::finalize_rules(
+        let mut rules = mecha_core::learning::finalize_rules(
             rules,
             &learned_before,
             &ids,
@@ -296,9 +395,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             continue;
         }
 
-        // ── the gate: measure the candidate, stage it, never apply it ──
-        if args.propose {
-            let prepared = prepared.as_ref().expect("built under --propose");
+        // ── the gate: measure the candidate, then dispose of it ──
+        if args.propose || args.auto {
+            let prepared = prepared.as_ref().expect("built under --propose/--auto");
             let candidate_block = wrap_rules_block(
                 domain_rules_section(domain, &user_rules, &rules)
                     .into_iter()
@@ -335,21 +434,42 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         lines.push(format!("{} [{}]: skipped — {why}", r.id, r.trigger));
                     }
                     probe::ProbeResult::Verdicts(b, t) => {
-                        measured += 1;
-                        let label = probe::compare(
+                        // Counted only when the pair *graded* — `compare`
+                        // returns `None` on an inconclusive arm. A pair that
+                        // ran and concluded nothing is not evidence, and
+                        // counting it let an all-inconclusive batch reach
+                        // `dispose` as measured-clean and land unmarked on
+                        // zero actual verdicts — the exact conflation ("not
+                        // measured" read as "measured clean") probation
+                        // exists to prevent.
+                        match probe::compare(
                             &b,
                             &t,
                             &mut improved,
                             &mut regressed,
                             &mut unchanged,
                             &mut inconclusive,
-                        )
-                        .unwrap_or("inconclusive");
-                        lines.push(format!("{} [{}]: {label}", r.id, r.trigger));
+                        ) {
+                            Some(label) => {
+                                measured += 1;
+                                lines.push(format!("{} [{}]: {label}", r.id, r.trigger));
+                            }
+                            None => {
+                                lines.push(format!("{} [{}]: inconclusive", r.id, r.trigger));
+                            }
+                        }
                     }
                 }
             }
-            lines.push(if measured == 0 {
+            lines.push(if measured == 0 && inconclusive > 0 {
+                // Ran and graded nothing is a different fact from had nothing
+                // to run — both land as probation, but the evidence must say
+                // which happened.
+                format!(
+                    "{inconclusive} probe pair(s) ran and none graded (inconclusive); \
+                     review by reading"
+                )
+            } else if measured == 0 {
                 "no trace-gradeable reflections in this batch; review by reading".into()
             } else {
                 format!(
@@ -361,23 +481,44 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             let evidence = lines.join("\n");
 
             // A candidate that makes any probe worse than what is deployed
-            // never reaches a human — recorded with its evidence, though,
+            // is refused in both modes — recorded with its evidence, though,
             // because a gate that leaves no trace teaches nobody anything.
-            let status = if regressed > 0 {
-                "rejected_by_gate"
-            } else {
-                "pending"
-            };
+            //
+            // The three-way split under `--auto` is the D1 ruling made
+            // mechanical. `measured == 0` is not a near-miss to be argued
+            // about: it is the *common* case, because only steers and denials
+            // have a replayable intervention point at all. Treating it as a
+            // refusal would silently discard every batch of edits and
+            // followups; treating it as a pass would lose the distinction
+            // between "measured clean" and "not measured", which is the one
+            // thing probation exists to remember.
+            let Disposition { status, probation } = dispose(args.auto, regressed, measured);
+            if probation {
+                stamp_probation(&mut rules, &tallies);
+            }
+            let applied = status == "auto_applied" || status == "auto_applied_probation";
+            // The proposal is written whichever way this went. Under `--auto`
+            // nobody is going to read it as a decision — it is the audit
+            // trail, and it is the only record of *why* a rule set landed or
+            // did not, since the gate's probes never reach the validation
+            // ledger.
             let proposal = Proposal {
                 id: Session::new_id(),
                 domain: domain.clone(),
                 status: status.into(),
-                reflexion_ids: ids,
+                reflexion_ids: ids.clone(),
                 rules_before: learned_before.clone(),
                 rules: rules.clone(),
                 evidence: evidence.clone(),
                 created_at: chrono::Utc::now().to_rfc3339(),
-                resolved_at: None,
+                // Resolved at birth when the gate decided: nothing is waiting
+                // on anyone, and leaving it `None` would make every auto pass
+                // read as pending review to `mecha proposals` and to doctor.
+                resolved_at: applied
+                    .then(|| chrono::Utc::now().to_rfc3339())
+                    .or_else(|| {
+                        (status == "rejected_by_gate").then(|| chrono::Utc::now().to_rfc3339())
+                    }),
                 reason: None,
             };
             store.write_proposal(&proposal)?;
@@ -391,8 +532,40 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             if status == "pending" {
                 println!("review with `mecha proposals show {}`", proposal.id);
             }
+
+            if applied {
+                let run = LeapRun {
+                    id: proposal.id.clone(),
+                    domain: domain.clone(),
+                    reflexions_processed: ids.len() as u32,
+                    rules_before: learned_before.len() as u32,
+                    rules_after: rules.len() as u32,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                store.write_learned_rules(domain, &rules)?;
+                store.mark_reflexions_processed(&ids, &run.id)?;
+                store.append_run(&run)?;
+                for r in &rules {
+                    println!(
+                        "  - {}{}",
+                        r.text,
+                        if r.probation { "  [probation]" } else { "" }
+                    );
+                }
+                if probation {
+                    println!(
+                        "  applied on probation: no reflection in this batch had a replayable \
+                         intervention point, so the gate could not grade it. Retires at \
+                         {} attributed regression(s) rather than {}.",
+                        mecha_core::learning::PROBATION_RETIRE_AT,
+                        mecha_core::learning::DEFAULT_RETIRE_AT,
+                    );
+                }
+            }
+
             store.commit(&format!(
-                "propose[{domain}]: {} rule(s) from {} reflection(s), {status}",
+                "{}[{domain}]: {} rule(s) from {} reflection(s), {status}",
+                if applied { "learn" } else { "propose" },
                 proposal.rules.len(),
                 proposal.reflexion_ids.len()
             ));
@@ -434,7 +607,120 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::hold_out;
+    use super::{dispose, hold_out, stamp_probation};
+
+    /// Probation marks what this pass could not grade — never a rule the
+    /// ledger has already measured. A consolidation is a full replacement, so
+    /// the candidate set carries forward long-standing rules with records; on
+    /// the old behaviour every one of them was stamped "applied ungraded" and
+    /// `rules list` reported measured-clean rules as probationary
+    /// indefinitely, since the retirement-side clear only persists when a
+    /// domain has a conviction to write.
+    #[test]
+    fn probation_lands_only_on_rules_the_ledger_never_graded() {
+        use mecha_core::learning::{Rule, RuleTally};
+        let rule = |id: Option<&str>, probation: bool| Rule {
+            text: "r".into(),
+            id: id.map(Into::into),
+            probation,
+            ..Default::default()
+        };
+        let mut rules = vec![
+            rule(Some("measured"), false),
+            // Probationary from an earlier pass, since graded: the shared
+            // predicate clears it, and this write persists the clear.
+            rule(Some("measured-probationary"), true),
+            rule(Some("unmeasured"), false),
+            // Pre-identity: no id, so no tally can exist — unmeasured.
+            rule(None, false),
+        ];
+        let retired = Rule {
+            retired_at: Some("2026-08-01T00:00:00Z".into()),
+            ..rule(Some("retired"), false)
+        };
+        rules.push(retired);
+
+        let mut tallies = std::collections::BTreeMap::new();
+        for id in ["measured", "measured-probationary"] {
+            tallies.insert(
+                id.to_string(),
+                RuleTally {
+                    observations: 4,
+                    ..Default::default()
+                },
+            );
+        }
+
+        stamp_probation(&mut rules, &tallies);
+
+        let by_id = |want: Option<&str>| {
+            rules
+                .iter()
+                .find(|r| r.id.as_deref() == want)
+                .unwrap()
+                .probation
+        };
+        assert!(!by_id(Some("measured")), "a graded rule is not ungraded");
+        assert!(
+            !by_id(Some("measured-probationary")),
+            "the ledger takes back what it has graded"
+        );
+        assert!(
+            by_id(Some("unmeasured")),
+            "never graded — the leash applies"
+        );
+        assert!(by_id(None), "no id means no tally can ever exist: ungraded");
+        assert!(
+            !by_id(Some("retired")),
+            "a retired rule rides in no prompt and wears no leash"
+        );
+    }
+
+    /// **The three-way split, which is the whole of `--auto`.**
+    ///
+    /// Fails on the old behaviour: there were two outcomes, and the only
+    /// non-refusal was `pending` — a human. That is how 27 reflections came
+    /// to sit behind four proposals nobody read.
+    #[test]
+    fn a_regression_is_refused_in_both_modes_and_nothing_else_can_talk_past_it() {
+        for auto in [true, false] {
+            let d = dispose(auto, 1, 9);
+            assert_eq!(d.status, "rejected_by_gate", "auto={auto}");
+            assert!(!d.probation);
+            // Even with nothing else measured, a regression still refuses.
+            assert_eq!(dispose(auto, 2, 0).status, "rejected_by_gate");
+        }
+    }
+
+    #[test]
+    fn measured_clean_applies_unmarked_under_auto_and_still_waits_under_propose() {
+        let auto = dispose(true, 0, 6);
+        assert_eq!(auto.status, "auto_applied");
+        assert!(!auto.probation, "measured clean is not probation");
+
+        let propose = dispose(false, 0, 6);
+        assert_eq!(propose.status, "pending");
+        assert!(!propose.probation);
+    }
+
+    /// The common case, not a corner: only steers and denials are replayable,
+    /// so every batch of edits and followups grades zero. Refusing here would
+    /// discard the majority of the corpus.
+    #[test]
+    fn an_ungradeable_batch_applies_marked_under_auto_and_reaches_a_human_under_propose() {
+        let auto = dispose(true, 0, 0);
+        assert_eq!(auto.status, "auto_applied_probation");
+        assert!(
+            auto.probation,
+            "ungraded rules must be marked or the leash means nothing"
+        );
+
+        // `--propose` never applies, so an ungradeable batch is still a
+        // person's to read rather than something marked and shipped.
+        let propose = dispose(false, 0, 0);
+        assert_eq!(propose.status, "pending");
+        assert!(!propose.probation);
+    }
 
     fn ids(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("r{i:02}")).collect()

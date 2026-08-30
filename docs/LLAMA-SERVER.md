@@ -283,6 +283,73 @@ machine from starting is one people turn off.
   to say". Measured: at `max_tokens` 1024, 1024 tokens of reasoning and no
   answer; at 8192, `finish_reason: stop` and valid output. Any client here
   should refuse an empty completion by name rather than treat it as data.
+
+  **"Comfortably" is 32,768, and it is free.** That is Qwen3.6-35B-A3B's own
+  recommended output length for most queries (81,920 for hard ones);
+  Qwen3.8-27B budgets the halves separately — 262,144 reasoning, 131,072 final
+  response — which is the same split `--reasoning-budget` and `max_tokens`
+  make, with numbers two orders of magnitude larger than this repository was
+  using. `provider::LOCAL_MAX_TOKENS` is the one place it is written down,
+  because four call sites had four different literals and the reflector, the
+  distiller and the eval judge all sat at exactly 4,096 — the worst possible
+  value, leaving nothing for an answer once thinking has run.
+
+  Measured here 2026-08-29, eight samples on a deliberation-shaped task:
+
+  | `max_tokens` | completion tokens | empty replies |
+  |---|---|---|
+  | 2048 | 2048, `finish_reason: length` | **1 of 1** |
+  | 4096 | 1453–2876 | 0 of 5 |
+  | 16384 | 2154–2855 | 0 of 2 |
+  | 32768 | 2187–2707 | 0 of 2 |
+
+  **The distribution does not move with the cap**, so raising it buys headroom
+  and costs no latency. An early two-sample read suggested reasoning expands to
+  fill whatever it is given; eight samples say that was variance, and the
+  cheap-to-hold belief would have argued against the fix. What the cap changes
+  is only whether a *long* input overflows: a modest task already spent 70% of
+  4,096 in its worst sample, and `validate`'s followup probe — which re-asks a
+  whole mid-task conversation — overflowed on nearly every call, had its
+  silence graded as a bad answer, and manufactured two of three rule
+  regressions before anyone looked.
+
+- **Upgrading llama.cpp: the build tree *is* the deployment.**
+  `~/.local/bin/llama-server` is a 72 KB dynamically-linked stub that resolves
+  `libllama.so` / `libggml.so` from **`~/llama.cpp/build/bin/`**, not from
+  `~/.local/lib` — whose copies are stale and load nothing. So `cmake --build`
+  replaces what a restart will run, and "rebuild" and "deploy" are not
+  separable steps here. Roll back by restoring `build/bin.prev` (the whole 75 MB
+  library set, with a `VERSION.txt` naming the commit) and
+  `~/.local/bin/llama-server.prev` — a rollback has to be a file you restore,
+  not a commit you would have to rebuild under pressure.
+
+  **Replace the stub with `mv`, never `cp`.** Both units — `llama-local`
+  (:8080) and `llama-embed` (:8081) — run the same binary path, so stopping
+  one still leaves the file busy and `cp` fails `ETXTBSY`. A rename swaps the
+  directory entry and leaves the running process's inode alive, so the
+  embedding server keeps serving old code until its own restart rather than
+  being taken down for an unrelated upgrade.
+
+  Measured on the 2026-08-29 jump, `a4ce259` → `c841aee` (674 commits): all six
+  sampling flags plus `--reasoning-budget`, `--spec-type`, `-cram` and
+  `--mmproj` survived, `/props` reported the same geometry, and throughput was
+  99.4–101.6 tok/s against 95–103 before — no regression. **Check tok/s, not
+  that it came back up**, and check `--version` rather than the binary's mtime:
+  the stub is byte-identical in size across builds.
+
+- **Sampling is the card's *precise-coding* profile, set explicitly, and
+  `/props` is how you know.** `start-moe-mtp.sh` passes all six values (temp
+  0.6, top_p 0.95, top_k 20, min_p 0.0, presence 0.0, repeat 1.0) and its
+  comment block is the authority on why that profile and not *general*
+  (temp 1.0, presence 1.5) — almost everything this server is asked for is
+  structured or exacting. Before that, the GGUF's metadata supplied the
+  general profile with an off-spec `min_p` 0.05 while
+  `[providers.local] temperature = 0.8` overrode the temperature from the
+  client — a served-vs-requested blend belonging to neither profile. The
+  client override is the part that bites from here: mecha **sends**
+  temperature on every request, so `--temp` and the config value must agree
+  or the model is silently un-tuned; both say 0.6 now, and only `/props`
+  plus a request log can prove it stayed that way.
 - **`response_format: json_schema` and thinking coexist.** llama.cpp applies
   the grammar *lazily*, after the thinking block closes — measured at 3,240
   chars of reasoning followed by schema-valid JSON. So a closed vocabulary can

@@ -243,6 +243,10 @@ pub enum Command {
     /// Absorb unprocessed reflections into the learned rule set.
     Learn(commands::learn::Args),
 
+    /// Is the learning loop improving anything? Correction rate over time,
+    /// rule-set health, and every consolidation pass. No model, no network.
+    LearningReport(commands::learning_report::Args),
+
     /// Summarise closed sessions into episodes staged to the knowledge graph.
     Distill(commands::distill::Args),
 
@@ -410,6 +414,7 @@ async fn dispatch() -> Result<()> {
         Command::Reflections(args) => commands::reflections::execute(args).await,
         Command::Learn(args) => commands::learn::execute(&cli.global, args).await,
         Command::Distill(args) => commands::distill::execute(&cli.global, args).await,
+        Command::LearningReport(args) => commands::learning_report::execute(args).await,
         Command::Validate(args) => commands::validate::execute(&cli.global, args).await,
         Command::Outbox(args) => commands::outbox::execute(&cli.global, args).await,
         Command::Msg(args) => commands::msg::execute(args).await,

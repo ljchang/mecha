@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# Nightly rumination: mine → measure → learn.
+# Nightly rumination: measure → sweep → retire.
+#
+# **Mining and consolidation moved live** (`learn-live.sh`, a `session_end`
+# hook): a lesson that lands tomorrow night missed everything the owner did
+# today. What stays nightly is the expensive half — the replay probes behind
+# `validate`, which cost a real model run per arm per episode and are better
+# spent once on a night's evidence than per session. `reflect` and `learn`
+# remain here as a *sweep*, for sessions whose hook did not fire (a crashed
+# front-end, a machine that was asleep) — not as the primary path.
 #
 # Ordering is the one deliberate choice here. `validate --unprocessed-only`
 # runs BEFORE `learn`, because learn marks reflections processed — measuring
@@ -21,7 +29,19 @@ set -uo pipefail
 
 MECHA="${MECHA_BIN:-$HOME/.cargo/bin/mecha}"
 PROVIDER="${MECHA_RUMINATE_PROVIDER:-local}"
-JUDGE="${MECHA_RUMINATE_JUDGE:-gemma26}"
+# **The judge is the model under test, deliberately and provisionally.**
+# A different family is the better methodology — a model grading trajectories
+# it produced shares the blind spot that caused them, which is why
+# `validate --judge-provider` exists at all. But gemma26 is served on :8082
+# and nothing has been listening there, so the independent judge was grading
+# *nothing*: 22 of 39 reflections skipped on transport failures. An available
+# correlated judge beats an unavailable independent one, and this is Luke's
+# call (2026-08-29) rather than a discovery.
+#
+# Set MECHA_RUMINATE_JUDGE=gemma26 after starting scripts/start-gemma26.sh to
+# put the independence back. Judge-graded rows in the ledger are only as good
+# as this line.
+JUDGE="${MECHA_RUMINATE_JUDGE:-local}"
 HEALTH="${MECHA_RUMINATE_HEALTH:-http://127.0.0.1:8080/health}"
 
 LOG_DIR="${MECHA_LEARNING_DIR:-$HOME/.mecha/learning}/logs"
@@ -60,20 +80,23 @@ if ! curl -sf -m 5 "$HEALTH" >/dev/null; then
     exit 0
 fi
 
-echo "· reflect"
+echo "· reflect (catches whatever the session_end hook missed; live mining is learn-live.sh)"
 "$MECHA" reflect -p "$PROVIDER"
 
 echo "· distill (episodes → the knowledge graph; catches whatever a hook missed)"
 "$MECHA" distill -p "$PROVIDER"
 
-echo "· validate (held-out + fresh, before learn consumes them)"
+echo "· validate (the measurement: held-out + fresh, before learn consumes them)"
 "$MECHA" validate -p "$PROVIDER" --judge-provider "$JUDGE" --unprocessed-only
 
-echo "· learn (propose-only: unattended learning never applies its own output)"
-"$MECHA" learn -p "$PROVIDER" --holdout 0.25 --propose
+echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
+echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
+"$MECHA" learn -p "$PROVIDER" --holdout 0.25 --auto
 
-echo "· retirements (deterministic ledger scan; staged for review like any rule change)"
-"$MECHA" rules propose-retirements
+echo "· retirements (deterministic ledger scan; applied, not staged — a rule measured"
+echo "  harmful must leave the prompt without waiting for anyone, and it is the only"
+echo "  brake on rules that now go live when they are derived)"
+"$MECHA" rules propose-retirements --apply
 
 echo "· work clean (retention on generated output; a published bundle's source is never removed)"
 "$MECHA" work clean

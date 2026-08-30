@@ -65,15 +65,71 @@ enum Action {
 
 /// A tool that answers from the recording.
 ///
-/// Wraps the live tool rather than replacing it: the spec the model sees —
-/// name, description, schema — is the live one, which is exactly right, because
-/// a changed description *is* part of what a replay measures. The live tool is
-/// only ever executed in [`OnDivergence::Live`] mode.
+/// Wraps the live tool rather than replacing it. Under [`OnDivergence::Live`]
+/// the spec the model sees — name, description, schema — is the live one,
+/// because the live tool is what would actually run after a divergence. Under
+/// the non-executing modes, `spec` carries the *recorded* spec when the
+/// surface store still holds the blob the recording's `tools_hash` cites, and
+/// it wins over the live tool's own words: tools render at the very front of
+/// the prompt, and re-describing one is the surface-drift cause
+/// [`crate::surface`] was built to name — presenting today's description to a
+/// probe of yesterday's recording replays a different question.
+/// Capabilities always come from `inner`: the spec says what the model reads,
+/// the capability says what the harness must assume, and only the live tool
+/// knows the latter.
 struct ReplayTool {
     inner: Arc<dyn Tool>,
+    /// The recorded spec, when one is available and this mode replays rather
+    /// than executes. `None` falls through to `inner`'s own words.
+    spec: Option<crate::message::ToolSpec>,
     mode: OnDivergence,
     state: Arc<Mutex<ReplayState>>,
     cancel: CancellationToken,
+}
+
+/// A stand-in built from a recorded [`ToolSpec`](crate::message::ToolSpec)
+/// alone — for a recorded tool that nothing running today can construct (a
+/// retired integration, a renamed MCP prefix). It can describe itself into
+/// the request, which is all a non-executing replay ever needs; recorded
+/// calls are answered from the recording before this is ever reached, and
+/// [`replay_registry`] refuses stand-ins under [`OnDivergence::Live`].
+///
+/// Capabilities are conservative on the taint axes — unknown is never clean —
+/// and `external_send` is narrowed away by the wrapper in the only modes this
+/// can exist in, so the interlock stays quiet for the same reason it does
+/// over live tools: a replayed call sends nothing.
+struct SpecTool {
+    spec: crate::message::ToolSpec,
+}
+
+#[async_trait]
+impl Tool for SpecTool {
+    fn name(&self) -> &str {
+        &self.spec.name
+    }
+    fn description(&self) -> &str {
+        &self.spec.description
+    }
+    fn input_schema(&self) -> Value {
+        self.spec.input_schema.clone()
+    }
+    fn read_only(&self) -> bool {
+        false
+    }
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            private_data: true,
+            untrusted_input: true,
+            external_send: true,
+            destructive: true,
+        }
+    }
+    async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+        Ok(ToolOutput::err(
+            "this tool exists only on the recorded surface; the replay answers from \
+             the recording, and this call has nothing recorded to answer with",
+        ))
+    }
 }
 
 impl ReplayTool {
@@ -139,19 +195,48 @@ impl ReplayTool {
 #[async_trait]
 impl Tool for ReplayTool {
     fn name(&self) -> &str {
-        self.inner.name()
+        self.spec
+            .as_ref()
+            .map(|s| s.name.as_str())
+            .unwrap_or_else(|| self.inner.name())
     }
     fn description(&self) -> &str {
-        self.inner.description()
+        self.spec
+            .as_ref()
+            .map(|s| s.description.as_str())
+            .unwrap_or_else(|| self.inner.description())
     }
     fn input_schema(&self) -> Value {
-        self.inner.input_schema()
+        self.spec
+            .as_ref()
+            .map(|s| s.input_schema.clone())
+            .unwrap_or_else(|| self.inner.input_schema())
     }
     fn read_only(&self) -> bool {
         self.inner.read_only()
     }
+    /// The live tool's capabilities, minus `external_send` in the modes where
+    /// nothing executes — the sandbox's rule in the other direction. A
+    /// replayed "send" sends nothing: its answer comes from the recording, so
+    /// declaring the capability would let the loop's trifecta interlock fire
+    /// *inside the replay* and block a call the recording executed. A blocked
+    /// call never reaches this tool, the cursor never consumes its recorded
+    /// result, and the arm dies one call later for a harness reason — which
+    /// grades as the model's failure. Measured 2026-08-29: `docs__sheets_write`
+    /// and `web_search` blocked mid-probe on three of twelve arms. Narrowing
+    /// also repairs record-time blocks: the interlock's refusal *is* the
+    /// recorded result, so the call now consumes it and the model reads back
+    /// exactly the refusal it read then. `private_data` stays, as everywhere —
+    /// and under `Live`, where the tool genuinely runs, nothing narrows.
     fn capabilities(&self) -> Capabilities {
-        self.inner.capabilities()
+        let caps = self.inner.capabilities();
+        match self.mode {
+            OnDivergence::Live => caps,
+            OnDivergence::Stop | OnDivergence::Error => Capabilities {
+                external_send: false,
+                ..caps
+            },
+        }
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -205,6 +290,7 @@ pub fn replay_registry(
     recorded_tools: &[String],
     live: &Registry,
     surface_only: Option<&Registry>,
+    recorded_specs: &[crate::message::ToolSpec],
     calls: Vec<RecordedCall>,
     mode: OnDivergence,
     cancel: CancellationToken,
@@ -230,18 +316,36 @@ pub fn replay_registry(
             OnDivergence::Live => true,
             OnDivergence::Stop | OnDivergence::Error => false,
         };
+        // The recorded spec, when the surface store still holds the blob the
+        // recording cites. In the non-executing modes it does two jobs: it
+        // overrides a live tool's *words* (re-describe is the drift that
+        // happens constantly, and tools render at the very front of the
+        // prompt), and it stands in bodily for a tool nothing today can
+        // construct — a retired integration, a renamed MCP prefix — which
+        // used to skip the probe outright. Under `Live` it does neither: the
+        // tools genuinely run there, and they deserve their own words.
+        let spec = (!executes)
+            .then(|| recorded_specs.iter().find(|s| s.name == *name))
+            .flatten();
         let stand_in = (!executes)
             .then(|| surface_only.and_then(|r| r.get(name)))
             .flatten();
-        let Some(tool) = live.get(name).or(stand_in) else {
-            bail!(
-                "recorded tool `{name}` is not available now, so the replay cannot offer \
-                 the tool surface the model saw. Enable whatever provided it (an MCP \
-                 server? a search backend?) and retry"
-            );
+        let inner: Arc<dyn Tool> = match live.get(name).or(stand_in) {
+            Some(tool) => Arc::clone(tool),
+            None => match spec {
+                Some(s) => Arc::new(SpecTool { spec: s.clone() }),
+                None => bail!(
+                    "recorded tool `{name}` is not available now, so the replay cannot \
+                     offer the tool surface the model saw. Enable whatever provided it \
+                     (an MCP server? a search backend?) and retry — or, if it no longer \
+                     exists anywhere, only a recording whose surface blob the store \
+                     still holds (`tools_hash`) can be replayed without it"
+                ),
+            },
         };
         registry.insert(Arc::new(ReplayTool {
-            inner: Arc::clone(tool),
+            inner,
+            spec: spec.cloned(),
             mode,
             state: Arc::clone(&state),
             cancel: cancel.clone(),
@@ -272,11 +376,13 @@ pub fn replay_surface_specs(
     recorded_tools: &[String],
     live: &Registry,
     surface_only: Option<&Registry>,
+    recorded_specs: &[crate::message::ToolSpec],
 ) -> Result<Vec<crate::message::ToolSpec>> {
     let registry = replay_registry(
         recorded_tools,
         live,
         surface_only,
+        recorded_specs,
         Vec::new(),
         OnDivergence::Stop,
         CancellationToken::new(),
@@ -305,6 +411,12 @@ pub struct ReplayReport {
     /// text, which made the whole episode ungradeable by anything but a
     /// divergence diff.
     pub stats: crate::session::RunStats,
+    /// Global index of the first call the model itself produced. Zero for a
+    /// full replay. A branched replay ([`drive_branch`]) resubmits the
+    /// recording up to an intervention verbatim, so its forced prefix cannot
+    /// diverge and every index in `divergences` is at or above this —
+    /// `replayed_calls[i]` sits at recording position `call_base + i`.
+    pub call_base: usize,
 }
 
 impl ReplayReport {
@@ -361,6 +473,64 @@ pub async fn drive(
         stopped_early,
         final_text,
         stats,
+        call_base: 0,
+    })
+}
+
+/// Continue a recorded conversation from a branch point instead of
+/// regenerating it.
+///
+/// [`drive`] asks the model to re-decide every call from the first user turn,
+/// which makes reaching a *mid-run* probe point a lottery: every open choice
+/// before the point is a chance to fork, so the odds decay with the point's
+/// depth — measured on the live store, 11 of 12 steer probes were lost to
+/// pre-point divergence, most at call #1 against points at #10–#28. This
+/// driver removes the lottery structurally. `seed` — the recorded messages up
+/// to the intervention, steering text already removed — is resubmitted
+/// verbatim, which is exactly the wire shape an ongoing run has at that
+/// moment, so the model's first free choice *is* the one the probe asks
+/// about, and a divergence before the branch cannot exist. The forced prefix
+/// also matches the recording's byte prefix, so on a caching server it reads
+/// from KV cache instead of being regenerated token by token.
+///
+/// `call_base` is the recording's index of the first regenerated call. The
+/// agent's [`replay_registry`] must have been built over the matching tail —
+/// `trajectory.calls[call_base..]` — or every recorded answer arrives offset.
+/// Divergences come back in the full recording's coordinates
+/// ([`crate::replay::diff_from`]), which is where a probe point lives.
+///
+/// One `run_in`, no turn loop: a branch point sits inside a run, and
+/// [`crate::counterfactual::truncate_after_run`] has already cut the slice
+/// before the next top-level turn, so there is nothing left to feed after
+/// the continuation ends.
+pub async fn drive_branch(
+    agent: &Agent,
+    cx: &RunContext,
+    seed: Vec<Message>,
+    trajectory: &Trajectory,
+    call_base: usize,
+) -> Result<ReplayReport> {
+    let base = call_base.min(trajectory.calls.len());
+    // A fresh default taint, as `drive` starts with: replayed results carry no
+    // `external` marking, so the branch may be less armed than the recording
+    // was — the module doc's standing caveat, unchanged here.
+    let mut convo = Conversation::resumed(seed, Default::default());
+    let mut stats = crate::session::RunStats {
+        usage_complete: true,
+        ..Default::default()
+    };
+    let outcome = agent.run_in(cx, &mut convo, None).await?;
+    stats.absorb(&outcome);
+    Ok(ReplayReport {
+        divergences: crate::replay::diff_from(base, &trajectory.calls[base..], &outcome.tool_calls),
+        replayed_calls: outcome.tool_calls,
+        recorded_calls: trajectory.calls.len(),
+        // No user turns are fed on a branch — the seed carries them all.
+        turns: 0,
+        stopped_early: cx.cancelled(),
+        final_text: outcome.text,
+        stats,
+        call_base: base,
     })
 }
 
@@ -436,6 +606,7 @@ mod tests {
             &[NeverRun.name().to_string()],
             &Registry::new(),
             Some(&fallback),
+            &[],
             vec![RecordedCall {
                 name: NeverRun.name().to_string(),
                 input: json!({}),
@@ -480,6 +651,7 @@ mod tests {
             &recorded,
             &live,
             Some(&fallback),
+            &[],
             Vec::new(),
             OnDivergence::Stop,
             CancellationToken::new(),
@@ -492,6 +664,7 @@ mod tests {
             &recorded,
             &live,
             Some(&fallback),
+            &[],
             Vec::new(),
             OnDivergence::Error,
             CancellationToken::new(),
@@ -504,6 +677,7 @@ mod tests {
             &recorded,
             &live,
             Some(&fallback),
+            &[],
             Vec::new(),
             OnDivergence::Live,
             CancellationToken::new(),
@@ -516,6 +690,7 @@ mod tests {
             &recorded,
             &live,
             None,
+            &[],
             Vec::new(),
             OnDivergence::Stop,
             CancellationToken::new(),
@@ -566,7 +741,7 @@ mod tests {
         // The fix: fingerprint the surface a replay actually builds, narrowed
         // to the recorded names and filled from the surface-only stand-in.
         let surface_specs =
-            replay_surface_specs(&recorded_tools, &live, Some(&surface_only)).unwrap();
+            replay_surface_specs(&recorded_tools, &live, Some(&surface_only), &[]).unwrap();
         assert_eq!(
             crate::surface::Fidelity::of(Some(&recorded_hash), &surface_specs),
             crate::surface::Fidelity::Matches,
@@ -619,6 +794,7 @@ mod tests {
             &["echo".to_string(), "other".to_string()],
             &live_registry(),
             None,
+            &[],
             calls,
             mode,
             cancel.clone(),
@@ -797,6 +973,190 @@ mod tests {
         assert_eq!(out.content, "live: x");
     }
 
+    /// A tool that can send when live sends nothing when replayed — its
+    /// answers come from the recording — so under the non-executing modes the
+    /// wrapper must not declare `external_send`, or the loop's trifecta
+    /// interlock blocks mid-replay a call the recording executed, the cursor
+    /// never consumes that call's recorded result, and the arm dies one call
+    /// later for a harness reason graded as the model's. Everything else
+    /// stays: `private_data` narrowing would under-taint the replay.
+    #[tokio::test]
+    async fn replay_narrows_external_send_in_the_modes_where_nothing_executes() {
+        struct Sender;
+        #[async_trait]
+        impl Tool for Sender {
+            fn name(&self) -> &str {
+                "mail_send"
+            }
+            fn description(&self) -> &str {
+                "Sends."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            fn capabilities(&self) -> Capabilities {
+                Capabilities {
+                    private_data: true,
+                    external_send: true,
+                    ..Default::default()
+                }
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("sent"))
+            }
+        }
+
+        let mut live = Registry::new();
+        live.insert(Arc::new(Sender));
+        let caps_under = |mode| {
+            let reg = replay_registry(
+                &["mail_send".to_string()],
+                &live,
+                None,
+                &[],
+                Vec::new(),
+                mode,
+                CancellationToken::new(),
+            )
+            .unwrap();
+            reg.get("mail_send").unwrap().capabilities()
+        };
+
+        for mode in [OnDivergence::Stop, OnDivergence::Error] {
+            let caps = caps_under(mode);
+            assert!(!caps.external_send, "a replayed send sends nothing");
+            assert!(caps.private_data, "private data must not narrow");
+        }
+        // Under Live the tool genuinely runs, and the interlock deserves the
+        // truth about it.
+        assert!(caps_under(OnDivergence::Live).external_send);
+    }
+
+    /// The skip this closes: a recorded tool nothing today can construct — a
+    /// retired integration, a renamed MCP prefix — used to bail the whole
+    /// probe, four reflections' worth on the live store. When the surface
+    /// store still holds the recording's spec blob, the spec alone rebuilds
+    /// the surface under the non-executing modes; recorded calls are answered
+    /// from the recording, so the stand-in's own `call` never runs on a
+    /// faithful path. Under `Live`, where tools genuinely execute, a spec
+    /// that cannot execute is still no substitute — fatal, unchanged.
+    #[tokio::test]
+    async fn a_dead_recorded_tool_is_rebuilt_from_its_recorded_spec_under_stop() {
+        let recorded_spec = crate::message::ToolSpec {
+            name: "pkg__kg_entity".into(),
+            description: "Look up one entity in the knowledge graph.".into(),
+            input_schema: json!({"type": "object", "properties": {"name": {"type": "string"}}}),
+        };
+        let specs = vec![recorded_spec.clone()];
+        let names = vec![recorded_spec.name.clone()];
+
+        let registry = replay_registry(
+            &names,
+            &Registry::new(),
+            None,
+            &specs,
+            vec![RecordedCall {
+                name: recorded_spec.name.clone(),
+                input: json!({"name": "Yuqi"}),
+                output: "the recorded entity".into(),
+                is_error: false,
+            }],
+            OnDivergence::Stop,
+            CancellationToken::new(),
+        )
+        .expect("the recorded spec supplies the surface");
+
+        let tool = registry.get(&recorded_spec.name).expect("registered");
+        // Described with the recording's own words — the bytes the model saw.
+        assert_eq!(tool.description(), recorded_spec.description);
+        assert_eq!(tool.input_schema(), recorded_spec.input_schema);
+        // Conservative on the taint axes, narrowed on the send axis.
+        assert!(tool.capabilities().private_data, "unknown is never clean");
+        assert!(
+            !tool.capabilities().external_send,
+            "a replayed call sends nothing"
+        );
+        // And answered from the recording, never executed.
+        let out = tool
+            .call(json!({"name": "Yuqi"}), &ToolCtx::default())
+            .await
+            .unwrap();
+        assert_eq!(out.content, "the recorded entity");
+
+        // Live mode executes, and a spec cannot: still fatal.
+        assert!(replay_registry(
+            &names,
+            &Registry::new(),
+            None,
+            &specs,
+            Vec::new(),
+            OnDivergence::Live,
+            CancellationToken::new(),
+        )
+        .is_err());
+    }
+
+    /// Re-describe is the drift that happens constantly, and tools render at
+    /// the very front of the prompt — so when the store holds the recorded
+    /// spec, it must win over the live tool's words under the non-executing
+    /// modes (the replay sends the bytes the recording sent) and lose under
+    /// `Live` (the live tool is what would actually run). Fidelity follows:
+    /// the rebuilt surface fingerprints back to the recorded hash even after
+    /// every live description has moved on.
+    #[test]
+    fn a_recorded_spec_overrides_a_live_tools_words_under_stop_only() {
+        let recorded_spec = crate::message::ToolSpec {
+            name: EchoTool.name().into(),
+            description: "The words the recording was sent.".into(),
+            input_schema: json!({"type": "object"}),
+        };
+        let specs = vec![recorded_spec.clone()];
+        let names = vec![recorded_spec.name.clone()];
+        let recorded_hash = crate::surface::fingerprint(&specs);
+
+        let stopped = replay_registry(
+            &names,
+            &live_registry(),
+            None,
+            &specs,
+            Vec::new(),
+            OnDivergence::Stop,
+            CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            stopped.get("echo").unwrap().description(),
+            recorded_spec.description,
+            "a probe replays the recorded surface, not today's rewording"
+        );
+
+        let surface = replay_surface_specs(&names, &live_registry(), None, &specs).unwrap();
+        assert_eq!(
+            crate::surface::Fidelity::of(Some(&recorded_hash), &surface),
+            crate::surface::Fidelity::Matches,
+            "the rebuilt surface is byte-faithful to the recording"
+        );
+
+        let live = replay_registry(
+            &names,
+            &live_registry(),
+            None,
+            &specs,
+            Vec::new(),
+            OnDivergence::Live,
+            CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            live.get("echo").unwrap().description(),
+            EchoTool.description(),
+            "live mode executes today's tool and must show today's words"
+        );
+    }
+
     #[test]
     fn a_recorded_tool_missing_today_is_an_error_not_a_shrink() {
         let err = replay_registry(
@@ -805,6 +1165,7 @@ mod tests {
             // No stand-in offered: a missing tool is still fatal, which is
             // what this test has always asserted.
             None,
+            &[],
             Vec::new(),
             OnDivergence::Stop,
             CancellationToken::new(),
@@ -911,6 +1272,96 @@ mod tests {
         assert!(!report.stopped_early);
         assert_eq!(report.final_text, "done");
         assert_eq!(report.turns, 1);
+    }
+
+    /// The branch driver: the recorded prefix is resubmitted, not
+    /// regenerated, so the model's first sampled choice is the first call
+    /// after the branch point — and a faithful continuation reports nothing,
+    /// while a fork reports its divergence in the *recording's* coordinates.
+    #[tokio::test]
+    async fn a_branch_continues_the_recording_instead_of_regenerating_it() {
+        let calls = vec![
+            recorded("echo", json!({"value": "a"}), "first"),
+            recorded("other", json!({}), "second"),
+        ];
+        let trajectory = Trajectory {
+            turns: vec!["do the thing".into()],
+            calls: calls.clone(),
+            final_text: "done".into(),
+            steered: true,
+        };
+        // The forced prefix: the first call already made and answered.
+        let seed = vec![
+            Message::user("do the thing"),
+            Message::assistant(vec![tool_use("t1", "echo", json!({"value": "a"}))]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "first".into(),
+                is_error: false,
+            }]),
+        ];
+
+        let run = |turns: Vec<CompletionResponse>| {
+            let calls = calls.clone();
+            let trajectory = trajectory.clone();
+            let seed = seed.clone();
+            async move {
+                let cancel = CancellationToken::new();
+                // The registry answers from the tail — the branch's contract.
+                let registry = replay_reg(calls[1..].to_vec(), OnDivergence::Stop, &cancel);
+                let approver = Arc::new(ModeApprover {
+                    mode: PermissionMode::Allow,
+                });
+                let agent = Agent::new(
+                    Box::new(Scripted(Mutex::new(turns))),
+                    registry,
+                    approver.clone(),
+                    ToolCtx::default(),
+                    AgentConfig::default(),
+                    None,
+                )
+                .unwrap();
+                let cx = RunContext::new(ToolCtx::default(), approver)
+                    .with_cancel(cancel)
+                    .with_budget(Budget::turns(8));
+                drive_branch(&agent, &cx, seed, &trajectory, 1)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // Faithful: the continuation makes the one remaining recorded call.
+        let report = run(vec![
+            assistant(
+                vec![tool_use("t2", "other", json!({}))],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("done")], StopReason::EndTurn),
+        ])
+        .await;
+        assert!(report.divergences.is_empty(), "{:?}", report.divergences);
+        assert_eq!(report.call_base, 1);
+        assert_eq!(
+            report.replayed_calls.len(),
+            1,
+            "only the continuation is the model's"
+        );
+        assert_eq!(report.final_text, "done");
+
+        // Forked: the divergence is reported at recording position 1, not at
+        // the continuation's local position 0 — the coordinates a probe
+        // point is located in.
+        let report = run(vec![
+            assistant(
+                vec![tool_use("t2", "echo", json!({"value": "z"}))],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("gave up")], StopReason::EndTurn),
+        ])
+        .await;
+        let structural: Vec<_> = report.structural().collect();
+        assert!(!structural.is_empty(), "{:?}", report.divergences);
+        assert_eq!(structural[0].index(), 1, "{:?}", report.divergences);
     }
 
     #[tokio::test]

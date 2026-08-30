@@ -726,7 +726,7 @@ impl Judge {
         Judge {
             provider,
             model,
-            max_tokens: 4096,
+            max_tokens: crate::provider::LOCAL_MAX_TOKENS,
         }
     }
 
@@ -739,6 +739,40 @@ impl Judge {
 
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// Prove the judge is reachable before a pass leans on it.
+    ///
+    /// **A validation pass whose judge is down must not look like one that
+    /// found nothing.** `assess` failing is handled per reflection — one bad
+    /// response should not end a run — but that same path turns a judge that
+    /// is *entirely* unreachable into a pass which skips every judged
+    /// reflection, exits 0, and leaves a ledger that reads thin rather than
+    /// broken. Retirement argues from that ledger, and under ungated learning
+    /// it is the only brake there is; "nothing regressed" and "nothing was
+    /// measured" would be indistinguishable.
+    ///
+    /// Found on 2026-08-29: the nightly named a judge on a port nothing was
+    /// serving, and had done for as long as the config had said so. It was
+    /// invisible because `validate` had never had a rule to grade — the
+    /// failure was waiting behind an earlier one.
+    ///
+    /// One trivial call rather than a health endpoint, because what has to be
+    /// true is that *this provider answers this model*, and only asking it
+    /// establishes that.
+    pub async fn preflight(&self) -> Result<()> {
+        self.assess("Reply as instructed.", "The answer says the word ok.", "ok")
+            .await
+            .map(|_| ())
+            .with_context(|| {
+                format!(
+                    "the judge ({}) is not answering — a validation pass cannot grade anything \
+                 without it, and a ledger empty because the judge was down reads exactly \
+                 like one where nothing regressed. Start it, or name a reachable provider \
+                 with --judge-provider",
+                    self.model()
+                )
+            })
     }
 
     /// Grade one answer. The judge gets no tools and no history.
