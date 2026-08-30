@@ -3374,6 +3374,23 @@ ARCHITECTURE's learning section; `drive_arm` now traces each arm's verdict,
 calls and final text under `MECHA_LOG=debug`, because the first failed run
 was diagnosed blind without it.
 
+The PR's review round then caught the fix's own mirror image before it
+merged: `stamp_probation` shared the release's predicate, so once the
+release stopped keying on bare coverage, a *born-graded* rule whose only
+verdicts were its convictions could be stamped by an unrelated ungradeable
+pass and never released — threshold silently 3 → 2 and a `retired_reason`
+naming a probation it never had. Stamping and releasing now ask different
+questions ("born ungraded?" vs "graded beyond its convictions?"), with
+test cases that fail on the shared-predicate version. The same round moved
+the ran-vs-graded distinction into every surface that shows a tally:
+`render_active`, `rules`' describe, and `rules list --json` (which gained
+`graded` beside `observations`) no longer render inconclusive-only
+coverage as "0 improved, 0 regressed" — a clean bill of health from rows
+that graded nothing. Merged as #124 (`6987bc5`) after a trial merge ran
+the full suite on the merged tree, and deployed the same hour — the
+install verified by the `graded` field answering from the installed
+binary, since the version string was 0.1.16 on both sides.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -5485,6 +5502,21 @@ and is what finally exercised the path.)
   inside a single fix rather than across review rounds of a whole PR.
 
 ### Environment
+
+**2026-08-30 — `node_modules/` with a trailing slash ignores a directory,
+not a symlink wearing its name.** A worktree lane symlinked
+`web/node_modules` at the primary checkout's copy to skip an `npm ci`,
+and `git add -A` swept the symlink into a commit — both `.gitignore`s say
+`node_modules/`, and the trailing slash makes the pattern match
+directories only, which a symlink is not. It rode a merge onto public
+`main` (`0b976c1` → #120) carrying an absolute path into this machine's
+home, and announced itself only as a perpetually-deleted file in `git
+status` after the next `npm ci`. Removed, and the ignore hardened to
+`node_modules` (no slash) so the next shortcut stays untracked. General
+shape: **a gitignore audit that only checks the pattern exists can still
+track the thing — the trailing-slash rule quietly scopes the pattern to
+one file type, and `git add -A` in a worktree stages whatever slips
+through.**
 
 **2026-08-30 — a cancelled CI run is neither a pass nor a fail, and this
 class of loss leaves a green-looking history.** The docs workflow's
