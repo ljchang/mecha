@@ -1071,6 +1071,9 @@ export const entity = {
     name: 'Priya Raghavan',
     node_type: 'person',
     aliases: ['Priya R.', 'priya.raghavan'],
+    // Deterministic keys — how sources reach the node, rendered apart from
+    // the aliases (how it is spoken of).
+    identifiers: [{ kind: 'email', value: 'priya.raghavan@ostrander.edu' }],
   },
   // Per-source coverage — which stores actually saw this person, and how
   // often. The graph tab renders it on the head card.
