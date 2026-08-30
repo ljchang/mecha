@@ -79,7 +79,7 @@
   {:else if view === 'mail'}
     <Mail />
   {:else if view === 'review'}
-    <Review initial={route.sub} />
+    <Review initial={route.sub} {navigate} />
   {:else if view === 'tasks'}
     <Tasks />
   {:else if view === 'graph'}

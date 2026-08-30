@@ -109,7 +109,12 @@
   $effect(() => () => cleanup());
 </script>
 
+<!-- type="button", load-bearing: a button defaults to type="submit", so
+     inside a form (the graph tab's find row) implicit submission — the
+     user hitting Enter in the text field — "clicks" the first submit
+     button it finds, which was this mic. Enter searched; the mic listened. -->
 <button
+  type="button"
   class="dictate"
   class:rec={state_ === 'recording'}
   class:busy={state_ === 'transcribing'}
