@@ -34,12 +34,17 @@ people to approve, and the nightly mail classifier took both mailboxes;
 queue's similarity groups; 0.1.12 on 2026-08-22, 0.1.11 and 0.1.10 both on
 2026-08-21, 0.1.9 on 2026-08-20, and 0.1.7/0.1.8 on 2026-08-19/20 after the
 mail hold lifted).
-**`main` carries four merges beyond v0.1.16 that are not yet tagged**
-(2026-08-29 night): #114, the shadow queue on every owner surface (plus a
-web entity page and chat tool-result previews); #116, the `/tasks` page
-repair; #115, the appraisal docs-page rework; #117, the docs site's
-fixture-backed web demo and its two CI gates. All in the `Unreleased`
-section of `CHANGELOG.md`.
+**`main` carries five merges beyond v0.1.16 that are not yet tagged**:
+#122 (2026-08-30, fifteen commits — **the learning loop runs itself and the
+instruments that grade it were fixed**: `learn --auto` with probation,
+nightly direct retirement, branched counterfactual probes, the surface
+rebuild from recorded specs; deployed to this machine the same night, so
+the installed binary is `main`); and the 2026-08-29 four — #114, the
+shadow queue on every owner surface (plus a web entity page and chat
+tool-result previews); #116, the `/tasks` page repair; #115, the appraisal
+docs-page rework; #117, the docs site's fixture-backed web demo and its
+two CI gates. All in the `Unreleased` section of `CHANGELOG.md`; the next
+tag is v0.1.17.
 
 **0.1.14 is thirty-one commits from three sessions working the same day**,
 which is the thing to know about reading its history: the lanes interleave,
@@ -132,9 +137,12 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,930 tests**, no failures — measured 2026-08-29 on `main` at
-**12d7f4b**, the night's four merges (#114/#115/#116/#117) on top of the
-v0.1.16 release. Breakdown: **630** in `mecha-cli` with 1 ignored plus a
+Expect **1,977 tests**, no failures — measured 2026-08-30 on `main` at
+**4c7a0e2** (the learning-loop-autonomy merge, PR #122: **653** in
+`mecha-cli` with 1 ignored, **1,079** in `mecha-core`, the rest unchanged
+from the previous count). The earlier baseline was 1,930 on **12d7f4b**,
+the night's four merges (#114/#115/#116/#117) on top of the v0.1.16
+release. Breakdown: **630** in `mecha-cli` with 1 ignored plus a
 new **20**-test `first_run` integration suite (the v0.1.16 onboarding
 arc's, #113 — the previous count predates it), **1,055** in `mecha-core`,
 6 + 9 in its two integration suites, **133** in `mecha-mail` plus 1 in a
@@ -316,7 +324,7 @@ A working agent harness, used and measured rather than just compiled.
 | Web surface | `mecha serve` (2026-08-24, extended the same evening) — the tailnet web app: binds 127.0.0.1 with no flag to widen it, `tailscale serve` is the door (`:8443`), every request must carry `Tailscale-User-Login` equal to `[web] owner_login` (global-file-only config, stripped from project layers like `[slack]`; refuses to start ownerless), strict self-only CSP. Pages: Home dashboard (`review queues --json` + `doctor --json` as child processes, a dash never a zero), streaming chat over SSE (one shared agent, per-session `RunContext` on the Slack connector's pattern — keyed sessions with validated directory-safe names, jails under `~/.mecha/work/web/<key>/`, steering, cancel, context gauge), outbox review (whole `DraftView`, source reads behind a gutter, taint sheet with exact args, approve `--yes`/reject/edit as CLI children), graph-queue sample deck (seed printed, verdict ≠ resample), tasks, notes + `kg search`. Per-session `ask` mode: live approval cards (deny-with-reason is a real user correction; timeout is `Blocked`) and `ask_user` option cards routed by the run's jail (`Asker::ask_in`); pending cards ride the transcript read so a locked phone reloads into them; cancel drains parked cards. Evening additions (2026-08-24): the **mail page** (`serve/mail.rs` + `Mail.svelte` — store read for the list, `mecha mail show` as the one thread renderer behind a gutter, closed-verb `/api/mail/act` with spam the only confirm; drafting verbs spawn detached into the outbox), the **graph queue at all three depths** (classes with server-stamped tiers from `tui::queues::Tier::of`, per-class similarity groups, and the cross-class global layer with a threshold stepper — see the graph repo's `similar.rs` for the invited-crossing rules), and **files** (`serve/files.rs`: uploads into the session jail's `inbox/` announced as paths, downloads that re-prove containment, images the only inline type). Assets are a build artifact at `~/.mecha/web/dist` (update skill surface 1b). **2026-08-25**: `review now` reached this surface — a finished run emits the ids it staged and the page draws a confirm card built from `/api/outbox/{id}` (whole `DraftView`, taint above everything, source reads behind a gutter, Send now / Later); notes open in place and edit through `mecha kg note --edit <source_id>`, which preserves the note's own `occurred_at`; and a failed graph verdict keeps its card and offers the two ways through (`bind`, accept-as-new-topic) that until then existed only in the TUI. **2026-08-26**: the board learned to delegate — *ask mecha* (`/api/tasks/work`, detached and unattended, because `serve`'s approval cards belong to a chat session's `RunContext` and cannot reach a child process), *stop* (`/api/tasks/stop`), *open the conversation* (`#chat/<session>`, which `Chat` resumes from the route), an agent chip derived from `waiting_on` rather than self-reported, `task:` sessions in the drawer, and the plan rendered in chat (live, from the shared `TodoTool` keyed by jail) and on the card (`/api/tasks/plan`, read out of the transcript because a `tasks work` run is another process). **2026-08-26 (second pass)**: the delegation loop closed — `/api/questions` (list, answer, abandon) so a parked question is answerable from the phone rather than only from a terminal, and the task card's state derived from board + questions + the transcript's outcome record (D16). **2026-08-26 (fourth pass)**: the graph queue became reviewable rather than only tappable — a group opens to its members (`GET /api/queue/items`, a named id set re-fetched by id, never a redraw) and each is verdicted on its own with no cascade, because similarity is the grouping key and members can contradict each other; a candidate's face comes from one `faceOf()` matched to `tui::queues::items_from_json`'s chain (`statement` → `what`), which is what stopped every commitment card rendering `undefined — undefined — undefined`; and a failed *bind* offers a target field, distinct from a failed accept, where naming a target is not the answer. `docs/REMOTE-SURFACE-RESEARCH.md` + `-DESIGN.md`, `docs/TASK-AGENT-DESIGN.md`. **2026-08-29 (#114)**: an **entity page** (`/api/entity` via `serve/board.rs::entity`, `Entity.svelte`, nav entry `graph`) marking unreviewed and denied facts as such; a **surfaced-verdict deck** on the review page (`/api/queue/shadow` + `/verdict`, `serve/review.rs::shadow`/`shadow_verdict`); and **chat tool-result previews** (`WireEvent::ToolResult`, a capped preview of what a tool answered). Same night (#116) the `/tasks` page was repaired — `stateOf` had called the server-stamped `stalled` *field* as a function, a `ReferenceError` on every card of a non-empty board, shipped broken in v0.1.16. **2026-08-29 (#118)**: settings became an **index** rather than one scroll — three rows opening panes at `#settings/<charter|learning|voice>` through the same hash router, each row carrying what is actually in there (a count, or a dash where the store could not be read) — and the gear moved out of `Home.svelte` into the shell (`App.svelte`), one button in the same corner on *every* view at `z-index: 3`, below the app's scrims and sheets (4-6) and drawers (40+). The charter is edited as a list with **drag-to-rank** (`SettingsCharter.svelte`; pointer events rather than HTML5 drag-and-drop, because `dragstart`/`dragover` never fire for touch): position in the file is the ranking, so dragging is the only rank control there can be. Everything above the first `[[line]]` survives a save, and a document the page cannot fully account for — a `parse_error`, bytes it never managed to read, or a comment among the tables — refuses the list editor and opens as raw TOML instead (`unreadable`, `blocked`). Routing moved to `pushState` with a depth stamped in `history.state`, so a back gesture can tell an in-app push from a cold deep link. Two gates ride it: `npm run check-charter-toml` pins the serialiser (`web/src/lib/charter-toml.js`) against `charter.rs`'s own `WEB_EDITOR_SAMPLE` fixture in both directions, and `render-check` now visits the three settings panes |
 | Voice | The stack from `docs/VOICE-RESEARCH.md`, built and in production 2026-08-24 (§7 is the build log): Pipecat worker (`scripts/voice/worker.py`, `:7860`), **Parakeet TDT** STT (`mecha-parakeet.service`, `:8992` — Voxtral was structurally unfit: a chat model answers speech instead of transcribing it, and obeys spoken instructions), Chatterbox TTS (no standby — Kokoro was removed 2026-08-25; nothing failed over to it automatically), and the loopback OpenAI facade (`mecha-cli/src/voice/`) **mounted inside `mecha serve`** (`--voice-port 8990`) over the shared agent — one process, one cached prefix, two dialects. The WebRTC offer proxies same-origin through serve (`/api/offer`), behind the owner guard — true of **both** doors since 2026-08-25, and only of `:8443` before it, when `:443` was a file mount whose `/api` went straight to the worker. In-chat voice: waveform button → call overlay (voice-core.js embedded by relative import; threaded transcript pane, cloned-track mic meter, mute, end). **A call is the chat session it was started from (D3, 2026-08-25)**: the page names its key in the WebRTC offer (`request_data`, pipecat's own passthrough), the worker forwards it as `X-Chat-Session` beside the slot key it still mints, and `voice::SessionHost` — implemented by `serve::chat::VoiceHost` — runs the turn on that conversation's messages, taint, transcript and jail, with the facade keeping no record of its own. `chat::begin_turn` is the one implementation both doors go through. Spoken turns arrive on the page's SSE feed live (`WireEvent::User`, block stripped) and are marked `spoken` in the transcript; the D10 block now opens a *switch into speech* rather than a conversation (`last_turn_spoken`), and `--voice-yes` travels with the turn, so a spoken turn runs at Allow while a typed one in the same session obeys the page's mode. D5 ratified: owner speech is typed text, arms nothing. **Voice controls (2026-08-24 night):** the in-chat call overlay (`Chat.svelte`) carries a **seven**-voice picker and a 0.5–2.0x rate slider. They persist in `localStorage` (`mecha.voice.prefs`, `{voice, speed}`, read on each connection's first `onVoiceConfig`), so the next call opens where you left it rather than resetting to whatever the worker booted with. That key originally synced two shells; the standalone page was retired in 876580e and the preference is why it stays. Seven is six Kokoro-derived cloning references plus Chatterbox's own built-in `default`, which the server lists as selectable because it is one — `voice: "default"` generates with no reference rather than falling back to anything. The controls are driven by a `voice-config` RTVI message and `session.voiceConfig(patch)` on `voice-core.js`; the server's reply is what renders, so a refused value never leaves the control showing a rate the worker is not speaking at. Rate is a pitch-preserving phase vocoder in `chatterbox_server.py` (~50 ms warm) because Chatterbox Turbo has no speed parameter and resampling moves pitch with tempo. The voices are Kokoro presets synthesized into cloning references by `scripts/voice/make-voices.py` — Apache 2.0, nobody's identity — and the server reads the directory live (`GET /v1/voices`) rather than holding a list. **Call teardown, 2026-08-25:** the pipeline's idle timeout was pipecat's unchosen 300s default and killed a call five minutes into any pause — raised past a conversational silence and it now *announces itself* over the data channel before tearing down; client-side, ICE `disconnected` is a 15s grace window rather than a hang-up, since only `failed`/`closed` are terminal (no ICE restart: pipecat's `restart_pc` fires the very event this worker cancels the pipeline on). **Spoken outbox confirmation, 2026-08-25:** a run that stages drafts is asked about aloud — the offer composed from the store through `DraftView::spoken`, the answer matched by `review_policy::parse_answer` *before* any model sees it, so the release decision never enters a context window |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
-| Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model |
+| Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model. Counterfactual probes **branch** rather than regenerate (`counterfactual::branch_at` + `drive_branch`, 2026-08-30): the recorded prefix is resubmitted verbatim and only the continuation is sampled, so pre-point divergence is structurally impossible; replay wrappers narrow `external_send` in the non-executing modes, and a recorded surface rebuilds from its `SurfaceStore` blob — dead tools included, recorded descriptions winning over live rewordings |
 | Hooks | `pre_tool` (can deny, fails closed) / `post_tool` / `session_end`, JSON on stdin |
 | Outbox | `[outbox] tools` staged for review instead of executed; `mecha outbox` list/show/edit (`--body-file` for surfaces with no `$EDITOR`)/**review**/send/reject, several ids or `--all` narrowed by `--kind`/`--via`; edits mined as writing reflections. Items carry a kind — a publish shows its rendered page, refuses `edit`, and is excluded from the miner — and the jail they were drafted under, so a release resolves paths against the agent's workspace rather than the reviewer's. Release policy is `review_policy.rs` — one encoding for every surface: `now` (the default) puts a finished run's drafts in front of you, `later` leaves them, `auto` releases only untainted drafts of a run that finished clean. Scope is `staged_since`, an id-diff, so no mode touches items another run staged. Since 2026-08-25 `now` reaches `mecha serve` too — a card on the page, a spoken offer in a call |
 | Messaging | `[messages]` + `mecha msg send/list/show/dismiss/agents` — a file mailbox between this machine's sessions (`~/.mecha/messages/<recipient>/`, producer-name addressing, per-session liveness registry). Delivery folds in at the steering point with the sender's harness-stamped taint merged first, so a hop launders nothing; attended surfaces hold with a notice, unattended accept; global config only; full mailboxes refuse, identical pending sends dedup. `docs/MESSAGING-RESEARCH.md` is the design record; phase 2 (TUI modal/badge) is scoped there |
@@ -330,7 +338,7 @@ A working agent harness, used and measured rather than just compiled.
 | Front door | `mecha frontdoor` list/show/extract/next/**triage**/**needs-info**/**close** over `~/.mecha/requests/` — the quarantine between a stranger's request and a run with tools, and the state machine that lets one reach an answer. The extractor is issued no tools and no history; `Record::for_privileged_run` has no argument that returns the prose; an extraction failure routes to a human. `triage` drafts into the outbox and refuses to run unrouted; `reconcile` closes the loop from released items on its own, with no verb to remember. `mecha-factory-publish drain` fills the directory |
 | Triggers | `mecha trigger` — a prompt on a cron schedule, unattended: `add/list/show/next/run/tick/daemon/runs`, store in `~/.mecha/triggers/`, ledger in `runs.jsonl`, **the daemon is installed and running here**; a failed `notify` is recorded on the run |
 | Skills | `~/.mecha/skills/<name>/SKILL.md` in the Agent Skills format, loaded by a `skill` tool call at three levels of disclosure. User-authored with no mechanism for anything else — no install, no registry, no remote body, none derived from a session — which is why loading one arms no taint. `tools:` narrows the surface and can never widen it; a loaded skill crosses compaction verbatim; `mecha eval` forces them off |
-| Learning | the full arc: reflect-on-close → nightly rumination → counterfactual validation (steers/denials trace-graded) → gated proposals (`mecha proposals`); git-backed store under `~/.mecha/learning`; rules carry id/sources/created_at, validate feeds a per-rule outcome ledger with regression bisection, and `mecha rules` retires through the same gate (`eval --ab-rules` for the coarse A/B). Budget is 25 active rules and 2600 chars **per domain**, and a run carries only `RUN_DOMAINS` (`behavior` + `writing`) — new domains are opt-in and `unrouted_domains` warns at startup on any that ride in no prompt |
+| Learning | the full arc, **ungated since 2026-08-30** (Luke's 2026-08-19 ruling, built): reflect-on-close → `learn --auto` per session close (`learn-live.sh`) and nightly — the counterfactual gate in front of the write (regression refuses, clean applies, ungradeable applies on **probation**, retiring at 2 vs the ordinary 3) — with every pass still writing a proposal as audit trail and superseding its pending predecessors; nightly `rules propose-retirements --apply` retires from the ledger with no human. Git-backed store under `~/.mecha/learning`; validate feeds a per-rule outcome ledger with regression bisection; `mecha learning-report` (+ web trend pane) is the is-it-working view. Budget is 25 active rules and 2600 chars **per domain**, and a run carries only `RUN_DOMAINS` (`behavior` + `writing`) — new domains are opt-in and `unrouted_domains` warns at startup on any that ride in no prompt |
 | Run quality | `Record::Outcome(RunStats)` per finished run from every front-end; `runlog.rs` reads the corpus back (`mecha sessions health`, rates split by model, `—` where a denominator is zero); three population checks in `doctor`; `candidate.rs` gates a proposed change on a paired comparison with a deterministic holdout and a work guardrail; `mecha eval --ab-config KEY=VALUE` is the content-sensitive arm; `mecha diagnose` proposes one change from the corpus and prints the command that would falsify it; `mecha harness` (2026-08-22) closes the loop nightly — candidates persisted, measured by session replay, a holdout-confirmed config win auto-accepted into a revertible override layer beneath the user's config, everything else staged for review — see the self-improvement section |
 | Queues | `mecha review` + the `/queues` modal — every store waiting on a human in one list: the graph's merge queue, the outbox, the front door, staged rule changes, harness candidates. Four hand off to the modal that owns them; the graph queue is reviewed in place, four levels deep (mechanism → class → similarity groups or a *random* sample → items), `t` filtering by evidence tier and `a`/`r` verdicting. `s` on a class groups its whole queue by semantic similarity (2026-08-23) — every pending item, largest groups first, singletons after — and a group verdict is ONE human verdict: the seed is the owner's, members cascade machine-labeled (`reviewed_by = cascade:<seed>`, invisible to the ladder) onto the exact ids that were on screen; `b` binds a group's subject, `A` accepts creating it, `[`/`]` re-group at a threshold stepped from the value the child reports. An unreadable store prints a dash, never a zero. **2026-08-26**: `B` names a bind target by hand and a failed `b` opens the same prompt — the graph answers an unbindable subject with *name a target with `--to`*, and until then no surface could send one; the prompt owns the keyboard while it is up, because `a`/`r`/`d` below it are verdict keys. Same day, `items --ids` stopped being trimmed to ten by `--top`, which had capped the group dive since the level shipped. **The one place mecha shells out to `mecha-graph`** — the MCP surface has no `kg_accept` and must not gain one. **2026-08-29 (#114)**: the graph's *shadow* queue (review-on-use surfaced verdicts) reached every owner surface — `mecha review shadow` lists and decides (`--confirm`/`--refute`, through the same mecha-graph child), the `/queues` modal grew a graph-shadow row with in-place verdicts riding the generic review level, and `/find`'s entity detail marks each fact's tier |
 | Eval | 36 cases, 15 tags (both re-counted 2026-08-20, unchanged), scorecard, `--compare`, sandboxes, verify, judge, multi-turn, run-metadata checks; plus `graph-cases.jsonl` — 10 memory/interlock cases against fixture MCP servers (`--mcp-file`), renamed with the graph and expecting the bare `kg_*` names production serves (scorecards across the rename are not comparable) |
@@ -958,6 +966,14 @@ in [`HISTORY.md`](HISTORY.md) under "The measurement record":
 Everything a judge touched — `ambiguity` and `synthesis` — is worth reading the
 answer for rather than trusting the verdict, because judges disagree with
 themselves across runs.
+
+**`results/qwen36-after-tuning.json` (2026-08-30) carries its own caveat**:
+compare it to `qwen-hard-v2.json` only on the 34 shared cases — 32 passed
+both times, one flipped each way, and the one that "broke" (`csv-rows`)
+passed 6/6 on rerun. Wall-clock and per-case latency are **not comparable**
+(the Aug 25 baseline ran ~2.2x parallel, this one near serial). Net: the
+sampling-recipe tuning is *unproven on this instrument*, not proven bad —
+the suite sits at 94% with little headroom to show a gain.
 
 **A second instrument arrived 2026-08-19 and has its own caveat**: a year of
 real mail at `~/.mecha/mail-corpus/`, which can grade the mail classifier
@@ -2068,92 +2084,75 @@ self-reported; affect may only *narrow*, so a disposition is a monotone layer
 above a structural check and never a replacement for one; and affect is a
 priority function, never an objective.
 
-### Validation — the probes could never run, and now they can
+### Validation — the probes run, grade, and feed an autonomous loop
 
-**`mecha validate`'s steer and denial probes had never run on an interactive
-session, and `validations.jsonl` has been empty since it shipped while the
-nightly reported success every night.** Fixed 2026-08-27 across two merged
-PRs: `surface.rs` and the registry fix are **#90** (`c630ff94`); the
-probe-specific half — driving the replay and filling `controllable` from
-whether it arrives at the intervention anyway — is **#91** (`f0ca8ca`), which
-is also where the `Regret` label below (`Agency::Own` + `controllable:
-Some(true)`, `mecha-core/src/appraisal.rs:692`) actually gets produced. A skip
-counted faithfully, and nothing read it as *this entire class is
-unreachable* — the same shape as a rate over a zero denominator printed as
-zero, which this file names in four other places.
+The 2026-08-27 arc got the probes *running* (the `surface_only` registry for
+front-end-only tools, `surface.rs` + `tools_hash`); the 2026-08-29/30 arc got
+them *grading*. The full story of both is in HISTORY under those dates. What
+is true now:
 
-`replay_registry` refuses to build when a recorded tool is missing from the live
-registry, which is right: the tool list is the front of the cached prefix, so a
-smaller toolbox is a different agent. What nobody had noticed is that three
-tools are registered **only by a front-end** and so no CLI process has ever held
-one — `ask_user` (246 of 408 sessions), `recall` (122), `show_file` (55). The
-coupling closes on itself: a probe needs an intervention, interventions happen
-interactively, interactive sessions carry `ask_user`. **319 of 407 sessions, and
-it is the 78% that contains every intervention.** A `surface_only` registry
-supplies them, consulted only where nothing executes; the store goes from **22%
-replayable to 76%**.
-
-The residual 97 name a `pkg__*` or a `google__*` and stay refused, which is the
-bail working. `google__*` was renamed to `mail__*`, so **those 23 recordings are
-permanently unreplayable**.
-
-**With the probes finally running, 12 of 13 come back inconclusive**, and the
-cause is found. On a pinned seed and a verified-quiet box the result is
-byte-identical across two runs — 11 of 13 exactly, 2 differing by ±1 — with
-divergence indices `#0:2 #1:6 #2:2 #3:1 #5:1`, **median 1**, against steer
-points at 3 through 33. One session contributes six probes with steer points
-from 10 to 33 and **all six diverge at the same call**: a trajectory-dependent
-cause cannot do that, and a per-session constant can.
-
-That constant is the tool surface. `RunConfig` kept the system prompt in full —
-*"the text lets a replay rebuild the request"* — and kept tools as **names**,
-with a comment naming three risks: added, removed, renamed. Those almost never
-happen; **re-describe happens constantly**, and a name list cannot see it. Tools
-render *before* the system prompt, so the replay rebuilt the back half of the
-prefix byte-exactly and the front half from today's registry.
-
-`surface.rs` records the specs once per distinct surface, content-addressed,
-cited by `RunConfig.tools_hash` — costed rather than preferred, since 69 KB of
-specs against a 25 KB average session would have quadrupled the store. Three
-states, and `Unknown` is the load-bearing one: a recording from before the field
-can never read as *matching*, and `Differs` needs no blob at all, so legibility
-lands the day it ships and rebuildability accumulates after.
+- **Counterfactual probes branch** (`counterfactual::branch_at` +
+  `replay_run::drive_branch`): the recorded prefix is resubmitted verbatim,
+  steering text stripped, and the model samples only the continuation — so
+  "diverged before the steer point", which ate 11 of 12 steer probes on the
+  first full pass, is structurally impossible. Measured after: **0
+  inconclusive, 12 graded** (2026-08-29), and the first unattended nightly
+  (2026-08-30 03:30) trace-graded all 3 of its steer probes.
+- **The surface rebuilds from the blob now.** The rebuildability half that
+  was open shipped: a recorded tool nothing today can construct becomes a
+  spec stand-in from the `SurfaceStore` blob, and a recorded spec **wins
+  over a live tool's reworded description** in the non-executing modes, so
+  fidelity reads `Matches` instead of `Differs` wherever the blob exists.
+  Recordings from before `tools_hash` stay unrecoverable, as `surface.rs`
+  always said; the four reflections stranded on them (`google__*`, `pkg__*`
+  pre-rename) are dropped with reasons, and `select_probe_corpus` now
+  honours `dropped_at`.
+- **Replay wrappers narrow `external_send` under `Stop`/`Error`** — a
+  replayed "send" sends nothing, and before this the trifecta interlock
+  fired *inside* three of twelve arms, desyncing the cursor and grading a
+  harness block as the model's failure.
 
 **Open:**
 
-- **Nothing rebuilds a surface *from* a blob yet.** That is the rebuildability
-  half; it is worthless until blobs exist and should be designed against a real
-  `Differs` case rather than a hypothetical one.
-- **The fix recovers nothing already recorded, and nothing can.** Those
-  recordings never held the specs. **The appraisal corpus and the validation
-  ledger start from zero the day this ships** — read that before budgeting on
-  the 120 sessions on disk.
-- **The prediction is untested and cannot be tested on the current corpus.**
-  If the surface is the cause, restoring it should push the divergence index up
-  and yield should follow the fraction of steers inside the new window. The 13
-  existing probes have no hash and stay `Unknown` forever, so the earliest
-  honest measurement needs sessions recorded *after* this lands. Re-running the
-  13 and reading anything into the number would be false, and the temptation is
-  real.
-- **Whether `inconclusive` should stay one counter.** It now splits by fidelity
-  (`matches` / `differs` / `unknown`), which is what keeps *drift* apart from
-  *no evidence*.
-
-**Attribution.** The reach and yield numbers, the determinism runs, the
-divergence distribution and the fidelity split are the probe lane's
-(`mecha-80`, 2026-08-27) and are **not independently reproduced here**. The
-78%/22%→76% store measurement, the 69 KB-vs-25 KB costing, `surface.rs` and the
-`tools_hash` field are this lane's. The one number both lanes measured
-separately is the pinned seed — 387 and 388 of ~394 sessions at `seed: 42`, a
-boundary apart and not a disagreement.
-
-**One result to note.** With the probes running, the first non-neutral label
-this system has ever produced appeared: `labels: {neutral: 119, regret: 1}` —
-one session where the replay went elsewhere without the steer, carried the whole
-way from probe through `apply_probe` to `affect_of`. One of 120 is not a result;
-it is the seam working end to end.
+- **The retirement end-to-end drill** — the research doc's own precondition,
+  still owed: a seeded bad rule → regressed probe → bisection →
+  `propose-retirements` firing, run whole. Every piece is unit-tested;
+  the NoGo path has never fired as one motion, and under D1 it is the only
+  brake in front of an ungraded rule.
+- **The followup probe answers with tool calls it cannot make.** It re-asks
+  the corrective turn with no tool surface, so on the 2026-08-30 nightly 5
+  of 7 followups were `inconclusive` — the `is_gradeable` span check
+  correctly refusing to judge a `<tool_call>` body as an answer, but that
+  is half the judged corpus producing nothing. Giving that probe its
+  recorded tool surface (specs only, nothing executes) is the candidate
+  fix.
+- **A steer pass is call-for-call.** Tracking the whole steered continuation
+  under sampling biases toward `Fail`/`Fail`; both arms share the bias so
+  the ledger's comparisons stand, but if improved/regressed stay rare
+  across nights, grade a bounded window after the steer point instead.
+  Decide from ledger data, not preemptively.
 
 ### Cheap, and worth doing first
+
+- **Rule on the `ask_user` decline wording** (measured 2026-08-30,
+  deliberately unadopted — the source is restored to control). A/B, 5 runs x
+  3 ambiguity cases per arm: dropping "If the task can be done without it,
+  do it" and adding "do not search for it again" saved 3 turns on
+  `ambiguous-rate` (13→10, zero variance) with 0 invention failures in all
+  30 case-runs — but did **not** make the case pass (10 > the ≤8 check), so
+  the wording is *a* cause of the thrash, not *the* cause. Unadopted because
+  the control string is itself the winner of a prior measured A/B whose
+  losing arm made the model invent a contractor name and rate, and 15 runs
+  is weak evidence of no regression on a rare failure. Luke's call, unmade
+  (`mecha-core/src/tool/ask.rs`, the decline text in `call`).
+
+- **Rule on harness candidate `hc-20260828T033309-d83b`**
+  (`context.auto_compact=true`, staged since 08-28, flagged unappliable —
+  the key is outside the closed override set). Reject it, or decide the
+  closed set grows; the loop rightly refuses to decide. `mecha harness
+  list` shows it, and the diagnostician re-derives it nightly and is
+  refused by canonical-spec comparison, which is the brake working but also
+  a nightly reminder that a human ruling is owed.
 
 - **Decide whether replayed reasoning stays unbounded.** As of 0.1.2 the
   OpenAI-compatible backend sends every `Block::Thinking` back, which is what
@@ -2238,8 +2237,15 @@ it is the seam working end to end.
 
 ### The learning system
 
-The arc is complete, running nightly, and — as of 2026-08-23 — **producing
-rules**. The provenance starvation measured on 2026-08-22 was resolved by
+The arc is complete, **ungated, and running per session close** (2026-08-30,
+PR #122 — Luke's 2026-08-19 ruling built): `learn --auto` measures by
+counterfactual probe and disposes without staging — regression refused,
+clean applied, ungradeable applied on probation with the 2-regression leash
+(carried across consolidations, released only by the ledger). Retirement
+applies nightly from the ledger with no human. First consolidation under it:
+28 reflections → 12 live rules, after 25 days at zero. What follows is the
+provenance history and the refinements still open. It had been producing
+rules through the gated path since 2026-08-23. The provenance starvation measured on 2026-08-22 was resolved by
 moving the evidence to the trusted side of the ruling rather than loosening
 it: `learning::evidence_for` (`mecha-core/src/learning.rs`) hands the
 reflector only user-typed words plus registry-owned tool names when coverage
@@ -2263,16 +2269,18 @@ What is missing beyond that is refinement:
 - **Rules that are facts should graduate to pkg.** No classifier routes
   fact-shaped rules into `kg_upsert` as staged candidates; `distill.rs` pushes
   episodes only.
-- **The positive signal is unread.** Reflection mines only edited-then-sent
-  outbox items. An item sent *unedited* is evidence that whatever produced it
-  was right, and nothing looks at it.
+- **The positive signal now has one reader** — the appraiser
+  (`appraisal.rs` folds `WritingOutcome::SentUnchanged` as positive
+  evidence) — but the *learner* still ignores it: consolidation mines only
+  edited-then-sent items, so "this voice was right" never reinforces a rule.
 - **LEAP-in-production.** Rumination mines interventions only. Learning from
   graded eval cases — sampling known-outcome examples rather than waiting for a
   correction — was ported in design but not in code.
-- **No correction-rate-over-time query.** `mecha sessions stats` counts sessions
-  and `mecha rules list` gives per-rule tallies; neither answers "are
-  interventions per session going down", which is the only number that says the
-  system is working.
+- **The correction-rate query shipped** (`mecha learning-report`, plus
+  `/api/settings/learning-report` and the web trend pane) — what remains is
+  *reading* it: the pre-cutover baseline is thin, so the trend needs a few
+  weeks of nights before "are interventions per session going down" has an
+  answer worth acting on.
 - **The CIPHER tier** — per-context preferences, embedded and retrieved top-k —
   exists as a comment and nothing else.
 - **A `/learning` TUI view.** The store is files by design so it can be read
