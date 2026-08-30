@@ -214,6 +214,7 @@ export const ROUTES = [
           'notes(/edit)?',
           'entity/unalias',
           'entity/merge',
+          'entity/create',
           'proposals/[^/]+/[^/]+/[^/]+',
           'tasks/[a-z]+',
           'questions/[a-z]+',

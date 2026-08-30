@@ -924,6 +924,34 @@ async fn graph_verb(args: &[&str]) -> Response {
 }
 
 #[derive(serde::Deserialize)]
+pub struct CreateEntityBody {
+    pub name: String,
+    /// One of the graph's closed type set; empty means person, the common
+    /// case for a create-on-miss.
+    #[serde(default)]
+    pub node_type: String,
+}
+
+/// POST /api/entity/create — a node nothing in the graph proposed, created
+/// from the lookup's own dead end. Relays `mecha-graph new-person` /
+/// `new-node`, whose refusals carry the graph's rules verbatim: an existing
+/// name is refused with the node that holds it, and an unknown type with
+/// the closed set.
+pub async fn entity_create(State(state): St, Json(body): Json<CreateEntityBody>) -> Response {
+    let name = body.name.trim();
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "a name, at least\n").into_response();
+    }
+    let _ = &state;
+    let t = body.node_type.trim();
+    if t.is_empty() || t == "person" {
+        graph_verb(&["new-person", "--", name]).await
+    } else {
+        graph_verb(&["new-node", "--type", t, "--", name]).await
+    }
+}
+
+#[derive(serde::Deserialize)]
 pub struct MergeBody {
     /// The node that stays — the open page's node, by id.
     pub keep_id: String,
