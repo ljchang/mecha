@@ -137,7 +137,15 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,977 tests**, no failures — measured 2026-08-30 on `main` at
+Expect **1,980 tests**, no failures — measured 2026-08-30 on
+`feat/retirement-drill` (the retirement-drill arc, three commits on
+`4c7a0e2`): **654** in `mecha-cli` with 1 ignored, **1,081** in
+`mecha-core`, the rest unchanged. The **3** added over the previous figure
+split `mecha-cli` +1 (the probationary-conviction-at-2 test in
+`commands/rules.rs`) and `mecha-core` +2 (the probation release tests in
+`learning.rs`).
+
+The previous figure was **1,977**, measured 2026-08-30 on `main` at
 **4c7a0e2** (the learning-loop-autonomy merge, PR #122: **653** in
 `mecha-cli` with 1 ignored, **1,079** in `mecha-core`, the rest unchanged
 from the previous count). The earlier baseline was 1,930 on **12d7f4b**,
@@ -275,16 +283,16 @@ id.
 
 | Suite | Count |
 |---|---:|
-| `mecha-core` unit | 1,055 |
-| `mecha-cli` unit | 630 (1 ignored) |
+| `mecha-core` unit | 1,081 |
+| `mecha-cli` unit | 654 (1 ignored) |
 | `mecha-cli` `first_run` integration | 20 |
 | `mecha-mail` unit | 133 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
 
-Measured 2026-08-29 at `12d7f4b`, same tree as the first prose figure above
-(1,930, post-#114–#117). The table had drifted two counts behind that
+Measured 2026-08-30 on `feat/retirement-drill`, same tree as the first
+prose figure above (1,980). The table had drifted two counts behind the
 prose once already, which is the failure mode of stating one fact twice — read
 the prose if they ever disagree again, and fix the table.
 
@@ -2111,14 +2119,18 @@ is true now:
   replayed "send" sends nothing, and before this the trifecta interlock
   fired *inside* three of twelve arms, desyncing the cursor and grading a
   harness block as the model's failure.
+- **The NoGo path has fired as one motion** (2026-08-30):
+  `scripts/retirement-drill.sh` seeds a probationary bad rule into an
+  isolated world and drives real probe passes to a conviction at the
+  probation leash of 2 — and its first run found that the leash had been
+  structurally unreachable (probation released on the very coverage its
+  convictions ride in; fixed as
+  `release_probation_when_measured_clean`). HISTORY has the story under
+  2026-08-30; run the drill after touching validate, the bisection,
+  tallies or the retirement scan.
 
 **Open:**
 
-- **The retirement end-to-end drill** — the research doc's own precondition,
-  still owed: a seeded bad rule → regressed probe → bisection →
-  `propose-retirements` firing, run whole. Every piece is unit-tested;
-  the NoGo path has never fired as one motion, and under D1 it is the only
-  brake in front of an ungraded rule.
 - **The followup probe answers with tool calls it cannot make.** It re-asks
   the corrective turn with no tool surface, so on the 2026-08-30 nightly 5
   of 7 followups were `inconclusive` — the `is_gradeable` span check
