@@ -29,6 +29,15 @@
   // changing the URL — no event, no re-render, a dead button press.
   function navigate(to, { replace = false } = {}) {
     const [v] = to.split('/');
+    // `fromHash` falls back to home for an unknown hash on purpose — a person
+    // can type anything into the URL bar. `navigate` must not inherit that
+    // leniency: it is only ever called with the app's own constants, so an
+    // unknown view here is a bug, and silently honouring it is what makes a
+    // dead button look live — the card keeps its chevron, the URL says
+    // `#reviw/outbox`, and no nav tab lights. The build-time guard in
+    // `review.rs` catches the home page's table; this catches every other
+    // caller, and says so where someone can see it.
+    if (!views.includes(v)) console.error(`navigate(): no view named "${v}" (from "${to}")`);
     route = { view: v, sub: to.split('/')[1] ?? null };
     const url = `${location.pathname}${location.search}${to === 'home' ? '' : `#${to}`}`;
     const depth = history.state?.mechaDepth ?? 0;
