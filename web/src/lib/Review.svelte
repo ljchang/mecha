@@ -22,6 +22,19 @@
   const proposalStores = panes.filter((p) => !ownPanes.includes(p));
   let pane = $state(panes.includes(initial) ? initial : 'outbox');
   const inProposals = $derived(proposalStores.includes(pane));
+  // The store chips navigate, which pushes a history entry — so a Back press
+  // lands here as a changed `initial`, and a `pane` initialised once would
+  // sit on the store the URL no longer names. That is the dead Back press
+  // `App.navigate` stamps its depth to avoid, reintroduced one layer down:
+  // popstate fires, the URL changes, and nothing on screen moves.
+  //
+  // Reads `initial` and nothing else on purpose. Touching `pane` here would
+  // make it a dependency, and every tab click would then snap straight back
+  // to whatever the URL last said.
+  $effect(() => {
+    const next = initial;
+    if (next && panes.includes(next)) pane = next;
+  });
 </script>
 
 <div class="review">

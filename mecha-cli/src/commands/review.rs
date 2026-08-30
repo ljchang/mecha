@@ -463,6 +463,11 @@ pub(crate) struct ReviewSource {
 /// to keep correct, which is how `/queues` came to say "no modal for that one
 /// yet" beside a count of 28, and how the web home came to print
 /// `mecha harness list` on a card it could not open.
+/// How many entity proposals to ask `mecha-graph` for. Not unbounded: the
+/// rows are rendered into a phone, and a store that has genuinely grown past
+/// this says so by depth, which every reader shows beside the list.
+pub(crate) const GRAPH_LIST_LIMIT: usize = 500;
+
 pub(crate) fn review_source(queue: &str) -> Option<ReviewSource> {
     let owned = |label: &str, verb: &[&str], graph: bool| {
         let v: Vec<String> = verb.iter().map(|s| s.to_string()).collect();
@@ -484,7 +489,18 @@ pub(crate) fn review_source(queue: &str) -> Option<ReviewSource> {
         })
     };
     match queue {
-        "graph entities" => owned("entity proposals", &["proposals"], true),
+        // `mecha-graph proposals list` defaults to `--limit 20`, and the
+        // depth beside it comes from `proposals summary`, which counts every
+        // pending row. Left alone, the surface says 45 and shows 20 with
+        // nothing admitting the cut — the exact "the count and the list
+        // disagree" failure this queue was surfaced to end. Ask for more than
+        // any real backlog, and let the reader compare the two numbers for
+        // the case where even that is not enough.
+        "graph entities" => owned("entity proposals", &["proposals"], true).map(|mut s| {
+            s.list
+                .extend(["--limit".into(), GRAPH_LIST_LIMIT.to_string()]);
+            s
+        }),
         "rule proposals" => owned("rule proposals", &["proposals"], false),
         "harness changes" => owned("harness candidates", &["harness"], false),
         // The surfaced-verdict queue rides the same generic level with
