@@ -874,9 +874,27 @@ pub async fn fact_retract(State(state): St, Json(body): Json<RetractBody>) -> Re
     verb(&state, &["kg", "retract", "--", uid]).await
 }
 
+#[derive(serde::Deserialize)]
+pub struct NotesQuery {
+    pub limit: Option<u64>,
+}
+
 /// GET /api/notes — recent notes, the `kg_notes` envelope verbatim.
-pub async fn notes(State(state): St) -> Response {
-    match self_json(&state, &["kg", "notes", "--json"]).await {
+///
+/// `?limit=` rides through to `kg notes --limit`; the graph side clamps it
+/// (200 today), so this handler passes the number along rather than invent a
+/// second ceiling that could drift from the real one.
+pub async fn notes(
+    State(state): St,
+    axum::extract::Query(query): axum::extract::Query<NotesQuery>,
+) -> Response {
+    let limit;
+    let mut args = vec!["kg", "notes", "--json"];
+    if let Some(n) = query.limit {
+        limit = n.to_string();
+        args.extend(["--limit", &limit]);
+    }
+    match self_json(&state, &args).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
     }

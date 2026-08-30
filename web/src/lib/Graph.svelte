@@ -57,28 +57,47 @@
 
   // ---- capture ----
   let draft = $state('');
+  let draftBox = $state(null); // the textarea element, for autogrow reset
   let capturing = $state(false);
   let landed = $state(null); // the CLI's own confirmation line
 
-  // ---- recent (the drawer) ----
+  // ---- the notebook (peek + sheet) ----
   // Notes only, for now: recently touched entities belong interleaved here
   // (frecency — the store already counts access), but the graph has no
   // recent-entities read yet; that is recorded residue, not a decision.
+  // Likewise each row should carry the entities the note linked — the
+  // rendering below is ready for a `note.entities` array, but `kg_notes`
+  // does not return one yet (uid, source_id, body, occurred_at only), so
+  // until that envelope grows the chips simply never appear.
   let recent = $state(null);
+  let sheetOpen = $state(false);
+  let sort = $state('newest'); // the envelope arrives newest-first
+  let filter = $state('');
   let open_ = $state(null); // uid of the expanded row
   let editing = $state(null); // uid being rewritten
   let editText = $state('');
   let saving = $state(false);
 
+  // The full notebook, not a taste of it: 200 is the graph side's own cap
+  // on `kg_notes`, so this asks for everything it will give.
   async function loadRecent() {
     try {
-      const res = await fetch('/api/notes');
+      const res = await fetch('/api/notes?limit=200');
       if (res.ok) recent = (await res.json()).notes ?? [];
     } catch {
       // the list is a convenience; the capture is the point
     }
   }
   loadRecent();
+
+  // Sorting and filtering are presentation over the fetched envelope — the
+  // store's order is the truth, this is just how it is read.
+  let shown = $derived.by(() => {
+    let list = recent ?? [];
+    const needle = filter.trim().toLowerCase();
+    if (needle) list = list.filter((n) => (n.body ?? '').toLowerCase().includes(needle));
+    return sort === 'oldest' ? [...list].reverse() : list;
+  });
 
   async function find(q) {
     const text = (q ?? query).trim();
@@ -256,6 +275,7 @@
       // paraphrase of it. Capture visibly feeding the graph is the loop.
       landed = (await res.json())?.output ?? 'noted';
       draft = '';
+      if (draftBox) draftBox.style.height = '';
       error = null;
       loadRecent();
     } catch (e) {
@@ -309,11 +329,21 @@
     }
   }
 
+  // The textarea grows with the note, up to a cap — a capture field should
+  // feel like a line that stretches, not a form that waits.
+  function grow(e) {
+    const t = e.target;
+    t.style.height = 'auto';
+    t.style.height = `${Math.min(t.scrollHeight, 160)}px`;
+  }
+
   $effect(() => {
     const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         findField?.focus();
+      } else if (e.key === 'Escape' && sheetOpen) {
+        sheetOpen = false;
       }
     };
     window.addEventListener('keydown', onKey);
@@ -322,12 +352,50 @@
 
   const unreviewed = (f) => f.tier !== 'reviewed';
   const day = (ts) => (ts ?? '').slice(0, 10);
+  const stamp = (ts) => (ts ?? '').slice(0, 16).replace('T', ' ');
 </script>
 
 {#snippet hazardGlyph(size = 12)}
   <svg viewBox="0 0 24 24" width={size} height={size} style="flex-shrink: 0" fill="none" stroke="var(--hazard)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M12 4l9 16H3z" /><path d="M12 11v4M12 17.5v.5" />
   </svg>
+{/snippet}
+
+{#snippet noteRow(note)}
+  <div class="card noterow">
+    {#if editing === note.uid}
+      <textarea class="editbox" rows="6" bind:value={editText}></textarea>
+      <div class="editrow">
+        <button class="btn slim" disabled={saving} onclick={cancelEdit}>Cancel</button>
+        <button
+          class="btn primary grow"
+          disabled={saving || !editText.trim()}
+          onclick={() => saveEdit(note)}
+        >{saving ? 'saving…' : 'Save'}</button>
+      </div>
+      <div class="editfoot">
+        Rewrites the note in place, keeping when it happened. Anything the graph already
+        derived from the old wording stays in your review queue — an edit is not a retraction.
+      </div>
+    {:else}
+      <button class="notehead" onclick={() => toggle(note)}>
+        <div class="notetext" class:clamp={open_ !== note.uid}>{note.body}</div>
+        <div class="notemeta">{stamp(note.occurred_at)}</div>
+      </button>
+      {#if note.entities?.length}
+        <div class="chiprow">
+          {#each note.entities as name}
+            <button class="entchip" onclick={() => { sheetOpen = false; lookup(name); }}>{name}</button>
+          {/each}
+        </div>
+      {/if}
+      {#if open_ === note.uid}
+        <div class="editrow">
+          <button class="btn slim grow" onclick={() => startEdit(note)}>Edit</button>
+        </div>
+      {/if}
+    {/if}
+  </div>
 {/snippet}
 
 <div class="page">
@@ -563,63 +631,89 @@
     {/if}
 
     {#if !entity?.node}
-      <div class="capture card">
+      <!-- The composer, not a form: the field is the star and the send
+           affordance earns its color only once there is something to send.
+           Enter stays a newline — a note is prose — so capture is the
+           button or ⌘⏎. -->
+      <div class="composer">
         <textarea
-          rows="3"
-          placeholder="Capture a note — entities named in it are linked on landing"
+          rows="1"
+          placeholder="Capture a note…"
           bind:value={draft}
+          bind:this={draftBox}
+          oninput={grow}
+          onkeydown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              e.preventDefault();
+              capture();
+            }
+          }}
         ></textarea>
-        <div class="capturerow">
-          <Dictate onText={(text, err) => { if (text) draft = draft ? `${draft} ${text}` : text; if (err) error = err; }} />
-          <button class="btn primary grow" disabled={capturing || !draft.trim()} onclick={capture}>
-            {capturing ? 'staging…' : 'Capture'}
-          </button>
+        <Dictate onText={(text, err) => { if (text) draft = draft ? `${draft} ${text}` : text; if (err) error = err; }} />
+        <button
+          class="round send"
+          class:armed={!!draft.trim()}
+          disabled={capturing || !draft.trim()}
+          onclick={capture}
+          title="capture — entities named in the note are linked on landing (⌘⏎)"
+          aria-label="capture the note"
+        >
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+        </button>
+      </div>
+      {#if landed}<div class="saidline">{landed}</div>{/if}
+
+      <!-- The notebook's closed lid: the newest notes showing through, the
+           whole thing one target that opens the sheet. -->
+      <button class="peek card" onclick={() => (sheetOpen = true)} aria-label="open the notebook">
+        <div class="handle" aria-hidden="true"></div>
+        <div class="peekhead">
+          <span class="sect">notebook</span>
+          <span class="peekcount">{recent === null ? '…' : recent.length}</span>
         </div>
-        {#if landed}<div class="saidline">{landed}</div>{/if}
-      </div>
-
-      <div class="kicker">Recent</div>
-      {#if recent === null}
-        <div class="empty">reading the notebook…</div>
-      {:else}
-        {#each recent as note}
-          <div class="card noterow">
-            {#if editing === note.uid}
-              <textarea class="editbox" rows="6" bind:value={editText}></textarea>
-              <div class="editrow">
-                <button class="btn slim" disabled={saving} onclick={cancelEdit}>Cancel</button>
-                <button
-                  class="btn primary grow"
-                  disabled={saving || !editText.trim()}
-                  onclick={() => saveEdit(note)}
-                >{saving ? 'saving…' : 'Save'}</button>
-              </div>
-              <div class="editfoot">
-                Rewrites the note in place, keeping when it happened. Anything the graph already
-                derived from the old wording stays in your review queue — an edit is not a retraction.
-              </div>
-            {:else}
-              <button class="notehead" onclick={() => toggle(note)}>
-                <div class="notetext" class:clamp={open_ !== note.uid}>{note.body}</div>
-                <div class="notemeta">{(note.occurred_at ?? '').slice(0, 16).replace('T', ' ')}</div>
-              </button>
-              {#if open_ === note.uid}
-                <div class="editrow">
-                  <button class="btn slim grow" onclick={() => startEdit(note)}>Edit</button>
-                </div>
-              {/if}
-            {/if}
-          </div>
+        {#if recent === null}
+          <div class="empty">reading the notebook…</div>
         {:else}
-          <div class="empty">Nothing captured yet.</div>
-        {/each}
-      {/if}
-
-      <div class="footnote">
-        A note is evidence — what the graph derives from it waits in your review queue.
-      </div>
+          {#each recent.slice(0, 2) as note (note.uid)}
+            <div class="peekrow">
+              <div class="notetext clamp">{note.body}</div>
+              <div class="notemeta">{stamp(note.occurred_at)}</div>
+            </div>
+          {:else}
+            <div class="empty">Nothing captured yet — the first note starts it.</div>
+          {/each}
+        {/if}
+      </button>
     {/if}
   </div>
+
+  {#if sheetOpen}
+    <div class="scrim" onclick={() => (sheetOpen = false)} aria-hidden="true"></div>
+    <aside class="sheet">
+      <button class="sheetlip" onclick={() => (sheetOpen = false)} aria-label="close the notebook">
+        <div class="handle" aria-hidden="true"></div>
+      </button>
+      <div class="sheethead">
+        <span class="sheettitle">Notebook</span>
+        <span class="peekcount">{shown.length}{filter.trim() ? ` of ${recent?.length ?? 0}` : ''}</span>
+        <div class="sortrow">
+          <button class="sortchip" class:on={sort === 'newest'} onclick={() => (sort = 'newest')}>newest</button>
+          <button class="sortchip" class:on={sort === 'oldest'} onclick={() => (sort = 'oldest')}>oldest</button>
+        </div>
+      </div>
+      <input class="field small" placeholder="filter notes…" bind:value={filter} />
+      <div class="sheetscroll">
+        {#each shown as note (note.uid)}
+          {@render noteRow(note)}
+        {:else}
+          <div class="empty">{filter.trim() ? 'No note contains that.' : 'Nothing captured yet.'}</div>
+        {/each}
+        <div class="footnote">
+          A note is evidence — what the graph derives from it waits in your review queue.
+        </div>
+      </div>
+    </aside>
+  {/if}
 </div>
 
 <style>
@@ -664,11 +758,36 @@
   .btnrow { display: flex; gap: 8px; }
   .btnrow .minibtn { flex: 1; }
   .preview { font-size: 12px; color: var(--text-muted); line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; }
-  .capture { padding: 12px; }
-  .capturerow { display: flex; gap: 8px; }
+  .composer { display: flex; align-items: flex-end; gap: 8px; }
+  .composer textarea { flex: 1; min-height: 44px; max-height: 160px; resize: none; overflow-y: auto; min-width: 0; }
+  .round { width: 44px; height: 44px; border-radius: var(--radius); border: 1px solid var(--accent-900); background: var(--bg); color: var(--text-muted); display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+  /* Armed by content: the send affordance stays quiet until there is a note
+     to send, then takes the accent — attention follows the words in. */
+  .round.send.armed { background: var(--accent-400); color: var(--void); border-color: var(--accent-400); }
+  .round:disabled { opacity: 0.5; cursor: default; }
   .grow { flex: 1; }
   textarea { background: var(--surface); border: none; border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; padding: 12px 14px; resize: vertical; }
   textarea:focus { outline: 1px solid var(--accent-500); }
+  .handle { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-700); margin: 0 auto; }
+  .peek { text-align: left; color: inherit; font: inherit; cursor: pointer; gap: 9px; margin-top: 6px; }
+  .peekhead { display: flex; align-items: baseline; gap: 8px; }
+  .peekcount { font-family: var(--mono); font-size: 11px; color: var(--accent-400); }
+  .peekrow { display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--accent-900); padding-top: 9px; }
+  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 40; }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; margin-inline: auto; max-width: 680px; height: auto; max-height: 86dvh; background: var(--bg); border: 1px solid var(--accent-700); border-bottom: none; border-radius: 14px 14px 0 0; z-index: 41; display: flex; flex-direction: column; gap: 10px; padding: 6px 14px 0; animation: sheet-in 0.2s ease-out; }
+  @keyframes sheet-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }
+  .sheetlip { background: none; border: none; padding: 8px 0 2px; cursor: pointer; width: 100%; flex-shrink: 0; }
+  .sheethead { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .sheettitle { font-weight: 500; font-size: 16px; letter-spacing: -0.02em; }
+  .sortrow { display: flex; gap: 6px; margin-left: auto; }
+  .sortchip { font-family: var(--mono); font-size: 11px; color: var(--text-muted); background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); padding: 6px 10px; cursor: pointer; }
+  .sortchip.on { color: var(--accent-400); border-color: var(--accent-700); }
+  /* `.field` is flex: 1 for row layouts; in the sheet's column it must not
+     grow into the empty space. */
+  .sheet .field.small { flex: 0 0 auto; }
+  .sheetscroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 2px 0 calc(14px + env(safe-area-inset-bottom)); }
+  .sheetscroll > * { flex-shrink: 0; }
   .btn { min-height: 46px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; }
   .btn.primary { background: var(--accent-400); color: var(--void); font-weight: 500; border: none; }
   .btn.slim { min-width: 72px; }
@@ -688,5 +807,4 @@
   .saidline { font-family: var(--mono); font-size: 11px; color: var(--accent-400); }
   .empty { color: var(--text-muted); font-size: 13px; padding: 8px 0; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; padding-top: 6px; }
-  .kicker { margin-top: 8px; }
 </style>

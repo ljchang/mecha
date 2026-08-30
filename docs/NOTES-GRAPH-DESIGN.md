@@ -12,6 +12,15 @@ source the same day. All five owner decisions are ruled in §8.*
 > entity half of the drawer interleave and per-fact provenance chips
 > (both need small mecha-graph-side reads, named in §2.1/§2.2), all of
 > tier 2, and tier 3.
+>
+> **Status 2026-08-30: the §2.1 drawer shipped as a bottom sheet
+> (`feat/graph-notebook`)** — capture became a composer (send armed by
+> content, ⌘⏎), the resting page shows the notebook's lid, and the sheet
+> holds the whole envelope (`?limit=` rides through to `kg notes`),
+> sortable by date both ways with a text filter. Note rows render a
+> `note.entities` chip row the moment `kg_notes` returns one; that
+> envelope field and the frecency interleave remain the mecha-graph-side
+> residue.
 
 ## 1. The problem, verified
 
