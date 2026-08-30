@@ -299,6 +299,18 @@ live (a `session_end` hook), so what moved was consolidation. Rules now go
 live when derived, per session; the nightly keeps the expensive half. Rung 3
 (`learn --auto`, one gate for both loops) and rungs 6–7 remain.
 
+**Status, 2026-08-30.** Precondition 1 below is discharged — after cutover,
+which is the wrong order and this line owns it. `scripts/retirement-drill.sh`
+now runs the seeded end-to-end proof this section asked for (bad rule →
+regressed probe → bisection → `propose-retirements` convicting at the
+probation leash of 2), and its **first run found that the leash could never
+fire**: probation released on bare ledger coverage, which conviction evidence
+always supplies, so every probationary rule answered to the ordinary
+threshold of 3. Fixed the same day
+(`release_probation_when_measured_clean`); the drill is the standing check.
+The prediction this section made — "a NoGo pathway that has never fired is
+an untested backstop" — was exact.
+
 What landed: `proposals supersede` (releases reflections **unconsumed** —
 `reject` marks them processed, which would have burned 27 real corrections);
 `rules propose-retirements --apply` (per-rule removal with no queue — `git

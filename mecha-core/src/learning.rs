@@ -432,9 +432,11 @@ pub struct Rule {
     /// property of `rule_tallies` and true of every new rule for a while. This
     /// records that the counterfactual gate ran and *could not grade it* —
     /// the gate's probes never reach the validation ledger, so nothing else
-    /// remembers that. Cleared by [`clear_probation_when_measured`] once real
-    /// observations exist, because a rule the ledger has since graded is no
-    /// longer unmeasured whatever was true at birth.
+    /// remembers that. Released by [`release_probation_when_measured_clean`]
+    /// once the ledger has graded the rule beyond its convictions — and only
+    /// then, because an attributed regression always arrives inside an
+    /// observation, so releasing on coverage alone would strip the leash on
+    /// the very evidence it exists to act on.
     #[serde(default, skip_serializing_if = "is_false")]
     pub probation: bool,
 }
@@ -527,7 +529,7 @@ pub fn finalize_rules(
                 r.retired_reason = prev.retired_reason.clone();
                 // The leash survives the rewrite. A rule born ungraded stays
                 // on the stricter threshold until the *ledger* clears it
-                // (`clear_probation_when_measured` owns the release
+                // (`release_probation_when_measured_clean` owns the release
                 // direction, and only it) — without this line, one gradeable
                 // batch after an ungradeable one re-emitted the same rule
                 // with `probation: false` via `..Default::default()`, and
@@ -1308,6 +1310,11 @@ pub fn rules_hash(block: &str) -> String {
 pub struct RuleTally {
     /// Probes whose measured block carried this rule.
     pub observations: u32,
+    /// Probes that reached a verdict — `improved`, `regressed` or either
+    /// `unchanged_*` — while the rule rode along. An inconclusive row is a
+    /// probe that *ran*, not one that graded, and the two must not read
+    /// alike anywhere a release or a conviction argues from the count.
+    pub graded: u32,
     /// Block-level outcomes while it rode along — context, not credit.
     pub improved: u32,
     pub regressed: u32,
@@ -1341,41 +1348,67 @@ pub fn render_active(
     rules
         .iter()
         .map(|r| {
+            // Gated on graded, not observations: a rule covered only by
+            // inconclusive probes has been *ran against*, never measured,
+            // and rendering it "0 regressed" hands the learner a clean bill
+            // of health from rows that graded nothing.
             let record = r
                 .id
                 .as_deref()
                 .and_then(|id| tallies.get(id))
-                .filter(|t| t.observations > 0)
+                .filter(|t| t.graded > 0)
                 .map(|t| {
                     format!(
-                        " [measured: {} probe(s), {} improved, {} regressed, {} attributed to this rule]",
-                        t.observations, t.improved, t.regressed, t.attributed_regressions
+                        " [measured: {} probe(s), {} graded, {} improved, {} regressed, {} attributed to this rule]",
+                        t.observations, t.graded, t.improved, t.regressed, t.attributed_regressions
                     )
                 })
-                .unwrap_or_else(|| " [unmeasured: no probe has covered it yet]".into());
+                .unwrap_or_else(|| " [unmeasured: no probe has graded it yet]".into());
             format!("- {}{}", r.text, record)
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// Drop the probation mark from any rule the ledger has since graded.
+/// Drop the probation mark from any rule the ledger has graded **beyond its
+/// convictions** — at least one verdict-bearing probe covered it that no
+/// bisection pinned on it.
 ///
-/// Probation says "born unmeasured", and that stops being true the moment a
-/// probe covers it — leaving the mark would retire a rule sooner on evidence
-/// that no longer applies, which is the stale-stamp failure one store over.
+/// Probation says "born unmeasured", and that stops being true once a probe
+/// grades the rule — leaving the mark then would retire a rule sooner on
+/// evidence that no longer applies, the stale-stamp failure one store over.
+/// But the release condition has two clauses, and each closes a hole a
+/// coverage-only release ("`observations > 0`") shipped with:
+///
+/// - **Conviction evidence releases nothing.** An attributed regression
+///   always arrives inside an observation — the bisection charges a rule
+///   from the same measured block the row records — so releasing on coverage
+///   made [`PROBATION_RETIRE_AT`] structurally unreachable: by the time any
+///   conviction count existed, the rule had already been handed the ordinary
+///   threshold. The D1 hedge existed only in its documentation. A rule whose
+///   whole graded history is its convictions keeps the leash those
+///   convictions argue to; one graded row beyond them is real coverage and
+///   releases it, which is what keeps an old once-convicted rule with a long
+///   clean record off the short leash when a later ungradeable consolidation
+///   re-stamps everything.
+/// - **Inconclusive rows release nothing.** They count as observations (the
+///   probe ran) but graded nothing, and "ran" reading as "measured" is the
+///   exact confusion the `--auto` dispose path had to fix one function over.
+///
 /// Separate from [`finalize_rules`] because it is a function of the *ledger*
 /// rather than of the rewrite, and runs whenever tallies are read.
-pub fn clear_probation_when_measured(
+pub fn release_probation_when_measured_clean(
     rules: &mut [Rule],
     tallies: &std::collections::BTreeMap<String, RuleTally>,
 ) {
     for r in rules.iter_mut().filter(|r| r.probation) {
-        let measured =
+        // Every attributed row is itself graded, so `graded > attributed` is
+        // exactly "some grade exists that is not one of its convictions".
+        let released =
             r.id.as_deref()
                 .and_then(|id| tallies.get(id))
-                .is_some_and(|t| t.observations > 0);
-        if measured {
+                .is_some_and(|t| t.graded > t.attributed_regressions);
+        if released {
             r.probation = false;
         }
     }
@@ -1416,9 +1449,19 @@ pub fn rule_tallies(records: &[ValidationRecord]) -> std::collections::BTreeMap<
         for id in &rec.rule_ids {
             let t = out.entry(id.clone()).or_default();
             t.observations += 1;
+            // An unknown outcome string is a row from a future vocabulary —
+            // wire format, so it degrades to "ran, graded nothing" rather
+            // than failing the fold or counting as a verdict.
             match rec.outcome.as_str() {
-                "improved" => t.improved += 1,
-                "regressed" => t.regressed += 1,
+                "improved" => {
+                    t.improved += 1;
+                    t.graded += 1;
+                }
+                "regressed" => {
+                    t.regressed += 1;
+                    t.graded += 1;
+                }
+                "unchanged_pass" | "unchanged_fail" => t.graded += 1,
                 _ => {}
             }
             if t.last_validated.as_deref() < Some(rec.created_at.as_str()) {
@@ -4152,6 +4195,7 @@ mod ledger_in_the_learner_tests {
             "r-bad".into(),
             RuleTally {
                 observations: 9,
+                graded: 7,
                 improved: 1,
                 regressed: 6,
                 attributed_regressions: 3,
@@ -4199,12 +4243,15 @@ mod probation_tests {
         }
     }
 
-    fn tally(observations: u32) -> RuleTally {
+    fn tally(graded: u32, attributed: u32) -> RuleTally {
         RuleTally {
-            observations,
+            // Every graded row is an observation; inconclusive-only coverage
+            // is built by the caller passing graded 0 with its own count.
+            observations: graded.max(attributed).max(1),
+            graded,
             improved: 0,
-            regressed: 0,
-            attributed_regressions: 0,
+            regressed: attributed,
+            attributed_regressions: attributed,
             last_validated: None,
         }
     }
@@ -4225,28 +4272,90 @@ mod probation_tests {
     }
 
     /// Probation records "born ungraded", not "never graded" — so a probe
-    /// covering the rule clears it. Leaving the mark would keep a measured
-    /// rule on a short leash forever on evidence that no longer applies.
+    /// grading the rule clean releases it. Leaving the mark would keep a
+    /// measured rule on a short leash forever on evidence that no longer
+    /// applies.
     #[test]
-    fn a_probe_clears_probation_and_an_empty_ledger_does_not() {
+    fn a_clean_grade_releases_probation_and_an_empty_ledger_does_not() {
         let mut rules = vec![
             r("measured", true),
             r("still-unmeasured", true),
             r("plain", false),
         ];
         let mut tallies: std::collections::BTreeMap<String, RuleTally> = Default::default();
-        tallies.insert("measured".into(), tally(4));
-        // Present but with nothing observed is not evidence of anything.
-        tallies.insert("still-unmeasured".into(), tally(0));
+        tallies.insert("measured".into(), tally(4, 0));
+        // Present but with nothing graded is not evidence of anything.
+        tallies.insert("still-unmeasured".into(), tally(0, 0));
 
-        clear_probation_when_measured(&mut rules, &tallies);
+        release_probation_when_measured_clean(&mut rules, &tallies);
 
-        assert!(!rules[0].probation, "a graded rule leaves probation");
-        assert!(
-            rules[1].probation,
-            "a zero-observation tally grades nothing"
-        );
+        assert!(!rules[0].probation, "a clean-graded rule leaves probation");
+        assert!(rules[1].probation, "a zero-graded tally grades nothing");
         assert!(!rules[2].probation);
+    }
+
+    /// **A convicted probationary rule keeps the leash — this is what makes
+    /// `PROBATION_RETIRE_AT` reachable at all.** An attributed regression
+    /// always arrives inside an observation (the bisection charges a rule
+    /// from the same measured block the row records), so a release keyed on
+    /// coverage alone stripped probation on the very rows that convict:
+    /// by the time `attributed_regressions` reached 2, the rule had already
+    /// been handed the ordinary threshold of 3, and the shorter leash the
+    /// D1 ruling bet on could never be the operative one. Fails on that
+    /// behaviour.
+    #[test]
+    fn a_convicted_probationary_rule_keeps_the_leash() {
+        let mut rules = vec![r("convicted", true), r("mixed", true)];
+        let mut tallies: std::collections::BTreeMap<String, RuleTally> = Default::default();
+        tallies.insert("convicted".into(), tally(2, 2));
+        // Graded beyond its convictions: one clean grade beside one
+        // conviction is real coverage, and releases — what keeps an old
+        // once-convicted rule with a clean record off the short leash when
+        // an ungradeable consolidation re-stamps everything active.
+        tallies.insert("mixed".into(), tally(3, 1));
+
+        release_probation_when_measured_clean(&mut rules, &tallies);
+
+        assert!(
+            rules[0].probation,
+            "conviction evidence must not release the leash it argues to"
+        );
+        assert_eq!(
+            retire_threshold_for(&rules[0], DEFAULT_RETIRE_AT),
+            PROBATION_RETIRE_AT,
+            "the shorter leash stays operative on a convicted probationary rule"
+        );
+        assert!(
+            !rules[1].probation,
+            "graded beyond its convictions releases"
+        );
+    }
+
+    /// An inconclusive row is a probe that ran, not one that graded — the
+    /// ran-vs-graded confusion the `--auto` dispose path had to fix, one
+    /// function over. Folded through `rule_tallies` so the test covers the
+    /// fold as well as the release: on the old behaviour a rule whose whole
+    /// ledger history was "graded nothing" was released on it.
+    #[test]
+    fn inconclusive_rows_do_not_release_probation() {
+        let records = vec![ValidationRecord {
+            reflexion_id: "refl".into(),
+            trigger: "steer".into(),
+            domain: "behavior".into(),
+            rules_hash: rules_hash("block"),
+            rule_ids: vec!["p".into()],
+            outcome: "inconclusive".into(),
+            attributed_rule_id: None,
+            model: "qwen".into(),
+            created_at: "2026-08-30T00:00:00Z".into(),
+        }];
+        let tallies = rule_tallies(&records);
+        assert_eq!(tallies["p"].observations, 1, "the probe ran");
+        assert_eq!(tallies["p"].graded, 0, "and graded nothing");
+
+        let mut rules = vec![r("p", true)];
+        release_probation_when_measured_clean(&mut rules, &tallies);
+        assert!(rules[0].probation, "ran is not measured");
     }
 
     /// The leash survives a consolidation. The learner's rules are built with
@@ -4255,7 +4364,7 @@ mod probation_tests {
     /// the D1 hedge evaporated within a session or two — while
     /// `PROBATION_RETIRE_AT` and the field's doc went on describing a
     /// protection that no longer applied. Fails on that behaviour. Release
-    /// stays the ledger's alone (`clear_probation_when_measured`).
+    /// stays the ledger's alone (`release_probation_when_measured_clean`).
     #[test]
     fn probation_survives_a_consolidation_that_reemits_the_rule() {
         let marked = Rule {

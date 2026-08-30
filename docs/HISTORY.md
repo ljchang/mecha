@@ -3338,6 +3338,42 @@ reflections — the reflector declines to draw lessons from user words alone.
 Do not re-open the gate on this argument; the evidence says it costs almost
 nothing.
 
+**2026-08-30 — the retirement drill ran the NoGo path whole, and its first
+run proved the leash could never fire.** The ungating precondition
+`LEARNING-LOOP-RESEARCH.md` §5 named — "a NoGo pathway that has never fired
+is an untested backstop, and under D1 it is the only one" — was discharged,
+one day after cutover instead of before it. `scripts/retirement-drill.sh`
+records an honest `mecha run` session, seeds it (typed, via
+`mecha-core/examples/retirement_drill_seed.rs` — a steer inserted into the
+last tool-result message, a steer reflection, a probationary bad rule and an
+innocuous bystander) into a world isolated by
+`MECHA_SESSION_DIR`/`MECHA_LEARNING_DIR`, then drives real probe passes and
+a retirement scan after each: the probe must regress, the bisection must
+convict the bad rule and not the bystander, one conviction must hold, and
+the second must retire it at the probation leash of 2, with the leash named
+in `retired_reason`. Before any of that could pass, the drill's paper
+walkthrough found the bug the research doc predicted a category for:
+**probation released on bare ledger coverage (`observations > 0`), and an
+attributed regression always arrives inside an observation** — the
+bisection charges a rule from the same measured block the row records — so
+`propose-retirements` stripped the leash in the same scan that read the
+convictions, and `PROBATION_RETIRE_AT` = 2 was structurally unreachable
+while three documents described it as the D1 hedge. Fixed as
+`release_probation_when_measured_clean`: release requires the ledger to
+grade the rule *beyond its convictions* (`graded > attributed_regressions`,
+counting verdict-bearing rows only, so inconclusive coverage releases
+nothing — the ran-vs-graded confusion round 13 fixed in dispose, closed on
+the release side). The seeded rule's wording is itself a measurement
+(arm-reconstruction harness, n small but clean): an advisory rule moved the
+model 0/3, a bare MANDATORY directive 1/3, and the same directive carrying a
+*mechanism* — stale reads, verify before reporting — 6/6; the branch point
+replays the model's own recorded reasoning, and naked authority loses to
+that momentum. The drill passed twice end to end (4/4 probe passes
+regressed and attributed correctly) and is the standing check named in
+ARCHITECTURE's learning section; `drive_arm` now traces each arm's verdict,
+calls and final text under `MECHA_LOG=debug`, because the first failed run
+was diagnosed blind without it.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -4686,6 +4722,20 @@ always re-running one command against two starting points.
 
 ### Learning
 
+**2026-08-30 — the safeguard's release condition was satisfied by the
+evidence it existed to act on.** Probation's stricter retirement threshold
+released once the ledger "measured" the rule — but the measurement that
+matters, an attributed regression, only ever arrives *inside* an
+observation, so any rule with conviction evidence had already been released
+to the ordinary threshold by the scan reading it. `PROBATION_RETIRE_AT` was
+unreachable from the day it shipped, every unit under it green, three
+documents describing it. General shape: **when a hedge's release predicate
+is implied by its trigger evidence, the hedge is decoration — check the
+implication direction between "what releases it" and "what it exists to
+catch", and fire the joined path once before relying on it.** Every piece
+was unit-tested; only the drill that ran the motion whole could have found
+it, and it did, on its first run.
+
 **2026-08-30 — a closed list gates live text, but recordings are of their
 era.** `STEP_ESCALATION_STEM` shipped mid-day 2026-08-28; a transcript from
 that morning carried the same fully-templated nudge body with no stem, and
@@ -5435,6 +5485,20 @@ and is what finally exercised the path.)
   inside a single fix rather than across review rounds of a whole PR.
 
 ### Environment
+
+**2026-08-30 — a cancelled CI run is neither a pass nor a fail, and this
+class of loss leaves a green-looking history.** The docs workflow's
+pull-request builds and main's Pages deploy shared one `pages` concurrency
+group, and GitHub holds only one *pending* run per group — so a PR build
+evicted the pending deploy of PR #118 (run 33256024329, created 13:50:09Z
+on 2026-08-29, zero jobs run, cancelled the second the next PR run was
+created; verified against the run's own API record). Nothing red anywhere:
+the deploy simply never happened, and the site stayed one PR stale behind a
+green checklist. PR #123 (another lane's, docs.yml only) serialises deploys
+against each other and gives PR builds per-branch groups. General shape:
+**an eviction shows up nowhere you normally look — when a deploy's absence
+is the symptom, search the workflow history for `cancelled` runs, not for
+failures.**
 
 **2026-08-30 — a rerun measured the code from before the fix, and the log's
 own symptom was what caught it.** After editing the replay wrapper,

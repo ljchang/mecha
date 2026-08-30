@@ -320,10 +320,16 @@ a rule goes live when it is derived, not when someone approves it. `learn
 in front of the write: a candidate that regresses any probe is refused; one
 that measures clean applies; one the gate **could not grade** applies on
 **probation** (`Rule::probation`), live but on the shorter retirement leash
-until the ledger grades it. Probation marks only rules the ledger has never
-graded (`stamp_probation` shares `clear_probation_when_measured`'s one
-predicate), survives consolidations (`finalize_rules` carries it), and only
-the ledger releases it. Every pass still writes a proposal record — the audit
+until the ledger grades it **beyond its convictions**
+(`release_probation_when_measured_clean` — one predicate, shared by
+`stamp_probation` and the retirement scan). The release deliberately does
+not key on bare coverage: an attributed regression always arrives inside an
+observation, so a coverage-keyed release stripped the leash on the very rows
+that convict and made `PROBATION_RETIRE_AT` unreachable from the automated
+path — found by the retirement drill the day it first ran. Inconclusive rows
+release nothing (a probe that ran is not a probe that graded), probation
+survives consolidations (`finalize_rules` carries it), and only the ledger
+releases it. Every pass still writes a proposal record — the audit
 trail, resolved at birth — and a new proposal for a domain **supersedes** its
 pending predecessors, releasing their reflections unconsumed (`proposals
 supersede`; reject is the owner's no and consumes them — the difference is
@@ -350,6 +356,13 @@ Retirement is the brake ungated learning leans on and it is a flag, never a
 deletion: the rule stays in the file as evidence, the learner is shown it as
 "measured harmful — never re-derive" (surviving even a reworded
 re-derivation, by `normalized_rule_key`), and `rules restore` undoes it.
+**The brake has been exercised whole, not only piecewise**:
+`scripts/retirement-drill.sh` seeds a probationary bad rule into an isolated
+world, drives real probe passes against the live model, and asserts the full
+motion — regression, bisection convicting the right rule, one conviction
+holding, the second retiring at the probation leash of 2 — and its first run
+found the release bug above, which every unit under it had passed over. Run
+it after touching validate, the bisection, tallies or the retirement scan.
 Deliberately absent: decay, TTLs, usage-based eviction (the rarely-fired
 rule that must never expire), and any policy built on model-rated
 confidence — only measured harm argues for retirement. `mecha
