@@ -123,9 +123,23 @@ async fn run(src: &ReviewSource, argv: &[String]) -> Result<String, Box<Response
         match tokio::time::timeout(std::time::Duration::from_secs(60), cmd.args(argv).output())
             .await
         {
+            // Dropping `output()` does NOT kill the child — `tokio::process`
+            // sets no `kill_on_drop` — so the verb behind this is still
+            // running, and for `entities` it can be a merge with no undo.
+            // Reporting a bare timeout invites the owner to accept again
+            // something that has already applied. Say what is actually known,
+            // the way `board.rs::graph_verb` does over the same child. The
+            // budget matches it and `verb_output` too: 120s, because the
+            // slowest work on this surface lives here.
             Err(_) => {
                 return Err(Box::new(
-                    (StatusCode::GATEWAY_TIMEOUT, "the verb timed out\n").into_response(),
+                    (
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "the verb is still running — it was not cancelled, and it may yet \
+                         finish. Re-open this queue to see what actually happened before \
+                         deciding it again.\n",
+                    )
+                        .into_response(),
                 ))
             }
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound && src.graph => {
@@ -277,6 +291,13 @@ pub async fn detail(
         Err(r) => return *r,
     };
     let mut argv = src.show.clone();
+    // The id is a URL path segment, so it is caller-controlled text, and
+    // without the separator `GET /api/proposals/harness/--help` runs
+    // `mecha harness show --help`, exits 0, and renders clap's help as the
+    // candidate. Every other child spawn on this surface already separates —
+    // the "these ids come from the store" assumption stops holding the moment
+    // one arrives from a URL instead.
+    argv.push("--".into());
     argv.push(id);
     match run(&src, &argv).await {
         Ok(text) => Json(Detail { text }).into_response(),
@@ -344,6 +365,7 @@ async fn decide(store: &str, id: &str, accepting: bool, body: DecideBody) -> Res
     } else {
         src.reject.clone()
     };
+    argv.push("--".into()); // caller-controlled, exactly as in `detail`
     argv.push(id.to_string());
     if !accepting && !src.graph {
         argv.push("--reason".into());

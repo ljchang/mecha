@@ -20,38 +20,33 @@
   const panes = ['outbox', 'graph', 'frontdoor', 'harness', 'rules', 'entities'];
   const ownPanes = ['outbox', 'graph', 'frontdoor'];
   const proposalStores = panes.filter((p) => !ownPanes.includes(p));
-  let pane = $state(panes.includes(initial) ? initial : 'outbox');
+  // Derived, never copied into state — `Settings.svelte` records this trap
+  // verbatim: App does not remount this component on a hash change, it only
+  // passes a new `initial`, so a `$state` snapshot ignores back/forward. A
+  // first pass here synced the snapshot from an effect, which cured the dead
+  // Back press but left the other half: the tabs assigned `pane` without
+  // navigating, so the URL could name one pane while another was on screen.
+  // One direction of truth instead — the route names the pane, every tab and
+  // chip navigates, and the two cannot disagree because there is only one.
+  const pane = $derived(panes.includes(initial) ? initial : 'outbox');
   const inProposals = $derived(proposalStores.includes(pane));
-  // The store chips navigate, which pushes a history entry — so a Back press
-  // lands here as a changed `initial`, and a `pane` initialised once would
-  // sit on the store the URL no longer names. That is the dead Back press
-  // `App.navigate` stamps its depth to avoid, reintroduced one layer down:
-  // popstate fires, the URL changes, and nothing on screen moves.
-  //
-  // Reads `initial` and nothing else on purpose. Touching `pane` here would
-  // make it a dependency, and every tab click would then snap straight back
-  // to whatever the URL last said.
-  $effect(() => {
-    const next = initial;
-    if (next && panes.includes(next)) pane = next;
-  });
 </script>
 
 <div class="review">
   <div class="tabs">
-    <button class="tab" class:active={pane === 'outbox'} onclick={() => (pane = 'outbox')}>Outbox</button>
-    <button class="tab" class:active={pane === 'graph'} onclick={() => (pane = 'graph')}>Graph queue</button>
-    <button class="tab" class:active={pane === 'frontdoor'} onclick={() => (pane = 'frontdoor')}>Front door</button>
-    <button class="tab" class:active={inProposals} onclick={() => (pane = 'harness')}>Proposals</button>
+    <button class="tab" class:active={pane === 'outbox'} onclick={() => navigate('review/outbox')}>Outbox</button>
+    <button class="tab" class:active={pane === 'graph'} onclick={() => navigate('review/graph')}>Graph queue</button>
+    <button class="tab" class:active={pane === 'frontdoor'} onclick={() => navigate('review/frontdoor')}>Front door</button>
+    <button class="tab" class:active={inProposals} onclick={() => navigate('review/harness')}>Proposals</button>
   </div>
   {#if pane === 'outbox'}
     <Outbox />
   {:else if pane === 'frontdoor'}
     <Frontdoor />
   {:else if inProposals}
-    <!-- The store selection is a route, not component state, so Back out of
-         `entities` returns to `harness` instead of leaving the tab. -->
-    <Proposals store={pane} onstore={(s) => { pane = s; navigate(`review/${s}`); }} />
+    <!-- The store selection is the route itself, so Back out of `entities`
+         returns to `harness` instead of leaving the tab. -->
+    <Proposals store={pane} onstore={(s) => navigate(`review/${s}`)} />
   {:else}
     <div class="scrollwrap"><Queue /></div>
   {/if}
