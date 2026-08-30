@@ -3391,6 +3391,51 @@ the full suite on the merged tree, and deployed the same hour — the
 install verified by the `graded` field answering from the installed
 binary, since the version string was 0.1.16 on both sides.
 
+**2026-08-30 — the graph tab became the curation surface, iterated live
+against the owner's phone.** One evening, two sessions in a negotiated
+file partition, ten deploys, three review waves. #125 (`68b4af9`) fixed
+the four home queue cards that did nothing and pinned them with
+`every_queue_the_backlog_reports_is_named_and_reachable_from_the_web_home`;
+it also rewrote the ExecStart prohibition as a check after two sessions
+violated the ban in one afternoon and the committed-script mitigation held.
+#126 (`ab0097b`) is the arc: capture became a chat-idiom composer, the
+notebook a bottom drawer pinned in layout (`?limit=` passthrough, sort,
+filter), and the entity card grew the identity lifecycle in place —
+two-tap alias removal and inline add (`mecha kg alias`/`unalias`, id-only
+like `retract`), merge through `mecha-graph proposals file-merge
+--accept` so the one no-undo verb always leaves a decided proposal,
+create-on-miss, and a read-only `reaches` row of identifiers. Owner
+rulings recorded in `NOTES-GRAPH-DESIGN.md`'s status blocks: repairs ride
+mecha's own path; correct-in-place is the house principle; web merges
+take the proposals record so the model's MCP surface gains nothing.
+Beside it, the three-store `/api/proposals` pane (harness · rules ·
+graph entities) with read-gated decisions, grown from the other lane's
+dead Harness card. The owner's live testing drove five fix rounds the
+demo never surfaced (Enter arming the mic via implicit form submission,
+an unbroken safelink URL dragging the page sideways, `[object Object]`
+chips, a floating drawer, no create for a missing person), and the
+review bot's three waves each caught what the previous fix introduced —
+the last a reject that could not work on two of three stores under a
+green suite (Traps → Review process). Everything was deployed as it
+landed and verified against the running thing; the night closed with
+both repos merged, the machine on `main` everywhere, and `deployed-local`
+deleted.
+
+**2026-08-30 — the private graph repo merged its first PR, and the public
+mirror caught up through the gate.** `d44e04d` carries the three verbs
+the web asked for (`kg_upsert kind=alias` gains `remove`; `proposals
+file-merge` with `--accept`, apply-first-decide-second like Accept;
+`identifiers` in the `kg_entity` envelope), each exercised end to end on
+a scratch `MECHA_GRAPH_DB` before being called done. Publishing then hit
+the export gate refusing 13 files of life-derived fixture names — family,
+colleagues, the university — accumulated since the 0.1.2 export. The
+strip (`20f3d38`) moved every fixture to the fictional cast with the test
+semantics preserved (the substring tests got new carriers: "SPSP Wrench
+Reunion" so "Wren" still substring-hits it; the surname swamp runs on
+Whitlock), suite 322/0 with identical assertions, and the blessed tree
+published as `bbbba2a` ("0.1.3") — the private/public split doing exactly
+what it exists for.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -4009,6 +4054,29 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**2026-08-30 — `git rev-parse` echoes an unresolvable ref name to stdout,
+and a suppressed stderr turns the echo into a phantom tag.** A probe ran
+`git tag -l deployed-local; git rev-parse deployed-local 2>/dev/null` and
+read the output line as the tag listing — but the tag did not exist, the
+listing printed nothing, and the line was rev-parse's pathspec fallback
+echoing its argument. The session then reported a tag "deleted between two
+commands" and hunted a race that never happened. General shape: **a
+lookup that echoes its input on failure looks exactly like success once
+stderr is gone — check the exit code, or leave stderr attached.**
+
+**2026-08-30 — after `/clear`, a session's own past is hearsay to itself,
+and the false statement arrived dressed as a correction.** A peer
+accurately quoted a sentence this terminal had sent before a `/clear`;
+the post-clear session, finding nothing in its window, twice "corrected"
+the record — and the correction was the false half, carrying the extra
+credibility of someone carefully fixing things. The transcript on disk
+(`~/.claude/projects/<project>/*.jsonl`) settled it in one grep, and a
+PID a peer had captured hours earlier for an unrelated reason
+corroborated it. General shape: **"not in my context" is not "did not
+happen" — the session file is the artifact and it greps; and a
+proactive correction deserves the same verification as any claim,
+because it is the direction nobody is guarded against.**
 
 **2026-08-30 — the security interlock did the failing, and the model wore
 it.** The trifecta interlock ran live inside counterfactual replays and
@@ -5429,6 +5497,22 @@ and is what finally exercised the path.)
 
 ### Review process
 
+- **Everything after clap's `--` is a positional, so a fix for argv
+  injection broke reject completely — under a suite that stayed green
+  because nothing ever spawned the child.** #126's separator fix put
+  `--reason` *after* the `--` that guards a URL-supplied id, and clap
+  parsed it as an unexpected second positional: every reject on the two
+  stores that *require* a reason exited non-zero, 100% of the time, while
+  1,986 tests passed — the argv lived inline in an async handler, so no
+  test could reach it and none spawned a real child. The repair moved
+  composition into a pure `decide_argv` (flags first, separator, then the
+  id), added shape tests, and ran one real reject through the handler
+  against a fabricated candidate in a scratch `MECHA_HOME`. Three review
+  waves that evening each caught what the previous wave's fix introduced.
+  Two general shapes: **flags go before the separator — `--` ends option
+  parsing for everything after it; and argv composed inside a handler is
+  argv no test can see — hoist it pure, then spawn one real child, because
+  a mutating path verified only by reading is unverified.**
 - **A PR can merge "successfully" into the wrong branch, and every signal
   reads green while it does.** Landing #112 (2026-08-29): `gh pr edit 112
   --base main` failed with a GraphQL error that scrolled past as a
@@ -5502,6 +5586,32 @@ and is what finally exercised the path.)
   inside a single fix rather than across review rounds of a whole PR.
 
 ### Environment
+
+**2026-08-30 — this box's clippy is 1.97, CI's is 1.98, and an `async fn`
+hides its `Result` from the older one.** `result_large_err` cannot see
+through the future wrapper on 1.97, so a `Result<String, Response>` return
+lint that fails CI's `-D warnings` build reports nothing locally — PR
+#126's clippy job ran red while every local check was green, and the
+finding surfaced only in `gh run view --log-failed`. The 1.98 toolchain
+was already installed here: `cargo +1.98.0 clippy --workspace
+--all-targets --all-features` reproduces CI exactly and is now the
+pre-push gate. General shape: **a local lint's green is evidence only at
+CI's own toolchain version — pin the invocation, not the habit.**
+
+**2026-08-30 — the export gate refused the whole public release over
+fixture names, thirteen files deep.** Test fixtures and doc comments in
+the private graph repo had accumulated real names — family, colleagues,
+the university — since the previous export, each legal where it sat and
+all of it unpublishable, including one written *that same morning* by a
+session that knew the no-real-people rule from the public repo and did
+not apply it in the private one. The strip cost an evening pass and two
+broken substring tests. General shape: **fixture rules follow where the
+code is going, not where it sits — a private repo with a public export is
+a public repo with a delay, so write the fictional cast from the first
+line.** (The gate's tree-destroying design also proved itself twice: a
+`tail -3` on the export truncated the hit list to one term and briefly
+misread a 13-term refusal as a one-term residue — the gate's own header
+records why a gate that only *reports* trusts every caller to check.)
 
 **2026-08-30 — `node_modules/` with a trailing slash ignores a directory,
 not a symlink wearing its name.** A worktree lane symlinked

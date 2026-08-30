@@ -34,10 +34,15 @@ people to approve, and the nightly mail classifier took both mailboxes;
 queue's similarity groups; 0.1.12 on 2026-08-22, 0.1.11 and 0.1.10 both on
 2026-08-21, 0.1.9 on 2026-08-20, and 0.1.7/0.1.8 on 2026-08-19/20 after the
 mail hold lifted).
-**`main` carries eight merges beyond v0.1.16 that are not yet tagged**:
-the 2026-08-30 three — #124 (**the retirement drill ran the NoGo path
-whole, and fixed the probation leash it proved unreachable** — deployed
-the same hour, so the installed binary is `main` at `6987bc5`); #120, the
+**`main` carries ten merges beyond v0.1.16 that are not yet tagged**:
+the 2026-08-30 five — #125 (**four home-page queue cards did nothing**,
+plus the ExecStart-check rewrite and the `js_string_array` guard
+loosening); #126 (**the graph tab grows its notebook, composer, and the
+whole entity-curation surface** — alias add/remove, merge-with-audit-trail,
+create-on-miss, identifiers, plus the three-store `/api/proposals` pane;
+deployed the same night, so the installed binary is `main` at `ab0097b`);
+#124 (**the retirement drill ran the NoGo path
+whole, and fixed the probation leash it proved unreachable**); #120, the
 notes and graph tabs become one graph tab; #123, the docs deploy stops
 being evictable by a PR build — then #122 (2026-08-30, fifteen commits —
 **the learning loop runs itself and the instruments that grade it were
@@ -140,7 +145,18 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,981 tests**, no failures — measured 2026-08-30 in this checkout
+Expect **1,988 tests**, no failures — measured 2026-08-30 (late, ~23:45
+UTC) in this checkout on `main` at **ab0097b** (the #126 merge): **662**
+in `mecha-cli` with 1 ignored, **1,081** in `mecha-core`, the rest
+unchanged. The **7** added over 1,981 at `6987bc5` split at the merge
+level: **+1** from #125
+(`every_queue_the_backlog_reports_is_named_and_reachable_from_the_web_home`,
+`commands/review.rs`) and **+6** from #126 (the proposals pane's
+store-coverage guards and the review-wave regression tests — the
+`decide_argv` flag-ordering pair among them, added after a green suite
+sat over a 100%-broken reject; see Traps → Review process).
+
+The previous figure was **1,981**, measured 2026-08-30 in this checkout
 on `main` at **6987bc5** (the #124 merge, which also folds in #120 and
 #123): **655** in `mecha-cli` with 1 ignored, **1,081** in `mecha-core`,
 the rest unchanged. The **4** added over 1,977 at `4c7a0e2` are fully
@@ -295,15 +311,15 @@ id.
 | Suite | Count |
 |---|---:|
 | `mecha-core` unit | 1,081 |
-| `mecha-cli` unit | 655 (1 ignored) |
+| `mecha-cli` unit | 662 (1 ignored) |
 | `mecha-cli` `first_run` integration | 20 |
 | `mecha-mail` unit | 133 (+1 in the `mecha-mail` binary) |
 | `mecha-slack` unit | 75 |
 | integration (`mcp_server` 6 + `sandbox_backends` 9) | 15 |
 | doctest | 1 |
 
-Measured 2026-08-30 on `main` at `6987bc5`, same tree as the first
-prose figure above (1,981). The table had drifted two counts behind the
+Measured 2026-08-30 (~23:45 UTC) on `main` at `ab0097b`, same tree as the
+first prose figure above (1,988). The table had drifted two counts behind the
 prose once already, which is the failure mode of stating one fact twice — read
 the prose if they ever disagree again, and fix the table.
 
@@ -340,7 +356,27 @@ A working agent harness, used and measured rather than just compiled.
 | Interfaces | `run`, `chat`, `tui`, `batch`, `eval`, plus `review` / `outbox` / `trigger` / `work` / `proposals` / `rules` for review and upkeep, `slack` for the remote control, and `serve` for the tailnet web surface |
 | TUI | Slash commands with menus and completion; switch model/provider/mode/MCP mid-session; shift+tab toggles planning. Review lives here too: `/queues`, `/outbox`, `/frontdoor`, `/mail`, `/tasks`, `/skills`, `/polls`, `/doctor` and (2026-08-23) `/find` modals drive the CLI like `/triggers` does — plus `/note` for one-line graph capture — the status line badges pending drafts, and `/review now\|later\|auto` decides what happens when a run stages some — scoped to that run's items by an id-diff, tainted drafts never auto-released, the mode set only by command (never parsed from the prompt). Detached releases/extractions/triages are watched and their results reported without a reopen |
 | Slack | `mecha slack` — a remote control: Socket Mode from home, an owner allowlist bound by a locally printed nonce, a thread as a `Conversation`, streamed answers with a task card per tool call, approval cards (incl. "allow for this run"), outbox review cards, files both ways, `notify`; owner-gated command words `doctor`, `triggers`, `review now|later|auto`, and (2026-08-23) `note <text>` — a deterministic capture matched before the text can become a prompt — `queues`, the read-only backlog rollup, and (2026-08-24, adopted from an orphaned WIP) `tasks`/`task`, the GTD board as command words. **Merged 2026-08-09 (PR #25) and running as `mecha-slack.service`** |
-| Web surface | `mecha serve` (2026-08-24, extended the same evening) — the tailnet web app: binds 127.0.0.1 with no flag to widen it, `tailscale serve` is the door (`:8443`), every request must carry `Tailscale-User-Login` equal to `[web] owner_login` (global-file-only config, stripped from project layers like `[slack]`; refuses to start ownerless), strict self-only CSP. Pages: Home dashboard (`review queues --json` + `doctor --json` as child processes, a dash never a zero), streaming chat over SSE (one shared agent, per-session `RunContext` on the Slack connector's pattern — keyed sessions with validated directory-safe names, jails under `~/.mecha/work/web/<key>/`, steering, cancel, context gauge), outbox review (whole `DraftView`, source reads behind a gutter, taint sheet with exact args, approve `--yes`/reject/edit as CLI children), graph-queue sample deck (seed printed, verdict ≠ resample), tasks, notes + `kg search`. Per-session `ask` mode: live approval cards (deny-with-reason is a real user correction; timeout is `Blocked`) and `ask_user` option cards routed by the run's jail (`Asker::ask_in`); pending cards ride the transcript read so a locked phone reloads into them; cancel drains parked cards. Evening additions (2026-08-24): the **mail page** (`serve/mail.rs` + `Mail.svelte` — store read for the list, `mecha mail show` as the one thread renderer behind a gutter, closed-verb `/api/mail/act` with spam the only confirm; drafting verbs spawn detached into the outbox), the **graph queue at all three depths** (classes with server-stamped tiers from `tui::queues::Tier::of`, per-class similarity groups, and the cross-class global layer with a threshold stepper — see the graph repo's `similar.rs` for the invited-crossing rules), and **files** (`serve/files.rs`: uploads into the session jail's `inbox/` announced as paths, downloads that re-prove containment, images the only inline type). Assets are a build artifact at `~/.mecha/web/dist` (update skill surface 1b). **2026-08-25**: `review now` reached this surface — a finished run emits the ids it staged and the page draws a confirm card built from `/api/outbox/{id}` (whole `DraftView`, taint above everything, source reads behind a gutter, Send now / Later); notes open in place and edit through `mecha kg note --edit <source_id>`, which preserves the note's own `occurred_at`; and a failed graph verdict keeps its card and offers the two ways through (`bind`, accept-as-new-topic) that until then existed only in the TUI. **2026-08-26**: the board learned to delegate — *ask mecha* (`/api/tasks/work`, detached and unattended, because `serve`'s approval cards belong to a chat session's `RunContext` and cannot reach a child process), *stop* (`/api/tasks/stop`), *open the conversation* (`#chat/<session>`, which `Chat` resumes from the route), an agent chip derived from `waiting_on` rather than self-reported, `task:` sessions in the drawer, and the plan rendered in chat (live, from the shared `TodoTool` keyed by jail) and on the card (`/api/tasks/plan`, read out of the transcript because a `tasks work` run is another process). **2026-08-26 (second pass)**: the delegation loop closed — `/api/questions` (list, answer, abandon) so a parked question is answerable from the phone rather than only from a terminal, and the task card's state derived from board + questions + the transcript's outcome record (D16). **2026-08-26 (fourth pass)**: the graph queue became reviewable rather than only tappable — a group opens to its members (`GET /api/queue/items`, a named id set re-fetched by id, never a redraw) and each is verdicted on its own with no cascade, because similarity is the grouping key and members can contradict each other; a candidate's face comes from one `faceOf()` matched to `tui::queues::items_from_json`'s chain (`statement` → `what`), which is what stopped every commitment card rendering `undefined — undefined — undefined`; and a failed *bind* offers a target field, distinct from a failed accept, where naming a target is not the answer. `docs/REMOTE-SURFACE-RESEARCH.md` + `-DESIGN.md`, `docs/TASK-AGENT-DESIGN.md`. **2026-08-29 (#114)**: an **entity page** (`/api/entity` via `serve/board.rs::entity`, `Entity.svelte`, nav entry `graph`) marking unreviewed and denied facts as such; a **surfaced-verdict deck** on the review page (`/api/queue/shadow` + `/verdict`, `serve/review.rs::shadow`/`shadow_verdict`); and **chat tool-result previews** (`WireEvent::ToolResult`, a capped preview of what a tool answered). Same night (#116) the `/tasks` page was repaired — `stateOf` had called the server-stamped `stalled` *field* as a function, a `ReferenceError` on every card of a non-empty board, shipped broken in v0.1.16. **2026-08-29 (#118)**: settings became an **index** rather than one scroll — three rows opening panes at `#settings/<charter|learning|voice>` through the same hash router, each row carrying what is actually in there (a count, or a dash where the store could not be read) — and the gear moved out of `Home.svelte` into the shell (`App.svelte`), one button in the same corner on *every* view at `z-index: 3`, below the app's scrims and sheets (4-6) and drawers (40+). The charter is edited as a list with **drag-to-rank** (`SettingsCharter.svelte`; pointer events rather than HTML5 drag-and-drop, because `dragstart`/`dragover` never fire for touch): position in the file is the ranking, so dragging is the only rank control there can be. Everything above the first `[[line]]` survives a save, and a document the page cannot fully account for — a `parse_error`, bytes it never managed to read, or a comment among the tables — refuses the list editor and opens as raw TOML instead (`unreadable`, `blocked`). Routing moved to `pushState` with a depth stamped in `history.state`, so a back gesture can tell an in-app push from a cold deep link. Two gates ride it: `npm run check-charter-toml` pins the serialiser (`web/src/lib/charter-toml.js`) against `charter.rs`'s own `WEB_EDITOR_SAMPLE` fixture in both directions, and `render-check` now visits the three settings panes |
+| Web surface | `mecha serve` (2026-08-24, extended the same evening) — the tailnet web app: binds 127.0.0.1 with no flag to widen it, `tailscale serve` is the door (`:8443`), every request must carry `Tailscale-User-Login` equal to `[web] owner_login` (global-file-only config, stripped from project layers like `[slack]`; refuses to start ownerless), strict self-only CSP. Pages: Home dashboard (`review queues --json` + `doctor --json` as child processes, a dash never a zero), streaming chat over SSE (one shared agent, per-session `RunContext` on the Slack connector's pattern — keyed sessions with validated directory-safe names, jails under `~/.mecha/work/web/<key>/`, steering, cancel, context gauge), outbox review (whole `DraftView`, source reads behind a gutter, taint sheet with exact args, approve `--yes`/reject/edit as CLI children), graph-queue sample deck (seed printed, verdict ≠ resample), tasks, notes + `kg search`. Per-session `ask` mode: live approval cards (deny-with-reason is a real user correction; timeout is `Blocked`) and `ask_user` option cards routed by the run's jail (`Asker::ask_in`); pending cards ride the transcript read so a locked phone reloads into them; cancel drains parked cards. Evening additions (2026-08-24): the **mail page** (`serve/mail.rs` + `Mail.svelte` — store read for the list, `mecha mail show` as the one thread renderer behind a gutter, closed-verb `/api/mail/act` with spam the only confirm; drafting verbs spawn detached into the outbox), the **graph queue at all three depths** (classes with server-stamped tiers from `tui::queues::Tier::of`, per-class similarity groups, and the cross-class global layer with a threshold stepper — see the graph repo's `similar.rs` for the invited-crossing rules), and **files** (`serve/files.rs`: uploads into the session jail's `inbox/` announced as paths, downloads that re-prove containment, images the only inline type). Assets are a build artifact at `~/.mecha/web/dist` (update skill surface 1b). **2026-08-25**: `review now` reached this surface — a finished run emits the ids it staged and the page draws a confirm card built from `/api/outbox/{id}` (whole `DraftView`, taint above everything, source reads behind a gutter, Send now / Later); notes open in place and edit through `mecha kg note --edit <source_id>`, which preserves the note's own `occurred_at`; and a failed graph verdict keeps its card and offers the two ways through (`bind`, accept-as-new-topic) that until then existed only in the TUI. **2026-08-26**: the board learned to delegate — *ask mecha* (`/api/tasks/work`, detached and unattended, because `serve`'s approval cards belong to a chat session's `RunContext` and cannot reach a child process), *stop* (`/api/tasks/stop`), *open the conversation* (`#chat/<session>`, which `Chat` resumes from the route), an agent chip derived from `waiting_on` rather than self-reported, `task:` sessions in the drawer, and the plan rendered in chat (live, from the shared `TodoTool` keyed by jail) and on the card (`/api/tasks/plan`, read out of the transcript because a `tasks work` run is another process). **2026-08-26 (second pass)**: the delegation loop closed — `/api/questions` (list, answer, abandon) so a parked question is answerable from the phone rather than only from a terminal, and the task card's state derived from board + questions + the transcript's outcome record (D16). **2026-08-26 (fourth pass)**: the graph queue became reviewable rather than only tappable — a group opens to its members (`GET /api/queue/items`, a named id set re-fetched by id, never a redraw) and each is verdicted on its own with no cascade, because similarity is the grouping key and members can contradict each other; a candidate's face comes from one `faceOf()` matched to `tui::queues::items_from_json`'s chain (`statement` → `what`), which is what stopped every commitment card rendering `undefined — undefined — undefined`; and a failed *bind* offers a target field, distinct from a failed accept, where naming a target is not the answer. `docs/REMOTE-SURFACE-RESEARCH.md` + `-DESIGN.md`, `docs/TASK-AGENT-DESIGN.md`. **2026-08-29 (#114)**: an **entity page** (`/api/entity` via `serve/board.rs::entity`, `Entity.svelte`, nav entry `graph`) marking unreviewed and denied facts as such; a **surfaced-verdict deck** on the review page (`/api/queue/shadow` + `/verdict`, `serve/review.rs::shadow`/`shadow_verdict`); and **chat tool-result previews** (`WireEvent::ToolResult`, a capped preview of what a tool answered). Same night (#116) the `/tasks` page was repaired — `stateOf` had called the server-stamped `stalled` *field* as a function, a `ReferenceError` on every card of a non-empty board, shipped broken in v0.1.16. **2026-08-29 (#118)**: settings became an **index** rather than one scroll — three rows opening panes at `#settings/<charter|learning|voice>` through the same hash router, each row carrying what is actually in there (a count, or a dash where the store could not be read) — and the gear moved out of `Home.svelte` into the shell (`App.svelte`), one button in the same corner on *every* view at `z-index: 3`, below the app's scrims and sheets (4-6) and drawers (40+). The charter is edited as a list with **drag-to-rank** (`SettingsCharter.svelte`; pointer events rather than HTML5 drag-and-drop, because `dragstart`/`dragover` never fire for touch): position in the file is the ranking, so dragging is the only rank control there can be. Everything above the first `[[line]]` survives a save, and a document the page cannot fully account for — a `parse_error`, bytes it never managed to read, or a comment among the tables — refuses the list editor and opens as raw TOML instead (`unreadable`, `blocked`). Routing moved to `pushState` with a depth stamped in `history.state`, so a back gesture can tell an in-app push from a cold deep link. Two gates ride it: `npm run check-charter-toml` pins the serialiser (`web/src/lib/charter-toml.js`) against `charter.rs`'s own `WEB_EDITOR_SAMPLE` fixture in both directions, and `render-check` now visits the three settings panes. **2026-08-30
+(#126)**: the graph tab became the curation surface, iterated live against
+the owner's phone in one evening — capture is a chat-idiom composer (send
+armed by content, ⌘⏎), the notebook is a bottom drawer pinned in layout
+(sortable, filtered, `?limit=` passthrough clamped to the graph's own
+200), and the restyled entity card does the identity lifecycle in place:
+alias chips with two-tap removal and inline add (`kg alias`/`kg unalias`,
+id-only like `retract`), **merge-with-audit-trail** (`/api/entity/merge` →
+`mecha-graph proposals file-merge --accept`, so the graph's one no-undo
+verb always leaves a decided proposal; ambiguity refused with the
+candidate list, relayed whole), **create-on-miss** (`new-person`/
+`new-node` from the lookup's dead end), and a read-only `reaches` row of
+identifiers (aliases are how a node is spoken of, identifiers decide where
+future ingest lands). `serve/board.rs::graph_verb` spawns `mecha-graph`
+directly — the owner's lane, deliberately not on the model's MCP surface.
+Beside it, `serve/proposals.rs` + `Proposals.svelte`: one pane over the
+three proposal stores (harness · rules · graph entities), read-gated
+decisions (accept refuses until the item's `show` was rendered; a merge
+accept gets its own confirmation sheet), depths that are `None` when a
+store cannot be read, and a 503 naming `MECHA_GRAPH_BIN` when the graph
+binary is absent |
 | Voice | The stack from `docs/VOICE-RESEARCH.md`, built and in production 2026-08-24 (§7 is the build log): Pipecat worker (`scripts/voice/worker.py`, `:7860`), **Parakeet TDT** STT (`mecha-parakeet.service`, `:8992` — Voxtral was structurally unfit: a chat model answers speech instead of transcribing it, and obeys spoken instructions), Chatterbox TTS (no standby — Kokoro was removed 2026-08-25; nothing failed over to it automatically), and the loopback OpenAI facade (`mecha-cli/src/voice/`) **mounted inside `mecha serve`** (`--voice-port 8990`) over the shared agent — one process, one cached prefix, two dialects. The WebRTC offer proxies same-origin through serve (`/api/offer`), behind the owner guard — true of **both** doors since 2026-08-25, and only of `:8443` before it, when `:443` was a file mount whose `/api` went straight to the worker. In-chat voice: waveform button → call overlay (voice-core.js embedded by relative import; threaded transcript pane, cloned-track mic meter, mute, end). **A call is the chat session it was started from (D3, 2026-08-25)**: the page names its key in the WebRTC offer (`request_data`, pipecat's own passthrough), the worker forwards it as `X-Chat-Session` beside the slot key it still mints, and `voice::SessionHost` — implemented by `serve::chat::VoiceHost` — runs the turn on that conversation's messages, taint, transcript and jail, with the facade keeping no record of its own. `chat::begin_turn` is the one implementation both doors go through. Spoken turns arrive on the page's SSE feed live (`WireEvent::User`, block stripped) and are marked `spoken` in the transcript; the D10 block now opens a *switch into speech* rather than a conversation (`last_turn_spoken`), and `--voice-yes` travels with the turn, so a spoken turn runs at Allow while a typed one in the same session obeys the page's mode. D5 ratified: owner speech is typed text, arms nothing. **Voice controls (2026-08-24 night):** the in-chat call overlay (`Chat.svelte`) carries a **seven**-voice picker and a 0.5–2.0x rate slider. They persist in `localStorage` (`mecha.voice.prefs`, `{voice, speed}`, read on each connection's first `onVoiceConfig`), so the next call opens where you left it rather than resetting to whatever the worker booted with. That key originally synced two shells; the standalone page was retired in 876580e and the preference is why it stays. Seven is six Kokoro-derived cloning references plus Chatterbox's own built-in `default`, which the server lists as selectable because it is one — `voice: "default"` generates with no reference rather than falling back to anything. The controls are driven by a `voice-config` RTVI message and `session.voiceConfig(patch)` on `voice-core.js`; the server's reply is what renders, so a refused value never leaves the control showing a rate the worker is not speaking at. Rate is a pitch-preserving phase vocoder in `chatterbox_server.py` (~50 ms warm) because Chatterbox Turbo has no speed parameter and resampling moves pitch with tempo. The voices are Kokoro presets synthesized into cloning references by `scripts/voice/make-voices.py` — Apache 2.0, nobody's identity — and the server reads the directory live (`GET /v1/voices`) rather than holding a list. **Call teardown, 2026-08-25:** the pipeline's idle timeout was pipecat's unchosen 300s default and killed a call five minutes into any pause — raised past a conversational silence and it now *announces itself* over the data channel before tearing down; client-side, ICE `disconnected` is a 15s grace window rather than a hang-up, since only `failed`/`closed` are terminal (no ICE restart: pipecat's `restart_pc` fires the very event this worker cancels the pipeline on). **Spoken outbox confirmation, 2026-08-25:** a run that stages drafts is asked about aloud — the offer composed from the store through `DraftView::spoken`, the answer matched by `review_policy::parse_answer` *before* any model sees it, so the release decision never enters a context window |
 | Sessions | Append-only JSONL, resume, taint recorded, `RunConfig` per attach |
 | Replay | `replay.rs` diffs trajectories, `replay_run.rs` drives them — `mecha replay`, incl. cross-model. Counterfactual probes **branch** rather than regenerate (`counterfactual::branch_at` + `drive_branch`, 2026-08-30): the recorded prefix is resubmitted verbatim and only the continuation is sampled, so pre-point divergence is structurally impossible; replay wrappers narrow `external_send` in the non-executing modes, and a recorded surface rebuilds from its `SurfaceStore` blob — dead tools included, recorded descriptions winning over live rewordings |
@@ -563,6 +599,32 @@ both graph binaries (different repo, no movement), `mecha-parakeet` (its
 script unchanged; a restart costs a model load), the factory client and
 droplet (different version line, not part of this deploy).
 
+**2026-08-30 (~23:30 UTC) — both repos merged and the whole machine on
+`main`, every claim verified by an artifact.** mecha #125 (`68b4af9`) and
+#126 (`ab0097b`) merged; the private graph repo merged its first PR
+(`d44e04d`: `kg_upsert` alias `remove`, `proposals file-merge`,
+`identifiers` in `kg_entity`) plus the fictional-cast strip (`20f3d38`).
+`mecha`, `mecha-graph` and `mecha-graph-mcp` all installed from the two
+mains; the MCP server answers **13 tools** with `remove` in `kg_upsert`'s
+schema (asked, not inferred). The graph nightly's own binary
+(`target/release/mecha-graph`) rebuilt from main at 23:28, and the
+private checkout is back on `main` — the 01:30 audit runs merged code.
+Web dist rebuilt from main and rsynced; **`deployed-local` deleted**, so
+its absence honestly means "main is deployed" again. All five long-running
+units restarted 23:29 and verified by their own startup lines (serve's two
+doors, slack "Connected … 1 owner(s)", triggers "ticking every minute",
+drain started, voice-worker's Uvicorn); stale-process sweep clean. The
+**public mirror published**: `github.com/ljchang/mecha-graph` at
+`bbbba2a` ("0.1.3"), through `export-public.sh` and a **clean** denylist
+gate — the first export attempt was refused on 13 files of life-derived
+fixture names, which is the strip commit above and a trap in HISTORY.
+llama-server re-verified: `total_slots=4`, `n_ctx` 262,144/slot,
+`model_alias qwen3.6-35b-a3b`. Eval: 36 cases, 15 tags, re-counted this
+date, unchanged. Workspace tests 1,988/0 (the prose figure above).
+`mecha-mail` binaries, benchmark musl, factory client/droplet, and the
+sandbox image deliberately untouched (no diff on their surfaces this
+session).
+
 **2026-08-26 (00:12 UTC) — installed and restarted again, and one commit
 of deliberate skew.** `mecha` reinstalled and all five long-running units
 restarted during the day's work, each verified by its own startup line;
@@ -623,7 +685,10 @@ trap arriving through the door that looks most like evidence. Cutting
 What has landed on main since the tag, beyond the `--json` flags and the
 `/queues` review level: **`/entity` merges two nodes you pick yourself**
 (`m` marks the survivor, `m` again confirms with `y` — the only key on that
-modal that confirms, because it is the only irreversible one), **Esc peels
+modal that confirms, because it is the only irreversible one; since
+2026-08-30 the web entity page has the same gesture through
+`proposals file-merge --accept`, which additionally records a decided
+proposal — the TUI path still merges bare), **Esc peels
 one layer at a time there** (merge → edit → search → modal), and **every
 `/queues` row reports how long its oldest item has waited** beside its depth.
 That last closed a real gap: four outbox drafts sat five days behind a row
@@ -1211,6 +1276,25 @@ diagnostician declined on a healthy corpus, which is the designed answer.
 
 What is actually open now:
 
+- **The nightly diagnostician cannot read the source it is told to read**
+  (found 2026-08-30 by a session auditing `mecha harness ruminate`; a fix
+  is in flight on that lane, nothing on `main` yet). `DIAGNOSE_SYSTEM`
+  says "You may read the source and its documentation… treat a documented
+  reason as evidence", but `scripts/ruminate.sh` cds into
+  `$(mecha work path ruminate)` — `~/.mecha/work/ruminate/`, which is
+  empty — and `setup::prepare_tools` roots the path jail at the cwd. So on
+  the one path that actually runs, the read-only tool surface reaches
+  nothing, and the safety argument behind the prompt ("if the thing you
+  were about to change is load-bearing for something the documentation
+  explains, propose something else") has never once been able to fire. The
+  visible symptom is in the candidate store: all three recorded candidates
+  propose config keys that exist nowhere in the codebase —
+  `security.minimize_taint`, `tool.validation.strict`,
+  `context.auto_compact`. Verified 2026-08-30 by resolving the work path
+  and grepping each key across `mecha-core/src` and `mecha-cli/src` (only
+  hit is `diagnose.rs`'s own test fixture). The in-flight fix: a
+  global-only `[harness] source_dir`, jailed read-only, with
+  `global_config_only` so standing outside a checkout stays the rule.
 - **Read the record, weekly at first.** `mecha harness list --all` and the
   nightly log. §2's failure mode (harness updating without benefiting) is now
   answerable from the store instead of from impression — but only if someone
@@ -1287,33 +1371,31 @@ Everything here is verified in source, re-checked 2026-08-25; the arcs' own
 docs (`REMOTE-SURFACE-DESIGN.md`, `VOICE-RESEARCH.md` §7) hold the shipped
 half.
 
-- **Review's tab and its URL disagree, and the URL wins on reload.**
-  `Review.svelte` opens with `let pane = $state(panes.includes(initial) ? …)`
-  — a `$state` seeded from a prop, so it is read once at mount and the tabs
-  then move it without touching the hash. Reproduced 2026-08-30 against the
-  demo build, all four steps: deep-link `#review/graph` lands on Graph queue;
-  clicking the Outbox tab moves the pane and leaves the hash at
-  `#review/graph`; a reload comes back on Graph queue, not where you were;
-  and Back leaves review for home, skipping the tab change entirely. It came
-  in with `69be1f9` (#114, *the app stops having missing rooms*) and belongs
-  to no live lane. **The fix is already written one file over**:
-  `Settings.svelte` spells the same thing `const pane = $derived(…)`, with
-  the reason on the line above it — *"Derived, never copied into state: App
-  re-renders this with a new `initial` on back/forward, and a `$state`
-  snapshot would ignore it."* Two panes of the same shell, two answers.
-  Closing it is `$derived` plus a `navigate('review/<pane>')` on tab click,
-  which is also what makes a pane linkable.
-- **The home page's queue cards are fixed on an unmerged branch**
-  (`fix/home-dead-cards`, `fe91e16`) — four of the eight did nothing when
-  tapped. `blocked questions` had no entry in `Home.svelte`'s label/target
-  maps at all, so it rendered under its raw wire name and went nowhere while
-  the tasks tab had been showing the same `/api/questions` items all along;
-  the other three are CLI-only by design and said so only in a comment and a
-  `title` tooltip, which touch never renders. The branch also adds
-  `every_queue_the_backlog_reports_is_named_by_the_web_home`, which
-  `include_str!`s both files so a queue added in Rust fails the build rather
-  than shipping a dead card. **Not merged and not deployed** — the running
-  server keeps the old `web/dist` until it is.
+- **The website's docs build can fail at random on a network blip, and the
+  fix is on an unmerged local branch** (`fix/sync-graph-docs-loud`,
+  `9328ba8`). `sync-graph-docs.mjs` soft-skips a failed fetch from the
+  public graph repo, but `onBrokenLinks: 'throw'` in `docusaurus.config.ts`
+  turns the missing generated page into a hard failure blaming two tracked
+  docs — so the flake reads as somebody's doc edit (it hit PR #125's first
+  CI run; a bare rerun went green). The branch makes fetches retry and a
+  still-missing file fail loudly naming the fetch, verified both ways
+  (old exits 0 against an unreachable repo, new exits 1). Needs a PR.
+- **`graph_verb` and `proposals::run` are near-duplicate spawn-mecha-graph
+  helpers in the same crate** (`serve/board.rs::graph_verb` relays stderr
+  whole for ambiguity candidate lists; `serve/proposals.rs::run` relays
+  first-line-then-stdout) — flagged by #126's review as the divergence that
+  will drift. Claimed post-merge: lift one `graph_child` helper with the
+  relay style as a parameter, both call sites moved in one commit. Test it
+  with a real child in a scratch `MECHA_GRAPH_DB` — a helper over two spawn
+  sites is exactly the change whose failure mode is invisible to tests that
+  never spawn (the reject regression under a green 1,986-test suite is the
+  proof, Traps → Review process).
+- **`mecha kg search` never prints its `entities:` line** —
+  `commands/kg.rs::search` does `filter_map(|e| e.as_str())` over
+  `pack["entities"]`, which is an array of objects (`{name, node_id, …}`),
+  so the filter drops every element. Same object-vs-string mismatch the web
+  chips hit twice in #126. Found by #126's review, deliberately left out of
+  that PR.
 
 D3 shipped 2026-08-25 — a call is the chat session it was started from.
 The narrative is in HISTORY under that date; `VOICE-RESEARCH.md` §7 holds
@@ -2404,7 +2486,12 @@ What is missing beyond that is refinement:
   `mecha proposals` beside `rule` and `retirement`, because it is the same
   shape — mecha asks, the user decides, future behaviour changes — and because
   two review surfaces (`outbox` for what leaves, `proposals` for what changes
-  behaviour) is a learnable morning routine where three is not. Deliberately
+  behaviour) is a learnable morning routine where three is not. **The
+  surface half arrived 2026-08-30 (#126)**: `serve/proposals.rs` +
+  `Proposals.svelte` render the three existing stores (harness · rules ·
+  graph entities) as one phone pane with read-gated decisions — so a new
+  policy-question *kind* would get its cards for free; what remains open is
+  the kind itself and the unattended run's path into it. Deliberately
   **not** called an inbox: ambiguous with the user's real one, and this queue is
   capped by design where an inbox is unbounded by definition. §3.1.
 - **File watchers.** `Trigger` has no watcher kind. Needs debounce and a
