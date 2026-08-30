@@ -1261,6 +1261,37 @@ mod tests {
         )));
     }
 
+    /// Transcripts recorded before the stem existed (pre-9c2424d, 2026-08-28)
+    /// carry the same templated bodies with no stem — and one such nudge was
+    /// already mined as a user steer and driven through a counterfactual
+    /// probe. The bare bodies must be recognised too; they are frozen
+    /// historical text, so the match cannot rot when the live template moves.
+    #[test]
+    fn the_pre_stem_nudge_bodies_are_still_recognised() {
+        for reason in [
+            EscalationReason::SpanOutlier,
+            EscalationReason::UnverifiedClaim,
+        ] {
+            let e = StepEscalation {
+                reason,
+                step: "verify the build succeeds".into(),
+                siblings: Vec::new(),
+                calls: 3,
+                sibling_mean_calls: Some(1.0),
+                sibling_count: 2,
+            };
+            let stemless = templated_nudge(&e)
+                .strip_prefix(STEP_ESCALATION_STEM)
+                .expect("the live nudge starts with the stem")
+                .trim()
+                .to_string();
+            assert!(
+                crate::agent::is_harness_voice(&stemless),
+                "a pre-stem transcript's nudge must not read as a user steer: {stemless}"
+            );
+        }
+    }
+
     // The retry loop that used to live here moved to `agent.rs`'s
     // `Agent::escalate_step`, which needs `self.complete` for cancellation
     // and usage accounting — see the module note above `parse_step_verdict`.

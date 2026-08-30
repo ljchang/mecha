@@ -840,6 +840,20 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         || text.starts_with(crate::boredom::NOTICE_STEM)
         || text.contains(crate::mailbox::DELIVERY_STEM)
         || text.starts_with(crate::step::STEP_ESCALATION_STEM)
+        // The step-escalation stem shipped 2026-08-28 (9c2424d); transcripts
+        // recorded before it carry the same fully-templated nudge bodies
+        // bare, and one such nudge was already mined as a steer and probed as
+        // if a person had typed it. These fragments are frozen historical
+        // text — the live template is covered by the stem above, so a later
+        // rewording never needs to touch them.
+        || text.contains(
+            "reads as claiming something was tested or verified, but nothing in its \
+             tool calls looked like a check",
+        )
+        || text.contains(
+            "worth checking whether the remaining steps in the plan need to be broken \
+             down differently",
+        )
 }
 
 /// Detects a run re-living the turns a compaction just summarised away.
