@@ -1266,6 +1266,34 @@ Everything here is verified in source, re-checked 2026-08-25; the arcs' own
 docs (`REMOTE-SURFACE-DESIGN.md`, `VOICE-RESEARCH.md` §7) hold the shipped
 half.
 
+- **Review's tab and its URL disagree, and the URL wins on reload.**
+  `Review.svelte` opens with `let pane = $state(panes.includes(initial) ? …)`
+  — a `$state` seeded from a prop, so it is read once at mount and the tabs
+  then move it without touching the hash. Reproduced 2026-08-30 against the
+  demo build, all four steps: deep-link `#review/graph` lands on Graph queue;
+  clicking the Outbox tab moves the pane and leaves the hash at
+  `#review/graph`; a reload comes back on Graph queue, not where you were;
+  and Back leaves review for home, skipping the tab change entirely. It came
+  in with `69be1f9` (#114, *the app stops having missing rooms*) and belongs
+  to no live lane. **The fix is already written one file over**:
+  `Settings.svelte` spells the same thing `const pane = $derived(…)`, with
+  the reason on the line above it — *"Derived, never copied into state: App
+  re-renders this with a new `initial` on back/forward, and a `$state`
+  snapshot would ignore it."* Two panes of the same shell, two answers.
+  Closing it is `$derived` plus a `navigate('review/<pane>')` on tab click,
+  which is also what makes a pane linkable.
+- **The home page's queue cards are fixed on an unmerged branch**
+  (`fix/home-dead-cards`, `fe91e16`) — four of the eight did nothing when
+  tapped. `blocked questions` had no entry in `Home.svelte`'s label/target
+  maps at all, so it rendered under its raw wire name and went nowhere while
+  the tasks tab had been showing the same `/api/questions` items all along;
+  the other three are CLI-only by design and said so only in a comment and a
+  `title` tooltip, which touch never renders. The branch also adds
+  `every_queue_the_backlog_reports_is_named_by_the_web_home`, which
+  `include_str!`s both files so a queue added in Rust fails the build rather
+  than shipping a dead card. **Not merged and not deployed** — the running
+  server keeps the old `web/dist` until it is.
+
 D3 shipped 2026-08-25 — a call is the chat session it was started from.
 The narrative is in HISTORY under that date; `VOICE-RESEARCH.md` §7 holds
 the mechanism and every decision. What it left standing:
