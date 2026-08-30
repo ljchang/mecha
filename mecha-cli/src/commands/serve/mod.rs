@@ -843,6 +843,18 @@ mod tests {
             ("POST", "/api/entity/unalias"),
             ("POST", "/api/entity/merge"),
             ("POST", "/api/entity/create"),
+            // The proposal stores, and the higher-stakes half: an accept on
+            // `harness` writes an entry into the override layer every future
+            // run reads its config through, and one on `entities` applies a
+            // merge with no undo. The guard is a whole-router layer, so these
+            // are covered today and this pins that they stay so — which is
+            // this test's own argument, since a route added later is exactly
+            // the one an earlier guard test cannot be covering.
+            ("GET", "/api/proposals"),
+            ("GET", "/api/proposals/harness"),
+            ("GET", "/api/proposals/harness/1"),
+            ("POST", "/api/proposals/harness/1/accept"),
+            ("POST", "/api/proposals/harness/1/reject"),
         ] {
             let response = test_router()
                 .oneshot(

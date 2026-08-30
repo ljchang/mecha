@@ -449,6 +449,11 @@ pub(crate) struct ReviewSource {
     pub graph: bool,
 }
 
+/// How many entity proposals to ask `mecha-graph` for. Not unbounded: the
+/// rows are rendered into a phone, and a store that has genuinely grown past
+/// this says so by depth, which every reader shows beside the list.
+pub(crate) const GRAPH_LIST_LIMIT: usize = 500;
+
 /// The reviewable-proposal stores, and where each one's verbs live.
 ///
 /// Keyed on the queue name [`collect_queues`] emits — one list of queues,
@@ -463,11 +468,6 @@ pub(crate) struct ReviewSource {
 /// to keep correct, which is how `/queues` came to say "no modal for that one
 /// yet" beside a count of 28, and how the web home came to print
 /// `mecha harness list` on a card it could not open.
-/// How many entity proposals to ask `mecha-graph` for. Not unbounded: the
-/// rows are rendered into a phone, and a store that has genuinely grown past
-/// this says so by depth, which every reader shows beside the list.
-pub(crate) const GRAPH_LIST_LIMIT: usize = 500;
-
 pub(crate) fn review_source(queue: &str) -> Option<ReviewSource> {
     let owned = |label: &str, verb: &[&str], graph: bool| {
         let v: Vec<String> = verb.iter().map(|s| s.to_string()).collect();

@@ -22,7 +22,9 @@
   let error = $state(null);
   let busy = $state(false);
   let toast = $state(null);
-  let rejecting = $state(false);
+  // Which confirmation is open: null, 'reject', or 'accept'. Accept needs
+  // one too on the entities store — see `noUndo`.
+  let sheet = $state(null);
   let reason = $state('');
 
   const dash = (v) => (v === null || v === undefined ? '—' : v);
@@ -82,7 +84,7 @@
 
   function back() {
     reading = null;
-    rejecting = false;
+    sheet = null;
     reason = '';
     loadStores();
     loadList();
@@ -130,6 +132,13 @@
   // until it is typed, collects a sentence into a bin and tells the owner it
   // is "the record". Ask where it is kept; say so where it is not.
   const reasonKept = $derived(store !== 'entities');
+  // Accepting an entity proposal runs `mecha-graph proposals accept`, and for
+  // a merge candidate that applies the merge — there is no unmerge. So the
+  // phone's least reversible action must not also be its cheapest gesture:
+  // before this, Accept was one un-confirmed tap while Reject — the
+  // recoverable one — got the whole sheet, which is the asymmetry backwards.
+  // The graph tab's own merge form, on the same verb, already says "no undo".
+  const noUndo = $derived(store === 'entities');
   const current = $derived((stores ?? []).find((s) => s.store === store) ?? null);
   // A depth of null is "could not look", which is not a disagreement with
   // anything — only two real numbers that differ are worth a line.
@@ -209,10 +218,16 @@
         <div class="qtext">{reading.text}</div>
       {/if}
     </div>
-    {#if reading.text !== null && !rejecting}
+    {#if reading.text !== null && !sheet}
       <div class="actionbar">
-        <button class="abtn primary" disabled={busy} onclick={() => decide(true)}>Accept</button>
-        <button class="abtn" disabled={busy} onclick={() => { rejecting = true; reason = ''; }}>
+        <button
+          class="abtn primary"
+          disabled={busy}
+          onclick={() => (noUndo ? (sheet = 'accept') : decide(true))}
+        >
+          {noUndo ? 'Accept…' : 'Accept'}
+        </button>
+        <button class="abtn" disabled={busy} onclick={() => { sheet = 'reject'; reason = ''; }}>
           Reject…
         </button>
       </div>
@@ -220,13 +235,33 @@
         {#if store === 'harness'}
           A config change inside the closed override set applies on accept — reversibly, through
           a layer your own config beats. Anything else is only marked.
+        {:else if noUndo}
+          Accepting applies the proposal to the graph. A merge cannot be undone.
         {:else}
           Decided here exactly as the command line decides it.
         {/if}
       </div>
     {/if}
 
-    {#if rejecting}
+    {#if sheet === 'accept'}
+      <div class="sheet">
+        <div class="sheet-grip"></div>
+        <div class="sheet-text">Accept this proposal?</div>
+        <div class="sheetnote">
+          {@render hazardGlyph()}
+          <span>
+            This applies it to the graph now. If it is a merge, the two entities become one and
+            there is no unmerge.
+          </span>
+        </div>
+        <div class="btnrow">
+          <button class="abtn" onclick={() => (sheet = null)}>Back</button>
+          <button class="abtn primary" disabled={busy} onclick={() => decide(true)}>Accept</button>
+        </div>
+      </div>
+    {/if}
+
+    {#if sheet === 'reject'}
       <div class="sheet">
         <div class="sheet-grip"></div>
         <div class="sheet-text">
@@ -243,7 +278,7 @@
           ></textarea>
         {/if}
         <div class="btnrow">
-          <button class="abtn" onclick={() => (rejecting = false)}>Back</button>
+          <button class="abtn" onclick={() => (sheet = null)}>Back</button>
           <button
             class="abtn primary"
             disabled={busy || (reasonKept && !reason.trim())}
@@ -293,5 +328,6 @@
   .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px 20px 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
   .sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-900); align-self: center; }
   .sheet-text { font-size: 15px; font-weight: 500; }
+  .sheetnote { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.45; color: var(--hazard); }
   .toast { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 10px 16px; font-size: 13px; white-space: nowrap; max-width: 90%; overflow: hidden; text-overflow: ellipsis; }
 </style>
