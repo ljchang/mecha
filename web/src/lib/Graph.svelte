@@ -373,6 +373,10 @@
   }
 
   async function capture() {
+    // Re-entrancy: the button disables on `capturing` but ⌘⏎ does not, and
+    // `kg note` mints a fresh source_id per call — so a double press was two
+    // identical episodes, both mined by the nightly extractor.
+    if (capturing) return;
     const text = draft.trim();
     if (!text) return;
     capturing = true;
@@ -501,9 +505,15 @@
         <div class="notemeta">{stamp(note.occurred_at)}</div>
       </button>
       {#if note.entities?.length}
+        <!-- Same normalization as the search chips above: the graph's
+             entity lists are objects ({node_id, name, …}), and an
+             interpolated object is "[object Object]". -->
         <div class="chiprow">
-          {#each note.entities as name}
-            <button class="entchip" onclick={() => { sheetOpen = false; lookup(name); }}>{name}</button>
+          {#each note.entities as ent (typeof ent === 'string' ? ent : (ent.node_id ?? ent.name))}
+            <button
+              class="entchip"
+              onclick={() => { sheetOpen = false; lookup(typeof ent === 'string' ? ent : (ent.node_id ?? ent.name)); }}
+            >{typeof ent === 'string' ? ent : ent.name}</button>
           {/each}
         </div>
       {/if}
