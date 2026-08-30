@@ -741,7 +741,6 @@ impl Judge {
         &self.model
     }
 
-    /// Grade one answer. The judge gets no tools and no history.
     /// Prove the judge is reachable before a pass leans on it.
     ///
     /// **A validation pass whose judge is down must not look like one that
@@ -776,6 +775,7 @@ impl Judge {
             })
     }
 
+    /// Grade one answer. The judge gets no tools and no history.
     pub async fn assess(&self, prompt: &str, rubric: &str, answer: &str) -> Result<Verdict> {
         let answer = if answer.trim().is_empty() {
             "(the assistant said nothing)"

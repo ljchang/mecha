@@ -1490,6 +1490,11 @@ const RECENT_CONSOLIDATION: chrono::Duration = chrono::Duration::hours(48);
 /// log rather than inferred from rule timestamps: a pass that produced *no*
 /// rules still consumed its reflections, and that is exactly the case an
 /// inference from rule mtimes would miss.
+///
+/// "Consolidate" means **consumed reflections**. A retirement pass appends a
+/// `LeapRun` too, with `reflexions_processed: 0` — and it runs nightly, so
+/// without the filter a retirement was enough to suppress the starved-learner
+/// finding for 48h while the pool sat exactly as unconsumed as before.
 fn learned_within(root: &Path, now: DateTime<Utc>, window: chrono::Duration) -> bool {
     let Ok(text) = std::fs::read_to_string(root.join("runs.jsonl")) else {
         return false;
@@ -1497,6 +1502,7 @@ fn learned_within(root: &Path, now: DateTime<Utc>, window: chrono::Duration) -> 
     text.lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["reflexions_processed"].as_u64().unwrap_or(0) > 0)
         .filter_map(|v| {
             v["created_at"]
                 .as_str()
@@ -2559,6 +2565,22 @@ mod tests {
                 .iter()
                 .any(|f| f.summary.contains("starved")),
             "a pass five weeks old explains nothing about today"
+        );
+
+        // A *retirement* pass hours ago consumed nothing — `rules
+        // propose-retirements --apply` appends a LeapRun with
+        // `reflexions_processed: 0`, nightly — so it must not read as the
+        // pool having been consumed.
+        std::fs::write(
+            root.join("runs.jsonl"),
+            "{\"id\":\"r2\",\"domain\":\"behavior\",\"reflexions_processed\":0,\"rules_before\":12,\"rules_after\":11,\"created_at\":\"2026-08-29T09:00:00Z\"}\n",
+        )
+        .unwrap();
+        assert!(
+            check_learning(&root, now)
+                .iter()
+                .any(|f| f.summary.contains("starved")),
+            "a retirement pass consumed no reflections and must not silence starvation"
         );
 
         std::fs::remove_dir_all(&home).ok();

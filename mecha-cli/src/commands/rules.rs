@@ -302,18 +302,23 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
         }
         // A pending proposal already retiring these exact rules is not
         // re-staged — the nightly must not spam the queue while a human
-        // hasn't looked yet.
+        // hasn't looked yet. Collected rather than tested, because the apply
+        // path below owes each of these a resolution.
         let convicted_ids: Vec<&str> = convicted.iter().filter_map(|r| r.id.as_deref()).collect();
-        let already = proposals.iter().any(|p| {
-            p.status == "pending"
-                && p.domain == domain
-                && convicted_ids.iter().all(|id| {
-                    p.rules
-                        .iter()
-                        .any(|r| r.id.as_deref() == Some(*id) && r.retired_at.is_some())
-                })
-        });
-        if already && !apply {
+        let pending_twins: Vec<mecha_core::learning::Proposal> = proposals
+            .iter()
+            .filter(|p| {
+                p.status == "pending"
+                    && p.domain == domain
+                    && convicted_ids.iter().all(|id| {
+                        p.rules
+                            .iter()
+                            .any(|r| r.id.as_deref() == Some(*id) && r.retired_at.is_some())
+                    })
+            })
+            .cloned()
+            .collect();
+        if !pending_twins.is_empty() && !apply {
             println!("{domain}: retirement already pending — review with `mecha proposals`");
             continue;
         }
@@ -407,6 +412,20 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
             );
             for line in evidence_lines.iter().take(convicted.len()) {
                 println!("  {}", line.replace('\n', "\n  "));
+            }
+            // The pending twin resolves, not lingers: an applied retirement
+            // leaves nothing for a human to decide, and a proposal still
+            // `pending` after its content landed reads as awaiting review —
+            // to `mecha proposals` and to doctor — forever. Superseded, not
+            // accepted: nobody ruled on the paper, the direct path overtook
+            // it. Retirement proposals hold no reflections, so there is
+            // nothing to release.
+            for mut p in pending_twins {
+                p.status = "superseded".into();
+                p.resolved_at = Some(now.clone());
+                p.reason =
+                    Some("superseded: the same retirement was applied directly (--apply)".into());
+                store.write_proposal(&p)?;
             }
             staged += 1;
             continue;
@@ -559,6 +578,45 @@ mod tests {
         // Re-running while the proposal is pending must not stage a twin.
         propose(&store, 3, false).unwrap();
         assert_eq!(store.proposals().unwrap().len(), 1);
+
+        std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    /// A pending retirement proposal overtaken by `--apply` resolves as
+    /// superseded rather than lingering. Fails on the old behaviour: the
+    /// direct path retired the rule and left the paper `pending`, so
+    /// `mecha proposals` and doctor read an already-applied retirement as
+    /// awaiting review forever.
+    #[test]
+    fn apply_resolves_the_pending_twin_it_overtakes() {
+        let store = temp_store();
+        store
+            .write_learned_rules("behavior", &[rule("Bad rule.", "r-bad")])
+            .unwrap();
+        for i in 0..3 {
+            store
+                .append_validation(&regression(
+                    "r-bad",
+                    &format!("2026-08-0{}T00:00:00Z", i + 1),
+                ))
+                .unwrap();
+        }
+
+        // Staged first, as the nightly would have before --apply existed.
+        propose(&store, 3, false).unwrap();
+        assert_eq!(store.proposals().unwrap()[0].status, "pending");
+
+        // The direct path retires the rule and resolves the paper.
+        propose(&store, 3, true).unwrap();
+        let all = store.proposals().unwrap();
+        assert_eq!(all.len(), 1, "no twin staged");
+        assert_eq!(all[0].status, "superseded");
+        assert!(all[0].resolved_at.is_some());
+        assert!(all[0].reason.as_deref().unwrap().contains("--apply"));
+        assert!(
+            !store.learned_rules("behavior").unwrap()[0].active(),
+            "the retirement itself landed"
+        );
 
         std::fs::remove_dir_all(store.root()).ok();
     }

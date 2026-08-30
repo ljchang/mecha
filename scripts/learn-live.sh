@@ -50,7 +50,15 @@ flock -n 9 || exit 0
   #
   # `ruminate.sh` already carries this argument; moving consolidation to a
   # per-session hook is what dropped the protection.
-  cd "$("$MECHA" work path learn-live)" || exit 0
+  #
+  # Captured and checked before the cd, because `cd ""` returns 0: if
+  # `work path` fails (an older installed binary, a directory that cannot be
+  # created), the bare `cd "$(...)" || exit 0` never fires and the pass runs
+  # in the closing session's workspace — the exact state the paragraph above
+  # exists to prevent. A protection that cannot run must stop the run.
+  workdir="$("$MECHA" work path learn-live)" || exit 0
+  [ -n "$workdir" ] && [ -d "$workdir" ] || exit 0
+  cd "$workdir" || exit 0
 
   # A small limit: this fires per session, so there is normally one to mine.
   # The cap is what stops a hook that has not run for a week from turning one
