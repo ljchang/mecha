@@ -1417,7 +1417,23 @@ mod tests {
                 .review_source()
                 .unwrap_or_else(|| panic!("{name} has no review source"));
             assert_eq!(src.graph, graph, "{name}");
-            assert_eq!(src.list, vec![verb, "list", "--json"], "{name}");
+            // The graph's list takes a limit and the other two do not — its
+            // verb defaults to 20 rows while the count beside it is the whole
+            // pending total, so an unlimited-looking call shows 20 of 45 and
+            // admits nothing. This modal reads the same table as the web
+            // pane, so it was silently truncating too.
+            let expected: Vec<String> = if graph {
+                vec![
+                    verb.into(),
+                    "list".into(),
+                    "--json".into(),
+                    "--limit".into(),
+                    crate::commands::review::GRAPH_LIST_LIMIT.to_string(),
+                ]
+            } else {
+                vec![verb.into(), "list".into(), "--json".into()]
+            };
+            assert_eq!(src.list, expected, "{name}");
             assert_eq!(src.accept, vec![verb, "accept"], "{name}");
             assert_eq!(src.reject, vec![verb, "reject"], "{name}");
         }

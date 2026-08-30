@@ -124,7 +124,21 @@
   // of its own runs — marking those would say something untrue about where
   // the words came from.
   const thirdParty = $derived(store === 'entities');
+  // `mecha-graph proposals reject` takes no `--reason`, so for the entities
+  // store a typed reason goes nowhere — the server does not forward it and
+  // the graph records none. Asking for one anyway, and blocking the button
+  // until it is typed, collects a sentence into a bin and tells the owner it
+  // is "the record". Ask where it is kept; say so where it is not.
+  const reasonKept = $derived(store !== 'entities');
   const current = $derived((stores ?? []).find((s) => s.store === store) ?? null);
+  // A depth of null is "could not look", which is not a disagreement with
+  // anything — only two real numbers that differ are worth a line.
+  const shownOfTotal = $derived.by(() => {
+    const shown = listing?.rows?.length;
+    const total = current?.depth;
+    if (shown === undefined || total === null || total === undefined) return null;
+    return shown < total ? { shown, total } : null;
+  });
 </script>
 
 {#snippet hazardGlyph(size = 13)}
@@ -147,6 +161,13 @@
       {#if error}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
       {#if current?.oldest}
         <div class="waitline">oldest has waited {current.oldest}</div>
+      {/if}
+      {#if shownOfTotal}
+        <!-- Two numbers that disagree, said out loud. The listing verbs are
+             asked for far more than any real backlog, so this should never
+             appear — and if it does, the honest reading is that the store
+             outgrew the surface, not that the chip is wrong. -->
+        <div class="waitline">showing {shownOfTotal.shown} of {shownOfTotal.total}</div>
       {/if}
       {#if listing === null && !error}
         <div class="empty">reading the store…</div>
@@ -208,16 +229,26 @@
     {#if rejecting}
       <div class="sheet">
         <div class="sheet-grip"></div>
-        <div class="sheet-text">Why? The reason is the record.</div>
-        <textarea
-          class="editbox"
-          rows="3"
-          bind:value={reason}
-          placeholder="the prediction does not follow from the evidence"
-        ></textarea>
+        <div class="sheet-text">
+          {reasonKept
+            ? 'Why? The reason is the record.'
+            : 'Reject this proposal? The graph keeps no reason, so anything typed here is not stored.'}
+        </div>
+        {#if reasonKept}
+          <textarea
+            class="editbox"
+            rows="3"
+            bind:value={reason}
+            placeholder="the prediction does not follow from the evidence"
+          ></textarea>
+        {/if}
         <div class="btnrow">
           <button class="abtn" onclick={() => (rejecting = false)}>Back</button>
-          <button class="abtn primary" disabled={busy || !reason.trim()} onclick={() => decide(false)}>
+          <button
+            class="abtn primary"
+            disabled={busy || (reasonKept && !reason.trim())}
+            onclick={() => decide(false)}
+          >
             Reject
           </button>
         </div>
