@@ -212,7 +212,7 @@ export const ROUTES = [
           'outbox/[^/]+/[^/]+',
           'mail/(act|compose)',
           'notes(/edit)?',
-          'entity/unalias',
+          'entity/(alias|unalias)',
           'entity/merge',
           'entity/create',
           'proposals/[^/]+/[^/]+/[^/]+',

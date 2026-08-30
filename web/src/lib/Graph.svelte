@@ -44,6 +44,34 @@
   let notes_ = $state({}); // fact uid → verdict error
   let said = $state(null); // one-line confirmation of the last verdict
   let armedAlias = $state(null); // alias awaiting its second, confirming tap
+  let addingAlias = $state(false);
+  let newAlias = $state('');
+
+  // The add direction: the owner stating another way of saying this name.
+  // Direct write, like answering a disambiguation — and the reason the whole
+  // repair loop closes in place: see a wrong alias, remove it; miss a right
+  // one, add it.
+  async function addAlias() {
+    const a = newAlias.trim();
+    if (!a || !entity?.node?.id) return;
+    busy = true;
+    try {
+      const res = await fetch('/api/entity/alias', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ node_id: entity.node.id, alias: a }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      said = (await res.json())?.output ?? 'aliased';
+      addingAlias = false;
+      newAlias = '';
+      await lookup(entity?.node?.name ?? query);
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      busy = false;
+    }
+  }
 
   // ---- fact authoring ----
   // The owner states a fact; it lands live, never in the review queue —
@@ -198,6 +226,8 @@
     busy = true;
     said = null;
     armedAlias = null;
+    addingAlias = false;
+    newAlias = '';
     historyOpen = false;
     timeline = null;
     related = null;
@@ -624,14 +654,13 @@
           <span class="ename">{n.name}</span>
           <span class="chip">{n.node_type ?? n.type}</span>
         </div>
-        {#if n.aliases?.length}
-          <!-- Every alias, each removable in place: a bare first name here
-               is a conflation magnet, and the repair should be reachable
-               the moment it is spotted (aliases are re-addable, so the
-               mistake costs one more tap than the fix). -->
-          <div class="chiprow aliasrow">
-            <span class="tinylabel">aka</span>
-            {#each n.aliases as a (a)}
+        <!-- Every alias, each removable in place, and a slot to add one: a
+             bare first name here is a conflation magnet, and both repairs
+             should be reachable the moment the gap is spotted (aliases are
+             re-addable, so a mistake costs one more tap than the fix). -->
+        <div class="chiprow aliasrow">
+          <span class="tinylabel">aka</span>
+          {#each n.aliases ?? [] as a (a)}
               <button
                 class="entchip aliaschip"
                 class:armed={armedAlias === a}
@@ -644,8 +673,34 @@
                 {a}<span class="aliasx">{armedAlias === a ? ' — remove?' : ' ✕'}</span>
               </button>
             {/each}
+            {#if addingAlias}
+              <!-- svelte-ignore a11y_autofocus — the input exists because the
+                   owner just asked for it; focus is the point. -->
+              <input
+                class="field small aliasinput"
+                placeholder="another name for {n.name}…"
+                bind:value={newAlias}
+                autocapitalize="off"
+                autofocus
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addAlias();
+                  } else if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    addingAlias = false;
+                    newAlias = '';
+                  }
+                }}
+              />
+            {:else}
+              <button
+                class="entchip addalias"
+                title="add another way of saying this name — it resolves here from now on"
+                onclick={() => (addingAlias = true)}
+              >+ alias</button>
+            {/if}
           </div>
-        {/if}
         {#if n.identifiers?.length}
           <!-- The deterministic keys, shown apart from the aliases on
                purpose: an alias is how the node is spoken of, an identifier
@@ -986,6 +1041,8 @@
   .aliaschip.armed { color: var(--hazard); border-color: var(--hazard); }
   .aliaschip.armed .aliasx { color: var(--hazard); }
   .aliaschip:disabled { opacity: 0.5; }
+  .addalias { color: var(--accent-400); border-style: dashed; }
+  .aliasinput { flex: 1 1 150px; min-width: 130px; min-height: 34px; }
   .card { background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; }
   .row { text-align: left; cursor: pointer; color: var(--text); font: inherit; }
   .rowtop { display: flex; align-items: center; gap: 8px; }
