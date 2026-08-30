@@ -874,6 +874,83 @@ pub async fn fact_retract(State(state): St, Json(body): Json<RetractBody>) -> Re
     verb(&state, &["kg", "retract", "--", uid]).await
 }
 
+/// Spawn `mecha-graph` and relay its own words — the owner's curation lane
+/// (merge, and the proposals family), deliberately NOT on the MCP tool
+/// surface the model sees. `$MECHA_GRAPH_BIN` overrides the `PATH` lookup,
+/// the same convention as `serve/proposals.rs`.
+///
+/// Unlike `verb`, a refusal relays the child's whole stderr, not its last
+/// line: `resolve_one` refuses an ambiguous name with the candidate list,
+/// and on a no-undo verb that list is the answer, not noise around it.
+async fn graph_verb(args: &[&str]) -> Response {
+    let bin = std::env::var("MECHA_GRAPH_BIN").unwrap_or_else(|_| "mecha-graph".into());
+    let mut cmd = tokio::process::Command::new(&bin);
+    if let Some(dir) = super::child_cwd() {
+        cmd.current_dir(dir);
+    }
+    let out =
+        match tokio::time::timeout(std::time::Duration::from_secs(30), cmd.args(args).output())
+            .await
+        {
+            Err(_) => {
+                return (StatusCode::GATEWAY_TIMEOUT, "the graph verb timed out\n").into_response()
+            }
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!(
+                    "`{bin}` not found — install mecha-graph, or set MECHA_GRAPH_BIN to its path\n"
+                ),
+                )
+                    .into_response()
+            }
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("spawning {bin}: {e:#}\n"),
+                )
+                    .into_response()
+            }
+            Ok(Ok(out)) => out,
+        };
+    if out.status.success() {
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return Json(serde_json::json!({ "output": stdout })).into_response();
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let reason = stderr.trim();
+    let reason = if reason.is_empty() { "failed" } else { reason };
+    (StatusCode::CONFLICT, format!("{reason}\n")).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct MergeBody {
+    /// The node that stays — the open page's node, by id.
+    pub keep_id: String,
+    /// The duplicate to fold into it: name, alias or id, resolved graph-side.
+    pub dup: String,
+}
+
+/// POST /api/entity/merge — fold a duplicate into the open entity, through
+/// `mecha-graph proposals file-merge --accept`: the owner's one-gesture
+/// merge, and the graph's one no-undo verb always leaves a decided proposal
+/// behind it. An ambiguous duplicate name is refused with the candidate
+/// list — on a no-undo verb, a guessed resolution is the worst outcome, so
+/// the refusal is the feature.
+pub async fn entity_merge(State(state): St, Json(body): Json<MergeBody>) -> Response {
+    let keep = body.keep_id.trim();
+    let dup = body.dup.trim();
+    if keep.is_empty() || dup.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "which node stays, and which folds in?\n",
+        )
+            .into_response();
+    }
+    let _ = &state;
+    graph_verb(&["proposals", "file-merge", "--accept", "--", keep, dup]).await
+}
+
 #[derive(serde::Deserialize)]
 pub struct UnaliasBody {
     /// The node's id — an id, never a name. On a conflation repair a name

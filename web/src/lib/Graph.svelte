@@ -57,6 +57,38 @@
   let factBusy = $state(false);
   let openFact = $state(null); // uid of the expanded reviewed-fact row
 
+  // ---- merge (fold a duplicate into the open entity) ----
+  let mergeOpen = $state(false);
+  let dupName = $state('');
+  let mergeBusy = $state(false);
+
+  // The one-gesture merge: files an owner proposal and accepts it in the
+  // same breath, so the graph's one no-undo verb always leaves a decided
+  // proposal behind it. An ambiguous name comes back as the CLI's own
+  // candidate list in the error line — paste the id it shows.
+  async function mergeDup() {
+    const dup = dupName.trim();
+    if (!dup || !entity?.node?.id) return;
+    mergeBusy = true;
+    try {
+      const res = await fetch('/api/entity/merge', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ keep_id: entity.node.id, dup }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      said = (await res.json())?.output ?? 'merged';
+      mergeOpen = false;
+      dupName = '';
+      error = null;
+      await lookup(entity?.node?.name ?? query);
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      mergeBusy = false;
+    }
+  }
+
   // ---- capture ----
   let draft = $state('');
   let draftBox = $state(null); // the textarea element, for autogrow reset
@@ -679,6 +711,35 @@
           <button class="sectbtn" onclick={() => (addingFact = true)}>+ add a fact or connection</button>
         {/if}
 
+        {#if mergeOpen}
+          <div class="card">
+            <div class="factform">
+              <span class="subjname">fold a duplicate into {n.name}</span>
+              <input
+                class="field small"
+                placeholder="the duplicate — a name, or an id when names collide"
+                bind:value={dupName}
+                autocapitalize="off"
+              />
+            </div>
+            <div class="btnrow">
+              <button class="minibtn" disabled={mergeBusy} onclick={() => { mergeOpen = false; dupName = ''; }}>Cancel</button>
+              <button
+                class="minibtn primary"
+                disabled={mergeBusy || !dupName.trim()}
+                onclick={mergeDup}
+              >{mergeBusy ? 'merging…' : 'Merge — no undo'}</button>
+            </div>
+            <div class="editfoot">
+              Everything the duplicate carries — facts, mentions, aliases — moves onto this entity,
+              and the merge is recorded as a decided proposal. There is no unmerge. A name two
+              entities share is refused with the candidates; answer with the id it lists.
+            </div>
+          </div>
+        {:else}
+          <button class="sectbtn" onclick={() => (mergeOpen = true)}>⇤ merge a duplicate into this</button>
+        {/if}
+
       <button class="sectbtn" onclick={toggleHistory}>
         {historyOpen ? 'history —' : 'history +'}
       </button>
@@ -910,7 +971,9 @@
   .editrow { display: flex; gap: 8px; }
   .editfoot { font-size: 11px; color: var(--text-muted); line-height: 1.45; }
   .notemeta { font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
-  .warnline { display: flex; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
+  /* pre-line: a refusal can be a list (resolve_one's ambiguity candidates),
+     and its line breaks are the answer's structure. */
+  .warnline { display: flex; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; white-space: pre-line; overflow-wrap: anywhere; }
   .saidline { font-family: var(--mono); font-size: 11px; color: var(--accent-400); }
   .empty { color: var(--text-muted); font-size: 13px; padding: 8px 0; }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; padding-top: 6px; }

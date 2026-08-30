@@ -206,6 +206,7 @@ export const ROUTES = [
           'mail/(act|compose)',
           'notes(/edit)?',
           'entity/unalias',
+          'entity/merge',
           'tasks/[a-z]+',
           'questions/[a-z]+',
           'frontdoor/act',
