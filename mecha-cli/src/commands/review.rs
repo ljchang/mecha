@@ -437,7 +437,7 @@ fn graph_bin() -> String {
 /// A missing binary is reported by name with the variable that fixes it —
 /// "No such file or directory" from a child process nobody mentioned is the
 /// least actionable error there is.
-fn graph_cli(args: &[&str]) -> Result<String> {
+pub(crate) fn graph_cli(args: &[&str]) -> Result<String> {
     let bin = graph_bin();
     let out = std::process::Command::new(&bin)
         .args(args)

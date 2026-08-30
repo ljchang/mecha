@@ -89,6 +89,10 @@ export const ROUTES = [
 
   ['GET', /^\/api\/notes$/, () => fx.notes],
   ['GET', /^\/api\/find$/, () => fx.find],
+  // The graph tab's neighborhood and history reads. One entity's worth,
+  // matching the /api/entity fixture — the demo has one person in it.
+  ['GET', /^\/api\/related$/, () => fx.related],
+  ['GET', /^\/api\/timeline$/, () => fx.timeline],
 
   // One entity, everything the graph knows about it. The page always asks by
   // name, and the demo has one person to answer with — a lookup for anyone
@@ -213,6 +217,7 @@ export const ROUTES = [
           'resume',
           'dictate',
           'offer',
+          'facts(/retract)?',
         ].join('|') +
         ')$',
     ),

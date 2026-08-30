@@ -365,6 +365,13 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/frontdoor/read", get(frontdoor::read))
         .route("/api/frontdoor/act", axum::routing::post(frontdoor::act))
         .route("/api/find", get(board::find))
+        .route("/api/related", get(board::related))
+        .route("/api/timeline", get(board::timeline))
+        .route("/api/facts", axum::routing::post(board::fact))
+        .route(
+            "/api/facts/retract",
+            axum::routing::post(board::fact_retract),
+        )
         .route(
             "/api/dictate",
             axum::routing::post(dictate)
@@ -766,6 +773,40 @@ mod tests {
             ("GET", "/api/settings/voice"),
             ("POST", "/api/settings/voice/clone?name=x"),
             ("POST", "/api/settings/voice/clone/delete"),
+        ] {
+            let response = test_router()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_graph_routes_sit_behind_the_owner_guard() {
+        // The graph tab reads the owner's whole private store — every
+        // entity, fact and note — so a probe without the header learns
+        // nothing, not even that a graph exists. The two new reads
+        // (`related`, `timeline`) are pinned beside the ones that predate
+        // them, because a route added later is exactly the one a guard
+        // test written earlier cannot be covering — and the two fact
+        // writes are the routes most worth pinning: they land live in the
+        // store, by the owner's authority, which is exactly what a probe
+        // must never borrow.
+        for (method, uri) in [
+            ("GET", "/api/entity?name=x"),
+            ("GET", "/api/find?q=x"),
+            ("GET", "/api/notes"),
+            ("GET", "/api/related?name=x"),
+            ("GET", "/api/timeline?name=x"),
+            ("POST", "/api/facts"),
+            ("POST", "/api/facts/retract"),
         ] {
             let response = test_router()
                 .oneshot(
