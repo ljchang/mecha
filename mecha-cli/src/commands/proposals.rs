@@ -304,7 +304,12 @@ fn supersede_cmd(
     // decision waiting for the owner, and sweeping it away silently would be
     // this command committing the failure it exists to fix.
     let targets: Vec<String> = match (&id, stale) {
-        (Some(id), false) => vec![id.clone()],
+        // Resolved through `store.proposal`, which matches on **prefix** and
+        // bails on zero or ambiguous — the same resolution `accept` and
+        // `reject` use. Comparing full ids here instead made the abbreviation
+        // that works for every other verb silently match nothing and exit 0,
+        // which reads as "done" when nothing happened.
+        (Some(id), false) => vec![store.proposal(id)?.id],
         (None, true) => {
             let mut out = Vec::new();
             for p in proposals.iter().filter(|p| p.status == "pending") {
@@ -319,6 +324,9 @@ fn supersede_cmd(
     };
 
     if targets.is_empty() {
+        // Only reachable under `--stale`: an explicit id has already been
+        // resolved by `store.proposal`, which errors rather than returning
+        // nothing.
         println!("no stale proposals — nothing to supersede");
         return Ok(());
     }

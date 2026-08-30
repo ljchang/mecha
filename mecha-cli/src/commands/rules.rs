@@ -384,8 +384,16 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
                 id: Session::new_id(),
                 domain: domain.clone(),
                 reflexions_processed: 0,
-                rules_before: before.iter().filter(|r| r.active()).count() as u32,
-                rules_after: rules.iter().filter(|r| r.active()).count() as u32,
+                // **Whole file, not the active subset** — the count every
+                // other `LeapRun` writer uses (`learn` writes
+                // `learned_before.len()` / `rules.len()`; `accept` the same).
+                // A retirement never removes a row, so these are equal and
+                // the pass shows as a flat step; counting `active()` here
+                // instead put two different measures on one series in the
+                // "Rule set over time" chart, where a retirement would read
+                // as a drop and a consolidation as a total.
+                rules_before: before.len() as u32,
+                rules_after: rules.len() as u32,
                 created_at: now.clone(),
             })?;
             store.commit(&format!(
@@ -625,10 +633,14 @@ mod tests {
 
         // And it is recorded as a pass, so `git log` in the store reads as the
         // system's learning history rather than an unexplained file change.
+        // Counted over the whole file, like every other `LeapRun` writer — a
+        // retirement disables a rule without removing its row, so both are 2
+        // and the pass reads as a flat step. Counting the *active* subset here
+        // would put two different measures on one chart series.
         let runs = std::fs::read_to_string(store.root().join("runs.jsonl")).unwrap();
         assert!(
-            runs.contains("\"rules_before\":2") && runs.contains("\"rules_after\":1"),
-            "a retirement pass must leave a LeapRun showing the active count fell: {runs}"
+            runs.contains("\"rules_before\":2") && runs.contains("\"rules_after\":2"),
+            "a retirement pass records the file's rule count, not the active one: {runs}"
         );
 
         std::fs::remove_dir_all(store.root()).ok();

@@ -1505,6 +1505,46 @@ fn learned_within(root: &Path, now: DateTime<Utc>, window: chrono::Duration) -> 
         .any(|t| now.signed_duration_since(t.with_timezone(&Utc)) < window)
 }
 
+/// Read a domain's learned rules **without constructing a store**.
+///
+/// `LearningStore::open` creates directories, runs `git init` and writes a
+/// `.gitignore`. Doctor reports on stores; it must not bring one into being,
+/// or running the health check on a machine that has never learned anything
+/// leaves a store behind that says it has.
+///
+/// **An absent file is an empty rule set, not an unknown one** — a domain that
+/// has never consolidated has no learned rules, and that is a fact `accept`
+/// acts on. `None` is reserved for a file that exists and cannot be read or
+/// parsed, where the honest answer is that we do not know and must not claim
+/// a proposal is unappliable.
+fn read_learned_rules(root: &Path, domain: &str) -> Option<Vec<crate::learning::Rule>> {
+    let path = root.join("rules").join(format!("{domain}.learned.toml"));
+    if !path.exists() {
+        return Some(Vec::new());
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    #[derive(serde::Deserialize)]
+    struct File {
+        #[serde(default)]
+        rules: Vec<crate::learning::Rule>,
+    }
+    toml::from_str::<File>(&text).ok().map(|f| f.rules)
+}
+
+/// `proposals::accept`'s staleness test, restated: positional over every
+/// rule, comparing `text` and `enabled`.
+///
+/// Duplicated rather than shared because `accept` lives in the CLI crate and
+/// this is core — but it is a duplication with a test
+/// (`the_stale_predicate_matches_accepts`) pinning the two together, since a
+/// doctor that disagrees with the verb it recommends is worse than silence.
+fn same_rules_as_accept(a: &[crate::learning::Rule], b: &[crate::learning::Rule]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.text == y.text && x.enabled == y.enabled)
+}
+
 /// A pending rule proposal older than this is a review nobody knows is due.
 ///
 /// Two nights, deliberately: the nightly is daily, so one unreviewed pass is
@@ -1558,20 +1598,21 @@ fn check_proposal_review(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         let Ok(at) = DateTime::parse_from_rfc3339(&p.created_at) else {
             continue;
         };
-        // Whether `accept` would still take it. Comparing against the live
-        // rules is the same question `proposals accept` asks, so a proposal
-        // this calls unappliable is exactly one the owner cannot apply.
-        let unappliable = crate::learning::LearningStore::open(root)
-            .and_then(|s| s.learned_rules(&p.domain))
-            .map(|live| {
-                let key = |rs: &[crate::learning::Rule]| {
-                    rs.iter()
-                        .filter(|r| r.active())
-                        .map(|r| r.text.clone())
-                        .collect::<std::collections::BTreeSet<_>>()
-                };
-                key(&live) != key(&p.rules_before)
-            })
+        // Whether `accept` would still take it — and it must be the *same*
+        // predicate, or doctor tells the owner to supersede something that
+        // would have applied fine.
+        //
+        // Two things were wrong here. `LearningStore::open` is a **writing**
+        // constructor (it creates `root` and `root/rules`, runs `git init`,
+        // writes `.gitignore`), and a check that reports on a store must not
+        // create one — the rule this module states two checks up about
+        // `Charter::load`. And the comparison was an order-insensitive set of
+        // *active* rule texts, where `accept`'s `same_rules` compares
+        // positionally over every rule, `text` **and** `enabled` — so a
+        // rewrite that reordered the same texts, or one that only flipped a
+        // rule's `enabled`, read as unchanged here and as changed there.
+        let unappliable = read_learned_rules(root, &p.domain)
+            .map(|live| !same_rules_as_accept(&live, &p.rules_before))
             .unwrap_or(false);
         pending.push((
             p.id.clone(),
@@ -3769,6 +3810,54 @@ mod proposal_review_tests {
         DateTime::parse_from_rfc3339("2026-08-29T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc)
+    }
+
+    /// **Doctor's staleness test must be `proposals accept`'s**, or it tells
+    /// the owner to supersede a proposal that would have applied fine.
+    ///
+    /// Fails on the old behaviour: that compared an order-insensitive set of
+    /// *active* rule texts, so a rewrite that reordered the same rules read as
+    /// unchanged here and as changed by `accept`, and a rule merely disabled
+    /// read as unchanged here and as changed there.
+    #[test]
+    fn the_stale_predicate_matches_accepts() {
+        let r = |text: &str, enabled: bool| crate::learning::Rule {
+            text: text.into(),
+            enabled,
+            ..Default::default()
+        };
+        let base = vec![r("alpha", true), r("beta", true)];
+
+        assert!(same_rules_as_accept(&base, &base.clone()));
+        // Order is part of it — a set comparison would call this unchanged.
+        assert!(!same_rules_as_accept(
+            &base,
+            &[r("beta", true), r("alpha", true)]
+        ));
+        // So is `enabled` — an active-only filter would drop the disabled one
+        // from both sides and call these equal.
+        assert!(!same_rules_as_accept(
+            &base,
+            &[r("alpha", true), r("beta", false)]
+        ));
+        assert!(!same_rules_as_accept(&base, &[r("alpha", true)]));
+    }
+
+    /// **Doctor must not bring a learning store into being.** Reporting on a
+    /// machine that has never learned anything must leave it looking like a
+    /// machine that has never learned anything.
+    #[test]
+    fn checking_an_absent_store_creates_nothing() {
+        let root =
+            std::env::temp_dir().join(format!("mecha-doctor-nostore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // An absent store reads as an empty rule set — a fact — rather than
+        // as unknown, and reading it creates nothing.
+        assert!(read_learned_rules(&root, "behavior").is_some_and(|r| r.is_empty()));
+        assert!(
+            !root.exists(),
+            "reading rules must not create the store directory"
+        );
     }
 
     /// **A queue nobody has answered is a finding.** Before this, review
