@@ -3281,6 +3281,63 @@ regenerating serialiser would otherwise eat. Three of the ten rounds found
 defects in the previous round's fix; that is the honest cost of repairing
 under review, and the reason the last two rounds were smaller than the first.
 
+**2026-08-29/30 — the learning loop runs itself, and the instruments that
+graded it were lying (PR #122, fifteen commits, merged fast-forward at
+`4c7a0e2`).** The gated path had produced 0 live rules in 25 days — four
+mutually-exclusive proposals held 27 of 43 reflections while `learn` skipped
+nightly. `learn --auto` is the ungated middle mode (Luke's 2026-08-19
+ruling): the counterfactual gate stays in front of the write, a regression
+refuses, measured-clean applies, and an ungradeable batch applies **on
+probation** (`Rule::probation`, retiring at `PROBATION_RETIRE_AT` = 2), with
+every pass still writing a proposal as audit trail and superseding its
+pending predecessors (`proposals supersede` — releases reflections
+unconsumed, where reject is the owner's no and consumes them). Retirement
+became direct: `rules propose-retirements --apply` nightly, resolving any
+pending twin it overtakes. First consolidation: 28 reflections → 12 live
+rules. Consolidation moved to the session-close hook (`learn-live.sh`,
+flock-guarded, workspace-jailed after a fail-open `cd ""` was caught in
+review); `mecha learning-report` and a web trend pane are the is-it-working
+view.
+
+The instrument half: **counterfactual probes had never once concluded on a
+mid-run steer**, because the replay regenerated the whole prefix and
+required the model to reproduce every call before the steer point — 11 of
+12 steer probes `inconclusive: diverged at call #1` against points at
+#10–#28, an exponential lottery, not noise. Probes now **branch**
+(`counterfactual::branch_at` + `replay_run::drive_branch`): the recorded
+messages before the intervention are resubmitted verbatim (a steer keeps its
+tool results and loses only the steering text; a denial regenerates the
+whole proposing turn), so pre-point divergence is structurally impossible
+and the forced prefix reads from KV cache. Measured after: 0 inconclusive,
+12 graded; the first unattended nightly trace-graded 3 of 3 steers. Three
+more instrument lies fixed in the same pass, each found by running the
+thing: the trifecta interlock fired *inside* replays (a replayed send sends
+nothing — `external_send` now narrows in the non-executing modes); a
+recorded tool nothing today can construct killed the whole probe (it now
+rebuilds as a spec stand-in from the `SurfaceStore` blob, and a recorded
+spec wins over a live tool's reworded description, closing the
+rebuildability half left open on 2026-08-27); and the judge graded
+tool-call bodies as answers (`is_gradeable` drops whole spans, unclosed
+tags included). Thirteen auto-review rounds ran against the PR; rounds 12
+and 13 alone caught a fail-open workspace guard, `--auto` skipping the
+already-argued brake, probation stamping every rule instead of the ungraded
+ones, a nightly retirement pass silencing the starved-learner check for
+48h, and `finalize_rules` dropping the probation flag — the D1 hedge
+evaporating within a session or two while three doc comments described it.
+Era hygiene rode along: the pre-stem step-nudge bodies are recognised as
+harness voice, four reflections stranded on pre-`tools_hash` surfaces were
+dropped with reasons, and `select_probe_corpus` honours `dropped_at`.
+
+**2026-08-30 — a hypothesis tested and rejected: the provenance gate is not
+crippling learning.** Investigated by the learning lane before ungating:
+`Evidence::UserTurns` already rescues tainted conversations into clean
+reflections (21 of 43 arrived that way); the real residue is 5 lessons, of
+which 2 are outbox edits the transcript walk structurally cannot reach, and
+`reflect --remine-untrusted` over all 9 affected sessions produced 0 new
+reflections — the reflector declines to draw lessons from user words alone.
+Do not re-open the gate on this argument; the evidence says it costs almost
+nothing.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -3899,6 +3956,29 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**2026-08-30 — the security interlock did the failing, and the model wore
+it.** The trifecta interlock ran live inside counterfactual replays and
+blocked `docs__sheets_write`/`web_search` calls the recording had executed —
+in a mode where nothing leaves the machine, since every answer comes from
+the recording. The blocked call never reached the replay cursor, the arm
+died one call later, and the verdict graded the model. General shape: **an
+instrument must not carry live-fire controls for actions it cannot
+perform** — a replayed tool declares what it can actually do (send nothing),
+or the guard's work is billed to the subject under measurement. The same
+session's stale-binary rerun is the Environment cluster's; found because the
+warning that should have vanished was still in the log, which is the cheap
+verification the fix itself suggests: after a fix, grep the next run's log
+for the symptom, not for success.
+
+**2026-08-30 — the judge's answer budget equalled the thinking budget under
+it, so silence got graded.** `Judge` defaulted `max_tokens` 4096 against the
+server's `--reasoning-budget 4096`; a long rubric spent the whole allowance
+on reasoning and returned HTTP 200 with empty content, which the judge
+scored as a bad answer. Fixed by `provider::LOCAL_MAX_TOKENS`; the general
+shape is CLAUDE.md's own server rule pointed at graders: **any budget handed
+to a component that thinks before answering must clear the thinking budget
+beneath it, or refusal-shaped emptiness is graded as the subject's failure.**
 
 **2026-08-29 — six verification steps in one session could not have failed.**
 Across PR #118's ten review rounds: a drag assertion that compared two empty
@@ -4605,6 +4685,17 @@ symptom is not yet evidence it caused it**, and the cheap test is almost
 always re-running one command against two starting points.
 
 ### Learning
+
+**2026-08-30 — a closed list gates live text, but recordings are of their
+era.** `STEP_ESCALATION_STEM` shipped mid-day 2026-08-28; a transcript from
+that morning carried the same fully-templated nudge body with no stem, and
+the miner recorded it as a user's steer — it reached the probe corpus and
+was counterfactually replayed as if a person had typed it.
+`is_harness_voice` now also matches the frozen pre-stem bodies. General
+shape: **matching harness voice against recordings needs every wording that
+ever shipped, not the current one** — the historical strings are frozen and
+can never drift, so adding them costs nothing; omitting them lets the
+harness's own words earn rules.
 
 All found by pre-push review or by running it.
 
@@ -5344,6 +5435,28 @@ and is what finally exercised the path.)
   inside a single fix rather than across review rounds of a whole PR.
 
 ### Environment
+
+**2026-08-30 — a rerun measured the code from before the fix, and the log's
+own symptom was what caught it.** After editing the replay wrapper,
+`cargo test -p mecha-core --lib` rebuilt the library and its tests — and left
+`target/debug/mecha` exactly as it was, so the "verification" rerun measured
+the unfixed binary for half an hour. Nothing in the invocation looked wrong;
+the tell was that the warning the fix should have removed was still being
+printed. Two general shapes: **a package-scoped test build is not a binary
+build** (`cargo test -p X --lib` proves the lib, not the bin you are about
+to run), and **after a fix, grep the next run's output for the symptom** —
+its absence is the cheapest artifact-level proof there is, and its presence
+is unfakeable.
+
+**2026-08-30 — a gitignored file does not exist in a worktree, so the rule
+"route specifics to OPERATIONS.md" silently forks it.** `docs/OPERATIONS.md`
+is gitignored (`.gitignore`, confirmed via `git check-ignore -v`) and
+`git worktree add` carries only tracked files — a lane following the
+inventory-split rule from a worktree writes a second, divergent copy the
+real file never learns about. General shape: **a convention that names a
+gitignored path binds only the main checkout**; a worktree lane hands the
+fact to whoever sits there. (Found by the perf lane, verified from the main
+checkout the same hour.)
 
 **2026-08-29 — deleting the A records would have left browsers on the old
 page while every terminal check looked right.** Squarespace's DNS preset
