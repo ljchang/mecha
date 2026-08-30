@@ -5,10 +5,23 @@
   import Outbox from './Outbox.svelte';
   import Queue from './Queue.svelte';
   import Frontdoor from './Frontdoor.svelte';
+  import Proposals from './Proposals.svelte';
 
-  let { initial = null } = $props();
-  const panes = ['outbox', 'graph', 'frontdoor'];
+  let { initial = null, navigate = () => {} } = $props();
+  // The three proposal stores are panes in their own right rather than one
+  // `proposals` pane with hidden state: each is a card on the home page, and
+  // a card has to land on the store it names. They share one component and
+  // one tab — six tabs on a phone is a scroller nobody reads.
+  // One literal, read by `every_queue_the_backlog_reports_is_named_and_\
+  // reachable_from_the_web_home` in Rust — which parses it as a string array
+  // and failed loudly on a `...spread`, which is the guard working. The
+  // proposal stores are what is left after the panes that own their own
+  // component, so the two lists cannot drift.
+  const panes = ['outbox', 'graph', 'frontdoor', 'harness', 'rules', 'entities'];
+  const ownPanes = ['outbox', 'graph', 'frontdoor'];
+  const proposalStores = panes.filter((p) => !ownPanes.includes(p));
   let pane = $state(panes.includes(initial) ? initial : 'outbox');
+  const inProposals = $derived(proposalStores.includes(pane));
 </script>
 
 <div class="review">
@@ -16,11 +29,16 @@
     <button class="tab" class:active={pane === 'outbox'} onclick={() => (pane = 'outbox')}>Outbox</button>
     <button class="tab" class:active={pane === 'graph'} onclick={() => (pane = 'graph')}>Graph queue</button>
     <button class="tab" class:active={pane === 'frontdoor'} onclick={() => (pane = 'frontdoor')}>Front door</button>
+    <button class="tab" class:active={inProposals} onclick={() => (pane = 'harness')}>Proposals</button>
   </div>
   {#if pane === 'outbox'}
     <Outbox />
   {:else if pane === 'frontdoor'}
     <Frontdoor />
+  {:else if inProposals}
+    <!-- The store selection is a route, not component state, so Back out of
+         `entities` returns to `harness` instead of leaving the tab. -->
+    <Proposals store={pane} onstore={(s) => { pane = s; navigate(`review/${s}`); }} />
   {:else}
     <div class="scrollwrap"><Queue /></div>
   {/if}

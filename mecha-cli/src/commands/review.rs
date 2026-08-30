@@ -418,6 +418,138 @@ fn shadow(
     Ok(())
 }
 
+// ─── The reviewable-proposal stores ──────────────────────────────────────────
+
+/// One reviewable proposal, in the shape every such store now answers in.
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct ReviewRow {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+}
+
+/// Where a review surface gets its rows and how it decides them. Held as argv
+/// rather than as an enum of stores, on the `/triggers` rule: a surface drives
+/// the command line, so nothing it can do is missing from a script.
+#[derive(Clone)]
+pub(crate) struct ReviewSource {
+    /// Human label for the box title.
+    pub label: String,
+    pub list: Vec<String>,
+    /// `<verb> show <id>` — the whole item. Essential rather than optional:
+    /// a rule proposal's list line is "5 rule(s) from 10 reflection(s)",
+    /// which is a count, not something anyone can accept on. Accepting what
+    /// you cannot read is the failure the outbox's DraftView exists to
+    /// prevent, and this surface had it.
+    pub show: Vec<String>,
+    pub accept: Vec<String>,
+    pub reject: Vec<String>,
+    /// True when the verb lives in `mecha-graph` rather than `mecha`.
+    pub graph: bool,
+}
+
+/// The reviewable-proposal stores, and where each one's verbs live.
+///
+/// Keyed on the queue name [`collect_queues`] emits — one list of queues,
+/// produced here and read by every surface, rather than an enum per reader
+/// that has to be kept in step by hand.
+///
+/// It lives beside the queue names rather than inside either surface because
+/// there are now **two** of them: the TUI's `/queues` modal and the web
+/// review tab. Four stores answer the same shape and take the same verbs, so
+/// they share one generic level in each surface rather than owning a pane
+/// each — three copies of "list, show, accept, reject" would be three things
+/// to keep correct, which is how `/queues` came to say "no modal for that one
+/// yet" beside a count of 28, and how the web home came to print
+/// `mecha harness list` on a card it could not open.
+pub(crate) fn review_source(queue: &str) -> Option<ReviewSource> {
+    let owned = |label: &str, verb: &[&str], graph: bool| {
+        let v: Vec<String> = verb.iter().map(|s| s.to_string()).collect();
+        let mut list = v.clone();
+        list.extend(["list".into(), "--json".into()]);
+        let mut show = v.clone();
+        show.push("show".into());
+        let mut accept = v.clone();
+        accept.push("accept".into());
+        let mut reject = v;
+        reject.push("reject".into());
+        Some(ReviewSource {
+            label: label.to_string(),
+            list,
+            show,
+            accept,
+            reject,
+            graph,
+        })
+    };
+    match queue {
+        "graph entities" => owned("entity proposals", &["proposals"], true),
+        "rule proposals" => owned("rule proposals", &["proposals"], false),
+        "harness changes" => owned("harness candidates", &["harness"], false),
+        // The surfaced-verdict queue rides the same generic level with
+        // hand-built argv: its verdict verbs are confirm/refute (a fact was
+        // never a candidate to accept), and the graph's flag spelling takes
+        // the uid appended exactly where accept/reject take an id. `a` =
+        // confirm, `r` = refute — one keystroke, one human verdict, the same
+        // keys meaning the same commitment.
+        "graph shadow" => Some(ReviewSource {
+            label: "shadow verdicts".to_string(),
+            list: vec!["shadow".into(), "list".into(), "--json".into()],
+            show: vec!["shadow".into(), "show".into()],
+            accept: vec!["shadow".into(), "--confirm".into()],
+            reject: vec!["shadow".into(), "--refute".into()],
+            graph: true,
+        }),
+        _ => None,
+    }
+}
+
+/// Parse the common `list --json` shape. The graph's entity proposals
+/// answer a richer object (they carry node ids and evidence); the fields
+/// this needs are read by name from either, so one parser serves all three
+/// stores without forcing them to a lowest common schema.
+pub(crate) fn review_from_json(raw: &str) -> anyhow::Result<Vec<ReviewRow>> {
+    let v: serde_json::Value = serde_json::from_str(raw)?;
+    let arr = v.as_array().cloned().unwrap_or_default();
+    Ok(arr
+        .iter()
+        .map(|r| {
+            let id = r["id"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| r["id"].as_i64().map(|n| n.to_string()))
+                .unwrap_or_default();
+            let kind = r["detector"]
+                .as_str()
+                .or_else(|| r["kind"].as_str())
+                .unwrap_or("")
+                .to_string();
+            // The graph names the node; the others carry a title already.
+            let title = r["title"].as_str().map(str::to_string).unwrap_or_else(|| {
+                let subject = r["subject_name"].as_str().unwrap_or("");
+                let other = r["other_name"].as_str().unwrap_or("");
+                if other.is_empty() {
+                    subject.to_string()
+                } else {
+                    format!("{subject}  +  {other}")
+                }
+            });
+            let detail = r["evidence"]
+                .as_str()
+                .or_else(|| r["detail"].as_str())
+                .unwrap_or("")
+                .to_string();
+            ReviewRow {
+                id,
+                kind,
+                title,
+                detail,
+            }
+        })
+        .collect())
+}
+
 // ─── The graph binary ────────────────────────────────────────────────────────
 
 /// Where `mecha-graph` lives.
