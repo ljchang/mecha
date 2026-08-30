@@ -367,6 +367,10 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/find", get(board::find))
         .route("/api/related", get(board::related))
         .route("/api/timeline", get(board::timeline))
+        .route(
+            "/api/entity/unalias",
+            axum::routing::post(board::entity_unalias),
+        )
         .route("/api/facts", axum::routing::post(board::fact))
         .route(
             "/api/facts/retract",
@@ -807,6 +811,7 @@ mod tests {
             ("GET", "/api/timeline?name=x"),
             ("POST", "/api/facts"),
             ("POST", "/api/facts/retract"),
+            ("POST", "/api/entity/unalias"),
         ] {
             let response = test_router()
                 .oneshot(
