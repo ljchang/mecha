@@ -43,6 +43,7 @@
   let reasons = $state({}); // fact uid → typed refute reason
   let notes_ = $state({}); // fact uid → verdict error
   let said = $state(null); // one-line confirmation of the last verdict
+  let armedAlias = $state(null); // alias awaiting its second, confirming tap
 
   // ---- fact authoring ----
   // The owner states a fact; it lands live, never in the review queue —
@@ -136,6 +137,7 @@
     if (!n) return;
     busy = true;
     said = null;
+    armedAlias = null;
     historyOpen = false;
     timeline = null;
     related = null;
@@ -190,6 +192,35 @@
     timeline = null;
     historyOpen = false;
     said = null;
+  }
+
+  // The conflation repair: a shared first name links strangers to this
+  // node, and removing the alias is what stops the next mention from
+  // landing here too. Two taps — the first arms, the second removes — and
+  // the id, never the name, names the node: a name lookup could resolve
+  // through the very alias being removed.
+  async function unalias(nodeId, alias) {
+    if (armedAlias !== alias) {
+      armedAlias = alias;
+      return;
+    }
+    busy = true;
+    try {
+      const res = await fetch('/api/entity/unalias', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ node_id: nodeId, alias }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      said = (await res.json())?.output ?? 'removed';
+      armedAlias = null;
+      await lookup(entity?.node?.name ?? query);
+    } catch (e) {
+      error = String(e?.message ?? e);
+      armedAlias = null;
+    } finally {
+      busy = false;
+    }
   }
 
   // One gesture back to the resting page: clears the query, the results,
@@ -500,7 +531,26 @@
           <span class="chip">{n.node_type ?? n.type}</span>
         </div>
         {#if n.aliases?.length}
-          <div class="rowsub">aka {n.aliases.join(' · ')}</div>
+          <!-- Every alias, each removable in place: a bare first name here
+               is a conflation magnet, and the repair should be reachable
+               the moment it is spotted (aliases are re-addable, so the
+               mistake costs one more tap than the fix). -->
+          <div class="chiprow aliasrow">
+            <span class="rowsub">aka</span>
+            {#each n.aliases as a (a)}
+              <button
+                class="entchip aliaschip"
+                class:armed={armedAlias === a}
+                disabled={busy}
+                title={armedAlias === a
+                  ? 'tap again to remove — future mentions of this name land elsewhere'
+                  : 'this name belongs to somebody else? tap twice to remove it'}
+                onclick={() => unalias(n.id, a)}
+              >
+                {a}<span class="aliasx">{armedAlias === a ? ' — remove?' : ' ✕'}</span>
+              </button>
+            {/each}
+          </div>
         {/if}
         {#if entity.interaction}
           <div class="rowsub">
@@ -776,6 +826,12 @@
   .minibtn:disabled { opacity: 0.5; }
   .chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
   .entchip { background: var(--bg); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); color: var(--accent-400); font-family: var(--mono); font-size: 11px; padding: 6px 10px; cursor: pointer; }
+  .aliasrow { align-items: center; }
+  .aliaschip { color: var(--text-muted); border-color: var(--accent-900); }
+  .aliaschip .aliasx { color: var(--accent-700); }
+  .aliaschip.armed { color: var(--hazard); border-color: var(--hazard); }
+  .aliaschip.armed .aliasx { color: var(--hazard); }
+  .aliaschip:disabled { opacity: 0.5; }
   .card { background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 7px; }
   .row { text-align: left; cursor: pointer; color: var(--text); font: inherit; }
   .rowtop { display: flex; align-items: center; gap: 8px; }

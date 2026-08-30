@@ -875,6 +875,26 @@ pub async fn fact_retract(State(state): St, Json(body): Json<RetractBody>) -> Re
 }
 
 #[derive(serde::Deserialize)]
+pub struct UnaliasBody {
+    /// The node's id — an id, never a name. On a conflation repair a name
+    /// lookup could resolve through the very alias being removed.
+    pub node_id: String,
+    pub alias: String,
+}
+
+/// POST /api/entity/unalias — remove an alias from a node: the repair for a
+/// name that belonged to somebody else, reachable the moment the entity
+/// page surfaces it. Relays `mecha kg unalias` verbatim, refusals included.
+pub async fn entity_unalias(State(state): St, Json(body): Json<UnaliasBody>) -> Response {
+    let id = body.node_id.trim();
+    let alias = body.alias.trim();
+    if id.is_empty() || alias.is_empty() {
+        return (StatusCode::BAD_REQUEST, "which node, and which alias?\n").into_response();
+    }
+    verb(&state, &["kg", "unalias", "--", id, alias]).await
+}
+
+#[derive(serde::Deserialize)]
 pub struct NotesQuery {
     pub limit: Option<u64>,
 }

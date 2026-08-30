@@ -21,6 +21,17 @@ source the same day. All five owner decisions are ruled in §8.*
 > `note.entities` chip row the moment `kg_notes` returns one; that
 > envelope field and the frecency interleave remain the mecha-graph-side
 > residue.
+>
+> **Status 2026-08-30, later: the first curation rung shipped** — the
+> entity page's aliases became removable in place (two taps; the repair
+> for a first-name conflation magnet, ruled by the owner: expose repairs
+> through mecha, "easy to enter, easy to correct in place").
+> `kg_upsert kind=alias` grew `remove` graph-side, `mecha kg unalias`
+> relays it (id-only, like `retract`), `POST /api/entity/unalias` sits
+> behind the owner guard. Still CLI-only: merge, rename, retype, and the
+> `proposals` queue (20 pending at the time of writing) — the next rung,
+> and merge needs an authority decision (it is no-undo, and today it is
+> deliberately not on the model's tool surface).
 
 ## 1. The problem, verified
 
