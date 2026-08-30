@@ -87,6 +87,13 @@ export const ROUTES = [
   // silent `[object Object]` in the pane.
   ['GET', /^\/api\/frontdoor\/read$/, () => text(fx.frontdoorShow)],
 
+  // The Proposals pane: the store chips, one store's listing, one item's
+  // `show`. Every store answers with the same demo listing — the pane is
+  // what is being demonstrated, not the stores' distinct contents.
+  ['GET', /^\/api\/proposals$/, () => fx.proposalStores],
+  ['GET', /^\/api\/proposals\/[^/]+$/, () => fx.proposalList],
+  ['GET', /^\/api\/proposals\/[^/]+\/[^/]+$/, () => fx.proposalDetail],
+
   ['GET', /^\/api\/notes$/, () => fx.notes],
   ['GET', /^\/api\/find$/, () => fx.find],
   // The graph tab's neighborhood and history reads. One entity's worth,
@@ -207,6 +214,7 @@ export const ROUTES = [
           'notes(/edit)?',
           'entity/unalias',
           'entity/merge',
+          'proposals/[^/]+/[^/]+/[^/]+',
           'tasks/[a-z]+',
           'questions/[a-z]+',
           'frontdoor/act',
