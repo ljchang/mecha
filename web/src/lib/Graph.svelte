@@ -568,7 +568,7 @@
                the moment it is spotted (aliases are re-addable, so the
                mistake costs one more tap than the fix). -->
           <div class="chiprow aliasrow">
-            <span class="rowsub">aka</span>
+            <span class="tinylabel">aka</span>
             {#each n.aliases as a (a)}
               <button
                 class="entchip aliaschip"
@@ -584,13 +584,39 @@
             {/each}
           </div>
         {/if}
+        {#if n.identifiers?.length}
+          <!-- The deterministic keys, shown apart from the aliases on
+               purpose: an alias is how the node is spoken of, an identifier
+               is how sources reach it — and it decides where future ingest
+               lands, so a split that leaves one behind re-merges on the
+               next sync. Read-only here; moving one is `mecha-graph
+               move-identifier`. -->
+          <div class="chiprow aliasrow">
+            <span class="tinylabel">reaches</span>
+            {#each n.identifiers as i (i.kind + i.value)}
+              <span
+                class="idchip"
+                title="{i.kind} — a deterministic key: future {i.kind} ingest lands on this node. Moving it to another node is `mecha-graph move-identifier`."
+              >{i.value}</span>
+            {/each}
+          </div>
+        {/if}
         {#if entity.interaction}
-          <div class="rowsub">
-            <span>
-              {entity.interaction.interaction_count} interactions · last seen
-              {day(entity.interaction.last_seen_at) || '—'} via
-              {entity.interaction.last_channel ?? '—'}
-            </span>
+          <!-- A stat row, not a sentence: the three numbers the old line ran
+               together, each under its own label. -->
+          <div class="statrow">
+            <div class="stat">
+              <span class="statval">{entity.interaction.interaction_count}</span>
+              <span class="tinylabel">interactions</span>
+            </div>
+            <div class="stat">
+              <span class="statval">{day(entity.interaction.last_seen_at) || '—'}</span>
+              <span class="tinylabel">last seen</span>
+            </div>
+            <div class="stat">
+              <span class="statval">{entity.interaction.last_channel ?? '—'}</span>
+              <span class="tinylabel">via</span>
+            </div>
           </div>
         {/if}
         {#if entity.sources?.length}
@@ -598,9 +624,12 @@
                returned by the store since the beginning, dropped by the old
                page. A source with no coverage is why two answers about the
                same person can differ. -->
-          <div class="rowsub srcline">
-            {#each entity.sources as s}
-              <span>{s.source} ×{s.episodes}</span>
+          <div class="chiprow aliasrow">
+            <span class="tinylabel">seen in</span>
+            {#each entity.sources as s (s.source)}
+              <span class="srcchip" title="{s.source}: {s.episodes} episode(s), {s.first ?? '?'} → {s.last ?? '?'}">
+                {s.source} <b>×{s.episodes}</b>
+              </span>
             {/each}
           </div>
         {/if}
@@ -888,6 +917,8 @@
   .chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
   .entchip { background: var(--bg); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); color: var(--accent-400); font-family: var(--mono); font-size: 11px; padding: 6px 10px; cursor: pointer; }
   .aliasrow { align-items: center; }
+  /* One left edge for the head card's labeled rows — aka, reaches, seen in. */
+  .aliasrow .tinylabel { min-width: 58px; flex-shrink: 0; }
   .aliaschip { color: var(--text-muted); border-color: var(--accent-900); }
   .aliaschip .aliasx { color: var(--accent-700); }
   .aliaschip.armed { color: var(--hazard); border-color: var(--hazard); }
@@ -897,13 +928,23 @@
   .row { text-align: left; cursor: pointer; color: var(--text); font: inherit; }
   .rowtop { display: flex; align-items: center; gap: 8px; }
   .rowsub { font-size: 11px; color: var(--text-muted); }
-  .srcline { display: flex; gap: 10px; flex-wrap: wrap; font-family: var(--mono); font-size: 10px; }
-  .head { border-color: var(--accent-700); }
+  .statrow { display: flex; gap: 22px; border-top: 1px solid var(--accent-900); padding-top: 10px; margin-top: 2px; }
+  .stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .statval { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+  .srcchip { background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); color: var(--text-muted); font-family: var(--mono); font-size: 10px; padding: 5px 8px; }
+  .srcchip b { color: var(--accent-400); font-weight: 500; }
+  /* The hub gets a touch more presence than the cards below it: a faint
+     accent wash and a larger name — hierarchy by weight, not decoration. */
+  .head { border-color: var(--accent-700); background: color-mix(in srgb, var(--accent-900) 28%, var(--surface)); gap: 9px; }
   .backbtn { background: none; border: none; color: var(--text-muted); font-size: 16px; cursor: pointer; padding: 0 4px 0 0; }
-  .ename { font-size: 16px; font-weight: 500; }
+  .ename { font-size: 18px; font-weight: 500; letter-spacing: -0.02em; }
+  /* Eyebrow labels: what a row IS, distinct from lowercase action buttons. */
+  .tinylabel { font-family: var(--mono); font-size: 10px; color: var(--accent-700); text-transform: uppercase; letter-spacing: 0.08em; }
+  /* Identifiers read as keys, not buttons: dashed, muted, inert. */
+  .idchip { border: 1px dashed color-mix(in srgb, var(--accent-700) 60%, transparent); border-radius: var(--radius-chip); color: var(--text-muted); font-family: var(--mono); font-size: 11px; padding: 6px 10px; overflow-wrap: anywhere; }
   .pname { font-family: var(--mono); font-size: 13px; color: var(--accent-400); }
   .chip { font-family: var(--mono); font-size: 10px; color: var(--text-muted); background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); padding: 3px 8px; margin-left: auto; }
-  .sect { font-family: var(--mono); font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+  .sect { font-family: var(--mono); font-size: 10px; color: var(--accent-700); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 8px; }
   .sectbtn { font-family: var(--mono); font-size: 11px; color: var(--text-muted); background: none; border: none; text-align: left; cursor: pointer; padding: 4px 0 0; }
   .factbtn { background: none; border: none; padding: 0; margin: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; width: 100%; }
   .factform { display: flex; flex-direction: column; gap: 8px; }
