@@ -889,11 +889,23 @@ async fn graph_verb(args: &[&str]) -> Response {
         cmd.current_dir(dir);
     }
     let out =
-        match tokio::time::timeout(std::time::Duration::from_secs(30), cmd.args(args).output())
+        // 120s, matching `verb_output` for far cheaper verbs — and the
+        // timeout message tells the truth about what a timeout here means:
+        // dropping the `output()` future does NOT kill the child (no
+        // `kill_on_drop`, deliberately — killing a no-undo merge mid-write
+        // risks partial state), so the verb may well complete after the page
+        // gave up. The first version said "timed out" and let the owner
+        // believe the merge had not happened while it quietly finished.
+        match tokio::time::timeout(std::time::Duration::from_secs(120), cmd.args(args).output())
             .await
         {
             Err(_) => {
-                return (StatusCode::GATEWAY_TIMEOUT, "the graph verb timed out\n").into_response()
+                return (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "timed out waiting — the verb may still be finishing in the background. \
+                     Re-open the entity and check what actually happened before retrying.\n",
+                )
+                    .into_response()
             }
             Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                 return (
