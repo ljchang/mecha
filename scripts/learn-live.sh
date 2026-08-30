@@ -38,6 +38,20 @@ flock -n 9 || exit 0
 
 {
   echo "── live learn $(date -u +%Y-%m-%dT%H:%M:%SZ) ──"
+  # **Stand somewhere no repository's `mecha.toml` reaches.** A `session_end`
+  # hook is spawned with `.current_dir(workspace)` — the closing session's
+  # workspace — and `reflect`/`learn` both `Config::load(&cwd)`, which layers
+  # `./mecha.toml` over the global config. `[providers]` is not stripped from
+  # a project layer, so ending a session in an untrusted checkout would let
+  # that repo point the consolidation call at its own endpoint, unattended,
+  # with the reflections as payload — and whatever came back would be written
+  # live into every future prompt's cached prefix. The provenance gate does
+  # not help: it classifies the *reflections*, not the learner.
+  #
+  # `ruminate.sh` already carries this argument; moving consolidation to a
+  # per-session hook is what dropped the protection.
+  cd "$("$MECHA" work path learn-live)" || exit 0
+
   # A small limit: this fires per session, so there is normally one to mine.
   # The cap is what stops a hook that has not run for a week from turning one
   # session's exit into an hour of inference.
@@ -50,7 +64,17 @@ flock -n 9 || exit 0
   # nothing gradeable in it still applies, marked probation and on a shorter
   # retirement leash — the D1 ruling, and the reason this is not simply
   # ungated.
-  "$MECHA" learn -p "$PROVIDER" --auto 2>&1
+  #
+  # **`--holdout` even here.** `learn` marks everything it consumes processed,
+  # and `validate --unprocessed-only` probes exactly what is left — so a hook
+  # that fires per session would consume every reflection within minutes of
+  # mining it and leave the nightly measurement with nothing. That ledger is
+  # what `rules propose-retirements --apply` argues from and what the learner
+  # reads as each rule's measured record, so starving it would render every
+  # rule `[unmeasured]` forever and retire nothing. The holdout slice is
+  # deterministic, so the slices accumulate across sessions into a real
+  # measurement set.
+  "$MECHA" learn -p "$PROVIDER" --holdout 0.25 --auto 2>&1
 } >>"$LOG" 2>&1
 
 exit 0
