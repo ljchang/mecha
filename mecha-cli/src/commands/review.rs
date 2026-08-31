@@ -1327,6 +1327,28 @@ pub fn cascade_tally(report: &str) -> Option<(usize, usize)> {
     Some((nums.next()?, nums.next().unwrap_or(0)))
 }
 
+/// The line of a verdict report that says why nothing landed.
+///
+/// Pure so it can be tested, and deliberately the child's own words: this
+/// string is what a person reads before deciding what to do next, and a
+/// re-wording here would be a second account of a failure the graph already
+/// described exactly once.
+///
+/// Lives here rather than in the web module that first needed it, because it
+/// is the third reader of the same report — `tally_report` says whether
+/// anything landed, `cascade_tally` says how far it reached, and this says
+/// why it did not. Both the route and the `/queues` modal ask, and a TUI
+/// importing from `commands::serve` would be a dependency pointing the wrong
+/// way for the sake of one function.
+pub fn why_nothing_landed(report: &str) -> String {
+    report
+        .lines()
+        .map(str::trim)
+        .find(|l| l.contains("FAILED"))
+        .map(|l| l.to_string())
+        .unwrap_or_else(|| "the verdict landed on nothing, with no reason reported".into())
+}
+
 pub fn tally_report(report: &str) -> (usize, usize) {
     let mut done = 0;
     let mut failed = 0;
