@@ -225,19 +225,16 @@ async fn ruminate(
 
     match proposal.class {
         ChangeClass::Security => {
-            let mut reason = String::new();
             // The mislabel leads, because it is the part a reviewer most needs
             // and the part the standing warning cannot imply: it says the
             // proposer's own account of its change did not match the change.
-            if let Some(note) = &proposal.reclassified {
-                reason.push_str(note);
-                reason.push_str(" — ");
-            }
-            reason.push_str(
+            // Through the shared composer so this arm and the one below cannot
+            // disagree about whether the note survives.
+            cand.reason = Some(staged_reason(
+                proposal.reclassified.as_deref(),
                 "security-class: never measured and never auto-applied — a loop that can \
                  argue for widening its own confinement will eventually argue well",
-            );
-            cand.reason = Some(reason);
+            ));
             store.write(&cand)?;
             println!(
                 "\nstaged for review (security-class; `mecha harness show {}`)",
@@ -245,10 +242,13 @@ async fn ruminate(
             );
         }
         ChangeClass::Prose | ChangeClass::Architecture => {
-            cand.reason = Some(format!(
-                "{:?}-class changes wait for a person; prose needs the content-sensitive arm \
-                 (`mecha eval --ab-config`), and architecture is always a human's call",
-                proposal.class
+            cand.reason = Some(staged_reason(
+                proposal.reclassified.as_deref(),
+                &format!(
+                    "{:?}-class changes wait for a person; prose needs the content-sensitive \
+                     arm (`mecha eval --ab-config`), and architecture is always a human's call",
+                    proposal.class
+                ),
             ));
             store.write(&cand)?;
             println!("\nstaged for review (`mecha harness show {}`)", cand.id);
@@ -320,6 +320,32 @@ async fn ruminate(
         },
     }
     Ok(())
+}
+
+/// Compose the `reason` a staged candidate carries, note first.
+///
+/// **One composer, because forgetting the note is invisible.** The `Security`
+/// arm prepended it deliberately — "the mislabel leads, because it is the part
+/// a reviewer most needs" — and the `Prose | Architecture` arm overwrote
+/// `reason` with the generic class text and dropped it. `HarnessCandidate` has
+/// no field for the note, so `reason` is its only durable home; on stdout it
+/// scrolls past, and the store is what a reviewer opens.
+///
+/// That silently un-did this branch's headline case, one class over. A
+/// `context.auto_compact=true` proposal now reclassifies to `Architecture` and
+/// reached the store reading:
+///
+/// > class: Architecture · reason: Architecture-class changes wait for a person…
+///
+/// with nothing recording that the model called it `config` and named a key
+/// that has never existed anywhere in this codebase — an ordinary staged
+/// change, which is exactly the appearance the reclassification exists to
+/// remove.
+fn staged_reason(note: Option<&str>, detail: &str) -> String {
+    match note {
+        Some(note) => format!("{note} — {detail}"),
+        None => detail.to_string(),
+    }
 }
 
 /// What happens to a `Config` proposal whose change parses, before any of it
@@ -902,6 +928,27 @@ fn overrides() -> Result<()> {
 mod tests {
     use super::*;
     use mecha_core::candidate::MIN_MEASURABLE_RUNS as FLOOR;
+
+    #[test]
+    fn a_mislabel_survives_into_the_record_a_reviewer_actually_opens() {
+        // The note was on the nightly's stdout and not in the store, so the
+        // branch's own headline case — a model calling `context.auto_compact`
+        // a config change when that key has never existed — reached
+        // `mecha harness show` looking like an ordinary staged Architecture
+        // change. `HarnessCandidate` has no field for the note; `reason` is
+        // the only durable place it can live.
+        let note = "proposed as `Config`, reclassified: `context.auto_compact` is not one \
+                    of the 4 keys this harness can override";
+        let composed = staged_reason(Some(note), "Architecture-class changes wait for a person");
+        assert!(composed.starts_with(note), "the mislabel leads: {composed}");
+        assert!(composed.contains("wait for a person"), "{composed}");
+
+        // An honestly-labelled proposal carries no note and gains no
+        // separator — a dangling em dash on every ordinary candidate would
+        // train a reviewer to skip the position the mislabel appears in.
+        let plain = staged_reason(None, "Architecture-class changes wait for a person");
+        assert_eq!(plain, "Architecture-class changes wait for a person");
+    }
 
     #[test]
     fn a_corpus_too_small_to_measure_stages_rather_than_rejecting() {
