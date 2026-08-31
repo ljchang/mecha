@@ -6,6 +6,12 @@ notice its own problems and improve. The answer to the second is **no** —
 rumination's only sensor is a human stepping in — and this is what the
 literature says about closing that loop without breaking the provenance rule.
 
+> **Shipped.** Everything §14 describes as a fix merged as #127
+> (`786d8ec`, 2026-08-31) — see `HISTORY.md` under that date. §14 is written
+> in the present tense because it was drafted against the branch; read it as
+> a record of what is now on `main`, not as a proposal. What §14.5 and §14.7
+> call open is still open.
+
 **§14 is a second pass, 2026-08-31**, and it reads the built loop rather than
 the literature: six nights of `harness ruminate`, three candidates, zero
 acceptances, and the measurement that explains it. Read it before acting on

@@ -3328,6 +3328,67 @@ Era hygiene rode along: the pre-stem step-nudge bodies are recognised as
 harness voice, four reflections stranded on pre-`tools_hash` surfaces were
 dropped with reasons, and `select_probe_corpus` honours `dropped_at`.
 
+**2026-08-31 — the nightly diagnostician was told to read the source and stood
+in an empty room (#127).** `DIAGNOSE_SYSTEM` said "You may read the source and
+its documentation… treat a documented reason as evidence", and §12.4 of
+`SELF-IMPROVEMENT-RESEARCH.md` names that clause a *safety input*: it is what
+stops a proposal unpicking something load-bearing. It had never once been able
+to fire. `scripts/ruminate.sh` stands the nightly in
+`$(mecha work path ruminate)` — an empty directory, on purpose and for a good
+reason — and `setup::prepare_tools` roots the path jail at the working
+directory. Six nights, three candidates, zero acceptances, and every proposed
+key fabricated: `security.minimize_taint`, `tool.validation.strict`,
+`context.auto_compact` exist nowhere in the codebase. A model told to read the
+source and given nothing to read writes down the key such a program would
+plausibly have.
+
+The two questions the script conflated were already separate in the code:
+config is discovered from the **cwd**, the jail is rooted at the **workspace**.
+So the fix keeps the script standing outside a checkout and points at one —
+`HarnessConfig::source_dir`, global-file only and stripped from project layers
+for `[slack]`'s reason at its sharpest, with `global_config_only` pinned so a
+checkout's own `mecha.toml` cannot ride in. `diagnose_system` became a function
+of what was actually granted: `holds_source` asks the directory whether it
+holds `mecha-core/src` and `docs` rather than believing the config key, and the
+blind branch says plainly that it is blind and forbids naming a key the brief
+did not name first. **A prompt asserting a capability the run was not given is
+the silently-degrading guard in its cheapest form — nothing fails, and the
+protection reads as satisfied.**
+
+The same pass found the brief reporting three of the six metrics it invited
+predictions on, so `Evidence::brief` now renders every member of `Metric::ALL`
+with its headroom and `ruminate` refuses a prediction on a metric no run has
+any of. It also found `RunStats`' denial counters never briefed — on the live
+corpus, 39 refusals by a person or a policy and 21 interlock refusals against
+32 environment errors, so the denials outnumber the failures and both are the
+harness working. And `SessionMeta.workspace`, recorded in every transcript
+header since the store existed, had never reached `RunRow`: the corpus was a
+mixture of four unrelated jobs pooled into one average, 389 runs across eight
+workspaces. `RunRow::workspace`, a prefix filter on `runlog::Scan` and
+`Corpus::by_workspace` separate them retroactively over all 490 sessions.
+
+Two gate holes came from literature newer than §13. GRASP
+([arXiv:2605.29668](https://arxiv.org/pdf/2605.29668)) names regression
+accumulation: `judge_slices` scored the predicted metric and the tool-call
+volume alone, so `WORK_FLOOR` caught a gain bought by attempting *less* and
+nothing caught one bought by failing *more*. `guard_regressions` closes it —
+rejecting a proportional breach and **proposing** where a cost appears from
+nothing, because `compactions` is zero across the corpus and rejecting there
+would have made `compact_at_tokens` unable to move the one metric it exists to
+move. SEAGym ([arXiv:2606.17546](https://arxiv.org/abs/2606.17546)) predicts
+the other: `Tally::not_worse` is `wins >= losses`, so four all-tie held-out
+episodes satisfied it with zero and zero and read as "confirmed on unseen
+work". `MIN_INFORMATIVE_HOLDOUT` routes that to `Propose`, which reaches a
+person.
+
+`SELF-IMPROVEMENT-RESEARCH.md` §14 is the measured reading of the built loop,
+including §14.6 — the finding that outlives the corpus, that replay drops
+diverged pairs, so a change small enough to leave the trajectory intact is
+measurable and a change large enough to alter behaviour is discarded. §14.7
+records the owner's rulings: self-improvement is measured against how the agent
+is actually used and never a generic suite; Terminal-Bench is a periodic
+transfer check that answers a question about the loop and never feeds it.
+
 **2026-08-30 — a hypothesis tested and rejected: the provenance gate is not
 crippling learning.** Investigated by the learning lane before ungating:
 `Evidence::UserTurns` already rescues tainted conversations into clean
@@ -4054,6 +4115,44 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**2026-08-31 — a counter whose scope is implicit is one nobody can read
+correctly, and three drafts got the same number wrong three different ways.**
+`Corpus::sessions_read` increments *after* the workspace filter and *before*
+rows are pushed. A bail-out in `corpus_slice` printed it as a store total
+(it is not), then removed it as "necessarily 0 on this branch" (it is not),
+then finally used it as what it is: the discriminator between "nothing was
+rooted there" and "sessions were and none recorded a run". Round five caught
+the middle one on live data — `~/.mecha/work/frontdoor`, 13 sessions, zero
+outcomes, reported as "the filter matched nothing" — and round seven caught a
+third case, a torn transcript landing in `unreadable` while `sessions_read`
+stayed at nought, turning a rotting store into a typo. **A count whose scope
+(pre-filter, post-filter, per-session, per-run) is not in its name will be
+read wrong at the call site, and the wrong reading always looks like a
+plausible sentence.** Absent is not zero, and the three zeros are not each
+other.
+
+**2026-08-31 — every test moved one variable, so none of them could see the
+bug.** `guard_regressions` returned on the first metric it found anything on,
+so a mild `0 → nonzero` proposal at `Compactions` (index 3 of `Metric::ALL`)
+suppressed a genuine ratio breach at `MalformedArgs` (index 5): the reviewer
+would have read the benign explanation and never learned something else had
+doubled. Three tests covered the guard and every one of them moved exactly one
+unpredicted metric, so the failure was invisible to all of them **by
+construction** — a green suite that could not have gone red. **When a guard
+iterates a collection and returns early, the test that matters moves two
+elements and puts the milder one first.**
+
+**2026-08-31 — a filter applied on the visible half reads exactly like a
+working filter.** `--from-workspace` scoped the diagnostician's brief and not
+`draw_episodes`' draw, so a change was reasoned about one job and accepted or
+rejected on the average of four. It looked correct because the scoped half was
+the half that printed. The same shape returned one round later: `corpus_slice`
+canonicalized the path internally and discarded the result, so the raw CLI
+value reached the draw and a `./work/morning` or a symlinked home matched
+nothing there while scoping the brief. **Where one input feeds two consumers,
+test the one that produces no output — and resolve shared inputs once, at the
+boundary, rather than in each consumer.**
 
 **2026-08-30 — `git rev-parse` echoes an unresolvable ref name to stdout,
 and a suppressed stderr turns the echo into a phantom tag.** A probe ran
