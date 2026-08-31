@@ -5361,6 +5361,20 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                                         .unwrap_or_else(|| format!("#{id}"))
                                 })
                                 .collect();
+                            // The spans line goes when the group shrinks, the
+                            // same move the web pane makes on the same
+                            // finding. `classes` counts members per class and
+                            // a removal cannot be attributed to one — the key
+                            // is the graph's `cluster_key`, which this file
+                            // must not keep a second copy of — but the row
+                            // renders `×{size}` with `spans: c ×n, …` right
+                            // underneath. Reject four of seven and it reads
+                            // `×3` above spans summing to seven: two numbers
+                            // disagreeing on one row. A named absence beats a
+                            // count that has quietly stopped being true.
+                            if survivors.len() != ids.len() {
+                                g.classes.clear();
+                            }
                         }
                         None => {
                             modal.groups.remove(pos);

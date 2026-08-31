@@ -953,6 +953,62 @@ mod tests {
         );
     }
 
+    /// **A partial fan-out must not hide the members it left behind.**
+    ///
+    /// Between the two ways this page can be wrong about a cached listing —
+    /// showing a candidate that is gone, or hiding one that is still there —
+    /// the second is much the worse, because it is silent and a Regroup does
+    /// not undo it. A first pass recorded every cascade id as judged on the
+    /// belief that vetting only drops ids already decided. This route
+    /// contradicts that on the same response: members are vetted per-id
+    /// against the seed's class, an unresolvable subject fails the same way,
+    /// and `left_pending` says how many stayed. Marking those judged removed
+    /// them from every cached listing AND from the next fetch, which is
+    /// filtered through the same set — invisible for the rest of the session.
+    ///
+    /// The route reports the number, so the page must read it, and the pane
+    /// must say so out loud the way the TUI does.
+    #[test]
+    fn a_partial_cascade_leaves_its_survivors_visible() {
+        let send = queue_fn("sendVerdict");
+        assert!(
+            send.contains("left_pending"),
+            "the cascade may only be recorded as judged when all of it landed:\n{send}"
+        );
+        assert!(
+            queue_fn("groupVerdict").contains("left_pending"),
+            "a group verdict that swept less than it offered must say so"
+        );
+        // The number exists to be read: this is the field the page depends on.
+        assert!(
+            QUEUE_SVELTE.contains("left_pending"),
+            "the page must consume the route's `left_pending`"
+        );
+    }
+
+    /// The TUI's row has the same two numbers on it as the web card.
+    ///
+    /// `queues.rs` renders `×{g.size()}` with `spans: {c} ×{n}, …` directly
+    /// underneath, so a group that lost members to a verdict reads `×3` above
+    /// spans summing to seven — the same disagreement the web pane drops the
+    /// chips to avoid. Both surfaces show a partially-judged group the same
+    /// way, or the claim that they do is the thing that is wrong.
+    #[test]
+    fn the_tui_drops_its_spans_when_a_group_shrinks() {
+        let src = include_str!("../../tui/mod.rs");
+        let arm = src
+            .split_once("// Back to the groups, updated LOCALLY")
+            .expect("the local group rebuild must still be there")
+            .1;
+        let arm = &arm[..arm
+            .find("modal.level = queues::Level::Groups")
+            .unwrap_or(arm.len())];
+        assert!(
+            arm.contains("g.classes.clear()"),
+            "a shrunken group must drop its spans line:\n{arm}"
+        );
+    }
+
     /// One door to the expensive query, so the cache cannot be walked around.
     ///
     /// A grouping is kept for the life of the page (`groupCache`), which is
