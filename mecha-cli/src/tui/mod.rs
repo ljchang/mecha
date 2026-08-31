@@ -5340,7 +5340,27 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                             }
                             g.leader_id = *lead;
                             g.member_ids = rest.to_vec();
-                            g.sample.retain(|_| false);
+                            // Rebuilt from the survivors rather than blanked.
+                            // The sample is what the card shows UNDER the
+                            // leader, and the rows are already in hand — the
+                            // same place the promoted leader's statement
+                            // above came from. Clearing it left a group whose
+                            // face was one line and whose count said six,
+                            // which reads as five members the view could not
+                            // name. Same three as the child would send, in
+                            // the order it sent them.
+                            g.sample = rest
+                                .iter()
+                                .take(3)
+                                .map(|id| {
+                                    modal
+                                        .items
+                                        .iter()
+                                        .find(|r| r.id == *id)
+                                        .map(|r| r.statement.clone())
+                                        .unwrap_or_else(|| format!("#{id}"))
+                                })
+                                .collect();
                         }
                         None => {
                             modal.groups.remove(pos);
