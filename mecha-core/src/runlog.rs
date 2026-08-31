@@ -374,9 +374,6 @@ impl Corpus {
         (total, priced.len())
     }
 
-    /// Split by model, so a rate can be read against the thing that produced
-    /// it. A corpus spanning two models has no single error rate worth
-    /// quoting.
     /// Split by where the session was rooted. See [`RunRow::workspace`].
     ///
     /// `by_model`'s shape and `by_model`'s caveat: `sessions_read` is the
@@ -393,6 +390,9 @@ impl Corpus {
         out
     }
 
+    /// Split by model, so a rate can be read against the thing that produced
+    /// it. A corpus spanning two models has no single error rate worth
+    /// quoting.
     pub fn by_model(&self) -> BTreeMap<String, Corpus> {
         let mut out: BTreeMap<String, Corpus> = BTreeMap::new();
         for row in &self.rows {

@@ -25,7 +25,7 @@ use crate::harness_probe;
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::candidate::{
-    judge_drawn, ChangeClass, Disposition, Pair, Prediction, MIN_HOLDOUT_PAIRS, MIN_SELECTION_PAIRS,
+    judge_drawn, measurable, ChangeClass, Disposition, Pair, Prediction, MIN_MEASURABLE_RUNS,
 };
 use mecha_core::harness::{
     parse_change, AcceptedOverride, HarnessCandidate, HarnessStore, Measurement, STATUS_ACCEPTED,
@@ -124,34 +124,11 @@ async fn ruminate(
 ) -> Result<()> {
     let store = HarnessStore::open_default()?;
 
-    let Some((model, slice, _)) = corpus_slice(None, days, limit, from_workspace)? else {
+    let Some((model, slice, _)) = corpus_slice(None, days, limit, from_workspace.clone())? else {
         println!("no recorded run outcomes yet — nothing to diagnose from; deferring");
         return Ok(());
     };
     let evidence = evidence_for(&model, &slice, harness_history().unwrap_or_default());
-
-    // A corpus that cannot fill both slices cannot measure anything, and the
-    // diagnosis is paid for before that is discovered — `measure` only reaches
-    // "no replayable sessions recorded" after a model call has already
-    // happened. A necessary condition rather than a sufficient one: these are
-    // runs, and the eligible pool is the replayable subset of them, which is
-    // smaller. It is cheap and it is honest about which of the two it is.
-    //
-    // Deliberately *not* the check this was first sketched as. "Skip a night
-    // when no metric has headroom" sounds like the same guard and would never
-    // fire: every run has turns, so `turns` always has headroom, and a
-    // condition that is always true is a guard that reads as protection while
-    // doing nothing — which is the failure this whole pass has been about.
-    let floor = MIN_SELECTION_PAIRS + MIN_HOLDOUT_PAIRS;
-    if slice.len() < floor {
-        println!(
-            "{} recorded run(s) for `{model}` — below the {floor} a selection slice and a \
-             holdout need between them, so nothing could be measured tonight; deferring \
-             rather than paying for a diagnosis first",
-            slice.len()
-        );
-        return Ok(());
-    }
 
     let diagnosis = run_diagnostician(global, &evidence).await?;
     let proposal = match diagnosis.outcome {
@@ -292,6 +269,30 @@ async fn ruminate(
             // person however they score, and a security-class proposal
             // silently rejected on a metric technicality is one nobody reviews
             // — which is the opposite of what its class is for.
+            // The corpus cannot fill both slices, so `measure` would draw
+            // nothing. Staged rather than rejected and recorded rather than
+            // dropped: the change may be perfectly good and it is the evidence
+            // that is missing, which is a person's call and belongs in the
+            // history that stops it being re-derived tomorrow.
+            //
+            // Here rather than before the diagnosis, which is where it first
+            // sat: only `Config` reaches `measure`, so an early return also
+            // withheld the Prose, Architecture and Security proposals a person
+            // reads without any replay at all.
+            Ok(_) if !measurable(slice.len()) => {
+                cand.reason = Some(format!(
+                    "{} recorded run(s) for `{model}`, below the {} a selection slice and a \
+                     holdout need between them — staged unmeasured. A necessary condition \
+                     only: the eligible pool is the replayable subset of those runs.",
+                    slice.len(),
+                    MIN_MEASURABLE_RUNS
+                ));
+                store.write(&cand)?;
+                println!(
+                    "\nstaged unmeasured — {}",
+                    cand.reason.as_deref().unwrap_or("")
+                );
+            }
             Ok(_) if no_headroom => {
                 cand.status = STATUS_REJECTED.into();
                 cand.resolved_at = Some(now.clone());
@@ -300,7 +301,19 @@ async fn ruminate(
                 println!("\nrejected unmeasured — {unrefutable}");
             }
             Ok(change) => {
-                measure(global, &store, cand, change, &model, sessions, holdout_in).await?;
+                measure(
+                    global,
+                    &store,
+                    cand,
+                    change,
+                    &model,
+                    DrawSpec {
+                        sessions,
+                        holdout_in,
+                        workspace: from_workspace.as_deref(),
+                    },
+                )
+                .await?;
             }
         },
     }
@@ -308,15 +321,34 @@ async fn ruminate(
 }
 
 /// Replay the corpus under both arms, judge, and dispose.
+/// How a measurement's episodes are drawn.
+///
+/// Three fields rather than three parameters because they travel together and
+/// only together: `workspace` joined them when the review found the draw
+/// re-scanning every session while the diagnosis was scoped, and the argument
+/// list crossed clippy's threshold in the same edit. Bundling the ones that
+/// must agree is the fix; an `allow` would have been the other one.
+struct DrawSpec<'a> {
+    sessions: usize,
+    holdout_in: u64,
+    /// Scoped identically to the diagnosis, or the two halves of one night
+    /// disagree about what they are talking about.
+    workspace: Option<&'a std::path::Path>,
+}
+
 async fn measure(
     global: &GlobalOpts,
     store: &HarnessStore,
     mut cand: HarnessCandidate,
     change: mecha_core::harness::ConfigChange,
     model: &str,
-    sessions: usize,
-    holdout_in: u64,
+    draw_spec: DrawSpec<'_>,
 ) -> Result<()> {
+    let DrawSpec {
+        sessions,
+        holdout_in,
+        workspace,
+    } = draw_spec;
     // The live registry, for tool specs the replay registry mirrors. Built
     // plain — the diagnostician's narrowed opts are its own, not the arms'.
     let prepared = setup::prepare(&global.clone(), false).await?;
@@ -342,6 +374,7 @@ async fn measure(
         sessions,
         holdout_in,
         seed,
+        workspace,
     )?;
     let unusable = draw.skipped;
     if draw.selection.is_empty() && draw.holdout.is_empty() {

@@ -1139,6 +1139,14 @@ struct ConfigLayer {
     harness: Option<HarnessLayer>,
 }
 
+/// A layer's opinion about where the diagnostician may read. See
+/// [`HarnessConfig`] for why this is global-file only.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HarnessLayer {
+    source_dir: Option<PathBuf>,
+}
+
 /// A layer's opinion about which skills to carry.
 ///
 /// The merge is **narrowing-only, structurally**, which is why this cannot be
@@ -1155,12 +1163,6 @@ struct ConfigLayer {
 /// where an intersection starts from nothing, so it assigns rather than
 /// intersects; the distinction is [`LayerTrust`], applied in
 /// [`Config::merge_file`].
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HarnessLayer {
-    source_dir: Option<PathBuf>,
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SkillsLayer {

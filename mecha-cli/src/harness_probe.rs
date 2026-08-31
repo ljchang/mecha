@@ -178,6 +178,7 @@ pub fn draw_episodes(
     want: usize,
     holdout_in: u64,
     seed: u64,
+    workspace: Option<&Path>,
 ) -> Result<Draw> {
     let mut listed: Vec<(SessionMeta, PathBuf)> = Session::list(sessions_dir)?;
     listed.sort_by_key(|entry| std::cmp::Reverse(entry.0.created_at));
@@ -194,6 +195,18 @@ pub fn draw_episodes(
         // runs under one model, so the filter's job is only to keep the
         // corpus representative of the model being graded.
         if meta.model != model {
+            continue;
+        }
+        // Scoped the same way the diagnosis was, or the two halves of one
+        // night disagree about what they are talking about: `--from-workspace`
+        // narrowed the brief while the draw kept re-scanning every session, so
+        // a change reasoned about one job was accepted or rejected on the
+        // average of four. Found in review, and it read as a working flag —
+        // the diagnosis was visibly scoped, and only the arms were not.
+        //
+        // Prefix, matching `runlog::Scan`: a checkout's worktrees are the same
+        // population as the checkout.
+        if workspace.is_some_and(|w| !meta.workspace.starts_with(w)) {
             continue;
         }
         match prepare_episode(&path, &meta.id)? {

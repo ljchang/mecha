@@ -276,6 +276,27 @@ pub const MIN_INFORMATIVE_HOLDOUT: usize = MIN_HOLDOUT_PAIRS;
 /// A cliff rather than a ratchet, like [`WORK_FLOOR`] — some movement is noise.
 pub const REGRESSION_CEILING: f64 = 1.25;
 
+/// The smallest corpus a measurement can be drawn from.
+///
+/// Both slices come off the same pool, so a corpus below their sum cannot fill
+/// them however it is split. **A necessary condition and not a sufficient
+/// one** — these are recorded runs, and the eligible pool is the replayable
+/// subset of them, which is smaller — and a caller must say which of the two
+/// it is claiming when it reports the refusal.
+///
+/// It gates the *measurement*, never the diagnosis. A `Prose`, `Architecture`
+/// or `Security` proposal is staged for a person and never touches a replay,
+/// so a small corpus must not withhold those: found in review, where an early
+/// return skipped the entire night and `--from-workspace` made a sub-floor
+/// corpus easy to reach on purpose.
+pub const MIN_MEASURABLE_RUNS: usize = MIN_SELECTION_PAIRS + MIN_HOLDOUT_PAIRS;
+
+/// Whether a corpus of this many runs could fill both slices. See
+/// [`MIN_MEASURABLE_RUNS`].
+pub fn measurable(runs: usize) -> bool {
+    runs >= MIN_MEASURABLE_RUNS
+}
+
 /// How far work may fall before a gain is treated as bought rather than
 /// earned. Some drop is legitimate — a change that stops a redundant re-read
 /// does less work and is better for it — so this is a cliff, not a ratchet.
@@ -311,8 +332,14 @@ pub fn is_holdout(episode: &str, holdout_in: u64) -> bool {
 /// Applied only to an `Accept`, and only here rather than inside
 /// [`judge_slices`], because it is the one thing that needs [`RunStats`]: the
 /// generic gate sees one cost function and cannot ask about the metrics it was
-/// not given. Keeping it out there also keeps the eval rig's use of the same
-/// gate unchanged, which grades cases rather than runs.
+/// not given, and `mecha eval --ab-config` grades cases rather than runs so it
+/// has no `RunStats` to ask about.
+///
+/// **This is not a claim that the eval rig is untouched by this change as a
+/// whole.** `MIN_INFORMATIVE_HOLDOUT` *is* inside [`judge_slices`], so eval's
+/// A/B arm gained that check too — deliberately, since a held-out case with no
+/// cost to lose confirms exactly as little there as here, but the two are
+/// separate decisions and only this one was scoped to runs.
 ///
 /// A regression from *nothing* counts however small it is. `compactions`,
 /// `malformed_args` and `ended_on_failed_call` are all at zero across the live
@@ -586,6 +613,49 @@ pub fn pair_arms(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_corpus_that_cannot_fill_both_slices_cannot_measure() {
+        // The floor is the sum, not either half: both slices are drawn from
+        // one pool, so a corpus between the two still cannot fill them.
+        assert!(!measurable(0));
+        assert!(!measurable(MIN_SELECTION_PAIRS));
+        assert!(!measurable(MIN_MEASURABLE_RUNS - 1));
+        assert!(measurable(MIN_MEASURABLE_RUNS));
+        // The live case that motivated it: the morning-briefing job has 11
+        // recorded runs against a floor of 12.
+        assert!(!measurable(11));
+        assert!(measurable(236));
+    }
+
+    #[test]
+    fn every_metric_variant_reaches_all() {
+        // `ALL` drives the brief, `guard_regressions`, and both consistency
+        // tests below — which is why it cannot police itself: a seventh
+        // variant that never joined this array would silently drop out of all
+        // four, and every test that iterates `ALL` would keep passing while
+        // covering less.
+        //
+        // The match is exhaustive, so adding a variant stops the build here
+        // and the count names the fix. That is the whole guard: the compiler
+        // points, the assertion says what to do.
+        for m in Metric::ALL {
+            match m {
+                Metric::EndedOnFailedCall
+                | Metric::ToolErrorRate
+                | Metric::CutShort
+                | Metric::Compactions
+                | Metric::Turns
+                | Metric::MalformedArgs => {}
+            }
+        }
+        assert_eq!(
+            Metric::ALL.len(),
+            6,
+            "a Metric variant was added or removed without updating ALL — the brief, \
+             guard_regressions and the drift tests all read it"
+        );
+    }
 
     #[test]
     fn every_metric_name_is_its_serde_spelling() {
