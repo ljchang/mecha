@@ -5809,14 +5809,26 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                             // The group STAYS: nothing changed in the store,
                             // and the ways through are the same two keys the
                             // Err arm names, on the item level's precedent.
+                            // Keys FIRST, the child's sentence last — the
+                            // ordering `group_verdict_status` uses one arm
+                            // over, for the same reason. `why` is the graph's
+                            // own `FAILED` line and its length is the
+                            // subject's, so anything after it is at the mercy
+                            // of a name: at 76 columns a hint written as a
+                            // suffix lost `A accept new`, which is the one key
+                            // that answers an unresolvable subject. The keys
+                            // are bounded and the reason is not, so the
+                            // bounded half goes where it cannot be clipped.
+                            //
+                            // Spelled as the key strip spells them, which is
+                            // already the compact form — this is not new
+                            // shorthand, it is the vocabulary the same screen
+                            // uses two lines down.
                             let why = crate::commands::review::why_nothing_landed(&report);
                             m.status = Some(if create {
                                 why
                             } else {
-                                format!(
-                                    "{why} — b binds the subject here; A accepts it as a \
-                                     new topic"
-                                )
+                                format!("b bind · A accept new — {why}")
                             });
                         } else {
                             let cascade = crate::commands::review::cascade_tally(&report);
@@ -5839,13 +5851,18 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     // "failed" strands the person exactly where a key would
                     // have carried them. Circular after `A`, so that one
                     // gets the reason alone.
+                    // Same reordering as the landed-on-nothing arm above, and
+                    // for the same reason: `{e:#}` is an error chain of
+                    // unbounded length, so a hint written after it is a hint
+                    // that clips. Pre-existing, fixed in the same pass because
+                    // both lines are read on the same screen and a reader
+                    // cannot be expected to know which failure they hit.
                     if let Some(m) = &mut app.queues {
                         m.status = Some(if create {
                             format!("{verb} failed, nothing cascaded: {e:#}")
                         } else {
                             format!(
-                                "{verb} failed, nothing cascaded: {e:#} — b binds the subject \
-                                 here; A accepts it as a new topic"
+                                "b bind · A accept new — {verb} failed, nothing cascaded: {e:#}"
                             )
                         });
                     }
@@ -10739,6 +10756,30 @@ mod tests {
         assert!(
             wide.contains("still pending"),
             "even the widest count must leave room for the caveat:\n{wide}"
+        );
+
+        // The failure lines are read on the same screen and were the only
+        // ones here not graded against a buffer. Both put a bounded hint in
+        // front of an unbounded tail — the graph's `FAILED` line, whose
+        // length is the subject's, and an error chain — so both are checked
+        // with a tail long enough to clip.
+        let long_subject = "a".repeat(60);
+        let why = crate::commands::review::why_nothing_landed(&format!(
+            "#9281 FAILED: cannot resolve subject '{long_subject}'\n"
+        ));
+        let nothing_landed = on_screen(&format!("b bind · A accept new — {why}"));
+        assert!(
+            nothing_landed.contains("A accept new"),
+            "the key that answers an unresolvable subject must reach the screen:\n{nothing_landed}"
+        );
+
+        let errored = on_screen(&format!(
+            "b bind · A accept new — reject failed, nothing cascaded: {}",
+            "chained context: ".repeat(6)
+        ));
+        assert!(
+            errored.contains("A accept new"),
+            "and must survive an error chain of any length:\n{errored}"
         );
     }
 
