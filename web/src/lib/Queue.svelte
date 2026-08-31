@@ -204,6 +204,10 @@
   let deck = $state(null); // { proposer, predicate, seed, items, judged }
   let items = $state(null); // one group's members: { from, ids, rows, judged, total }
   let error = $state(null);
+  // Something true that is not a failure — kept apart from `error` so a
+  // partial sweep is not dressed as one, and so the hazard styling keeps
+  // meaning what it says.
+  let notice = $state(null);
   let busy = $state(false);
 
   const TIERS = ['unjudged', 'thin', 'some', 'solid'];
@@ -448,15 +452,31 @@
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error((await res.text()).trim());
+    const out = await res.json();
     // Recorded here because this is the one place a verdict is sent, so no
     // caller can file one that the cached listings never hear about — which
     // is exactly how the Sample-12 deck used to leave a grouping offering a
-    // candidate it had just judged. The cascade ids ride along: the graph
-    // vets them and silently drops any already decided, so every id in this
-    // body is one that is no longer pending either way.
+    // candidate it had just judged.
+    //
+    // The SEED is always safe: the route answers 409 when nothing landed, so
+    // reaching here means it did.
     judgedIds.add(body.id);
-    for (const id of body.cascade ?? []) judgedIds.add(id);
-    return res.json();
+    // The cascade is not. A first pass added every id in the body, on the
+    // belief that vetting only ever drops ids already decided — which the
+    // handler contradicts on the same response: it reports `left_pending`,
+    // and the child's own line is `cascade: 14 rejected, 2 left pending`.
+    // Members are vetted per-id against the seed's class, and an unresolvable
+    // subject fails the same way, so a partial fan-out leaves real candidates
+    // pending. Marking those judged would hide them from every cached listing
+    // AND from the next fetch, which filters through the same set — invisible
+    // for the rest of the session, and a Regroup would not bring them back.
+    //
+    // Hiding pending work is the worse failure of the two this set exists
+    // between, so the cascade is only recorded when the child says all of it
+    // landed. A partial fan-out leaves the listings stale instead, which is
+    // the failure that announces itself.
+    if (!out?.left_pending) for (const id of body.cascade ?? []) judgedIds.add(id);
+    return out;
   }
 
   async function verdict(accept, create = false) {
@@ -651,7 +671,7 @@
   async function groupVerdict(g, accept, create = false) {
     busy = true;
     try {
-      await sendVerdict({
+      const out = await sendVerdict({
         id: g.leader_id,
         accept,
         create_subjects: create,
@@ -665,6 +685,15 @@
       cacheGroups();
       clearNote(g.leader_id);
       error = null;
+      // A fan-out is routinely partial — members are vetted per-id against
+      // the seed's class, and an unresolvable subject fails the same way —
+      // and the card carrying them has just left the screen. The TUI says so
+      // on the same outcome (`({left} similar left pending)`); this pane read
+      // the number off the response and threw it away, which is a verdict
+      // silently covering less than the button offered.
+      notice = out?.left_pending
+        ? `${out.left_pending} of that group could not be swept and stay pending — they will be back in the next regroup.`
+        : null;
     } catch (e) {
       note(g.leader_id, { error: String(e?.message ?? e), created: create });
     } finally {
@@ -782,6 +811,7 @@
 
 <div class="pane">
   {#if error}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
+  {#if notice}<div class="noticeline">{notice}</div>{/if}
 
   {#if deck}
     <div class="deckhead">
@@ -1094,6 +1124,7 @@
   .ways { display: flex; gap: 8px; flex-wrap: wrap; }
   .ways .ghost { flex: 1; min-height: 42px; border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); }
   .warnline { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--hazard); line-height: 1.45; }
+  .noticeline { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
   .row { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 7px; cursor: pointer; color: var(--text); font: inherit; }
   .rowtop { display: flex; align-items: center; gap: 8px; }
   .pname { font-family: var(--mono); font-size: 13px; color: var(--accent-400); overflow-wrap: anywhere; }
