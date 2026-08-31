@@ -341,11 +341,14 @@ pub fn is_holdout(episode: &str, holdout_in: u64) -> bool {
 /// cost to lose confirms exactly as little there as here, but the two are
 /// separate decisions and only this one was scoped to runs.
 ///
-/// A regression from *nothing* counts however small it is. `compactions`,
-/// `malformed_args` and `ended_on_failed_call` are all at zero across the live
-/// corpus, so "0 → 2" is not noise on a large number; it is a failure mode
-/// appearing that was not there before. Absent is not zero, in the direction
-/// that matters.
+/// A cost appearing from *nothing* is treated differently from one that grew:
+/// it **proposes** rather than rejects. `compactions`, `malformed_args` and
+/// `ended_on_failed_call` are all zero across the live corpus, so "0 → 2" is
+/// not noise on a large number — but neither is it always bad, and this
+/// function cannot tell which. A `compact_at_tokens` low enough to compact is
+/// a change whose whole purpose is to move `compactions` off zero; rejecting
+/// it would make one of the four overridable knobs unusable by construction.
+/// See the branch itself.
 fn guard_regressions<'a>(
     j: Judgement,
     predicted: Metric,
@@ -362,17 +365,39 @@ fn guard_regressions<'a>(
             pairs.clone().map(|p| metric.of(pick(p))).sum()
         };
         let (before, after) = (total(|p| &p.baseline), total(|p| &p.candidate));
-        let regressed = if before > 0.0 {
-            after > before * REGRESSION_CEILING
-        } else {
-            after > 0.0
-        };
-        if regressed {
+        if before > 0.0 {
+            if after > before * REGRESSION_CEILING {
+                return Judgement {
+                    disposition: Disposition::Reject(format!(
+                        "predicted a lower {predicted:?} and got one, but {metric:?} rose from \
+                         {before:.2} to {after:.2} across the same episodes: a win paid for on \
+                         a metric nobody was watching is not a win"
+                    )),
+                    ..j
+                };
+            }
+        } else if after > 0.0 {
+            // **A cost appearing from nothing reaches a person; it does not
+            // auto-reject.** A first version rejected it outright, on the
+            // reasoning that a failure mode that was not there before is not
+            // noise on a large number. True, and it foreclosed the closed
+            // override set's own purpose: `compactions` is zero across this
+            // corpus, so *any* `compact_at_tokens` low enough to actually
+            // compact scored a hard rejection on the metric that knob exists
+            // to move. The guard would have made one of four knobs unusable
+            // and said nothing about why.
+            //
+            // `Propose` is the honest disposition and the one this design
+            // already has for it. Nothing here can tell "compaction started
+            // happening, which is the point" from "malformed arguments
+            // appeared, which is not" — and a reader can. So it never
+            // auto-accepts, and it never silently refuses either.
             return Judgement {
-                disposition: Disposition::Reject(format!(
+                disposition: Disposition::Propose(format!(
                     "predicted a lower {predicted:?} and got one, but {metric:?} rose from \
-                     {before:.2} to {after:.2} across the same episodes: a win paid for on a \
-                     metric nobody was watching is not a win"
+                     nothing to {after:.2} across the same episodes — a cost that was not \
+                     there before. That is the intended effect for some changes and a \
+                     regression for others, and only a person can tell which"
                 )),
                 ..j
             };
@@ -952,6 +977,78 @@ mod tests {
         // nothing would pass every test above while measuring nothing.
         let held = first.iter().filter(|h| **h).count();
         assert!((20..80).contains(&held), "{held} of 200 held out");
+    }
+
+    #[test]
+    fn a_suite_the_baseline_already_passes_cannot_confirm_an_improvement() {
+        // The eval side of `MIN_INFORMATIVE_HOLDOUT`, which review noted was
+        // coupled and untested. In `mecha eval --ab-config` the cost is
+        // `!passed`, so a held-out case the baseline already passed has cost 0
+        // and no room to win — exactly the shape the run-side check exists
+        // for, in a different currency.
+        //
+        // A change is not confirmed by cases that were already green. It
+        // stages for a person instead, which is what the disposition is for.
+        struct Case {
+            id: String,
+            was: bool,
+            now: bool,
+        }
+        let cases: Vec<Case> = (0..24)
+            .map(|i| Case {
+                id: format!("case-{i}"),
+                // Held-out cases all passed under the baseline; selection
+                // cases were failing and now pass.
+                was: is_holdout(&format!("case-{i}"), 3),
+                now: true,
+            })
+            .collect();
+        fn cost(c: &Case) -> (&str, f64, f64) {
+            (
+                c.id.as_str(),
+                f64::from(u8::from(!c.was)),
+                f64::from(u8::from(!c.now)),
+            )
+        }
+        let refs: Vec<&Case> = cases.iter().collect();
+        let (hold, sel): (Vec<&Case>, Vec<&Case>) =
+            refs.into_iter().partition(|c| is_holdout(&c.id, 3));
+        let j = judge_slices(ChangeClass::Config, &sel, &hold, cost, |_| (6, 6));
+        match j.disposition {
+            Disposition::Propose(ref why) => {
+                assert!(why.contains("without ever being able to confirm"), "{why}")
+            }
+            other => panic!("an all-green holdout was read as confirmation: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cost_appearing_from_nothing_reaches_a_person_rather_than_being_refused() {
+        // `compactions` is zero across the live corpus, so a
+        // `compact_at_tokens` low enough to actually compact takes the metric
+        // from 0 to nonzero. A first version of `guard_regressions` rejected
+        // that outright, which made one of the four overridable knobs unusable
+        // for the metric it exists to move — found in review.
+        //
+        // Nothing here can tell "compaction started, which is the point" from
+        // "malformed arguments appeared, which is not". A person can.
+        let pairs: Vec<Pair> = corpus(12, 3, |_| {
+            let mut baseline = run(10, 1, false);
+            baseline.turns = 10;
+            baseline.compactions = 0;
+            let mut candidate = run(10, 1, false);
+            candidate.turns = 5;
+            candidate.compactions = 2;
+            (baseline, candidate)
+        });
+        let j = judge(ChangeClass::Config, &prediction(Metric::Turns), &pairs, 3);
+        match j.disposition {
+            Disposition::Propose(ref why) => {
+                assert!(why.contains("rose from"), "{why}");
+                assert!(why.contains("only a person can tell which"), "{why}");
+            }
+            other => panic!("the knob's own effect was treated as a regression: {other:?}"),
+        }
     }
 
     #[test]
