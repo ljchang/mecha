@@ -269,68 +269,92 @@ async fn ruminate(
                     cand.reason.as_deref().unwrap_or("")
                 );
             }
-            // The corpus cannot fill both slices, so `measure` would draw
-            // nothing. Staged rather than rejected and recorded rather than
-            // dropped: the change may be perfectly good and it is the evidence
-            // that is missing, which is a person's call and belongs in the
-            // history that stops it being re-derived tomorrow.
-            //
-            // Here rather than before the diagnosis, which is where it first
-            // sat: only `Config` reaches `measure`, so an early return also
-            // withheld the Prose, Architecture and Security proposals a person
-            // reads without any replay at all.
-            Ok(_) if !measurable(slice.len()) => {
-                cand.reason = Some(format!(
-                    "{} recorded run(s) for `{model}`, below the {} a selection slice and a \
-                     holdout need between them — staged unmeasured. A necessary condition \
-                     only: the eligible pool is the replayable subset of those runs.",
-                    slice.len(),
-                    MIN_MEASURABLE_RUNS
-                ));
-                store.write(&cand)?;
-                println!(
-                    "\nstaged unmeasured — {}",
-                    cand.reason.as_deref().unwrap_or("")
-                );
-            }
-            // Refused rather than measured, and rejected rather than staged.
-            // This is the one path where a proposal costs replays, and a
-            // prediction the corpus cannot refute buys nothing with them.
-            // Rejected so the brief's history carries it: dropped, it would be
-            // free to come back tomorrow.
-            //
-            // Deliberately not applied to the other classes. Those reach a
-            // person however they score, and a security-class proposal
-            // silently rejected on a metric technicality is one nobody reviews
-            // — which is the opposite of what its class is for.
-            Ok(_) if no_headroom => {
-                cand.status = STATUS_REJECTED.into();
-                cand.resolved_at = Some(now.clone());
-                cand.reason = Some(format!("{unrefutable}, so it was not worth a replay"));
-                store.write(&cand)?;
-                println!("\nrejected unmeasured — {unrefutable}");
-            }
-            Ok(change) => {
-                measure(
-                    global,
-                    &store,
-                    cand,
-                    change,
-                    &model,
-                    DrawSpec {
-                        sessions,
-                        holdout_in,
-                        workspace: from_workspace.as_deref(),
-                    },
-                )
-                .await?;
-            }
+            Ok(change) => match measurement_verdict(slice.len(), no_headroom) {
+                // Staged rather than rejected and recorded rather than
+                // dropped: the change may be perfectly good and it is the
+                // evidence that is missing, which is a person's call and
+                // belongs in the history that stops it being re-derived.
+                Verdict::CorpusTooSmall => {
+                    cand.reason = Some(format!(
+                        "{} recorded run(s) for `{model}`, below the {} a selection slice and \
+                         a holdout need between them — staged unmeasured. A necessary \
+                         condition only: the eligible pool is the replayable subset of those \
+                         runs.",
+                        slice.len(),
+                        MIN_MEASURABLE_RUNS
+                    ));
+                    store.write(&cand)?;
+                    println!(
+                        "\nstaged unmeasured — {}",
+                        cand.reason.as_deref().unwrap_or("")
+                    );
+                }
+                // Rejected so the brief's history carries it: dropped, it
+                // would be free to come back tomorrow.
+                Verdict::NoHeadroom => {
+                    cand.status = STATUS_REJECTED.into();
+                    cand.resolved_at = Some(now.clone());
+                    cand.reason = Some(format!("{unrefutable}, so it was not worth a replay"));
+                    store.write(&cand)?;
+                    println!("\nrejected unmeasured — {unrefutable}");
+                }
+                Verdict::Measure => {
+                    measure(
+                        global,
+                        &store,
+                        cand,
+                        change,
+                        &model,
+                        DrawSpec {
+                            sessions,
+                            holdout_in,
+                            workspace: from_workspace.as_deref(),
+                        },
+                    )
+                    .await?;
+                }
+            },
         },
     }
     Ok(())
 }
 
-/// Replay the corpus under both arms, judge, and dispose.
+/// What happens to a `Config` proposal whose change parses, before any of it
+/// is written down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// The corpus cannot fill both slices, so `measure` would draw nothing.
+    CorpusTooSmall,
+    /// The prediction names a metric no run in the corpus has any of.
+    NoHeadroom,
+    Measure,
+}
+
+/// Decide, as a function of the two facts and nothing else.
+///
+/// Split out from the arm that writes the candidate because **the ordering is
+/// the policy**, and the ordering was the only part of this with no test —
+/// review named these the two guarantees on this branch least measured, and it
+/// was right: the writing needs a provider and a store, the decision needs
+/// neither.
+///
+/// **Corpus size is asked first, and that is the substantive choice.** Both
+/// conditions can hold at once, and they disagree about who decides:
+/// `NoHeadroom` rejects, `CorpusTooSmall` stages for a person. On a corpus too
+/// small to measure, "no run has any of this metric" is a statement about a
+/// handful of runs and not about the harness — so rejecting on it would be
+/// refusing a proposal for want of evidence, which this design calls an
+/// absence of a verdict rather than a verdict. Thin evidence stages.
+fn measurement_verdict(runs: usize, no_headroom: bool) -> Verdict {
+    if !measurable(runs) {
+        return Verdict::CorpusTooSmall;
+    }
+    if no_headroom {
+        return Verdict::NoHeadroom;
+    }
+    Verdict::Measure
+}
+
 /// How a measurement's episodes are drawn.
 ///
 /// Three fields rather than three parameters because they travel together and
@@ -346,6 +370,7 @@ struct DrawSpec<'a> {
     workspace: Option<&'a std::path::Path>,
 }
 
+/// Replay the corpus under both arms, judge, and dispose.
 async fn measure(
     global: &GlobalOpts,
     store: &HarnessStore,
@@ -868,4 +893,43 @@ fn overrides() -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::candidate::MIN_MEASURABLE_RUNS as FLOOR;
+
+    #[test]
+    fn a_corpus_too_small_to_measure_stages_rather_than_rejecting() {
+        // Both conditions hold, and they disagree about who decides. On a
+        // corpus below the floor, "no run has any of this metric" describes a
+        // handful of runs rather than the harness, so it must not be grounds
+        // for refusing the proposal — thin evidence is an absence of a verdict,
+        // not a verdict. Swapping the two checks makes this return NoHeadroom
+        // and quietly converts a staging into a rejection.
+        assert_eq!(
+            measurement_verdict(FLOOR - 1, true),
+            Verdict::CorpusTooSmall
+        );
+        assert_eq!(
+            measurement_verdict(FLOOR - 1, false),
+            Verdict::CorpusTooSmall
+        );
+        // The live case: the morning-briefing job, 11 runs against a floor
+        // of 12.
+        assert_eq!(measurement_verdict(11, false), Verdict::CorpusTooSmall);
+    }
+
+    #[test]
+    fn a_prediction_the_corpus_cannot_refute_is_refused_before_it_costs_replays() {
+        assert_eq!(measurement_verdict(FLOOR, true), Verdict::NoHeadroom);
+        assert_eq!(measurement_verdict(236, true), Verdict::NoHeadroom);
+    }
+
+    #[test]
+    fn enough_corpus_and_a_metric_with_room_is_measured() {
+        assert_eq!(measurement_verdict(FLOOR, false), Verdict::Measure);
+        assert_eq!(measurement_verdict(236, false), Verdict::Measure);
+    }
 }

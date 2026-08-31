@@ -69,16 +69,49 @@ pub fn corpus_slice(
 ) -> Result<Option<(String, Corpus, usize)>> {
     let dir = Session::default_dir()?;
     let since = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
+    // Canonicalized, or the filter compares a path the user typed against
+    // paths the store recorded canonically — `~/.mecha/work/../work/morning`
+    // and a trailing slash both match nothing, silently. A path that does not
+    // resolve is reported and refused rather than quietly matching nothing:
+    // the flag scopes an unattended nightly, and a typo that reads as "no runs
+    // recorded" defers the night for a reason nobody can see.
+    let workspace = match workspace {
+        None => None,
+        Some(w) => Some(w.canonicalize().with_context(|| {
+            format!(
+                "--from-workspace {} does not resolve to a directory",
+                w.display()
+            )
+        })?),
+    };
     let corpus = Corpus::scan(
         &dir,
         &Scan {
             max_sessions: Some(limit),
             since,
-            workspace,
+            workspace: workspace.clone(),
         },
     )?;
     let sessions_read = corpus.sessions_read;
     if corpus.is_empty() {
+        // "Nothing matched this filter" and "nothing has been recorded" are
+        // opposite findings, and returning the same `None` for both made a
+        // prefix miss indistinguishable from an empty store. A dash is never
+        // zero — and the caller cannot recover the distinction, because by
+        // here the filter has already been applied.
+        if let Some(w) = &workspace {
+            // No count here on purpose. `sessions_read` is the *post-filter*
+            // denominator, so it is necessarily 0 on this branch — a first
+            // draft printed "the store holds 0 session(s)", which is a number
+            // that means something other than what it says, on the branch
+            // whose whole point is not conflating two zeros.
+            anyhow::bail!(
+                "no recorded runs are rooted under {} — the filter matched nothing, which \
+                 is not the same as an empty store. `mecha diagnose --dry-run` without \
+                 --from-workspace lists the workspaces that do have runs.",
+                w.display()
+            );
+        }
         return Ok(None);
     }
     let by_model = corpus.by_model();
@@ -131,22 +164,30 @@ pub fn evidence_for(model: &str, slice: &Corpus, history: Vec<String>) -> Eviden
 /// checkout moved is worse than one that diagnoses from counters and says it
 /// did. What must never happen is the third thing — proceeding while the
 /// prompt still claims the source is readable.
-fn source_dir() -> Result<Option<std::path::PathBuf>> {
-    let Some(dir) = mecha_core::config::Config::load_global()?
-        .harness
-        .source_dir
-    else {
-        return Ok(None);
+fn source_dir() -> Result<(Option<std::path::PathBuf>, Option<std::path::PathBuf>)> {
+    let cfg = mecha_core::config::Config::load_global()?;
+    // The middle term of `prepare_tools`' own fallback, handed back so the
+    // caller can mirror it exactly. Skipping it was review's finding: the jail
+    // resolved here was `configured → global.workspace → cwd` while
+    // `setup.rs` resolves `opts.workspace → cfg.tools.workspace → cwd`, and
+    // with `global_config_only` pinned a global `[tools] workspace` is
+    // precisely the reachable difference — so the prompt could name a
+    // directory the jail would refuse, or claim blindness on a run whose
+    // `fs_read` reached the source. This PR's own bug, in both directions, one
+    // fallback term down.
+    let tools_workspace = cfg.tools.workspace.clone();
+    let Some(dir) = cfg.harness.source_dir else {
+        return Ok((None, tools_workspace));
     };
     match dir.canonicalize() {
-        Ok(dir) if dir.is_dir() => Ok(Some(dir)),
+        Ok(dir) if dir.is_dir() => Ok((Some(dir), tools_workspace)),
         _ => {
             eprintln!(
                 "mecha: [harness] source_dir names {}, which is not a readable \
                  directory — diagnosing from counters alone",
                 dir.display()
             );
-            Ok(None)
+            Ok((None, tools_workspace))
         }
     }
 }
@@ -216,10 +257,14 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
     // which branch produced the path. That is the same move as `/props` and
     // `--json` elsewhere here: the artifact answers, config does not get to
     // assert. A `source_dir` pointed somewhere wrong is caught by it too.
-    let configured = source_dir()?;
+    let (configured, tools_workspace) = source_dir()?;
+    // Mirrors `setup::prepare_tools` exactly — `opts.workspace` (which is
+    // `configured` or the caller's), then `[tools] workspace`, then the cwd.
+    // Any term dropped here is a term where the prompt and the jail disagree.
     let jail = configured
         .clone()
         .or_else(|| global.workspace.clone())
+        .or(tools_workspace)
         .or_else(|| std::env::current_dir().ok());
     let source = jail
         .as_deref()
