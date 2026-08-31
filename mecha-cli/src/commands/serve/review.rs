@@ -1058,6 +1058,63 @@ mod tests {
         );
     }
 
+    /// **A leader with nobody behind it is not a group, on all three paths.**
+    ///
+    /// A pair is the commonest group size there is, so judging one member is
+    /// the ordinary case rather than an edge: it leaves a lone leader, and a
+    /// card reading "1 near-repeats" over *Reject all 1* covers exactly one
+    /// candidate the item list is already showing. Tapping it sends an empty
+    /// cascade, which reaches the child as no `--cascade` at all and comes
+    /// back with no `cascade:` line — so the pane announced that the fan-out
+    /// could not be measured, about a group with nothing to fan out to.
+    ///
+    /// Two rebuild paths in this pane and one in the TUI, and they disagreed:
+    /// `withoutJudged` dropped at one survivor while `reconcileGroup` dropped
+    /// only at zero, and `split_first` kept the case in the modal. Nor did it
+    /// self-heal — `reconcileGroup` had already written the emptied members
+    /// to the cache, so the cached path saw a count that had not changed.
+    #[test]
+    fn a_group_of_one_is_dropped_wherever_a_group_is_rebuilt() {
+        assert!(
+            queue_fn("reconcileGroup").contains("survivors.length < 2"),
+            "the live rebuild must drop a group that is down to its leader"
+        );
+        assert!(
+            queue_fn("withoutJudged").contains("rest.length === 0"),
+            "the cached rebuild must drop a group that is down to its leader"
+        );
+        let src = include_str!("../../tui/mod.rs");
+        let arm = src
+            .split_once("// Back to the groups, updated LOCALLY")
+            .expect("the local group rebuild must still be there")
+            .1;
+        assert!(
+            arm[..arm
+                .find("modal.level = queues::Level::Groups")
+                .unwrap_or(arm.len())]
+                .contains("!rest.is_empty()"),
+            "the modal's rebuild must drop one too, or `both surfaces, one rule` is false"
+        );
+    }
+
+    /// A notice about one group verdict must not outlive the screen it was
+    /// about.
+    ///
+    /// It renders at the top of the pane on every depth, and the fan-out it
+    /// describes belongs to a card that has just been removed. Left standing,
+    /// it follows the reviewer to the sample deck and survives a Regroup that
+    /// contradicts it — the same failure the header's clock time is written to
+    /// avoid, on a different field. `error` is cleared in a dozen places;
+    /// this needs the same treatment at every entry point that changes what
+    /// is on screen.
+    #[test]
+    fn a_fan_out_notice_does_not_outlive_its_screen() {
+        assert!(
+            QUEUE_SVELTE.matches("notice = null").count() >= 5,
+            "every navigation that changes the screen must clear the fan-out notice"
+        );
+    }
+
     /// One door to the expensive query, so the cache cannot be walked around.
     ///
     /// A grouping is kept for the life of the page (`groupCache`), which is

@@ -5327,7 +5327,12 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         .copied()
                         .filter(|i| remaining.contains(i))
                         .collect();
-                    match survivors.split_first() {
+                    // Fewer than two survivors is not a group: nothing left,
+                    // or a leader with nobody behind it, and a row offering
+                    // `a` over `×1` covers exactly one candidate the item
+                    // list is already showing. `split_first` kept the second
+                    // case, which is the commonest group size there is.
+                    match survivors.split_first().filter(|(_, rest)| !rest.is_empty()) {
                         Some((lead, rest)) => {
                             let g = &mut modal.groups[pos];
                             if *lead != g.leader_id {

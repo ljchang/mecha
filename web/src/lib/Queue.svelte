@@ -213,6 +213,7 @@
   const TIERS = ['unjudged', 'thin', 'some', 'solid'];
 
   async function load() {
+    notice = null;
     try {
       const res = await fetch('/api/queue');
       if (!res.ok) throw new Error((await res.text()).trim());
@@ -277,6 +278,7 @@
   }
 
   async function openClasses(proposer) {
+    notice = null;
     try {
       const q = new URLSearchParams({ proposer });
       const res = await fetch(`/api/queue/classes?${q}`);
@@ -312,7 +314,12 @@
   // the only way to make the queue be embedded again, and an explicit one,
   // because it is minutes.
   async function loadGroups(spec, force = false) {
+    notice = null;
     const lookup = cacheKey(spec);
+    // What is on screen right now, remembered before the placeholder below
+    // overwrites it — the listing to fall back to when this request fails and
+    // has no cached answer of its own.
+    const onScreen = groups?.key ?? null;
     const token = ++inflight;
     if (!force && lookup) {
       const hit = groupCache.get(lookup);
@@ -377,9 +384,22 @@
       // reviewer the whole embedding again to get back to where they were.
       // Reported either way: a regroup that failed must not look like one
       // that found nothing new.
+      //
+      // Two candidates, in that order, because the request that failed is not
+      // always the listing that was on screen. A Regroup asks for the key it
+      // is already showing, so its own entry is the right restore. The
+      // STEPPER does not: from a 0.87 listing, `−` asks for `global:0.84`,
+      // which on a floor never visited has no entry — so restoring only from
+      // the requested key dropped the reviewer to the front screen having
+      // lost the 0.87 view they were reading, which is the charge this
+      // paragraph says it exists to avoid. The listing on screen is the
+      // fallback, which makes the behaviour match the claim.
       if (token !== inflight) return;
       error = String(e?.message ?? e);
-      const hit = lookup ? groupCache.get(lookup) : null;
+      const hit =
+        (lookup ? groupCache.get(lookup) : null) ??
+        (onScreen ? groupCache.get(onScreen) : null) ??
+        null;
       // Filtered like the other two install paths. This is the one that used
       // to be missed, and it is not a rare one: a Regroup that times out
       // lands here, and verdicts filed while it was in the air — from the
@@ -408,6 +428,7 @@
     );
 
   async function draw(proposer, predicate = null, seed = null) {
+    notice = null;
     busy = true;
     try {
       const res = await fetch('/api/queue/sample', {
@@ -523,6 +544,7 @@
   // person saw is what they are judging. There is deliberately no resample
   // here, for the same reason the deck has none mid-sitting.
   async function openItems(g) {
+    notice = null;
     const ids = [g.leader_id, ...g.members.map((m) => m[0])];
     items = { from: g, ids, rows: null, judged: 0, total: ids.length };
     try {
@@ -623,9 +645,18 @@
     // and the card behind was describing them before anyone touched it.
     const survivors = items.ids.filter((id) => alive.has(id));
 
-    if (survivors.length === 0) {
-      // Every member judged: this is not a group any more, and a card
-      // offering "Reject all 0" is worse than no card.
+    if (survivors.length < 2) {
+      // Nothing left, or a leader with nobody behind it — not a group either
+      // way. The same rule `withoutJudged` applies to a cached listing, and
+      // the two rebuild paths disagreeing is how a pair (leader + one member)
+      // ended up rendering "1 near-repeats" over Reject all 1. It could not
+      // self-heal, either: this function had already written `members: []` to
+      // the cache, so the guard in `withoutJudged` saw a group whose member
+      // count had not changed and passed it straight through. Tapping the
+      // card then sent an empty cascade, which reaches the child as no
+      // `--cascade` at all and comes back with no `cascade:` line — so the
+      // pane announced that the fan-out could not be measured, about a group
+      // that had nothing to fan out to.
       groups.rows = groups.rows.filter((r) => r !== g);
       cacheGroups();
       return;
@@ -668,6 +699,7 @@
   // Leaving the group is now only navigation: the listing behind was brought
   // into step by the verdict that changed it.
   function closeItems() {
+    notice = null;
     items = null;
   }
 

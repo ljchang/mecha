@@ -100,10 +100,21 @@ judgedIds.clear();
 r = withoutJudged(listing());
 t('a group with no nameable face is dropped, not faked', r.rows.length === 1 && r.rows[0].leader_id === 200);
 
+// A pair is the commonest group size, and judging its one member leaves a
+// leader alone. `reconcileGroup` and this function must agree about that, or
+// a card renders "1 near-repeats" over Reject all 1 — and tapping it sends an
+// empty cascade, which comes back with no `cascade:` line to read.
 judgedIds.clear();
 judgedIds.add(201);
 r = withoutJudged(listing());
 t('a leader with nobody behind it is not a group', !r.rows.some((g) => g.leader_id === 200));
+
+// The same shape reached the other way: the leader of a pair is judged, so
+// the lone survivor would be promoted into a group of one.
+judgedIds.clear();
+judgedIds.add(200);
+r = withoutJudged(listing());
+t('a pair whose leader was judged leaves no group of one', !r.rows.some((g) => g.leader_id === 201));
 
 judgedIds.clear();
 judgedIds.add(102);
