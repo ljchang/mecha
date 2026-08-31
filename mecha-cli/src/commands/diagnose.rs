@@ -92,15 +92,32 @@ pub fn corpus_slice(
         // zero — and the caller cannot recover the distinction, because by
         // here the filter has already been applied.
         if let Some(w) = &workspace {
-            // No count here on purpose. `sessions_read` is the *post-filter*
-            // denominator, so it is necessarily 0 on this branch — a first
-            // draft printed "the store holds 0 session(s)", which is a number
-            // that means something other than what it says, on the branch
-            // whose whole point is not conflating two zeros.
+            // **Three outcomes, not two**, and the first two rounds of this
+            // branch got the count wrong in both directions. `sessions_read`
+            // increments *after* the workspace filter and *before* rows are
+            // pushed, so it is the discriminator: zero means nothing was
+            // rooted there, non-zero means sessions were and none of them
+            // recorded an outcome. A draft removed the number as meaningless
+            // — it is the meaningful one — after an earlier draft printed it
+            // as a store total, which it is not.
+            //
+            // Live on 2026-08-31: `~/.mecha/work/frontdoor` held 13 sessions
+            // and no outcomes, and was reported as "the filter matched
+            // nothing" — the wrong finding, on the branch whose subject is
+            // not conflating two zeros.
+            if sessions_read == 0 {
+                anyhow::bail!(
+                    "no sessions are rooted under {} — the filter matched nothing, which is \
+                     not the same as an empty store. `mecha diagnose --dry-run` without \
+                     --from-workspace lists the workspaces that do have runs.",
+                    w.display()
+                );
+            }
             anyhow::bail!(
-                "no recorded runs are rooted under {} — the filter matched nothing, which \
-                 is not the same as an empty store. `mecha diagnose --dry-run` without \
-                 --from-workspace lists the workspaces that do have runs.",
+                "{sessions_read} session(s) are rooted under {}, and none of them recorded a \
+                 finished run — so there is nothing to diagnose from, which is a different \
+                 finding from the filter matching nothing. A session records an outcome only \
+                 when a run completes under it.",
                 w.display()
             );
         }
@@ -301,6 +318,31 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
         ..global.clone()
     };
     let prepared = setup::prepare(&opts, false).await?;
+    // **The jail above is a hand-copy of `prepare_tools`' fallback chain, and
+    // `prepared.workspace` is the ground truth.** Review caught that copy one
+    // term short mid-branch — it omitted `[tools] workspace` — which is
+    // precisely this PR's own bug: a prompt describing a directory that is not
+    // the one the run can read. A copy that drifts silently would reintroduce
+    // it, so the copy is checked against the original rather than trusted.
+    //
+    // An error rather than a warning: the system prompt is already built from
+    // `jail` and describes what the model may read. Running anyway means
+    // running with a prompt that is wrong about the surface, which is the
+    // failure this whole branch exists to remove — and the nightly is not
+    // `set -e`, so a refusal here defers one night loudly instead of
+    // diagnosing from a false premise every night quietly.
+    if let Some(jail) = &jail {
+        let resolved = jail.canonicalize().unwrap_or_else(|_| jail.clone());
+        anyhow::ensure!(
+            resolved == prepared.workspace,
+            "the diagnostician's prompt was built for {} but the path jail resolved to {} — \
+             `run_diagnostician` mirrors `setup::prepare_tools`' workspace fallback by hand \
+             and the two have drifted. Fix the copy; do not diagnose from a prompt that is \
+             wrong about what can be read.",
+            resolved.display(),
+            prepared.workspace.display()
+        );
+    }
     match (&source, &configured) {
         (Some(dir), _) => eprintln!("reading source and docs from {}", dir.display()),
         // Configured and yet not holding the source: the loudest of the three,

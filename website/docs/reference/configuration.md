@@ -40,15 +40,19 @@ hooks to execute and tools to enable. That is a reasonable bargain for someone
 who just decided to work in that repository, and no bargain at all for a
 scheduled run firing at 03:00 with nobody watching.
 
-Two tables are stripped out of a project layer for the same reason, wherever the
-run happens: `[messages]` and `[slack]`. `[messages]` is receiver-side admission
-policy, so a cloned repository must not be able to set `inbound = "accept"` on
-your sessions; `[slack]` is the remote control, and a repository that could name
-a Slack owner would have been handed it. The strip is loud rather than silent — a
-project file naming either logs a warning saying the section is ignored, because
-an ignored section that looks applied is the silently-degrading-sandbox shape.
-A global `[messages]` or `[slack]` is kept, of course; there is a test on each
-side of that boundary.
+Four tables are stripped out of a project layer for the same reason, wherever the
+run happens: `[messages]`, `[slack]`, `[web]` and `[harness]`. `[messages]` is
+receiver-side admission policy, so a cloned repository must not be able to set
+`inbound = "accept"` on your sessions; `[slack]` is the remote control, and a
+repository that could name a Slack owner would have been handed it; `[web]` names
+the tailnet surface's port and the one identity allowed through it; and
+`[harness]` names the checkout an unattended nightly reads and treats as the
+authority on which of this harness's protections are load-bearing — a repository
+able to set that could hand the diagnostician its own prose about what is safe to
+change. The strip is loud rather than silent — a project file naming any of them
+logs a warning saying the section is ignored, because an ignored section that
+looks applied is the silently-degrading-sandbox shape. A global one is kept, of
+course; there is a test on each side of that boundary.
 
 `[skills]` is a third case and takes a **narrowing-only** merge rather than a
 strip, because a repository saying "these three are the relevant ones" is
@@ -685,9 +689,43 @@ kind = "tavily"
 api_key_env = "TAVILY_API_KEY"
 ```
 
-`[messages]` and `[slack]` are deliberately absent from that file: both are
-stripped out of a project layer, so a `mecha.toml` is the one place they cannot
-go. Put them in `~/.mecha/config.toml` — see the two sections above.
+`[messages]`, `[slack]`, `[web]` and `[harness]` are deliberately absent from
+that file: all four are stripped out of a project layer, so a `mecha.toml` is the
+one place they cannot go. Put them in `~/.mecha/config.toml` — see the sections
+above.
 
 `mecha config init` writes a shorter commented starter file to
 `~/.mecha/config.toml`, or to `./mecha.toml` with `--project`.
+
+## `[harness]`
+
+What `mecha harness ruminate`'s diagnostician may read. **Global file only** —
+see the strip above.
+
+```toml
+[harness]
+# A checkout of mecha's own source and docs. Jailed read-only.
+source_dir = "/home/you/src/mecha"
+```
+
+The nightly diagnostician is told it may read this program's source and
+documentation, and that its documentation is evidence about which mechanisms are
+load-bearing. Without this key it cannot: the nightly stands in
+`~/.mecha/work/ruminate/`, and the path jail is rooted where the run is standing.
+Unset, the prompt says plainly that it is blind rather than claiming a capability
+it was not given, and it is forbidden from naming a configuration key it cannot
+verify exists.
+
+`source_dir` is **not** the working directory. Config is discovered from the
+current directory and the jail is rooted at the workspace, so pointing this at a
+checkout gets its documentation without putting that repository's `mecha.toml` in
+front of an unattended run. The directory is checked rather than believed: if it
+does not look like a checkout of mecha, the run says so and diagnoses from
+counters alone.
+
+:::warning Add this only after upgrading
+The config layer rejects unknown tables, so a `[harness]` section is a **startup
+parse error** on any `mecha` binary built before this key existed. If you run
+several binaries against one `~/.mecha/config.toml` — a service, a benchmark, a
+second machine — upgrade all of them before adding it.
+:::
