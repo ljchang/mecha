@@ -66,10 +66,20 @@ echo "── rumination start $(date -Is) ──"
 # `mecha work path` builds no surface of its own, so it cannot be caught by the
 # check it is resolving, and it creates the directory on the way past. Done
 # here rather than with `WorkingDirectory=` in the unit so the script is
-# correct however it is launched — by hand, by cron, or by the timer. A
-# checkout would be the wrong answer either way: it would put a project's
-# `mecha.toml` in front of an unattended run, which is exactly what the
-# triggers unit refuses to do for the same reason.
+# correct however it is launched — by hand, by cron, or by the timer.
+#
+# **Standing here is still right, and it is no longer the same thing as being
+# unable to read the source.** This comment used to end "a checkout would be
+# the wrong answer either way: it would put a project's `mecha.toml` in front
+# of an unattended run" — true of the *config* root and not of the *jail* root,
+# and conflating the two left the diagnostician jailed in an empty directory
+# while its prompt told it to read the documentation. Config is discovered from
+# the cwd and the jail is rooted at the workspace, so the fix was to keep
+# standing outside a checkout and point at one: set `[harness] source_dir` in
+# `~/.mecha/config.toml` and `mecha harness ruminate` reads the source
+# read-only with `global_config_only` pinned, so no project layer rides in.
+# Unset, it says it is blind rather than pretending otherwise. See
+# `docs/SELF-IMPROVEMENT-RESEARCH.md` §14.1.
 if ! cd "$("$MECHA" work path ruminate)"; then
     echo "cannot resolve the ruminate work directory; deferring the whole night"
     exit 0
