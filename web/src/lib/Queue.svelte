@@ -22,14 +22,42 @@
   // refresh is a clean start. A cache with an expiry policy would be this
   // page deciding when the graph has moved, which it cannot know.
   const groupCache = new Map();
-  const cacheKey = (spec) =>
-    spec.all
-      ? `global:${typeof spec.threshold === 'number' ? spec.threshold.toFixed(2) : 'default'}`
-      : // Serialised rather than joined on a delimiter: a proposer is free
-        // text and a predicate is a graph `cluster_key`, so any character
-        // picked as a separator is one they are allowed to contain, and a
-        // collision would serve one class's groups under another's name.
-        `class:${JSON.stringify([spec.proposer, spec.predicate])}`;
+
+  // What the server's default cross-class floor turned out to be, learned
+  // from the first answer that ran without one asked for.
+  //
+  // It exists so that a listing has exactly ONE key. Asking for no threshold
+  // and asking for the floor the server picks are the same listing under two
+  // names, and the first version of this cache filed it under both — which
+  // made the entries alias, and made every write-back have to find its
+  // siblings. It could not: a cached open re-keyed the listing to the key it
+  // was looked up under, the sibling search then matched neither entry, and
+  // a group emptied from inside came back offering "Accept all 7" on
+  // candidates already verdicted. Exactly the stale listing the write-back
+  // was written to prevent.
+  //
+  // Resolving the name instead of duplicating the entry removes the class:
+  // there is one entry per listing, `cacheGroups` writes one key, and a
+  // regroup overwrites the same row it read.
+  let defaultGlobalThreshold = null;
+
+  // `null` means "not knowable yet" — the very first cross-class open, before
+  // any answer has said what the default floor is. That is a forced fetch,
+  // not a miss to be cached under a placeholder name.
+  const cacheKey = (spec) => {
+    if (!spec.all) {
+      // Serialised rather than joined on a delimiter: a proposer is free
+      // text and a predicate is a graph `cluster_key`, so any character
+      // picked as a separator is one they are allowed to contain, and a
+      // collision would serve one class's groups under another's name.
+      return `class:${JSON.stringify([spec.proposer, spec.predicate])}`;
+    }
+    const t =
+      typeof spec.threshold === 'number' && isFinite(spec.threshold)
+        ? spec.threshold
+        : defaultGlobalThreshold;
+    return t == null ? null : `global:${t.toFixed(2)}`;
+  };
 </script>
 
 <script>
@@ -175,44 +203,44 @@
     }
   }
 
-  // Write the listing on screen back to the cache under its own key. Called
-  // after every local edit to it, because the prunes replace `rows` with a
-  // new array — a cache holding the array it was handed at fetch time would
-  // hand back members the reviewer has already judged, which is the one way
-  // this cache could be worse than no cache.
+  // Write the listing on screen back to the cache. Called after every edit to
+  // it — a cache still holding what the fetch returned would hand back
+  // members the reviewer has already judged, which is the one way this cache
+  // could be worse than no cache.
   //
-  // Written to every key that names this listing, not just the one it was
-  // opened under. The global layer files an answer twice — under the
-  // threshold ASKED for (often "default") and under the one the server says
-  // it RAN at — so the stepper can walk back to a floor it has already
-  // visited. One entry updated and the other not would mean stepping away
-  // and back re-offered a group the reviewer had already emptied, which is
-  // the stale-listing failure this cache exists to avoid rather than cause.
+  // One key, because `cacheKey` resolves the default floor to the floor it
+  // means rather than filing the same listing under two names.
   function cacheGroups() {
-    if (!groups?.key) return;
-    const snap = $state.snapshot(groups);
-    for (const [k, v] of groupCache) {
-      if (v.key === snap.key) groupCache.set(k, snap);
-    }
-    groupCache.set(snap.key, snap);
+    if (groups?.key) groupCache.set(groups.key, $state.snapshot(groups));
   }
+
+  // Which request owns the screen. A grouping runs for as long as minutes on
+  // a cold cache while every cached listing opens instantly, so a reviewer
+  // can step back and open two more classes before the first answers — and
+  // the slow one used to land on top of whatever they were reading. Compared
+  // against a token rather than against the key, because a listing's key is
+  // only known once the server has said which floor it ran at.
+  let inflight = 0;
 
   // Install a cached listing, or fetch one. `force` is the regroup button:
   // the only way to make the queue be embedded again, and an explicit one,
   // because it is minutes.
   async function loadGroups(spec, force = false) {
-    const key = cacheKey(spec);
-    if (!force) {
-      const hit = groupCache.get(key);
+    const lookup = cacheKey(spec);
+    const token = ++inflight;
+    if (!force && lookup) {
+      const hit = groupCache.get(lookup);
       if (hit) {
         // Straight to the listing, with no `rows: null` in between: the
         // placeholder is what makes a cached open still *look* like a wait.
-        groups = { ...hit, key };
+        // Spread whole, key included — re-keying it to the name it was looked
+        // up under is what broke the write-back the first time.
+        groups = { ...hit };
         error = null;
         return;
       }
     }
-    groups = { ...spec, key, threshold: null, rows: null, considered: null, at: null };
+    groups = { ...spec, key: lookup, threshold: null, rows: null, considered: null, at: null };
     try {
       const q = new URLSearchParams(
         spec.all ? { all: 'true' } : { proposer: spec.proposer, predicate: spec.predicate }
@@ -225,13 +253,14 @@
       const res = await fetch(`/api/queue/groups?${q}`);
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
-      // Whoever is on screen now decides whether this answer is still
-      // wanted. A grouping runs for minutes, and every other listing is now
-      // instant, so a reviewer can step back and open two more classes while
-      // the first is still embedding — this used to land on top of whatever
-      // they were reading. The answer is still cached below, so the run is
-      // not wasted; it just does not seize the screen.
-      const wanted = groups?.key === key;
+      // The floor the server says it RAN at is the listing's name, whatever
+      // was asked for. Learned only from a request that named none, because
+      // an answer to `threshold=0.89` reports 0.89 and says nothing about
+      // what the default would have been.
+      if (spec.all && spec.threshold == null && typeof data.threshold === 'number') {
+        defaultGlobalThreshold = data.threshold;
+      }
+      const key = cacheKey({ ...spec, threshold: data.threshold ?? spec.threshold }) ?? lookup;
       const next = {
         ...spec,
         key,
@@ -240,15 +269,10 @@
         considered: data.considered ?? null,
         at: Date.now(),
       };
+      // Cached whether or not it is still wanted — the run happened, and a
+      // reviewer who navigated away should not pay for it twice.
       groupCache.set(key, next);
-      // Also under the threshold the server says it RAN at, so stepping back
-      // to a floor already visited is a hit. Asking with no threshold and
-      // asking for the default are the same answer under two names, and the
-      // stepper always steps from the reported value.
-      if (spec.all && typeof data.threshold === 'number') {
-        groupCache.set(cacheKey({ all: true, threshold: data.threshold }), next);
-      }
-      if (wanted) {
+      if (token === inflight) {
         groups = { ...next };
         error = null;
       }
@@ -260,10 +284,10 @@
       // reviewer the whole embedding again to get back to where they were.
       // Reported either way: a regroup that failed must not look like one
       // that found nothing new.
-      if (groups?.key !== key) return;
+      if (token !== inflight) return;
       error = String(e?.message ?? e);
-      const hit = groupCache.get(key);
-      groups = hit ? { ...hit, key } : null;
+      const hit = lookup ? groupCache.get(lookup) : null;
+      groups = hit ? { ...hit } : null;
     }
   }
 
@@ -389,6 +413,11 @@
       // (It used to be mostly `--top`'s silent cap of ten, which is fixed in
       // `mecha review items` — a set the caller names is not a listing.)
       items = { from: g, ids, rows, judged: 0, total: rows.length, asked: ids.length };
+      // The gap is real and is now also written back: members judged in
+      // another session, or by an earlier cascade, are gone from the queue and
+      // the card behind should stop offering them. This is the one place the
+      // page learns which of a group's ids are still pending.
+      reconcileGroup();
       error = null;
     } catch (e) {
       error = String(e?.message ?? e);
@@ -406,6 +435,10 @@
       await sendVerdict({ id: item.id, accept, create_subjects: create });
       items.rows = items.rows.filter((r) => r.id !== item.id);
       items.judged += 1;
+      // The listing behind is brought into step here, while the verdict is
+      // the thing that just happened — not on the way out, which is only one
+      // of the ways off this screen.
+      reconcileGroup();
       clearNote(item.id);
       error = null;
     } catch (e) {
@@ -415,50 +448,56 @@
     }
   }
 
-  // Leaving the group, without paying for the queue a second time.
+  // Keep the group behind this screen in step with what has been judged in it.
   //
-  // Anything judged in there is gone from the queue, so the listing behind
-  // this screen describes members that no longer exist. That used to be
-  // answered by re-running the same query, which for the global layer is a
-  // two-minute re-embedding of every pending statement — charged on the way
-  // OUT of a group the reviewer had just finished reading. A guard skipped it
-  // when nothing had been judged, so a *glance* was free and the actual work
-  // was not: open a group, reject three, step back, wait two minutes. That is
-  // the ordinary loop of a sitting, which made the ordinary loop the
-  // expensive one, and a sitting ended when patience did.
+  // Anything verdicted in here is gone from the queue, so the listing behind
+  // describes members that no longer exist. That used to be answered by
+  // re-running the same query, which for the global layer is a re-embedding of
+  // every pending statement — charged on the way OUT of a group the reviewer
+  // had just finished reading. A guard skipped it when nothing had been
+  // judged, so a *glance* was free and the actual work was not: open a group,
+  // reject three, step back, wait. That is the ordinary loop of a sitting,
+  // which made the ordinary loop the expensive one, and a sitting ended when
+  // patience did.
   //
-  // Nothing here needs re-deriving. The page knows exactly which ids it
-  // judged: `itemVerdict` already dropped every verdicted row from
-  // `items.rows`, so the survivors ARE the group, in the order it was shown.
-  // Removing a member cannot change any other group either — similarity was
-  // computed over statements, and a verdict does not move a statement.
+  // Nothing needs re-deriving. The page knows exactly which ids it judged, so
+  // the group is rebuilt from its survivors. Removing a member cannot change
+  // any other group either — similarity was computed over statements, and a
+  // verdict does not move a statement. This is the TUI's rule arriving here
+  // rather than a new one: the `Level::Items if from_group` arm of Esc in
+  // `tui/mod.rs` has rebuilt the group from its survivors since the level
+  // existed, and makes no child call.
   //
-  // This is the TUI's rule arriving here rather than a new one: the
-  // `Level::Items if from_group` arm of Esc in `tui/mod.rs` has rebuilt the
-  // group from its survivors since the level existed, and makes no child
-  // call. The web pane was the surface still paying.
-  function closeItems() {
-    const from = items?.from;
-    const ids = items?.ids ?? [];
+  // **Called as each verdict lands, not on the way out.** Back is not the only
+  // way off this screen — the Review tabs are one tap away and unmount the
+  // pane, and the listing now OUTLIVES the pane. Doing the work in `closeItems`
+  // meant: reject three, tap Outbox, tap back, reopen the grouping, and the
+  // cache serves a card still offering all seven. Worse than a wrong count, if
+  // the leader was among the three: a verdict seeded on a candidate that is
+  // gone fails, and by the graph's own rule a fan-out from a failed verdict
+  // cascades nothing, so that card cannot be cleared at all — only regrouped.
+  // Writing through at the moment of the verdict has no such path around it.
+  //
+  // Mutated in place rather than replaced, so `items.from` stays the group it
+  // was opened from and survives any number of verdicts.
+  function reconcileGroup() {
+    const g = items?.from;
     const rows = items?.rows;
-    items = null;
-    // `rows` is null while the fetch is in flight — Back during the load is
-    // a real keypress, and treating "not read yet" as "none survived" would
-    // delete a group nobody judged. Unknown is not empty.
-    if (!from || !Array.isArray(rows) || !groups?.rows?.includes(from)) return;
+    // `rows` is null while the fetch is in flight, and unknown is not empty:
+    // treating "not read yet" as "none survived" would delete a group nobody
+    // has judged.
+    if (!g || !Array.isArray(rows) || !groups?.rows?.includes(g)) return;
 
     const alive = new Set(rows.map((r) => r.id));
-    const survivors = ids.filter((id) => alive.has(id));
-    // Includes the members that were already judged elsewhere before this
-    // group was opened — the `asked > total` gap the items screen reports.
-    // Those are gone from the queue too, and the card behind was already
-    // describing them.
-    if (survivors.length === ids.length) return;
+    // Also drops members already judged before this group was opened — the
+    // `asked > total` gap the items screen reports. Those left the queue too,
+    // and the card behind was describing them before anyone touched it.
+    const survivors = items.ids.filter((id) => alive.has(id));
 
     if (survivors.length === 0) {
       // Every member judged: this is not a group any more, and a card
       // offering "Reject all 0" is worse than no card.
-      groups.rows = groups.rows.filter((g) => g !== from);
+      groups.rows = groups.rows.filter((r) => r !== g);
       cacheGroups();
       return;
     }
@@ -468,34 +507,30 @@
     // Scores are the ones the grouping reported, carried over by id — never
     // re-derived here. A promoted leader keeps the members the embedder put
     // beside the OLD leader, which is exactly the set a cascade would act on.
-    const scores = new Map(from.members);
-    groups.rows = groups.rows.map((g) =>
-      g !== from
-        ? g
-        : {
-            ...from,
-            leader_id: leader,
-            leader_statement:
-              leader === from.leader_id
-                ? from.leader_statement
-                : faceOf(rowOf(leader)?.payload),
-            members: rest.map((id) => [id, scores.get(id) ?? null]),
-            // Rebuilt from rows that are still here rather than blanked: a
-            // group's face is a real member statement, and these are the
-            // real ones. The TUI rebuilds the same three from `modal.items`
-            // at the same point — both surfaces, one rule.
-            sample: rest.slice(0, 3).map((id) => faceOf(rowOf(id)?.payload)),
-            // `classes` is carried over unchanged, deliberately. It counts
-            // members per class and a removal cannot be attributed to one:
-            // the key is the graph's own `cluster_key`, and re-deriving it
-            // in this page would be a third reader of a rule it must not
-            // own. Carried over it can only OVERSTATE the span, and the
-            // span drives a caution — "expect a whole-group verdict here to
-            // overwrite ~1 in 3". A warning is the one field where the
-            // stale copy is the safe one.
-          }
-    );
+    const scores = new Map(g.members);
+    if (leader !== g.leader_id) {
+      g.leader_id = leader;
+      g.leader_statement = faceOf(rowOf(leader)?.payload);
+    }
+    g.members = rest.map((id) => [id, scores.get(id) ?? null]);
+    // Rebuilt from rows that are still here rather than blanked: a group's
+    // face is a real member statement, and these are the real ones. The TUI
+    // rebuilds the same three from `modal.items` — both surfaces, one rule.
+    g.sample = rest.slice(0, 3).map((id) => faceOf(rowOf(id)?.payload));
+    // `classes` is carried over unchanged, deliberately. It counts members per
+    // class and a removal cannot be attributed to one: the key is the graph's
+    // own `cluster_key`, and re-deriving it in this page would be a third
+    // reader of a rule it must not own. Carried over it can only OVERSTATE the
+    // span, and the span drives a caution — "expect a whole-group verdict here
+    // to overwrite ~1 in 3". A warning is the one field where the stale copy
+    // is the safe one.
     cacheGroups();
+  }
+
+  // Leaving the group is now only navigation: the listing behind was brought
+  // into step by the verdict that changed it.
+  function closeItems() {
+    items = null;
   }
 
   // One tap, one human verdict: the leader id is the owner's, the member
