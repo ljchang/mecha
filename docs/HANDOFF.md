@@ -145,8 +145,24 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **1,988 tests**, no failures — measured 2026-08-30 (late, ~23:45
-UTC) in this checkout on `main` at **ab0097b** (the #126 merge): **662**
+Expect **2,026 tests**, no failures — measured 2026-08-31 (~11:15 UTC) in
+this checkout on `main` at **786d8ec** (the #127 merge): **679** in
+`mecha-cli` with 1 ignored, **1,102** in `mecha-core`, the rest unchanged.
+The **38** added over 1,988 at `ab0097b` split at the merge level: **+11**
+from #128 (the review queue's regroup-cost arc) and **+27** from #127 (the
+diagnostician's sight, the workspace split, and the two gate guards —
+`guard_regressions` and `MIN_INFORMATIVE_HOLDOUT`; see below).
+
+Both halves were measured rather than subtracted from a single total:
+`cargo test --workspace` at `4cfd57d` gives 1,999 and at `786d8ec` gives
+2,026. Worth doing that way — summing the per-suite lines by eye gave 2,006
+here, because a `grep -v "0 passed"` filter also swallows a suite reporting
+**20** passed, and `$6` in `test result: ok. N passed; N failed; N ignored`
+is the *failed* column rather than the ignored one. Two off-by-a-column
+errors in one measurement of a number that then gets written down.
+
+The previous figure was **1,988**, measured 2026-08-30 (late, ~23:45
+UTC) on `main` at **ab0097b** (the #126 merge): **662**
 in `mecha-cli` with 1 ignored, **1,081** in `mecha-core`, the rest
 unchanged. The **7** added over 1,981 at `6987bc5` split at the merge
 level: **+1** from #125
@@ -1276,25 +1292,43 @@ diagnostician declined on a healthy corpus, which is the designed answer.
 
 What is actually open now:
 
-- **The nightly diagnostician cannot read the source it is told to read**
-  (found 2026-08-30 by a session auditing `mecha harness ruminate`; a fix
-  is in flight on that lane, nothing on `main` yet). `DIAGNOSE_SYSTEM`
-  says "You may read the source and its documentation… treat a documented
-  reason as evidence", but `scripts/ruminate.sh` cds into
-  `$(mecha work path ruminate)` — `~/.mecha/work/ruminate/`, which is
-  empty — and `setup::prepare_tools` roots the path jail at the cwd. So on
-  the one path that actually runs, the read-only tool surface reaches
-  nothing, and the safety argument behind the prompt ("if the thing you
-  were about to change is load-bearing for something the documentation
-  explains, propose something else") has never once been able to fire. The
-  visible symptom is in the candidate store: all three recorded candidates
-  propose config keys that exist nowhere in the codebase —
-  `security.minimize_taint`, `tool.validation.strict`,
-  `context.auto_compact`. Verified 2026-08-30 by resolving the work path
-  and grepping each key across `mecha-core/src` and `mecha-cli/src` (only
-  hit is `diagnose.rs`'s own test fixture). The in-flight fix: a
-  global-only `[harness] source_dir`, jailed read-only, with
-  `global_config_only` so standing outside a checkout stays the rule.
+- **Does the workspace split separate what it claims to?** #127 gave the
+  run corpus `RunRow::workspace` and a prefix filter, and the brief now
+  reports the mixture — but nothing yet confirms the field sorts sessions
+  by the *job* they belong to rather than by something incidental. The
+  falsifiable form, raised by the lane working the graph review queue and
+  recorded in their words: **every review-queue run has a person present
+  and every morning-briefing run does not**, so `work/web`'s "refused by a
+  person or a policy" count must be nonzero exactly where `work/morning`'s
+  is structurally zero. The briefing half is already measured — 0 denials
+  and 0 interlock refusals over 11 runs, against 6.0% environment errors
+  and 3.45 turns versus 2.72 pooled. The other half is not. Run
+  `mecha diagnose --dry-run --from-workspace ~/.mecha/work/web` beside the
+  same for `work/morning`. **If the briefing job comes back showing
+  denials, the field is not measuring what §14.3 of
+  [`SELF-IMPROVEMENT-RESEARCH.md`](SELF-IMPROVEMENT-RESEARCH.md) says it
+  is**, and the stratification argument there needs revisiting. A
+  prediction that can only confirm is not one.
+- **`[harness] source_dir` is not set, and must not be until every binary
+  is reinstalled.** #127 shipped the key; nothing has been written to
+  `~/.mecha/config.toml`. `ConfigLayer` is `deny_unknown_fields`, so the
+  section is a **startup config-parse error** on any binary predating the
+  merge — measured against the then-installed one on 2026-08-31:
+  `unknown field \`harness\`, expected one of \`default_provider\`, …`.
+  The services were restarted onto `main` before #127 landed, so the
+  ordering is: run the `update` skill everywhere, *then* add the key.
+  Until it is set the diagnostician runs blind — but `diagnose_system(None)`
+  now says so and forbids naming a config key the brief did not name first,
+  which is the failure mode #127 removed. Reference:
+  `website/docs/reference/configuration.md`.
+- **`setup.rs:879` claims the trigger runner is the only caller setting
+  `global_config_only`**, which has not been true for a while —
+  `run_diagnostician` pins it too. Surfaced by #127's review, left out of
+  that diff on purpose (seven rounds deep, and the comment predates the
+  branch). The coupling it documents was chased and is inert: the flag
+  flips `prepare_tools`' inbound-mail default from `Hold` to `Accept`, and
+  `MailboxRoute::claim_pending` returns empty without an identity while
+  `run_diagnostician` never calls `attach`. Unowned.
 - **Read the record, weekly at first.** `mecha harness list --all` and the
   nightly log. §2's failure mode (harness updating without benefiting) is now
   answerable from the store instead of from impression — but only if someone
