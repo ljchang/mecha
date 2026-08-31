@@ -6,6 +6,12 @@ notice its own problems and improve. The answer to the second is **no** —
 rumination's only sensor is a human stepping in — and this is what the
 literature says about closing that loop without breaking the provenance rule.
 
+**§14 is a second pass, 2026-08-31**, and it reads the built loop rather than
+the literature: six nights of `harness ruminate`, three candidates, zero
+acceptances, and the measurement that explains it. Read it before acting on
+§8's corpus or §13's gate — it does not overturn either, but it establishes
+that the evidence they run on cannot currently move.
+
 **Venue key**: ✅ peer-reviewed · 📄 preprint · 📰 vendor/blog · 🔮 folklore.
 
 Complements `MEMORY-RESEARCH.md` (the rule store, tenure, retirement) and
@@ -731,3 +737,252 @@ arranged against.
 
 The modification procedure stays uneditable (§12.3), and the diagnostician
 still does not run its own test. Every bound above rests on those two.
+
+---
+
+## 14. What the loop did once it ran, measured 2026-08-31
+
+§13 closed the design. This section is the first reading of the built thing,
+prompted by "it is not useful yet" — and the finding is that every bound above
+held, produced nothing, and produced nothing for a reason none of the sections
+above anticipated.
+
+**Six nights of `harness ruminate` produced three candidates and zero
+acceptances**, and all three named a configuration key that has never existed
+anywhere in this codebase: `security.minimize_taint`, `tool.validation.strict`,
+`context.auto_compact`. `grep` over `mecha-core/src` and `mecha-cli/src` finds
+only `diagnose.rs`'s own test fixture.
+
+### 14.1 A prompt may not claim a capability the harness did not grant
+
+§12.4 ruled that repository documentation is *a safety input to the proposer,
+not merely a convenience*, and `DIAGNOSE_SYSTEM` said so — "You may read the
+source and its documentation". It could not. `scripts/ruminate.sh` stands the
+nightly in `$(mecha work path ruminate)`, and `setup::prepare_tools` roots the
+path jail at the working directory; that directory is empty. So the sentence
+carrying the whole safety argument — *if the thing you were about to change is
+load-bearing for something the documentation explains, propose something else*
+— has never once been able to fire, and a model told to read the source and
+given nothing to read writes down the key such a program would plausibly have.
+
+This is the silently-degrading guard in its cheapest form: nothing failed, and
+the protection read as satisfied for six nights.
+
+**The two questions the script conflated were already separate in the code.**
+Its refusal to stand in a checkout is right — that is what keeps a project
+`mecha.toml` out of an unattended run — but config is discovered from the
+*cwd* and the jail is rooted at the *workspace*. `diagnose_system` is now a
+function of what was actually granted, and says plainly that it is blind when
+it is; `[harness] source_dir` grants the read, global-file-only for `[slack]`'s
+reason in its sharpest form.
+
+### 14.2 A brief that hides half the metrics is asking the model to guess
+
+Six metrics were offered to predict and three were reported. The two worst
+proposals were both on metrics whose value the diagnostician had never seen:
+one predicted a lower `cut_short` over 170 runs in which `cut_short` was zero —
+the 37 `Interrupted` it was reading are cancellations, which `StopCause::cut_short`
+excludes on purpose — and the measurement it asked for could only have tied.
+
+`Evidence::brief` now renders every member of `Metric::ALL` with its corpus
+cost and how many runs have any of it to reduce, and `ruminate` rejects a
+prediction on a metric at zero rather than spending replays on it.
+
+Separately, the brief folded three different things into one "refused" number.
+On the live corpus the split is **32 refusals by a person or a policy, 14 sends
+refused by the interlock, and 15 environment errors** — the denials outnumber
+the failures two to one, and the interlock's cost was the exact quantity the
+2026-08-25 proposal guessed at. Both are the harness working. `RunStats` had
+recorded `tool_denied` and `blocked_sends` all along.
+
+### 14.3 The corpus has no dynamic range, and is not yet a portrait of use
+
+The measured corpus, 2026-08-31, 172 runs:
+
+| | |
+|---|---|
+| turn distribution | 69% are ≤2 turns · median **2** · max 17 |
+| metrics with any headroom | **2 of 6.** `turns` 171/172 · `tool_error_rate` 9/172 · `cut_short` 1/172 · `compactions`, `malformed_args`, `ended_on_failed_call` all zero |
+| action space | `compact_at_tokens` provably inert (0 compactions in 172 runs); `max_turns` nearly so (1 run cut short) |
+
+A harness knob can only express itself in a run long enough to hit it. Half the
+closed override set cannot move on this population at all, and the half that
+can acts on runs of median length two. **The loop is not failing on algorithm —
+the gate here is more rigorous than most of the published work in §3 — it is
+failing because nothing in its evidence can move.**
+
+**What this is not evidence of.** The owner's reading, 2026-08-31: mecha is
+still being prototyped, the MVP is iterating fast, and most of these runs are
+smoke tests for new features rather than work anyone wanted done. So the
+distribution above describes a *development* store, and no conclusion about
+what this agent's real usage looks like may be drawn from it — an earlier draft
+of §14.5 drew one, called the short runs the natural shape of a personal
+assistant's work, and was wrong. The numbers say the loop currently has nothing
+to learn from. They do not say what it will have.
+
+**But the corpus cannot tell the two apart, and never will retroactively.**
+`Scan` filters on session count and start time; `RunRow` carries provider,
+model and title, and nothing marks a run as development traffic. When real use
+begins, `since` is the only lever — a date cutoff, set by hand, by someone who
+remembers when the change happened. Nothing records that boundary, and a label
+cannot be added to a run after it is over. Absent is not zero, in the one
+direction that is expensive here: months of feature tests are about to become
+indistinguishable evidence about how the agent is used.
+
+§8's *corpus* subsection assumed recorded sessions would supply the episodes.
+They supply the count and not the signal, and `MIN_SELECTION_PAIRS` counts
+episodes rather than informative ones.
+
+### 14.4 Two gate holes the newer literature names
+
+📄 **GRASP** ([arXiv:2605.29668](https://arxiv.org/pdf/2605.29668)) — gated,
+*regression-aware* skill proposal: a candidate is accepted only if it improves
+its target **without degrading existing capability**, and it names *regression
+accumulation* as the failure that makes naive loops decay. (Mechanism verified;
+no quantitative result was extractable from the PDF, so none is claimed here.)
+
+That hole was live. `judge_slices` scored the predicted metric and the
+tool-call volume, nothing else. `WORK_FLOOR` catches a gain bought by
+attempting *less*; nothing caught a gain bought by failing *more*, and `turns`
+is currently the only metric with real headroom — so trading accuracy for an
+earlier finish is precisely the trade the loop is next in line to be offered.
+`guard_regressions` now rejects an accepted candidate whose unpredicted metrics
+rose past `REGRESSION_CEILING`, with 0 → nonzero always counting, because
+absent is not zero.
+
+📄 **SEAGym** ([arXiv:2606.17546](https://arxiv.org/abs/2606.17546)) — an
+evaluation environment for self-evolving agents, defining "agent harness" as
+this project does. It requires train/validation batches with frozen
+update-validation, held-out **in-distribution and out-of-distribution** views,
+replay diagnostics, snapshots and cost tracking, and reports that *frequent
+updates may fail to improve held-out performance* and *useful intermediate
+snapshots may collapse later*.
+
+The second hole is the one that reading predicts. `Tally::not_worse` is
+`wins >= losses`, so a holdout of four all-tie episodes satisfies it with zero
+and zero and reads as "confirmed on unseen work" — and the holdout is drawn
+*uniformly*, on purpose, from a pool that is 69% two-turn runs. The gate's
+strongest claim was the one its evidence was least able to support.
+`MIN_INFORMATIVE_HOLDOUT` now routes that case to `Disposition::Propose`,
+which reaches a person. Ordering matters and the existing overfitting test
+proved it: a holdout that *finds* a loss has spoken whatever its headroom, so
+the informative check runs after `not_worse`, never before.
+
+### 14.5 What this does not fix
+
+Every change above makes the gate harder to pass, which is the right direction
+and not the useful one: a loop that auto-accepts on vacuous evidence is worse
+than a loop that accepts nothing. The fitness signal is untouched, and §14.3
+established that the ambient corpus cannot currently move.
+
+An earlier draft of this section concluded from that that the signal should be
+replaced by a public benchmark. **That was wrong, and §14.7 is the ruling that
+corrects it.** The conclusion that survives is narrower and harder: the ambient
+corpus is the right substrate and is not yet a usable one, and the two
+paragraphs below are why.
+
+**Widening the window does not rescue it.** At maximum extent — every session
+on disk, 490 of them, no cutoff — the corpus yields 236 runs, and the metric
+table reads:
+
+| metric | episodes with any to reduce |
+|---|---|
+| `turns` | 235 of 236 |
+| `tool_error_rate` | 19 of 236 |
+| `ended_on_failed_call` · `cut_short` | 1 of 236 |
+| `compactions` · `malformed_args` | 0 of 236 |
+
+Two of six clear `MIN_INFORMATIVE_HOLDOUT`, and one of those two is `turns` —
+the metric most easily bought by finishing sooner, which is what
+`guard_regressions` and `WORK_FLOOR` are now both standing in front of. Per
+§14.3 this is a development store rather than a portrait of use, so the right
+reading is that the loop has nothing to learn from *yet* — not that a wider
+window or a longer wait fixes it, which is what the table rules out.
+
+**A gap worth noticing before the corpus turns real.** Whatever else this store
+is, the quantity in it is the owner reacting: 38 of 236 runs interrupted, 39
+tool calls denied by a person or a policy, 21 sends refused by the interlock.
+No member of `Metric::ALL` reads any of it. That is not yet a finding about
+usage — these are test runs, and a test run is interrupted for reasons a real
+one is not — but it is a finding about the *sensor*: the one-paragraph answer
+at the top of this document diagnosed the harness loop as open because a
+harness problem produces no intervention, and `RunStats` was built to close it
+with six counters, none of which is an intervention. When real use arrives, the
+interventions are what it will produce in quantity, and nothing is set up to
+read them. §14.6 is why that is harder than adding a metric.
+
+### 14.6 Replay can only measure changes that change nothing
+
+The limit that makes §14.5 hard rather than merely annoying, and it is
+structural rather than a matter of tuning.
+
+The gate measures by counterfactual replay against recorded tool results. When
+an arm makes a call the recording has no result for, the episode has
+**diverged**, and `harness.rs`'s measurement drops the pair — correctly, since
+the recording has nothing truthful to say past that point.
+
+The consequence is a bias with the wrong sign. **A change small enough to leave
+the trajectory intact is measurable; a change large enough to alter what the
+agent does is dropped.** The better the improvement, the likelier it is to be
+discarded before it is scored. Every accepted candidate this loop can ever
+produce is therefore, by construction, one that did not change behaviour much —
+which is a fair description of tuning four numeric knobs, and an unfair
+instrument for anything else.
+
+It also forecloses the obvious repair to §14.5. Interruptions, denials and
+outbox edits cannot be replayed: an interruption is a person acting at a wall
+clock moment, and a denial the candidate avoids provoking shows up as a
+divergence rather than as a win. So the intervention signal — the one this
+usage produces in quantity — is unreachable from a replay arm at all.
+
+**Which points at an arm mecha does not have.** Measuring a behavioural change
+against real usage means applying it to a fraction of *future* runs and
+comparing outcomes, not re-running the past.
+[`EXPERIMENT-DESIGN.md`](EXPERIMENT-DESIGN.md) is the design for exactly that
+instrument and is marked **unbuilt**; its first open question is where
+Terminal-Bench executes and which side drives, and §14.7 removes Terminal-Bench
+from that critical path.
+
+### 14.7 Owner's ruling, 2026-08-31
+
+Supersedes the recommendation an earlier draft of §14.5 made.
+
+**Self-improvement is measured against how the owner actually uses the agent,
+not against a generic benchmark.** The ambient corpus is the substrate and
+stays the substrate; the work in §14.5 and §14.6 is what it takes to make it
+carry signal, not an argument for replacing it. A harness tuned to a public
+task suite is a harness tuned for someone else's work.
+
+**Terminal-Bench is a periodic transfer check, not a fitness signal.** Run it
+occasionally to see whether a harness improving on this owner's usage also
+improves — or at least does not regress — on work it was never tuned against.
+That is the out-of-distribution view SEAGym (§14.4) argues for, and it is the
+one guard against the failure this ruling deliberately accepts the risk of:
+overfitting the harness to one person's habits. It answers a question about the
+loop; it never feeds it. HyperAgents' transfer result (§1) is the reason to
+expect the check to be informative rather than flat.
+
+**The corpus to date is prototyping traffic and is not evidence about usage.**
+The MVP is still being iterated and most recorded runs are feature smoke tests,
+so the short-session distribution in §14.3 is an artifact of building the thing
+and carries no conclusion about the work it will be asked to do. The practical
+consequence is a date: when real use starts, the corpus needs a cutoff before
+it, because nothing in the store distinguishes a test run from a real one and
+nothing can add that distinction afterwards.
+
+**SEAGym is worth standing up at some point**, as an environment rather than a
+score — its frozen update-validation and its ID/OOD split are the structure
+this section keeps arriving at independently.
+
+Nothing here changes §13. The gate, the provenance rule and the human-gated
+classes are unaffected; what changed is where the episodes come from and what
+is counted over them.
+
+### 14.8 Leads not read
+
+Surfaced 2026-08-31 and **not** read, recorded so the next pass does not
+re-derive the search: AI4AI-Bench ([2608.20318](https://arxiv.org/abs/2608.20318)),
+recursive self-improvement survey ([2607.07663](https://arxiv.org/pdf/2607.07663)),
+Experiential Reflective Learning ([2603.24639](https://arxiv.org/pdf/2603.24639)),
+natural-language agent harnesses (2603.25723),
+RSIBench-data (2607.25886).
