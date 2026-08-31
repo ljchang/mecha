@@ -351,7 +351,15 @@ pub async fn groups(State(state): St, Query(q): Query<GroupsQuery>) -> Response 
         predicate,
         "--json",
     ];
-    match self_json(&state, &args).await {
+    // A class grouping embeds that class, which is seconds on a thousand-item
+    // class and more on the big ones — the same kind of work as the global
+    // layer, one class wide. It used to go through the default 30-second
+    // budget, so a class large enough to be worth grouping was the one that
+    // answered `502 timed out` on the phone while the identical `mecha review
+    // groups` in a terminal, which has no cap, printed it. Same work, same
+    // order of magnitude, so it gets the stated budget too — smaller than the
+    // whole queue's, because it is a fraction of the queue.
+    match self_json_within(&state, &args, 180).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
     }
@@ -784,6 +792,77 @@ mod tests {
     use super::*;
     use mecha_core::agent::Taint;
     use serde_json::json;
+
+    const QUEUE_SVELTE: &str = include_str!("../../../../web/src/lib/Queue.svelte");
+
+    /// The body of a top-level function in the queue pane's script block,
+    /// from its opening line to the `\n  }` that closes it at script indent.
+    fn queue_fn(name: &str) -> &'static str {
+        let after = QUEUE_SVELTE
+            .split_once(&format!("function {name}("))
+            .unwrap_or_else(|| panic!("Queue.svelte must still define `{name}`"))
+            .1;
+        after
+            .split_once("\n  }")
+            .expect("the function must still close at script indent")
+            .0
+    }
+
+    /// **Leaving a similarity group must cost nothing.**
+    ///
+    /// The whole-queue layer embeds every pending statement, which the route
+    /// below budgets three hundred and sixty seconds for. `closeItems` used
+    /// to answer the Back arrow by re-running exactly that query whenever a
+    /// verdict had been filed inside the group — so a glance was free and the
+    /// actual work was not, and the ordinary loop of a sitting (open a group,
+    /// reject a few, step back) paid minutes each time round. It was reported
+    /// as the thing that ended the desire to clear the queue, which is the
+    /// real cost of a slow surface: not the wait, the abandonment.
+    ///
+    /// Nothing needs re-deriving. The page knows which ids it judged, and the
+    /// TUI has rebuilt the group from its survivors since the level existed.
+    ///
+    /// Asserted against the source because this pane has no JS test rig, and
+    /// checked as an *absence*: any call out of `closeItems` — `fetch`, or
+    /// either open helper — reintroduces the wait. With the old body in place
+    /// this fails on `openGlobal`.
+    #[test]
+    fn leaving_a_similarity_group_makes_no_request() {
+        let body = queue_fn("closeItems");
+        for forbidden in ["fetch(", "openGlobal(", "openGroups(", "loadGroups("] {
+            assert!(
+                !body.contains(forbidden),
+                "closeItems must not call `{forbidden}` — leaving a group would re-embed \
+                 the queue. Prune the listing from the survivors instead.\n{body}"
+            );
+        }
+        // And it must still do the pruning, or it "costs nothing" by leaving
+        // the card describing members the reviewer has just judged away.
+        assert!(
+            body.contains("survivors"),
+            "closeItems must rebuild the group from its survivors:\n{body}"
+        );
+    }
+
+    /// One door to the expensive query, so the cache cannot be walked around.
+    ///
+    /// A grouping is kept for the life of the page (`groupCache`), which is
+    /// what makes the Back arrow and a tab switch free rather than a fresh
+    /// two minutes. That only holds while every path to a listing goes
+    /// through the one loader — a second `fetch` of this route added beside
+    /// it would be a listing nobody cached and nobody could regroup.
+    #[test]
+    fn the_grouping_query_has_exactly_one_caller_in_the_page() {
+        assert_eq!(
+            QUEUE_SVELTE.matches("/api/queue/groups").count(),
+            1,
+            "every grouping must go through the cached loader in Queue.svelte"
+        );
+        assert!(
+            QUEUE_SVELTE.contains("const groupCache"),
+            "Queue.svelte must keep the listing across an unmount"
+        );
+    }
 
     fn item(id: &str, status: &str, created: &str) -> OutboxItem {
         OutboxItem {
