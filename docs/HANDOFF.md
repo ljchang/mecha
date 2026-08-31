@@ -52,7 +52,13 @@ and the 2026-08-29 four — #114, the shadow queue on every owner surface
 (plus a web entity page and chat tool-result previews); #116, the
 `/tasks` page repair; #115, the appraisal docs-page rework; #117, the
 docs site's fixture-backed web demo and its two CI gates. All in the
-`Unreleased` section of `CHANGELOG.md`; the next tag is v0.1.17.
+`CHANGELOG.md`. **Released as v0.1.17 on 2026-08-31** — tagged, the
+release workflow green, and all four crates confirmed live on crates.io
+at 0.1.17 (`mecha-core`, `mecha-cli`, `mecha-mail`, `mecha-slack`) by
+querying the registry rather than by watching the job go green. Seven of
+the merges in it had landed with no changelog entry (#119, #121, #123,
+#125, #127, #128, #130) and were written up at release time; the next tag
+is v0.1.18.
 
 **0.1.14 is thirty-one commits from three sessions working the same day**,
 which is the thing to know about reading its history: the lanes interleave,
@@ -145,9 +151,17 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-Expect **2,026 tests**, no failures — measured 2026-08-31 (~11:15 UTC) in
-this checkout on `main` at **786d8ec** (the #127 merge): **679** in
+Expect **2,029 tests**, no failures — measured 2026-08-31 (~12:50 UTC) in
+this checkout on `main` at **b132157** (the 0.1.17 release commit): **682** in
 `mecha-cli` with 1 ignored, **1,102** in `mecha-core`, the rest unchanged.
+
+The **+3** over 2,026 at `786d8ec` is #130, and it is named rather than
+subtracted, because a delta is a commit delta and not an arithmetic one:
+`a_group_verdict_says_what_it_does_not_know`,
+`the_verdict_line_survives_an_eighty_column_terminal` and
+`a_verdict_that_landed_on_nothing_keeps_its_group`, all in `tui::tests`.
+Moving `why_nothing_landed` from `serve::review` to `commands::review` in the
+same PR moved no tests — they stayed where they were and follow the new path.
 The **38** added over 1,988 at `ab0097b` split at the merge level: **+11**
 from #128 (the review queue's regroup-cost arc) and **+27** from #127 (the
 diagnostician's sight, the workspace split, and the two gate guards —
@@ -507,6 +521,47 @@ independently stale: the musl benchmark binary (`target-musl/release/mecha`,
 built 2026-08-23), so **re-run `bench/build-portable.sh` before trusting any
 scorecard against 0.1.13**. The factory client is current at 0.2.7 and the
 droplet was not touched.
+
+**2026-08-31 (~12:45, after the 0.1.17 / graph 0.1.4 releases)** — the first
+pass in a while where all six `update` surfaces were taken in one sitting, so
+this supersedes the install claims above rather than adding to them. Verified
+by asking each artifact, never the repo:
+
+- `mecha --version` → **0.1.17** from `~/.cargo/bin`; `strings` on it contains
+  `left_pending`, which is the literal the release added, so the install is
+  the new *build* and not merely a new mtime.
+- `mecha-mail` reinstalled beside it (note: it had been installed from a
+  *scratchpad worktree* — cargo reported replacing `mecha-mail v0.1.16
+  (/tmp/…/wt/appraisal-fixes/mecha-mail)`, which is the deferred-failure shape
+  the web assets already had a rule about, one binary over).
+- Both graph binaries at **0.1.4**, and `mecha-graph-mcp` answering **13**
+  `kg_*` tools from the installed path (twelve previously; `kg_verdict` is the
+  addition).
+- The seventh binary — the one `scripts/nightly.sh` executes directly out of
+  the graph repo's `target/release` — reports 0.1.4 with `candidate_embedding`
+  compiled in. Checked rather than assumed to have been refreshed by
+  `cargo install --path`.
+- Web assets rebuilt from `b132157` and rsynced (`index-WdOIXhHv.js`,
+  replacing Aug 30's `index-BlZ4I5_n.js`, whose mtime matched
+  `mecha-serve`'s start time exactly — a normal earlier deploy, not another
+  lane's live test; no `deployed-local` tag).
+- All five services restarted and confirmed by **startup line**, not
+  `is-active`: Slack "1 owner(s), 16 thread(s)", triggers "1 trigger(s), 1
+  enabled", serve printing both doors, voice worker on 7860.
+- Stale-process sweep clean. Factory client **0.2.8**, droplet already serving
+  **0.2.8** (read-only check only). Sandbox image cargo 1.97.1, identical to
+  host.
+
+**Not verified, and stated as such:** the *served* bundle. `63242` answers 403
+to an unauthenticated curl, which is the owner gate working correctly, so the
+end-to-end check is the owner loading the page. The dist on disk is right and
+the service restarted after it landed.
+
+**The musl benchmark binary does not exist at all** (`target-musl/release/`
+is empty), which is a different state from stale and a safer one: it cannot
+mislead a scorecard, and `bench/run.sh` builds it via `build-portable.sh`.
+Worth knowing that the build will therefore happen *inside* whatever window
+someone starts a benchmark in.
 
 **2026-08-24 (re-verified this date, evening)**: `~/.cargo/bin/mecha`
 reinstalled again for the web-review-surfaces arc (final at merge `cfab345`)
@@ -1132,6 +1187,19 @@ one person's mailbox rather than a public fact.
 ---
 
 ## What to do next
+
+- **The graph's public mirror is a release behind, deliberately.** The private
+  checkout is tagged **v0.1.4** (2026-08-31) and `~/Github/mecha-graph` is
+  still **0.1.3**, so the two version lines have diverged for the first time.
+  Catching up means `scripts/export-public.sh`, which runs the denylist gate —
+  outward-facing, irreversible, and pushing life-derived-adjacent material to
+  a public repo, so it was left for the owner rather than done as part of the
+  release. Nothing is broken by the gap; the crates on crates.io are mecha's,
+  not the graph's, and the graph is installed locally from the private
+  checkout as it always is. **Whoever runs the export: the gate deletes the
+  tree it refuses rather than flagging it, and a new private artifact has to
+  be registered in two places** (the `rm -f` list and the presence check) — see
+  the export-arc notes in HISTORY.
 
 - **Two macOS residues from #113's CI arm, parked deliberately** (that
   lane's own flag, so they are not lost): `homeostat.rs` reads
