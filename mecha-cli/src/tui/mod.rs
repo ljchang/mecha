@@ -5788,17 +5788,47 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 fan,
             );
             match outcome {
+                // **The exit code is not the verdict**, and this arm is the
+                // third site in the repo to need saying so. mecha-graph
+                // reports a per-candidate failure as `#id FAILED: …` and
+                // exits 0, so a process-level `Ok` can carry a verdict that
+                // did not happen. The item level below learned it the
+                // expensive way (`accepted #2951` on an item whose subject
+                // could not resolve: row gone locally, still pending in the
+                // store) and the web route answers 409 on the same reading.
+                // This arm did neither, and removed the group regardless —
+                // the same lie one level up, over seven candidates instead of
+                // one. Worse since the status line started naming what it
+                // could not see: with an unresolvable seed there is no
+                // `cascade:` line either, so it read as "the seed landed, the
+                // fan-out is unknown" when nothing had landed at all.
                 Ok(report) => {
-                    let cascade = crate::commands::review::cascade_tally(&report);
+                    let (landed, _failed) = crate::commands::review::tally_report(&report);
                     if let Some(m) = &mut app.queues {
-                        m.groups.retain(|x| x.leader_id != leader);
-                        m.selected = m.selected.min(m.groups.len().saturating_sub(1));
-                        m.status = Some(group_verdict_status(
-                            verb,
-                            &stmt.chars().take(48).collect::<String>(),
-                            members,
-                            cascade,
-                        ));
+                        if landed == 0 {
+                            // The group STAYS: nothing changed in the store,
+                            // and the ways through are the same two keys the
+                            // Err arm names, on the item level's precedent.
+                            let why = crate::commands::review::why_nothing_landed(&report);
+                            m.status = Some(if create {
+                                why
+                            } else {
+                                format!(
+                                    "{why} — b binds the subject here; A accepts it as a \
+                                     new topic"
+                                )
+                            });
+                        } else {
+                            let cascade = crate::commands::review::cascade_tally(&report);
+                            m.groups.retain(|x| x.leader_id != leader);
+                            m.selected = m.selected.min(m.groups.len().saturating_sub(1));
+                            m.status = Some(group_verdict_status(
+                                verb,
+                                &stmt.chars().take(48).collect::<String>(),
+                                members,
+                                cascade,
+                            ));
+                        }
                     }
                 }
                 Err(e) => {
@@ -10609,6 +10639,49 @@ mod tests {
     /// That is the bug this pair of tests exists for, one layer down — the
     /// note absent, and its absence read as nothing to report.
     ///
+    /// **A zero exit code is not a verdict, and this arm removes a row.**
+    ///
+    /// mecha-graph reports a per-candidate failure as `#id FAILED: …` and
+    /// exits 0, so `Ok(report)` can carry a verdict that did not happen. The
+    /// item level learned it on `#2951` — row gone locally, still pending in
+    /// the store — and the web route answers 409 on the same reading. The
+    /// group arm did neither.
+    ///
+    /// The two readings have to come apart on the SAME report, which is what
+    /// this pins: a report whose only line is a `FAILED` has `tally_report`
+    /// saying nothing landed, so the group must stay and the child's own
+    /// sentence must reach the screen. It also carries no `cascade:` line, so
+    /// the status builder — asked in isolation — would call it "the seed
+    /// landed, the fan-out is unknown". Which is why the guard belongs at the
+    /// call site, ahead of it, and not in another arm of the formatter.
+    #[test]
+    fn a_verdict_that_landed_on_nothing_keeps_its_group() {
+        use crate::commands::review::{cascade_tally, tally_report, why_nothing_landed};
+        let failed = "#9281 FAILED: cannot resolve subject 'Sage'\n";
+
+        let (landed, _) = tally_report(failed);
+        assert_eq!(landed, 0, "a FAILED line must not read as a landed verdict");
+        assert!(
+            why_nothing_landed(failed).contains("cannot resolve subject"),
+            "the child's own reason is what the reviewer needs to act"
+        );
+
+        // The same report through the status builder alone, to show what the
+        // guard is standing in front of: no `cascade:` line, so this would
+        // announce a seed that never landed.
+        assert!(
+            group_verdict_status("reject", "Sage plays cello", 6, cascade_tally(failed))
+                .contains("the seed only"),
+            "the formatter cannot see this case — the caller must"
+        );
+
+        // And a report that DID land still reads as one, or the guard would
+        // swallow every good verdict.
+        let ok = "#9281 rejected\ncascade: 6 rejected\n";
+        assert_eq!(tally_report(ok).0, 1);
+        assert_eq!(cascade_tally(ok), Some((6, 0)));
+    }
+
     /// So the counts precede the head everywhere, and this **draws the modal
     /// and reads the buffer** rather than counting characters.
     ///
