@@ -1321,27 +1321,38 @@ What is actually open now:
   now says so and forbids naming a config key the brief did not name first,
   which is the failure mode #127 removed. Reference:
   `website/docs/reference/configuration.md`.
-- **`prepare_tools`' inbound-policy comment in `mecha-cli/src/setup.rs`
-  says the trigger runner is "the only caller that sets
-  `global_config_only`", and there are four.** `commands/trigger.rs`,
-  `commands/diagnose.rs`, `slack/connector.rs` and `commands/serve/chat.rs`
-  all pin it — measured 2026-08-31 at `89677fc` by grepping
-  `global_config_only: true` across `mecha-cli/src`. Surfaced by #127's
-  review, left out of that diff on purpose (seven rounds deep, and the
-  comment predates the branch). The coupling it documents was chased and is
-  inert: the flag flips that default from `Hold` to `Accept`, and
-  `MailboxRoute::claim_pending` returns empty without an identity while
-  `run_diagnostician` never calls `attach` — but the same is worth
-  re-checking for the Slack connector and the chat surface, which do have
-  identities. Unowned.
+- **`prepare_tools` decides inbound mail on the wrong property, and its own
+  config doc says so.** `MessagesConfig::inbound` in
+  `mecha-core/src/config.rs` states the contract: *"Unset — the default —
+  resolves per surface: attended front-ends hold, unattended runs accept."*
+  The implementation keys that decision off `global_config_only`, which
+  means something else entirely — *ignore the project's `mecha.toml`* —
+  and which every remote surface sets for that reason, because a cloned
+  repository must not shape a run driven from a phone. Five callers set it
+  (`commands/trigger.rs`, `commands/diagnose.rs`, `slack/connector.rs`,
+  `commands/serve/chat.rs`, `voice/mod.rs`), and **three of the five are
+  attended front-ends receiving `Accept` where the documented contract says
+  `Hold`**. The comment beside the branch — "a *scheduled* run (the trigger
+  runner is the only caller that sets `global_config_only`) accepts —
+  nobody is coming to release a hold" — is the right rationale naming the
+  wrong property, and is also wrong about the caller count.
 
-  *This item cited `setup.rs:879` until 2026-08-31 and sent a reader to the
-  wrong file: there are two `setup.rs` under `mecha-cli/src`, and line 879
-  of `commands/setup.rs` is an unrelated test assertion where
-  `global_config_only` does not appear at all — so following the reference
-  read as "already fixed, or never true". A bare filename is a line number's
-  failure mode one level up, and this one was written into a handoff pass by
-  the skill whose own rule is to cite the symbol.*
+  **Not live on this install, and that is what sets the severity.**
+  `MessagesConfig::enabled` defaults to `false` ("a mailbox is a policy
+  decision") and `~/.mecha/config.toml` has no `[messages]` section, so
+  `prepare_tools` never builds the mailbox and the branch is unreached —
+  verified 2026-08-31 at `20bebac`. This is a contract violation to fix
+  before the mailbox is ever enabled, not an open exposure today. Whoever
+  takes it should read `ARCHITECTURE.md`'s messaging section first; nobody
+  has, and it should not be repaired from a grep.
+
+  *Two corrections already, both from a peer checking the address rather
+  than the claim. It first cited `setup.rs:879` unqualified — two files
+  share that basename, and line 879 of the other is an unrelated test
+  assertion, so following the reference read as "already fixed". Then it
+  said four callers: a grep for `global_config_only: true` misses
+  `voice/mod.rs`, which assigns instead. The pattern you search with is
+  part of the claim you can make.*
 - **Read the record, weekly at first.** `mecha harness list --all` and the
   nightly log. §2's failure mode (harness updating without benefiting) is now
   answerable from the store instead of from impression — but only if someone
