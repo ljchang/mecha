@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-08-31
+
 ### Changed
 
 - **The web notes and graph tabs are one graph tab**
@@ -22,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`mecha kg timeline` → `/api/timeline`). The `#notes` hash still routes.
 
 ### Added
+
+- **The web settings page can disagree with what the model learned** (#119).
+  It listed the learned rules and could do nothing about them, and never
+  showed a reflection at all — so the stage where objecting is cheap was the
+  one stage with no browser surface. It now carries the two panes the TUI's
+  `/learning` has, with the same verbs behind them.
 
 - **The retirement end-to-end drill** (`scripts/retirement-drill.sh` +
   `mecha-core/examples/retirement_drill_seed.rs`) — the ungating
@@ -107,6 +115,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to grade the rule *beyond its convictions* (`graded >
   attributed_regressions`, counting verdict-bearing rows only — an
   inconclusive probe ran but graded nothing and releases nothing).
+- **Leaving a similarity group re-embedded the whole review queue** (#128).
+  The graph queue's grouping embeds every pending statement — measured at
+  ~40s over ~7,000 — and `closeItems` re-ran it whenever a verdict had been
+  filed inside a group. A guard skipped it when *nothing* had been judged, so
+  a glance was free and the actual work was not: open a group, reject three,
+  step back, wait. The listing is now rebuilt from its survivors, which is
+  the rule the TUI's `Esc` has used since the level existed, and groupings
+  are kept for the life of the page rather than discarded by the back arrow,
+  a Review sub-tab switch, or a transient error. A cross-class grouping the
+  page has already paid for reopens instantly; the header says when it ran
+  and offers a regroup. Class groups also had a 30-second server budget
+  against the global layer's 360, so a class big enough to be worth grouping
+  answered `502` on a phone while the identical command in a terminal printed
+  it.
+- **A group verdict could delete a card while nothing was verdicted** (#130).
+  mecha-graph reports a per-candidate failure as `#id FAILED: …` and exits 0,
+  so `Ok(report)` can carry a verdict that did not happen — the `#2951`
+  incident the item level records, one level up and over seven candidates
+  instead of one. The `/queues` group arm now reads the report before
+  removing the row, and the status line distinguishes a fan-out that was
+  never asked for from one the child did not report: `cascade_tally` answers
+  `None` for both, and `unwrap_or((0, 0))` rendered them identically as `×1`
+  with no "left pending" note. Silence there read as *none left*. Counts and
+  remedy keys now precede the statement head, because the status line clips
+  at 76 columns and a caveat written after a child-controlled string is one
+  the reader never sees.
+- **The entry document must not be cached the way its assets are** (#121).
+  Reported as the settings page's learning section vanishing from a phone
+  minutes after it deployed. Nothing had regressed: the phone was rendering
+  the previous build, correctly and whole, from a cached `index.html`.
+- **A pull-request build could evict main's pending Pages deploy** (#123).
+  `docs.yml` put PR builds and main's deploy in one concurrency group, and
+  GitHub holds only one pending run per group, so a third arrival cancels the
+  one waiting.
+- **Four cards on the home page did nothing, and one of them should have**
+  (#125). `mecha review queues --json` reports eight queues and `Home.svelte`
+  had a hardcoded map covering seven, so `blocked questions` rendered under
+  its raw wire name and went nowhere — while the tasks tab had been showing
+  those same questions all along. The other three are CLI-only by design, but
+  a flat card and a tappable one differed only in an `:active` background
+  nobody sees on a phone, with the explaining command in a `title` tooltip
+  touch does not render.
+- **The nightly diagnostician could not read the source it was told to read**
+  (#127). Six nights of `mecha harness ruminate` produced three candidates and
+  zero acceptances, all three proposing configuration keys that exist nowhere
+  in this codebase.
 - **The `/tasks` web page rendered no tasks at all** on any non-empty board
   (#116): `stateOf` called `stalled(t)` where `stalled` is a *field* the
   server stamps (`serve/board.rs`), not a function — a `ReferenceError` on
@@ -2769,7 +2823,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/ljchang/mecha/releases/tag/v0.1.17
 [0.1.16]: https://github.com/ljchang/mecha/releases/tag/v0.1.16
 [0.1.14]: https://github.com/ljchang/mecha/releases/tag/v0.1.14
 [0.1.13]: https://github.com/ljchang/mecha/releases/tag/v0.1.13
