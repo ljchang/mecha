@@ -124,6 +124,9 @@ async fn ruminate(
 ) -> Result<()> {
     let store = HarnessStore::open_default()?;
 
+    // Resolved once, at the boundary, so the brief and the draw compare the
+    // same path against the same recorded ones. See `resolve_workspace_filter`.
+    let from_workspace = crate::commands::diagnose::resolve_workspace_filter(from_workspace)?;
     let Some((model, slice, _)) = corpus_slice(None, days, limit, from_workspace.clone())? else {
         println!("no recorded run outcomes yet — nothing to diagnose from; deferring");
         return Ok(());

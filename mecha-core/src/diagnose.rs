@@ -326,11 +326,20 @@ impl Evidence {
                 ));
             }
         }
-        if self.workspaces.len() > 1 {
-            out.push_str(
-                "\nwhere these runs were rooted — this corpus is a mixture of different \
-                 jobs, and a rate over all of them describes none of them:\n",
-            );
+        // Shown whenever there is anything to show, not only for a mixture.
+        // The suppressed case was the one where it was most needed: a
+        // `--from-workspace` typo bails out pointing the reader at this
+        // listing, and a single-workspace store printed nothing for them to
+        // read. The wording changes with the count; the listing does not
+        // disappear.
+        if !self.workspaces.is_empty() {
+            out.push_str(match self.workspaces.len() {
+                1 => "\nwhere these runs were rooted:\n",
+                _ => {
+                    "\nwhere these runs were rooted — this corpus is a mixture of different \
+                      jobs, and a rate over all of them describes none of them:\n"
+                }
+            });
             // Capped: one-off task workspaces (`work/task-<id>`) are minted
             // per delegated run, so the tail grows without bound and is all
             // ones. The tail is summarised rather than dropped — "and 9 more"
@@ -544,11 +553,17 @@ pub fn parse_proposal(text: &str) -> Option<Proposal> {
         ChangeClass::Config if crate::harness::names_override_key(&change).is_none() => (
             ChangeClass::Architecture,
             Some(format!(
-                "proposed as `Config`, reclassified: `{}` is not one of the four keys this \
+                "proposed as `Config`, reclassified: `{}` is not one of the {} keys this \
                  harness can override ({}), so applying it would mean adding a setting",
                 change
                     .split_once('=')
                     .map_or(change.as_str(), |(k, _)| k.trim()),
+                // From the set, not from prose. "the four keys" sat beside a
+                // list rendered from `OverrideKey::names()`, so a fifth key
+                // would have made the sentence quietly wrong — the
+                // instruction's copy of the list is covered by a test and this
+                // number was not.
+                crate::harness::OverrideKey::ALL.len(),
                 crate::harness::OverrideKey::names()
             )),
         ),
@@ -720,7 +735,13 @@ I would look at compaction next if this does not help.";
             let p = parse_proposal(&reply).expect(change);
             assert_eq!(p.class, ChangeClass::Architecture, "{change}");
             let note = p.reclassified.expect(change);
-            assert!(note.contains("not one of the four keys"), "{note}");
+            assert!(
+                note.contains(&format!(
+                    "not one of the {} keys",
+                    crate::harness::OverrideKey::ALL.len()
+                )),
+                "{note}"
+            );
         }
     }
 

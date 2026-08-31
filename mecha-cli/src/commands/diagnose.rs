@@ -75,15 +75,7 @@ pub fn corpus_slice(
     // resolve is reported and refused rather than quietly matching nothing:
     // the flag scopes an unattended nightly, and a typo that reads as "no runs
     // recorded" defers the night for a reason nobody can see.
-    let workspace = match workspace {
-        None => None,
-        Some(w) => Some(w.canonicalize().with_context(|| {
-            format!(
-                "--from-workspace {} does not resolve to a directory",
-                w.display()
-            )
-        })?),
-    };
+    let workspace = resolve_workspace_filter(workspace)?;
     let corpus = Corpus::scan(
         &dir,
         &Scan {
@@ -189,6 +181,34 @@ fn source_dir() -> Result<(Option<std::path::PathBuf>, Option<std::path::PathBuf
             );
             Ok((None, tools_workspace))
         }
+    }
+}
+
+/// Resolve a `--from-workspace` to the form the store recorded.
+///
+/// **One place, because two callers compare against the same recorded paths
+/// and only one of them was resolving.** `corpus_slice` canonicalized
+/// internally and threw the result away; `ruminate` then handed the raw clap
+/// value to `draw_episodes`, so a relative path, a `..` component or a
+/// symlinked home scoped the *brief* and matched nothing in the *draw* — and
+/// the candidate was staged "no replayable sessions recorded", which is the
+/// wrong finding and the same two-zeros conflation the bail-out below exists
+/// to stop. Found in review, in the fix for that conflation.
+///
+/// A path that does not resolve is an error rather than a filter that matches
+/// nothing, for the same reason: on the unattended path a typo would otherwise
+/// defer the night silently.
+pub fn resolve_workspace_filter(
+    workspace: Option<std::path::PathBuf>,
+) -> Result<Option<std::path::PathBuf>> {
+    match workspace {
+        None => Ok(None),
+        Some(w) => Ok(Some(w.canonicalize().with_context(|| {
+            format!(
+                "--from-workspace {} does not resolve to a directory",
+                w.display()
+            )
+        })?)),
     }
 }
 
@@ -456,6 +476,46 @@ pub fn shell_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The defect this closes: the brief resolved its filter and the draw did
+    /// not, so a path the user could reasonably type scoped one and matched
+    /// nothing in the other. The existing `draw_episodes` test could not see
+    /// it — it passes canonical absolute paths on both sides, which is exactly
+    /// the case where the bug is invisible.
+    #[test]
+    fn a_workspace_filter_resolves_to_the_form_the_store_recorded() {
+        let base = std::env::temp_dir()
+            .join(format!("mecha-wsfilter-{}", std::process::id()))
+            .join("work");
+        std::fs::create_dir_all(base.join("morning")).unwrap();
+        // `a/../b` only resolves if `a` exists — canonicalize walks the real
+        // filesystem rather than normalising the string, which is the whole
+        // reason the raw value could not be compared against a recorded one.
+        std::fs::create_dir_all(base.join("frontdoor")).unwrap();
+        let canonical = base.join("morning").canonicalize().unwrap();
+
+        // The forms a person actually types. Each resolves to the one path the
+        // session header holds; unresolved, `starts_with` matches none of them.
+        for typed in [
+            base.join("morning"),
+            base.join("./morning"),
+            base.join("frontdoor/../morning"),
+        ] {
+            let resolved = resolve_workspace_filter(Some(typed.clone()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(resolved, canonical, "{}", typed.display());
+        }
+
+        assert!(resolve_workspace_filter(None).unwrap().is_none());
+        // A path that does not resolve is an error, never a filter that
+        // silently matches nothing: on the nightly a typo would defer the
+        // night with no way to see why.
+        assert!(resolve_workspace_filter(Some(base.join("nope"))).is_err());
+
+        std::fs::remove_dir_all(base.parent().unwrap()).ok();
+    }
     use super::shell_quote;
 
     #[test]
