@@ -3497,6 +3497,35 @@ Whitlock), suite 322/0 with identical assertions, and the blessed tree
 published as `bbbba2a` ("0.1.3") — the private/public split doing exactly
 what it exists for.
 
+**2026-08-31 — the review queue stopped charging for a second look, then
+shipped, then ran.** Reported as a person's own workflow failing: *"when I
+enter a cluster to reject individual items and then go back, it reruns the
+expensive similarity again. Really annoying and ends my desire to spend time
+clearing the queue."* Three surfaces were charging for it and one of them was
+already right. `closeItems` in `Queue.svelte` re-ran the whole cross-class
+grouping whenever a verdict had been filed inside a group — a guard skipped it
+when *nothing* had been judged, so a glance was free and the actual work was
+not; the TUI's `Level::Items if from_group` arm had rebuilt the group from its
+survivors since the level existed, so #128 was porting a settled decision
+rather than making one. Listings then became a per-page cache, because the
+back arrow, a Review sub-tab switch (which unmounts the pane) and any
+transient error each threw the result away. #130 followed the same thread into
+the TUI: `unwrap_or((0, 0))` over `cascade_tally` made "no fan-out was asked
+for" and "a fan-out was asked for and the child did not report it" render
+identically as `×1`, and the group arm removed a card on any `Ok(report)` —
+mecha-graph reports `#id FAILED: …` and exits 0, so an unresolvable seed
+deleted a row covering seven candidates while none were touched, which is the
+`#2951` incident one level up. Underneath both, `candidate_embedding` (V023)
+in the graph: a pending statement's text does not change while it waits, so
+its vector is immutable and re-deriving it every call was pure waste.
+Released the same day as mecha **v0.1.17** (four crates to crates.io) and
+graph **v0.1.4**, deployed across all six `update` surfaces, and warmed on the
+live store — **42.6s cold, 4.6s warm, byte-identical output, +17.9 MB**, and
+**4.2s at a cosine floor never visited**, which is the number that matters:
+what is cached is the vectors, not the query, so the threshold stepper stopped
+being a re-embed of the world per nudge. The graph's public mirror was
+deliberately left at 0.1.3.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -5701,6 +5730,64 @@ and is what finally exercised the path.)
   findings I already know about" answers a narrower question than the one
   that matters (the #89/#94 trap, above) — recurring here one level down,
   inside a single fix rather than across review rounds of a whole PR.
+
+**2026-08-31 — seven review rounds on #128 and five on #130, and after the
+first round every finding was a defect the previous round's fix had
+introduced.** Worth recording as three distinct shapes rather than one, because
+they fail differently.
+
+- **The checked part was not the load-bearing part.** `withoutJudged` rebuilt
+  a cached grouping and needed an id-to-statement map to promote a new leader.
+  The only thing available was `sample`, whose alignment with `members` is
+  *another repository's* serialisation detail — true today, decorative
+  everywhere else it is consumed, and nothing in this repo would break if the
+  graph started sending the top three by cosine. A person would: the promoted
+  id becomes `leader_id`, and a group verdict files on `leader_id` under the
+  statement on the card, so a changed mapping shows one candidate's words over
+  Accept-all and votes on another. The induction over it was sound and had
+  been verified; the base case was in a repo the verification never reached.
+  The fix was to stop needing the belief — drop the group rather than re-head
+  it — not to document it. **An assumption whose base case lives in another
+  repository is not an assumption this repo's tests can hold.**
+
+- **A test that pins a count forbids the correct change.**
+  `a_verdict_reaches_listings_other_than_the_one_on_screen` asserted
+  `withoutJudged` was called exactly twice. The bug the next round found was a
+  *third* install path that was missing the call — so the test written to catch
+  that gap would have failed the fix for it. Assert the property (every path
+  that reaches the screen is filtered), never the arity.
+
+- **A warning's position is part of whether it exists.** The `/queues` status
+  line is a `Paragraph` in a `Rect { height: 1 }` with no `.wrap()`, so it
+  clips at 76 columns. A caveat written *after* a 48-character
+  statement head, or after a child-controlled `FAILED` line, was simply not on
+  the screen — and its absence read as "nothing to report", which is the exact
+  failure the caveat existed to prevent, one layer down. Bounded facts first,
+  unbounded strings last. The first attempt to test this re-derived the
+  geometry (`76`, hand-copied from three constants in `queues.rs`) and would
+  have gone green through any change to them; drawing the modal into a
+  `TestBackend` and reading the buffer catches both the ordering *and* a
+  ten-column indent change in a file the test never names.
+
+  The general lesson across all three: **a review round that finds only what
+  the last round touched is not converging, it is following you.** Each fix
+  here was correct about the thing reported and created the next finding, and
+  what stopped it was not more care per round but changing what the tests were
+  about — from arity to property, from arithmetic to rendered artifact, from a
+  documented belief to no belief.
+
+**2026-08-31 — an inability is not a request.** A peer session, blocked by its
+own worktree guard from writing `docs/OPERATIONS.md`, asked this lane to write
+a line into it — phrased as "you can reach that file and I cannot". It was
+safe here only by accident: the finding was independently this lane's (the
+swap state was read here, and the build was capped at `-j 4` because of it),
+so there was an honest reason to write it that did not depend on the request.
+Had it been *only* the peer's finding, the correct answer was the human, not
+the reachable file. **A guard that stops one lane is not a task that lane can
+hand to another, and the reachability of a file is not the authority to write
+it.** The phrasing is the peer's own, offered unprompted after the fact; both
+sessions had spent the day refusing the same shape in other forms without
+noticing it in this one.
 
 ### Environment
 
