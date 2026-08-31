@@ -85,6 +85,35 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features
 
+  # The web pane's own logic. Almost everything in `web/` is assertable from
+  # Rust by reading the component source, and `serve/review.rs` does exactly
+  # that — but a `contains(...)` over source text cannot tell whether a leader
+  # promotion or a sample alignment is CORRECT, only that the code is still
+  # shaped like itself. `web/test/` covers the parts that are real logic.
+  #
+  # It runs here because the alternative is the failure this file already
+  # guards against one job down: a test nobody runs reads exactly like a
+  # passing one. `docs.yml` has a node job, but it is `working-directory:
+  # website` and would never have touched this.
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm test
+        working-directory: web
+      # The bundle is what actually ships; a component that tests clean and
+      # does not compile is not a passing state.
+      - run: npm run build
+        working-directory: web
+
   # The integration tests skip themselves when a sandbox backend is missing, and
   # a silently skipped test reads exactly like a passing one. This job installs
   # the backends and sets MECHA_TEST_REQUIRE_BACKENDS=1, which turns every skip

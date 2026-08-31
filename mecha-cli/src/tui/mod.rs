@@ -5327,7 +5327,12 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                         .copied()
                         .filter(|i| remaining.contains(i))
                         .collect();
-                    match survivors.split_first() {
+                    // Fewer than two survivors is not a group: nothing left,
+                    // or a leader with nobody behind it, and a row offering
+                    // `a` over `×1` covers exactly one candidate the item
+                    // list is already showing. `split_first` kept the second
+                    // case, which is the commonest group size there is.
+                    match survivors.split_first().filter(|(_, rest)| !rest.is_empty()) {
                         Some((lead, rest)) => {
                             let g = &mut modal.groups[pos];
                             if *lead != g.leader_id {
@@ -5340,7 +5345,41 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                             }
                             g.leader_id = *lead;
                             g.member_ids = rest.to_vec();
-                            g.sample.retain(|_| false);
+                            // Rebuilt from the survivors rather than blanked.
+                            // The sample is what the card shows UNDER the
+                            // leader, and the rows are already in hand — the
+                            // same place the promoted leader's statement
+                            // above came from. Clearing it left a group whose
+                            // face was one line and whose count said six,
+                            // which reads as five members the view could not
+                            // name. Same three as the child would send, in
+                            // the order it sent them.
+                            g.sample = rest
+                                .iter()
+                                .take(3)
+                                .map(|id| {
+                                    modal
+                                        .items
+                                        .iter()
+                                        .find(|r| r.id == *id)
+                                        .map(|r| r.statement.clone())
+                                        .unwrap_or_else(|| format!("#{id}"))
+                                })
+                                .collect();
+                            // The spans line goes when the group shrinks, the
+                            // same move the web pane makes on the same
+                            // finding. `classes` counts members per class and
+                            // a removal cannot be attributed to one — the key
+                            // is the graph's `cluster_key`, which this file
+                            // must not keep a second copy of — but the row
+                            // renders `×{size}` with `spans: c ×n, …` right
+                            // underneath. Reject four of seven and it reads
+                            // `×3` above spans summing to seven: two numbers
+                            // disagreeing on one row. A named absence beats a
+                            // count that has quietly stopped being true.
+                            if survivors.len() != ids.len() {
+                                g.classes.clear();
+                            }
                         }
                         None => {
                             modal.groups.remove(pos);
