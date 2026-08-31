@@ -10609,37 +10609,63 @@ mod tests {
     /// That is the bug this pair of tests exists for, one layer down — the
     /// note absent, and its absence read as nothing to report.
     ///
-    /// So the counts precede the head everywhere, and this measures the
-    /// rendered prefix rather than the whole string. Asserting `.contains` on
-    /// a value the draw path throws away measures a guarantee nobody gets.
+    /// So the counts precede the head everywhere, and this **draws the modal
+    /// and reads the buffer** rather than counting characters.
+    ///
+    /// A first version asserted against a hand-written budget of 76 columns,
+    /// which is three constants from `queues.rs` copied into a comment:
+    /// `122u16.min(frame.area().width)`, `Borders::ALL`, and the two-space
+    /// indent in `format!("  {s}")`. Widen the box, drop the indent, or add a
+    /// prefix span, and the caveat starts clipping again while the test stays
+    /// green — the same failure restored one constant later. Grade the
+    /// artifact: `QueuesModal::draw` is public and `it_draws_at_tiny_sizes`
+    /// already drives it through a `TestBackend`, so what a reader sees is
+    /// available to assert on directly.
     #[test]
     fn the_verdict_line_survives_an_eighty_column_terminal() {
-        // The longest head the caller can produce: it clips its statement to
-        // 48 chars before calling in.
-        let head: String = "a".repeat(48);
-        // `122.min(80)` box, `Borders::ALL` (−2), `format!("  {s}")` (−2).
-        let visible = |s: &str| -> String { s.chars().take(76).collect() };
+        // What the modal actually puts on an 80×24 screen.
+        fn on_screen(status: &str) -> String {
+            let mut m = queues::QueuesModal::new(
+                queues::queues_from_json(
+                    r#"[{"queue":"graph candidates","depth":6434,"detail":"d","opens":"o"}]"#,
+                )
+                .unwrap(),
+            );
+            m.status = Some(status.to_string());
+            let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            term.draw(|f| m.draw(f)).unwrap();
+            let buf = term.backend().buffer().clone();
+            (0..24)
+                .map(|y| {
+                    (0..80)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
 
-        let partial = group_verdict_status("reject", &head, 6, Some((4, 2)));
+        // The longest head the caller can produce: `handle_queues_key` clips
+        // its statement to 48 characters before calling in.
+        let head: String = "a".repeat(48);
+
+        let partial = on_screen(&group_verdict_status("reject", &head, 6, Some((4, 2))));
         assert!(
-            visible(&partial).contains("2 similar left pending"),
-            "a partial sweep must still say so at 80 columns: {}",
-            visible(&partial)
+            partial.contains("2 similar left pending"),
+            "a partial sweep must still say so on an 80-column screen:\n{partial}"
         );
 
-        let unknown = group_verdict_status("reject", &head, 6, None);
-        let seen = visible(&unknown);
+        let unknown = on_screen(&group_verdict_status("reject", &head, 6, None));
         assert!(
-            seen.contains("unreported") && seen.contains("still pending"),
-            "the unreported caveat must survive the clip: {seen}"
+            unknown.contains("unreported") && unknown.contains("still pending"),
+            "the unreported caveat must reach the screen:\n{unknown}"
         );
 
         // A four-digit member count is the widest this arm can get.
-        let wide = group_verdict_status("accept", &head, 9999, None);
+        let wide = on_screen(&group_verdict_status("accept", &head, 9999, None));
         assert!(
-            visible(&wide).contains("still pending"),
-            "even the widest count must leave room for the caveat: {}",
-            visible(&wide)
+            wide.contains("still pending"),
+            "even the widest count must leave room for the caveat:\n{wide}"
         );
     }
 
