@@ -511,7 +511,7 @@ pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Respons
     if landed == 0 {
         return (
             StatusCode::CONFLICT,
-            format!("{}\n", why_nothing_landed(&report)),
+            format!("{}\n", crate::commands::review::why_nothing_landed(&report)),
         )
             .into_response();
     }
@@ -532,21 +532,6 @@ pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Respons
         "output": report.trim(),
     }))
     .into_response()
-}
-
-/// The line of a verdict report that says why nothing landed.
-///
-/// Pure so it can be tested, and deliberately the child's own words: this
-/// string is what a person reads before deciding what to do next, and a
-/// re-wording here would be a second account of a failure the graph already
-/// described exactly once.
-pub(super) fn why_nothing_landed(report: &str) -> String {
-    report
-        .lines()
-        .map(str::trim)
-        .find(|l| l.contains("FAILED"))
-        .map(|l| l.to_string())
-        .unwrap_or_else(|| "the verdict landed on nothing, with no reason reported".into())
 }
 
 #[derive(serde::Deserialize)]
@@ -1192,7 +1177,7 @@ mod tests {
         let (landed, failed) = crate::commands::review::tally_report(report);
         assert_eq!((landed, failed), (0, 1));
         assert!(
-            why_nothing_landed(report).contains("cannot resolve subject"),
+            crate::commands::review::why_nothing_landed(report).contains("cannot resolve subject"),
             "the reason is the child's own words — it is what the owner acts on"
         );
     }
@@ -1214,7 +1199,7 @@ mod tests {
     /// refusal they will retry forever.
     #[test]
     fn a_silent_report_still_names_itself() {
-        assert!(!why_nothing_landed("").is_empty());
+        assert!(!crate::commands::review::why_nothing_landed("").is_empty());
     }
 
     #[test]

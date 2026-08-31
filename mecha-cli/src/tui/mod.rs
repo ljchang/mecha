@@ -5215,6 +5215,58 @@ fn bind_candidate(app: &mut App, id: i64, to: Option<&str>) {
     }
 }
 
+/// What a group verdict says it did, from the child's own tally.
+///
+/// Pure so the honesty is a unit test rather than a hope — the same reason
+/// `why_nothing_landed` is. This one line is the ONLY thing telling a person
+/// what a keystroke just covered, so what it cannot know it has to say.
+///
+/// `cascade` is `None` in two situations that mean opposite things, and
+/// flattening them with `unwrap_or((0, 0))` is what this replaces:
+///
+/// - **No fan-out was asked for** — a singleton group takes `Fan::None`, no
+///   `--cascade` reaches the child, and there is no `cascade:` line to read.
+///   `×1` is then the whole truth.
+/// - **A fan-out was asked for and the child did not report it** — an older
+///   graph binary, a changed line, a cascade arm that died before printing.
+///   Here `×1` is a claim nobody checked, and the missing "left pending" note
+///   is worse than the wrong number: silence reads as "none left", so the
+///   line could not distinguish *nothing was left pending* from *I do not
+///   know whether anything was*.
+///
+/// `members` is what separates them, which is why the caller keeps it.
+///
+/// **Every count comes before the statement head**, which is the other half of
+/// making this readable. `QueuesModal::draw` renders the status into a
+/// `Rect { height: 1 }` with no `.wrap()`, so it CLIPS rather than wrapping —
+/// and the box is `122.min(frame.width)` with `Borders::ALL` under a two-space
+/// indent, leaving 76 columns on an eighty-column terminal. A caveat written
+/// after the forty-eight-character head fell off the end there, which is this
+/// function's own failure one layer down: the note absent, and its absence
+/// read as "nothing to report". The head is the part that can be lost — the
+/// group has already gone from the list above — so it goes last.
+fn group_verdict_status(
+    verb: &str,
+    head: &str,
+    members: usize,
+    cascade: Option<(usize, usize)>,
+) -> String {
+    match cascade {
+        Some((cascaded, 0)) => format!("{verb}ed ×{} — {head}", 1 + cascaded),
+        Some((cascaded, left)) => format!(
+            "{verb}ed ×{}, {left} similar left pending — {head}",
+            1 + cascaded
+        ),
+        // Nothing was asked to fan out, so nothing is unaccounted for.
+        None if members == 0 => format!("{verb}ed ×1 — {head}"),
+        // A count this line does not have is not a count of one.
+        None => format!(
+            "{verb}ed the seed only — fan-out unreported, {members} similar still \
+             pending — {head}"
+        ),
+    }
+}
+
 fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let Some(modal) = &mut app.queues else {
         return Ok(());
@@ -5693,6 +5745,9 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 return Ok(());
             };
             let (leader, stmt) = (g.leader_id, g.statement.clone());
+            // How many the fan-out was asked to cover, kept because the status
+            // line has to be able to say what it does NOT know about them.
+            let members = g.member_ids.len();
             // The cascade lands on the EXPLICIT member list this listing
             // showed — never a re-derivation: the ids on screen are what the
             // verdict is about, the graph vets them against the seed's
@@ -5733,21 +5788,59 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 fan,
             );
             match outcome {
+                // **The exit code is not the verdict**, and this arm is the
+                // third site in the repo to need saying so. mecha-graph
+                // reports a per-candidate failure as `#id FAILED: …` and
+                // exits 0, so a process-level `Ok` can carry a verdict that
+                // did not happen. The item level below learned it the
+                // expensive way (`accepted #2951` on an item whose subject
+                // could not resolve: row gone locally, still pending in the
+                // store) and the web route answers 409 on the same reading.
+                // This arm did neither, and removed the group regardless —
+                // the same lie one level up, over seven candidates instead of
+                // one. Worse since the status line started naming what it
+                // could not see: with an unresolvable seed there is no
+                // `cascade:` line either, so it read as "the seed landed, the
+                // fan-out is unknown" when nothing had landed at all.
                 Ok(report) => {
-                    let (cascaded, left) =
-                        crate::commands::review::cascade_tally(&report).unwrap_or((0, 0));
+                    let (landed, _failed) = crate::commands::review::tally_report(&report);
                     if let Some(m) = &mut app.queues {
-                        m.groups.retain(|x| x.leader_id != leader);
-                        m.selected = m.selected.min(m.groups.len().saturating_sub(1));
-                        let mut said = format!(
-                            "{verb}ed ×{} — {}",
-                            1 + cascaded,
-                            stmt.chars().take(48).collect::<String>()
-                        );
-                        if left > 0 {
-                            said.push_str(&format!(" ({left} similar left pending)"));
+                        if landed == 0 {
+                            // The group STAYS: nothing changed in the store,
+                            // and the ways through are the same two keys the
+                            // Err arm names, on the item level's precedent.
+                            // Keys FIRST, the child's sentence last — the
+                            // ordering `group_verdict_status` uses one arm
+                            // over, for the same reason. `why` is the graph's
+                            // own `FAILED` line and its length is the
+                            // subject's, so anything after it is at the mercy
+                            // of a name: at 76 columns a hint written as a
+                            // suffix lost `A accept new`, which is the one key
+                            // that answers an unresolvable subject. The keys
+                            // are bounded and the reason is not, so the
+                            // bounded half goes where it cannot be clipped.
+                            //
+                            // Spelled as the key strip spells them, which is
+                            // already the compact form — this is not new
+                            // shorthand, it is the vocabulary the same screen
+                            // uses two lines down.
+                            let why = crate::commands::review::why_nothing_landed(&report);
+                            m.status = Some(if create {
+                                why
+                            } else {
+                                format!("b bind · A accept new — {why}")
+                            });
+                        } else {
+                            let cascade = crate::commands::review::cascade_tally(&report);
+                            m.groups.retain(|x| x.leader_id != leader);
+                            m.selected = m.selected.min(m.groups.len().saturating_sub(1));
+                            m.status = Some(group_verdict_status(
+                                verb,
+                                &stmt.chars().take(48).collect::<String>(),
+                                members,
+                                cascade,
+                            ));
                         }
-                        m.status = Some(said);
                     }
                 }
                 Err(e) => {
@@ -5758,13 +5851,18 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     // "failed" strands the person exactly where a key would
                     // have carried them. Circular after `A`, so that one
                     // gets the reason alone.
+                    // Same reordering as the landed-on-nothing arm above, and
+                    // for the same reason: `{e:#}` is an error chain of
+                    // unbounded length, so a hint written after it is a hint
+                    // that clips. Pre-existing, fixed in the same pass because
+                    // both lines are read on the same screen and a reader
+                    // cannot be expected to know which failure they hit.
                     if let Some(m) = &mut app.queues {
                         m.status = Some(if create {
                             format!("{verb} failed, nothing cascaded: {e:#}")
                         } else {
                             format!(
-                                "{verb} failed, nothing cascaded: {e:#} — b binds the subject \
-                                 here; A accepts it as a new topic"
+                                "b bind · A accept new — {verb} failed, nothing cascaded: {e:#}"
                             )
                         });
                     }
@@ -10497,6 +10595,192 @@ mod tests {
         let text = "one\ntwo\nthree";
         // Just after the second newline: start of the third row.
         assert_eq!(at(text, 8, 40), (0, 2, 3));
+    }
+
+    /// **A fan-out the child did not report is not a fan-out of nothing.**
+    ///
+    /// The status line after a group verdict was built from
+    /// `cascade_tally(&report).unwrap_or((0, 0))`, and `cascade_tally`
+    /// answers `None` whenever the report carries no `cascade:` line. That
+    /// flattening made two opposite situations render identically:
+    ///
+    /// A singleton group asks for no fan-out, so there is no line to read and
+    /// `×1` is the whole truth. But a group of seven whose cascade arm
+    /// produced nothing readable — an older graph binary, a changed line —
+    /// also came out `×1`, and `left > 0` was false so the "(N similar left
+    /// pending)" note never rendered. Silence there reads as "none left", so
+    /// the only surface telling a person what their keystroke covered could
+    /// not distinguish *nothing was left pending* from *I do not know whether
+    /// anything was* — the absence of the note being itself the claim.
+    ///
+    /// Same flattening the web route carried until #128 took it out one
+    /// function over; this is pre-existing rather than that branch's doing —
+    /// `cascade_tally` has always returned `Option`.
+    #[test]
+    fn a_group_verdict_says_what_it_does_not_know() {
+        // Read, and complete.
+        assert_eq!(
+            group_verdict_status("reject", "Sage plays cello", 6, Some((6, 0))),
+            "rejected ×7 — Sage plays cello"
+        );
+        // Read, and partial: the members the graph could not sweep are named.
+        assert!(
+            group_verdict_status("accept", "Sage plays cello", 6, Some((4, 2)))
+                .contains("2 similar left pending")
+        );
+        // Nothing was asked to fan out, so nothing is unaccounted for.
+        assert_eq!(
+            group_verdict_status("reject", "Sage plays cello", 0, None),
+            "rejected ×1 — Sage plays cello"
+        );
+        // Asked, and unreported. The old line said exactly the same thing as
+        // the singleton above, which is the bug.
+        let unknown = group_verdict_status("reject", "Sage plays cello", 6, None);
+        assert_ne!(unknown, "rejected ×1 — Sage plays cello");
+        assert!(
+            unknown.contains("unreported") && unknown.contains("still pending"),
+            "an unreadable tally must say so, and say what is unaccounted for: {unknown}"
+        );
+    }
+
+    /// **What the line says has to survive being drawn.**
+    ///
+    /// `QueuesModal::draw` renders the status as a `Paragraph` into a
+    /// `Rect { height: 1 }` with no `.wrap()`, so it clips. The box is
+    /// `122.min(frame.width)` with `Borders::ALL`, and the line carries a
+    /// two-space indent — 76 columns of message on an eighty-column terminal.
+    ///
+    /// The first fix put its caveat *after* the forty-eight-character
+    /// statement head, which pushed it past that budget: on a normal terminal
+    /// the reader saw `rejected the seed — Sage plays…` and no warning at all.
+    /// That is the bug this pair of tests exists for, one layer down — the
+    /// note absent, and its absence read as nothing to report.
+    ///
+    /// **A zero exit code is not a verdict, and this arm removes a row.**
+    ///
+    /// mecha-graph reports a per-candidate failure as `#id FAILED: …` and
+    /// exits 0, so `Ok(report)` can carry a verdict that did not happen. The
+    /// item level learned it on `#2951` — row gone locally, still pending in
+    /// the store — and the web route answers 409 on the same reading. The
+    /// group arm did neither.
+    ///
+    /// The two readings have to come apart on the SAME report, which is what
+    /// this pins: a report whose only line is a `FAILED` has `tally_report`
+    /// saying nothing landed, so the group must stay and the child's own
+    /// sentence must reach the screen. It also carries no `cascade:` line, so
+    /// the status builder — asked in isolation — would call it "the seed
+    /// landed, the fan-out is unknown". Which is why the guard belongs at the
+    /// call site, ahead of it, and not in another arm of the formatter.
+    #[test]
+    fn a_verdict_that_landed_on_nothing_keeps_its_group() {
+        use crate::commands::review::{cascade_tally, tally_report, why_nothing_landed};
+        let failed = "#9281 FAILED: cannot resolve subject 'Sage'\n";
+
+        let (landed, _) = tally_report(failed);
+        assert_eq!(landed, 0, "a FAILED line must not read as a landed verdict");
+        assert!(
+            why_nothing_landed(failed).contains("cannot resolve subject"),
+            "the child's own reason is what the reviewer needs to act"
+        );
+
+        // The same report through the status builder alone, to show what the
+        // guard is standing in front of: no `cascade:` line, so this would
+        // announce a seed that never landed.
+        assert!(
+            group_verdict_status("reject", "Sage plays cello", 6, cascade_tally(failed))
+                .contains("the seed only"),
+            "the formatter cannot see this case — the caller must"
+        );
+
+        // And a report that DID land still reads as one, or the guard would
+        // swallow every good verdict.
+        let ok = "#9281 rejected\ncascade: 6 rejected\n";
+        assert_eq!(tally_report(ok).0, 1);
+        assert_eq!(cascade_tally(ok), Some((6, 0)));
+    }
+
+    /// So the counts precede the head everywhere, and this **draws the modal
+    /// and reads the buffer** rather than counting characters.
+    ///
+    /// A first version asserted against a hand-written budget of 76 columns,
+    /// which is three constants from `queues.rs` copied into a comment:
+    /// `122u16.min(frame.area().width)`, `Borders::ALL`, and the two-space
+    /// indent in `format!("  {s}")`. Widen the box, drop the indent, or add a
+    /// prefix span, and the caveat starts clipping again while the test stays
+    /// green — the same failure restored one constant later. Grade the
+    /// artifact: `QueuesModal::draw` is public and `it_draws_at_tiny_sizes`
+    /// already drives it through a `TestBackend`, so what a reader sees is
+    /// available to assert on directly.
+    #[test]
+    fn the_verdict_line_survives_an_eighty_column_terminal() {
+        // What the modal actually puts on an 80×24 screen.
+        fn on_screen(status: &str) -> String {
+            let mut m = queues::QueuesModal::new(
+                queues::queues_from_json(
+                    r#"[{"queue":"graph candidates","depth":6434,"detail":"d","opens":"o"}]"#,
+                )
+                .unwrap(),
+            );
+            m.status = Some(status.to_string());
+            let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            term.draw(|f| m.draw(f)).unwrap();
+            let buf = term.backend().buffer().clone();
+            (0..24)
+                .map(|y| {
+                    (0..80)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        // The longest head the caller can produce: `handle_queues_key` clips
+        // its statement to 48 characters before calling in.
+        let head: String = "a".repeat(48);
+
+        let partial = on_screen(&group_verdict_status("reject", &head, 6, Some((4, 2))));
+        assert!(
+            partial.contains("2 similar left pending"),
+            "a partial sweep must still say so on an 80-column screen:\n{partial}"
+        );
+
+        let unknown = on_screen(&group_verdict_status("reject", &head, 6, None));
+        assert!(
+            unknown.contains("unreported") && unknown.contains("still pending"),
+            "the unreported caveat must reach the screen:\n{unknown}"
+        );
+
+        // A four-digit member count is the widest this arm can get.
+        let wide = on_screen(&group_verdict_status("accept", &head, 9999, None));
+        assert!(
+            wide.contains("still pending"),
+            "even the widest count must leave room for the caveat:\n{wide}"
+        );
+
+        // The failure lines are read on the same screen and were the only
+        // ones here not graded against a buffer. Both put a bounded hint in
+        // front of an unbounded tail — the graph's `FAILED` line, whose
+        // length is the subject's, and an error chain — so both are checked
+        // with a tail long enough to clip.
+        let long_subject = "a".repeat(60);
+        let why = crate::commands::review::why_nothing_landed(&format!(
+            "#9281 FAILED: cannot resolve subject '{long_subject}'\n"
+        ));
+        let nothing_landed = on_screen(&format!("b bind · A accept new — {why}"));
+        assert!(
+            nothing_landed.contains("A accept new"),
+            "the key that answers an unresolvable subject must reach the screen:\n{nothing_landed}"
+        );
+
+        let errored = on_screen(&format!(
+            "b bind · A accept new — reject failed, nothing cascaded: {}",
+            "chained context: ".repeat(6)
+        ));
+        assert!(
+            errored.contains("A accept new"),
+            "and must survive an error chain of any length:\n{errored}"
+        );
     }
 
     #[test]
