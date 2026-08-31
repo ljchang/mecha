@@ -207,7 +207,21 @@
   // Something true that is not a failure — kept apart from `error` so a
   // partial sweep is not dressed as one, and so the hazard styling keeps
   // meaning what it says.
+  //
+  // `{ text, on }`, where `on` is the listing it describes. A first pass was
+  // a bare string cleared by hand at each navigation point, and the one exit
+  // it missed was the only exit from the screen that writes it: the groups
+  // back arrow is an inline `() => { groups = null }` and cleared nothing, so
+  // the sentence followed the reviewer into the class list and the sample
+  // deck. Counting clear sites cannot find that — the missing one is a
+  // handler, not a function — so the message is scoped to its listing instead
+  // and the guard is in the render. A new navigation handler cannot
+  // reintroduce this by forgetting a line.
   let notice = $state(null);
+  // Bumped every time a listing is installed on screen. A regroup and a
+  // re-open both produce a new instance, so a message about the listing
+  // before it cannot survive either.
+  let listingInstance = $state(0);
   let busy = $state(false);
 
   const TIERS = ['unjudged', 'thin', 'some', 'solid'];
@@ -332,6 +346,7 @@
         // Filtered on the way out, because this entry may not be the one that
         // was on screen when a verdict landed.
         groups = withoutJudged({ ...hit });
+        listingInstance += 1;
         cacheGroups();
         error = null;
         return;
@@ -374,6 +389,7 @@
       groupCache.set(key, fresh);
       if (token === inflight) {
         groups = { ...fresh };
+        listingInstance += 1;
         error = null;
       }
     } catch (e) {
@@ -406,6 +422,7 @@
       // sample deck, or another class's groups — would come back offered
       // again on the restored listing.
       groups = hit ? withoutJudged({ ...hit }) : null;
+      listingInstance += 1;
     }
   }
 
@@ -735,12 +752,13 @@
       // on the same outcome (`({left} similar left pending)`); this pane read
       // the number off the response and threw it away, which is a verdict
       // silently covering less than the button offered.
-      notice =
+      const text =
         out?.left_pending > 0
           ? `${out.left_pending} of that group could not be swept and stay pending — they will be back in the next regroup.`
           : out?.left_pending == null
             ? 'The fan-out did not report how much of the group it covered — treat the rest as still pending.'
             : null;
+      notice = text ? { text, on: listingInstance } : null;
     } catch (e) {
       note(g.leader_id, { error: String(e?.message ?? e), created: create });
     } finally {
@@ -858,7 +876,11 @@
 
 <div class="pane">
   {#if error}<div class="warnline">{@render hazardGlyph()}<span>{error}</span></div>{/if}
-  {#if notice}<div class="noticeline">{notice}</div>{/if}
+  <!-- Only over the listing it is about: `groups` gone means the screen it
+       described is gone, and a new instance means it has been replaced. -->
+  {#if notice && groups && notice.on === listingInstance}
+    <div class="noticeline">{notice.text}</div>
+  {/if}
 
   {#if deck}
     <div class="deckhead">

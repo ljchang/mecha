@@ -1100,18 +1100,40 @@ mod tests {
     /// A notice about one group verdict must not outlive the screen it was
     /// about.
     ///
-    /// It renders at the top of the pane on every depth, and the fan-out it
+    /// It renders at the top of the pane at every depth, and the fan-out it
     /// describes belongs to a card that has just been removed. Left standing,
-    /// it follows the reviewer to the sample deck and survives a Regroup that
-    /// contradicts it — the same failure the header's clock time is written to
-    /// avoid, on a different field. `error` is cleared in a dozen places;
-    /// this needs the same treatment at every entry point that changes what
-    /// is on screen.
+    /// it follows the reviewer into the class list and the sample deck and
+    /// survives a Regroup that contradicts it — the failure the header's clock
+    /// time is written to avoid, on a different field.
+    ///
+    /// **Scoped, not swept.** The first version cleared it by hand at each
+    /// navigation point, and the one exit it missed was the only exit from the
+    /// screen that writes it: the groups back arrow is an inline
+    /// `() => { groups = null }` and cleared nothing. Counting clear sites
+    /// could not find that — the missing one is a handler, not a function —
+    /// and a test that counts would have gone on passing while any future
+    /// handler reintroduced it. So the message carries the listing instance it
+    /// belongs to and the render decides, which no new handler can get wrong.
     #[test]
     fn a_fan_out_notice_does_not_outlive_its_screen() {
         assert!(
-            QUEUE_SVELTE.matches("notice = null").count() >= 5,
-            "every navigation that changes the screen must clear the fan-out notice"
+            QUEUE_SVELTE.contains("notice.on === listingInstance"),
+            "the notice must be scoped to the listing it describes, not cleared by hand \
+             at each navigation point — the exits are handlers, and one was missed"
+        );
+        // `groups` gone is the back arrow, and it must hide the message too.
+        assert!(
+            QUEUE_SVELTE.contains("notice && groups && notice.on === listingInstance"),
+            "leaving the groups screen must take the notice with it"
+        );
+        // Every install of a listing is a new instance, or a Regroup would
+        // keep a message that contradicts what it just fetched.
+        assert_eq!(
+            queue_fn("loadGroups")
+                .matches("listingInstance += 1")
+                .count(),
+            3,
+            "each of the three ways a listing reaches the screen is a new instance"
         );
     }
 
