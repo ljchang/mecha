@@ -380,7 +380,12 @@
       if (token !== inflight) return;
       error = String(e?.message ?? e);
       const hit = lookup ? groupCache.get(lookup) : null;
-      groups = hit ? { ...hit } : null;
+      // Filtered like the other two install paths. This is the one that used
+      // to be missed, and it is not a rare one: a Regroup that times out
+      // lands here, and verdicts filed while it was in the air — from the
+      // sample deck, or another class's groups — would come back offered
+      // again on the restored listing.
+      groups = hit ? withoutJudged({ ...hit }) : null;
     }
   }
 
@@ -475,7 +480,14 @@
     // between, so the cascade is only recorded when the child says all of it
     // landed. A partial fan-out leaves the listings stale instead, which is
     // the failure that announces itself.
-    if (!out?.left_pending) for (const id of body.cascade ?? []) judgedIds.add(id);
+    //
+    // `=== 0`, not falsy. The route answers `null` when it could not read a
+    // `cascade:` line out of the child's report, and a falsy test cannot tell
+    // that from a real zero — so an unparsed cascade arm would mark every
+    // member judged on the strength of a number nobody had. Unknown is never
+    // clean and a dash is never zero, which is a rule about the wire and not
+    // only about a column.
+    if (out?.left_pending === 0) for (const id of body.cascade ?? []) judgedIds.add(id);
     return out;
   }
 
@@ -691,9 +703,12 @@
       // on the same outcome (`({left} similar left pending)`); this pane read
       // the number off the response and threw it away, which is a verdict
       // silently covering less than the button offered.
-      notice = out?.left_pending
-        ? `${out.left_pending} of that group could not be swept and stay pending — they will be back in the next regroup.`
-        : null;
+      notice =
+        out?.left_pending > 0
+          ? `${out.left_pending} of that group could not be swept and stay pending — they will be back in the next regroup.`
+          : out?.left_pending == null
+            ? 'The fan-out did not report how much of the group it covered — treat the rest as still pending.'
+            : null;
     } catch (e) {
       note(g.leader_id, { error: String(e?.message ?? e), created: create });
     } finally {
