@@ -1321,14 +1321,27 @@ What is actually open now:
   now says so and forbids naming a config key the brief did not name first,
   which is the failure mode #127 removed. Reference:
   `website/docs/reference/configuration.md`.
-- **`setup.rs:879` claims the trigger runner is the only caller setting
-  `global_config_only`**, which has not been true for a while —
-  `run_diagnostician` pins it too. Surfaced by #127's review, left out of
-  that diff on purpose (seven rounds deep, and the comment predates the
-  branch). The coupling it documents was chased and is inert: the flag
-  flips `prepare_tools`' inbound-mail default from `Hold` to `Accept`, and
+- **`prepare_tools`' inbound-policy comment in `mecha-cli/src/setup.rs`
+  says the trigger runner is "the only caller that sets
+  `global_config_only`", and there are four.** `commands/trigger.rs`,
+  `commands/diagnose.rs`, `slack/connector.rs` and `commands/serve/chat.rs`
+  all pin it — measured 2026-08-31 at `89677fc` by grepping
+  `global_config_only: true` across `mecha-cli/src`. Surfaced by #127's
+  review, left out of that diff on purpose (seven rounds deep, and the
+  comment predates the branch). The coupling it documents was chased and is
+  inert: the flag flips that default from `Hold` to `Accept`, and
   `MailboxRoute::claim_pending` returns empty without an identity while
-  `run_diagnostician` never calls `attach`. Unowned.
+  `run_diagnostician` never calls `attach` — but the same is worth
+  re-checking for the Slack connector and the chat surface, which do have
+  identities. Unowned.
+
+  *This item cited `setup.rs:879` until 2026-08-31 and sent a reader to the
+  wrong file: there are two `setup.rs` under `mecha-cli/src`, and line 879
+  of `commands/setup.rs` is an unrelated test assertion where
+  `global_config_only` does not appear at all — so following the reference
+  read as "already fixed, or never true". A bare filename is a line number's
+  failure mode one level up, and this one was written into a handoff pass by
+  the skill whose own rule is to cite the symbol.*
 - **Read the record, weekly at first.** `mecha harness list --all` and the
   nightly log. §2's failure mode (harness updating without benefiting) is now
   answerable from the store instead of from impression — but only if someone
