@@ -5235,6 +5235,16 @@ fn bind_candidate(app: &mut App, id: i64, to: Option<&str>) {
 ///   know whether anything was*.
 ///
 /// `members` is what separates them, which is why the caller keeps it.
+///
+/// **Every count comes before the statement head**, which is the other half of
+/// making this readable. `QueuesModal::draw` renders the status into a
+/// `Rect { height: 1 }` with no `.wrap()`, so it CLIPS rather than wrapping —
+/// and the box is `122.min(frame.width)` with `Borders::ALL` under a two-space
+/// indent, leaving 76 columns on an eighty-column terminal. A caveat written
+/// after the forty-eight-character head fell off the end there, which is this
+/// function's own failure one layer down: the note absent, and its absence
+/// read as "nothing to report". The head is the part that can be lost — the
+/// group has already gone from the list above — so it goes last.
 fn group_verdict_status(
     verb: &str,
     head: &str,
@@ -5242,19 +5252,17 @@ fn group_verdict_status(
     cascade: Option<(usize, usize)>,
 ) -> String {
     match cascade {
-        Some((cascaded, left)) => {
-            let mut said = format!("{verb}ed ×{} — {head}", 1 + cascaded);
-            if left > 0 {
-                said.push_str(&format!(" ({left} similar left pending)"));
-            }
-            said
-        }
+        Some((cascaded, 0)) => format!("{verb}ed ×{} — {head}", 1 + cascaded),
+        Some((cascaded, left)) => format!(
+            "{verb}ed ×{}, {left} similar left pending — {head}",
+            1 + cascaded
+        ),
         // Nothing was asked to fan out, so nothing is unaccounted for.
         None if members == 0 => format!("{verb}ed ×1 — {head}"),
         // A count this line does not have is not a count of one.
         None => format!(
-            "{verb}ed the seed — {head} (fan-out not reported; treat its {members} \
-             similar as still pending)"
+            "{verb}ed the seed only — fan-out unreported, {members} similar still \
+             pending — {head}"
         ),
     }
 }
@@ -10571,7 +10579,7 @@ mod tests {
         // Read, and partial: the members the graph could not sweep are named.
         assert!(
             group_verdict_status("accept", "Sage plays cello", 6, Some((4, 2)))
-                .contains("2 similar left pending"),
+                .contains("2 similar left pending")
         );
         // Nothing was asked to fan out, so nothing is unaccounted for.
         assert_eq!(
@@ -10583,8 +10591,55 @@ mod tests {
         let unknown = group_verdict_status("reject", "Sage plays cello", 6, None);
         assert_ne!(unknown, "rejected ×1 — Sage plays cello");
         assert!(
-            unknown.contains("not reported") && unknown.contains("still pending"),
+            unknown.contains("unreported") && unknown.contains("still pending"),
             "an unreadable tally must say so, and say what is unaccounted for: {unknown}"
+        );
+    }
+
+    /// **What the line says has to survive being drawn.**
+    ///
+    /// `QueuesModal::draw` renders the status as a `Paragraph` into a
+    /// `Rect { height: 1 }` with no `.wrap()`, so it clips. The box is
+    /// `122.min(frame.width)` with `Borders::ALL`, and the line carries a
+    /// two-space indent — 76 columns of message on an eighty-column terminal.
+    ///
+    /// The first fix put its caveat *after* the forty-eight-character
+    /// statement head, which pushed it past that budget: on a normal terminal
+    /// the reader saw `rejected the seed — Sage plays…` and no warning at all.
+    /// That is the bug this pair of tests exists for, one layer down — the
+    /// note absent, and its absence read as nothing to report.
+    ///
+    /// So the counts precede the head everywhere, and this measures the
+    /// rendered prefix rather than the whole string. Asserting `.contains` on
+    /// a value the draw path throws away measures a guarantee nobody gets.
+    #[test]
+    fn the_verdict_line_survives_an_eighty_column_terminal() {
+        // The longest head the caller can produce: it clips its statement to
+        // 48 chars before calling in.
+        let head: String = "a".repeat(48);
+        // `122.min(80)` box, `Borders::ALL` (−2), `format!("  {s}")` (−2).
+        let visible = |s: &str| -> String { s.chars().take(76).collect() };
+
+        let partial = group_verdict_status("reject", &head, 6, Some((4, 2)));
+        assert!(
+            visible(&partial).contains("2 similar left pending"),
+            "a partial sweep must still say so at 80 columns: {}",
+            visible(&partial)
+        );
+
+        let unknown = group_verdict_status("reject", &head, 6, None);
+        let seen = visible(&unknown);
+        assert!(
+            seen.contains("unreported") && seen.contains("still pending"),
+            "the unreported caveat must survive the clip: {seen}"
+        );
+
+        // A four-digit member count is the widest this arm can get.
+        let wide = group_verdict_status("accept", &head, 9999, None);
+        assert!(
+            visible(&wide).contains("still pending"),
+            "even the widest count must leave room for the caveat: {}",
+            visible(&wide)
         );
     }
 
