@@ -5215,6 +5215,50 @@ fn bind_candidate(app: &mut App, id: i64, to: Option<&str>) {
     }
 }
 
+/// What a group verdict says it did, from the child's own tally.
+///
+/// Pure so the honesty is a unit test rather than a hope — the same reason
+/// `why_nothing_landed` is. This one line is the ONLY thing telling a person
+/// what a keystroke just covered, so what it cannot know it has to say.
+///
+/// `cascade` is `None` in two situations that mean opposite things, and
+/// flattening them with `unwrap_or((0, 0))` is what this replaces:
+///
+/// - **No fan-out was asked for** — a singleton group takes `Fan::None`, no
+///   `--cascade` reaches the child, and there is no `cascade:` line to read.
+///   `×1` is then the whole truth.
+/// - **A fan-out was asked for and the child did not report it** — an older
+///   graph binary, a changed line, a cascade arm that died before printing.
+///   Here `×1` is a claim nobody checked, and the missing "left pending" note
+///   is worse than the wrong number: silence reads as "none left", so the
+///   line could not distinguish *nothing was left pending* from *I do not
+///   know whether anything was*.
+///
+/// `members` is what separates them, which is why the caller keeps it.
+fn group_verdict_status(
+    verb: &str,
+    head: &str,
+    members: usize,
+    cascade: Option<(usize, usize)>,
+) -> String {
+    match cascade {
+        Some((cascaded, left)) => {
+            let mut said = format!("{verb}ed ×{} — {head}", 1 + cascaded);
+            if left > 0 {
+                said.push_str(&format!(" ({left} similar left pending)"));
+            }
+            said
+        }
+        // Nothing was asked to fan out, so nothing is unaccounted for.
+        None if members == 0 => format!("{verb}ed ×1 — {head}"),
+        // A count this line does not have is not a count of one.
+        None => format!(
+            "{verb}ed the seed — {head} (fan-out not reported; treat its {members} \
+             similar as still pending)"
+        ),
+    }
+}
+
 fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let Some(modal) = &mut app.queues else {
         return Ok(());
@@ -5693,6 +5737,9 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 return Ok(());
             };
             let (leader, stmt) = (g.leader_id, g.statement.clone());
+            // How many the fan-out was asked to cover, kept because the status
+            // line has to be able to say what it does NOT know about them.
+            let members = g.member_ids.len();
             // The cascade lands on the EXPLICIT member list this listing
             // showed — never a re-derivation: the ids on screen are what the
             // verdict is about, the graph vets them against the seed's
@@ -5734,20 +5781,16 @@ fn handle_queues_key(app: &mut App, key: KeyEvent) -> Result<()> {
             );
             match outcome {
                 Ok(report) => {
-                    let (cascaded, left) =
-                        crate::commands::review::cascade_tally(&report).unwrap_or((0, 0));
+                    let cascade = crate::commands::review::cascade_tally(&report);
                     if let Some(m) = &mut app.queues {
                         m.groups.retain(|x| x.leader_id != leader);
                         m.selected = m.selected.min(m.groups.len().saturating_sub(1));
-                        let mut said = format!(
-                            "{verb}ed ×{} — {}",
-                            1 + cascaded,
-                            stmt.chars().take(48).collect::<String>()
-                        );
-                        if left > 0 {
-                            said.push_str(&format!(" ({left} similar left pending)"));
-                        }
-                        m.status = Some(said);
+                        m.status = Some(group_verdict_status(
+                            verb,
+                            &stmt.chars().take(48).collect::<String>(),
+                            members,
+                            cascade,
+                        ));
                     }
                 }
                 Err(e) => {
@@ -10497,6 +10540,52 @@ mod tests {
         let text = "one\ntwo\nthree";
         // Just after the second newline: start of the third row.
         assert_eq!(at(text, 8, 40), (0, 2, 3));
+    }
+
+    /// **A fan-out the child did not report is not a fan-out of nothing.**
+    ///
+    /// The status line after a group verdict was built from
+    /// `cascade_tally(&report).unwrap_or((0, 0))`, and `cascade_tally`
+    /// answers `None` whenever the report carries no `cascade:` line. That
+    /// flattening made two opposite situations render identically:
+    ///
+    /// A singleton group asks for no fan-out, so there is no line to read and
+    /// `×1` is the whole truth. But a group of seven whose cascade arm
+    /// produced nothing readable — an older graph binary, a changed line —
+    /// also came out `×1`, and `left > 0` was false so the "(N similar left
+    /// pending)" note never rendered. Silence there reads as "none left", so
+    /// the only surface telling a person what their keystroke covered could
+    /// not distinguish *nothing was left pending* from *I do not know whether
+    /// anything was* — the absence of the note being itself the claim.
+    ///
+    /// Same flattening the web route carried until #128 took it out one
+    /// function over; this is pre-existing rather than that branch's doing —
+    /// `cascade_tally` has always returned `Option`.
+    #[test]
+    fn a_group_verdict_says_what_it_does_not_know() {
+        // Read, and complete.
+        assert_eq!(
+            group_verdict_status("reject", "Sage plays cello", 6, Some((6, 0))),
+            "rejected ×7 — Sage plays cello"
+        );
+        // Read, and partial: the members the graph could not sweep are named.
+        assert!(
+            group_verdict_status("accept", "Sage plays cello", 6, Some((4, 2)))
+                .contains("2 similar left pending"),
+        );
+        // Nothing was asked to fan out, so nothing is unaccounted for.
+        assert_eq!(
+            group_verdict_status("reject", "Sage plays cello", 0, None),
+            "rejected ×1 — Sage plays cello"
+        );
+        // Asked, and unreported. The old line said exactly the same thing as
+        // the singleton above, which is the bug.
+        let unknown = group_verdict_status("reject", "Sage plays cello", 6, None);
+        assert_ne!(unknown, "rejected ×1 — Sage plays cello");
+        assert!(
+            unknown.contains("not reported") && unknown.contains("still pending"),
+            "an unreadable tally must say so, and say what is unaccounted for: {unknown}"
+        );
     }
 
     #[test]
