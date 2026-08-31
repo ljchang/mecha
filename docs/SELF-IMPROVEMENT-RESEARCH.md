@@ -820,14 +820,32 @@ of §14.5 drew one, called the short runs the natural shape of a personal
 assistant's work, and was wrong. The numbers say the loop currently has nothing
 to learn from. They do not say what it will have.
 
-**But the corpus cannot tell the two apart, and never will retroactively.**
-`Scan` filters on session count and start time; `RunRow` carries provider,
-model and title, and nothing marks a run as development traffic. When real use
-begins, `since` is the only lever — a date cutoff, set by hand, by someone who
-remembers when the change happened. Nothing records that boundary, and a label
-cannot be added to a run after it is over. Absent is not zero, in the one
-direction that is expensive here: months of feature tests are about to become
-indistinguishable evidence about how the agent is used.
+**And the corpus could tell them apart all along.** A first draft of this
+paragraph said the opposite — that nothing marked a run as development traffic,
+that a label could not be added after the fact, and that a hand-set date cutoff
+would be the only lever once real use began. That was wrong in the most
+ordinary way: `SessionMeta.workspace` is recorded in every transcript header
+and has been since the store existed. It simply never reached `RunRow`, so the
+information was in all 490 files and in none of the reports.
+
+Read out, it does not say "tests versus use". It says the corpus is a
+**mixture**, which is the more useful finding. 389 runs across eight
+workspaces: `~/.mecha/work/web` 61, `~/Projects/mecha` 36, `work/voice` 24,
+`work/morning` 11, `/tmp` 11, the mecha source checkout 47. A morning briefing,
+a front-door request, a smoke test and a feature test are four jobs with four
+different normal behaviours, and every rate above is their average.
+
+Scoped to the briefing job alone the difference shows at once: 6.0%
+environment errors against 4.7% pooled, 3.45 turns against 2.72, and **zero**
+denials and zero interlock refusals — it runs unattended, so there is nobody
+there to deny anything. Pooled, those zeros dilute a denial rate that describes
+the interactive runs only.
+
+`RunRow::workspace`, `Scan`'s prefix filter and `Corpus::by_workspace` close
+this, retroactively over the whole store. The lesson worth keeping is not the
+fix but the reflex: the answer was a field on a struct that had been written to
+disk since the beginning, and a paragraph was drafted declaring it impossible
+before anyone looked.
 
 §8's *corpus* subsection assumed recorded sessions would supply the episodes.
 They supply the count and not the signal, and `MIN_SELECTION_PAIRS` counts
@@ -963,12 +981,14 @@ loop; it never feeds it. HyperAgents' transfer result (§1) is the reason to
 expect the check to be informative rather than flat.
 
 **The corpus to date is prototyping traffic and is not evidence about usage.**
-The MVP is still being iterated and most recorded runs are feature smoke tests,
+The MVP is still being iterated and much of the store is feature smoke tests,
 so the short-session distribution in §14.3 is an artifact of building the thing
-and carries no conclusion about the work it will be asked to do. The practical
-consequence is a date: when real use starts, the corpus needs a cutoff before
-it, because nothing in the store distinguishes a test run from a real one and
-nothing can add that distinction afterwards.
+and carries no conclusion about the work the agent will be asked to do. The
+consequence is not a date, as a first draft of this bullet claimed: the store
+records each run's workspace, so the populations separate retroactively and
+without anyone having to remember when the change happened. What it does mean
+is that the pooled numbers in §14.3 and §14.5 should be re-read per workspace
+before any of them is treated as a fact about the harness.
 
 **SEAGym is worth standing up at some point**, as an environment rather than a
 score — its frozen update-validation and its ID/OOD split are the structure
