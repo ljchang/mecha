@@ -178,6 +178,7 @@ pub fn draw_episodes(
     want: usize,
     holdout_in: u64,
     seed: u64,
+    workspace: Option<&Path>,
 ) -> Result<Draw> {
     let mut listed: Vec<(SessionMeta, PathBuf)> = Session::list(sessions_dir)?;
     listed.sort_by_key(|entry| std::cmp::Reverse(entry.0.created_at));
@@ -194,6 +195,18 @@ pub fn draw_episodes(
         // runs under one model, so the filter's job is only to keep the
         // corpus representative of the model being graded.
         if meta.model != model {
+            continue;
+        }
+        // Scoped the same way the diagnosis was, or the two halves of one
+        // night disagree about what they are talking about: `--from-workspace`
+        // narrowed the brief while the draw kept re-scanning every session, so
+        // a change reasoned about one job was accepted or rejected on the
+        // average of four. Found in review, and it read as a working flag —
+        // the diagnosis was visibly scoped, and only the arms were not.
+        //
+        // Prefix, matching `runlog::Scan`: a checkout's worktrees are the same
+        // population as the checkout.
+        if workspace.is_some_and(|w| !meta.workspace.starts_with(w)) {
             continue;
         }
         match prepare_episode(&path, &meta.id)? {
@@ -390,6 +403,85 @@ mod tests {
         // than a retuning.
         assert_eq!(slice_sizes(16, 3, 64), (5, 11));
         assert_eq!(slice_sizes(16, 3, 16), (5, 11));
+    }
+
+    /// The `draw_episodes` half of the workspace filter, which is the half
+    /// that had no test.
+    ///
+    /// Its twin in `Corpus::scan` is pinned in `runlog.rs`, and that test's own
+    /// comment says this is the one most worth pinning — because this is the
+    /// half that was *missing* when the flag shipped, while the brief looked
+    /// correctly scoped. A filter whose applied half is the visible half is
+    /// indistinguishable from a working one, so the unseen half is where the
+    /// test belongs.
+    #[test]
+    fn the_draw_is_scoped_to_the_same_workspace_the_diagnosis_was() {
+        use mecha_core::message::{Block, Message};
+        use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
+
+        let dir = std::env::temp_dir().join(format!("mecha-probe-ws-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let replayable = |s: &Session| {
+            s.append(&Record::Config(RunConfig::default())).unwrap();
+            s.append_messages(&[
+                Message::user("do the thing"),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "shell".into(),
+                    input: serde_json::json!({}),
+                }]),
+                Message {
+                    role: mecha_core::message::Role::User,
+                    content: vec![Block::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    }],
+                },
+                Message::assistant(vec![Block::text("done")]),
+            ])
+            .unwrap();
+        };
+        let make = |id: &str, workspace: &str| {
+            let s = Session::create(
+                &dir,
+                SessionMeta {
+                    id: id.into(),
+                    created_at: chrono::Utc::now(),
+                    provider: "local".into(),
+                    model: "m".into(),
+                    workspace: std::path::PathBuf::from(workspace),
+                    title: None,
+                },
+            )
+            .unwrap();
+            replayable(&s);
+        };
+        make("20260101T000000-a", "/src/mecha");
+        make("20260101T000001-b", "/src/mecha/.claude/worktrees/lane");
+        make("20260101T000002-c", "/tmp");
+        // Shares a textual prefix and is a different directory: `starts_with`
+        // is component-wise, and this is what a naive string check lets in.
+        make("20260101T000003-d", "/src/mecha-other");
+
+        let drawn = |ws: Option<&Path>| {
+            let d = draw_episodes(&dir, "m", Metric::Turns, 16, 3, 7, ws).unwrap();
+            d.selection.len() + d.holdout.len()
+        };
+        assert_eq!(
+            drawn(None),
+            4,
+            "unscoped, every replayable session is eligible"
+        );
+        assert_eq!(
+            drawn(Some(Path::new("/src/mecha"))),
+            2,
+            "the checkout and its worktree, and neither /tmp nor /src/mecha-other"
+        );
+        assert_eq!(drawn(Some(Path::new("/tmp"))), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A resumed session replays under its first config — the only choice a

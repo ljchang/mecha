@@ -57,6 +57,35 @@ pub enum Metric {
 }
 
 impl Metric {
+    /// Every metric a proposal may name.
+    ///
+    /// The list exists so the diagnostic brief and the diagnostic instruction
+    /// cannot disagree about it. Until it did, `DIAGNOSE_INSTRUCTION` offered
+    /// six metrics to predict while `Evidence::brief` reported values for
+    /// three, and the nightly's two worst proposals were both on metrics whose
+    /// value it had never been shown — one of them `cut_short`, on a corpus
+    /// where `cut_short` was zero and the measurement could only tie.
+    pub const ALL: [Metric; 6] = [
+        Metric::EndedOnFailedCall,
+        Metric::ToolErrorRate,
+        Metric::CutShort,
+        Metric::Compactions,
+        Metric::Turns,
+        Metric::MalformedArgs,
+    ];
+
+    /// The name the proposal block uses, which is the serde spelling.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Metric::EndedOnFailedCall => "ended_on_failed_call",
+            Metric::ToolErrorRate => "tool_error_rate",
+            Metric::CutShort => "cut_short",
+            Metric::Compactions => "compactions",
+            Metric::Turns => "turns",
+            Metric::MalformedArgs => "malformed_args",
+        }
+    }
+
     /// How much this episode can say about the metric, higher being more.
     ///
     /// **The priority for a prioritised replay draw, and it needs no new
@@ -209,6 +238,65 @@ pub struct Judgement {
 pub const MIN_SELECTION_PAIRS: usize = 8;
 pub const MIN_HOLDOUT_PAIRS: usize = 4;
 
+/// How many held-out episodes must have had **room to move** before the
+/// holdout is allowed to confirm anything.
+///
+/// **An episode whose baseline cost is already zero cannot produce a win.** It
+/// can still produce a loss, so an all-zero holdout is a real regression check
+/// — but it is not confirmation, and `not_worse` cannot tell the two apart:
+/// `0 wins, 0 losses, 4 ties` satisfies `wins >= losses` and reads as
+/// "confirmed on unseen work".
+///
+/// That is not hypothetical here. The holdout is drawn *uniformly* on purpose,
+/// and on 2026-08-31 the live corpus was 69% runs of two turns or fewer, with
+/// four of the six metrics at zero across all 172 runs. A uniform draw of four
+/// from that pool is usually four episodes that could not have moved whatever
+/// was predicted. So the gate's strongest claim was the one its evidence was
+/// least able to support.
+///
+/// Set equal to [`MIN_HOLDOUT_PAIRS`] rather than below it: a slice that
+/// cannot confirm is not a smaller confirmation, and the disposition for
+/// "nothing has confirmed this" already exists and is [`Disposition::Propose`]
+/// — it reaches a person instead of being believed.
+pub const MIN_INFORMATIVE_HOLDOUT: usize = MIN_HOLDOUT_PAIRS;
+
+/// How far a metric the candidate did *not* predict may worsen before the
+/// measured win is treated as bought rather than earned.
+///
+/// The work guardrail below counts tool calls, which catches a gain bought by
+/// attempting less. It does not catch a gain bought by failing more: nothing
+/// stopped a change that halved `turns` while doubling `tool_error_rate`, and
+/// `turns` is currently the only metric in this corpus with real headroom, so
+/// that is the trade the loop is most likely to be offered.
+///
+/// This is the regression-awareness that GRASP (arXiv:2605.29668) names as the
+/// difference between a self-improvement loop that compounds and one that
+/// accumulates: a candidate is accepted on one number and the others are never
+/// looked at, so each accepted change silently pays for itself somewhere else.
+/// A cliff rather than a ratchet, like [`WORK_FLOOR`] — some movement is noise.
+pub const REGRESSION_CEILING: f64 = 1.25;
+
+/// The smallest corpus a measurement can be drawn from.
+///
+/// Both slices come off the same pool, so a corpus below their sum cannot fill
+/// them however it is split. **A necessary condition and not a sufficient
+/// one** — these are recorded runs, and the eligible pool is the replayable
+/// subset of them, which is smaller — and a caller must say which of the two
+/// it is claiming when it reports the refusal.
+///
+/// It gates the *measurement*, never the diagnosis. A `Prose`, `Architecture`
+/// or `Security` proposal is staged for a person and never touches a replay,
+/// so a small corpus must not withhold those: found in review, where an early
+/// return skipped the entire night and `--from-workspace` made a sub-floor
+/// corpus easy to reach on purpose.
+pub const MIN_MEASURABLE_RUNS: usize = MIN_SELECTION_PAIRS + MIN_HOLDOUT_PAIRS;
+
+/// Whether a corpus of this many runs could fill both slices. See
+/// [`MIN_MEASURABLE_RUNS`].
+pub fn measurable(runs: usize) -> bool {
+    runs >= MIN_MEASURABLE_RUNS
+}
+
 /// How far work may fall before a gain is treated as bought rather than
 /// earned. Some drop is legitimate — a change that stops a redundant re-read
 /// does less work and is better for it — so this is a cliff, not a ratchet.
@@ -238,6 +326,102 @@ pub fn is_holdout(episode: &str, holdout_in: u64) -> bool {
 }
 
 /// Grade a candidate against its own prediction.
+/// Reject an accepted candidate that paid for its win on a metric it never
+/// predicted.
+///
+/// Applied only to an `Accept`, and only here rather than inside
+/// [`judge_slices`], because it is the one thing that needs [`RunStats`]: the
+/// generic gate sees one cost function and cannot ask about the metrics it was
+/// not given, and `mecha eval --ab-config` grades cases rather than runs so it
+/// has no `RunStats` to ask about.
+///
+/// **This is not a claim that the eval rig is untouched by this change as a
+/// whole.** `MIN_INFORMATIVE_HOLDOUT` *is* inside [`judge_slices`], so eval's
+/// A/B arm gained that check too — deliberately, since a held-out case with no
+/// cost to lose confirms exactly as little there as here, but the two are
+/// separate decisions and only this one was scoped to runs.
+///
+/// A cost appearing from *nothing* is treated differently from one that grew:
+/// it **proposes** rather than rejects. `compactions`, `malformed_args` and
+/// `ended_on_failed_call` are all zero across the live corpus, so "0 → 2" is
+/// not noise on a large number — but neither is it always bad, and this
+/// function cannot tell which. A `compact_at_tokens` low enough to compact is
+/// a change whose whole purpose is to move `compactions` off zero; rejecting
+/// it would make one of the four overridable knobs unusable by construction.
+/// See the branch itself.
+fn guard_regressions<'a>(
+    j: Judgement,
+    predicted: Metric,
+    pairs: impl Iterator<Item = &'a Pair> + Clone,
+) -> Judgement {
+    if j.disposition != Disposition::Accept {
+        return j;
+    }
+    // **Every metric is examined before anything is returned, because the two
+    // outcomes are not equally serious and they were racing on array order.**
+    // A `0 → nonzero` proposal returned immediately, so a genuine ratio breach
+    // on a metric later in `Metric::ALL` was never reached: the reviewer got
+    // the benign "a cost that was not there before, and only a person can tell
+    // which" and never saw that something else had also doubled. `Compactions`
+    // sits at index 3 and `MalformedArgs` at 5, so the pair that hides the
+    // worse finding behind the milder one is reachable rather than theoretical.
+    //
+    // A `Reject` still returns as soon as it is found — it is the strongest
+    // verdict available and nothing later can outrank it. Only the `Propose`
+    // waits.
+    let mut appeared: Option<String> = None;
+    for metric in Metric::ALL {
+        if metric == predicted {
+            continue;
+        }
+        let total = |pick: fn(&Pair) -> &RunStats| -> f64 {
+            pairs.clone().map(|p| metric.of(pick(p))).sum()
+        };
+        let (before, after) = (total(|p| &p.baseline), total(|p| &p.candidate));
+        if before > 0.0 {
+            if after > before * REGRESSION_CEILING {
+                return Judgement {
+                    disposition: Disposition::Reject(format!(
+                        "predicted a lower {predicted:?} and got one, but {metric:?} rose from \
+                         {before:.2} to {after:.2} across the same episodes: a win paid for on \
+                         a metric nobody was watching is not a win"
+                    )),
+                    ..j
+                };
+            }
+        } else if after > 0.0 && appeared.is_none() {
+            // **A cost appearing from nothing reaches a person; it does not
+            // auto-reject.** A first version rejected it outright, on the
+            // reasoning that a failure mode that was not there before is not
+            // noise on a large number. True, and it foreclosed the closed
+            // override set's own purpose: `compactions` is zero across this
+            // corpus, so *any* `compact_at_tokens` low enough to actually
+            // compact scored a hard rejection on the metric that knob exists
+            // to move. The guard would have made one of four knobs unusable
+            // and said nothing about why.
+            //
+            // `Propose` is the honest disposition and the one this design
+            // already has for it. Nothing here can tell "compaction started
+            // happening, which is the point" from "malformed arguments
+            // appeared, which is not" — and a reader can. So it never
+            // auto-accepts, and it never silently refuses either.
+            appeared = Some(format!(
+                "predicted a lower {predicted:?} and got one, but {metric:?} rose from \
+                 nothing to {after:.2} across the same episodes — a cost that was not there \
+                 before. That is the intended effect for some changes and a regression for \
+                 others, and only a person can tell which"
+            ));
+        }
+    }
+    match appeared {
+        Some(why) => Judgement {
+            disposition: Disposition::Propose(why),
+            ..j
+        },
+        None => j,
+    }
+}
+
 pub fn judge(
     class: ChangeClass,
     prediction: &Prediction,
@@ -245,7 +429,7 @@ pub fn judge(
     holdout_in: u64,
 ) -> Judgement {
     let metric = prediction.metric;
-    judge_with(
+    let judged = judge_with(
         class,
         pairs,
         |p| {
@@ -262,7 +446,8 @@ pub fn judge(
             )
         },
         holdout_in,
-    )
+    );
+    guard_regressions(judged, metric, pairs.iter())
 }
 
 /// Judge two slices the caller drew: selection by priority, holdout uniformly.
@@ -281,7 +466,7 @@ pub fn judge_drawn(
     let metric = prediction.metric;
     let sel: Vec<&Pair> = selection.iter().collect();
     let hold: Vec<&Pair> = holdout.iter().collect();
-    judge_slices(
+    let judged = judge_slices(
         class,
         &sel,
         &hold,
@@ -301,7 +486,8 @@ pub fn judge_drawn(
                 u64::from(p.candidate.tool_calls),
             )
         },
-    )
+    );
+    guard_regressions(judged, metric, selection.iter().chain(holdout.iter()))
 }
 
 /// The same gate over anything that can name an episode and produce a cost.
@@ -414,6 +600,28 @@ pub fn judge_slices<T>(
             hold.wins, hold.losses
         )));
     }
+    // Only now, with the regression check already passed. A holdout that
+    // *found* a loss has spoken, whatever its headroom — ordering this ahead
+    // of `not_worse` turned a detected regression into "thin evidence", which
+    // is the opposite finding, and the overfitting test caught it.
+    //
+    // What is left here is the all-ties case, where sample size and
+    // discriminating power come apart. See `MIN_INFORMATIVE_HOLDOUT`.
+    let informative = holdout
+        .iter()
+        .filter(|p| {
+            let (_, before, _) = cost(p);
+            before > 0.0
+        })
+        .count();
+    if informative < MIN_INFORMATIVE_HOLDOUT {
+        return judgement(Disposition::Propose(format!(
+            "won on the selection slice, and nothing got worse on the holdout — but only \
+             {informative} of {} held-out episode(s) had any of this metric to begin with, \
+             so the holdout ruled out a regression without ever being able to confirm a gain",
+            hold.total()
+        )));
+    }
     if !class.auto_acceptable() {
         return judgement(Disposition::Propose(format!(
             "measured better, but a {class:?} change is a person's decision however it scored"
@@ -446,6 +654,86 @@ pub fn pair_arms(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_corpus_that_cannot_fill_both_slices_cannot_measure() {
+        // The floor is the sum, not either half: both slices are drawn from
+        // one pool, so a corpus between the two still cannot fill them.
+        assert!(!measurable(0));
+        assert!(!measurable(MIN_SELECTION_PAIRS));
+        assert!(!measurable(MIN_MEASURABLE_RUNS - 1));
+        assert!(measurable(MIN_MEASURABLE_RUNS));
+        // The live case that motivated it: the morning-briefing job has 11
+        // recorded runs against a floor of 12.
+        assert!(!measurable(11));
+        assert!(measurable(236));
+    }
+
+    #[test]
+    fn every_metric_variant_reaches_all() {
+        // `ALL` drives the brief, `guard_regressions`, and both consistency
+        // tests below — which is why it cannot police itself: a seventh
+        // variant that never joined this array would silently drop out of all
+        // four, and every test that iterates `ALL` would keep passing while
+        // covering less.
+        //
+        // The match is exhaustive, so adding a variant stops the build here
+        // and the count names the fix. That is the whole guard: the compiler
+        // points, the assertion says what to do.
+        for m in Metric::ALL {
+            match m {
+                Metric::EndedOnFailedCall
+                | Metric::ToolErrorRate
+                | Metric::CutShort
+                | Metric::Compactions
+                | Metric::Turns
+                | Metric::MalformedArgs => {}
+            }
+        }
+        assert_eq!(
+            Metric::ALL.len(),
+            6,
+            "a Metric variant was added or removed without updating ALL — the brief, \
+             guard_regressions and the drift tests all read it"
+        );
+    }
+
+    #[test]
+    fn every_metric_name_is_its_serde_spelling() {
+        // `as_str` is what the brief prints and what the proposal block is
+        // parsed against, and serde is what the candidate store round-trips
+        // through. A metric whose two spellings disagree would be reported
+        // under one name and proposable only under the other.
+        for m in Metric::ALL {
+            let wire = serde_json::to_string(&m).unwrap();
+            assert_eq!(wire.trim_matches('"'), m.as_str());
+        }
+    }
+
+    #[test]
+    fn a_metric_no_run_has_any_of_is_visible_as_zero_headroom() {
+        // The 2026-08-28 nightly in shape: it predicted a lower `cut_short`
+        // over a corpus where every run was `Completed` or `Interrupted`, and
+        // `cut_short` excludes `Interrupted` on purpose. Every pair could only
+        // tie, so the measurement it would have cost could not have informed
+        // anything.
+        let completed = RunStats {
+            stop_cause: Some(crate::agent::StopCause::Completed),
+            ..Default::default()
+        };
+        let interrupted = RunStats {
+            stop_cause: Some(crate::agent::StopCause::Interrupted),
+            ..Default::default()
+        };
+        assert_eq!(Metric::CutShort.of(&completed), 0.0);
+        assert_eq!(Metric::CutShort.of(&interrupted), 0.0);
+        let cut = RunStats {
+            stop_cause: Some(crate::agent::StopCause::MaxTurns),
+            ..Default::default()
+        };
+        assert_eq!(Metric::CutShort.of(&cut), 1.0);
+    }
+
     use crate::agent::StopCause;
 
     fn run(calls: u32, errors: u32, ended_failed: bool) -> RunStats {
@@ -528,6 +816,88 @@ mod tests {
             other => panic!("a suppressed-work win was not rejected: {other:?}"),
         }
         assert!(j.work_candidate < j.work_baseline);
+    }
+
+    #[test]
+    fn a_holdout_that_could_not_have_confirmed_anything_does_not_confirm() {
+        // The hole this closes: `not_worse` is `wins >= losses`, so a holdout
+        // of four all-tie episodes satisfies it with 0 and 0 and reads as
+        // "confirmed on unseen work". The holdout is drawn uniformly on
+        // purpose, and on 2026-08-31 the live corpus was 69% runs of two turns
+        // or fewer — so a uniform draw of four was usually four episodes that
+        // could not have moved whatever was predicted.
+        //
+        // Every holdout baseline here has `ended_on_failed_call` false, so no
+        // held-out episode had anything to lose.
+        let pairs: Vec<Pair> = corpus(12, 3, |_| (run(10, 5, true), run(10, 5, true)))
+            .into_iter()
+            .map(|mut p| {
+                if is_holdout(&p.episode, 3) {
+                    p.baseline = run(10, 5, false);
+                    p.candidate = run(10, 5, false);
+                } else {
+                    p.baseline = run(10, 5, true);
+                    p.candidate = run(10, 5, false);
+                }
+                p
+            })
+            .collect();
+        let j = judge(
+            ChangeClass::Config,
+            &prediction(Metric::EndedOnFailedCall),
+            &pairs,
+            3,
+        );
+        match j.disposition {
+            Disposition::Propose(ref why) => {
+                assert!(why.contains("without ever being able to confirm"), "{why}")
+            }
+            other => panic!("a vacuous holdout was treated as confirmation: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_win_paid_for_on_a_metric_nobody_predicted_is_not_a_win() {
+        // The work guardrail counts tool calls, so it catches a gain bought by
+        // attempting *less*. It never caught a gain bought by failing *more*:
+        // this candidate does exactly the same amount of work and halves the
+        // predicted metric, while every call it makes now fails.
+        //
+        // Live, this is the trade the loop is most likely to be offered —
+        // `turns` is currently the only metric in the corpus with real
+        // headroom, and spending accuracy to end sooner buys it.
+        let pairs: Vec<Pair> = corpus(12, 3, |_| {
+            let mut baseline = run(10, 1, false);
+            baseline.turns = 10;
+            let mut candidate = run(10, 9, false);
+            candidate.turns = 5;
+            (baseline, candidate)
+        });
+        let j = judge(ChangeClass::Config, &prediction(Metric::Turns), &pairs, 3);
+        match j.disposition {
+            Disposition::Reject(ref why) => {
+                assert!(why.contains("ToolErrorRate"), "{why}");
+                assert!(why.contains("nobody was watching"), "{why}");
+            }
+            other => panic!("a bought win was accepted: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unpredicted_metric_that_holds_steady_does_not_block_a_real_win() {
+        // The guard above must be a cliff, not a ratchet — otherwise noise on
+        // any of five other metrics vetoes every candidate and the loop stops
+        // accepting anything at all, which is the failure it was added to
+        // avoid wearing the opposite costume.
+        let pairs: Vec<Pair> = corpus(12, 3, |_| {
+            let mut baseline = run(10, 2, false);
+            baseline.turns = 10;
+            let mut candidate = run(10, 2, false);
+            candidate.turns = 5;
+            (baseline, candidate)
+        });
+        let j = judge(ChangeClass::Config, &prediction(Metric::Turns), &pairs, 3);
+        assert_eq!(j.disposition, Disposition::Accept, "{:?}", j.disposition);
     }
 
     #[test]
@@ -623,6 +993,106 @@ mod tests {
         // nothing would pass every test above while measuring nothing.
         let held = first.iter().filter(|h| **h).count();
         assert!((20..80).contains(&held), "{held} of 200 held out");
+    }
+
+    #[test]
+    fn a_suite_the_baseline_already_passes_cannot_confirm_an_improvement() {
+        // The eval side of `MIN_INFORMATIVE_HOLDOUT`, which review noted was
+        // coupled and untested. In `mecha eval --ab-config` the cost is
+        // `!passed`, so a held-out case the baseline already passed has cost 0
+        // and no room to win — exactly the shape the run-side check exists
+        // for, in a different currency.
+        //
+        // A change is not confirmed by cases that were already green. It
+        // stages for a person instead, which is what the disposition is for.
+        struct Case {
+            id: String,
+            was: bool,
+            now: bool,
+        }
+        let cases: Vec<Case> = (0..24)
+            .map(|i| Case {
+                id: format!("case-{i}"),
+                // Held-out cases all passed under the baseline; selection
+                // cases were failing and now pass.
+                was: is_holdout(&format!("case-{i}"), 3),
+                now: true,
+            })
+            .collect();
+        fn cost(c: &Case) -> (&str, f64, f64) {
+            (
+                c.id.as_str(),
+                f64::from(u8::from(!c.was)),
+                f64::from(u8::from(!c.now)),
+            )
+        }
+        let refs: Vec<&Case> = cases.iter().collect();
+        let (hold, sel): (Vec<&Case>, Vec<&Case>) =
+            refs.into_iter().partition(|c| is_holdout(&c.id, 3));
+        let j = judge_slices(ChangeClass::Config, &sel, &hold, cost, |_| (6, 6));
+        match j.disposition {
+            Disposition::Propose(ref why) => {
+                assert!(why.contains("without ever being able to confirm"), "{why}")
+            }
+            other => panic!("an all-green holdout was read as confirmation: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_real_regression_is_not_hidden_behind_a_milder_one_earlier_in_the_list() {
+        // The short-circuit: `guard_regressions` returned on the first metric
+        // it found something on, so a `0 → nonzero` Propose at `Compactions`
+        // (index 3) suppressed a ratio breach at `MalformedArgs` (index 5) and
+        // the reviewer saw only the benign explanation. Each of the other
+        // tests moves exactly one unpredicted metric, so none of them could
+        // see it.
+        let pairs: Vec<Pair> = corpus(12, 3, |_| {
+            let mut baseline = run(10, 1, false);
+            baseline.turns = 10;
+            baseline.compactions = 0;
+            baseline.malformed_tool_args = 4;
+            let mut candidate = run(10, 1, false);
+            candidate.turns = 5;
+            // Milder, and earlier in `Metric::ALL`.
+            candidate.compactions = 2;
+            // Worse, and later: 10 against a 1.25 ceiling on 4.
+            candidate.malformed_tool_args = 10;
+            (baseline, candidate)
+        });
+        let j = judge(ChangeClass::Config, &prediction(Metric::Turns), &pairs, 3);
+        match j.disposition {
+            Disposition::Reject(ref why) => assert!(why.contains("MalformedArgs"), "{why}"),
+            other => panic!("the worse finding was hidden behind the milder one: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cost_appearing_from_nothing_reaches_a_person_rather_than_being_refused() {
+        // `compactions` is zero across the live corpus, so a
+        // `compact_at_tokens` low enough to actually compact takes the metric
+        // from 0 to nonzero. A first version of `guard_regressions` rejected
+        // that outright, which made one of the four overridable knobs unusable
+        // for the metric it exists to move — found in review.
+        //
+        // Nothing here can tell "compaction started, which is the point" from
+        // "malformed arguments appeared, which is not". A person can.
+        let pairs: Vec<Pair> = corpus(12, 3, |_| {
+            let mut baseline = run(10, 1, false);
+            baseline.turns = 10;
+            baseline.compactions = 0;
+            let mut candidate = run(10, 1, false);
+            candidate.turns = 5;
+            candidate.compactions = 2;
+            (baseline, candidate)
+        });
+        let j = judge(ChangeClass::Config, &prediction(Metric::Turns), &pairs, 3);
+        match j.disposition {
+            Disposition::Propose(ref why) => {
+                assert!(why.contains("rose from"), "{why}");
+                assert!(why.contains("only a person can tell which"), "{why}");
+            }
+            other => panic!("the knob's own effect was treated as a regression: {other:?}"),
+        }
     }
 
     #[test]

@@ -29,7 +29,7 @@ use crate::session::{Record, RunStats, Session};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One finished run, with enough of its session to be identifiable.
 #[derive(Debug, Clone)]
@@ -42,6 +42,22 @@ pub struct RunRow {
     pub provider: String,
     pub model: String,
     pub title: Option<String>,
+    /// Where the session was rooted.
+    ///
+    /// **Recorded in every transcript header since the store existed, and read
+    /// into the corpus only on 2026-08-31.** It is what separates populations
+    /// this loop had been pooling: a morning-briefing run out of
+    /// `~/.mecha/work/morning`, a front-door run, a smoke test in `/tmp` and a
+    /// feature test in the source checkout have different normal behaviour,
+    /// and a harness change measured across the mixture is measured against
+    /// an average of four different jobs. On the day it was added the store
+    /// held 389 runs across eight workspaces, only 12% of them in the mecha
+    /// checkout.
+    ///
+    /// Retroactive on purpose, and it is why no new marker was invented: the
+    /// field was already on disk in all 490 sessions, so the separation cost
+    /// nothing and covers all of history rather than starting from now.
+    pub workspace: PathBuf,
     /// Which run within the session, 1-based. A resumed session has several.
     pub run: u32,
     pub stats: RunStats,
@@ -70,6 +86,11 @@ pub struct Scan {
     pub max_sessions: Option<usize>,
     /// Skip sessions started before this.
     pub since: Option<DateTime<Utc>>,
+    /// Keep only sessions rooted at this path or beneath it.
+    ///
+    /// A prefix rather than an equality test, because a source checkout has
+    /// worktrees under it and they are the same population.
+    pub workspace: Option<PathBuf>,
 }
 
 impl Corpus {
@@ -84,6 +105,13 @@ impl Corpus {
         out.unreadable = skipped;
         for (meta, path) in listed {
             if scan.since.is_some_and(|t| meta.created_at < t) {
+                continue;
+            }
+            if scan
+                .workspace
+                .as_ref()
+                .is_some_and(|w| !meta.workspace.starts_with(w))
+            {
                 continue;
             }
             if scan.max_sessions.is_some_and(|n| out.sessions_read >= n) {
@@ -111,6 +139,7 @@ impl Corpus {
                     provider,
                     model,
                     title: meta.title.clone(),
+                    workspace: meta.workspace.clone(),
                     run: i as u32 + 1,
                     stats: s,
                 });
@@ -187,6 +216,49 @@ impl Corpus {
             *out.entry(row.stats.stop_cause).or_insert(0) += 1;
         }
         out
+    }
+
+    /// What one predictable metric currently costs: its mean over the corpus,
+    /// and how many runs have any of it to reduce.
+    ///
+    /// **The second number is the one that matters, and it is a headroom
+    /// check, not a summary.** Every metric here is a cost, so a metric no run
+    /// has any of cannot be reduced — a change predicting it can only tie or
+    /// worsen, and learning that costs a real model run per episode per arm.
+    /// [`crate::candidate::Metric::headroom`] makes the same argument one
+    /// episode at a time, for the replay draw; this makes it for the corpus,
+    /// before a prediction about it is ever written down.
+    pub fn metric_cost(&self, metric: crate::candidate::Metric) -> (f64, usize) {
+        if self.rows.is_empty() {
+            return (0.0, 0);
+        }
+        let values: Vec<f64> = self.rows.iter().map(|r| metric.of(&r.stats)).collect();
+        let with = values.iter().filter(|v| **v > 0.0).count();
+        (values.iter().sum::<f64>() / values.len() as f64, with)
+    }
+
+    /// Calls a human or a policy refused — the harness working, and never
+    /// averaged into [`Self::tool_errors`].
+    ///
+    /// Reported beside the error rate because it is the datum that separates
+    /// "the environment is failing calls" from "the environment is declining
+    /// them", and a diagnostician shown only the total invents which one it
+    /// is looking at.
+    pub fn tool_denied(&self) -> u64 {
+        self.rows
+            .iter()
+            .map(|r| u64::from(r.stats.tool_denied))
+            .sum()
+    }
+
+    /// Sends the trifecta interlock refused. The only counter that answers
+    /// "is a security control costing this run tool calls?" — the question
+    /// the 2026-08-25 nightly answered by guessing.
+    pub fn blocked_sends(&self) -> u64 {
+        self.rows
+            .iter()
+            .map(|r| u64::from(r.stats.blocked_sends))
+            .sum()
     }
 
     pub fn compactions(&self) -> u64 {
@@ -302,6 +374,22 @@ impl Corpus {
         (total, priced.len())
     }
 
+    /// Split by where the session was rooted. See [`RunRow::workspace`].
+    ///
+    /// `by_model`'s shape and `by_model`'s caveat: `sessions_read` is the
+    /// scan's denominator and is carried unchanged into every bucket, because
+    /// zero there reads as "from no sessions", which is the one lie that makes
+    /// a well-sampled rate look like it came from nowhere.
+    pub fn by_workspace(&self) -> BTreeMap<PathBuf, Corpus> {
+        let mut out: BTreeMap<PathBuf, Corpus> = BTreeMap::new();
+        for row in &self.rows {
+            let bucket = out.entry(row.workspace.clone()).or_default();
+            bucket.rows.push(row.clone());
+            bucket.sessions_read = self.sessions_read;
+        }
+        out
+    }
+
     /// Split by model, so a rate can be read against the thing that produced
     /// it. A corpus spanning two models has no single error rate worth
     /// quoting.
@@ -337,6 +425,48 @@ fn exhaustive(record: &Record) {
 }
 
 #[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    fn row(ws: &str, model: &str) -> RunRow {
+        RunRow {
+            session_id: "s".into(),
+            started_at: Utc::now(),
+            provider: "local".into(),
+            model: model.into(),
+            title: None,
+            workspace: PathBuf::from(ws),
+            run: 1,
+            stats: RunStats::default(),
+        }
+    }
+
+    #[test]
+    fn a_corpus_splits_by_where_its_runs_were_rooted() {
+        // The separation this exists for: on 2026-08-31 the store held 389
+        // runs across eight workspaces — briefing runs, front-door runs,
+        // smoke tests in /tmp, feature tests in the source checkout — and the
+        // loop had been pooling all of them into one average.
+        let corpus = Corpus {
+            rows: vec![
+                row("/home/u/.mecha/work/morning", "m"),
+                row("/home/u/.mecha/work/morning", "m"),
+                row("/tmp", "m"),
+            ],
+            sessions_read: 3,
+            ..Default::default()
+        };
+        let by = corpus.by_workspace();
+        assert_eq!(by.len(), 2);
+        assert_eq!(by[&PathBuf::from("/home/u/.mecha/work/morning")].len(), 2);
+        // `by_model`'s caveat, and for its reason: zero here would read as
+        // "from no sessions", making a well-sampled rate look like it came
+        // from nowhere.
+        assert_eq!(by[&PathBuf::from("/tmp")].sessions_read, 3);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::Taint;
@@ -353,6 +483,105 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn session_in(
+        dir: &Path,
+        id: &str,
+        model: &str,
+        workspace: &str,
+        runs: Vec<RunStats>,
+    ) -> Session {
+        let s = Session::create(
+            dir,
+            SessionMeta {
+                id: id.to_string(),
+                created_at: DateTime::parse_from_rfc3339("2026-08-01T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                provider: "local".into(),
+                model: model.to_string(),
+                workspace: PathBuf::from(workspace),
+                title: None,
+            },
+        )
+        .unwrap();
+        for stats in runs {
+            s.append(&Record::Outcome(stats)).unwrap();
+        }
+        s
+    }
+
+    /// The filter, exercised through `Corpus::scan` rather than through
+    /// `PathBuf::starts_with`.
+    ///
+    /// A first version of this asserted the stdlib's prefix behaviour and left
+    /// the `continue` in `scan` unpinned — deleting it broke nothing. Review
+    /// caught that, and caught it on the branch where the *other* half of the
+    /// same filter (in `draw_episodes`) had been missing entirely while the
+    /// brief looked correctly scoped. A filter whose applied half is the
+    /// visible half is the one that most needs a test.
+    #[test]
+    fn the_workspace_filter_selects_through_scan_and_keeps_worktrees() {
+        let dir = tmpdir();
+        let done = || stats(4, 0, false, StopCause::Completed);
+        session_in(
+            &dir,
+            "20260801T000000-a",
+            "opus",
+            "/src/mecha",
+            vec![done()],
+        );
+        session_in(
+            &dir,
+            "20260801T000001-b",
+            "opus",
+            // Under the checkout: a worktree is the same population, which is
+            // why the filter is a prefix and not an equality.
+            "/src/mecha/.claude/worktrees/lane",
+            vec![done()],
+        );
+        session_in(&dir, "20260801T000002-c", "opus", "/tmp", vec![done()]);
+        // Shares a textual prefix with `/src/mecha` and is a different
+        // directory. `starts_with` is component-wise, and this is the case
+        // that would pass a naive string check.
+        session_in(
+            &dir,
+            "20260801T000003-d",
+            "opus",
+            "/src/mecha-other",
+            vec![done()],
+        );
+
+        assert_eq!(Corpus::scan(&dir, &Scan::default()).unwrap().len(), 4);
+
+        let scoped = Corpus::scan(
+            &dir,
+            &Scan {
+                workspace: Some(PathBuf::from("/src/mecha")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            scoped.len(),
+            2,
+            "the checkout and its worktree, and nothing else"
+        );
+        assert!(scoped
+            .rows
+            .iter()
+            .all(|r| r.workspace.starts_with("/src/mecha")));
+
+        let elsewhere = Corpus::scan(
+            &dir,
+            &Scan {
+                workspace: Some(PathBuf::from("/tmp")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(elsewhere.len(), 1);
     }
 
     fn session_with(dir: &Path, id: &str, model: &str, runs: Vec<RunStats>) -> Session {
@@ -697,6 +926,7 @@ mod tests {
             &Scan {
                 max_sessions: Some(2),
                 since: None,
+                workspace: None,
             },
         )
         .unwrap();
@@ -714,6 +944,7 @@ mod tests {
                         .unwrap()
                         .with_timezone(&Utc),
                 ),
+                workspace: None,
             },
         )
         .unwrap();

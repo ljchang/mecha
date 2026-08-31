@@ -24,7 +24,9 @@ use crate::commands::diagnose::{
 use crate::harness_probe;
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
-use mecha_core::candidate::{judge_drawn, ChangeClass, Disposition, Pair, Prediction};
+use mecha_core::candidate::{
+    judge_drawn, measurable, ChangeClass, Disposition, Pair, Prediction, MIN_MEASURABLE_RUNS,
+};
 use mecha_core::harness::{
     parse_change, AcceptedOverride, HarnessCandidate, HarnessStore, Measurement, STATUS_ACCEPTED,
     STATUS_REJECTED, STATUS_REVERTED, STATUS_STAGED,
@@ -57,6 +59,9 @@ pub enum Cmd {
         /// One episode in this many is held out of selection.
         #[arg(long, default_value_t = 3)]
         holdout_in: u64,
+        /// Only diagnose from sessions rooted at this path or beneath it.
+        #[arg(long, value_name = "PATH")]
+        from_workspace: Option<std::path::PathBuf>,
     },
     /// Candidates waiting on you (--all for the whole record).
     List {
@@ -95,9 +100,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             days,
             limit,
             holdout_in,
+            from_workspace,
         } => {
             anyhow::ensure!(holdout_in >= 2, "--holdout-in must be at least 2");
-            ruminate(global, sessions, days, limit, holdout_in).await
+            ruminate(global, sessions, days, limit, holdout_in, from_workspace).await
         }
         Cmd::List { all, json } => list(all, json),
         Cmd::Show { id } => show(&id),
@@ -114,10 +120,14 @@ async fn ruminate(
     days: Option<i64>,
     limit: usize,
     holdout_in: u64,
+    from_workspace: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let store = HarnessStore::open_default()?;
 
-    let Some((model, slice, _)) = corpus_slice(None, days, limit)? else {
+    // Resolved once, at the boundary, so the brief and the draw compare the
+    // same path against the same recorded ones. See `resolve_workspace_filter`.
+    let from_workspace = crate::commands::diagnose::resolve_workspace_filter(from_workspace)?;
+    let Some((model, slice, _)) = corpus_slice(None, days, limit, from_workspace.clone())? else {
         println!("no recorded run outcomes yet — nothing to diagnose from; deferring");
         return Ok(());
     };
@@ -191,21 +201,40 @@ async fn ruminate(
         println!("note:      {note}");
     }
 
+    // Whether the corpus can refute this prediction at all. Every metric is a
+    // cost, so one that no run has any of can only tie or worsen under any
+    // change — and finding that out costs a real model run per episode per
+    // arm. The brief now reports the table this reads, so a diagnostician
+    // choosing such a metric has been told; on 2026-08-28 it had not been, and
+    // predicted a lower `cut_short` over 170 runs in which `cut_short` was
+    // zero. The 37 "interrupted" it was reading are cancellations, which
+    // `StopCause::cut_short` excludes on purpose.
+    let no_headroom = evidence
+        .metrics
+        .iter()
+        .find(|(m, _, _)| *m == cand.metric)
+        .is_some_and(|(_, _, with)| *with == 0);
+    let unrefutable = format!(
+        "predicts a lower `{}`, which no run in this corpus has any of — \
+         the measurement could only tie",
+        cand.metric.as_str()
+    );
+    if no_headroom {
+        println!("note:      {unrefutable}");
+    }
+
     match proposal.class {
         ChangeClass::Security => {
-            let mut reason = String::new();
             // The mislabel leads, because it is the part a reviewer most needs
             // and the part the standing warning cannot imply: it says the
             // proposer's own account of its change did not match the change.
-            if let Some(note) = &proposal.reclassified {
-                reason.push_str(note);
-                reason.push_str(" — ");
-            }
-            reason.push_str(
+            // Through the shared composer so this arm and the one below cannot
+            // disagree about whether the note survives.
+            cand.reason = Some(staged_reason(
+                proposal.reclassified.as_deref(),
                 "security-class: never measured and never auto-applied — a loop that can \
                  argue for widening its own confinement will eventually argue well",
-            );
-            cand.reason = Some(reason);
+            ));
             store.write(&cand)?;
             println!(
                 "\nstaged for review (security-class; `mecha harness show {}`)",
@@ -213,29 +242,161 @@ async fn ruminate(
             );
         }
         ChangeClass::Prose | ChangeClass::Architecture => {
-            cand.reason = Some(format!(
-                "{:?}-class changes wait for a person; prose needs the content-sensitive arm \
-                 (`mecha eval --ab-config`), and architecture is always a human's call",
-                proposal.class
+            cand.reason = Some(staged_reason(
+                proposal.reclassified.as_deref(),
+                &format!(
+                    "{:?}-class changes wait for a person; prose needs the content-sensitive \
+                     arm (`mecha eval --ab-config`), and architecture is always a human's call",
+                    proposal.class
+                ),
             ));
             store.write(&cand)?;
             println!("\nstaged for review (`mecha harness show {}`)", cand.id);
         }
         ChangeClass::Config => match parse_change(&proposal.change) {
+            // **Not "outside the closed override set" any more**, though it
+            // said so until review caught it. `parse_proposal` reclassifies an
+            // unknown key to `Architecture` before this arm is reached, so the
+            // only thing that can still land here is a key this harness *does*
+            // own carrying a value `parse_change` refused —
+            // `a_real_knob_with_a_refused_value_is_still_a_config_change` is
+            // what makes that the sole survivor. The old wording told a
+            // reviewer to go looking for a key that is right there in the set.
             Err(e) => {
-                cand.reason = Some(format!("outside the closed override set: {e:#}"));
+                cand.reason = Some(format!(
+                    "a known key with a value that does not parse: {e:#}"
+                ));
                 store.write(&cand)?;
                 println!(
                     "\nstaged for review — {}",
                     cand.reason.as_deref().unwrap_or("")
                 );
             }
-            Ok(change) => {
-                measure(global, &store, cand, change, &model, sessions, holdout_in).await?;
-            }
+            Ok(change) => match measurement_verdict(slice.len(), no_headroom) {
+                // Staged rather than rejected and recorded rather than
+                // dropped: the change may be perfectly good and it is the
+                // evidence that is missing, which is a person's call and
+                // belongs in the history that stops it being re-derived.
+                Verdict::CorpusTooSmall => {
+                    cand.reason = Some(format!(
+                        "{} recorded run(s) for `{model}`, below the {} a selection slice and \
+                         a holdout need between them — staged unmeasured. A necessary \
+                         condition only: the eligible pool is the replayable subset of those \
+                         runs.",
+                        slice.len(),
+                        MIN_MEASURABLE_RUNS
+                    ));
+                    store.write(&cand)?;
+                    println!(
+                        "\nstaged unmeasured — {}",
+                        cand.reason.as_deref().unwrap_or("")
+                    );
+                }
+                // Rejected so the brief's history carries it: dropped, it
+                // would be free to come back tomorrow.
+                Verdict::NoHeadroom => {
+                    cand.status = STATUS_REJECTED.into();
+                    cand.resolved_at = Some(now.clone());
+                    cand.reason = Some(format!("{unrefutable}, so it was not worth a replay"));
+                    store.write(&cand)?;
+                    println!("\nrejected unmeasured — {unrefutable}");
+                }
+                Verdict::Measure => {
+                    measure(
+                        global,
+                        &store,
+                        cand,
+                        change,
+                        &model,
+                        DrawSpec {
+                            sessions,
+                            holdout_in,
+                            workspace: from_workspace.as_deref(),
+                        },
+                    )
+                    .await?;
+                }
+            },
         },
     }
     Ok(())
+}
+
+/// Compose the `reason` a staged candidate carries, note first.
+///
+/// **One composer, because forgetting the note is invisible.** The `Security`
+/// arm prepended it deliberately — "the mislabel leads, because it is the part
+/// a reviewer most needs" — and the `Prose | Architecture` arm overwrote
+/// `reason` with the generic class text and dropped it. `HarnessCandidate` has
+/// no field for the note, so `reason` is its only durable home; on stdout it
+/// scrolls past, and the store is what a reviewer opens.
+///
+/// That silently un-did this branch's headline case, one class over. A
+/// `context.auto_compact=true` proposal now reclassifies to `Architecture` and
+/// reached the store reading:
+///
+/// > class: Architecture · reason: Architecture-class changes wait for a person…
+///
+/// with nothing recording that the model called it `config` and named a key
+/// that has never existed anywhere in this codebase — an ordinary staged
+/// change, which is exactly the appearance the reclassification exists to
+/// remove.
+fn staged_reason(note: Option<&str>, detail: &str) -> String {
+    match note {
+        Some(note) => format!("{note} — {detail}"),
+        None => detail.to_string(),
+    }
+}
+
+/// What happens to a `Config` proposal whose change parses, before any of it
+/// is written down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// The corpus cannot fill both slices, so `measure` would draw nothing.
+    CorpusTooSmall,
+    /// The prediction names a metric no run in the corpus has any of.
+    NoHeadroom,
+    Measure,
+}
+
+/// Decide, as a function of the two facts and nothing else.
+///
+/// Split out from the arm that writes the candidate because **the ordering is
+/// the policy**, and the ordering was the only part of this with no test —
+/// review named these the two guarantees on this branch least measured, and it
+/// was right: the writing needs a provider and a store, the decision needs
+/// neither.
+///
+/// **Corpus size is asked first, and that is the substantive choice.** Both
+/// conditions can hold at once, and they disagree about who decides:
+/// `NoHeadroom` rejects, `CorpusTooSmall` stages for a person. On a corpus too
+/// small to measure, "no run has any of this metric" is a statement about a
+/// handful of runs and not about the harness — so rejecting on it would be
+/// refusing a proposal for want of evidence, which this design calls an
+/// absence of a verdict rather than a verdict. Thin evidence stages.
+fn measurement_verdict(runs: usize, no_headroom: bool) -> Verdict {
+    if !measurable(runs) {
+        return Verdict::CorpusTooSmall;
+    }
+    if no_headroom {
+        return Verdict::NoHeadroom;
+    }
+    Verdict::Measure
+}
+
+/// How a measurement's episodes are drawn.
+///
+/// Three fields rather than three parameters because they travel together and
+/// only together: `workspace` joined them when the review found the draw
+/// re-scanning every session while the diagnosis was scoped, and the argument
+/// list crossed clippy's threshold in the same edit. Bundling the ones that
+/// must agree is the fix; an `allow` would have been the other one.
+struct DrawSpec<'a> {
+    sessions: usize,
+    holdout_in: u64,
+    /// Scoped identically to the diagnosis, or the two halves of one night
+    /// disagree about what they are talking about.
+    workspace: Option<&'a std::path::Path>,
 }
 
 /// Replay the corpus under both arms, judge, and dispose.
@@ -245,9 +406,13 @@ async fn measure(
     mut cand: HarnessCandidate,
     change: mecha_core::harness::ConfigChange,
     model: &str,
-    sessions: usize,
-    holdout_in: u64,
+    draw_spec: DrawSpec<'_>,
 ) -> Result<()> {
+    let DrawSpec {
+        sessions,
+        holdout_in,
+        workspace,
+    } = draw_spec;
     // The live registry, for tool specs the replay registry mirrors. Built
     // plain — the diagnostician's narrowed opts are its own, not the arms'.
     let prepared = setup::prepare(&global.clone(), false).await?;
@@ -273,6 +438,7 @@ async fn measure(
         sessions,
         holdout_in,
         seed,
+        workspace,
     )?;
     let unusable = draw.skipped;
     if draw.selection.is_empty() && draw.holdout.is_empty() {
@@ -756,4 +922,64 @@ fn overrides() -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::candidate::MIN_MEASURABLE_RUNS as FLOOR;
+
+    #[test]
+    fn a_mislabel_survives_into_the_record_a_reviewer_actually_opens() {
+        // The note was on the nightly's stdout and not in the store, so the
+        // branch's own headline case — a model calling `context.auto_compact`
+        // a config change when that key has never existed — reached
+        // `mecha harness show` looking like an ordinary staged Architecture
+        // change. `HarnessCandidate` has no field for the note; `reason` is
+        // the only durable place it can live.
+        let note = "proposed as `Config`, reclassified: `context.auto_compact` is not one \
+                    of the 4 keys this harness can override";
+        let composed = staged_reason(Some(note), "Architecture-class changes wait for a person");
+        assert!(composed.starts_with(note), "the mislabel leads: {composed}");
+        assert!(composed.contains("wait for a person"), "{composed}");
+
+        // An honestly-labelled proposal carries no note and gains no
+        // separator — a dangling em dash on every ordinary candidate would
+        // train a reviewer to skip the position the mislabel appears in.
+        let plain = staged_reason(None, "Architecture-class changes wait for a person");
+        assert_eq!(plain, "Architecture-class changes wait for a person");
+    }
+
+    #[test]
+    fn a_corpus_too_small_to_measure_stages_rather_than_rejecting() {
+        // Both conditions hold, and they disagree about who decides. On a
+        // corpus below the floor, "no run has any of this metric" describes a
+        // handful of runs rather than the harness, so it must not be grounds
+        // for refusing the proposal — thin evidence is an absence of a verdict,
+        // not a verdict. Swapping the two checks makes this return NoHeadroom
+        // and quietly converts a staging into a rejection.
+        assert_eq!(
+            measurement_verdict(FLOOR - 1, true),
+            Verdict::CorpusTooSmall
+        );
+        assert_eq!(
+            measurement_verdict(FLOOR - 1, false),
+            Verdict::CorpusTooSmall
+        );
+        // The live case: the morning-briefing job, 11 runs against a floor
+        // of 12.
+        assert_eq!(measurement_verdict(11, false), Verdict::CorpusTooSmall);
+    }
+
+    #[test]
+    fn a_prediction_the_corpus_cannot_refute_is_refused_before_it_costs_replays() {
+        assert_eq!(measurement_verdict(FLOOR, true), Verdict::NoHeadroom);
+        assert_eq!(measurement_verdict(236, true), Verdict::NoHeadroom);
+    }
+
+    #[test]
+    fn enough_corpus_and_a_metric_with_room_is_measured() {
+        assert_eq!(measurement_verdict(FLOOR, false), Verdict::Measure);
+        assert_eq!(measurement_verdict(236, false), Verdict::Measure);
+    }
 }
