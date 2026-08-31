@@ -39,6 +39,14 @@ pub struct Args {
     #[arg(long, short = 'n', default_value_t = 200)]
     pub limit: usize,
 
+    /// Only sessions rooted at this path or beneath it.
+    ///
+    /// Not `--workspace`: that is the global flag naming the path jail, and
+    /// these are opposite questions — where this run may read, versus where
+    /// the runs being read from were standing.
+    #[arg(long, value_name = "PATH")]
+    pub from_workspace: Option<std::path::PathBuf>,
+
     /// Print the brief the diagnostician would be handed, and stop.
     ///
     /// The cheap way to see what it is reasoning from — and the honest way to
@@ -56,6 +64,7 @@ pub fn corpus_slice(
     want: Option<&str>,
     days: Option<i64>,
     limit: usize,
+    workspace: Option<std::path::PathBuf>,
 ) -> Result<Option<(String, Corpus, usize)>> {
     let dir = Session::default_dir()?;
     let since = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
@@ -64,6 +73,7 @@ pub fn corpus_slice(
         &Scan {
             max_sessions: Some(limit),
             since,
+            workspace,
         },
     )?;
     let sessions_read = corpus.sessions_read;
@@ -243,7 +253,12 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
-    let Some((model, slice, _)) = corpus_slice(args.model.as_deref(), args.days, args.limit)?
+    let Some((model, slice, _)) = corpus_slice(
+        args.model.as_deref(),
+        args.days,
+        args.limit,
+        args.from_workspace.clone(),
+    )?
     else {
         let dir = Session::default_dir()?;
         anyhow::bail!(

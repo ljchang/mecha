@@ -180,6 +180,18 @@ pub struct Evidence {
     /// had, in the direction that matters: six metrics offered, three
     /// reported.
     pub metrics: Vec<(Metric, f64, usize)>,
+    /// Where these runs were rooted, commonest first, with a count each.
+    ///
+    /// **The corpus is a mixture, and pooling it averages four different
+    /// jobs.** A morning-briefing run, a front-door run, a smoke test in
+    /// `/tmp` and a feature test in the source checkout have different normal
+    /// behaviour; a rate over all of them describes none of them. Reported so
+    /// the diagnostician can say "this is concentrated in one job" instead of
+    /// treating the average as a property of the harness — and so a reader can
+    /// see when a number came almost entirely from one place.
+    ///
+    /// A path is machine-recorded from the session header, never model-authored.
+    pub workspaces: Vec<(String, usize)>,
     /// What `doctor` said, verbatim — machine-authored text, not third-party.
     pub findings: Vec<String>,
     /// What earlier passes already tried, one line each — machine-authored
@@ -220,6 +232,28 @@ impl Evidence {
                 .collect(),
             mean_peak_context_pressure: corpus.mean_peak_context_pressure(),
             mean_anticipated_guilt: corpus.mean_anticipated_guilt(),
+            workspaces: {
+                let mut w: Vec<(String, usize)> = corpus
+                    .by_workspace()
+                    .into_iter()
+                    .map(|(path, c)| {
+                        // A transcript written before the header carried a
+                        // workspace, or one whose header was torn. Named,
+                        // never printed as an empty string: a blank reads as a
+                        // workspace called "" and quietly becomes its own
+                        // bucket. Absent is not zero.
+                        let name = match path.as_os_str().is_empty() {
+                            true => "(unrecorded)".to_string(),
+                            false => path.display().to_string(),
+                        };
+                        (name, c.len())
+                    })
+                    .collect();
+                // Commonest first, then by name so the order is stable across
+                // scans — the brief is diffed by humans reading two nights.
+                w.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                w
+            },
             tool_denied: corpus.tool_denied(),
             blocked_sends: corpus.blocked_sends(),
             metrics: Metric::ALL
@@ -285,6 +319,26 @@ impl Evidence {
                     metric.as_str(),
                     with,
                     self.runs
+                ));
+            }
+        }
+        if self.workspaces.len() > 1 {
+            out.push_str(
+                "\nwhere these runs were rooted — this corpus is a mixture of different \
+                 jobs, and a rate over all of them describes none of them:\n",
+            );
+            // Capped: one-off task workspaces (`work/task-<id>`) are minted
+            // per delegated run, so the tail grows without bound and is all
+            // ones. The tail is summarised rather than dropped — "and 9 more"
+            // is a different statement from silence about them.
+            const SHOWN: usize = 8;
+            for (path, n) in self.workspaces.iter().take(SHOWN) {
+                out.push_str(&format!("- {path}: {n} run(s)\n"));
+            }
+            if let Some(rest) = self.workspaces.len().checked_sub(SHOWN).filter(|n| *n > 0) {
+                let runs: usize = self.workspaces.iter().skip(SHOWN).map(|(_, n)| n).sum();
+                out.push_str(&format!(
+                    "- and {rest} further workspace(s), {runs} run(s) between them\n"
                 ));
             }
         }
