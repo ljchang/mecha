@@ -1346,6 +1346,9 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
         &Scan {
             max_sessions: Some(RUNS_WINDOW),
             since: None,
+            // Every workspace: doctor reports the machine's health, and
+            // health is not scoped to one job.
+            workspace: None,
         },
     ) {
         Ok(c) => c,

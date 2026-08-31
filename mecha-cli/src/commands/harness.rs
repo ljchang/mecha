@@ -24,7 +24,9 @@ use crate::commands::diagnose::{
 use crate::harness_probe;
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
-use mecha_core::candidate::{judge_drawn, ChangeClass, Disposition, Pair, Prediction};
+use mecha_core::candidate::{
+    judge_drawn, ChangeClass, Disposition, Pair, Prediction, MIN_HOLDOUT_PAIRS, MIN_SELECTION_PAIRS,
+};
 use mecha_core::harness::{
     parse_change, AcceptedOverride, HarnessCandidate, HarnessStore, Measurement, STATUS_ACCEPTED,
     STATUS_REJECTED, STATUS_REVERTED, STATUS_STAGED,
@@ -57,6 +59,9 @@ pub enum Cmd {
         /// One episode in this many is held out of selection.
         #[arg(long, default_value_t = 3)]
         holdout_in: u64,
+        /// Only diagnose from sessions rooted at this path or beneath it.
+        #[arg(long, value_name = "PATH")]
+        from_workspace: Option<std::path::PathBuf>,
     },
     /// Candidates waiting on you (--all for the whole record).
     List {
@@ -95,9 +100,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             days,
             limit,
             holdout_in,
+            from_workspace,
         } => {
             anyhow::ensure!(holdout_in >= 2, "--holdout-in must be at least 2");
-            ruminate(global, sessions, days, limit, holdout_in).await
+            ruminate(global, sessions, days, limit, holdout_in, from_workspace).await
         }
         Cmd::List { all, json } => list(all, json),
         Cmd::Show { id } => show(&id),
@@ -114,14 +120,38 @@ async fn ruminate(
     days: Option<i64>,
     limit: usize,
     holdout_in: u64,
+    from_workspace: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let store = HarnessStore::open_default()?;
 
-    let Some((model, slice, _)) = corpus_slice(None, days, limit)? else {
+    let Some((model, slice, _)) = corpus_slice(None, days, limit, from_workspace)? else {
         println!("no recorded run outcomes yet — nothing to diagnose from; deferring");
         return Ok(());
     };
     let evidence = evidence_for(&model, &slice, harness_history().unwrap_or_default());
+
+    // A corpus that cannot fill both slices cannot measure anything, and the
+    // diagnosis is paid for before that is discovered — `measure` only reaches
+    // "no replayable sessions recorded" after a model call has already
+    // happened. A necessary condition rather than a sufficient one: these are
+    // runs, and the eligible pool is the replayable subset of them, which is
+    // smaller. It is cheap and it is honest about which of the two it is.
+    //
+    // Deliberately *not* the check this was first sketched as. "Skip a night
+    // when no metric has headroom" sounds like the same guard and would never
+    // fire: every run has turns, so `turns` always has headroom, and a
+    // condition that is always true is a guard that reads as protection while
+    // doing nothing — which is the failure this whole pass has been about.
+    let floor = MIN_SELECTION_PAIRS + MIN_HOLDOUT_PAIRS;
+    if slice.len() < floor {
+        println!(
+            "{} recorded run(s) for `{model}` — below the {floor} a selection slice and a \
+             holdout need between them, so nothing could be measured tonight; deferring \
+             rather than paying for a diagnosis first",
+            slice.len()
+        );
+        return Ok(());
+    }
 
     let diagnosis = run_diagnostician(global, &evidence).await?;
     let proposal = match diagnosis.outcome {

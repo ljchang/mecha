@@ -29,7 +29,7 @@ use crate::session::{Record, RunStats, Session};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One finished run, with enough of its session to be identifiable.
 #[derive(Debug, Clone)]
@@ -42,6 +42,22 @@ pub struct RunRow {
     pub provider: String,
     pub model: String,
     pub title: Option<String>,
+    /// Where the session was rooted.
+    ///
+    /// **Recorded in every transcript header since the store existed, and read
+    /// into the corpus only on 2026-08-31.** It is what separates populations
+    /// this loop had been pooling: a morning-briefing run out of
+    /// `~/.mecha/work/morning`, a front-door run, a smoke test in `/tmp` and a
+    /// feature test in the source checkout have different normal behaviour,
+    /// and a harness change measured across the mixture is measured against
+    /// an average of four different jobs. On the day it was added the store
+    /// held 389 runs across eight workspaces, only 12% of them in the mecha
+    /// checkout.
+    ///
+    /// Retroactive on purpose, and it is why no new marker was invented: the
+    /// field was already on disk in all 490 sessions, so the separation cost
+    /// nothing and covers all of history rather than starting from now.
+    pub workspace: PathBuf,
     /// Which run within the session, 1-based. A resumed session has several.
     pub run: u32,
     pub stats: RunStats,
@@ -70,6 +86,11 @@ pub struct Scan {
     pub max_sessions: Option<usize>,
     /// Skip sessions started before this.
     pub since: Option<DateTime<Utc>>,
+    /// Keep only sessions rooted at this path or beneath it.
+    ///
+    /// A prefix rather than an equality test, because a source checkout has
+    /// worktrees under it and they are the same population.
+    pub workspace: Option<PathBuf>,
 }
 
 impl Corpus {
@@ -84,6 +105,13 @@ impl Corpus {
         out.unreadable = skipped;
         for (meta, path) in listed {
             if scan.since.is_some_and(|t| meta.created_at < t) {
+                continue;
+            }
+            if scan
+                .workspace
+                .as_ref()
+                .is_some_and(|w| !meta.workspace.starts_with(w))
+            {
                 continue;
             }
             if scan.max_sessions.is_some_and(|n| out.sessions_read >= n) {
@@ -111,6 +139,7 @@ impl Corpus {
                     provider,
                     model,
                     title: meta.title.clone(),
+                    workspace: meta.workspace.clone(),
                     run: i as u32 + 1,
                     stats: s,
                 });
@@ -348,6 +377,22 @@ impl Corpus {
     /// Split by model, so a rate can be read against the thing that produced
     /// it. A corpus spanning two models has no single error rate worth
     /// quoting.
+    /// Split by where the session was rooted. See [`RunRow::workspace`].
+    ///
+    /// `by_model`'s shape and `by_model`'s caveat: `sessions_read` is the
+    /// scan's denominator and is carried unchanged into every bucket, because
+    /// zero there reads as "from no sessions", which is the one lie that makes
+    /// a well-sampled rate look like it came from nowhere.
+    pub fn by_workspace(&self) -> BTreeMap<PathBuf, Corpus> {
+        let mut out: BTreeMap<PathBuf, Corpus> = BTreeMap::new();
+        for row in &self.rows {
+            let bucket = out.entry(row.workspace.clone()).or_default();
+            bucket.rows.push(row.clone());
+            bucket.sessions_read = self.sessions_read;
+        }
+        out
+    }
+
     pub fn by_model(&self) -> BTreeMap<String, Corpus> {
         let mut out: BTreeMap<String, Corpus> = BTreeMap::new();
         for row in &self.rows {
@@ -376,6 +421,63 @@ fn exhaustive(record: &Record) {
         | Record::Taint(_)
         | Record::Rewrite { .. }
         | Record::Outcome(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    fn row(ws: &str, model: &str) -> RunRow {
+        RunRow {
+            session_id: "s".into(),
+            started_at: Utc::now(),
+            provider: "local".into(),
+            model: model.into(),
+            title: None,
+            workspace: PathBuf::from(ws),
+            run: 1,
+            stats: RunStats::default(),
+        }
+    }
+
+    #[test]
+    fn a_corpus_splits_by_where_its_runs_were_rooted() {
+        // The separation this exists for: on 2026-08-31 the store held 389
+        // runs across eight workspaces — briefing runs, front-door runs,
+        // smoke tests in /tmp, feature tests in the source checkout — and the
+        // loop had been pooling all of them into one average.
+        let corpus = Corpus {
+            rows: vec![
+                row("/home/u/.mecha/work/morning", "m"),
+                row("/home/u/.mecha/work/morning", "m"),
+                row("/tmp", "m"),
+            ],
+            sessions_read: 3,
+            ..Default::default()
+        };
+        let by = corpus.by_workspace();
+        assert_eq!(by.len(), 2);
+        assert_eq!(by[&PathBuf::from("/home/u/.mecha/work/morning")].len(), 2);
+        // `by_model`'s caveat, and for its reason: zero here would read as
+        // "from no sessions", making a well-sampled rate look like it came
+        // from nowhere.
+        assert_eq!(by[&PathBuf::from("/tmp")].sessions_read, 3);
+    }
+
+    #[test]
+    fn the_workspace_filter_matches_a_prefix_not_an_equality() {
+        // A source checkout has worktrees under it and they are the same
+        // population; an equality test would drop every one of them.
+        let root = PathBuf::from("/home/u/src/mecha");
+        for (path, want) in [
+            ("/home/u/src/mecha", true),
+            ("/home/u/src/mecha/.claude/worktrees/lane", true),
+            ("/home/u/src/mecha-other", false),
+            ("/tmp", false),
+        ] {
+            assert_eq!(PathBuf::from(path).starts_with(&root), want, "{path}");
+        }
     }
 }
 
@@ -740,6 +842,7 @@ mod tests {
             &Scan {
                 max_sessions: Some(2),
                 since: None,
+                workspace: None,
             },
         )
         .unwrap();
@@ -757,6 +860,7 @@ mod tests {
                         .unwrap()
                         .with_timezone(&Utc),
                 ),
+                workspace: None,
             },
         )
         .unwrap();
