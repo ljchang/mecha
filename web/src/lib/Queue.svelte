@@ -1,3 +1,37 @@
+<script module>
+  // Grouped listings, kept for as long as the page is open.
+  //
+  // Module scope on purpose: everything else in this component is per-mount
+  // `$state`, and `Review.svelte` renders `<Queue />` inside an `{#if}`, so
+  // a tap on the Outbox tab UNMOUNTS this component and takes a listing that
+  // cost two minutes of embedding with it. The back arrow out of a grouping
+  // did the same by setting `groups = null`. Neither is a cheap thing to
+  // throw away: the whole-queue layer embeds every pending statement.
+  //
+  // Safe to keep, and this is the part that makes it safe rather than
+  // convenient — a stale listing already degrades correctly everywhere it is
+  // spent. A group verdict sends the ids the card showed and the graph vets
+  // them (`vet_cascade_ids`), dropping any decided since without comment;
+  // `/api/queue/items` returns only what is still pending and the group
+  // screen reports the gap out loud ("3 already judged"). Nothing downstream
+  // trusts this listing to be current, so nothing breaks when it is not.
+  // What was missing was telling the reviewer, which is why an entry carries
+  // the moment it ran and the header offers a regroup.
+  //
+  // Per page load, not per install: no invalidation rule, no disk, and a
+  // refresh is a clean start. A cache with an expiry policy would be this
+  // page deciding when the graph has moved, which it cannot know.
+  const groupCache = new Map();
+  const cacheKey = (spec) =>
+    spec.all
+      ? `global:${typeof spec.threshold === 'number' ? spec.threshold.toFixed(2) : 'default'}`
+      : // Serialised rather than joined on a delimiter: a proposer is free
+        // text and a predicate is a graph `cluster_key`, so any character
+        // picked as a separator is one they are allowed to contain, and a
+        // collision would serve one class's groups under another's name.
+        `class:${JSON.stringify([spec.proposer, spec.predicate])}`;
+</script>
+
 <script>
   // The graph queue on the phone, at the TUI /queues modal's three depths:
   // proposers → one proposer's classes (with the evidence-tier filter) →
@@ -141,41 +175,115 @@
     }
   }
 
-  async function openGroups(proposer, predicate) {
-    groups = { proposer, predicate, threshold: null, rows: null };
+  // Write the listing on screen back to the cache under its own key. Called
+  // after every local edit to it, because the prunes replace `rows` with a
+  // new array — a cache holding the array it was handed at fetch time would
+  // hand back members the reviewer has already judged, which is the one way
+  // this cache could be worse than no cache.
+  //
+  // Written to every key that names this listing, not just the one it was
+  // opened under. The global layer files an answer twice — under the
+  // threshold ASKED for (often "default") and under the one the server says
+  // it RAN at — so the stepper can walk back to a floor it has already
+  // visited. One entry updated and the other not would mean stepping away
+  // and back re-offered a group the reviewer had already emptied, which is
+  // the stale-listing failure this cache exists to avoid rather than cause.
+  function cacheGroups() {
+    if (!groups?.key) return;
+    const snap = $state.snapshot(groups);
+    for (const [k, v] of groupCache) {
+      if (v.key === snap.key) groupCache.set(k, snap);
+    }
+    groupCache.set(snap.key, snap);
+  }
+
+  // Install a cached listing, or fetch one. `force` is the regroup button:
+  // the only way to make the queue be embedded again, and an explicit one,
+  // because it is minutes.
+  async function loadGroups(spec, force = false) {
+    const key = cacheKey(spec);
+    if (!force) {
+      const hit = groupCache.get(key);
+      if (hit) {
+        // Straight to the listing, with no `rows: null` in between: the
+        // placeholder is what makes a cached open still *look* like a wait.
+        groups = { ...hit, key };
+        error = null;
+        return;
+      }
+    }
+    groups = { ...spec, key, threshold: null, rows: null, considered: null, at: null };
     try {
-      const q = new URLSearchParams({ proposer, predicate });
+      const q = new URLSearchParams(
+        spec.all ? { all: 'true' } : { proposer: spec.proposer, predicate: spec.predicate }
+      );
+      // Only a real number becomes a param — an event object handed by a
+      // bare onclick={openGlobal} must fall through to the server default.
+      if (spec.all && typeof spec.threshold === 'number' && isFinite(spec.threshold)) {
+        q.set('threshold', spec.threshold.toFixed(2));
+      }
       const res = await fetch(`/api/queue/groups?${q}`);
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
-      groups = { proposer, predicate, threshold: data.threshold, rows: data.groups };
-      error = null;
+      // Whoever is on screen now decides whether this answer is still
+      // wanted. A grouping runs for minutes, and every other listing is now
+      // instant, so a reviewer can step back and open two more classes while
+      // the first is still embedding — this used to land on top of whatever
+      // they were reading. The answer is still cached below, so the run is
+      // not wasted; it just does not seize the screen.
+      const wanted = groups?.key === key;
+      const next = {
+        ...spec,
+        key,
+        threshold: data.threshold,
+        rows: data.groups,
+        considered: data.considered ?? null,
+        at: Date.now(),
+      };
+      groupCache.set(key, next);
+      // Also under the threshold the server says it RAN at, so stepping back
+      // to a floor already visited is a hit. Asking with no threshold and
+      // asking for the default are the same answer under two names, and the
+      // stepper always steps from the reported value.
+      if (spec.all && typeof data.threshold === 'number') {
+        groupCache.set(cacheKey({ all: true, threshold: data.threshold }), next);
+      }
+      if (wanted) {
+        groups = { ...next };
+        error = null;
+      }
     } catch (e) {
+      // A failed grouping keeps whatever listing it was asked from rather
+      // than clearing it. Both layers embed, and both answer through a
+      // stated budget on the server, so a timeout is a thing this page will
+      // meet — and trading a good listing for an error message charges the
+      // reviewer the whole embedding again to get back to where they were.
+      // Reported either way: a regroup that failed must not look like one
+      // that found nothing new.
+      if (groups?.key !== key) return;
       error = String(e?.message ?? e);
-      groups = null;
+      const hit = groupCache.get(key);
+      groups = hit ? { ...hit, key } : null;
     }
   }
 
+  const openGroups = (proposer, predicate, force = false) =>
+    loadGroups({ proposer, predicate }, force);
+
   // The top layer: near-repeats across the WHOLE queue, wherever they sit.
   // Embedding every pending statement takes minutes, and an honest wait
-  // message beats a spinner that looks hung.
-  async function openGlobal(threshold = null) {
-    groups = { all: true, threshold: null, rows: null, considered: null };
-    try {
-      const q = new URLSearchParams({ all: 'true' });
-      // Only a real number becomes a param — an event object handed by a
-      // bare onclick={openGlobal} must fall through to the server default.
-      if (typeof threshold === 'number' && isFinite(threshold)) q.set('threshold', threshold.toFixed(2));
-      const res = await fetch(`/api/queue/groups?${q}`);
-      if (!res.ok) throw new Error((await res.text()).trim());
-      const data = await res.json();
-      groups = { all: true, threshold: data.threshold, rows: data.groups, considered: data.considered };
-      error = null;
-    } catch (e) {
-      error = String(e?.message ?? e);
-      groups = null;
-    }
-  }
+  // message beats a spinner that looks hung — but only the FIRST time at a
+  // given floor. Each threshold the stepper visits is remembered, so walking
+  // looser and back again is two waits, not four.
+  const openGlobal = (threshold = null, force = false) =>
+    loadGroups(
+      // A bare `onclick={openGlobal}` hands this an event object; only a real
+      // number is a threshold, and anything else must fall through to the
+      // server default — including in the cache key, or one listing would be
+      // filed under a MouseEvent.
+      { all: true, threshold: typeof threshold === 'number' && isFinite(threshold) ? threshold : null },
+      force
+    );
 
   async function draw(proposer, predicate = null, seed = null) {
     busy = true;
@@ -307,17 +415,87 @@
     }
   }
 
-  // Leaving the group. Anything judged in there is gone from the queue, so
-  // the group listing behind this screen is now describing members that no
-  // longer exist — re-run the same query rather than restore a stale list.
-  // Nothing judged means nothing moved, and a two-minute global regrouping
-  // must not be the price of a glance.
+  // Leaving the group, without paying for the queue a second time.
+  //
+  // Anything judged in there is gone from the queue, so the listing behind
+  // this screen describes members that no longer exist. That used to be
+  // answered by re-running the same query, which for the global layer is a
+  // two-minute re-embedding of every pending statement — charged on the way
+  // OUT of a group the reviewer had just finished reading. A guard skipped it
+  // when nothing had been judged, so a *glance* was free and the actual work
+  // was not: open a group, reject three, step back, wait two minutes. That is
+  // the ordinary loop of a sitting, which made the ordinary loop the
+  // expensive one, and a sitting ended when patience did.
+  //
+  // Nothing here needs re-deriving. The page knows exactly which ids it
+  // judged: `itemVerdict` already dropped every verdicted row from
+  // `items.rows`, so the survivors ARE the group, in the order it was shown.
+  // Removing a member cannot change any other group either — similarity was
+  // computed over statements, and a verdict does not move a statement.
+  //
+  // This is the TUI's rule arriving here rather than a new one: the
+  // `Level::Items if from_group` arm of Esc in `tui/mod.rs` has rebuilt the
+  // group from its survivors since the level existed, and makes no child
+  // call. The web pane was the surface still paying.
   function closeItems() {
-    const judged = items?.judged ?? 0;
+    const from = items?.from;
+    const ids = items?.ids ?? [];
+    const rows = items?.rows;
     items = null;
-    if (judged === 0) return;
-    if (groups?.all) openGlobal(groups.threshold);
-    else if (groups) openGroups(groups.proposer, groups.predicate);
+    // `rows` is null while the fetch is in flight — Back during the load is
+    // a real keypress, and treating "not read yet" as "none survived" would
+    // delete a group nobody judged. Unknown is not empty.
+    if (!from || !Array.isArray(rows) || !groups?.rows?.includes(from)) return;
+
+    const alive = new Set(rows.map((r) => r.id));
+    const survivors = ids.filter((id) => alive.has(id));
+    // Includes the members that were already judged elsewhere before this
+    // group was opened — the `asked > total` gap the items screen reports.
+    // Those are gone from the queue too, and the card behind was already
+    // describing them.
+    if (survivors.length === ids.length) return;
+
+    if (survivors.length === 0) {
+      // Every member judged: this is not a group any more, and a card
+      // offering "Reject all 0" is worse than no card.
+      groups.rows = groups.rows.filter((g) => g !== from);
+      cacheGroups();
+      return;
+    }
+
+    const [leader, ...rest] = survivors;
+    const rowOf = (id) => rows.find((r) => r.id === id);
+    // Scores are the ones the grouping reported, carried over by id — never
+    // re-derived here. A promoted leader keeps the members the embedder put
+    // beside the OLD leader, which is exactly the set a cascade would act on.
+    const scores = new Map(from.members);
+    groups.rows = groups.rows.map((g) =>
+      g !== from
+        ? g
+        : {
+            ...from,
+            leader_id: leader,
+            leader_statement:
+              leader === from.leader_id
+                ? from.leader_statement
+                : faceOf(rowOf(leader)?.payload),
+            members: rest.map((id) => [id, scores.get(id) ?? null]),
+            // Rebuilt from rows that are still here rather than blanked: a
+            // group's face is a real member statement, and these are the
+            // real ones. The TUI rebuilds the same three from `modal.items`
+            // at the same point — both surfaces, one rule.
+            sample: rest.slice(0, 3).map((id) => faceOf(rowOf(id)?.payload)),
+            // `classes` is carried over unchanged, deliberately. It counts
+            // members per class and a removal cannot be attributed to one:
+            // the key is the graph's own `cluster_key`, and re-deriving it
+            // in this page would be a third reader of a rule it must not
+            // own. Carried over it can only OVERSTATE the span, and the
+            // span drives a caution — "expect a whole-group verdict here to
+            // overwrite ~1 in 3". A warning is the one field where the
+            // stale copy is the safe one.
+          }
+    );
+    cacheGroups();
   }
 
   // One tap, one human verdict: the leader id is the owner's, the member
@@ -340,6 +518,10 @@
         across: !!groups.all,
       });
       groups.rows = groups.rows.filter((r) => r !== g);
+      // The listing outlives this screen now, so a verdict has to reach the
+      // kept copy too — otherwise stepping out and back in would re-offer
+      // "Accept all 7" on a group that is already gone from the queue.
+      cacheGroups();
       clearNote(g.leader_id);
       error = null;
     } catch (e) {
@@ -598,6 +780,30 @@
         {/if}
       {/if}
     </div>
+    <!-- When this listing was embedded, and the one way to embed it again.
+         A clock time rather than "4 minutes ago": nothing here ticks, and an
+         elapsed figure that only updates when something else re-renders is a
+         number that quietly stops being true. The hour it ran is true for as
+         long as it is on screen. -->
+    {#if groups.rows !== null && groups.at}
+      <div class="keptline">
+        <span
+          >grouped at {new Date(groups.at).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          })} · kept until you reload the page</span
+        >
+        <button
+          class="ghost regroup"
+          disabled={busy}
+          onclick={() =>
+            groups.all
+              ? openGlobal(groups.threshold, true)
+              : openGroups(groups.proposer, groups.predicate, true)}
+          >Regroup</button
+        >
+      </div>
+    {/if}
     {#if groups.rows === null}
       <div class="empty">
         {groups.all
@@ -781,6 +987,8 @@
   .btn:disabled { opacity: 0.5; }
   .deckfoot { display: flex; justify-content: space-between; }
   .ghost { background: none; border: none; color: var(--text-muted); font-size: 13px; min-height: 44px; cursor: pointer; }
+  .keptline { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--text-muted); }
+  .regroup { margin-left: auto; font-size: 11px; min-height: 34px; color: var(--accent-400); }
   .footnote { font-size: 11px; color: var(--text-muted); text-align: center; }
   .footnote.warn { color: var(--hazard); }
   .open { align-self: center; font-size: 13px; color: var(--accent-400); }
