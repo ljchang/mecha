@@ -58,6 +58,88 @@
         : defaultGlobalThreshold;
     return t == null ? null : `global:${t.toFixed(2)}`;
   };
+
+  // Every candidate this page has filed a verdict on.
+  //
+  // A candidate sits in more than one cached listing at once — the stepper
+  // makes an entry per floor and a pair above the stricter one is in both,
+  // and a within-class near-repeat is in its class listing AND the global
+  // one. Writing back only the listing on screen leaves the others offering
+  // it: step to 0.84, back to 0.87, accept a group there, step down again,
+  // and the 0.84 entry still shows that group. Verdicts from the Sample-12
+  // deck reach none of the listings at all.
+  //
+  // Every entry into this screen used to be a fresh fetch, so none of that
+  // was reachable; the cache is what makes it reachable, which makes this
+  // the cache's own debt to pay.
+  //
+  // A set of ids rather than a sweep over the map: the sweep would have to
+  // rebuild every entry on every verdict, and most of them will never be
+  // looked at again. Filtering on the way OUT costs nothing until a listing
+  // is actually served.
+  const judgedIds = new Set();
+
+  // A cached listing minus what has been judged since it was fetched.
+  //
+  // Removing a member cannot change any other group — similarity was computed
+  // over statements, and a verdict does not move a statement — so the groups
+  // beside it are handed back untouched, and an untouched listing is returned
+  // by identity.
+  //
+  // A group whose LEADER was judged needs a new face, and a face must be a
+  // real member statement. The server sends `sample` for the first three
+  // members in members order, which is the only id→statement mapping this
+  // page has; past it there is nothing to promote with. So a group that
+  // cannot name a survivor is dropped rather than shown under a face this
+  // page invented. Nothing is lost by dropping it: those candidates are still
+  // pending, still in their class listing, and still in the next regroup.
+  function withoutJudged(listing) {
+    if (judgedIds.size === 0 || !Array.isArray(listing?.rows)) return listing;
+    let changed = false;
+    const rows = [];
+    for (const g of listing.rows) {
+      const members = (g.members ?? []).filter((m) => !judgedIds.has(m[0]));
+      const leaderJudged = judgedIds.has(g.leader_id);
+      if (!leaderJudged && members.length === (g.members ?? []).length) {
+        rows.push(g);
+        continue;
+      }
+      changed = true;
+      // `sample[i]` is the statement of `members[i]`, by the graph's own
+      // construction in `assemble_global_groups` — same slice, same order.
+      const sample = g.sample ?? [];
+      const statementOf = new Map(
+        (g.members ?? []).slice(0, sample.length).map((m, i) => [m[0], sample[i]])
+      );
+      let leader = g.leader_id;
+      let leaderStatement = g.leader_statement;
+      let rest = members;
+      if (leaderJudged) {
+        const heir = members.find((m) => statementOf.has(m[0]));
+        if (!heir) continue;
+        leader = heir[0];
+        leaderStatement = statementOf.get(heir[0]);
+        rest = members.filter((m) => m[0] !== leader);
+      }
+      // A leader with nobody behind it is not a group, and a card offering
+      // "Reject all 1" is a worse answer than no card.
+      if (rest.length === 0) continue;
+      rows.push({
+        ...g,
+        leader_id: leader,
+        leader_statement: leaderStatement,
+        members: rest,
+        sample: rest.map((m) => statementOf.get(m[0])).filter(Boolean).slice(0, 3),
+        // Dropped rather than carried, for the reason the header's timestamp
+        // is a clock time: these render as per-class counts under a kicker
+        // that now says something else, and two numbers disagreeing on one
+        // card is worse than one absent chip row. The cross-class caution is
+        // page-level and survives.
+        classes: null,
+      });
+    }
+    return changed ? { ...listing, rows } : listing;
+  }
 </script>
 
 <script>
@@ -235,7 +317,11 @@
         // placeholder is what makes a cached open still *look* like a wait.
         // Spread whole, key included — re-keying it to the name it was looked
         // up under is what broke the write-back the first time.
-        groups = { ...hit };
+        //
+        // Filtered on the way out, because this entry may not be the one that
+        // was on screen when a verdict landed.
+        groups = withoutJudged({ ...hit });
+        cacheGroups();
         error = null;
         return;
       }
@@ -270,10 +356,13 @@
         at: Date.now(),
       };
       // Cached whether or not it is still wanted — the run happened, and a
-      // reviewer who navigated away should not pay for it twice.
-      groupCache.set(key, next);
+      // reviewer who navigated away should not pay for it twice. Filtered
+      // first: a fetch this slow can have verdicts land while it is in the
+      // air, and the server answered about the queue as it was at the start.
+      const fresh = withoutJudged(next);
+      groupCache.set(key, fresh);
       if (token === inflight) {
-        groups = { ...next };
+        groups = { ...fresh };
         error = null;
       }
     } catch (e) {
@@ -359,6 +448,14 @@
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error((await res.text()).trim());
+    // Recorded here because this is the one place a verdict is sent, so no
+    // caller can file one that the cached listings never hear about — which
+    // is exactly how the Sample-12 deck used to leave a grouping offering a
+    // candidate it had just judged. The cascade ids ride along: the graph
+    // vets them and silently drops any already decided, so every id in this
+    // body is one that is no longer pending either way.
+    judgedIds.add(body.id);
+    for (const id of body.cascade ?? []) judgedIds.add(id);
     return res.json();
   }
 
@@ -517,13 +614,22 @@
     // face is a real member statement, and these are the real ones. The TUI
     // rebuilds the same three from `modal.items` — both surfaces, one rule.
     g.sample = rest.slice(0, 3).map((id) => faceOf(rowOf(id)?.payload));
-    // `classes` is carried over unchanged, deliberately. It counts members per
-    // class and a removal cannot be attributed to one: the key is the graph's
-    // own `cluster_key`, and re-deriving it in this page would be a third
-    // reader of a rule it must not own. Carried over it can only OVERSTATE the
-    // span, and the span drives a caution — "expect a whole-group verdict here
-    // to overwrite ~1 in 3". A warning is the one field where the stale copy
-    // is the safe one.
+    // `classes` is dropped rather than re-derived OR carried.
+    //
+    // Not re-derived: it counts members per class, a removal cannot be
+    // attributed to one, and the key is the graph's own `cluster_key` — this
+    // page must not become a third reader of that rule.
+    //
+    // Not carried either, which is where a first pass got it wrong by
+    // treating the map as a warning input, safe to overstate. It is also a
+    // *display*: the chips render as `{class} ×{n}` directly under a kicker
+    // reading "N near-repeats". Reject four of seven and the kicker says
+    // three while the chips still sum to seven — two numbers disagreeing on
+    // one card. The page-level caution about cross-class agreement is not on
+    // the chips and survives without them. Same rule as the header's clock
+    // time: a figure that has stopped being true without saying so is worse
+    // than one that is absent.
+    if (survivors.length !== items.ids.length) g.classes = null;
     cacheGroups();
   }
 

@@ -900,6 +900,59 @@ mod tests {
         );
     }
 
+    /// **A verdict reaches every cached listing, not just the one on screen.**
+    ///
+    /// A pending candidate sits in several cache entries at once: the stepper
+    /// makes an entry per floor and a pair above the stricter one is in both,
+    /// and a within-class near-repeat is in its class listing *and* the global
+    /// one. A write-back that only touched `groups.key` left the others
+    /// offering a candidate already verdicted — and a whole-group verdict
+    /// seeded on one that is gone fails, cascades nothing, and leaves a card
+    /// that only a Regroup can clear, which is the wait this branch exists to
+    /// remove. Verdicts from the Sample-12 deck reached no listing at all.
+    ///
+    /// Every entry into the groups screen used to be a fresh fetch, so none of
+    /// this was reachable: the cache is what makes it reachable. So the ids
+    /// are recorded where verdicts are SENT — one place, no caller able to
+    /// miss it — and every listing is filtered on the way out of the cache.
+    #[test]
+    fn a_verdict_reaches_listings_other_than_the_one_on_screen() {
+        assert!(
+            queue_fn("sendVerdict").contains("judgedIds.add"),
+            "the one place a verdict is sent must record it, or a caller can file \
+             a verdict no cached listing hears about"
+        );
+        // Both ways a listing reaches the screen, or the gap reopens on
+        // whichever one was left unfiltered.
+        let load = queue_fn("loadGroups");
+        assert_eq!(
+            load.matches("withoutJudged(").count(),
+            2,
+            "both the cached and the freshly fetched listing must be filtered:\n{load}"
+        );
+    }
+
+    /// A count that has stopped being true is worse than an absent one.
+    ///
+    /// `classes` renders as per-class chips directly under a kicker reading
+    /// "N near-repeats". Carrying it through a reconcile leaves the two
+    /// disagreeing on the same card — reject four of seven and the kicker says
+    /// three while the chips still sum to seven. Re-deriving it is not the
+    /// alternative (the key is the graph's `cluster_key` and this page must
+    /// not own a second copy of that rule); dropping it is. The page-level
+    /// cross-class caution is not on the chips and survives without them.
+    #[test]
+    fn a_shrunken_group_stops_showing_its_old_class_spans() {
+        assert!(
+            queue_fn("reconcileGroup").contains("g.classes = null"),
+            "a group that lost members must drop its class chips"
+        );
+        assert!(
+            queue_fn("withoutJudged").contains("classes: null"),
+            "a group rebuilt out of the cache must drop its class chips too"
+        );
+    }
+
     /// One door to the expensive query, so the cache cannot be walked around.
     ///
     /// A grouping is kept for the life of the page (`groupCache`), which is
