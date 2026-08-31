@@ -24,6 +24,7 @@ use mecha_core::diagnose::{
 use mecha_core::message::Block;
 use mecha_core::runlog::{Corpus, Scan};
 use mecha_core::session::Session;
+use std::path::Path;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -150,6 +151,17 @@ fn source_dir() -> Result<Option<std::path::PathBuf>> {
     }
 }
 
+/// Does this directory actually hold this program's source and documentation?
+///
+/// Asked of the directory rather than inferred from config, for the reason
+/// every other "ask the artifact" check here exists: a path in a config file
+/// is a claim about the filesystem, and the filesystem is available. Two
+/// markers rather than one so a directory that merely *contains* a `docs/`
+/// does not pass.
+fn holds_source(dir: &Path) -> bool {
+    dir.join("mecha-core").join("src").is_dir() && dir.join("docs").is_dir()
+}
+
 /// What one diagnostic pass produced.
 pub struct Diagnosis {
     /// The model's full reply, reasoning included.
@@ -191,7 +203,28 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
     // `global_config_only` gets the documentation without the project layer —
     // and pins it belt-and-braces, so this holds even if someone later runs
     // the nightly from a checkout by hand.
-    let source = source_dir()?;
+    // **The grant is the jail root, not the config key**, and keying the
+    // prompt off the key was this PR's own bug reflected. Configured, the
+    // sighted paragraph over-claimed; unconfigured, the blind one under-claims
+    // — `mecha diagnose` run by hand from the checkout gets a working
+    // `fs_read` over the source while being told it cannot read anything and
+    // forbidden from naming a key the brief did not name first. Both are a
+    // prompt disagreeing with the surface it was given.
+    //
+    // So resolve the root the way `prepare_tools` will, then *ask the
+    // directory* whether it holds the source rather than inferring it from
+    // which branch produced the path. That is the same move as `/props` and
+    // `--json` elsewhere here: the artifact answers, config does not get to
+    // assert. A `source_dir` pointed somewhere wrong is caught by it too.
+    let configured = source_dir()?;
+    let jail = configured
+        .clone()
+        .or_else(|| global.workspace.clone())
+        .or_else(|| std::env::current_dir().ok());
+    let source = jail
+        .as_deref()
+        .filter(|d| holds_source(d))
+        .map(Path::to_path_buf);
     let opts = GlobalOpts {
         read_only: true,
         yes: false,
@@ -199,15 +232,23 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
         no_outbox: true,
         no_learned_rules: true,
         global_config_only: true,
-        workspace: source.clone().or_else(|| global.workspace.clone()),
+        workspace: configured.clone().or_else(|| global.workspace.clone()),
         ..global.clone()
     };
     let prepared = setup::prepare(&opts, false).await?;
-    match &source {
-        Some(dir) => eprintln!("reading source and docs from {}", dir.display()),
-        None => eprintln!(
-            "no `[harness] source_dir` configured — diagnosing from counters alone, \
-             and the prompt says so rather than claiming otherwise"
+    match (&source, &configured) {
+        (Some(dir), _) => eprintln!("reading source and docs from {}", dir.display()),
+        // Configured and yet not holding the source: the loudest of the three,
+        // because it is the case where someone believes the grant is in place.
+        (None, Some(dir)) => eprintln!(
+            "mecha: [harness] source_dir names {}, which does not look like a checkout \
+             of this program (no `mecha-core/src` and `docs` under it) — diagnosing from \
+             counters alone",
+            dir.display()
+        ),
+        (None, None) => eprintln!(
+            "no source checkout reachable from the path jail — diagnosing from counters \
+             alone, and the prompt says so rather than claiming otherwise"
         ),
     }
 

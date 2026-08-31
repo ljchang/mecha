@@ -1917,6 +1917,14 @@ mod tests {
         // field handled under another name would need naming here, and none is
         // today; the cost of that is a comment, and the cost of not having the
         // check is a config section that does nothing.
+        //
+        // **What it does not cover, stated so the next reader does not trust
+        // it further than it goes: only top-level `ConfigLayer` sections.** A
+        // field added to `HarnessLayer`, `SkillsLayer` or `WebLayer` that
+        // parses and is never copied is the same `[[hook]]` costume one level
+        // down, and this stays green through it. Extending the walk to nested
+        // layers is possible and is not done; a guard that quietly covers less
+        // than a reader assumes is the shape this file keeps finding.
         let src = include_str!("config.rs");
         let layer = src
             .split_once("struct ConfigLayer {")

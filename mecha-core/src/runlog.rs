@@ -464,21 +464,6 @@ mod workspace_tests {
         // from nowhere.
         assert_eq!(by[&PathBuf::from("/tmp")].sessions_read, 3);
     }
-
-    #[test]
-    fn the_workspace_filter_matches_a_prefix_not_an_equality() {
-        // A source checkout has worktrees under it and they are the same
-        // population; an equality test would drop every one of them.
-        let root = PathBuf::from("/home/u/src/mecha");
-        for (path, want) in [
-            ("/home/u/src/mecha", true),
-            ("/home/u/src/mecha/.claude/worktrees/lane", true),
-            ("/home/u/src/mecha-other", false),
-            ("/tmp", false),
-        ] {
-            assert_eq!(PathBuf::from(path).starts_with(&root), want, "{path}");
-        }
-    }
 }
 
 #[cfg(test)]
@@ -498,6 +483,105 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn session_in(
+        dir: &Path,
+        id: &str,
+        model: &str,
+        workspace: &str,
+        runs: Vec<RunStats>,
+    ) -> Session {
+        let s = Session::create(
+            dir,
+            SessionMeta {
+                id: id.to_string(),
+                created_at: DateTime::parse_from_rfc3339("2026-08-01T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                provider: "local".into(),
+                model: model.to_string(),
+                workspace: PathBuf::from(workspace),
+                title: None,
+            },
+        )
+        .unwrap();
+        for stats in runs {
+            s.append(&Record::Outcome(stats)).unwrap();
+        }
+        s
+    }
+
+    /// The filter, exercised through `Corpus::scan` rather than through
+    /// `PathBuf::starts_with`.
+    ///
+    /// A first version of this asserted the stdlib's prefix behaviour and left
+    /// the `continue` in `scan` unpinned — deleting it broke nothing. Review
+    /// caught that, and caught it on the branch where the *other* half of the
+    /// same filter (in `draw_episodes`) had been missing entirely while the
+    /// brief looked correctly scoped. A filter whose applied half is the
+    /// visible half is the one that most needs a test.
+    #[test]
+    fn the_workspace_filter_selects_through_scan_and_keeps_worktrees() {
+        let dir = tmpdir();
+        let done = || stats(4, 0, false, StopCause::Completed);
+        session_in(
+            &dir,
+            "20260801T000000-a",
+            "opus",
+            "/src/mecha",
+            vec![done()],
+        );
+        session_in(
+            &dir,
+            "20260801T000001-b",
+            "opus",
+            // Under the checkout: a worktree is the same population, which is
+            // why the filter is a prefix and not an equality.
+            "/src/mecha/.claude/worktrees/lane",
+            vec![done()],
+        );
+        session_in(&dir, "20260801T000002-c", "opus", "/tmp", vec![done()]);
+        // Shares a textual prefix with `/src/mecha` and is a different
+        // directory. `starts_with` is component-wise, and this is the case
+        // that would pass a naive string check.
+        session_in(
+            &dir,
+            "20260801T000003-d",
+            "opus",
+            "/src/mecha-other",
+            vec![done()],
+        );
+
+        assert_eq!(Corpus::scan(&dir, &Scan::default()).unwrap().len(), 4);
+
+        let scoped = Corpus::scan(
+            &dir,
+            &Scan {
+                workspace: Some(PathBuf::from("/src/mecha")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            scoped.len(),
+            2,
+            "the checkout and its worktree, and nothing else"
+        );
+        assert!(scoped
+            .rows
+            .iter()
+            .all(|r| r.workspace.starts_with("/src/mecha")));
+
+        let elsewhere = Corpus::scan(
+            &dir,
+            &Scan {
+                workspace: Some(PathBuf::from("/tmp")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(elsewhere.len(), 1);
     }
 
     fn session_with(dir: &Path, id: &str, model: &str, runs: Vec<RunStats>) -> Session {

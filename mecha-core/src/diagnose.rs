@@ -79,14 +79,18 @@ pub fn diagnose_system(source: Option<&std::path::Path>) -> String {
         // it is blind will assume the ordinary case and describe machinery it
         // has not looked at; one that is told can say the evidence does not
         // support a change, which this instruction explicitly permits.
+        // Says what is known — no checkout is reachable — and not what is
+        // merely likely. An earlier version asserted the directory was empty,
+        // which was true of the nightly and false of anyone running this by
+        // hand from somewhere else, and a prompt that over-claims its own
+        // conditions is the failure this whole function exists to fix.
         None => "\
-You cannot read this program's source or its documentation on this run — no \
-checkout was made available to you, and the directory you are standing in is \
-empty. Do not describe internal machinery, and do not name a configuration key \
-unless this brief named it first: you have no way to check that either exists, \
-and a plausible invention costs a measurement and teaches nobody anything. \
-Reason from the counters you were given, and say so if they do not support a \
-change."
+You cannot read this program's source or its documentation on this run: no \
+checkout of it is reachable from where you are standing. Do not describe \
+internal machinery, and do not name a configuration key unless this brief named \
+it first — you have no way to check that either exists, and a plausible \
+invention costs a measurement and teaches nobody anything. Reason from the \
+counters you were given, and say so if they do not support a change."
             .to_string(),
     };
     format!("{DIAGNOSE_ROLE}\n\n{sight}\n\nNever reproduce sentences from anything you read. Write your own.")

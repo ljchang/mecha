@@ -251,24 +251,24 @@ async fn ruminate(
             println!("\nstaged for review (`mecha harness show {}`)", cand.id);
         }
         ChangeClass::Config => match parse_change(&proposal.change) {
+            // **Not "outside the closed override set" any more**, though it
+            // said so until review caught it. `parse_proposal` reclassifies an
+            // unknown key to `Architecture` before this arm is reached, so the
+            // only thing that can still land here is a key this harness *does*
+            // own carrying a value `parse_change` refused —
+            // `a_real_knob_with_a_refused_value_is_still_a_config_change` is
+            // what makes that the sole survivor. The old wording told a
+            // reviewer to go looking for a key that is right there in the set.
             Err(e) => {
-                cand.reason = Some(format!("outside the closed override set: {e:#}"));
+                cand.reason = Some(format!(
+                    "a known key with a value that does not parse: {e:#}"
+                ));
                 store.write(&cand)?;
                 println!(
                     "\nstaged for review — {}",
                     cand.reason.as_deref().unwrap_or("")
                 );
             }
-            // Refused rather than measured, and rejected rather than staged.
-            // This is the one path where a proposal costs replays, and a
-            // prediction the corpus cannot refute buys nothing with them.
-            // Rejected so the brief's history carries it: dropped, it would be
-            // free to come back tomorrow.
-            //
-            // Deliberately not applied to the other classes. Those reach a
-            // person however they score, and a security-class proposal
-            // silently rejected on a metric technicality is one nobody reviews
-            // — which is the opposite of what its class is for.
             // The corpus cannot fill both slices, so `measure` would draw
             // nothing. Staged rather than rejected and recorded rather than
             // dropped: the change may be perfectly good and it is the evidence
@@ -293,6 +293,16 @@ async fn ruminate(
                     cand.reason.as_deref().unwrap_or("")
                 );
             }
+            // Refused rather than measured, and rejected rather than staged.
+            // This is the one path where a proposal costs replays, and a
+            // prediction the corpus cannot refute buys nothing with them.
+            // Rejected so the brief's history carries it: dropped, it would be
+            // free to come back tomorrow.
+            //
+            // Deliberately not applied to the other classes. Those reach a
+            // person however they score, and a security-class proposal
+            // silently rejected on a metric technicality is one nobody reviews
+            // — which is the opposite of what its class is for.
             Ok(_) if no_headroom => {
                 cand.status = STATUS_REJECTED.into();
                 cand.resolved_at = Some(now.clone());
