@@ -823,24 +823,80 @@ mod tests {
     /// TUI has rebuilt the group from its survivors since the level existed.
     ///
     /// Asserted against the source because this pane has no JS test rig, and
-    /// checked as an *absence*: any call out of `closeItems` — `fetch`, or
-    /// either open helper — reintroduces the wait. With the old body in place
-    /// this fails on `openGlobal`.
+    /// checked as an *absence*: any call out of either function — `fetch`, or
+    /// an open helper — reintroduces the wait. With the old body in place this
+    /// fails on `openGlobal`.
     #[test]
     fn leaving_a_similarity_group_makes_no_request() {
-        let body = queue_fn("closeItems");
-        for forbidden in ["fetch(", "openGlobal(", "openGroups(", "loadGroups("] {
-            assert!(
-                !body.contains(forbidden),
-                "closeItems must not call `{forbidden}` — leaving a group would re-embed \
-                 the queue. Prune the listing from the survivors instead.\n{body}"
-            );
+        for name in ["closeItems", "reconcileGroup"] {
+            let body = queue_fn(name);
+            for forbidden in ["fetch(", "openGlobal(", "openGroups(", "loadGroups("] {
+                assert!(
+                    !body.contains(forbidden),
+                    "{name} must not call `{forbidden}` — leaving a group would re-embed \
+                     the queue. Prune the listing from the survivors instead.\n{body}"
+                );
+            }
         }
-        // And it must still do the pruning, or it "costs nothing" by leaving
-        // the card describing members the reviewer has just judged away.
+        // And the pruning must still happen, or "costs nothing" is bought by
+        // leaving the card describing members the reviewer just judged away.
+        let reconcile = queue_fn("reconcileGroup");
         assert!(
-            body.contains("survivors"),
-            "closeItems must rebuild the group from its survivors:\n{body}"
+            reconcile.contains("survivors"),
+            "reconcileGroup must rebuild the group from its survivors:\n{reconcile}"
+        );
+    }
+
+    /// **The listing is brought into step by the verdict, not by the exit.**
+    ///
+    /// Back is not the only way off the group screen — the Review tabs are one
+    /// tap away and unmount the pane, while the cached listing outlives it. So
+    /// a prune that only ran on the way out could be walked around: reject
+    /// three members, tap Outbox, tap back, reopen the grouping, and the cache
+    /// serves a card still offering all seven. Worse than a wrong count if the
+    /// leader was among them — a verdict seeded on a candidate that is gone
+    /// fails, a fan-out from a failed verdict cascades nothing by the graph's
+    /// own rule, and the card cannot be cleared at all, only regrouped.
+    ///
+    /// So the write-back belongs where the verdict lands, which no navigation
+    /// can route around.
+    #[test]
+    fn a_member_verdict_writes_the_group_back_itself() {
+        assert!(
+            queue_fn("itemVerdict").contains("reconcileGroup()"),
+            "itemVerdict must reconcile the group as the verdict lands"
+        );
+        assert!(
+            queue_fn("openItems").contains("reconcileGroup()"),
+            "openItems must reconcile away members judged before it was opened"
+        );
+    }
+
+    /// One listing, one cache key.
+    ///
+    /// The cross-class layer can be asked with no threshold, or with the floor
+    /// the server would have picked anyway — the same listing under two names.
+    /// Filing it under both made the entries alias, and a write-back then had
+    /// to find its own siblings; it could not, because a cached open re-keyed
+    /// the listing to whichever name it was looked up under. A group emptied
+    /// from inside came back offering to accept candidates already verdicted:
+    /// the exact staleness the write-back exists to prevent.
+    ///
+    /// Resolving the name instead of duplicating the entry removes the class,
+    /// so `cacheGroups` writes one key and a regroup overwrites the row it
+    /// read.
+    #[test]
+    fn a_grouping_is_cached_under_exactly_one_key() {
+        let body = queue_fn("cacheGroups");
+        assert_eq!(
+            body.matches("groupCache.set").count(),
+            1,
+            "cacheGroups must write one key, not a key and its aliases:\n{body}"
+        );
+        assert!(
+            QUEUE_SVELTE.contains("defaultGlobalThreshold"),
+            "the default cross-class floor must be resolved to the floor it means, \
+             so one listing cannot be filed under two names"
         );
     }
 
