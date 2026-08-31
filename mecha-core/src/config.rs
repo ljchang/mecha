@@ -54,6 +54,34 @@ pub struct Config {
     /// through the door. (Replaces the opaque `toml::Value` bridge main
     /// carried while this arc was in flight.)
     pub web: WebConfig,
+    /// Where the harness diagnostician may read this program's own source.
+    /// Global-file only; see [`HarnessConfig`].
+    pub harness: HarnessConfig,
+}
+
+/// What `mecha harness ruminate`'s diagnostician is allowed to read.
+///
+/// **Global-file only, for `[slack]`'s reason in its sharpest form.** The
+/// diagnostician reads whatever this names and treats it as the authority on
+/// why each mechanism exists — "if the thing you were about to change is
+/// load-bearing for something the documentation explains, propose something
+/// else". A project file arrives with a cloned repository, so a project layer
+/// able to set this could hand an unattended, privileged nightly a checkout of
+/// its own prose and be believed about which of this harness's protections are
+/// load-bearing. `merge_file` strips it from project layers.
+///
+/// `None` means the diagnostician runs blind, which is what it did until this
+/// existed and is still the default. That case is not silent: the system
+/// prompt says so rather than claiming a capability the run was not given —
+/// see [`crate::diagnose::diagnose_system`].
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HarnessConfig {
+    /// A checkout of this program's source and `docs/`. Jailed read-only, and
+    /// never the working directory: config is discovered from the cwd, so
+    /// standing in a checkout is what would put its `mecha.toml` in front of
+    /// an unattended run. The two are separable and this keeps them separate.
+    pub source_dir: Option<PathBuf>,
 }
 
 /// Which skills a run carries.
@@ -280,6 +308,7 @@ impl Default for Config {
             tools: ToolsConfig::default(),
             security: SecurityConfig::default(),
             skills: SkillsConfig::default(),
+            harness: HarnessConfig::default(),
             sandbox: crate::sandbox::SandboxConfig::default(),
             mcp: Vec::new(),
             subagents: Vec::new(),
@@ -925,6 +954,17 @@ impl Config {
                 path.display()
             );
         }
+        // `[harness]` for `[slack]`'s reason at its sharpest: it names what an
+        // unattended nightly diagnostician reads and believes about which of
+        // this harness's protections are load-bearing, and a project file
+        // arrives with a cloned repository.
+        if trust == LayerTrust::Project && layer.harness.take().is_some() {
+            tracing::warn!(
+                "[harness] in {} is ignored — the diagnostician's source directory \
+                 loads from the global config only",
+                path.display()
+            );
+        }
         // `[skills]` from a project layer may only ever *narrow*, and that is
         // enforced here rather than asked for. `dir` is dropped outright — a
         // project naming its own skill directory is the authoring hole
@@ -1096,6 +1136,7 @@ struct ConfigLayer {
     messages: Option<MessagesLayer>,
     skills: Option<SkillsLayer>,
     web: Option<WebLayer>,
+    harness: Option<HarnessLayer>,
 }
 
 /// A layer's opinion about which skills to carry.
@@ -1114,6 +1155,12 @@ struct ConfigLayer {
 /// where an intersection starts from nothing, so it assigns rather than
 /// intersects; the distinction is [`LayerTrust`], applied in
 /// [`Config::merge_file`].
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HarnessLayer {
+    source_dir: Option<PathBuf>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SkillsLayer {
@@ -1455,6 +1502,12 @@ impl ConfigLayer {
                 t.keep = v;
             }
         }
+        // Global layer only; `merge_file` strips a project file's `[harness]`.
+        if let Some(x) = self.harness {
+            if x.source_dir.is_some() {
+                cfg.harness.source_dir = x.source_dir;
+            }
+        }
         // Only ever reached from the global layer, like `[messages]` and
         // `[slack]`: `merge_file` strips a project file's `[web]` first.
         if let Some(x) = self.web {
@@ -1610,6 +1663,30 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_layer_cannot_choose_what_the_diagnostician_reads() {
+        // `[harness] source_dir` names a checkout an unattended nightly reads
+        // and treats as the authority on which of this harness's protections
+        // are load-bearing. A project file arrives with a cloned repository,
+        // so this is `[slack]`'s rule with a sharper edge: a repo able to set
+        // it could hand the diagnostician its own prose about what is safe to
+        // change.
+        let dir = std::env::temp_dir().join(format!("mecha-harness-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("mecha.toml");
+        std::fs::write(&project, "[harness]\nsource_dir = \"/tmp/attacker\"\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.merge_file(&project, LayerTrust::Project).unwrap();
+        assert_eq!(cfg.harness.source_dir, None);
+
+        let mut cfg = Config::default();
+        cfg.merge_file(&project, LayerTrust::Global).unwrap();
+        assert_eq!(
+            cfg.harness.source_dir,
+            Some(std::path::PathBuf::from("/tmp/attacker"))
+        );
     }
 
     #[test]
@@ -1818,5 +1895,52 @@ mod tests {
             parsed.is_ok(),
             "Config has a field ConfigLayer cannot read: {parsed:?}"
         );
+    }
+
+    #[test]
+    fn every_field_a_layer_can_read_is_a_field_a_layer_applies() {
+        // A field on `Config` is **three** edits, not the two the comment
+        // above counts: the struct, the layer, and `apply`. The test above
+        // covers the first two, because a field the layer cannot read is a
+        // parse error it can see. The third is invisible to it — a layer field
+        // that parses and is never copied onto `cfg` leaves the setting silent
+        // rather than broken, which is the `[[hook]]` incident wearing the one
+        // costume that test cannot recognise.
+        //
+        // Found the way these are always found: `[harness] source_dir` was
+        // added to both structs, stripped from project layers, and never
+        // applied, and every test above it passed.
+        //
+        // Reads its own source because there is no reflective way to ask. A
+        // field handled under another name would need naming here, and none is
+        // today; the cost of that is a comment, and the cost of not having the
+        // check is a config section that does nothing.
+        let src = include_str!("config.rs");
+        let layer = src
+            .split_once("struct ConfigLayer {")
+            .expect("ConfigLayer moved")
+            .1;
+        let layer = &layer[..layer.find("\n}").expect("unterminated ConfigLayer")];
+        let apply = src
+            .split_once("fn apply(self, cfg: &mut Config)")
+            .expect("apply moved")
+            .1;
+        let apply = &apply[..apply.find("\n    }\n").expect("unterminated apply")];
+
+        for line in layer.lines() {
+            let line = line.trim();
+            let Some((name, rest)) = line.split_once(':') else {
+                continue;
+            };
+            if !rest.trim_start().starts_with("Option<") {
+                continue;
+            }
+            let name = name.trim();
+            assert!(
+                apply.contains(&format!("self.{name}")),
+                "`ConfigLayer::{name}` parses from a file and `apply` never reads it, \
+                 so the setting is silently ignored"
+            );
+        }
     }
 }

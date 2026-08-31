@@ -37,19 +37,60 @@
 use crate::candidate::{ChangeClass, Metric};
 use crate::runlog::Corpus;
 
-/// What the diagnostician is told it is.
-pub const DIAGNOSE_SYSTEM: &str = "\
+/// What the diagnostician is told it is, minus what it can see.
+const DIAGNOSE_ROLE: &str = "\
 You are diagnosing a harness — the program that runs an AI agent — from its own \
 measurements. You propose one change and predict what it will do. You do not \
 apply it: a separate measurement decides whether it was right, and a wrong \
-proposal costs one measurement, so a specific guess beats a safe one.
+proposal costs one measurement, so a specific guess beats a safe one.";
 
-You may read the source and its documentation. The documentation records why \
-each mechanism exists and what it cost to learn; treat a documented reason as \
-evidence, not as decoration. If the thing you were about to change is \
-load-bearing for something the documentation explains, propose something else.
-
-Never reproduce sentences from anything you read. Write your own.";
+/// What the diagnostician is told it is, given what it can actually reach.
+///
+/// **A function, because the sighted paragraph was a promise the harness did
+/// not keep.** The prompt said "You may read the source and its
+/// documentation" unconditionally, while `scripts/ruminate.sh` stood the
+/// nightly in `~/.mecha/work/ruminate/` — an empty directory — and the path
+/// jail is rooted at the working directory. So on the one path that runs
+/// unattended, the read-only tool surface reached nothing, and the sentence
+/// that carries the whole safety argument here ("if the thing you were about
+/// to change is load-bearing, propose something else") could never fire.
+///
+/// The symptom was in the candidate store rather than in any log. Three
+/// nights running, the proposal named a configuration key that has never
+/// existed anywhere in this codebase — `security.minimize_taint`,
+/// `tool.validation.strict`, `context.auto_compact` — because a model told it
+/// may read the source, and given nothing to read, writes down the key such a
+/// program would plausibly have.
+///
+/// A prompt asserting a capability the run was not granted is the
+/// silently-degrading guard in its cheapest form: nothing fails, and the
+/// protection reads as satisfied. So the grant decides the sentence.
+pub fn diagnose_system(source: Option<&std::path::Path>) -> String {
+    let sight = match source {
+        Some(dir) => format!(
+            "This program's own source and documentation are at {}, and you may read \
+             them. The documentation records why each mechanism exists and what it \
+             cost to learn; treat a documented reason as evidence, not as decoration. \
+             If the thing you were about to change is load-bearing for something the \
+             documentation explains, propose something else.",
+            dir.display()
+        ),
+        // Said plainly rather than omitted. A diagnostician that is not told
+        // it is blind will assume the ordinary case and describe machinery it
+        // has not looked at; one that is told can say the evidence does not
+        // support a change, which this instruction explicitly permits.
+        None => "\
+You cannot read this program's source or its documentation on this run — no \
+checkout was made available to you, and the directory you are standing in is \
+empty. Do not describe internal machinery, and do not name a configuration key \
+unless this brief named it first: you have no way to check that either exists, \
+and a plausible invention costs a measurement and teaches nobody anything. \
+Reason from the counters you were given, and say so if they do not support a \
+change."
+            .to_string(),
+    };
+    format!("{DIAGNOSE_ROLE}\n\n{sight}\n\nNever reproduce sentences from anything you read. Write your own.")
+}
 
 /// The instruction, appended after the brief.
 ///
@@ -68,8 +109,18 @@ metric: ended_on_failed_call | tool_error_rate | cut_short | compactions | turns
 rationale: <one line: what is wrong, and why this addresses it>
 
 `metric` is what you predict this change will *reduce*. Pick the one it should \
-move most; a prediction that cannot fail is not a prediction. If the evidence \
-does not support any single change, say so in prose and write no block.
+move most; a prediction that cannot fail is not a prediction. The brief reports \
+what each metric currently costs — a metric already at zero has no room to \
+improve, so predicting it can only tie, and the measurement it costs teaches \
+nobody anything. If the evidence does not support any single change, say so in \
+prose and write no block.
+
+For `class: config` the key must be one this harness can actually override: \
+compact_at_tokens, max_turns, max_output_tokens, effort. Write it bare, as \
+KEY=VALUE, with no section prefix. There is no other knob this loop can apply, \
+so a key outside that set is not a config change — it is a request that someone \
+add a setting, which is `class: architecture`. A plausible-sounding key name \
+that does not exist is the most common way one of these passes is wasted.
 
 Anything touching `[security]`, `[sandbox]` or `[outbox]` is `class: security`, \
 whatever else it also is. Calling it something else does not make it \
@@ -110,6 +161,25 @@ pub struct Evidence {
     /// treating a rise in both as two corroborating signals is seeing one
     /// cause twice.
     pub mean_anticipated_guilt: Option<f64>,
+    /// Calls a human or a policy refused, and sends the interlock refused.
+    ///
+    /// Reported beside the error rate rather than folded into it, because the
+    /// two are opposite findings: an error is the environment failing a call,
+    /// a denial is the harness working. Without the split a diagnostician
+    /// shown one rate has to guess which it is looking at, and on 2026-08-25
+    /// and 2026-08-26 it guessed twice — attributing the same ~9% first to
+    /// taint propagation and then to schema validation, with nothing in the
+    /// brief able to support or refute either.
+    pub tool_denied: u64,
+    pub blocked_sends: u64,
+    /// What each metric a proposal may name currently costs: its mean over the
+    /// corpus, and how many runs have any of it to reduce.
+    ///
+    /// Built from [`Metric::ALL`] rather than written out, so this list and
+    /// the one in [`DIAGNOSE_INSTRUCTION`] cannot drift apart — which they
+    /// had, in the direction that matters: six metrics offered, three
+    /// reported.
+    pub metrics: Vec<(Metric, f64, usize)>,
     /// What `doctor` said, verbatim — machine-authored text, not third-party.
     pub findings: Vec<String>,
     /// What earlier passes already tried, one line each — machine-authored
@@ -150,6 +220,15 @@ impl Evidence {
                 .collect(),
             mean_peak_context_pressure: corpus.mean_peak_context_pressure(),
             mean_anticipated_guilt: corpus.mean_anticipated_guilt(),
+            tool_denied: corpus.tool_denied(),
+            blocked_sends: corpus.blocked_sends(),
+            metrics: Metric::ALL
+                .iter()
+                .map(|m| {
+                    let (mean, with) = corpus.metric_cost(*m);
+                    (*m, mean, with)
+                })
+                .collect(),
             findings: Vec::new(),
             history: Vec::new(),
         }
@@ -167,7 +246,9 @@ impl Evidence {
         };
         let mut out = format!(
             "model: {}\nruns: {} (from {} session(s))\n\
-             tool calls: {} · refused by the environment: {} ({})\n\
+             tool calls: {} · refused by the environment: {} ({}) · \
+             refused by a person or a policy: {} · sends refused by the interlock: {} \
+             (the last two are the harness working, not failing)\n\
              finished on a failed call: {} ({})\ncompactions: {}\nstop causes: {}\n\
              avg peak context pressure: {} · avg anticipated guilt: {} \
              (guilt is computed partly from pressure — a rise in both is not two \
@@ -178,6 +259,8 @@ impl Evidence {
             self.tool_calls,
             self.tool_errors,
             pct(self.tool_error_rate),
+            self.tool_denied,
+            self.blocked_sends,
             self.ended_on_failed_call,
             pct(self.ended_on_failed_call_rate),
             self.compactions,
@@ -191,6 +274,20 @@ impl Evidence {
                 .map(|g| format!("{g:.2}"))
                 .unwrap_or_else(|| "unknown (no denominator)".into()),
         );
+        if !self.metrics.is_empty() {
+            out.push_str(
+                "\nwhat each metric you may predict currently costs — a metric no run has \
+                 any of cannot be reduced, and predicting it can only tie:\n",
+            );
+            for (metric, mean, with) in &self.metrics {
+                out.push_str(&format!(
+                    "- {}: {} of {} run(s) have any to reduce (mean {mean:.2})\n",
+                    metric.as_str(),
+                    with,
+                    self.runs
+                ));
+            }
+        }
         if !self.findings.is_empty() {
             out.push_str("\nwhat the health check reported:\n");
             for f in &self.findings {
@@ -368,6 +465,38 @@ pub fn parse_proposal(text: &str) -> Option<Proposal> {
         _ => (class, None),
     };
 
+    // The same derivation in the other direction, and it raises toward review
+    // for the same reason. `Config` is the class that can reach auto-accept,
+    // and what makes that safe is that the change is one of four knobs the
+    // harness can actually set. A `config` proposal naming a key outside that
+    // set is not a smaller version of a config change — it is a request that
+    // someone add a setting, which is architecture, and a person decides.
+    //
+    // Stored as `Config` it read to a reviewer as a config change waiting to
+    // be applied. Three nights running the nightly proposed one —
+    // `security.minimize_taint`, `tool.validation.strict`, `context.auto_compact`
+    // — and not one of those keys has ever existed anywhere in this codebase.
+    // The brief now names the closed set, so the fabrication should stop; this
+    // is what catches the one that gets through, and it labels it honestly.
+    //
+    // Keyed on the key alone, not on the whole change parsing: `max_turns=0`
+    // names a real knob with a refused value, and that is a config change a
+    // human can correct rather than a knob that does not exist.
+    let (class, reclassified) = match class {
+        ChangeClass::Config if crate::harness::names_override_key(&change).is_none() => (
+            ChangeClass::Architecture,
+            Some(format!(
+                "proposed as `Config`, reclassified: `{}` is not one of the four keys this \
+                 harness can override ({}), so applying it would mean adding a setting",
+                change
+                    .split_once('=')
+                    .map_or(change.as_str(), |(k, _)| k.trim()),
+                crate::harness::OverrideKey::names()
+            )),
+        ),
+        _ => (class, reclassified),
+    };
+
     Some(Proposal {
         class,
         change,
@@ -442,6 +571,146 @@ I would look at compaction next if this does not help.";
         assert_eq!(p.change, "max_turns=40");
         assert_eq!(p.metric, Metric::CutShort);
         assert!(p.rationale.starts_with("runs are hitting"));
+    }
+
+    #[test]
+    fn every_metric_a_proposal_may_name_has_a_value_in_the_brief() {
+        // Six metrics were offered and three were reported. The nightly's two
+        // worst proposals were both on metrics whose value it had never been
+        // shown — `cut_short` on a corpus where `cut_short` was zero, and a
+        // schema-validation story about calls it could not see the count of.
+        // Asking a model to choose what to reduce while hiding half the costs
+        // is asking it to guess.
+        let brief = Evidence {
+            runs: 170,
+            metrics: Metric::ALL.iter().map(|m| (*m, 0.0, 0)).collect(),
+            ..Default::default()
+        }
+        .brief();
+        for m in Metric::ALL {
+            assert!(
+                brief.contains(m.as_str()),
+                "`{}` can be predicted but is not reported: {brief}",
+                m.as_str()
+            );
+            assert!(
+                DIAGNOSE_INSTRUCTION.contains(m.as_str()),
+                "`{}` is reported but cannot be predicted",
+                m.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn the_brief_separates_a_refusal_from_a_failure() {
+        // An error is the environment failing a call; a denial is the harness
+        // working. Folded into one rate, a diagnostician has to guess which it
+        // is looking at — and on 2026-08-25 and 2026-08-26 it guessed the same
+        // ~9% two different ways, first as taint propagation and then as
+        // schema validation, with nothing in the brief able to settle it.
+        let brief = Evidence {
+            runs: 170,
+            tool_calls: 204,
+            tool_errors: 20,
+            tool_denied: 7,
+            blocked_sends: 3,
+            ..Default::default()
+        }
+        .brief();
+        assert!(brief.contains("refused by the environment: 20"), "{brief}");
+        assert!(
+            brief.contains("refused by a person or a policy: 7"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains("sends refused by the interlock: 3"),
+            "{brief}"
+        );
+    }
+
+    #[test]
+    fn the_closed_override_set_is_named_where_a_config_change_is_asked_for() {
+        // Naming the set at parse time and not in the brief made every
+        // out-of-set proposal a discovery the diagnostician could not make:
+        // the history line teaches it not to repeat one fabricated key, so it
+        // invents a different one. Three nights, three keys, none of which
+        // have ever existed.
+        for key in crate::harness::OverrideKey::ALL {
+            assert!(
+                DIAGNOSE_INSTRUCTION.contains(key.as_str()),
+                "`{}` is applicable but is never offered",
+                key.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn a_config_change_naming_a_key_that_does_not_exist_is_architecture() {
+        // The two survivors of the 2026-08-26 and 2026-08-28 nightlies,
+        // verbatim. Both were stored `class: Config, status: staged`, which
+        // reads to a reviewer as a config change waiting to be applied. Both
+        // are requests that someone add a setting.
+        for change in [
+            "tool.validation.strict=false",
+            "context.auto_compact=true",
+            "retry.max_attempts=5",
+            // No `=` at all: a config class with nothing to apply.
+            "raise the turn ceiling",
+        ] {
+            let reply =
+                format!("PROPOSAL\nclass: config\nchange: {change}\nmetric: tool_error_rate");
+            let p = parse_proposal(&reply).expect(change);
+            assert_eq!(p.class, ChangeClass::Architecture, "{change}");
+            let note = p.reclassified.expect(change);
+            assert!(note.contains("not one of the four keys"), "{note}");
+        }
+    }
+
+    #[test]
+    fn a_real_knob_with_a_refused_value_is_still_a_config_change() {
+        // The distinction the reclassification turns on. `max_turns=0` names
+        // something this harness can set, with a value `parse_change` refuses
+        // — a config change a human can correct, not a knob that has never
+        // existed. Demoting it to architecture would bury an ordinary typo
+        // among the feature requests.
+        for change in ["max_turns=0", "effort=extreme", "compact_at_tokens=1"] {
+            let reply =
+                format!("PROPOSAL\nclass: config\nchange: {change}\nmetric: tool_error_rate");
+            let p = parse_proposal(&reply).expect(change);
+            assert_eq!(p.class, ChangeClass::Config, "{change}");
+            assert!(p.reclassified.is_none(), "{change}");
+        }
+    }
+
+    #[test]
+    fn a_security_key_outside_the_override_set_is_security_and_not_architecture() {
+        // Both derivations fire on `security.minimize_taint=false`: it names a
+        // guarded section, and it is not in the override set. The security one
+        // must win — the note a reviewer needs is that the proposer mislabelled
+        // a confinement change, not that the key is unknown.
+        let reply = "PROPOSAL\nclass: config\nchange: security.minimize_taint=false\n\
+                     metric: tool_error_rate";
+        let p = parse_proposal(reply).unwrap();
+        assert_eq!(p.class, ChangeClass::Security);
+        assert!(p.reclassified.unwrap().contains("security boundary"));
+    }
+
+    #[test]
+    fn the_prompt_claims_it_can_read_the_source_only_when_it_can() {
+        // The whole safety argument in `DIAGNOSE_ROLE`'s neighbourhood rests
+        // on the diagnostician checking the documentation before unpicking
+        // something load-bearing. Claiming that unconditionally, while the
+        // nightly stands in an empty directory, is the silently-degrading
+        // guard at its cheapest: nothing fails, and the protection reads as
+        // satisfied.
+        let blind = diagnose_system(None);
+        assert!(blind.contains("cannot read"), "{blind}");
+        assert!(blind.contains("do not name a configuration key"), "{blind}");
+
+        let sighted = diagnose_system(Some(std::path::Path::new("/src/mecha")));
+        assert!(sighted.contains("/src/mecha"), "{sighted}");
+        assert!(sighted.contains("load-bearing"), "{sighted}");
+        assert!(!sighted.contains("cannot read"), "{sighted}");
     }
 
     #[test]

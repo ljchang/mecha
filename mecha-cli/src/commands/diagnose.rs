@@ -19,7 +19,7 @@ use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::agent::Conversation;
 use mecha_core::diagnose::{
-    carries_over, parse_proposal, Evidence, Proposal, DIAGNOSE_INSTRUCTION, DIAGNOSE_SYSTEM,
+    carries_over, diagnose_system, parse_proposal, Evidence, Proposal, DIAGNOSE_INSTRUCTION,
 };
 use mecha_core::message::Block;
 use mecha_core::runlog::{Corpus, Scan};
@@ -109,6 +109,37 @@ pub fn evidence_for(model: &str, slice: &Corpus, history: Vec<String>) -> Eviden
     evidence
 }
 
+/// The checkout the diagnostician may read, if one is configured and present.
+///
+/// Global config only, by construction — `[harness]` is stripped from project
+/// layers — and re-read here rather than taken from the caller's `Prepared`,
+/// because this decides the workspace that `prepare` is then called with.
+///
+/// A configured directory that is missing is reported and then treated as
+/// absent, not as a hard failure: a nightly that stops entirely because a
+/// checkout moved is worse than one that diagnoses from counters and says it
+/// did. What must never happen is the third thing — proceeding while the
+/// prompt still claims the source is readable.
+fn source_dir() -> Result<Option<std::path::PathBuf>> {
+    let Some(dir) = mecha_core::config::Config::load_global()?
+        .harness
+        .source_dir
+    else {
+        return Ok(None);
+    };
+    match dir.canonicalize() {
+        Ok(dir) if dir.is_dir() => Ok(Some(dir)),
+        _ => {
+            eprintln!(
+                "mecha: [harness] source_dir names {}, which is not a readable \
+                 directory — diagnosing from counters alone",
+                dir.display()
+            );
+            Ok(None)
+        }
+    }
+}
+
 /// What one diagnostic pass produced.
 pub struct Diagnosis {
     /// The model's full reply, reasoning included.
@@ -134,19 +165,41 @@ pub enum DiagnosisOutcome {
 /// of "read-only, no outbox, no learned rules" is how one of them silently
 /// stops being true.
 pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Result<Diagnosis> {
-    // Read-only, and the workspace is wherever the caller is standing: the
-    // diagnostician's most useful input is this repository's own
-    // documentation, which records why each mechanism exists and is what
-    // stops a proposal unpicking something load-bearing.
+    // The diagnostician's most useful input is this repository's own
+    // documentation, which records why each mechanism exists and is what stops
+    // a proposal unpicking something load-bearing. Reaching it takes an
+    // explicit grant, because "wherever the caller is standing" was not one:
+    // the nightly stands in `~/.mecha/work/ruminate/`, on purpose and for a
+    // good reason, and that directory is empty.
+    //
+    // **The jail root and the config root are separated here rather than
+    // reconciled.** `scripts/ruminate.sh` refuses to stand in a checkout so
+    // that a project's `mecha.toml` never gets in front of an unattended run,
+    // and that refusal is right. But `prepare_tools` discovers config from the
+    // *cwd* and roots the jail at the *workspace*, so the two were never the
+    // same question. Standing outside, pointing the workspace in, and pinning
+    // `global_config_only` gets the documentation without the project layer —
+    // and pins it belt-and-braces, so this holds even if someone later runs
+    // the nightly from a checkout by hand.
+    let source = source_dir()?;
     let opts = GlobalOpts {
         read_only: true,
         yes: false,
-        system: Some(DIAGNOSE_SYSTEM.to_string()),
+        system: Some(diagnose_system(source.as_deref())),
         no_outbox: true,
         no_learned_rules: true,
+        global_config_only: true,
+        workspace: source.clone().or_else(|| global.workspace.clone()),
         ..global.clone()
     };
     let prepared = setup::prepare(&opts, false).await?;
+    match &source {
+        Some(dir) => eprintln!("reading source and docs from {}", dir.display()),
+        None => eprintln!(
+            "no `[harness] source_dir` configured — diagnosing from counters alone, \
+             and the prompt says so rather than claiming otherwise"
+        ),
+    }
 
     eprintln!(
         "diagnosing {} run(s) of `{}` · {} ({})",
