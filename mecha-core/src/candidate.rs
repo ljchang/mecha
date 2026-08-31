@@ -357,6 +357,19 @@ fn guard_regressions<'a>(
     if j.disposition != Disposition::Accept {
         return j;
     }
+    // **Every metric is examined before anything is returned, because the two
+    // outcomes are not equally serious and they were racing on array order.**
+    // A `0 → nonzero` proposal returned immediately, so a genuine ratio breach
+    // on a metric later in `Metric::ALL` was never reached: the reviewer got
+    // the benign "a cost that was not there before, and only a person can tell
+    // which" and never saw that something else had also doubled. `Compactions`
+    // sits at index 3 and `MalformedArgs` at 5, so the pair that hides the
+    // worse finding behind the milder one is reachable rather than theoretical.
+    //
+    // A `Reject` still returns as soon as it is found — it is the strongest
+    // verdict available and nothing later can outrank it. Only the `Propose`
+    // waits.
+    let mut appeared: Option<String> = None;
     for metric in Metric::ALL {
         if metric == predicted {
             continue;
@@ -376,7 +389,7 @@ fn guard_regressions<'a>(
                     ..j
                 };
             }
-        } else if after > 0.0 {
+        } else if after > 0.0 && appeared.is_none() {
             // **A cost appearing from nothing reaches a person; it does not
             // auto-reject.** A first version rejected it outright, on the
             // reasoning that a failure mode that was not there before is not
@@ -392,18 +405,21 @@ fn guard_regressions<'a>(
             // happening, which is the point" from "malformed arguments
             // appeared, which is not" — and a reader can. So it never
             // auto-accepts, and it never silently refuses either.
-            return Judgement {
-                disposition: Disposition::Propose(format!(
-                    "predicted a lower {predicted:?} and got one, but {metric:?} rose from \
-                     nothing to {after:.2} across the same episodes — a cost that was not \
-                     there before. That is the intended effect for some changes and a \
-                     regression for others, and only a person can tell which"
-                )),
-                ..j
-            };
+            appeared = Some(format!(
+                "predicted a lower {predicted:?} and got one, but {metric:?} rose from \
+                 nothing to {after:.2} across the same episodes — a cost that was not there \
+                 before. That is the intended effect for some changes and a regression for \
+                 others, and only a person can tell which"
+            ));
         }
     }
-    j
+    match appeared {
+        Some(why) => Judgement {
+            disposition: Disposition::Propose(why),
+            ..j
+        },
+        None => j,
+    }
 }
 
 pub fn judge(
@@ -1019,6 +1035,34 @@ mod tests {
                 assert!(why.contains("without ever being able to confirm"), "{why}")
             }
             other => panic!("an all-green holdout was read as confirmation: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_real_regression_is_not_hidden_behind_a_milder_one_earlier_in_the_list() {
+        // The short-circuit: `guard_regressions` returned on the first metric
+        // it found something on, so a `0 → nonzero` Propose at `Compactions`
+        // (index 3) suppressed a ratio breach at `MalformedArgs` (index 5) and
+        // the reviewer saw only the benign explanation. Each of the other
+        // tests moves exactly one unpredicted metric, so none of them could
+        // see it.
+        let pairs: Vec<Pair> = corpus(12, 3, |_| {
+            let mut baseline = run(10, 1, false);
+            baseline.turns = 10;
+            baseline.compactions = 0;
+            baseline.malformed_tool_args = 4;
+            let mut candidate = run(10, 1, false);
+            candidate.turns = 5;
+            // Milder, and earlier in `Metric::ALL`.
+            candidate.compactions = 2;
+            // Worse, and later: 10 against a 1.25 ceiling on 4.
+            candidate.malformed_tool_args = 10;
+            (baseline, candidate)
+        });
+        let j = judge(ChangeClass::Config, &prediction(Metric::Turns), &pairs, 3);
+        match j.disposition {
+            Disposition::Reject(ref why) => assert!(why.contains("MalformedArgs"), "{why}"),
+            other => panic!("the worse finding was hidden behind the milder one: {other:?}"),
         }
     }
 

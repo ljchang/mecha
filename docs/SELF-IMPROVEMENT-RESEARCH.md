@@ -865,8 +865,21 @@ attempting *less*; nothing caught a gain bought by failing *more*, and `turns`
 is currently the only metric with real headroom — so trading accuracy for an
 earlier finish is precisely the trade the loop is next in line to be offered.
 `guard_regressions` now rejects an accepted candidate whose unpredicted metrics
-rose past `REGRESSION_CEILING`, with 0 → nonzero always counting, because
-absent is not zero.
+rose past `REGRESSION_CEILING`. A cost appearing from *nothing* is treated
+differently and **proposes** rather than rejecting: `compactions` is zero across
+this corpus, so rejecting there would have made `compact_at_tokens` unable to
+move the one metric it exists to move — the guard foreclosing its own subject.
+Nothing in a pure function can tell "compaction started, which is the point"
+from "malformed arguments appeared, which is not"; a person can. Every metric is
+examined before either verdict is returned, or a mild proposal earlier in
+`Metric::ALL` hides a real breach later in it.
+
+An earlier draft of this paragraph said 0 → nonzero always rejected, which is
+what the code did for one round and stopped doing in the next. Corrected here
+rather than left, because §14.1 is the finding that `docs/` is what the
+diagnostician reads and treats as evidence — so once `[harness] source_dir` is
+set, a stale sentence here is not documentation drift, it is a false premise
+handed to the thing this document is about.
 
 📄 **SEAGym** ([arXiv:2606.17546](https://arxiv.org/abs/2606.17546)) — an
 evaluation environment for self-evolving agents, defining "agent harness" as
