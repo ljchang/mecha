@@ -298,9 +298,18 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
     // Mirrors `setup::prepare_tools` exactly — `opts.workspace` (which is
     // `configured` or the caller's), then `[tools] workspace`, then the cwd.
     // Any term dropped here is a term where the prompt and the jail disagree.
-    let jail = configured
+    // **`--workspace` first, then `[harness] source_dir`.** A flag losing to
+    // config inverts the layering every other command follows, and made
+    // `--workspace` a silent no-op for this one. The nightly passes no flag,
+    // so it costs the unattended path nothing.
+    //
+    // This order and `opts.workspace` below must move together; the `ensure!`
+    // after `prepare` is what makes it impossible for them to drift apart
+    // quietly.
+    let jail = global
+        .workspace
         .clone()
-        .or_else(|| global.workspace.clone())
+        .or_else(|| configured.clone())
         .or(tools_workspace)
         .or_else(|| std::env::current_dir().ok());
     let source = jail
@@ -314,7 +323,7 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
         no_outbox: true,
         no_learned_rules: true,
         global_config_only: true,
-        workspace: configured.clone().or_else(|| global.workspace.clone()),
+        workspace: global.workspace.clone().or_else(|| configured.clone()),
         ..global.clone()
     };
     let prepared = setup::prepare(&opts, false).await?;
