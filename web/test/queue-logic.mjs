@@ -7,11 +7,12 @@
 // **Why this exists at all.** Most of what Queue.svelte does is assertable
 // from Rust by reading the source (`serve/review.rs` does exactly that, and
 // those tests catch a call reappearing where it must not). `withoutJudged` is
-// the one piece that is real logic rather than a shape: it promotes leaders,
-// drops groups it cannot name a face for, and keeps `sample` aligned with the
-// members that survive. A source-string assertion cannot tell whether any of
-// that is correct, and two rounds of review found staleness bugs in exactly
-// this area — the cache is the part of the pane where being wrong is silent.
+// the one piece that is real logic rather than a shape: which groups survive a
+// verdict filed somewhere else, which are dropped, and which fields stop being
+// true when one shrinks. A source-string assertion cannot tell whether any of
+// that is correct, and successive rounds of review found staleness bugs in
+// exactly this area — the cache is the part of the pane where being wrong is
+// silent.
 //
 // The function is read OUT of the component rather than copied here, so this
 // exercises the text that ships. A copy would be a second reader of a rule,
@@ -42,9 +43,13 @@ const t = (name, cond) => {
   }
 };
 
-// Leader #100 with six members. `sample` holds the statements of the first
-// three members, in members order — the graph's own construction in
-// `assemble_global_groups`, and the only id-to-statement mapping the page has.
+// Leader #100 with six members, plus a PAIR (#200 + one member) — the
+// commonest group size, and the one where a single verdict leaves a leader
+// standing alone.
+//
+// `sample` is deliberately populated but never trusted as an id-to-statement
+// map: whether its order matches `members` is the graph's serialisation
+// detail, and the function under test is written not to depend on it.
 const group = () => ({
   leader_id: 100,
   leader_statement: 'S100',
@@ -61,6 +66,7 @@ const group = () => ({
 });
 const listing = () => ({
   key: 'global:0.87',
+  considered: 7013,
   rows: [
     group(),
     { ...group(), leader_id: 200, leader_statement: 'S200', members: [[201, 0.9]], sample: ['S201'] },
@@ -86,40 +92,43 @@ t('the kicker count follows it down', r.rows[0].members.length + 1 === 6);
 t('the shrunken group drops its class chips', r.rows[0].classes === null);
 t('a sibling group nobody touched keeps its chips', r.rows[1].classes !== null);
 
+// A judged LEADER drops the group rather than promoting an heir. The only
+// id-to-statement mapping available here is `sample`, whose alignment with
+// `members` is another repository's serialisation detail — and a wrong
+// mapping would show one candidate's words over Accept-all and file the
+// verdict on another. `reconcileGroup` promotes instead, because it holds the
+// real statements by id.
 judgedIds.clear();
 judgedIds.add(100);
 r = withoutJudged(listing());
-t('a judged leader is replaced', r.rows[0].leader_id === 101);
-t('the new face is a real member statement', r.rows[0].leader_statement === 'S101');
-t('the promoted leader is no longer also a member', !r.rows[0].members.some((m) => m[0] === 101));
+t('a judged leader drops its group rather than promoting an heir', !r.rows.some((g) => g.leader_id === 100 || g.leader_id === 101));
+t('the untouched sibling group survives it', r.rows.length === 1 && r.rows[0].leader_id === 200);
 
-// Past `sample` there is no statement to promote with, and a group's face must
-// never be something this page invented.
+// The leader statement is what a verdict is filed under, so a surviving group
+// keeps the graph's own, untouched.
 judgedIds.clear();
-[100, 101, 102, 103].forEach((i) => judgedIds.add(i));
+judgedIds.add(104);
 r = withoutJudged(listing());
-t('a group with no nameable face is dropped, not faked', r.rows.length === 1 && r.rows[0].leader_id === 200);
+t('a surviving group keeps the leader statement the graph sent', r.rows[0].leader_statement === 'S100');
+// `sample` cannot be trimmed without the mapping this function refuses to
+// assume, so it is emptied rather than guessed at.
+t('a shrunken group shows no invented member lines', r.rows[0].sample.length === 0);
+// The denominator was measured over the queue as it was at fetch time.
+t('an edited listing drops its frozen total', r.considered === null);
 
-// A pair is the commonest group size, and judging its one member leaves a
-// leader alone. `reconcileGroup` and this function must agree about that, or
-// a card renders "1 near-repeats" over Reject all 1 — and tapping it sends an
-// empty cascade, which comes back with no `cascade:` line to read.
+// A pair, both ways round. Judging the member leaves the leader alone;
+// judging the leader would leave the member alone. Neither is a group, and a
+// card offering "Reject all 1" covers one candidate the item list already
+// shows. `reconcileGroup` applies the same rule on the live path.
 judgedIds.clear();
 judgedIds.add(201);
 r = withoutJudged(listing());
 t('a leader with nobody behind it is not a group', !r.rows.some((g) => g.leader_id === 200));
 
-// The same shape reached the other way: the leader of a pair is judged, so
-// the lone survivor would be promoted into a group of one.
 judgedIds.clear();
 judgedIds.add(200);
 r = withoutJudged(listing());
 t('a pair whose leader was judged leaves no group of one', !r.rows.some((g) => g.leader_id === 201));
-
-judgedIds.clear();
-judgedIds.add(102);
-r = withoutJudged(listing());
-t('sample stays aligned with the surviving members', r.rows[0].sample.join() === 'S101,S103');
 
 judgedIds.clear();
 judgedIds.add(104);

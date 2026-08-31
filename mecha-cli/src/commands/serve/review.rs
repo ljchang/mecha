@@ -1080,7 +1080,7 @@ mod tests {
             "the live rebuild must drop a group that is down to its leader"
         );
         assert!(
-            queue_fn("withoutJudged").contains("rest.length === 0"),
+            queue_fn("withoutJudged").contains("members.length === 0"),
             "the cached rebuild must drop a group that is down to its leader"
         );
         let src = include_str!("../../tui/mod.rs");
