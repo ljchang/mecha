@@ -98,6 +98,20 @@ pub struct ConfigChange {
     pub value: String,
 }
 
+/// The key half of a `KEY=VALUE`, if it names something this loop can override.
+///
+/// Separate from [`parse_change`] because the two questions have different
+/// answers and only one of them is about the proposer. `max_turns=0` names a
+/// real knob with a value that was refused; `context.auto_compact=true` names
+/// nothing at all. The first is a config change a human can correct, the
+/// second is a request that someone add a setting — and until this existed
+/// both were stored `class: Config, status: staged`, which reads to a reviewer
+/// as a config change waiting to be applied when it is a feature request for a
+/// knob that has never existed.
+pub fn names_override_key(spec: &str) -> Option<OverrideKey> {
+    OverrideKey::parse(spec.split_once('=')?.0.trim())
+}
+
 /// Parse a proposal's `KEY=VALUE` into the closed set, validating the value.
 ///
 /// Refusal is the common case and the safe one: a proposal whose change does

@@ -838,6 +838,9 @@ fn health(
         &Scan {
             max_sessions: limit,
             since,
+            // Every workspace: this is a listing of the store, not a
+            // measurement scoped to one job.
+            workspace: None,
         },
     )?;
 
