@@ -351,7 +351,15 @@ pub async fn groups(State(state): St, Query(q): Query<GroupsQuery>) -> Response 
         predicate,
         "--json",
     ];
-    match self_json(&state, &args).await {
+    // A class grouping embeds that class, which is seconds on a thousand-item
+    // class and more on the big ones — the same kind of work as the global
+    // layer, one class wide. It used to go through the default 30-second
+    // budget, so a class large enough to be worth grouping was the one that
+    // answered `502 timed out` on the phone while the identical `mecha review
+    // groups` in a terminal, which has no cap, printed it. Same work, same
+    // order of magnitude, so it gets the stated budget too — smaller than the
+    // whole queue's, because it is a fraction of the queue.
+    match self_json_within(&state, &args, 180).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_GATEWAY, format!("{e:#}\n")).into_response(),
     }
@@ -507,12 +515,20 @@ pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Respons
         )
             .into_response();
     }
-    let (cascaded, left) = crate::commands::review::cascade_tally(&report).unwrap_or((0, 0));
+    // `None` when the report carried no `cascade:` line at all — an older
+    // graph binary, a changed line, a cascade that died before printing. It
+    // rides out as `null` rather than being flattened to zero, because a
+    // reader cannot tell a real zero from a failure to look, and this one
+    // acts on the difference: the page marks a fan-out's members judged when
+    // none were left pending, and hiding still-pending candidates is the
+    // worse of the two ways it can be wrong. A dash is never zero, on the
+    // wire as much as in a column.
+    let cascade = crate::commands::review::cascade_tally(&report);
     Json(serde_json::json!({
         "ok": true,
         "landed": landed,
-        "cascaded": cascaded,
-        "left_pending": left,
+        "cascaded": cascade.map(|(c, _)| c),
+        "left_pending": cascade.map(|(_, left)| left),
         "output": report.trim(),
     }))
     .into_response()
@@ -784,6 +800,362 @@ mod tests {
     use super::*;
     use mecha_core::agent::Taint;
     use serde_json::json;
+
+    const QUEUE_SVELTE: &str = include_str!("../../../../web/src/lib/Queue.svelte");
+
+    /// The body of a top-level function in the queue pane's script block,
+    /// from its opening line to the `\n  }` that closes it at script indent.
+    fn queue_fn(name: &str) -> &'static str {
+        let after = QUEUE_SVELTE
+            .split_once(&format!("function {name}("))
+            .unwrap_or_else(|| panic!("Queue.svelte must still define `{name}`"))
+            .1;
+        after
+            .split_once("\n  }")
+            .expect("the function must still close at script indent")
+            .0
+    }
+
+    /// **Leaving a similarity group must cost nothing.**
+    ///
+    /// The whole-queue layer embeds every pending statement, which the route
+    /// below budgets three hundred and sixty seconds for. `closeItems` used
+    /// to answer the Back arrow by re-running exactly that query whenever a
+    /// verdict had been filed inside the group — so a glance was free and the
+    /// actual work was not, and the ordinary loop of a sitting (open a group,
+    /// reject a few, step back) paid minutes each time round. It was reported
+    /// as the thing that ended the desire to clear the queue, which is the
+    /// real cost of a slow surface: not the wait, the abandonment.
+    ///
+    /// Nothing needs re-deriving. The page knows which ids it judged, and the
+    /// TUI has rebuilt the group from its survivors since the level existed.
+    ///
+    /// Asserted against the source because this pane has no JS test rig, and
+    /// checked as an *absence*: any call out of either function — `fetch`, or
+    /// an open helper — reintroduces the wait. With the old body in place this
+    /// fails on `openGlobal`.
+    #[test]
+    fn leaving_a_similarity_group_makes_no_request() {
+        for name in ["closeItems", "reconcileGroup"] {
+            let body = queue_fn(name);
+            for forbidden in ["fetch(", "openGlobal(", "openGroups(", "loadGroups("] {
+                assert!(
+                    !body.contains(forbidden),
+                    "{name} must not call `{forbidden}` — leaving a group would re-embed \
+                     the queue. Prune the listing from the survivors instead.\n{body}"
+                );
+            }
+        }
+        // And the pruning must still happen, or "costs nothing" is bought by
+        // leaving the card describing members the reviewer just judged away.
+        let reconcile = queue_fn("reconcileGroup");
+        assert!(
+            reconcile.contains("survivors"),
+            "reconcileGroup must rebuild the group from its survivors:\n{reconcile}"
+        );
+    }
+
+    /// **The listing is brought into step by the verdict, not by the exit.**
+    ///
+    /// Back is not the only way off the group screen — the Review tabs are one
+    /// tap away and unmount the pane, while the cached listing outlives it. So
+    /// a prune that only ran on the way out could be walked around: reject
+    /// three members, tap Outbox, tap back, reopen the grouping, and the cache
+    /// serves a card still offering all seven. Worse than a wrong count if the
+    /// leader was among them — a verdict seeded on a candidate that is gone
+    /// fails, a fan-out from a failed verdict cascades nothing by the graph's
+    /// own rule, and the card cannot be cleared at all, only regrouped.
+    ///
+    /// So the write-back belongs where the verdict lands, which no navigation
+    /// can route around.
+    #[test]
+    fn a_member_verdict_writes_the_group_back_itself() {
+        assert!(
+            queue_fn("itemVerdict").contains("reconcileGroup()"),
+            "itemVerdict must reconcile the group as the verdict lands"
+        );
+        assert!(
+            queue_fn("openItems").contains("reconcileGroup()"),
+            "openItems must reconcile away members judged before it was opened"
+        );
+    }
+
+    /// One listing, one cache key.
+    ///
+    /// The cross-class layer can be asked with no threshold, or with the floor
+    /// the server would have picked anyway — the same listing under two names.
+    /// Filing it under both made the entries alias, and a write-back then had
+    /// to find its own siblings; it could not, because a cached open re-keyed
+    /// the listing to whichever name it was looked up under. A group emptied
+    /// from inside came back offering to accept candidates already verdicted:
+    /// the exact staleness the write-back exists to prevent.
+    ///
+    /// Resolving the name instead of duplicating the entry removes the class,
+    /// so `cacheGroups` writes one key and a regroup overwrites the row it
+    /// read.
+    #[test]
+    fn a_grouping_is_cached_under_exactly_one_key() {
+        let body = queue_fn("cacheGroups");
+        assert_eq!(
+            body.matches("groupCache.set").count(),
+            1,
+            "cacheGroups must write one key, not a key and its aliases:\n{body}"
+        );
+        assert!(
+            QUEUE_SVELTE.contains("defaultGlobalThreshold"),
+            "the default cross-class floor must be resolved to the floor it means, \
+             so one listing cannot be filed under two names"
+        );
+    }
+
+    /// **A verdict reaches every cached listing, not just the one on screen.**
+    ///
+    /// A pending candidate sits in several cache entries at once: the stepper
+    /// makes an entry per floor and a pair above the stricter one is in both,
+    /// and a within-class near-repeat is in its class listing *and* the global
+    /// one. A write-back that only touched `groups.key` left the others
+    /// offering a candidate already verdicted — and a whole-group verdict
+    /// seeded on one that is gone fails, cascades nothing, and leaves a card
+    /// that only a Regroup can clear, which is the wait this branch exists to
+    /// remove. Verdicts from the Sample-12 deck reached no listing at all.
+    ///
+    /// Every entry into the groups screen used to be a fresh fetch, so none of
+    /// this was reachable: the cache is what makes it reachable. So the ids
+    /// are recorded where verdicts are SENT — one place, no caller able to
+    /// miss it — and every listing is filtered on the way out of the cache.
+    #[test]
+    fn a_verdict_reaches_listings_other_than_the_one_on_screen() {
+        assert!(
+            queue_fn("sendVerdict").contains("judgedIds.add"),
+            "the one place a verdict is sent must record it, or a caller can file \
+             a verdict no cached listing hears about"
+        );
+        // Every way a listing reaches the screen, or the gap reopens on
+        // whichever one was left unfiltered. Deliberately not an equality on
+        // the call count: the first spelling of this pinned it at two and so
+        // would have *blocked* the fix for the third install path — the
+        // error-restore — instead of catching that it was missing. A test
+        // that forbids a correct change is worse than the one it replaced.
+        let load = queue_fn("loadGroups");
+        assert!(
+            load.matches("withoutJudged(").count() >= 3,
+            "every listing that reaches the screen must be filtered — the cache hit, \
+             the fresh fetch, and the restore after a failed regroup:\n{load}"
+        );
+    }
+
+    /// **A number nobody has is not zero.**
+    ///
+    /// `cascade_tally` answers `None` when the child's report carries no
+    /// `cascade:` line — an older graph binary, a changed line, a cascade that
+    /// died before printing. Flattening that to `(0, 0)` on the way out told
+    /// the page "nothing was left pending" on the strength of a tally that had
+    /// not been read, and the page acts on exactly that: it marks a fan-out's
+    /// members judged, which hides still-pending candidates for the session.
+    ///
+    /// So the field is nullable, and the page tests `=== 0` rather than
+    /// falsiness. This is the wire half; the reader half is asserted below it.
+    #[test]
+    fn an_unreadable_cascade_is_null_not_zero() {
+        use crate::commands::review::cascade_tally;
+        assert_eq!(
+            cascade_tally("#12 rejected\ncascade: 4 rejected, 2 left pending"),
+            Some((4, 2))
+        );
+        assert_eq!(
+            cascade_tally("#12 rejected\ncascade: 6 rejected"),
+            Some((6, 0))
+        );
+        // The case the flattening erased: a landed seed whose cascade arm said
+        // nothing this can parse.
+        assert_eq!(
+            cascade_tally("#12 rejected\n(cascade arm produced no line)"),
+            None
+        );
+
+        // And the page must not treat that `null` as "none left pending".
+        let send = queue_fn("sendVerdict");
+        assert!(
+            send.contains("out?.left_pending === 0"),
+            "a falsy test cannot tell `null` from a real zero:\n{send}"
+        );
+    }
+
+    /// A count that has stopped being true is worse than an absent one.
+    ///
+    /// `classes` renders as per-class chips directly under a kicker reading
+    /// "N near-repeats". Carrying it through a reconcile leaves the two
+    /// disagreeing on the same card — reject four of seven and the kicker says
+    /// three while the chips still sum to seven. Re-deriving it is not the
+    /// alternative (the key is the graph's `cluster_key` and this page must
+    /// not own a second copy of that rule); dropping it is. The page-level
+    /// cross-class caution is not on the chips and survives without them.
+    #[test]
+    fn a_shrunken_group_stops_showing_its_old_class_spans() {
+        assert!(
+            queue_fn("reconcileGroup").contains("g.classes = null"),
+            "a group that lost members must drop its class chips"
+        );
+        assert!(
+            queue_fn("withoutJudged").contains("classes: null"),
+            "a group rebuilt out of the cache must drop its class chips too"
+        );
+    }
+
+    /// **A partial fan-out must not hide the members it left behind.**
+    ///
+    /// Between the two ways this page can be wrong about a cached listing —
+    /// showing a candidate that is gone, or hiding one that is still there —
+    /// the second is much the worse, because it is silent and a Regroup does
+    /// not undo it. A first pass recorded every cascade id as judged on the
+    /// belief that vetting only drops ids already decided. This route
+    /// contradicts that on the same response: members are vetted per-id
+    /// against the seed's class, an unresolvable subject fails the same way,
+    /// and `left_pending` says how many stayed. Marking those judged removed
+    /// them from every cached listing AND from the next fetch, which is
+    /// filtered through the same set — invisible for the rest of the session.
+    ///
+    /// The route reports the number, so the page must read it, and the pane
+    /// must say so out loud the way the TUI does.
+    #[test]
+    fn a_partial_cascade_leaves_its_survivors_visible() {
+        let send = queue_fn("sendVerdict");
+        assert!(
+            send.contains("left_pending"),
+            "the cascade may only be recorded as judged when all of it landed:\n{send}"
+        );
+        assert!(
+            queue_fn("groupVerdict").contains("left_pending"),
+            "a group verdict that swept less than it offered must say so"
+        );
+        // The number exists to be read: this is the field the page depends on.
+        assert!(
+            QUEUE_SVELTE.contains("left_pending"),
+            "the page must consume the route's `left_pending`"
+        );
+    }
+
+    /// The TUI's row has the same two numbers on it as the web card.
+    ///
+    /// `queues.rs` renders `×{g.size()}` with `spans: {c} ×{n}, …` directly
+    /// underneath, so a group that lost members to a verdict reads `×3` above
+    /// spans summing to seven — the same disagreement the web pane drops the
+    /// chips to avoid. Both surfaces show a partially-judged group the same
+    /// way, or the claim that they do is the thing that is wrong.
+    #[test]
+    fn the_tui_drops_its_spans_when_a_group_shrinks() {
+        let src = include_str!("../../tui/mod.rs");
+        let arm = src
+            .split_once("// Back to the groups, updated LOCALLY")
+            .expect("the local group rebuild must still be there")
+            .1;
+        let arm = &arm[..arm
+            .find("modal.level = queues::Level::Groups")
+            .unwrap_or(arm.len())];
+        assert!(
+            arm.contains("g.classes.clear()"),
+            "a shrunken group must drop its spans line:\n{arm}"
+        );
+    }
+
+    /// **A leader with nobody behind it is not a group, on all three paths.**
+    ///
+    /// A pair is the commonest group size there is, so judging one member is
+    /// the ordinary case rather than an edge: it leaves a lone leader, and a
+    /// card reading "1 near-repeats" over *Reject all 1* covers exactly one
+    /// candidate the item list is already showing. Tapping it sends an empty
+    /// cascade, which reaches the child as no `--cascade` at all and comes
+    /// back with no `cascade:` line — so the pane announced that the fan-out
+    /// could not be measured, about a group with nothing to fan out to.
+    ///
+    /// Two rebuild paths in this pane and one in the TUI, and they disagreed:
+    /// `withoutJudged` dropped at one survivor while `reconcileGroup` dropped
+    /// only at zero, and `split_first` kept the case in the modal. Nor did it
+    /// self-heal — `reconcileGroup` had already written the emptied members
+    /// to the cache, so the cached path saw a count that had not changed.
+    #[test]
+    fn a_group_of_one_is_dropped_wherever_a_group_is_rebuilt() {
+        assert!(
+            queue_fn("reconcileGroup").contains("survivors.length < 2"),
+            "the live rebuild must drop a group that is down to its leader"
+        );
+        assert!(
+            queue_fn("withoutJudged").contains("members.length === 0"),
+            "the cached rebuild must drop a group that is down to its leader"
+        );
+        let src = include_str!("../../tui/mod.rs");
+        let arm = src
+            .split_once("// Back to the groups, updated LOCALLY")
+            .expect("the local group rebuild must still be there")
+            .1;
+        assert!(
+            arm[..arm
+                .find("modal.level = queues::Level::Groups")
+                .unwrap_or(arm.len())]
+                .contains("!rest.is_empty()"),
+            "the modal's rebuild must drop one too, or `both surfaces, one rule` is false"
+        );
+    }
+
+    /// A notice about one group verdict must not outlive the screen it was
+    /// about.
+    ///
+    /// It renders at the top of the pane at every depth, and the fan-out it
+    /// describes belongs to a card that has just been removed. Left standing,
+    /// it follows the reviewer into the class list and the sample deck and
+    /// survives a Regroup that contradicts it — the failure the header's clock
+    /// time is written to avoid, on a different field.
+    ///
+    /// **Scoped, not swept.** The first version cleared it by hand at each
+    /// navigation point, and the one exit it missed was the only exit from the
+    /// screen that writes it: the groups back arrow is an inline
+    /// `() => { groups = null }` and cleared nothing. Counting clear sites
+    /// could not find that — the missing one is a handler, not a function —
+    /// and a test that counts would have gone on passing while any future
+    /// handler reintroduced it. So the message carries the listing instance it
+    /// belongs to and the render decides, which no new handler can get wrong.
+    #[test]
+    fn a_fan_out_notice_does_not_outlive_its_screen() {
+        assert!(
+            QUEUE_SVELTE.contains("notice.on === listingInstance"),
+            "the notice must be scoped to the listing it describes, not cleared by hand \
+             at each navigation point — the exits are handlers, and one was missed"
+        );
+        // `groups` gone is the back arrow, and it must hide the message too.
+        assert!(
+            QUEUE_SVELTE.contains("notice && groups && notice.on === listingInstance"),
+            "leaving the groups screen must take the notice with it"
+        );
+        // Every install of a listing is a new instance, or a Regroup would
+        // keep a message that contradicts what it just fetched.
+        assert_eq!(
+            queue_fn("loadGroups")
+                .matches("listingInstance += 1")
+                .count(),
+            3,
+            "each of the three ways a listing reaches the screen is a new instance"
+        );
+    }
+
+    /// One door to the expensive query, so the cache cannot be walked around.
+    ///
+    /// A grouping is kept for the life of the page (`groupCache`), which is
+    /// what makes the Back arrow and a tab switch free rather than a fresh
+    /// two minutes. That only holds while every path to a listing goes
+    /// through the one loader — a second `fetch` of this route added beside
+    /// it would be a listing nobody cached and nobody could regroup.
+    #[test]
+    fn the_grouping_query_has_exactly_one_caller_in_the_page() {
+        assert_eq!(
+            QUEUE_SVELTE.matches("/api/queue/groups").count(),
+            1,
+            "every grouping must go through the cached loader in Queue.svelte"
+        );
+        assert!(
+            QUEUE_SVELTE.contains("const groupCache"),
+            "Queue.svelte must keep the listing across an unmount"
+        );
+    }
 
     fn item(id: &str, status: &str, created: &str) -> OutboxItem {
         OutboxItem {
