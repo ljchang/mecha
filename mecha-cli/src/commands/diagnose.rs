@@ -105,6 +105,23 @@ pub fn corpus_slice(
             // and no outcomes, and was reported as "the filter matched
             // nothing" — the wrong finding, on the branch whose subject is
             // not conflating two zeros.
+            // A third zero, and the last one this branch found: `scan` counts
+            // a session as read only *after* `outcomes_attributed` succeeds,
+            // so a torn transcript lands in `unreadable` and leaves
+            // `sessions_read` at nought. Reporting that as "the filter matched
+            // nothing" turns a rotting store into a typo. `unreadable` exists
+            // for exactly this and its own doc says so — an unreadable store
+            // is a finding, not an empty queue.
+            if sessions_read == 0 && corpus.unreadable > 0 {
+                anyhow::bail!(
+                    "no readable sessions are rooted under {}, and {} transcript(s) in the \
+                     store could not be read at all — which is a damaged store rather than a \
+                     filter that matched nothing. `mecha doctor` reports on the session \
+                     store.",
+                    w.display(),
+                    corpus.unreadable
+                );
+            }
             if sessions_read == 0 {
                 anyhow::bail!(
                     "no sessions are rooted under {} — the filter matched nothing, which is \
