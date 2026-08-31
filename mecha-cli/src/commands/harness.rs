@@ -191,6 +191,28 @@ async fn ruminate(
         println!("note:      {note}");
     }
 
+    // Whether the corpus can refute this prediction at all. Every metric is a
+    // cost, so one that no run has any of can only tie or worsen under any
+    // change — and finding that out costs a real model run per episode per
+    // arm. The brief now reports the table this reads, so a diagnostician
+    // choosing such a metric has been told; on 2026-08-28 it had not been, and
+    // predicted a lower `cut_short` over 170 runs in which `cut_short` was
+    // zero. The 37 "interrupted" it was reading are cancellations, which
+    // `StopCause::cut_short` excludes on purpose.
+    let no_headroom = evidence
+        .metrics
+        .iter()
+        .find(|(m, _, _)| *m == cand.metric)
+        .is_some_and(|(_, _, with)| *with == 0);
+    let unrefutable = format!(
+        "predicts a lower `{}`, which no run in this corpus has any of — \
+         the measurement could only tie",
+        cand.metric.as_str()
+    );
+    if no_headroom {
+        println!("note:      {unrefutable}");
+    }
+
     match proposal.class {
         ChangeClass::Security => {
             let mut reason = String::new();
@@ -229,6 +251,23 @@ async fn ruminate(
                     "\nstaged for review — {}",
                     cand.reason.as_deref().unwrap_or("")
                 );
+            }
+            // Refused rather than measured, and rejected rather than staged.
+            // This is the one path where a proposal costs replays, and a
+            // prediction the corpus cannot refute buys nothing with them.
+            // Rejected so the brief's history carries it: dropped, it would be
+            // free to come back tomorrow.
+            //
+            // Deliberately not applied to the other classes. Those reach a
+            // person however they score, and a security-class proposal
+            // silently rejected on a metric technicality is one nobody reviews
+            // — which is the opposite of what its class is for.
+            Ok(_) if no_headroom => {
+                cand.status = STATUS_REJECTED.into();
+                cand.resolved_at = Some(now.clone());
+                cand.reason = Some(format!("{unrefutable}, so it was not worth a replay"));
+                store.write(&cand)?;
+                println!("\nrejected unmeasured — {unrefutable}");
             }
             Ok(change) => {
                 measure(global, &store, cand, change, &model, sessions, holdout_in).await?;

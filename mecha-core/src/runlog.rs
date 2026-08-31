@@ -189,6 +189,49 @@ impl Corpus {
         out
     }
 
+    /// What one predictable metric currently costs: its mean over the corpus,
+    /// and how many runs have any of it to reduce.
+    ///
+    /// **The second number is the one that matters, and it is a headroom
+    /// check, not a summary.** Every metric here is a cost, so a metric no run
+    /// has any of cannot be reduced — a change predicting it can only tie or
+    /// worsen, and learning that costs a real model run per episode per arm.
+    /// [`crate::candidate::Metric::headroom`] makes the same argument one
+    /// episode at a time, for the replay draw; this makes it for the corpus,
+    /// before a prediction about it is ever written down.
+    pub fn metric_cost(&self, metric: crate::candidate::Metric) -> (f64, usize) {
+        if self.rows.is_empty() {
+            return (0.0, 0);
+        }
+        let values: Vec<f64> = self.rows.iter().map(|r| metric.of(&r.stats)).collect();
+        let with = values.iter().filter(|v| **v > 0.0).count();
+        (values.iter().sum::<f64>() / values.len() as f64, with)
+    }
+
+    /// Calls a human or a policy refused — the harness working, and never
+    /// averaged into [`Self::tool_errors`].
+    ///
+    /// Reported beside the error rate because it is the datum that separates
+    /// "the environment is failing calls" from "the environment is declining
+    /// them", and a diagnostician shown only the total invents which one it
+    /// is looking at.
+    pub fn tool_denied(&self) -> u64 {
+        self.rows
+            .iter()
+            .map(|r| u64::from(r.stats.tool_denied))
+            .sum()
+    }
+
+    /// Sends the trifecta interlock refused. The only counter that answers
+    /// "is a security control costing this run tool calls?" — the question
+    /// the 2026-08-25 nightly answered by guessing.
+    pub fn blocked_sends(&self) -> u64 {
+        self.rows
+            .iter()
+            .map(|r| u64::from(r.stats.blocked_sends))
+            .sum()
+    }
+
     pub fn compactions(&self) -> u64 {
         self.rows
             .iter()
