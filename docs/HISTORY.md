@@ -4116,6 +4116,20 @@ matters is the general shape.
 
 ### Measuring
 
+**2026-08-31 — a bare filename is a line number's failure mode one level up,
+and two files share the name.** A handoff item cited `setup.rs:879` for a stale
+comment in `prepare_tools`. There are two: `mecha-cli/src/setup.rs` and
+`mecha-cli/src/commands/setup.rs`. A reader followed it to the second, where
+line 879 is an unrelated test assertion and `global_config_only` does not
+appear anywhere in the file — so the reference read as "already fixed, or never
+true", which is the failure a citation exists to prevent, pointed backwards.
+Caught by a peer checking the address rather than the finding. **`CLAUDE.md`
+says cite the symbol, not the line; the unstated half is that a path is part of
+the symbol whenever the basename is not unique** — and `find . -name` is the
+one-second check. Written, of all places, into a handoff pass by the skill
+whose own stated rule this is. The corrected item also found the comment worse
+than reported: it claims one caller and there are four.
+
 **2026-08-31 — a counter whose scope is implicit is one nobody can read
 correctly, and three drafts got the same number wrong three different ways.**
 `Corpus::sessions_read` increments *after* the workspace filter and *before*
