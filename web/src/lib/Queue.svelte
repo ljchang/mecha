@@ -86,59 +86,62 @@
   // beside it are handed back untouched, and an untouched listing is returned
   // by identity.
   //
-  // A group whose LEADER was judged needs a new face, and a face must be a
-  // real member statement. The server sends `sample` for the first three
-  // members in members order, which is the only id→statement mapping this
-  // page has; past it there is nothing to promote with. So a group that
-  // cannot name a survivor is dropped rather than shown under a face this
-  // page invented. Nothing is lost by dropping it: those candidates are still
-  // pending, still in their class listing, and still in the next regroup.
+  // **A group whose LEADER was judged is dropped, never re-headed.**
+  //
+  // This function knows a listing and a set of ids, and nothing else. It has
+  // no statement for any member — the only thing that looks like one is
+  // `sample`, and reading it as `members[i]`'s statement would be a belief
+  // about another repository's serialiser held in this file. It happens to be
+  // true today (`assemble_global_groups` takes the first three members in
+  // order), but `sample` is decorative everywhere else it is consumed: the
+  // CLI prints it as unattributed `~` lines and `GroupRow` calls it "a few
+  // member statements". Nothing in this repo would break if the graph started
+  // sending, say, the top three by cosine.
+  //
+  // What would break is a person: the promoted id becomes `leader_id`, and a
+  // group verdict files on `leader_id` under the statement on the card. A
+  // wrong mapping shows one candidate's words over Accept-all and votes on
+  // another — the reviewable-object rule failing in the one way it fails
+  // without an error. A promotion is not worth buying with that, because the
+  // cost of dropping is small and known: those candidates stay pending, stay
+  // in their class listing, and come back in the next regroup.
+  //
+  // `reconcileGroup` promotes, and may: it holds `items.rows`, which carries
+  // each surviving candidate's own statement by id. Precision where the data
+  // is, refusal where it is not.
   function withoutJudged(listing) {
     if (judgedIds.size === 0 || !Array.isArray(listing?.rows)) return listing;
     let changed = false;
     const rows = [];
     for (const g of listing.rows) {
       const members = (g.members ?? []).filter((m) => !judgedIds.has(m[0]));
-      const leaderJudged = judgedIds.has(g.leader_id);
-      if (!leaderJudged && members.length === (g.members ?? []).length) {
+      if (judgedIds.has(g.leader_id)) {
+        changed = true;
+        continue;
+      }
+      if (members.length === (g.members ?? []).length) {
         rows.push(g);
         continue;
       }
       changed = true;
-      // `sample[i]` is the statement of `members[i]`, by the graph's own
-      // construction in `assemble_global_groups` — same slice, same order.
-      const sample = g.sample ?? [];
-      const statementOf = new Map(
-        (g.members ?? []).slice(0, sample.length).map((m, i) => [m[0], sample[i]])
-      );
-      let leader = g.leader_id;
-      let leaderStatement = g.leader_statement;
-      let rest = members;
-      if (leaderJudged) {
-        const heir = members.find((m) => statementOf.has(m[0]));
-        if (!heir) continue;
-        leader = heir[0];
-        leaderStatement = statementOf.get(heir[0]);
-        rest = members.filter((m) => m[0] !== leader);
-      }
       // A leader with nobody behind it is not a group, and a card offering
       // "Reject all 1" is a worse answer than no card.
-      if (rest.length === 0) continue;
+      if (members.length === 0) continue;
       rows.push({
         ...g,
-        leader_id: leader,
-        leader_statement: leaderStatement,
-        members: rest,
-        sample: rest.map((m) => statementOf.get(m[0])).filter(Boolean).slice(0, 3),
-        // Dropped rather than carried, for the reason the header's timestamp
-        // is a clock time: these render as per-class counts under a kicker
-        // that now says something else, and two numbers disagreeing on one
-        // card is worse than one absent chip row. The cross-class caution is
-        // page-level and survives.
+        members,
+        // Both dropped rather than guessed at, for the reason the header's
+        // timestamp is a clock time. `sample` cannot be trimmed without the
+        // id→statement mapping this function refuses to assume, and `classes`
+        // renders as per-class counts under a kicker that has just moved —
+        // two numbers disagreeing on one card is worse than one absent row.
+        // The leader statement, which is what a verdict is filed under, is
+        // untouched and still the graph's own.
+        sample: [],
         classes: null,
       });
     }
-    return changed ? { ...listing, rows } : listing;
+    return changed ? { ...listing, rows, considered: null } : listing;
   }
 </script>
 
@@ -709,7 +712,12 @@
     // the chips and survives without them. Same rule as the header's clock
     // time: a figure that has stopped being true without saying so is worse
     // than one that is absent.
-    if (survivors.length !== items.ids.length) g.classes = null;
+    if (survivors.length !== items.ids.length) {
+      g.classes = null;
+      // And the listing's total stops being a denominator for a count
+      // that has moved beneath it — same rule, one scope up.
+      groups.considered = null;
+    }
     cacheGroups();
   }
 
@@ -740,6 +748,7 @@
         across: !!groups.all,
       });
       groups.rows = groups.rows.filter((r) => r !== g);
+      groups.considered = null;
       // The listing outlives this screen now, so a verdict has to reach the
       // kept copy too — otherwise stepping out and back in would re-offer
       // "Accept all 7" on a group that is already gone from the queue.
@@ -1054,9 +1063,17 @@
       <div class="empty">Nothing repeats above the threshold — review item by item.</div>
     {:else}
       {#if groups.all}
+        <!-- The denominator goes as soon as the numerator stops matching it.
+             `considered` is the queue size the grouping RAN over, frozen at
+             fetch; the covered count is live, shrinking as verdicts land. A
+             refetch used to move both together. Now "12 groups covering 40 of
+             7,013 pending" would be a live count over an hour-old total —
+             the same two-numbers-disagreeing the class chips were dropped to
+             avoid, one line above the chips. -->
         <div class="footnote">
           {groups.rows.length} groups covering
-          {groups.rows.reduce((n, g) => n + g.members.length + 1, 0)} of {groups.considered} pending ·
+          {groups.rows.reduce((n, g) => n + g.members.length + 1, 0)}
+          {#if groups.considered != null}of {groups.considered}{/if} pending ·
           singletons stay in their class listings. One tap is one human verdict — the shown
           statement is yours, the rest follow as a labeled machine cascade, and each group names
           every class it touches.
