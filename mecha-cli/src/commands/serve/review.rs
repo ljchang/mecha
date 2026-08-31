@@ -515,12 +515,20 @@ pub async fn verdict(State(state): St, Json(body): Json<VerdictBody>) -> Respons
         )
             .into_response();
     }
-    let (cascaded, left) = crate::commands::review::cascade_tally(&report).unwrap_or((0, 0));
+    // `None` when the report carried no `cascade:` line at all — an older
+    // graph binary, a changed line, a cascade that died before printing. It
+    // rides out as `null` rather than being flattened to zero, because a
+    // reader cannot tell a real zero from a failure to look, and this one
+    // acts on the difference: the page marks a fan-out's members judged when
+    // none were left pending, and hiding still-pending candidates is the
+    // worse of the two ways it can be wrong. A dash is never zero, on the
+    // wire as much as in a column.
+    let cascade = crate::commands::review::cascade_tally(&report);
     Json(serde_json::json!({
         "ok": true,
         "landed": landed,
-        "cascaded": cascaded,
-        "left_pending": left,
+        "cascaded": cascade.map(|(c, _)| c),
+        "left_pending": cascade.map(|(_, left)| left),
         "output": report.trim(),
     }))
     .into_response()
@@ -922,13 +930,54 @@ mod tests {
             "the one place a verdict is sent must record it, or a caller can file \
              a verdict no cached listing hears about"
         );
-        // Both ways a listing reaches the screen, or the gap reopens on
-        // whichever one was left unfiltered.
+        // Every way a listing reaches the screen, or the gap reopens on
+        // whichever one was left unfiltered. Deliberately not an equality on
+        // the call count: the first spelling of this pinned it at two and so
+        // would have *blocked* the fix for the third install path — the
+        // error-restore — instead of catching that it was missing. A test
+        // that forbids a correct change is worse than the one it replaced.
         let load = queue_fn("loadGroups");
+        assert!(
+            load.matches("withoutJudged(").count() >= 3,
+            "every listing that reaches the screen must be filtered — the cache hit, \
+             the fresh fetch, and the restore after a failed regroup:\n{load}"
+        );
+    }
+
+    /// **A number nobody has is not zero.**
+    ///
+    /// `cascade_tally` answers `None` when the child's report carries no
+    /// `cascade:` line — an older graph binary, a changed line, a cascade that
+    /// died before printing. Flattening that to `(0, 0)` on the way out told
+    /// the page "nothing was left pending" on the strength of a tally that had
+    /// not been read, and the page acts on exactly that: it marks a fan-out's
+    /// members judged, which hides still-pending candidates for the session.
+    ///
+    /// So the field is nullable, and the page tests `=== 0` rather than
+    /// falsiness. This is the wire half; the reader half is asserted below it.
+    #[test]
+    fn an_unreadable_cascade_is_null_not_zero() {
+        use crate::commands::review::cascade_tally;
         assert_eq!(
-            load.matches("withoutJudged(").count(),
-            2,
-            "both the cached and the freshly fetched listing must be filtered:\n{load}"
+            cascade_tally("#12 rejected\ncascade: 4 rejected, 2 left pending"),
+            Some((4, 2))
+        );
+        assert_eq!(
+            cascade_tally("#12 rejected\ncascade: 6 rejected"),
+            Some((6, 0))
+        );
+        // The case the flattening erased: a landed seed whose cascade arm said
+        // nothing this can parse.
+        assert_eq!(
+            cascade_tally("#12 rejected\n(cascade arm produced no line)"),
+            None
+        );
+
+        // And the page must not treat that `null` as "none left pending".
+        let send = queue_fn("sendVerdict");
+        assert!(
+            send.contains("out?.left_pending === 0"),
+            "a falsy test cannot tell `null` from a real zero:\n{send}"
         );
     }
 
