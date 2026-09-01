@@ -170,6 +170,19 @@ pub struct Evidence {
     /// way twice (2026-08-31, 2026-09-01), both times proposing a compaction
     /// change for a corpus that never came close to compacting.
     pub compact_at_fraction: Option<f64>,
+    /// Context overflows across the corpus, and how many rows sensed one.
+    ///
+    /// **A different counter from [`Self::compactions`], and the one the
+    /// common overflow actually increments.** `RunOutcome::context_overflows`
+    /// exists because eviction-and-thinning recovery incremented nothing and
+    /// was invisible in every store; a run can overflow repeatedly with
+    /// `compactions: 0`. Pressure cannot see it either — the overflowing
+    /// request 400s and is never priced.
+    ///
+    /// So the reassuring sentence has to consult this too, or it talks a
+    /// reader out of a true finding, which is the 2026-08-31 bug in a mirror.
+    /// `None` means no row sensed it: unknown, not zero.
+    pub context_overflows: Option<u64>,
     /// Average `Homeostat::anticipated_guilt` over the runs that sensed it
     /// (`crate::guilt`). The sensor has no behavioural consumer yet; this is
     /// the corpus existing before anything is built on it.
@@ -252,6 +265,14 @@ impl Evidence {
                 .collect(),
             mean_peak_context_pressure: corpus.mean_peak_context_pressure(),
             max_peak_context_pressure: corpus.max_peak_context_pressure(),
+            context_overflows: {
+                let (total, sensed) = corpus.context_overflows();
+                // A rate over an empty denominator is `None`. Rows written
+                // before the sensor contribute no knowledge, and reading
+                // "nobody recorded one" as "none happened" is the dash-is-
+                // never-zero mistake this module keeps elsewhere.
+                (sensed > 0).then_some(total)
+            },
             // Left for the caller to fill: this constructor sees a corpus,
             // not a config, and the threshold is a property of the run's
             // provider window. `None` renders nothing rather than guessing —
@@ -363,12 +384,30 @@ impl Evidence {
                 // ≈ 28 points). In the one sentence whose whole job is to
                 // stop a model misreading a number, the label has to be
                 // unambiguous.
+                // Overflows are known to have happened: whatever pressure
+                // reported, the window was hit. Never reassurance.
+                (_, Some(at)) if self.context_overflows.is_some_and(|n| n > 0) => format!(
+                    " — compaction fires at {}, and {} context overflow(s) are recorded: the \
+                     window WAS reached, whatever the peaks above say (an overflowing request \
+                     400s and is never priced, so it contributes no peak)",
+                    pct(Some(at)),
+                    self.context_overflows.unwrap_or(0)
+                ),
                 (Some(max), Some(at)) if max < at && self.compactions == 0 => format!(
                     " — compaction fires at {}, and the highest any run reached is {:.1} \
                      points below it, so `compactions: 0` above means never needed, NOT \
-                     disabled or broken",
+                     disabled or broken{}",
                     pct(Some(at)),
-                    (at - max) * 100.0
+                    (at - max) * 100.0,
+                    match self.context_overflows {
+                        Some(_) => " (and no run overflowed)",
+                        // Said, not assumed. The claim is about pressure and
+                        // compactions; overflows are a third counter, and a
+                        // corpus predating the sensor cannot answer for them.
+                        None =>
+                            " (no run recorded whether it overflowed, so that axis is \
+                                 unchecked)",
+                    }
                 ),
                 // Compactions happened while the reported peak stayed under
                 // the threshold. Not reassurance — that combination is
@@ -755,6 +794,49 @@ mod tests {
             "a run crossed the threshold; claiming otherwise is the inverse \
              of the original bug: {brief}"
         );
+    }
+
+    /// **Review finding, round 3.** The gate was on `compactions == 0`, but
+    /// that is not the counter the common overflow increments —
+    /// `context_overflows` is, and pressure cannot see an overflow either
+    /// (the request 400s and is never priced). So a corpus that overflowed
+    /// repeatedly with zero compactions read back as "never needed, NOT
+    /// disabled or broken": the original bug in a mirror, talking a reader
+    /// out of a true finding instead of into a false one.
+    #[test]
+    fn recorded_overflows_defeat_the_reassurance() {
+        let brief = super::Evidence {
+            runs: 175,
+            compactions: 0,
+            max_peak_context_pressure: Some(0.233),
+            compact_at_fraction: Some(0.66),
+            context_overflows: Some(4),
+            ..Default::default()
+        }
+        .brief();
+        assert!(!brief.contains("never needed"), "{brief}");
+        assert!(
+            brief.contains("4 context overflow(s) are recorded"),
+            "{brief}"
+        );
+    }
+
+    /// Unknown is not zero. A corpus predating the sensor cannot answer for
+    /// overflows, so the sentence still fires but names the unchecked axis
+    /// rather than implying it was checked.
+    #[test]
+    fn unsensed_overflows_are_named_not_assumed_away() {
+        let brief = super::Evidence {
+            runs: 175,
+            compactions: 0,
+            max_peak_context_pressure: Some(0.233),
+            compact_at_fraction: Some(0.66),
+            context_overflows: None,
+            ..Default::default()
+        }
+        .brief();
+        assert!(brief.contains("never needed"), "{brief}");
+        assert!(brief.contains("unchecked"), "{brief}");
     }
 
     /// Review finding: the reassurance arm tested pressure alone, so it

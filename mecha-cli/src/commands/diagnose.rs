@@ -191,14 +191,16 @@ pub fn evidence_for(model: &str, slice: &Corpus, history: Vec<String>) -> Eviden
 /// those describes the runs being diagnosed. A slice whose rows disagree
 /// about the provider yields `None`: there is no single threshold to name.
 ///
-/// **`None` wherever `AgentConfig::compact_at` would return `None`.** That
-/// method is `compact_at_tokens.or_else(|| context_window.map(..))`, so with
-/// neither set there is no threshold and the run has no compaction at all —
-/// and an earlier draft of this function returned `Some(COMPACT_FRACTION)`
-/// there, which would have printed "compaction fires at 66.0% ... never
-/// needed, NOT disabled" for a configuration in which it is genuinely
-/// disabled. Exactly the confident wrong sentence this whole branch exists
-/// to remove, reintroduced one level down.
+/// **`None` whenever there is no fraction to report — which is not the same
+/// set as `AgentConfig::compact_at` returning `None`.** With neither
+/// `compact_at_tokens` nor a window there is no threshold at all, and an
+/// earlier draft returned `Some(COMPACT_FRACTION)` there — printing
+/// "compaction fires at 66.0% ... never needed, NOT disabled" for a
+/// configuration in which it is genuinely disabled. With an explicit
+/// `compact_at_tokens` and no window, `compact_at` returns `Some(n)` and
+/// compaction IS on; what is missing is the denominator, so there is no
+/// fraction to put beside a pressure reading. Both yield `None` here, for
+/// two different reasons, and conflating them was the earlier wording.
 ///
 /// Still the *currently configured* threshold rather than the one each run
 /// used. `RunConfig` does record `compact_at_tokens` per session, so a
@@ -633,6 +635,41 @@ mod tests {
             sessions_read: 1,
             ..Default::default()
         }
+    }
+
+    /// **The invariant the other tests could not see.** All three set
+    /// `default_provider` to the same name the rows carry, so
+    /// `cfg.provider(Some(name))` and `cfg.provider(None)` returned the
+    /// same thing and the fix was unmeasured. Here the default provider has
+    /// a different window from the one the rows name: the fraction must be
+    /// computed against the ROWS\' provider, or the brief divides this
+    /// model\'s threshold by another model\'s window.
+    #[test]
+    fn the_window_comes_from_the_rows_provider_not_the_default() {
+        let mut cfg = mecha_core::config::Config::default();
+        cfg.agent.compact_at_tokens = Some(40_000);
+        cfg.providers.insert(
+            "small".into(),
+            mecha_core::config::ProviderConfig {
+                context_window: Some(65_536),
+                ..Default::default()
+            },
+        );
+        cfg.providers.insert(
+            "big".into(),
+            mecha_core::config::ProviderConfig {
+                context_window: Some(200_000),
+                ..Default::default()
+            },
+        );
+        // The default is the SMALL window; the rows ran on the big one.
+        cfg.default_provider = "small".into();
+        let got = compact_at_fraction_of(&cfg, &corpus(vec![row("big", "m")])).unwrap();
+        assert!(
+            (got - 0.2).abs() < 1e-9,
+            "40000/200000 = 0.20 against the rows\' provider; \
+             40000/65536 = 0.61 would be the default\'s window — got {got}"
+        );
     }
 
     /// Unset `compact_at_tokens` with a window: the threshold *is* the
