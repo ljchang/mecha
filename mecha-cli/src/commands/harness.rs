@@ -464,6 +464,8 @@ async fn measure(
     let mut holdout_pairs: Vec<Pair> = Vec::new();
     let mut diverged: Vec<String> = Vec::new();
     let mut replay_caveats: Vec<String> = Vec::new();
+    // See `Measurement::divergence_detail`.
+    let mut divergence_detail: Vec<String> = Vec::new();
     let mut skipped = unusable;
     let total = draw.selection.len() + draw.holdout.len();
     // The flag decides the slice; the label only decides the column width.
@@ -528,7 +530,25 @@ async fn measure(
                     continue;
                 }
             };
-            if baseline.diverged || candidate.diverged {
+            // Which arm left the recording, and why — beside the id, never
+            // folded into it (`Measurement::diverged`'s ids stay joinable,
+            // the same contract `replay_caveats` respects).
+            //
+            // **The distinction the bare bool destroyed.** A baseline
+            // divergence says the replay is unreliable on this episode; a
+            // candidate-only divergence says the change altered behaviour,
+            // which is the measurement working, not failing. On 2026-09-01
+            // twelve of sixteen episodes were dropped as one undifferentiated
+            // pile, and the four that paired were all far below the
+            // threshold the candidate moved — so the tally scored only the
+            // episodes where the change provably did nothing, and reported
+            // it as a thin sample rather than a censored one.
+            for (arm, outcome) in [("baseline", &baseline), ("candidate", &candidate)] {
+                if let Some(why) = &outcome.divergence {
+                    divergence_detail.push(format!("{} — {arm} arm: {why}", prep.id));
+                }
+            }
+            if baseline.diverged() || candidate.diverged() {
                 // The recording has nothing truthful to say past a divergence;
                 // stats over the tracked prefix would grade a behaviour-visible
                 // change on the fraction it happened to track.
@@ -570,9 +590,31 @@ async fn measure(
         } else {
             format!("; replay caveats: {}", replay_caveats.join(", "))
         };
+        // Which arm, in the same breath. "Everything diverged" is two very
+        // different findings depending on whether the BASELINE did: if it
+        // did, the recording is the problem; if only the candidate did, the
+        // change moves behaviour on every episode drawn, which is a result
+        // about the change and not an absence of one.
+        let baseline_arms = divergence_detail
+            .iter()
+            .filter(|d| d.contains("— baseline arm:"))
+            .count();
+        let arms = if divergence_detail.is_empty() {
+            String::new()
+        } else if baseline_arms == 0 {
+            "; every divergence was the CANDIDATE arm — the change moved behaviour on \
+             every episode drawn, which is a finding about the change, not a missing \
+             measurement"
+                .to_string()
+        } else {
+            format!(
+                "; {baseline_arms} baseline-arm divergence(s) — the replay itself is \
+                 unreliable on this corpus, so this says little about the change"
+            )
+        };
         cand.reason = Some(format!(
             "nothing measurable: {} diverged, {} skipped — a change the replay cannot hold on \
-             the recording needs the eval arm instead{caveats}",
+             the recording needs the eval arm instead{arms}{caveats}",
             diverged.len(),
             skipped
         ));
@@ -605,6 +647,7 @@ async fn measure(
             seed: draw.seed,
             diverged,
             replay_caveats,
+            divergence_detail,
             skipped,
         },
     ));
@@ -771,6 +814,34 @@ fn show(id: &str) -> Result<()> {
                 "diverged:   {} (dropped, not scored)",
                 m.diverged.join(", ")
             );
+        }
+        // Its own block, like `replay caveats` below and for the same
+        // reason: the ids above stay a bare joinable list, and the reader
+        // deciding on this candidate gets the arm and the cause without
+        // parsing them back out.
+        if !m.divergence_detail.is_empty() {
+            let baseline_arms = m
+                .divergence_detail
+                .iter()
+                .filter(|d| d.contains("— baseline arm:"))
+                .count();
+            println!(
+                "divergence detail ({} baseline-arm, {} candidate-arm):",
+                baseline_arms,
+                m.divergence_detail.len() - baseline_arms
+            );
+            for d in &m.divergence_detail {
+                println!("  {d}");
+            }
+            // The reading, stated once rather than left to be re-derived.
+            if baseline_arms == 0 {
+                println!(
+                    "  → every divergence was the candidate arm: the change moved behaviour \
+                     on these episodes, so they are dropped for being unscoreable, NOT for \
+                     showing nothing. Check whether the episodes that DID pair are ones the \
+                     change can affect at all."
+                );
+            }
         }
         // Its own block with its own label, not indented under `diverged:`
         // — found on review: these cover *every* episode the replay

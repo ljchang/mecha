@@ -54,6 +54,15 @@ struct ReplayState {
     /// Set at the first structural divergence. From then on the recording has
     /// nothing truthful left to say.
     dead: bool,
+    /// Why the recording was left, set once beside `dead`.
+    ///
+    /// The message already existed — it is what the diverging call is
+    /// refused with — but it went only to the model, so every caller
+    /// upstream saw a bare bool. `mecha harness show` could name the
+    /// episodes that diverged and nothing about how, which is the
+    /// difference between "the replay is unreliable" and "the change did
+    /// something", and those want opposite responses.
+    divergence: Option<String>,
 }
 
 /// What one call decided to do, resolved under the lock and acted on after it.
@@ -149,28 +158,31 @@ impl ReplayTool {
 
         let Some(want) = st.calls.get(st.cursor) else {
             // The model kept going past the end of the recording.
+            let why = format!(
+                "the recording ended after {} call(s) and has no result for this one",
+                st.calls.len()
+            );
             st.dead = true;
+            st.divergence.get_or_insert_with(|| why.clone());
             return match self.mode {
                 OnDivergence::Live => Action::Live,
                 _ => {
                     self.cancel.cancel();
-                    Action::Refuse(format!(
-                        "replay: the recording ended after {} calls and has no result for \
-                         this one; stopping",
-                        st.calls.len()
-                    ))
+                    Action::Refuse(format!("replay: {why}; stopping"))
                 }
             };
         };
 
         if want.name != self.inner.name() {
-            let msg = format!(
-                "replay: recorded call #{} was `{}`, not `{}`; stopping",
+            let why = format!(
+                "recorded call #{} was `{}`, not `{}`",
                 st.cursor,
                 want.name,
                 self.inner.name()
             );
+            let msg = format!("replay: {why}; stopping");
             st.dead = true;
+            st.divergence.get_or_insert(why);
             return match self.mode {
                 OnDivergence::Live => Action::Live,
                 _ => {
@@ -286,6 +298,54 @@ impl Tool for ReplayTool {
 /// module's.** Naming one here would put a front-end's registration policy in
 /// core — the same rule that keeps `OutboxKind` config's to declare rather
 /// than the tool's.
+/// A read-only handle on why a replay left its recording.
+///
+/// Returned beside the registry by [`replay_registry_reporting`]. Held
+/// separately rather than folded into the report, because the state it reads
+/// is shared by every tool in the registry and outlives any one call.
+#[derive(Clone)]
+pub struct DivergenceProbe(Arc<Mutex<ReplayState>>);
+
+impl DivergenceProbe {
+    /// Why this replay diverged, or `None` if it never did.
+    pub fn reason(&self) -> Option<String> {
+        self.0.lock().unwrap().divergence.clone()
+    }
+}
+
+/// [`replay_registry`], plus a handle on the divergence reason.
+///
+/// A sibling rather than a changed signature: fifteen call sites want only
+/// the registry, and widening all of them to discard a value would be a
+/// larger diff than the finding is worth.
+pub fn replay_registry_reporting(
+    recorded_tools: &[String],
+    live: &Registry,
+    surface_only: Option<&Registry>,
+    recorded_specs: &[crate::message::ToolSpec],
+    calls: Vec<RecordedCall>,
+    mode: OnDivergence,
+    cancel: CancellationToken,
+) -> Result<(Registry, DivergenceProbe)> {
+    let state = Arc::new(Mutex::new(ReplayState {
+        calls,
+        cursor: 0,
+        dead: false,
+        divergence: None,
+    }));
+    let probe = DivergenceProbe(Arc::clone(&state));
+    let registry = build_replay_registry(
+        recorded_tools,
+        live,
+        surface_only,
+        recorded_specs,
+        state,
+        mode,
+        cancel,
+    )?;
+    Ok((registry, probe))
+}
+
 pub fn replay_registry(
     recorded_tools: &[String],
     live: &Registry,
@@ -295,11 +355,27 @@ pub fn replay_registry(
     mode: OnDivergence,
     cancel: CancellationToken,
 ) -> Result<Registry> {
-    let state = Arc::new(Mutex::new(ReplayState {
+    Ok(replay_registry_reporting(
+        recorded_tools,
+        live,
+        surface_only,
+        recorded_specs,
         calls,
-        cursor: 0,
-        dead: false,
-    }));
+        mode,
+        cancel,
+    )?
+    .0)
+}
+
+fn build_replay_registry(
+    recorded_tools: &[String],
+    live: &Registry,
+    surface_only: Option<&Registry>,
+    recorded_specs: &[crate::message::ToolSpec],
+    state: Arc<Mutex<ReplayState>>,
+    mode: OnDivergence,
+    cancel: CancellationToken,
+) -> Result<Registry> {
     let mut registry = Registry::new();
     for name in recorded_tools {
         // `Error` and not just `Stop`: the two run identically and differ only
@@ -1398,5 +1474,156 @@ mod tests {
         assert_eq!(report.turns, 1);
         let structural: Vec<_> = report.structural().collect();
         assert!(!structural.is_empty(), "{:?}", report.divergences);
+    }
+}
+
+#[cfg(test)]
+mod divergence_reason_tests {
+    use super::*;
+    use crate::tool::{Registry, Tool, ToolCtx, ToolOutput};
+    use async_trait::async_trait;
+    use serde_json::json;
+
+    struct Named(&'static str);
+    #[async_trait]
+    impl Tool for Named {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "fixture"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+        async fn call(&self, _i: serde_json::Value, _c: &ToolCtx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("live"))
+        }
+    }
+
+    /// **The regression.** The reason a replay left its recording was built
+    /// in `ReplayTool::decide`, handed to the model in a refusal, and then
+    /// dropped: `ArmOutcome.diverged` was a bare `bool`, so
+    /// `mecha harness show` could name twelve dropped episodes and say
+    /// nothing about how any of them diverged.
+    ///
+    /// Fails on the old behaviour, where nothing carried the string at all.
+    #[tokio::test]
+    async fn a_wrong_tool_records_which_call_and_which_tool() {
+        let mut live = Registry::new();
+        live.insert(Arc::new(Named("recorded_tool")));
+        live.insert(Arc::new(Named("other_tool")));
+
+        let (registry, probe) = replay_registry_reporting(
+            &["recorded_tool".into(), "other_tool".into()],
+            &live,
+            None,
+            &[],
+            vec![RecordedCall {
+                name: "recorded_tool".into(),
+                input: json!({}),
+                output: "recorded".into(),
+                is_error: false,
+            }],
+            OnDivergence::Stop,
+            CancellationToken::new(),
+        )
+        .expect("both tools are live");
+
+        // Nothing has diverged yet: the negative that keeps this honest.
+        assert_eq!(probe.reason(), None);
+
+        // The recorded call, in order — still no divergence.
+        registry
+            .get("recorded_tool")
+            .unwrap()
+            .call(json!({}), &ToolCtx::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            probe.reason(),
+            None,
+            "following the recording is not a divergence"
+        );
+
+        // Now the wrong tool. The recording ended, so this is the
+        // past-the-end arm.
+        registry
+            .get("other_tool")
+            .unwrap()
+            .call(json!({}), &ToolCtx::default())
+            .await
+            .unwrap();
+        let why = probe.reason().expect("a divergence must record its reason");
+        assert!(
+            why.contains("the recording ended after 1 call(s)"),
+            "the reason must say what happened: {why}"
+        );
+    }
+
+    /// A call to a tool the recording did not expect names both tools, so a
+    /// reader can see the shape of the divergence without the transcript.
+    #[tokio::test]
+    async fn a_substituted_tool_names_both_sides() {
+        let mut live = Registry::new();
+        live.insert(Arc::new(Named("expected")));
+        live.insert(Arc::new(Named("actual")));
+        let (registry, probe) = replay_registry_reporting(
+            &["expected".into(), "actual".into()],
+            &live,
+            None,
+            &[],
+            vec![RecordedCall {
+                name: "expected".into(),
+                input: json!({}),
+                output: "recorded".into(),
+                is_error: false,
+            }],
+            OnDivergence::Stop,
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        registry
+            .get("actual")
+            .unwrap()
+            .call(json!({}), &ToolCtx::default())
+            .await
+            .unwrap();
+        let why = probe.reason().expect("recorded");
+        assert!(why.contains("recorded call #0"), "{why}");
+        assert!(why.contains("`expected`"), "{why}");
+        assert!(why.contains("`actual`"), "{why}");
+    }
+
+    /// The FIRST divergence is the one that matters — everything after it
+    /// happens in a run that has already left the recording, so a later
+    /// message must not overwrite the cause.
+    #[tokio::test]
+    async fn the_first_reason_is_the_one_kept() {
+        let mut live = Registry::new();
+        live.insert(Arc::new(Named("expected")));
+        live.insert(Arc::new(Named("actual")));
+        let (registry, probe) = replay_registry_reporting(
+            &["expected".into(), "actual".into()],
+            &live,
+            None,
+            &[],
+            vec![RecordedCall {
+                name: "expected".into(),
+                input: json!({}),
+                output: "recorded".into(),
+                is_error: false,
+            }],
+            OnDivergence::Stop,
+            CancellationToken::new(),
+        )
+        .unwrap();
+
+        let actual = registry.get("actual").unwrap();
+        actual.call(json!({}), &ToolCtx::default()).await.unwrap();
+        let first = probe.reason().expect("recorded");
+        actual.call(json!({}), &ToolCtx::default()).await.unwrap();
+        assert_eq!(probe.reason().as_deref(), Some(first.as_str()));
     }
 }

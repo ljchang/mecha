@@ -27,7 +27,7 @@ use mecha_core::candidate::Metric;
 use mecha_core::config::{PermissionMode, ProviderConfig};
 use mecha_core::harness::ConfigChange;
 use mecha_core::replay::{extract, Trajectory};
-use mecha_core::replay_run::{drive, replay_registry, OnDivergence};
+use mecha_core::replay_run::{drive, replay_registry_reporting, OnDivergence};
 use mecha_core::session::{RunConfig, RunStats, Session, SessionMeta};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -272,9 +272,23 @@ pub fn draw_episodes(
 /// What one arm of one episode produced.
 pub struct ArmOutcome {
     pub stats: RunStats,
-    /// The replay left the recording and was stopped. The stats above cover
-    /// only the prefix it tracked; the caller drops the episode.
-    pub diverged: bool,
+    /// Why the replay left the recording, if it did. The stats above then
+    /// cover only the prefix it tracked, and the caller drops the episode.
+    ///
+    /// **A reason, not a bool.** The caller ORs the two arms together, so a
+    /// bare flag lost the one distinction that decides what to do next: a
+    /// baseline that diverged means the replay itself is unreliable on this
+    /// episode, while a candidate-only divergence is the change altering
+    /// behaviour — which is what the measurement is *for*. On 2026-09-01
+    /// twelve of sixteen episodes were dropped and the record could not say
+    /// which kind either of them was.
+    pub divergence: Option<String>,
+}
+
+impl ArmOutcome {
+    pub fn diverged(&self) -> bool {
+        self.divergence.is_some()
+    }
 }
 
 /// Drive one episode once, under the recorded config plus an optional
@@ -299,7 +313,7 @@ pub async fn drive_episode(
         .as_deref()
         .and_then(|h| mecha_core::surface::SurfaceStore::open_default()?.load(h))
         .unwrap_or_default();
-    let registry = match replay_registry(
+    let (registry, divergence) = match replay_registry_reporting(
         &recorded.tools,
         prepared.agent.registry(),
         Some(&crate::setup::surface_only_registry()),
@@ -377,7 +391,16 @@ pub async fn drive_episode(
         .with_compact_at(agent_cfg.compact_at_tokens);
     match drive(&agent, &cx, &prep.trajectory).await {
         Ok(report) => Ok(Ok(ArmOutcome {
-            diverged: report.stopped_early,
+            // `stopped_early` is the authority on *whether* — it is what the
+            // cancel token did — and the probe supplies the *why*. A run
+            // stopped early with no recorded reason still counts as
+            // diverged, with the reason named as unrecorded rather than
+            // silently dropped: unknown is not clean.
+            divergence: report.stopped_early.then(|| {
+                divergence
+                    .reason()
+                    .unwrap_or_else(|| "left the recording; no reason recorded".into())
+            }),
             stats: report.stats,
         })),
         Err(e) => Ok(Err(format!("replay failed: {e:#}"))),

@@ -303,6 +303,25 @@ pub struct Measurement {
     /// `diverged` rather than folded into it, so the ids stay joinable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replay_caveats: Vec<String>,
+    /// Why each dropped episode diverged, and in WHICH ARM — one entry per
+    /// arm that left the recording, "id — baseline arm: reason".
+    ///
+    /// Beside [`Self::diverged`] rather than folded into it, the same shape
+    /// and for the same reason as [`Self::replay_caveats`]: those ids are a
+    /// joinable list by contract and must not need parsing.
+    ///
+    /// **The two arms want opposite responses, and the old bool could not
+    /// tell them apart.** A baseline divergence is the replay failing on
+    /// that episode; a candidate-only divergence is the change altering
+    /// behaviour — evidence the change does something, on precisely the
+    /// episodes where it bites. Dropping both as one pile is individually
+    /// correct (a truncated arm cannot be scored) and collectively biased:
+    /// on 2026-09-01 a `compact_at_tokens=16384` candidate paired only on
+    /// episodes far below 16384 tokens, so the sample it scored was the
+    /// sample where it provably did nothing, and the gate reported a thin
+    /// sample rather than a censored one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub divergence_detail: Vec<String>,
     /// Sessions that could not be replayed at all (unreadable, no recorded
     /// calls, tool surface moved). Never evidence for either arm.
     pub skipped: usize,
@@ -320,6 +339,8 @@ pub struct Drawn {
     pub diverged: Vec<String>,
     /// See [`Measurement::replay_caveats`].
     pub replay_caveats: Vec<String>,
+    /// See [`Measurement::divergence_detail`].
+    pub divergence_detail: Vec<String>,
     pub skipped: usize,
 }
 
@@ -336,6 +357,7 @@ impl Measurement {
             seed,
             diverged,
             replay_caveats,
+            divergence_detail,
             skipped,
         } = drawn;
         use crate::candidate::Disposition;
@@ -363,6 +385,7 @@ impl Measurement {
             seed,
             diverged,
             replay_caveats,
+            divergence_detail,
             skipped,
         }
     }
