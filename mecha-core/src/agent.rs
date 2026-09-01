@@ -1177,7 +1177,6 @@ impl Agent {
         &mut self.registry
     }
 
-    /// The provider's own id (`anthropic`, `local`, …), for display.
     /// The connection this agent talks over, for a caller that needs a
     /// one-shot *beside* the loop rather than through it — a
     /// [`QuarantinedPass`](crate::quarantine::QuarantinedPass), which by
@@ -1187,6 +1186,7 @@ impl Agent {
         self.provider.as_ref()
     }
 
+    /// The provider's own id (`anthropic`, `local`, …), for display.
     pub fn provider_id(&self) -> &str {
         self.provider.id()
     }

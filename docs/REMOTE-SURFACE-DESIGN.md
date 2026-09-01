@@ -377,8 +377,29 @@ the owner typed.** A title is rendered in the owner's session list, on
 every surface, for as long as the session exists — a longer-lived display
 than any single answer — so a model paraphrase of *third-party* text would
 let a page fetched mid-conversation compose the label its own conversation
-wears. User turns in a web session are bytes the owner typed or spoke;
-summarising those is a paraphrase of the owner, and there is no channel.
+wears.
+
+**And `Role::User` is not that invariant** — the first cut of this read it
+as though it were, and review caught it before it ran. Three routes carry
+text the owner did not write into a user message, all of them live in
+`mecha serve`: tool results ride in one (which is what
+`agent::is_plain_user_text` already exists to tell apart), and
+`compact::rebuild` appends *both* its summary — a model paraphrase of
+precisely the assistant turns and tool results that were cut — and verbatim
+carried tool state onto the head message, which is a user message because
+two user messages in a row are rejected. A fourth route is a counting bug
+rather than a security one: the harness speaks in user messages too
+(`agent::is_harness_voice`), and those turns would move the rename
+thresholds. So `title::owner_turns` filters per *block* against sentinels
+the compactor exports for the purpose (`SUMMARY_HEADER`, `CARRIED_HEADER`),
+and the head message keeps the owner's opening text while losing what was
+appended to it.
+
+The general lesson is worth more than the fix: **a role is a wire-format
+position, not a provenance claim.** `Role::User` means "this slot in the
+request", and three separate mechanisms legitimately write into it. Any
+future reader that wants the owner's own words wants `is_plain_user_text`
+plus the sentinels, not the role.
 The pass is a `QuarantinedPass` on top of that, and what comes back is
 bounded to one line of 48 characters with control bytes stripped before it
 reaches a record or a row.
