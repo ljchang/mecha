@@ -154,6 +154,22 @@ pub struct Evidence {
     /// field here: the diagnostician judges what a high number means, this
     /// module only reports it.
     pub mean_peak_context_pressure: Option<f64>,
+    /// The highest peak pressure any run in the corpus reached.
+    ///
+    /// Carried beside the mean because compaction turns on the maximum, not
+    /// the average: a corpus of short runs averages a single long one away,
+    /// and the mean alone cannot say whether anything ever approached the
+    /// threshold.
+    pub max_peak_context_pressure: Option<f64>,
+    /// The fraction of the context window at which compaction fires for
+    /// these runs, when it is knowable.
+    ///
+    /// Reported so `compactions: 0` can be read correctly. Without it the
+    /// count is ambiguous between "never needed" and "never happened when it
+    /// should have", and the diagnostician resolved that ambiguity the wrong
+    /// way twice (2026-08-31, 2026-09-01), both times proposing a compaction
+    /// change for a corpus that never came close to compacting.
+    pub compact_at_fraction: Option<f64>,
     /// Average `Homeostat::anticipated_guilt` over the runs that sensed it
     /// (`crate::guilt`). The sensor has no behavioural consumer yet; this is
     /// the corpus existing before anything is built on it.
@@ -235,6 +251,12 @@ impl Evidence {
                 })
                 .collect(),
             mean_peak_context_pressure: corpus.mean_peak_context_pressure(),
+            max_peak_context_pressure: corpus.max_peak_context_pressure(),
+            // Left for the caller to fill: this constructor sees a corpus,
+            // not a config, and the threshold is a property of the run's
+            // provider window. `None` renders nothing rather than guessing —
+            // an unknown threshold must not become a confident sentence.
+            compact_at_fraction: None,
             mean_anticipated_guilt: corpus.mean_anticipated_guilt(),
             workspaces: {
                 let mut w: Vec<(String, usize)> = corpus
@@ -288,7 +310,8 @@ impl Evidence {
              refused by a person or a policy: {} · sends refused by the interlock: {} \
              (the last two are the harness working, not failing)\n\
              finished on a failed call: {} ({})\ncompactions: {}\nstop causes: {}\n\
-             avg peak context pressure: {} · avg anticipated guilt: {} \
+             context pressure: avg peak {} · highest peak {}{}\n\
+             avg anticipated guilt: {} \
              (guilt is computed partly from pressure — a rise in both is not two \
              independent findings)\n",
             self.model,
@@ -308,6 +331,24 @@ impl Evidence {
                 .collect::<Vec<_>>()
                 .join(", "),
             pct(self.mean_peak_context_pressure),
+            pct(self.max_peak_context_pressure),
+            // The subtraction, done here rather than left to the reader.
+            // `compactions: 0` is not evidence that compaction is off or
+            // broken; it is what a corpus that never reached the threshold
+            // looks like, and saying so is cheaper than a wrong proposal.
+            match (self.max_peak_context_pressure, self.compact_at_fraction) {
+                (Some(max), Some(at)) if max < at => format!(
+                    " — compaction fires at {}, and the highest any run reached is {} \
+                     below it, so `compactions: 0` above means never needed, NOT \
+                     disabled or broken",
+                    pct(Some(at)),
+                    pct(Some(at - max))
+                ),
+                (Some(_), Some(at)) => {
+                    format!(" — compaction fires at {}", pct(Some(at)))
+                }
+                _ => String::new(),
+            },
             self.mean_anticipated_guilt
                 .map(|g| format!("{g:.2}"))
                 .unwrap_or_else(|| "unknown (no denominator)".into()),
@@ -624,6 +665,76 @@ pub fn carries_over(proposal: &str, sources: &[&str]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    // ── The pressure-headroom sentence ──────────────────────────────────
+    //
+    // The incident: on 2026-08-31 and 2026-09-01 the nightly diagnostician
+    // read `compactions: 0` beside a ~9% mean pressure and concluded, both
+    // times, that compaction was disabled and context was overflowing —
+    // "causing zero compactions at 9.6% avg pressure, so the model runs in
+    // bloated context", then "context overflow with compaction disabled".
+    // Nothing in the brief said where the threshold was, so the count was
+    // ambiguous and it resolved the ambiguity the wrong way twice.
+
+    /// Fails on the old brief: it had no threshold and no maximum, so no
+    /// sentence could distinguish "never needed" from "never fired".
+    #[test]
+    fn a_corpus_that_never_neared_the_threshold_says_so() {
+        let brief = super::Evidence {
+            runs: 175,
+            compactions: 0,
+            mean_peak_context_pressure: Some(0.093),
+            max_peak_context_pressure: Some(0.233),
+            compact_at_fraction: Some(0.66),
+            ..Default::default()
+        }
+        .brief();
+        assert!(brief.contains("highest peak 23.3%"), "{brief}");
+        assert!(brief.contains("compaction fires at 66.0%"), "{brief}");
+        assert!(
+            brief.contains("never needed, NOT disabled or broken"),
+            "the reading the diagnostician got wrong twice must be stated: {brief}"
+        );
+    }
+
+    /// The maximum is not the mean, and the mean is what hides the case
+    /// compaction actually turns on. A corpus whose average is low but whose
+    /// peak crosses the threshold must NOT get the reassuring sentence.
+    #[test]
+    fn a_corpus_that_did_reach_the_threshold_gets_no_reassurance() {
+        let brief = super::Evidence {
+            runs: 175,
+            mean_peak_context_pressure: Some(0.093),
+            max_peak_context_pressure: Some(0.71),
+            compact_at_fraction: Some(0.66),
+            ..Default::default()
+        }
+        .brief();
+        assert!(brief.contains("compaction fires at 66.0%"), "{brief}");
+        assert!(
+            !brief.contains("never needed"),
+            "a run crossed the threshold; claiming otherwise is the inverse \
+             of the original bug: {brief}"
+        );
+    }
+
+    /// An unknown threshold renders no sentence rather than a confident one
+    /// — the fail-quiet direction, since the sentence would be an assertion
+    /// about a number nobody has.
+    #[test]
+    fn an_unknown_threshold_says_nothing_about_compaction() {
+        let brief = super::Evidence {
+            runs: 175,
+            mean_peak_context_pressure: Some(0.093),
+            max_peak_context_pressure: Some(0.233),
+            compact_at_fraction: None,
+            ..Default::default()
+        }
+        .brief();
+        assert!(brief.contains("highest peak 23.3%"), "{brief}");
+        assert!(!brief.contains("compaction fires at"), "{brief}");
+        assert!(!brief.contains("never needed"), "{brief}");
+    }
+
     use super::*;
 
     #[test]
