@@ -303,8 +303,16 @@ pub struct Measurement {
     /// `diverged` rather than folded into it, so the ids stay joinable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replay_caveats: Vec<String>,
-    /// Why each dropped episode diverged, and in WHICH ARM — one entry per
-    /// arm that left the recording, "id — baseline arm: reason".
+    /// Why an arm left the recording, and which arm — one entry per arm
+    /// that diverged.
+    ///
+    /// **Not joinable one-to-one against [`Self::diverged`], and that is
+    /// deliberate.** Each arm is recorded as it finishes, so an episode
+    /// whose baseline diverged and whose candidate then failed to replay at
+    /// all contributes an entry here while landing in `skipped` rather than
+    /// in `diverged`. Recording later would lose that reason entirely,
+    /// which is the loss this field exists to prevent — so the entry stays
+    /// and the contract is "an arm that diverged", not "a dropped episode".
     ///
     /// Beside [`Self::diverged`] rather than folded into it, the same shape
     /// and for the same reason as [`Self::replay_caveats`]: those ids are a
@@ -369,6 +377,34 @@ pub struct Divergence {
 }
 
 impl Divergence {
+    /// The one-line arm split for a measurement that produced no pairs.
+    ///
+    /// Extracted so it can be tested: it lands in the candidate's stored
+    /// reason, which on the all-diverged path is the whole durable record
+    /// of the run, and it was previously built inline where no test could
+    /// reach it — including the case where the two `Arm` literals are
+    /// swapped at the call site, which makes the reporter assert the
+    /// opposite of what happened.
+    pub fn arms_summary(all: &[Divergence], skipped: usize) -> String {
+        let baseline = Self::baseline_count(all);
+        let candidate = Self::candidate_count(all);
+        if all.is_empty() {
+            return String::new();
+        }
+        if baseline == 0 && skipped == 0 {
+            return format!(
+                "; all {candidate} divergence(s) were the CANDIDATE arm and nothing was \
+                 skipped — the change moved behaviour on every episode that diverged, \
+                 which is a finding about the change, not a missing measurement"
+            );
+        }
+        format!(
+            "; {baseline} baseline-arm and {candidate} candidate-arm divergence(s) — a \
+             baseline divergence says the replay is unreliable here, a candidate one says \
+             the change moved behaviour; read the split before concluding either"
+        )
+    }
+
     /// How many of these were the baseline arm — the count both the report
     /// and the renderer key on, derived rather than parsed.
     pub fn baseline_count(all: &[Divergence]) -> usize {
@@ -891,6 +927,51 @@ mod divergence_arm_tests {
         // The rendered form is free to change without moving either count.
         assert_eq!(Arm::Baseline.as_str(), "baseline");
         assert_eq!(Arm::Candidate.as_str(), "candidate");
+    }
+
+    /// **The swapped-literal case.** Every other test here would still pass
+    /// if the two `Arm::` literals were exchanged at the call site — and
+    /// that swap is exactly what makes the reporter assert the opposite of
+    /// what happened. Pinning the summary to the counts is what catches it.
+    #[test]
+    fn the_summary_follows_the_arms_and_would_catch_a_swap() {
+        // All candidate, nothing skipped: the strong claim is allowed.
+        let all_candidate = vec![d("a", Arm::Candidate), d("b", Arm::Candidate)];
+        let s = Divergence::arms_summary(&all_candidate, 0);
+        assert!(
+            s.contains("all 2 divergence(s) were the CANDIDATE arm"),
+            "{s}"
+        );
+        assert!(
+            s.contains("moved behaviour on every episode that diverged"),
+            "{s}"
+        );
+
+        // Swap the arms and the strong claim must disappear.
+        let all_baseline = vec![d("a", Arm::Baseline), d("b", Arm::Baseline)];
+        let s = Divergence::arms_summary(&all_baseline, 0);
+        assert!(
+            !s.contains("CANDIDATE arm"),
+            "a swap must not keep the claim: {s}"
+        );
+        assert!(s.contains("2 baseline-arm and 0 candidate-arm"), "{s}");
+    }
+
+    /// `skipped > 0` withdraws the strong claim: episodes never driven are
+    /// not evidence the change moved anything.
+    #[test]
+    fn skipped_episodes_withdraw_the_strong_claim() {
+        let all = vec![d("a", Arm::Candidate)];
+        let s = Divergence::arms_summary(&all, 9);
+        assert!(!s.contains("every episode that diverged"), "{s}");
+        assert!(s.contains("0 baseline-arm and 1 candidate-arm"), "{s}");
+    }
+
+    /// Nothing diverged, nothing to say.
+    #[test]
+    fn no_divergences_render_no_summary() {
+        assert!(Divergence::arms_summary(&[], 0).is_empty());
+        assert!(Divergence::arms_summary(&[], 5).is_empty());
     }
 
     /// A closed enum written into an append-only store is a wire format: a

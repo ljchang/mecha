@@ -609,32 +609,7 @@ async fn measure(
         // did, the recording is the problem; if only the candidate did, the
         // change moves behaviour on every episode drawn, which is a result
         // about the change and not an absence of one.
-        let baseline_arms = mecha_core::harness::Divergence::baseline_count(&divergence_detail);
-        let candidate_arms = mecha_core::harness::Divergence::candidate_count(&divergence_detail);
-        // **Both counts, always.** Reporting only the baseline number
-        // dropped the candidate-arm divergences that say the opposite —
-        // 19 candidate and 1 baseline read as "the replay is unreliable"
-        // and lost the 19 entirely. This path writes no `Measurement`, so
-        // this string is the whole durable record of the run.
-        let arms = if divergence_detail.is_empty() {
-            String::new()
-        } else if baseline_arms == 0 && skipped == 0 {
-            // Only safe to say "every episode drawn" when nothing was lost
-            // to `skipped` — 15 skipped and 1 candidate divergence is not
-            // a change that moved behaviour everywhere.
-            format!(
-                "; all {candidate_arms} divergence(s) were the CANDIDATE arm and nothing \
-                 was skipped — the change moved behaviour on every episode that diverged, \
-                 which is a finding about the change, not a missing measurement"
-            )
-        } else {
-            format!(
-                "; {baseline_arms} baseline-arm and {candidate_arms} candidate-arm \
-                 divergence(s) — a baseline divergence says the replay is unreliable here, \
-                 a candidate one says the change moved behaviour; read the split before \
-                 concluding either"
-            )
-        };
+        let arms = mecha_core::harness::Divergence::arms_summary(&divergence_detail, skipped);
         cand.reason = Some(format!(
             "nothing measurable: {} diverged, {} skipped — a change the replay cannot hold on \
              the recording needs the eval arm instead{arms}{caveats}",
@@ -656,7 +631,7 @@ async fn measure(
             &[],
             &[],
         );
-        cand.measurement = Some(Measurement::record(
+        let mut record = Measurement::record(
             &empty,
             model,
             now.clone(),
@@ -669,7 +644,15 @@ async fn measure(
                 divergence_detail,
                 skipped,
             },
-        ));
+        );
+        // **The stored reason must not be the floor text.** `judge_drawn`
+        // over two empty slices yields "only 0 paired episode(s) … below the
+        // floor of 8" — the sample-size framing this whole branch argues
+        // misdirects, and `show` would print it directly above the arm
+        // split that contradicts it. Nothing paired because every arm left
+        // the recording, which is a different finding from too small a draw.
+        record.reason = cand.reason.clone().unwrap_or_default();
+        cand.measurement = Some(record);
         store.write(&cand)?;
         println!(
             "\nstaged for review — {}",
