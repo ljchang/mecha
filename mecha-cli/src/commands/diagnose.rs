@@ -176,7 +176,36 @@ pub fn evidence_for(model: &str, slice: &Corpus, history: Vec<String>) -> Eviden
         }
     }
     evidence.history = history;
+    evidence.compact_at_fraction = compact_at_fraction();
     evidence
+}
+
+/// The fraction of the context window at which compaction fires, as the
+/// config currently sets it.
+///
+/// **The currently-configured threshold, not the one each recorded run
+/// used.** The corpus does not record its own threshold, so a run recorded
+/// under a different setting is described by this number only
+/// approximately. That is worth saying and still worth reporting: the
+/// alternative on 2026-08-31 and 2026-09-01 was a brief with no threshold
+/// in it at all, which the diagnostician twice resolved by inventing one
+/// ("compaction disabled", "threshold implied 80%+") and proposing a change
+/// against the invention.
+///
+/// `None` rather than a guess wherever the window is unknown — an unknown
+/// threshold renders no sentence at all, because the sentence it would
+/// render is a confident one.
+fn compact_at_fraction() -> Option<f64> {
+    let cfg = mecha_core::config::Config::load_global().ok()?;
+    // Unset is the common case and the exact one: with no explicit token
+    // count the threshold *is* the fraction, whatever the window happens
+    // to be, so no window lookup can go wrong here.
+    let Some(tokens) = cfg.agent.compact_at_tokens else {
+        return Some(mecha_core::config::AgentConfig::COMPACT_FRACTION);
+    };
+    let (_, provider) = cfg.provider(None).ok()?;
+    let window = provider.context_window?;
+    (window > 0).then(|| tokens as f64 / window as f64)
 }
 
 /// The checkout the diagnostician may read, if one is configured and present.

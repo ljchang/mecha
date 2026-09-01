@@ -343,6 +343,27 @@ impl Corpus {
         (!sensed.is_empty()).then(|| sensed.iter().sum::<f64>() / sensed.len() as f64)
     }
 
+    /// The **highest** `Homeostat::peak_context_pressure` any row sensed.
+    ///
+    /// The mean above cannot answer the only question compaction actually
+    /// turns on — did any run get near the threshold — because a corpus of
+    /// mostly-short runs averages a single long one away. On 2026-08-31 and
+    /// 2026-09-01 the diagnostician read `compactions: 0` beside a mean of
+    /// ~9% and twice concluded that compaction was *disabled* and context
+    /// was "bloated", proposing a change to fix it; the corpus maximum was
+    /// nowhere near the threshold, and no field in the brief said so.
+    ///
+    /// Reported, not judged — same rule as the mean beside it. The brief
+    /// puts it next to the threshold and lets the reader do the subtraction.
+    pub fn max_peak_context_pressure(&self) -> Option<f64> {
+        self.rows
+            .iter()
+            .filter_map(|r| r.stats.homeostat.as_ref())
+            .filter_map(|h| h.peak_context_pressure)
+            .map(f64::from)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+    }
+
     /// Average of `Homeostat::anticipated_guilt` over the rows that sensed
     /// it. See [`crate::guilt`] — the sensor has no consumer yet, and this is
     /// the corpus existing before anything is built on it, same as every
