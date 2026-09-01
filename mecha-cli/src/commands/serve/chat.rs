@@ -127,6 +127,16 @@ struct WebSession {
     mode: Arc<StdMutex<PermissionMode>>,
     /// Outstanding approval/ask cards for this session.
     questions: super::present::Questions,
+    /// How many owner turns this conversation had when it was last named.
+    ///
+    /// Zero for one that has never been: a session is created under a key,
+    /// and a key is an address rather than a name. The schedule that reads
+    /// this is `title::due` — front-loaded, three names in a session's life,
+    /// so a long conversation does not spend a generation per turn moving a
+    /// label. Not persisted: on a resume the recorded name comes back with
+    /// the transcript, and re-earning it once is cheaper than another record
+    /// that can disagree with the one beside it.
+    titled_at: usize,
     /// Was the last turn spoken? Since D3 typed and spoken turns share one
     /// conversation, so "does this turn need the voice block" is no longer
     /// answerable from the messages — a spoken turn and a typed one look
@@ -425,6 +435,15 @@ pub enum WireEvent {
     /// back to rather than a stream of `"neutral"` events saying nothing.
     Affect {
         label: String,
+    },
+    /// This conversation has a name now — see `mecha_core::title`. Sent when
+    /// a run's end earns one, carrying the name without its `web: ` prefix,
+    /// which is a storage detail no header should render. The page reloads
+    /// the rail rather than trusting this string into its own state: the
+    /// rail is where every other surface reads a session's name, and two
+    /// paths to one label is how a header and a drawer row start disagreeing.
+    Titled {
+        title: String,
     },
     Done {
         ok: bool,
@@ -789,6 +808,14 @@ pub(super) fn task_withholding(title: &Option<String>) -> Vec<String> {
 /// The prefix the drawer filters on and `task_withholding` reads.
 pub(super) const TASK_TITLE_PREFIX: &str = "task: ";
 
+/// The same, for an ordinary chat. Sessions are *renamed* as they grow
+/// (`mecha_core::title`), and the prefix is what `history` filters on and
+/// what tells a renamed session apart from a delegation — so a rename
+/// carries it, and only sessions wearing it are eligible to be renamed at
+/// all. A task conversation already has the task's name, and its title is
+/// read by `task_withholding`.
+pub(super) const WEB_TITLE_PREFIX: &str = "web: ";
+
 /// What a session should be created *as*, when it does not exist yet.
 ///
 /// Only a task conversation needs any of this today, and it is threaded
@@ -866,7 +893,11 @@ fn ensure_session_as<'a>(
                         // `task: …` for a delegation, so the drawer's task filter
                         // and `runlog` see it as the delegation it is rather than as
                         // an unrelated web chat that happens to mention one.
-                        title: Some(init.title.clone().unwrap_or_else(|| format!("web: {key}"))),
+                        title: Some(
+                            init.title
+                                .clone()
+                                .unwrap_or_else(|| format!("{WEB_TITLE_PREFIX}{key}")),
+                        ),
                     },
                 )?,
                 Conversation::new(),
@@ -914,6 +945,7 @@ fn ensure_session_as<'a>(
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
                 questions,
                 last_turn_spoken: false,
+                titled_at: 0,
                 withheld: Arc::from(init.withheld),
                 task: init.task,
             },
@@ -1380,14 +1412,32 @@ fn begin_turn(
             },
         };
 
+        // What the titler is allowed to read, taken before the conversation
+        // goes back: the owner's own turns and nothing else (`title`'s module
+        // comment has the argument — a title outlives every answer in the
+        // conversation and is rendered on every surface, so third-party text
+        // must not reach the thing that composes one).
+        let owner_turns = mecha_core::title::owner_turns(&conversation.messages);
+
         // Hand the conversation back, then announce the end — a stream left
         // open is indistinguishable from a run still working. A failed
         // turn's conversation was already rolled back beside the record
         // above, where the file and this hand-back could be made to agree.
         let mut sessions = state_for_task.sessions.lock().await;
+        let mut name_it = false;
         if let Some(ws) = sessions.get_mut(&key_for_task) {
             ws.conversation = Some(conversation);
             ws.live = None;
+            // Only an ordinary chat is renamed: a delegation already carries
+            // the task's name (and `task_withholding` reads that title), and
+            // a voice session is the same conversation from another door.
+            name_it = ws
+                .session
+                .meta
+                .title
+                .as_deref()
+                .is_some_and(|t| t.starts_with(WEB_TITLE_PREFIX))
+                && mecha_core::title::due(owner_turns.len(), ws.titled_at);
         }
         drop(sessions);
         let _ = bcast.send(done);
@@ -1402,6 +1452,53 @@ fn begin_turn(
             }),
             Err(e) => Err(format!("{e:#}")),
         });
+
+        // **Last of all, because nothing waits on it.** Naming the
+        // conversation costs a small generation on the same server the run
+        // just used; doing it before the hand-back would hold the session,
+        // and before the answer would delay it. A failure here is a session
+        // that keeps the name it has, which is why nothing above depends on
+        // it and why the miss is logged rather than shown.
+        if name_it {
+            let turns = owner_turns.len();
+            match mecha_core::title::summarise(
+                state_for_task.agent.provider(),
+                &state_for_task.model,
+                &owner_turns,
+            )
+            .await
+            {
+                Ok(Some(name)) => {
+                    let recorded = format!("{WEB_TITLE_PREFIX}{name}");
+                    // The record first: a name the page shows and the
+                    // transcript does not is one that vanishes on the next
+                    // restart, which is worse than never having had it.
+                    if let Err(e) = session.append(&Record::Title {
+                        title: recorded.clone(),
+                    }) {
+                        tracing::warn!("naming this conversation was not recorded: {e:#}");
+                    } else {
+                        let mut sessions = state_for_task.sessions.lock().await;
+                        if let Some(ws) = sessions.get_mut(&key_for_task) {
+                            let mut meta = ws.session.meta.clone();
+                            meta.title = Some(recorded);
+                            ws.session = Arc::new(Session {
+                                meta,
+                                path: ws.session.path.clone(),
+                            });
+                            ws.titled_at = turns;
+                        }
+                        drop(sessions);
+                        let _ = bcast.send(WireEvent::Titled { title: name });
+                    }
+                }
+                // The model had nothing usable to say. A miss, not a name:
+                // the session keeps the one it has, and the next threshold
+                // will ask again.
+                Ok(None) => tracing::debug!("no usable name came back for {key_for_task}"),
+                Err(e) => tracing::debug!("naming {key_for_task} failed: {e:#}"),
+            }
+        }
     });
 
     Ok(Started {
@@ -1681,30 +1778,58 @@ pub async fn set_mode(
 /// megabytes, and a listing that reads whole files is a listing nobody
 /// opens twice. `None` means no user ever spoke — a shell created by a page
 /// load — and the listing skips it.
-fn first_user_snippet(path: &std::path::Path) -> Option<String> {
+fn first_user_snippet(path: &std::path::Path) -> Option<Listing> {
     use std::io::BufRead;
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
-    for line in reader.lines().take(300) {
+    let mut listing = Listing::default();
+    for line in reader.lines().take(LISTING_SCAN_LINES) {
         let line = line.ok()?;
         let v: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if v["record"] == "message" && v["role"] == "user" {
+        // A rename, from `mecha_core::title`. Last one within the scan wins.
+        if v["record"] == "title" {
+            if let Some(t) = v["title"].as_str() {
+                listing.title = Some(t.to_string());
+            }
+        }
+        if listing.snippet.is_none() && v["record"] == "message" && v["role"] == "user" {
             for block in v["content"].as_array().into_iter().flatten() {
                 if let Some(text) = block["text"].as_str() {
                     let text = strip_voice_preamble(text).trim();
                     if !text.is_empty() {
-                        let head: String = text.chars().take(140).collect();
-                        return Some(head);
+                        listing.snippet = Some(text.chars().take(140).collect());
+                        break;
                     }
                 }
             }
         }
     }
-    None
+    listing.snippet.is_some().then_some(listing)
 }
+
+/// What one row of the "earlier" listing needs from a transcript.
+#[derive(Default)]
+struct Listing {
+    /// The owner's opening line. `None` means no user ever spoke — a shell
+    /// created by a page load, which the listing skips.
+    snippet: Option<String>,
+    /// The recorded name, when the session has earned one.
+    title: Option<String>,
+}
+
+/// How far into a transcript a *listing* reads.
+///
+/// The bound is the whole reason this is a scan and not a `Session::read`: a
+/// transcript can be megabytes and a listing walks forty of them, so a
+/// listing that read whole files is a listing nobody opens twice. What the
+/// bound costs is honest and small — renaming is front-loaded (`title::due`
+/// names a session at its 1st, 3rd and 8th owner turn), so a rename past
+/// this line lives in the rail without reaching the listing, where the
+/// opening line stands in for it.
+const LISTING_SCAN_LINES: usize = 400;
 
 /// GET /api/history — recorded web and voice sessions from the store,
 /// newest first: what the drawer's "earlier" section lists. A row carries
@@ -1740,7 +1865,9 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
             // back: it was started from a card and left a question or a
             // draft behind.
             .is_some_and(|t| {
-                t.starts_with("web: ") || t.starts_with("voice: ") || t.starts_with("task: ")
+                t.starts_with(WEB_TITLE_PREFIX)
+                    || t.starts_with("voice: ")
+                    || t.starts_with(TASK_TITLE_PREFIX)
             })
     });
     metas.sort_by_key(|(m, _)| std::cmp::Reverse(m.created_at));
@@ -1749,7 +1876,7 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
         if rows.len() >= 40 {
             break;
         }
-        let Some(snippet) = first_user_snippet(&path) else {
+        let Some(listing) = first_user_snippet(&path) else {
             continue; // a page load that never spoke is not a conversation
         };
         let kind = match meta.title.as_deref() {
@@ -1761,7 +1888,11 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
             "id": meta.id,
             "kind": kind,
             "created_at": meta.created_at.to_rfc3339(),
-            "snippet": snippet,
+            "snippet": listing.snippet,
+            // The name it earned, when it has one — the page prefers this and
+            // falls back to the opening line, which is what it showed before
+            // conversations had names at all.
+            "title": listing.title,
             "attached_key": attached.get(&meta.id),
         }));
     }
@@ -1911,6 +2042,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
             mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
             questions,
             last_turn_spoken: false,
+            titled_at: 0,
             // **A resumed delegation is still a delegation.** D6 is a
             // property of the conversation, not of how it was opened, so
             // picking a task transcript back up must not hand back the tool

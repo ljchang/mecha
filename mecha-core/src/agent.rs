@@ -1178,6 +1178,15 @@ impl Agent {
     }
 
     /// The provider's own id (`anthropic`, `local`, …), for display.
+    /// The connection this agent talks over, for a caller that needs a
+    /// one-shot *beside* the loop rather than through it — a
+    /// [`QuarantinedPass`](crate::quarantine::QuarantinedPass), which by
+    /// construction carries no tools and none of this agent's history. A
+    /// caller that wants the loop wants `run_in`.
+    pub fn provider(&self) -> &dyn Provider {
+        self.provider.as_ref()
+    }
+
     pub fn provider_id(&self) -> &str {
         self.provider.id()
     }
