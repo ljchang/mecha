@@ -233,6 +233,20 @@ fn is_safe_cut(messages: &[Message], i: usize) -> bool {
 /// would leave last hour's task list sitting in the prompt above this one's,
 /// and a model reading two contradictory lists is worse off than one reading
 /// neither.
+/// Marks the summary block [`rebuild`] appends to the head message.
+///
+/// A named constant for the same reason [`CARRIED_HEADER`] is one, plus a
+/// second reader that arrived later: both blocks land in a **user** message
+/// (see `rebuild` — two user messages in a row are rejected, so the summary
+/// joins the task at the top), and both are *derived* text — this one a model
+/// paraphrase of the assistant turns and tool results that were cut, the
+/// other verbatim tool output. Anything that reads user turns expecting the
+/// owner's own words has to exclude them by name, and a literal copied into
+/// that reader would go stale the first time this sentence was reworded.
+/// `title::owner_turns` is the reader that needs it.
+pub const SUMMARY_HEADER: &str =
+    "[Earlier turns were compacted to fit the context window. What happened in them:]";
+
 pub const CARRIED_HEADER: &str =
     "[Live state, carried past the compaction and current as of now — it supersedes \
      anything about it in the summaries above:]";
@@ -265,10 +279,8 @@ pub fn rebuild(
         Block::Text { text } => !text.trim_start().starts_with(CARRIED_HEADER),
         _ => true,
     });
-    head.content.push(Block::text(format!(
-        "\n\n[Earlier turns were compacted to fit the context window. What \
-         happened in them:]\n{summary}"
-    )));
+    head.content
+        .push(Block::text(format!("\n\n{SUMMARY_HEADER}\n{summary}")));
     if !carried.is_empty() {
         let mut block = format!("\n\n{CARRIED_HEADER}\n");
         for (label, body) in carried {

@@ -1785,6 +1785,18 @@ fn first_user_snippet(path: &std::path::Path) -> Option<Listing> {
     let mut listing = Listing::default();
     for line in reader.lines().take(LISTING_SCAN_LINES) {
         let line = line.ok()?;
+        // **Rule the line out on its bytes before parsing it.** This loop
+        // used to return at the first user message — line two or three of
+        // the file — and a later `title` has to win, so it cannot any more.
+        // What that costs is not the extra lines, it is what a line *is*: a
+        // `message` record carries whole tool results and a `rewrite` record
+        // carries the entire message list, so parsing forty transcripts'
+        // worth of them to learn they are not titles is the whole cost of
+        // this scan. Two record types matter and both are a substring test.
+        let could_be_title = line.contains("\"record\":\"title\"");
+        if !could_be_title && listing.snippet.is_some() {
+            continue;
+        }
         let v: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
@@ -1824,11 +1836,21 @@ struct Listing {
 ///
 /// The bound is the whole reason this is a scan and not a `Session::read`: a
 /// transcript can be megabytes and a listing walks forty of them, so a
-/// listing that read whole files is a listing nobody opens twice. What the
-/// bound costs is honest and small — renaming is front-loaded (`title::due`
-/// names a session at its 1st, 3rd and 8th owner turn), so a rename past
-/// this line lives in the rail without reaching the listing, where the
-/// opening line stands in for it.
+/// listing that read whole files is a listing nobody opens twice.
+///
+/// **The baseline this has to be honest against is three lines, not the
+/// whole file** — found in review. Before renaming existed the loop returned
+/// at the first user message, so `/api/history` parsed about three JSON
+/// values per transcript; a later title has to win, so it cannot return
+/// early any more, and the line count alone would have made this endpoint
+/// forty times more expensive on records that carry whole tool results. The
+/// byte pre-filter in the loop is what keeps the *parse* count near the old
+/// baseline; this constant only bounds the read.
+///
+/// What the bound itself costs is small: renaming is front-loaded
+/// (`title::due` names a session at its 1st, 3rd and 8th owner turn), so a
+/// rename past this line lives in the rail without reaching the listing,
+/// where the opening line stands in for it.
 const LISTING_SCAN_LINES: usize = 400;
 
 /// GET /api/history — recorded web and voice sessions from the store,
