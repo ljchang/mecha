@@ -321,10 +321,62 @@ pub struct Measurement {
     /// sample where it provably did nothing, and the gate reported a thin
     /// sample rather than a censored one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub divergence_detail: Vec<String>,
+    pub divergence_detail: Vec<Divergence>,
     /// Sessions that could not be replayed at all (unreadable, no recorded
     /// calls, tool surface moved). Never evidence for either arm.
     pub skipped: usize,
+}
+
+/// Which arm of a paired replay left the recording.
+///
+/// A closed enum written into an append-only store, so it is a wire format:
+/// an unknown variant on load degrades rather than failing the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Arm {
+    Baseline,
+    Candidate,
+    /// A variant written by a newer build than this one. Never counted as
+    /// either arm — unknown is not clean.
+    #[serde(other)]
+    Unrecognised,
+}
+
+impl Arm {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Arm::Baseline => "baseline",
+            Arm::Candidate => "candidate",
+            Arm::Unrecognised => "unrecognised",
+        }
+    }
+}
+
+/// One arm of one episode leaving the recording, and why.
+///
+/// **Structured, not a formatted line.** The first version of this was
+/// `Vec<String>` rendered as "id — baseline arm: reason" and read back with
+/// `contains("— baseline arm:")` in two places. Losing the em dash, or
+/// rewording the prefix, would have silently zeroed the baseline count and
+/// made `mecha harness show` assert "every divergence was the candidate arm
+/// — the change moved behaviour" for a run in which every divergence was the
+/// baseline. A format string is not a data structure.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Divergence {
+    pub episode: String,
+    pub arm: Arm,
+    pub reason: String,
+}
+
+impl Divergence {
+    /// How many of these were the baseline arm — the count both the report
+    /// and the renderer key on, derived rather than parsed.
+    pub fn baseline_count(all: &[Divergence]) -> usize {
+        all.iter().filter(|d| d.arm == Arm::Baseline).count()
+    }
+    pub fn candidate_count(all: &[Divergence]) -> usize {
+        all.iter().filter(|d| d.arm == Arm::Candidate).count()
+    }
 }
 
 /// Which episodes a measurement drew, where they went, and what it could not
@@ -340,7 +392,7 @@ pub struct Drawn {
     /// See [`Measurement::replay_caveats`].
     pub replay_caveats: Vec<String>,
     /// See [`Measurement::divergence_detail`].
-    pub divergence_detail: Vec<String>,
+    pub divergence_detail: Vec<Divergence>,
     pub skipped: usize,
 }
 
@@ -803,5 +855,68 @@ accepted_at = "2026-08-22T00:00:00Z"
         future.status = "escalated".into();
         store.write(&future).unwrap();
         assert_eq!(store.all().unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod divergence_arm_tests {
+    use super::*;
+
+    fn d(episode: &str, arm: Arm) -> Divergence {
+        Divergence {
+            episode: episode.into(),
+            arm,
+            reason: "recorded call #0 was `a`, not `b`".into(),
+        }
+    }
+
+    /// **Review finding.** The arm was encoded into a formatted line and
+    /// recovered with `contains("— baseline arm:")` in two places, with no
+    /// shared constant and no test. Rewording the prefix — or losing the em
+    /// dash — would silently zero the baseline count and make the reporter
+    /// assert "every divergence was the candidate arm" for a run in which
+    /// every divergence was the baseline.
+    ///
+    /// Counting from the enum cannot break that way, and this test is what
+    /// says so.
+    #[test]
+    fn the_arm_split_is_counted_from_data_not_from_prose() {
+        let all = vec![
+            d("a", Arm::Baseline),
+            d("b", Arm::Candidate),
+            d("c", Arm::Candidate),
+        ];
+        assert_eq!(Divergence::baseline_count(&all), 1);
+        assert_eq!(Divergence::candidate_count(&all), 2);
+        // The rendered form is free to change without moving either count.
+        assert_eq!(Arm::Baseline.as_str(), "baseline");
+        assert_eq!(Arm::Candidate.as_str(), "candidate");
+    }
+
+    /// A closed enum written into an append-only store is a wire format: a
+    /// variant from a newer build degrades rather than failing the record,
+    /// and is never silently counted as one of the known arms.
+    #[test]
+    fn an_unknown_arm_from_a_newer_build_is_neither_arm() {
+        let parsed: Divergence =
+            serde_json::from_str(r#"{"episode":"e","arm":"third_arm","reason":"r"}"#)
+                .expect("an unknown variant must not fail the record");
+        assert_eq!(parsed.arm, Arm::Unrecognised);
+        let all = vec![parsed];
+        assert_eq!(Divergence::baseline_count(&all), 0);
+        assert_eq!(Divergence::candidate_count(&all), 0);
+    }
+
+    /// Round-trips through the store, since this rides in a persisted
+    /// `Measurement`.
+    #[test]
+    fn a_divergence_survives_the_store() {
+        let all = vec![d("ep-1", Arm::Baseline), d("ep-2", Arm::Candidate)];
+        let json = serde_json::to_string(&all).unwrap();
+        let back: Vec<Divergence> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].arm, Arm::Baseline);
+        assert_eq!(back[1].episode, "ep-2");
+        assert!(back[0].reason.contains("recorded call #0"));
     }
 }
