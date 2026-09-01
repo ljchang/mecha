@@ -176,36 +176,56 @@ pub fn evidence_for(model: &str, slice: &Corpus, history: Vec<String>) -> Eviden
         }
     }
     evidence.history = history;
-    evidence.compact_at_fraction = compact_at_fraction();
+    evidence.compact_at_fraction = compact_at_fraction(slice);
     evidence
 }
 
-/// The fraction of the context window at which compaction fires, as the
-/// config currently sets it.
+/// The fraction of the context window at which compaction fires for the runs
+/// in this slice, when it is knowable.
 ///
-/// **The currently-configured threshold, not the one each recorded run
-/// used.** The corpus does not record its own threshold, so a run recorded
-/// under a different setting is described by this number only
-/// approximately. That is worth saying and still worth reporting: the
-/// alternative on 2026-08-31 and 2026-09-01 was a brief with no threshold
-/// in it at all, which the diagnostician twice resolved by inventing one
-/// ("compaction disabled", "threshold implied 80%+") and proposing a change
-/// against the invention.
+/// **The provider comes from the corpus, not from the default.** The slice is
+/// keyed by model and every `RunRow` records the provider that served it, so
+/// looking the window up on `cfg.provider(None)` would divide this model's
+/// token threshold by a different model's window — 40 000 against a 65 536
+/// window reads as 61%, against a 200 000 window as 20%, and only one of
+/// those describes the runs being diagnosed. A slice whose rows disagree
+/// about the provider yields `None`: there is no single threshold to name.
 ///
-/// `None` rather than a guess wherever the window is unknown — an unknown
-/// threshold renders no sentence at all, because the sentence it would
-/// render is a confident one.
-fn compact_at_fraction() -> Option<f64> {
+/// **`None` wherever `AgentConfig::compact_at` would return `None`.** That
+/// method is `compact_at_tokens.or_else(|| context_window.map(..))`, so with
+/// neither set there is no threshold and the run has no compaction at all —
+/// and an earlier draft of this function returned `Some(COMPACT_FRACTION)`
+/// there, which would have printed "compaction fires at 66.0% ... never
+/// needed, NOT disabled" for a configuration in which it is genuinely
+/// disabled. Exactly the confident wrong sentence this whole branch exists
+/// to remove, reintroduced one level down.
+///
+/// Still the *currently configured* threshold rather than the one each run
+/// used. `RunConfig` does record `compact_at_tokens` per session, so a
+/// per-row threshold is reachable and is the better answer; it is not this
+/// change, and the brief says "fires at" rather than "fired at" so the
+/// sentence stays true of the corpus as configured now.
+fn compact_at_fraction(slice: &Corpus) -> Option<f64> {
     let cfg = mecha_core::config::Config::load_global().ok()?;
-    // Unset is the common case and the exact one: with no explicit token
-    // count the threshold *is* the fraction, whatever the window happens
-    // to be, so no window lookup can go wrong here.
-    let Some(tokens) = cfg.agent.compact_at_tokens else {
-        return Some(mecha_core::config::AgentConfig::COMPACT_FRACTION);
-    };
-    let (_, provider) = cfg.provider(None).ok()?;
-    let window = provider.context_window?;
-    (window > 0).then(|| tokens as f64 / window as f64)
+
+    // One provider, or nothing to name.
+    let mut providers = slice.rows.iter().map(|r| r.provider.as_str());
+    let provider_name = providers.next()?;
+    if providers.any(|p| p != provider_name) {
+        return None;
+    }
+    let (_, provider) = cfg.provider(Some(provider_name)).ok()?;
+    let window = provider.context_window;
+
+    match cfg.agent.compact_at_tokens {
+        // Derived: the threshold *is* the fraction — but only when there is
+        // a window for it to be a fraction of.
+        None => window.map(|_| mecha_core::config::AgentConfig::COMPACT_FRACTION),
+        Some(tokens) => {
+            let window = window?;
+            (window > 0).then(|| tokens as f64 / window as f64)
+        }
+    }
 }
 
 /// The checkout the diagnostician may read, if one is configured and present.
