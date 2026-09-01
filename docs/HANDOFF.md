@@ -585,6 +585,17 @@ someone starts a benchmark in.
 > pointing it at `HEAD` would assert the release is deployed: the same false
 > inference, written down more confidently. The tag becomes honest when that
 > work is branched and committed, and that lane will set it then.
+>
+> **The tree has moved since that binary was built, and rebuilding will not
+> reproduce it byte-for-byte.** A `cargo fmt --all` landed on
+> `mecha-core/src/session.rs` and `title.rs` afterwards, so the install is
+> from pre-format source: whitespace only, no behavioural difference, and the
+> probe above still answers 1. Deliberately not reinstalled — spending a build
+> against ~19 GB free and no swap to change indentation inside a binary is the
+> wrong trade while two llama-servers hold the machine, and a server that
+> reloads under memory contention does not recover (`LLAMA-SERVER.md`).
+> Recorded because "the tree builds what is installed" is the assumption a
+> reader makes for free, and here it is false in a way nothing announces.
 
 **2026-08-24 (re-verified this date, evening)**: `~/.cargo/bin/mecha`
 reinstalled again for the web-review-surfaces arc (final at merge `cfab345`)
