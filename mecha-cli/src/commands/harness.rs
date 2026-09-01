@@ -466,6 +466,23 @@ async fn measure(
     let mut replay_caveats: Vec<String> = Vec::new();
     // See `Measurement::divergence_detail`.
     let mut divergence_detail: Vec<mecha_core::harness::Divergence> = Vec::new();
+    // Recorded as each arm finishes, never after both. Review finding: the
+    // push used to sit past the candidate's `Err` arm, so an episode whose
+    // BASELINE left the recording and whose candidate then failed to replay
+    // at all lost the baseline's reason entirely and landed in `skipped`
+    // with no account of itself — the same loss this branch exists to fix,
+    // one case narrower.
+    macro_rules! note_divergence {
+        ($arm:expr, $outcome:expr, $id:expr) => {
+            if let Some(why) = &$outcome.divergence {
+                divergence_detail.push(mecha_core::harness::Divergence {
+                    episode: $id.clone(),
+                    arm: $arm,
+                    reason: why.clone(),
+                });
+            }
+        };
+    }
     let mut skipped = unusable;
     let total = draw.selection.len() + draw.holdout.len();
     // The flag decides the slice; the label only decides the column width.
@@ -513,6 +530,7 @@ async fn measure(
                         continue;
                     }
                 };
+            note_divergence!(mecha_core::harness::Arm::Baseline, baseline, prep.id);
             eprint!(" candidate…");
             let candidate = match harness_probe::drive_episode(
                 &prepared,
@@ -543,18 +561,7 @@ async fn measure(
             // threshold the candidate moved — so the tally scored only the
             // episodes where the change provably did nothing, and reported
             // it as a thin sample rather than a censored one.
-            for (arm, outcome) in [
-                (mecha_core::harness::Arm::Baseline, &baseline),
-                (mecha_core::harness::Arm::Candidate, &candidate),
-            ] {
-                if let Some(why) = &outcome.divergence {
-                    divergence_detail.push(mecha_core::harness::Divergence {
-                        episode: prep.id.clone(),
-                        arm,
-                        reason: why.clone(),
-                    });
-                }
-            }
+            note_divergence!(mecha_core::harness::Arm::Candidate, candidate, prep.id);
             if baseline.diverged() || candidate.diverged() {
                 // The recording has nothing truthful to say past a divergence;
                 // stats over the tracked prefix would grade a behaviour-visible
@@ -617,8 +624,8 @@ async fn measure(
             // a change that moved behaviour everywhere.
             format!(
                 "; all {candidate_arms} divergence(s) were the CANDIDATE arm and nothing \
-                 was skipped — the change moved behaviour on every episode drawn, which \
-                 is a finding about the change, not a missing measurement"
+                 was skipped — the change moved behaviour on every episode that diverged, \
+                 which is a finding about the change, not a missing measurement"
             )
         } else {
             format!(
