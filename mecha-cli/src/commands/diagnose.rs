@@ -206,8 +206,19 @@ pub fn evidence_for(model: &str, slice: &Corpus, history: Vec<String>) -> Eviden
 /// change, and the brief says "fires at" rather than "fired at" so the
 /// sentence stays true of the corpus as configured now.
 fn compact_at_fraction(slice: &Corpus) -> Option<f64> {
-    let cfg = mecha_core::config::Config::load_global().ok()?;
+    compact_at_fraction_of(&mecha_core::config::Config::load_global().ok()?, slice)
+}
 
+/// [`compact_at_fraction`] against an explicit config, so the branch that
+/// decides whether the reassuring sentence appears at all is testable.
+///
+/// Split out on review: the renderer had five tests and this function had
+/// none, and it *could not* get one while it loaded the config itself. Its
+/// own doc records that an earlier draft got one of these branches wrong in
+/// the direction that prints "never needed, NOT disabled" for a config where
+/// compaction is genuinely off — the exact regression nothing would have
+/// caught.
+fn compact_at_fraction_of(cfg: &mecha_core::config::Config, slice: &Corpus) -> Option<f64> {
     // One provider, or nothing to name.
     let mut providers = slice.rows.iter().map(|r| r.provider.as_str());
     let provider_name = providers.next()?;
@@ -594,6 +605,99 @@ pub fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── The threshold derivation ────────────────────────────────────────
+    //
+    // Added on review: the renderer had five tests and this function had
+    // none, and could not get one while it loaded config itself. Its doc
+    // records that an earlier draft returned `Some(COMPACT_FRACTION)` with
+    // no window — which prints "never needed, NOT disabled" for a config
+    // where compaction is genuinely off. These are what would catch that.
+
+    fn row(provider: &str, model: &str) -> mecha_core::runlog::RunRow {
+        mecha_core::runlog::RunRow {
+            session_id: "s".into(),
+            started_at: chrono::Utc::now(),
+            provider: provider.into(),
+            model: model.into(),
+            title: None,
+            workspace: std::path::PathBuf::from("/tmp"),
+            run: 0,
+            stats: Default::default(),
+        }
+    }
+
+    fn corpus(rows: Vec<mecha_core::runlog::RunRow>) -> Corpus {
+        Corpus {
+            rows,
+            sessions_read: 1,
+            ..Default::default()
+        }
+    }
+
+    /// Unset `compact_at_tokens` with a window: the threshold *is* the
+    /// fraction.
+    #[test]
+    fn a_derived_threshold_is_the_fraction() {
+        let mut cfg = mecha_core::config::Config::default();
+        cfg.agent.compact_at_tokens = None;
+        cfg.providers.insert(
+            "local".into(),
+            mecha_core::config::ProviderConfig {
+                context_window: Some(262_144),
+                ..Default::default()
+            },
+        );
+        cfg.default_provider = "local".into();
+        assert_eq!(
+            compact_at_fraction_of(&cfg, &corpus(vec![row("local", "m")])),
+            Some(mecha_core::config::AgentConfig::COMPACT_FRACTION)
+        );
+    }
+
+    /// **The draft bug.** An explicit token count with no window has no
+    /// fraction — `AgentConfig::compact_at` returns `None` there, and so
+    /// must this, or the brief reassures about a threshold that does not
+    /// exist.
+    #[test]
+    fn an_explicit_threshold_without_a_window_is_unknown() {
+        let mut cfg = mecha_core::config::Config::default();
+        cfg.agent.compact_at_tokens = Some(16_384);
+        cfg.providers.insert(
+            "local".into(),
+            mecha_core::config::ProviderConfig {
+                context_window: None,
+                ..Default::default()
+            },
+        );
+        cfg.default_provider = "local".into();
+        assert_eq!(
+            compact_at_fraction_of(&cfg, &corpus(vec![row("local", "m")])),
+            None
+        );
+    }
+
+    /// Rows disagreeing about the provider name no single threshold.
+    #[test]
+    fn a_mixed_provider_slice_has_no_one_threshold() {
+        let mut cfg = mecha_core::config::Config::default();
+        cfg.agent.compact_at_tokens = None;
+        cfg.providers.insert(
+            "local".into(),
+            mecha_core::config::ProviderConfig {
+                context_window: Some(262_144),
+                ..Default::default()
+            },
+        );
+        cfg.default_provider = "local".into();
+        assert_eq!(
+            compact_at_fraction_of(
+                &cfg,
+                &corpus(vec![row("local", "m"), row("anthropic", "m")])
+            ),
+            None
+        );
+    }
 
     /// The defect this closes: the brief resolved its filter and the draw did
     /// not, so a path the user could reasonably type scoped one and matched
