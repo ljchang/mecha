@@ -357,12 +357,18 @@ impl Evidence {
                 // needed" directly beneath a line reading `compactions: 6` —
                 // a self-contradicting sentence in the one place this exists
                 // to stop the diagnostician inventing one.
+                // **"points", not "%".** `at - max` is a difference of two
+                // fractions, so rendering it through `pct` and calling it
+                // "42.7% below" invites the relative reading (42.7% of 66%
+                // ≈ 28 points). In the one sentence whose whole job is to
+                // stop a model misreading a number, the label has to be
+                // unambiguous.
                 (Some(max), Some(at)) if max < at && self.compactions == 0 => format!(
-                    " — compaction fires at {}, and the highest any run reached is {} \
-                     below it, so `compactions: 0` above means never needed, NOT \
+                    " — compaction fires at {}, and the highest any run reached is {:.1} \
+                     points below it, so `compactions: 0` above means never needed, NOT \
                      disabled or broken",
                     pct(Some(at)),
-                    pct(Some(at - max))
+                    (at - max) * 100.0
                 ),
                 // Compactions happened while the reported peak stayed under
                 // the threshold. Not reassurance — that combination is
@@ -722,6 +728,8 @@ mod tests {
         .brief();
         assert!(brief.contains("highest peak 23.3%"), "{brief}");
         assert!(brief.contains("compaction fires at 66.0%"), "{brief}");
+        // Points, not percent — the difference of two fractions.
+        assert!(brief.contains("42.7 points below it"), "{brief}");
         assert!(
             brief.contains("never needed, NOT disabled or broken"),
             "the reading the diagnostician got wrong twice must be stated: {brief}"
