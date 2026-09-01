@@ -329,3 +329,62 @@ The through-line worth keeping: every ask is a standard pattern from
 apps Luke uses daily (session drawers, tappable dashboards, dictation,
 plain inbox). The agent-augmented surfaces earn their keep only when the
 ordinary affordances underneath them also exist.
+
+## 13. The desktop window, and naming a conversation — D10, D11 (2026-09-01)
+
+Two asks from the owner, working the app on a laptop rather than a phone.
+The mockup canvas was nine phone screens and the build was faithful to it,
+which meant a 1500px window rendered a 560px column with the rest of the
+screen empty — and starting a fresh conversation lived inside the session
+drawer, behind a modal that asked for a name.
+
+**D10 — a wide window lays the same views out side by side; it is not a
+second design.** Two breakpoints, and each one exists because a specific
+thing stops fitting:
+
+- **900px** — the bottom nav becomes a left rail (`order: -1` on the same
+  element; the markup order stays phone-first, which is also the order a
+  screen reader wants), and the shell's floating gear docks to the foot of
+  that rail. Every view's own content stops stretching and keeps a reading
+  measure.
+- **1180px** — the chat's session drawer stops being a drawer and simply
+  stays open. That is the only thing a phone could not afford, and the
+  whole reason the drawer existed; docked, it is the same markup with the
+  modal parts (scrim, slide-in, tap-to-close) left off.
+
+Two things carry the implementation and are the parts worth not undoing.
+The shell owns a `.viewport` element, because **views do not all have a
+single root** — Home and Settings are a `<header>` beside a `<main>`, which
+stacks correctly in a column shell and lays out *side by side* the moment
+the shell becomes a row. And every view's side margin goes through
+`--gutter` / `--gutter-gear` in `web/src/app.css` rather than through a
+literal: a percentage inside a custom property resolves where it is *used*,
+so one definition centres each view's content in whatever width that view
+has — the chat's column is narrower than the board's by exactly the docked
+panel, and neither needs to know that. Nine components had their own copy
+of `20px`; this is `tui::list_height`'s argument in CSS.
+
+**D11 — a conversation names itself, from the owner's own turns.** Minting
+a key is the machine's job (`chat-8f3a`: unique and URL-safe, nothing
+else); the *name* is derived after a run and re-derived as the conversation
+grows — `mecha_core::title`, recorded as `Record::Title` and applied over
+the header by `Session::read`. Three names in a session's life (owner turns
+1, 3 and 8), because re-titling every turn spends a generation to move a
+label nobody is looking at.
+
+The invariant is the input, not the prompt: **the titler reads only what
+the owner typed.** A title is rendered in the owner's session list, on
+every surface, for as long as the session exists — a longer-lived display
+than any single answer — so a model paraphrase of *third-party* text would
+let a page fetched mid-conversation compose the label its own conversation
+wears. User turns in a web session are bytes the owner typed or spoke;
+summarising those is a paraphrase of the owner, and there is no channel.
+The pass is a `QuarantinedPass` on top of that, and what comes back is
+bounded to one line of 48 characters with control bytes stripped before it
+reaches a record or a row.
+
+Only `web: ` sessions are renamed. A delegation already carries the task's
+name and `task_withholding` reads that title; a rename carries the prefix
+for the same reason. `titled_at` is deliberately not persisted — a resumed
+session earns its name once more from the whole discussion, which is
+cheaper than a second record that can disagree with the one beside it.

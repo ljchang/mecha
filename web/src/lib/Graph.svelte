@@ -1018,9 +1018,9 @@
   .page { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
   /* The right gutter leaves the corner clear for the shell's gear, the
      agreement every view's header keeps (#118). */
-  header { display: flex; align-items: center; justify-content: space-between; padding: 22px 56px 12px 20px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 22px var(--gutter-gear) 12px var(--gutter); }
   .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; }
-  .scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 2px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 2px var(--gutter) 20px; display: flex; flex-direction: column; gap: 10px; }
   .findrow { display: flex; gap: 8px; }
   .findwrap { position: relative; flex: 1; display: flex; min-width: 0; }
   .findwrap .field { padding-right: 38px; }

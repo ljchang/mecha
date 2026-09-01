@@ -62,7 +62,7 @@
   .tabs {
     display: flex;
     gap: 8px;
-    padding: 14px 56px 0 20px;
+    padding: 14px var(--gutter-gear) 0 var(--gutter);
   }
   .tab {
     font-family: var(--mono);
@@ -83,6 +83,6 @@
   .scrollwrap {
     flex: 1;
     overflow-y: auto;
-    padding: 14px 20px;
+    padding: 14px var(--gutter);
   }
 </style>
