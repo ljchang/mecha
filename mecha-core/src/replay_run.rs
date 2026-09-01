@@ -267,37 +267,6 @@ impl Tool for ReplayTool {
     }
 }
 
-/// Build a registry that offers the recorded tool surface and answers from the
-/// recording.
-///
-/// `recorded_tools` is the tool list from the session's `RunConfig` — what the
-/// model saw at record time. Every name must resolve in today's registry,
-/// because the replay needs the live specs to offer (and the live tools to fall
-/// through to in [`OnDivergence::Live`]). A tool that existed then and not now
-/// is an error rather than a silent shrink of the surface: the model would be
-/// replaying a different question.
-/// Build the tool surface a replay offers, from the names the recording holds.
-///
-/// `surface_only` is consulted only in the modes where **nothing executes** —
-/// [`OnDivergence::Stop`] and [`OnDivergence::Error`] — for names the live
-/// registry cannot supply. The distinction it exists for: a recorded
-/// tool is needed here to *describe itself* into the request — name,
-/// description, schema — because the tool list is the front of the prompt, and
-/// a replay offering a smaller toolbox is a different agent whose divergences
-/// say nothing about the question being probed. Under `Stop` nothing is ever
-/// executed (`Action::Live` is unreachable), so a stand-in that can describe
-/// itself is a *faithful* surface rather than a fake one.
-///
-/// Under [`OnDivergence::Live`] tools genuinely run, and there a missing tool
-/// must still be fatal — a stand-in would execute nothing while the recording
-/// executed something. The gate is on the mode rather than on the caller's
-/// good intentions, because an unconditional fallback silently changes what
-/// `mecha replay` does.
-///
-/// **Which tools may be reconstructed is the caller's to decide, never this
-/// module's.** Naming one here would put a front-end's registration policy in
-/// core — the same rule that keeps `OutboxKind` config's to declare rather
-/// than the tool's.
 /// A read-only handle on why a replay left its recording.
 ///
 /// Returned beside the registry by [`replay_registry_reporting`]. Held
@@ -313,7 +282,8 @@ impl DivergenceProbe {
     }
 }
 
-/// [`replay_registry`], plus a handle on the divergence reason.
+/// [`replay_registry`], plus a handle on the divergence reason. See
+/// [`build_replay_registry`] for the registry contract itself.
 ///
 /// A sibling rather than a changed signature: fifteen call sites want only
 /// the registry, and widening all of them to discard a value would be a
@@ -346,6 +316,12 @@ pub fn replay_registry_reporting(
     Ok((registry, probe))
 }
 
+/// Build a registry that offers the recorded tool surface and answers from
+/// the recording. See [`build_replay_registry`] for the full contract —
+/// which names must resolve, and how `surface_only` is gated on the mode.
+///
+/// Use [`replay_registry_reporting`] instead where the caller needs to know
+/// *why* a replay diverged rather than only that it did.
 pub fn replay_registry(
     recorded_tools: &[String],
     live: &Registry,
@@ -367,6 +343,37 @@ pub fn replay_registry(
     .0)
 }
 
+/// Build a registry that offers the recorded tool surface and answers from the
+/// recording.
+///
+/// `recorded_tools` is the tool list from the session's `RunConfig` — what the
+/// model saw at record time. Every name must resolve in today's registry,
+/// because the replay needs the live specs to offer (and the live tools to fall
+/// through to in [`OnDivergence::Live`]). A tool that existed then and not now
+/// is an error rather than a silent shrink of the surface: the model would be
+/// replaying a different question.
+/// Build the tool surface a replay offers, from the names the recording holds.
+///
+/// `surface_only` is consulted only in the modes where **nothing executes** —
+/// [`OnDivergence::Stop`] and [`OnDivergence::Error`] — for names the live
+/// registry cannot supply. The distinction it exists for: a recorded
+/// tool is needed here to *describe itself* into the request — name,
+/// description, schema — because the tool list is the front of the prompt, and
+/// a replay offering a smaller toolbox is a different agent whose divergences
+/// say nothing about the question being probed. Under `Stop` nothing is ever
+/// executed (`Action::Live` is unreachable), so a stand-in that can describe
+/// itself is a *faithful* surface rather than a fake one.
+///
+/// Under [`OnDivergence::Live`] tools genuinely run, and there a missing tool
+/// must still be fatal — a stand-in would execute nothing while the recording
+/// executed something. The gate is on the mode rather than on the caller's
+/// good intentions, because an unconditional fallback silently changes what
+/// `mecha replay` does.
+///
+/// **Which tools may be reconstructed is the caller's to decide, never this
+/// module's.** Naming one here would put a front-end's registration policy in
+/// core — the same rule that keeps `OutboxKind` config's to declare rather
+/// than the tool's.
 fn build_replay_registry(
     recorded_tools: &[String],
     live: &Registry,
