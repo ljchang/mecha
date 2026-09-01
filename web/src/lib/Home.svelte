@@ -185,7 +185,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 22px 56px 14px 20px;
+    padding: 22px var(--gutter-gear) 14px var(--gutter);
   }
   .wordmark {
     display: flex;
@@ -210,7 +210,7 @@
   }
   main {
     flex: 1;
-    padding: 0 20px;
+    padding: 0 var(--gutter);
     display: flex;
     flex-direction: column;
     gap: 18px;
@@ -225,6 +225,15 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
+  }
+
+  /* The wide window reads the dashboard across rather than down — the
+     same cards, four to a row instead of two. (The margins are the
+     shared gutter's job; see app.css.) */
+  @media (min-width: 900px) {
+    .grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
   }
   .stat {
     padding: 14px;
