@@ -337,12 +337,44 @@ impl Evidence {
             // broken; it is what a corpus that never reached the threshold
             // looks like, and saying so is cheaper than a wrong proposal.
             match (self.max_peak_context_pressure, self.compact_at_fraction) {
-                (Some(max), Some(at)) if max < at => format!(
+                // A threshold at or above the whole window can never be
+                // reached before the provider refuses the request, so it is
+                // not headroom — it is compaction effectively switched off,
+                // which is the opposite reading. Reachable without a person:
+                // `compact_at_tokens` is in the auto-accepted override set
+                // and is only validated as `>= 1000`.
+                (_, Some(at)) if at >= 1.0 => format!(
+                    " — compaction is set to fire at {} of the window, which is at or past \
+                     the window itself: it cannot fire before the request overflows",
+                    pct(Some(at))
+                ),
+                // **Gated on `compactions == 0`, not on pressure alone.**
+                // A run can compact without ever reporting a peak above the
+                // threshold: the overflow-recovery arm counts a compaction
+                // after a request that already 400'd, and a failed request is
+                // never priced, so no peak is recorded for it. Ungated, this
+                // arm would render "`compactions: 0` above means never
+                // needed" directly beneath a line reading `compactions: 6` —
+                // a self-contradicting sentence in the one place this exists
+                // to stop the diagnostician inventing one.
+                (Some(max), Some(at)) if max < at && self.compactions == 0 => format!(
                     " — compaction fires at {}, and the highest any run reached is {} \
                      below it, so `compactions: 0` above means never needed, NOT \
                      disabled or broken",
                     pct(Some(at)),
                     pct(Some(at - max))
+                ),
+                // Compactions happened while the reported peak stayed under
+                // the threshold. Not reassurance — that combination is
+                // itself the finding, and pointing at it beats hiding it.
+                (Some(max), Some(at)) if max < at => format!(
+                    " — compaction fires at {}, which no run's reported peak reached, yet \
+                     {} compaction(s) happened: they did not come from reported pressure \
+                     (overflow recovery and an explicitly requested compaction both count \
+                     here), so read the count as a finding rather than as a threshold \
+                     being crossed",
+                    pct(Some(at)),
+                    self.compactions
                 ),
                 (Some(_), Some(at)) => {
                     format!(" — compaction fires at {}", pct(Some(at)))
@@ -714,6 +746,53 @@ mod tests {
             !brief.contains("never needed"),
             "a run crossed the threshold; claiming otherwise is the inverse \
              of the original bug: {brief}"
+        );
+    }
+
+    /// Review finding: the reassurance arm tested pressure alone, so it
+    /// could assert "`compactions: 0` above means never needed" directly
+    /// under a line reading `compactions: 6`. A compaction can happen with
+    /// no peak above the threshold — the overflow-recovery arm counts one
+    /// after a request that already 400'd, and a failed request is never
+    /// priced.
+    #[test]
+    fn compactions_that_happened_are_never_called_never_needed() {
+        let brief = super::Evidence {
+            runs: 175,
+            compactions: 6,
+            mean_peak_context_pressure: Some(0.093),
+            max_peak_context_pressure: Some(0.233),
+            compact_at_fraction: Some(0.66),
+            ..Default::default()
+        }
+        .brief();
+        assert!(
+            !brief.contains("never needed"),
+            "six compactions happened; the brief must not say none were needed: {brief}"
+        );
+        // And the combination is surfaced rather than hidden: pressure never
+        // reached the threshold yet compaction ran, which is the finding.
+        assert!(brief.contains("yet 6 compaction(s) happened"), "{brief}");
+    }
+
+    /// A threshold at or past the window cannot fire before the request
+    /// overflows — that is compaction switched off, not headroom. Reachable
+    /// without a person: `compact_at_tokens` is auto-acceptable and only
+    /// validated as `>= 1000`.
+    #[test]
+    fn a_threshold_past_the_window_is_not_headroom() {
+        let brief = super::Evidence {
+            runs: 175,
+            compactions: 0,
+            max_peak_context_pressure: Some(0.233),
+            compact_at_fraction: Some(1.526),
+            ..Default::default()
+        }
+        .brief();
+        assert!(!brief.contains("never needed"), "{brief}");
+        assert!(
+            brief.contains("cannot fire before the request overflows"),
+            "{brief}"
         );
     }
 
