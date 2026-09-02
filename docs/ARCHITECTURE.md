@@ -630,15 +630,21 @@ account-scoped, and every row a read returns carries the account, so the
 model always has it); **creates use the default or ask** (`mecha-mail
 default <name>`; with several accounts and none, the error says to *ask the
 user* — worded that way because "use your best judgment" measurably makes
-models invent). **A create declares its default in the schema's `default` key,
-and only a create declares one at all.** The key is what lets the outbox pin
-the account into a draft so the reviewer can see who a message is from (see
-*The outbox*); confining it to creates is the same rule the prose already
-followed and had broken — a read fans out and an item op errors, so "The
-default account is `dartmouth`" on `mail_search` described behaviour that does
-not exist, next to a sentence saying the opposite. One configured account is
-its own default whether or not one is set, because `resolve` answers the
-single-name case before it consults a default at all. A failed account never
+models invent). **The schema declares a `default` key exactly where omitting
+`account` really does resolve to one, and the resolution mode decides — not
+the verb.** The key is what lets the outbox pin the account into a draft so
+the reviewer can see who a message is from (see *The outbox*), so declaring
+one anywhere else is a promise `resolve` does not keep: a `Mode::Read` fans
+out, and "The default account is `dartmouth`" on `mail_search` described
+behaviour that does not exist, one clause after a sentence saying the
+opposite. So a **create** declares the configured default (`mail_default` /
+`calendar_default`, per surface). An **item op** declares nothing when several
+accounts are configured, because it consults no default and errors until one
+is named — but declares the single account when there is only one, since
+`resolve` answers the single-name case before it reaches any default at all,
+and a reviewer should not have to know how many accounts exist to read a
+draft. `mail_get_thread` reads, and resolves as an item, so it follows the
+item rule. A **read** declares nothing either way. A failed account never
 sinks a fan-out: its error is reported beside the other accounts' results,
 and the call errors only when every account failed.
 
