@@ -3499,7 +3499,10 @@ impl Agent {
                 }
                 (Some(why), _) => Some(cx.approver.escalate(tool.as_ref(), input, why).await),
                 (None, Some(RuleDecision::Prompt)) => {
-                    Some(cx.approver.approve(tool.as_ref(), input).await)
+                    // `consult`, not `approve`: a standing yes on the tool is
+                    // exactly what a `prompt` rule must not be answered by.
+                    let why = ruling.map(|r| r.reason).unwrap_or_default();
+                    Some(cx.approver.consult(tool.as_ref(), input, &why).await)
                 }
                 (None, Some(RuleDecision::Allow)) if !tool.read_only() => {
                     Some(cx.approver.permit(tool.as_ref(), input).await)
@@ -10007,12 +10010,20 @@ mod tests {
     /// An approver that records what it was asked and says yes.
     struct Recording {
         asked: Mutex<Vec<String>>,
+        consulted: Mutex<Vec<String>>,
         permitted: Mutex<Vec<String>>,
     }
     #[async_trait]
     impl Approver for Recording {
         async fn approve(&self, tool: &dyn Tool, _input: &Value) -> Decision {
             self.asked.lock().unwrap().push(tool.name().to_string());
+            Decision::Allow
+        }
+        async fn consult(&self, tool: &dyn Tool, _input: &Value, why: &str) -> Decision {
+            self.consulted
+                .lock()
+                .unwrap()
+                .push(format!("{}: {why}", tool.name()));
             Decision::Allow
         }
         async fn permit(&self, tool: &dyn Tool, _input: &Value) -> Decision {
@@ -10125,6 +10136,7 @@ decision = "prompt"
         let ran = Arc::new(Mutex::new(Vec::new()));
         let approver = Arc::new(Recording {
             asked: Mutex::new(Vec::new()),
+            consulted: Mutex::new(Vec::new()),
             permitted: Mutex::new(Vec::new()),
         });
         let (agent, _) = agent_with_tools(
@@ -10153,8 +10165,17 @@ decision = "prompt"
         );
         assert_eq!(
             *approver.asked.lock().unwrap(),
-            vec!["shell", "shell"],
-            "the prompt rule and the unmatched command both asked"
+            vec!["shell"],
+            "the unmatched command asked through `approve`"
+        );
+        // The `prompt` rule went through `consult`, never `approve`: a
+        // standing yes on `shell` is what `approve` may answer from and
+        // what a `prompt` rule exists to be asked past (the PR review's
+        // finding). The ruling's sentence rides along for the card.
+        assert_eq!(
+            *approver.consulted.lock().unwrap(),
+            vec!["shell: an approval rule asks that this `shell` call be approved"],
+            "the prompt rule consulted, once, with the ruling's reason"
         );
     }
 

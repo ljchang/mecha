@@ -1490,7 +1490,13 @@ refusal. The specification and the survey behind it are
   nothing else. Rules sit after the interlock, the hook and outbox staging
   and before the approver, and an escalation (`trifecta = "ask"`) is never
   softened by one: the interlock chose to put a person in front of the call,
-  and a config line is not that person.
+  and a config line is not that person. A `prompt` ruling goes to
+  `Approver::consult`, never `approve`: `approve` may answer from a standing
+  yes — `[a]lways`, Slack's "approve for run" — and one `[a]lways` to
+  `shell: ls` was covering a later `shell: cargo publish` the operator had
+  written a `prompt` rule for, the tool-granularity problem surviving inside
+  the mechanism built to end it. `consult` asks past the shortcuts and an
+  "always" answered there allows one call only, the shape `escalate` set.
 - **The splitter is conservative on purpose.** A command is judged one
   segment at a time (`&&`, `||`, `|`, `;`), and allowed only if every segment
   is. Anything `split_segments` cannot take apart with certainty —
