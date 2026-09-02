@@ -41,6 +41,7 @@
   let draft = $state('');
   let error = $state(null);
   let transcriptEl = $state(null);
+  let inputEl = $state(null);
 
   // Interim voice-out: the browser's own synthesis reads replies aloud when
   // toggled. Deliberately a stopgap — the real voice mode (Pipecat, the
@@ -200,6 +201,13 @@
           affect = ev.label;
           sawAffectThisRun = true;
           break;
+        case 'titled':
+          // The conversation has a name now. Reload the rail rather than
+          // writing the name straight into the header: the rail is where
+          // every surface reads a session's name, and two paths to one
+          // label is how a header and a drawer row start disagreeing.
+          loadRail();
+          break;
         case 'mode':
           // The server is the owner of this, not the tap that asked for it:
           // a change made on the phone has to reach the laptop watching the
@@ -340,6 +348,38 @@
   // conversation, same taint.
   let drawer = $state(false);
   let history = $state(null);
+  /// Wide enough that the drawer stops being a drawer and simply stays
+  /// open. Read from `matchMedia` rather than inferred from anything: the
+  /// docked panel and the overlay one are the same markup, and only one of
+  /// them wants a scrim, an animation and a tap-to-close.
+  let docked = $state(false);
+  $effect(() => {
+    const mq = window.matchMedia('(min-width: 1180px)');
+    const apply = () => {
+      docked = mq.matches;
+      if (docked) {
+        drawer = false;
+        loadRail();
+        loadHistory();
+      }
+    };
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  });
+
+  /// This conversation's own row in the rail, which is where its title
+  /// lives — the header renders the same name the drawer does, from the
+  /// same source, so they cannot disagree.
+  const heading = $derived.by(() => {
+    // A key minted a moment ago is not in the rail yet; showing it while we
+    // wait would put `chat-8f3a` in the header of a conversation that is
+    // about to be called something, which is the thing this replaced.
+    const row = rail.find((s) => s.key === key);
+    const name = row ? sessionLabel(row) : key === DEFAULT_KEY ? DEFAULT_KEY : 'new chat';
+    if (key === DEFAULT_KEY && name === DEFAULT_KEY) return 'Chat';
+    return name === 'new chat' ? 'New chat' : name;
+  });
 
   async function loadHistory() {
     try {
@@ -386,14 +426,43 @@
     }
   }
 
-  const sessionLabel = (s) =>
-    (s.title ?? s.key).replace(/^(web|voice|task): /, '') || s.key;
+  /// What to call a conversation. The server titles a session from the
+  /// owner's own opening turns once there are some (`web: <summary>`);
+  /// until then the recorded title is still the minted key, which is an
+  /// address rather than a name — so say so, instead of showing `chat-8f3a`
+  /// as if it meant something.
+  /// The stored form carries which door a session came through (`web: `,
+  /// `voice: `, `task: `); that is a storage detail and a `kind` field of
+  /// its own, never part of the name.
+  const nameOf = (title) => (title ?? '').replace(/^(web|voice|task): /, '').trim();
 
+  const sessionLabel = (s) => {
+    const t = nameOf(s.title);
+    if (!t || t === s.key) return s.key === DEFAULT_KEY ? DEFAULT_KEY : 'new chat';
+    return t;
+  };
+
+  const DEFAULT_KEY = 'main';
+
+  /// **A new conversation asks nothing.** It used to ask for a name — a
+  /// modal prompt, a lowercase-and-dashes rule, and a decision to make
+  /// before saying the thing you opened the app to say. The key is minted
+  /// here (it is an address: it has to be unique and URL-safe, and nothing
+  /// else), and the *name* arrives from the conversation itself once there
+  /// is one to summarise.
   function newSession() {
-    const name = prompt('Session name (lowercase, dashes):');
-    if (!name) return;
-    const k = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 32);
-    if (k) switchTo(k);
+    // Already sitting in an empty one: opening a second would leave a
+    // trail of blank sessions behind a button people press to clear their
+    // head. Nothing to do but put the cursor where they expect it.
+    if (!entries.length && !running) {
+      drawer = false;
+      queueMicrotask(() => inputEl?.focus());
+      return;
+    }
+    const k = `chat-${Math.random().toString(36).slice(2, 8)}`;
+    drawer = false;
+    switchTo(k);
+    queueMicrotask(() => inputEl?.focus());
   }
 
   // Re-subscribe whenever the key changes; the server owns every
@@ -643,7 +712,16 @@
     <button class="menubtn" onclick={openDrawer} aria-label="sessions">
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
     </button>
-    <span class="title">{key === 'main' ? 'Chat' : key}</span>
+    <!-- **A fresh context is one tap from where you are.** It lived inside
+         the drawer, which made starting over a two-step navigation *and* a
+         naming decision; the surface people reach for most often was the
+         one behind the most doors. It stays here on every width — the
+         docked panel on a wide window has its own, and both call the same
+         thing. -->
+    <button class="newbtn header" onclick={newSession} title="new conversation" aria-label="new conversation">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
+    </button>
+    <span class="title" title={key}>{heading}</span>
     <div class="meta">
       <!-- §6.2's readout on the typed surface. The voice logo's tint only
            renders inside the voice overlay, so a typed run that earned a
@@ -676,12 +754,17 @@
     </div>
   </header>
 
-  {#if drawer}
-    <div class="scrim" onclick={() => (drawer = false)} aria-hidden="true"></div>
-    <aside class="drawer">
+  {#if drawer || docked}
+    <!-- Docked, the panel is the same markup with the modal parts left
+         off: no scrim to dismiss, no slide-in, and nothing to close —
+         a sidebar that is always there is not a thing you opened. -->
+    {#if !docked}
+      <div class="scrim" onclick={() => (drawer = false)} aria-hidden="true"></div>
+    {/if}
+    <aside class="drawer" class:docked>
       <div class="drawer-head">
         <span class="drawer-title">Sessions</span>
-        <button class="newbtn" onclick={() => { drawer = false; newSession(); }}>
+        <button class="newbtn" onclick={newSession}>
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14" /></svg>
           new
         </button>
@@ -703,7 +786,10 @@
         {:else}
           {#each history.filter((h) => !h.attached_key) as h}
             <button class="drow past" onclick={() => resumeSession(h.id)}>
-              <span class="dsnippet">{h.snippet}</span>
+              <!-- The name it earned, and the opening line for one that has
+                   not earned one yet (or was renamed past where the listing
+                   scan reads). -->
+              <span class="dsnippet">{nameOf(h.title) || h.snippet}</span>
               <span class="dmeta">
                 {#if h.kind === 'voice'}<span class="dkind">voice</span>{/if}
                 {#if h.kind === 'task'}<span class="dkind">task</span>{/if}
@@ -997,6 +1083,7 @@
       </button>
       <textarea
         rows="1"
+        bind:this={inputEl}
         placeholder={running ? 'Steer the run…' : 'Ask mecha…'}
         bind:value={draft}
         onkeydown={(e) => {
@@ -1111,21 +1198,40 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    /* What the docked sessions panel is positioned against on a wide
+       window — on a phone the panel is `fixed` and this does nothing. */
+    position: relative;
   }
   header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 22px 56px 6px 20px;
+    /* The name of the conversation now earns its place here — it used to be
+       the key, which was `main` or nothing. On a phone the three status
+       chips and a title do not fit on one line, and the title is the half
+       that would silently shrink to zero (it is the only flexible item), so
+       the chips wrap under it instead of squeezing it out. */
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding: 22px var(--gutter-gear) 6px var(--gutter);
   }
   .title {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-left: 2px;
     font-weight: 500;
     font-size: 17px;
     letter-spacing: -0.02em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .meta {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    margin-left: auto;
     gap: 6px;
   }
   .chip.taint {
@@ -1190,6 +1296,18 @@
     font-weight: 500;
     font-size: 16px;
     letter-spacing: -0.02em;
+  }
+  .newbtn.header {
+    padding: 0;
+    width: 34px;
+    min-height: 34px;
+    justify-content: center;
+    color: var(--accent-400);
+    flex-shrink: 0;
+  }
+  .newbtn.header:hover {
+    color: var(--accent-300);
+    border-color: var(--accent-500);
   }
   .newbtn {
     display: flex;
@@ -1357,7 +1475,7 @@
   .transcript {
     flex: 1;
     overflow-y: auto;
-    padding: 16px 20px;
+    padding: 16px var(--gutter);
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -1914,6 +2032,55 @@
     align-items: center;
     justify-content: center;
     cursor: pointer;
+  }
+
+  /* ---- the wide window ----
+     Two steps, because two different things stop fitting at two different
+     widths. At 900px the shell has already moved the nav to a left rail
+     (App.svelte), so the header's reserved gear corner comes back and the
+     transcript stops stretching: it keeps `--measure` and pads the rest
+     away, which leaves the scrollbar at the window edge where a desktop
+     expects it rather than floating mid-page. At 1180px there is room for
+     the session list to simply stay open — the one thing a phone could
+     not afford, and the reason the drawer existed. */
+  @media (min-width: 900px) {
+    /* The composer and the two state panels take the transcript's own
+       measure — they are the same column, and only the transcript gets it
+       from the shared gutter (the others are floored lower on a phone,
+       where 20px of chrome is 5% of the screen). */
+    footer,
+    .taskhead,
+    .todo {
+      padding-inline: var(--gutter);
+    }
+    /* An 82%-wide bubble is a phone measure; against an 880px column it is
+       a very long line to read back. */
+    .bubble {
+      max-width: 66%;
+    }
+    .answer {
+      max-width: 100%;
+    }
+  }
+  @media (min-width: 1180px) {
+    .chat {
+      padding-left: var(--sessions);
+    }
+    .drawer.docked {
+      position: absolute;
+      width: var(--sessions);
+      border-right: 1px solid var(--accent-900);
+      padding-top: 0;
+      animation: none;
+    }
+    /* The one control the docked panel makes redundant. */
+    .menubtn {
+      display: none;
+    }
+    /* A call takes over the conversation, not the list of them. */
+    .voice-overlay {
+      left: var(--sessions);
+    }
   }
 
   /* Carried from the standalone voice page when it was retired: it had the

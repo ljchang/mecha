@@ -420,6 +420,7 @@ fn exhaustive(record: &Record) {
         | Record::Config(_)
         | Record::Taint(_)
         | Record::Rewrite { .. }
+        | Record::Title { .. }
         | Record::Outcome(_) => {}
     }
 }
