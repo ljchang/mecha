@@ -68,6 +68,12 @@ impl Approver for TuiApprover {
         let summary = format!("{why} {}", crate::approve::summarize(tool.name(), input));
         self.ask(tool, summary, true).await
     }
+
+    /// A rule's `allow` is a yes written down in advance; this approver has
+    /// no mode of its own to consult.
+    async fn permit(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
+        Decision::Allow
+    }
 }
 
 impl TuiApprover {

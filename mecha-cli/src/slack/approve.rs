@@ -207,6 +207,19 @@ impl Approver for SlackApprover {
         )
         .await
     }
+
+    /// A rule's `allow` stands in for the card, not for the thread's mode: a
+    /// read-only thread still refuses a write.
+    async fn permit(&self, tool: &dyn Tool, _input: &Value) -> Decision {
+        match self.mode() {
+            Mode::ReadOnly if !tool.read_only() => Decision::Blocked(format!(
+                "`{}` modifies state and this thread is read-only; an approval rule cannot \
+                 widen that",
+                tool.name()
+            )),
+            _ => Decision::Allow,
+        }
+    }
 }
 
 impl SlackApprover {
