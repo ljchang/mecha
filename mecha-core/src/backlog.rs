@@ -141,7 +141,14 @@ impl Backlog {
     }
 
     fn read_frontdoor() -> Option<Depth> {
-        let records = Frontdoor::open_default().and_then(|s| s.records()).ok()?;
+        // Like `read_questions`: a front door that has never existed is
+        // empty, not unreadable — and `open_default` would *create* it,
+        // twice per run at both ends of `Homeostat::finish`, and read a
+        // failed creation as an unknown depth (found on review).
+        let Some(store) = Frontdoor::open_existing_default() else {
+            return Some(Depth::default());
+        };
+        let records = store.records().ok()?;
         let open: Vec<_> = records
             .iter()
             .filter(|r| r.state != frontdoor::CLOSED)
