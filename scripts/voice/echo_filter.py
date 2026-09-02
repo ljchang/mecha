@@ -68,11 +68,27 @@ BOT_TAIL_SECONDS = 1.2
 # by it. Anything this filter rejects is rejected finally, so it must only
 # speak when a person is unlikely to have said exactly that.
 #
-# The cost, stated: a *short* echo that clears the raised RMS floor becomes a
-# turn, and mecha answers something odd. That is recoverable in a way the
-# other direction is not — turn-start is transcription-based, so a wrong
-# suppression is not a degraded turn but no turn, and the owner repeats
-# themselves into a mic that keeps discarding them.
+# The cost, stated accurately, because this is the sentence a later reader
+# will tune against. A *short* echo that clears the raised RMS floor becomes a
+# turn — and a spoken turn is not always an answer. Production runs
+# `mecha serve --voice-yes` (`mecha-serve.service`), which sets
+# `TurnOpts::approve_all` and runs the spoken turn with **the approver off**.
+# Sends are still staged through the outbox and the trifecta interlock is
+# untouched, but a `destructive` local call is gated by the approver alone —
+# `mail_triage` is the named example, deliberately not outbox-routed. So on
+# speakers, mecha offering "I can cancel it, delete it, or do it now" and
+# hearing "delete it" back is that call with no human in it, and below this
+# floor the only thing left is `ECHO_SEGMENT_RMS`, which is a guess pending
+# measurement and ships commented out.
+#
+# The floor is still here, because the other direction is worse in the way
+# that matters most: turn-start is transcription-based, so a wrong suppression
+# is not a degraded turn but no turn at all, and the owner repeats themselves
+# into a mic that keeps discarding them. But "recoverable" was too generous,
+# and the sub-eight-word band wants a defence with more state than a text
+# filter has — a spoken turn that is a verbatim span of the offer it answers
+# might reasonably not inherit `approve_all`. That is the owner's call and it
+# lives in `mecha-cli`, not here.
 MIN_ECHO_WORDS = 8
 
 # How many words of a transcript this long may fail to be ours, and how fast
@@ -274,6 +290,18 @@ def echo_rms(raw: str | None, *, floor: float, default: float) -> tuple[float, s
     refused. A refusal is never silent and never fatal: an unusable threshold
     must not take voice down, and must not quietly become one.
     """
+    # The *pairing* is checked, not only the configured value. `MIN_SEGMENT_RMS`
+    # is a constant VOICE-RESEARCH §7 expects to be re-measured per microphone,
+    # and raising it past the default would install the very inversion this
+    # function refuses — on the **unset** path, where there is nothing
+    # configured to complain about. Clamped rather than asserted, so a bad
+    # pairing is a loud line and not a worker that will not start; the safe
+    # direction is the stricter floor.
+    if not floor <= default < 1:
+        return max(default, floor), (
+            f"MECHA_VOICE_ECHO_RMS default {default} is not in [{floor}, 1) - "
+            f"the graded gate would run backwards; using {max(default, floor)}"
+        )
     if raw is None:
         return default, None
     try:
