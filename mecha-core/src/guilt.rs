@@ -258,8 +258,10 @@ pub fn anticipated_guilt(
 /// means `diagnose::Evidence` averages across the boundary are a lower
 /// bound on the old formula's, never a different quantity.
 ///
-/// `waiting_before` is how many recorded commitments the run inherited
-/// across the same three stores the level reads. A negative delta against
+/// `net_delta` is [`crate::backlog::BacklogDelta::owner_facing_net`] and
+/// `waiting_before` is [`waiting`], both over the same three stores the
+/// level reads — never the five-store `net`, whose proposals and candidates
+/// are the harness's own queue. A negative delta against
 /// nothing waiting cannot happen from a consistent pair of reads; it is
 /// treated as full relief rather than as a division by zero.
 pub fn with_delta(

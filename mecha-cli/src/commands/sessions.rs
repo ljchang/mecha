@@ -644,6 +644,7 @@ async fn appraise(
             meta.created_at.to_rfc3339(),
             appraisal::SessionRecords {
                 drafts: &mine,
+                outbox_unreadable,
                 questions: &questions,
                 requests: &requests,
                 reflexions: &reflexions,
