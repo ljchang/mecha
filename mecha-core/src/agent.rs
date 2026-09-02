@@ -2246,9 +2246,17 @@ impl Agent {
                         // the `max_turns` arm specifically, the only turn
                         // left to read it is `final_answer` — tool-less,
                         // unable to act on "re-scope the plan" regardless.
-                        let candidate = slot.lock().unwrap().take().filter(|_| {
-                            !cx.cancelled() && !stopping_now(loop_detected, turns, &usage)
-                        });
+                        // Recover from poison as `take_queued_input` does: a
+                        // tool that panicked while holding this lock is now a
+                        // survivable event, and the run must not die a turn
+                        // later on it.
+                        let candidate = slot
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .take()
+                            .filter(|_| {
+                                !cx.cancelled() && !stopping_now(loop_detected, turns, &usage)
+                            });
                         if let Some(escalation) = candidate {
                             if step_escalations_used < MAX_STEP_ESCALATIONS_PER_RUN {
                                 step_escalations_used += 1;
@@ -3301,16 +3309,23 @@ impl Agent {
                     }
                     // Escalate to a human even for a tool that would normally
                     // pass unapproved.
+                    // The text names the control that fired *and* its refusing
+                    // setting, because a headless approver's refusal repeats
+                    // it to the operator: telling someone whose `trifecta` is
+                    // already `allow` to set it to `block` tightens the wrong
+                    // knob and leaves the actual refusal in place.
                     TrifectaPolicy::Ask => {
                         escalation = Some(if injection_risk {
                             format!(
                                 "This conversation holds both private data and third-party \
-                                 content, and `{name}` can send data outside this machine."
+                                 content, and `{name}` can send data outside this machine \
+                                 (`[security] trifecta = \"ask\"`; `\"block\"` refuses instead)."
                             )
                         } else {
                             format!(
                                 "This conversation holds private data, `{name}` can send data \
-                                 outside this machine, and this session keeps private data local."
+                                 outside this machine, and this session keeps private data local \
+                                 (`[security] block_sends_after_private`)."
                             )
                         });
                     }
@@ -3320,7 +3335,8 @@ impl Agent {
                         if leak_risk {
                             escalation = Some(format!(
                                 "This conversation holds private data, `{name}` can send data \
-                                 outside this machine, and this session keeps private data local."
+                                 outside this machine, and this session keeps private data local \
+                                 (`[security] block_sends_after_private`)."
                             ));
                         }
                     }
@@ -3474,6 +3490,14 @@ impl Agent {
                     }
                 };
                 if let Some((content, reason)) = refusal {
+                    // An escalation that ends `Blocked` is a send the harness
+                    // refused — on every headless surface `ask` ends exactly
+                    // so — and `RunStats`/`runlog` read `blocked_sends` as the
+                    // whole count of those. A person's `Deny` is not counted:
+                    // that is a correction, and the trace's `denied` has it.
+                    if escalation.is_some() && matches!(decision, Decision::Blocked(_)) {
+                        *blocked_sends += 1;
+                    }
                     emit(
                         events,
                         AgentEvent::ToolDenied {
@@ -3555,17 +3579,11 @@ impl Agent {
                         // A tool that returns Err failed in a way it didn't
                         // anticipate; tell the model so it can try something
                         // else.
-                        Ok(Err(e)) => {
-                            harness_error(&tool, &name, format!("tool `{name}` failed: {e:#}"))
-                        }
+                        Ok(Err(e)) => harness_error(&tool, format!("tool `{name}` failed: {e:#}")),
                         Err(payload) => {
                             let message = panic_message(payload.as_ref());
                             tracing::error!(tool = %name, %message, "tool panicked");
-                            harness_error(
-                                &tool,
-                                &name,
-                                format!("tool `{name}` panicked: {message}"),
-                            )
+                            harness_error(&tool, format!("tool `{name}` panicked: {message}"))
                         }
                     };
                     (i, id, name, out)
@@ -3666,8 +3684,7 @@ impl Agent {
 /// error built with `external: false` let that text enter the conversation
 /// untainted. The loop's rule is `untrusted_input && external`, so marking
 /// external here costs a tool that cannot read outside nothing.
-fn harness_error(tool: &Arc<dyn crate::tool::Tool>, name: &str, content: String) -> ToolOutput {
-    let _ = name;
+fn harness_error(tool: &Arc<dyn crate::tool::Tool>, content: String) -> ToolOutput {
     let mut out = ToolOutput::err(content);
     out.external = tool.capabilities().untrusted_input;
     out
@@ -5033,7 +5050,11 @@ mod tests {
             "no human spoke, so it is never a correction: {}",
             refusal.0
         );
-        assert_eq!(outcome.blocked_sends, 0, "an escalation is not a block");
+        assert_eq!(
+            outcome.blocked_sends, 1,
+            "an escalation nobody could answer is a send the harness refused, and the \
+             record must say so"
+        );
     }
 
     /// And an approver that *can* reach a person is asked — through

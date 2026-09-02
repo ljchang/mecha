@@ -153,11 +153,21 @@ impl Approver for WebApprover {
         self.ask(tool, input, None).await
     }
 
-    /// Past the permission mode and the read-only shortcut on purpose: an
-    /// escalation is the interlock asking a person about *this* call, and a
-    /// mode that would have passed it is exactly what is being overridden.
-    /// The reason rides on the card as its question.
+    /// Past the modes that would have *passed* the call — `Allow`, the
+    /// read-only shortcut — on purpose: an escalation is the interlock asking
+    /// a person about *this* call. Not past `ReadOnly`, which is a refusal
+    /// the surface already made: an escalation narrows and never loosens,
+    /// and the PR review of this change found the first version widening
+    /// past it. The reason rides on the card as its question.
     async fn escalate(&self, tool: &dyn Tool, input: &serde_json::Value, why: &str) -> Decision {
+        let mode = self
+            .mode
+            .lock()
+            .map(|m| *m)
+            .unwrap_or(PermissionMode::ReadOnly);
+        if mode == PermissionMode::ReadOnly && !tool.read_only() {
+            return ModeApprover { mode }.approve(tool, input).await;
+        }
         self.ask(tool, input, Some(why.to_string())).await
     }
 }

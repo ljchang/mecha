@@ -578,7 +578,10 @@ mod tests {
             .capabilities();
         assert!(caps.private_data, "the private leg must survive the return");
         assert!(!caps.untrusted_input);
-        assert!(!caps.external_send, "a subagent is never itself a sink");
+        assert!(
+            !caps.external_send,
+            "a child of one private reader holds nothing that can send"
+        );
     }
 
     /// The web-only child: untrusted comes back, private does not appear
