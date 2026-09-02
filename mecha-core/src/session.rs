@@ -2848,9 +2848,33 @@ mod tests {
             assert_eq!(serde_json::from_str::<SessionKind>(&json).unwrap(), kind);
             assert_eq!(SessionKind::parse_lenient(kind.as_str()), Some(kind));
         }
+        // Compiler-forced, not a length literal: `ALL` is `[SessionKind; 11]`,
+        // so a length assert is a tautology about its own type and a
+        // twelfth variant with an updated `as_str` and a forgotten `ALL`
+        // entry would leave every test green while the binary read its own
+        // rows back as unknown (found on review). A new variant fails this
+        // match, and the arm the author then writes forces the `ALL` entry.
+        fn position(k: SessionKind) -> usize {
+            match k {
+                SessionKind::Run => 0,
+                SessionKind::Chat => 1,
+                SessionKind::Tui => 2,
+                SessionKind::Web => 3,
+                SessionKind::Voice => 4,
+                SessionKind::Task => 5,
+                SessionKind::Trigger => 6,
+                SessionKind::Frontdoor => 7,
+                SessionKind::Mail => 8,
+                SessionKind::Slack => 9,
+                SessionKind::Test => 10,
+            }
+        }
         assert!(
-            SessionKind::ALL.len() == 11,
-            "a new variant must be added to `ALL`, or `parse_lenient` cannot read it"
+            SessionKind::ALL
+                .iter()
+                .enumerate()
+                .all(|(i, k)| position(*k) == i),
+            "every variant, in `ALL`, once, in order"
         );
     }
 
