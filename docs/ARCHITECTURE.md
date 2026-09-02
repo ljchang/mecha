@@ -1490,7 +1490,15 @@ refusal. The specification and the survey behind it are
   nothing else. Rules sit after the interlock, the hook and outbox staging
   and before the approver, and an escalation (`trifecta = "ask"`) is never
   softened by one: the interlock chose to put a person in front of the call,
-  and a config line is not that person. A `prompt` ruling goes to
+  and a config line is not that person. Under a headless `Ask` — a trigger,
+  `batch` at the default mode — `allow` is the one place a rules file widens
+  what *executes*: `ModeApprover::permit` runs the ruled write the mode alone
+  refused, because the rule is the yes the run had nobody to give
+  (`an_allow_rule_is_the_yes_a_headless_ask_has_nobody_to_give` pins it).
+  The policy rides on `RunContext`; `RunContext::new` carries an empty one, so
+  the direct-construction sites (`gossip`, `vet`, `corroborate`, the probes)
+  run without rules — all read-only, shell-less agents, the same as hooks.
+  A `prompt` ruling goes to
   `Approver::consult`, never `approve`: `approve` may answer from a standing
   yes — `[a]lways`, Slack's "approve for run" — and one `[a]lways` to
   `shell: ls` was covering a later `shell: cargo publish` the operator had
@@ -1508,13 +1516,18 @@ refusal. The specification and the survey behind it are
   is. Anything `split_segments` cannot take apart with certainty —
   substitution, redirection, globs, braces, backslashes, comments, control
   flow, an unterminated quote, an operator glued to a word — is one opaque
-  invocation that matches no prefix rule, so under a policy it prompts. A
-  false "cannot split" costs one prompt; a false "can" costs the feature.
+  invocation that matches no prefix rule, so under a policy it prompts — and
+  where no person can be asked (`--yes`, a trigger, `batch`) a prompt is a
+  refusal, so one `allow` rule on `shell` makes every later `ls *.txt` in a
+  trigger `Blocked` where it ran before. Narrowing, and deliberate: the
+  alternative is an opaque command answered by a mode. A false "cannot split"
+  costs one prompt, or that command; a false "can" costs the feature.
   `forbid` is the one rule that reaches into an opaque command: a pattern-less
   one by construction, a patterned one by its words (`forbidden_words` —
-  whitespace-split with quote characters dropped, matched at every position,
-  deliberately over-approximate), so `rm -rf $HOME`, `"rm" -rf $HOME` and
-  `git status; rm -rf *` are refused rather than downgraded to the prompt a
+  split on whitespace and the shell's separators with quote characters
+  dropped, matched at every position, deliberately over-approximate), so
+  `rm -rf $HOME`, `"rm" -rf $HOME`, `git status; rm -rf *` and the glued
+  `git status;rm -rf *` are refused rather than downgraded to the prompt a
   headless `Allow` mode answers yes to. **A program path names its program
   only where the model cannot write.** `allow` reduces `/usr/bin/git` to
   `git` and nothing outside `SYSTEM_BIN_DIRS` (`/bin`, `/sbin`, `/usr/bin`,
@@ -1533,7 +1546,12 @@ refusal. The specification and the survey behind it are
   setting, because that lookup only ever raises the decision, and gating it
   once made turning the knob off silently disable the `timeout 5 rm -rf` rule.
   A quoted argument the splitter finds opaque (`bash -ec 'cd /tmp; rm -rf
-  x'`) gets the same forbidden-word search an opaque outer command gets.
+  x'`) gets the same forbidden-word search an opaque outer command gets. The
+  floor is about inline source and wrappers, **not about an interpreter
+  handed a program**: `python3 safe.py` under an `allow` on `python3` is
+  allowed, though `safe.py` is a file `fs_write` can create, and `echo … |
+  python3` needs no flag at all. An `allow` on a bare interpreter is the
+  operator saying so; the sandbox is the containment. Stated, not closed.
 - **Examples are checked at load.** An `allow` rule and every patterned rule
   must carry `match` examples; every `match` must match the rule and every
   `not_match` must not, or `Config::validate` fails the start naming the rule.
