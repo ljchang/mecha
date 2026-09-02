@@ -1448,6 +1448,21 @@ fn begin_turn(
                 .as_deref()
                 .is_some_and(|t| t.starts_with(WEB_TITLE_PREFIX))
                 && mecha_core::title::due(owner_turns.len(), ws.titled_at);
+            // **Claimed here, under the lock that decided it.** Advancing the
+            // bookmark after the generation (which is where the previous fix
+            // put it) leaves a window the owner's typing speed decides: the
+            // generation is a network round-trip, and a turn submitted while
+            // it is in flight reads `titled_at` still at its old value —
+            // `due`'s first threshold is satisfied by any zero — and starts a
+            // second one against the same single-slot server. Both then
+            // append a `Record::Title`, and `Session::read` takes the last in
+            // the *file*, which is whichever generation returned last rather
+            // than whichever saw more turns. So a fast turn-1 name could land
+            // after the turn-2 name and the conversation would keep the less
+            // informative label.
+            if name_it {
+                ws.titled_at = owner_turns.len();
+            }
         }
         drop(sessions);
         let _ = bcast.send(done);
@@ -1470,7 +1485,6 @@ fn begin_turn(
         // that keeps the name it has, which is why nothing above depends on
         // it and why the miss is logged rather than shown.
         if name_it {
-            let turns = owner_turns.len();
             let named = mecha_core::title::summarise(
                 state_for_task.agent.provider(),
                 &state_for_task.model,
@@ -1504,20 +1518,15 @@ fn begin_turn(
                 }
             };
 
-            // **The bookkeeping advances on the attempt, not on the win.**
-            // `due` reads `titled_at`, so leaving it alone after a miss does
-            // not mean "ask again at the next threshold" — it means ask again
-            // on *every* turn, forever, because the `at = 1` threshold is
-            // never satisfied. And the failure modes here are the persistent
-            // ones: a model that refuses, a reply `tidy` keeps rejecting, a
-            // provider that is down. That is one quarantined generation per
-            // owner turn, for the life of the conversation, on a server with
-            // one slot per turn — for a label nobody is waiting on. Three
-            // attempts per session either way; a miss costs the name, not the
-            // budget.
+            // The bookmark was already claimed above, on the attempt rather
+            // than on the win — `due` reads it, so a miss that left it alone
+            // would ask again on *every* turn rather than at the next
+            // threshold, and the failure modes here are the persistent ones
+            // (a model that refuses, a reply `tidy` keeps rejecting, a
+            // provider that is down). Three attempts per session; a miss
+            // costs the name, not the budget.
             let mut sessions = state_for_task.sessions.lock().await;
             if let Some(ws) = sessions.get_mut(&key_for_task) {
-                ws.titled_at = turns;
                 if let Some((recorded, _)) = &recorded {
                     let mut meta = ws.session.meta.clone();
                     meta.title = Some(recorded.clone());
@@ -1967,7 +1976,14 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
             // The name it earned, when it has one — the page prefers this and
             // falls back to the opening line, which is what it showed before
             // conversations had names at all.
-            "title": listing.title,
+            //
+            // Through the same rule `Session::read` applies, because this is
+            // the second reader of a rename and two readers that disagree
+            // about one record is how a drawer ends up showing a name the
+            // session does not have.
+            "title": listing
+                .title
+                .filter(|t| Session::keeps_kind(meta.title.as_deref(), t)),
             "attached_key": attached.get(&meta.id),
         }));
     }
@@ -2172,6 +2188,63 @@ mod tests {
     /// decoration is the one that has to remove it. Without this the titler
     /// names a voice conversation after the harness's own instructions to
     /// itself.
+    /// The listing rules a line out on its **bytes** before parsing it, which
+    /// is a hand-written copy of serde's wire encoding for `Record::Title`
+    /// that the compiler cannot see in either direction: rename the tag or
+    /// the variant, add a `#[serde(rename)]`, or switch the writer to
+    /// `to_string_pretty`, and the predicate goes permanently false. The
+    /// failure is silent and reads as a feature that is merely not very good
+    /// — every earned name vanishes from the drawer and each row falls back
+    /// to its opening line. So the fixture is written through
+    /// `Session::append`, never as a literal: a serialization change fails
+    /// here rather than in a drawer nobody is diffing.
+    ///
+    /// It covers the two rules beside it as well: the last title within the
+    /// scan wins, and finding the snippet does not stop the scan looking for
+    /// one.
+    #[test]
+    fn the_listing_finds_the_newest_recorded_name_through_serdes_own_encoding() {
+        use mecha_core::session::{Record, Session, SessionMeta};
+        let dir = std::env::temp_dir().join(format!("mecha-listing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Session::create(
+            &dir,
+            SessionMeta {
+                id: "20260902T000000-l".into(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "m".into(),
+                workspace: std::path::PathBuf::from("/tmp"),
+                title: Some("web: chat-8f3a".into()),
+            },
+        )
+        .unwrap();
+        s.append_messages(&[mecha_core::message::Message::user(
+            "what did I promise Hollis in March?",
+        )])
+        .unwrap();
+        s.append(&Record::Title {
+            title: "web: Hollis in March".into(),
+        })
+        .unwrap();
+        s.append(&Record::Title {
+            title: "web: Ostrander nomination".into(),
+        })
+        .unwrap();
+
+        let listing = super::first_user_snippet(&s.path).expect("a session that spoke");
+        assert_eq!(
+            listing.snippet.as_deref(),
+            Some("what did I promise Hollis in March?")
+        );
+        assert_eq!(
+            listing.title.as_deref(),
+            Some("web: Ostrander nomination"),
+            "the newest name within the scan wins, and the scan does not stop at the snippet"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_spoken_turn_reaches_the_titler_as_what_was_said() {
         let spoken = crate::voice::open_spoken_turn("what did I promise Hollis?", false);
