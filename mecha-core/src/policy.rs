@@ -712,9 +712,12 @@ fn forbidden_words(rules: &[&RuleConfig], command: &str) -> Option<Vec<String>> 
     // prompt — which on a headless `Allow` surface is a yes. And the shell's
     // own separators split a word the way whitespace does: `git status;rm
     // -rf *` is `git status; rm -rf *` to bash, one character apart, and the
-    // review found the glued spelling walking past this check next.
+    // review found the glued spelling walking past this check next — and
+    // then the backtick, the one substitution spelling `(`/`)` did not cover.
     let words: Vec<String> = command
-        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')'))
+        .split(|c: char| {
+            c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '`' | '<' | '>')
+        })
         .map(|w| {
             w.chars()
                 .filter(|c| !matches!(c, '\'' | '"'))
@@ -800,7 +803,9 @@ fn runs_its_arguments(segment: &[String]) -> bool {
         // Always: they exist to run something else.
         "awk" | "gawk" | "mawk" | "nawk" | "xargs" | "make" | "env" | "sudo" | "su" | "doas"
         | "nohup" | "nice" | "ionice" | "timeout" | "watch" | "eval" | "exec" | "command"
-        | "builtin" | "chroot" | "strace" | "ltrace" | "gdb" => true,
+        | "builtin" | "chroot" | "strace" | "ltrace" | "gdb" | "setsid" | "stdbuf" | "flock"
+        | "unshare" | "nsenter" | "parallel" | "chrt" | "taskset" | "script" | "expect" | "ssh"
+        | "docker" | "podman" | "kubectl" | "systemd-run" | "firejail" | "bwrap" => true,
         _ => false,
     }
 }
@@ -1252,6 +1257,11 @@ mod tests {
             "(rm -rf $HOME)",
             "ls|rm -rf *",
             "bash -ec 'cd /tmp;rm -rf x'",
+            // Both substitution spellings, and a redirection glued on.
+            "echo `rm -rf /`",
+            "echo $(rm -rf /)",
+            "true;`rm -rf $HOME`",
+            "rm -rf $HOME>log",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(quoted)).unwrap().decision,
@@ -1307,7 +1317,18 @@ mod tests {
             ],
             strict_inline_eval: false,
         };
-        for laundered in ["timeout 5 rm -rf x", "env rm -rf x", "sh -c 'rm -rf x'"] {
+        for laundered in [
+            "timeout 5 rm -rf x",
+            "env rm -rf x",
+            "sh -c 'rm -rf x'",
+            // The ones the first list forgot, named by the PR review.
+            "setsid rm -rf x",
+            "stdbuf -o0 rm -rf x",
+            "flock /tmp/l rm -rf x",
+            "unshare -r rm -rf x",
+            "parallel rm -rf x",
+            "ssh box rm -rf x",
+        ] {
             assert_eq!(
                 loose.decide("shell", &cmd(laundered)).unwrap().decision,
                 RuleDecision::Forbid,

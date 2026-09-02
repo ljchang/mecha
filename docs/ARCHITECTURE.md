@@ -1577,10 +1577,15 @@ refusal. The specification and the survey behind it are
   suffix of a wrapper's argv and every quoted argument that splits as a
   command, so a `forbid` on the inner command is not laundered down to a
   prompt — which under a headless `Allow` mode is a yes. The wrapper set is
-  necessarily incomplete (`stdbuf`, `setsid`, `flock`, `ssh`, `git -c
-  core.pager=…` are not in it), so `forbid` is a control against mistakes and
-  ordinary injection, not containment against a deliberate adversary at
-  `--yes`; the sandbox is the containment.
+  necessarily incomplete — it now names `setsid`, `stdbuf`, `flock`,
+  `unshare`, `nsenter`, `parallel`, `ssh` and the container executors after
+  the PR review listed them, but `git -c core.pager=…`, `git rebase -x`,
+  `git bisect run` and `git submodule foreach` execute their arguments and
+  `git` is rightly not a wrapper (the recommended narrow pattern `["git",
+  ["status", "diff", "log"]]` does not reach them; a bare `allow` on `git`
+  would) — so `forbid` is a control against mistakes and ordinary injection,
+  not containment against a deliberate adversary at `--yes`; the sandbox is
+  the containment.
 - **A `pattern` is for `shell`.** A patterned rule on a builtin that carries
   no `command` is refused at load; on an MCP tool the crate cannot know about,
   it asks at call time with the reason said out loud, never staying silently
