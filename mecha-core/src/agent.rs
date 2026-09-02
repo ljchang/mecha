@@ -9124,6 +9124,17 @@ mod tests {
         assert_eq!(items[0].args["account"], json!("dartmouth"));
         // What the model did send is untouched — filling is not editing.
         assert_eq!(items[0].args["to"], json!("x@example.com"));
+        // The provenance the loop recorded, and not only the arguments.
+        // These two fields are the whole mechanism behind both
+        // `outbox_source` repairs, and neither is observable from `args`:
+        // `call_id` is what the walk anchors on instead of guessing identity
+        // from content, and `filled_defaults` is what keeps a pinned constant
+        // out of the join. Without this assertion both could be dropped here
+        // with every test still green, and both failures would come back
+        // silently — a draft joined to itself, and an unrelated calendar
+        // listing offered as the thing being acted on.
+        assert_eq!(items[0].call_id.as_deref(), Some("t1"));
+        assert_eq!(items[0].filled_defaults, vec!["account".to_string()]);
         // And the shaped view a reviewer actually reads now carries it.
         let view = crate::outbox::DraftView::of(&items[0].args);
         assert!(
