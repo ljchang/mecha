@@ -253,10 +253,12 @@ pub fn anticipated_guilt(
 ///
 /// `None` in, `None` out — and a level with no delta is the level, because
 /// a row without the delta sensor says nothing about what the run did.
-/// Rows recorded before this fold and after it share the field with nothing
-/// marking which; the change only ever lowers a reading, so the corpus
-/// means `diagnose::Evidence` averages across the boundary are a lower
-/// bound on the old formula's, never a different quantity.
+/// The result lands in its own field (`Homeostat::guilt_after_relief`),
+/// never over the level: a first cut overwrote `anticipated_guilt`, so
+/// `Corpus::mean_anticipated_guilt` averaged relief-scaled rows beside
+/// level-only ones with nothing marking which — a blended mean that was
+/// neither formula's, on a field whose own doc chose `None` over a
+/// differently-computed number for exactly that reason (found on review).
 ///
 /// `net_delta` is [`crate::backlog::BacklogDelta::owner_facing_net`] and
 /// `waiting_before` is [`waiting`], both over the same three stores the
