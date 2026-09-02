@@ -58,7 +58,13 @@ long answer died mid-stream with the partial discarded (found by the
 2026-09-02 audit); the first fix used one client with a read timeout and
 *tightened* the non-streaming cap to that read bound, which the PR review
 caught. The guarantee is measured against a socket that goes quiet, not a
-builder field.
+builder field. **The scope is the request, not the run:** only a request with
+an event sink or a cancel token streams (`Agent::complete`), so `mecha batch`,
+`mecha eval`, the distiller, the reflector and the eval judge take the
+non-streaming path and keep the exchange cap — raised to clear a long local
+generation, and still the only bound that path has. A timeout there classifies
+as `Transport` and is retried, which re-issues a generation the server already
+finished; no tool runs on that path, so nothing duplicates, but the wait does.
 
 There is no official Anthropic SDK for Rust, so `provider/anthropic.rs` speaks
 raw HTTP. Things that will 400 if forgotten:
@@ -2574,7 +2580,13 @@ The things that decide the design:
   old one, so an unfolded earlier summary surfaces as an omission. That is
   the net: replacing turned a structural guarantee (nothing was ever lost,
   because everything accumulated) into a model-follows-instructions one, and
-  `compact_validate = false` runs without it.
+  `compact_validate = false` runs without it. The failure mode it sharpens: a
+  summary that must cover the whole session trends toward the summariser's
+  fixed 8192-token budget, and a summary cut off at that budget is never
+  installed — `compact` bails and leaves the transcript, previous summary
+  included, alone, so the next threshold check tries again. A run that hits
+  that wall every turn will eventually overflow; the fallback that keeps the
+  old block is the next thing to build if a session ever reports it.
 - **Stale results are evicted before anything is summarised.**
   `evict_superseded_results` runs first at both compaction sites (threshold
   and overflow recovery): when a later call covers the same target — the same
