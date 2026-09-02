@@ -128,12 +128,6 @@ import time as _time
 
 from echo_filter import BotSpeech, overlapped
 
-BOT_SPEECH = BotSpeech()
-
-
-def note_bot_speech(text: str) -> None:
-    BOT_SPEECH.note(text)
-
 
 # The energy floor while our own speaker is playing. Echo that survives the
 # browser's canceller is far quieter than a voice at the microphone, so this
@@ -166,18 +160,45 @@ def _echo_rms_from_env() -> float:
         value = float(raw)
     except ValueError:
         value = None
-    if value is None or not 0 < value < 1:
+    # Bounded *below by the silent-room floor*, not by zero. Below it the
+    # graded gate runs backwards - the over-the-speaker floor becomes more
+    # permissive than the ordinary one, so our own echo is held to a lower bar
+    # than room noise, and nothing says so because 0.005 is a perfectly good
+    # RMS. That is one keystroke away from the value this comment invites the
+    # owner to type (0.02 -> 0.002), and it is the loosening direction, which
+    # is the one nothing here takes quietly.
+    if value is None or not MIN_SEGMENT_RMS <= value < 1:
         from loguru import logger
 
         logger.warning(
-            f"MECHA_VOICE_ECHO_RMS={raw!r} is not an RMS between 0 and 1 - "
-            f"using {_ECHO_RMS_DEFAULT}"
+            f"MECHA_VOICE_ECHO_RMS={raw!r} is not an RMS in "
+            f"[{MIN_SEGMENT_RMS}, 1) - using {_ECHO_RMS_DEFAULT}"
         )
         return _ECHO_RMS_DEFAULT
     return value
 
 
 ECHO_SEGMENT_RMS = _echo_rms_from_env()
+
+
+def _new_echo_window() -> BotSpeech:
+    """One window per call, minted in `run_bot` beside everything else that
+    is per-connection.
+
+    It was a module global, which every other piece of per-call state here
+    deliberately is not — `LocalTTS`'s own docstring makes the point, and the
+    worker accepts concurrent calls, each with its own `run_bot`. A shared
+    window means caller A's replies land in caller B's blob, and B's fuzzy arm
+    is armed whenever B's *own* speaker is audible, so B can be judged against
+    words B never heard. Contamination only ever adds echo verdicts, and an
+    added echo verdict is a turn that never happens.
+
+    It mattered less when the match was per-phrase and exact, because a
+    cross-call collision then required B to say one of A's sentences verbatim.
+    Joining the window and matching by ordered subsequence made it require
+    only resemblance — to a haystack that was the union of every live call.
+    """
+    return BotSpeech()
 
 
 class SegmentGatedSTT(BaseWhisperSTTService):
@@ -200,6 +221,9 @@ class SegmentGatedSTT(BaseWhisperSTTService):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        # This connection's own echo window. `run_bot` hands the same object
+        # to the TTS, which writes what it speaks into it.
+        self.echo_window = _new_echo_window()
         self._segment_started_at = None
         self._bot_speaking = False
         # Never `0.0`: `time.monotonic()` is uptime on Linux, so a zero here
@@ -293,7 +317,7 @@ class ParakeetSTT(SegmentGatedSTT):
             f"over_speaker={echoey} segment_start={self._segment_started_at} "
             f"text={text[:100]!r}"
         )
-        if BOT_SPEECH.is_probable_echo(text, bot_was_audible=echoey):
+        if self.echo_window.is_probable_echo(text, bot_was_audible=echoey):
             logger.debug(f"parakeet echo filter: {text[:60]!r} over_speaker={echoey}")
             return Transcription(text="")
         return Transcription(text=text)
@@ -353,8 +377,14 @@ class LocalTTS(OpenAITTSService):
     def __init__(self, *args, speed: float = 1.0,
                  exaggeration: float = TTS_EXAGGERATION,
                  cfg_weight: float = TTS_CFG_WEIGHT,
-                 affect_key: str | None = None, **kwargs):
+                 affect_key: str | None = None,
+                 echo_window: BotSpeech | None = None, **kwargs):
         super().__init__(*args, **kwargs)
+        # Where this connection's spoken text is recorded for the echo filter.
+        # A reference to the STT's own window, handed over in `run_bot`: the
+        # two halves have to be the same object or the filter reads a window
+        # nothing writes to.
+        self._echo_window = echo_window
         self._speed = speed
         self._exaggeration = exaggeration
         self._cfg_weight = cfg_weight
@@ -391,6 +421,12 @@ class LocalTTS(OpenAITTSService):
 
     def set_voice_name(self, voice: str) -> None:
         self._settings.voice = voice
+
+    def set_echo_window(self, window: BotSpeech) -> None:
+        """Share the STT's echo window - the same after-construction pattern
+        as `set_affect_key`, and for the same reason: the pair is only known
+        once `run_bot` has built both ends."""
+        self._echo_window = window
 
     def set_affect_key(self, key: str) -> None:
         """Set once `named`/`session_key` are known in `run_bot` - the same
@@ -512,7 +548,8 @@ class LocalTTS(OpenAITTSService):
                     yield ErrorFrame(error=f"TTS error {r.status_code}: {error}")
                     return
                 await self.start_tts_usage_metrics(text)
-                note_bot_speech(text)
+                if self._echo_window is not None:
+                    self._echo_window.note(text)
                 async for chunk in r.iter_bytes(self.chunk_size):
                     if len(chunk) > 0:
                         await self.stop_ttfb_metrics()
@@ -530,6 +567,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         speed=TTS_SPEED,
         exaggeration=TTS_EXAGGERATION,
         cfg_weight=TTS_CFG_WEIGHT,
+        # One window, both ends: the STT reads what the TTS wrote, and no
+        # other call on this worker can reach it.
+        echo_window=stt.echo_window,
     )
     # The facade ignores the re-sent history (the Conversation is the
     # server's state) and the system prompt rides in mecha's cached prefix,

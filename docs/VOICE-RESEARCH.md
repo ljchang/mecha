@@ -781,7 +781,11 @@ named by what it can and cannot do.
   reply still interrupts and a speaker across the room does not — this section's
   own warning applies, that 0.010 was tuned on a different microphone, so the
   gated path now **logs the RMS it gated at** and the env var exists to be set
-  from that rather than from a guess. "Was the speaker playing" comes from
+  from that rather than from a guess. It is bounded below by `MIN_SEGMENT_RMS`
+  rather than by zero: under it the graded gate runs *backwards*, holding our
+  own echo to a lower bar than room noise, and nothing would say so because
+  0.005 is a perfectly good RMS — one keystroke from the value the comment
+  invites you to type. "Was the speaker playing" comes from
   `BotStartedSpeakingFrame`/`BotStoppedSpeakingFrame`, which pipecat pushes
   **upstream as well as downstream**, so the STT service sees them where it
   already stands; they are the *transport's* edges, firing when audio starts
@@ -817,6 +821,30 @@ named by what it can and cannot do.
   asked. That also retired a margin far too thin to keep — "yes, move the
   seminar to Thursday" against "Shall I move the seminar to Thursday?" scored
   0.833 against 0.85, one word from silencing the plainest yes in the language.
+
+  The **verbatim** arm needed the same floor, and for the same reason one door
+  over. It was a *character* count — 8 — which is two short words: "go ahead"
+  is 8, "cancel it" and "delete it" are 9, and each is a substring of the reply
+  that just offered it. So the plainest confirmations in the language were
+  dropped as echo, and dropped on headphones too, since that arm runs whether
+  or not the speaker was playing. Joining the window had widened the surface it
+  arrives on, from one phrase to every cross-boundary span in twenty seconds.
+  It now takes the same four-word floor, which costs it nothing it is for: a
+  real verbatim echo of a spoken sentence is much longer than three words. It
+  stays unconditional, because the timing layer can be wrong and this is the
+  fallback for when it is — with a word floor under it, that claim is finally
+  cheap enough to make.
+
+  **The window is per-connection**, like everything else per-call in the
+  worker. It was a module global, which mattered less when matching was
+  per-phrase and exact: a cross-call collision then needed one caller to say
+  another's sentence verbatim. Joining the window and matching by ordered
+  subsequence made it need only resemblance — to a haystack that was the union
+  of every live call, so a second caller could be judged against words it never
+  heard, and contamination only ever *adds* echo verdicts. The `BotSpeech`
+  instance now hangs off the per-connection `ParakeetSTT` and `run_bot` hands
+  the same object to `LocalTTS`, the way `set_affect_key` already threads
+  per-connection state after construction.
 
   It moved to `scripts/voice/echo_filter.py` — a pure module with no pipecat
   import — for the sole reason that testing it used to mean standing up a GPU

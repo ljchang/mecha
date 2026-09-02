@@ -132,8 +132,12 @@ class BotSpeech:
         last reply in a silent room is a person agreeing in the words of the
         question they were asked, which is what conversation sounds like. The
         verbatim arm still applies either way, because the timing layer can be
-        wrong — a missing frame, an unrecorded segment start — and that is the
-        one claim cheap enough to make unconditionally.
+        wrong — a missing frame, an unrecorded segment start — and with a word
+        floor under it that claim is cheap enough to make unconditionally.
+        Without one it was not: at two short words against a joined window it
+        was a bag of every phrase spoken in the last twenty seconds, and
+        short confirmations quoting the assistant are the commonest legitimate
+        turn there is.
         """
         words = _words(transcript)
         if not words:
@@ -143,8 +147,22 @@ class BotSpeech:
             return False
 
         norm = " ".join(words)
-        # Said verbatim, heard verbatim. The original test, unchanged.
-        if len(norm) >= 8 and norm in blob:
+        # Said verbatim, heard verbatim — under the same word count the fuzzy
+        # arm uses, and that guard is not decoration.
+        #
+        # This arm was a character count (>= 8), which is two short words:
+        # "go ahead" is 8, "cancel it" and "delete it" are 9, and each is a
+        # substring of the reply that just offered it. So the shortest, most
+        # natural confirmations in the language were dropped as echo — and
+        # dropped in a *silent room* too, since this arm runs whether or not
+        # the speaker was playing. That is the same failure the fuzzy arm's
+        # floor exists to prevent, arriving through the other door, and
+        # joining the window widened the surface it arrives on: the substring
+        # test now spans phrase boundaries where it used to run per phrase.
+        #
+        # A real verbatim echo of a spoken sentence is far longer than three
+        # words, so the guard costs this arm nothing it is for.
+        if len(words) >= MIN_ECHO_MATCHED_WORDS and norm in blob:
             return True
         if not bot_was_audible:
             return False

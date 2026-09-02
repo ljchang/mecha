@@ -131,6 +131,46 @@ class TheTextFilter(unittest.TestCase):
             self.bot.is_probable_echo("yes move the seminar to thursday", bot_was_audible=False)
         )
 
+    def test_a_two_word_confirmation_is_not_an_echo_of_the_offer(self):
+        """The verbatim arm's own version of the short-barge-in failure, and
+        it fires in a **silent room** — on headphones, where there is no echo
+        to have at all.
+
+        "go ahead" is 8 characters and a substring of the offer that prompted
+        it, so the old character bar dropped it; and because turn-start is
+        transcription-based the owner is not answered slowly, they are not
+        answered at all, and they repeat themselves into a mic that keeps
+        discarding them.
+        """
+        self.bot.note("Shall I go ahead?")
+        for audible in (False, True):
+            self.assertFalse(
+                self.bot.is_probable_echo("go ahead", bot_was_audible=audible),
+                f"silenced with bot_was_audible={audible}",
+            )
+
+    def test_short_verbs_the_reply_offered_are_not_echoes(self):
+        """The same shape, and the reason it is worth a loop: every one of
+        these is nine characters, a substring of the sentence that offered it,
+        and the plainest way to say yes to it."""
+        self.bot.note("I can cancel it, delete it, or do it now — which would you like?")
+        for said in ["cancel it", "delete it", "do it now"]:
+            self.assertFalse(
+                self.bot.is_probable_echo(said, bot_was_audible=True),
+                f"{said!r} was silenced as an echo",
+            )
+
+    def test_a_verbatim_echo_long_enough_to_mean_it_still_counts(self):
+        """The arm still does its job, including with nothing playing — which
+        is the point of keeping it unconditional: the timing layer can be
+        wrong, and this is the fallback for when it is."""
+        self.bot.note("I have moved the seminar to Thursday afternoon.")
+        self.assertTrue(
+            self.bot.is_probable_echo(
+                "i have moved the seminar to thursday afternoon", bot_was_audible=False
+            )
+        )
+
     def test_the_window_closes(self):
         self.bot.note("Your first meeting tomorrow is at nine.")
         self.clock.advance(30)
