@@ -769,6 +769,7 @@ async fn appraise(
                     "negative": valence.negative,
                     "positives": valence.positives,
                     "negatives": valence.negatives,
+                    "visible": valence.visible,
                 },
                 "channels": channels,
                 "positive_errors": positive,

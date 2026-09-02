@@ -121,6 +121,21 @@ pub fn corpus_slice(
             // nothing" turns a rotting store into a typo. `unreadable` exists
             // for exactly this and its own doc says so — an unreadable store
             // is a finding, not an empty queue.
+            // The fourth zero, and the one the smoke-test mark created:
+            // every session rooted here was recorded as a test and the
+            // diagnosis excludes those by design, so this is the filter
+            // working — not a prefix typo, and not an empty store (found
+            // on review, after CLAUDE.md started telling smoke tests to
+            // set the mark).
+            if sessions_read == 0 && corpus.hidden_tests > 0 {
+                anyhow::bail!(
+                    "the only sessions rooted under {} are {} smoke-test session(s) \
+                     (`MECHA_SESSION_KIND=test`), which the diagnosis excludes — a \
+                     candidate is measured against real use, and there is none here yet.",
+                    w.display(),
+                    corpus.hidden_tests
+                );
+            }
             if sessions_read == 0 && corpus.unreadable > 0 {
                 anyhow::bail!(
                     "no readable sessions are rooted under {}, and {} transcript(s) in the \
@@ -145,6 +160,13 @@ pub fn corpus_slice(
                  finding from the filter matching nothing. A session records an outcome only \
                  when a run completes under it.",
                 w.display()
+            );
+        }
+        if corpus.hidden_tests > 0 && sessions_read == 0 {
+            anyhow::bail!(
+                "the store holds only {} smoke-test session(s) (`MECHA_SESSION_KIND=test`), \
+                 which the diagnosis excludes — nothing recorded as real use yet.",
+                corpus.hidden_tests
             );
         }
         return Ok(None);

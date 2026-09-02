@@ -215,7 +215,14 @@ impl Work {
                 }
                 if outcome == Outcome::Ok {
                     work.checks_passed += 1;
+                    // Both counters, so `shell_calls` stays the population
+                    // `verify_like` draws from once checks run: a check is a
+                    // shell command the harness ran, and counting it as
+                    // verification without counting it as a shell call
+                    // would let the numerator exceed its own denominator
+                    // (found on review).
                     work.verify_like += 1;
+                    work.shell_calls += 1;
                 }
                 continue;
             }
@@ -1393,6 +1400,10 @@ mod tests {
         assert_eq!(
             work.verify_like, 1,
             "a passing check is verification by construction"
+        );
+        assert_eq!(
+            work.shell_calls, 3,
+            "the two model `shell` calls plus the passing check — a shell call too, so the verify ratio's denominator holds"
         );
         assert_eq!(
             work.last,
