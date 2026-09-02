@@ -136,10 +136,15 @@ from echo_filter import BotSpeech, overlapped
 # speaker across the room does not.
 #
 # Tunable from the environment because the right value is a property of *this
-# room and this laptop*, not of the code: turn on MECHA_LOG=debug (or read the
-# worker's journal) and every gated segment prints the RMS it was gated at,
-# which is the measurement to set this from. A guessed constant with no way to
-# check it would be the worse half of both worlds.
+# room and this laptop*, not of the code. The measurement to set it from is in
+# the worker's own journal, which logs the RMS of every gated segment:
+#
+#     journalctl -u mecha-voice-worker -f | grep "parakeet segment gated:"
+#
+# Named precisely because the argument for having a knob at all is that the
+# measurement is checkable, and an instruction that does not work makes that
+# argument false. `MECHA_LOG` is mecha's *Rust* tracing filter and nothing in
+# this file reads it; loguru is what logs here.
 _ECHO_RMS_DEFAULT = 0.020
 
 
@@ -378,12 +383,21 @@ class LocalTTS(OpenAITTSService):
                  exaggeration: float = TTS_EXAGGERATION,
                  cfg_weight: float = TTS_CFG_WEIGHT,
                  affect_key: str | None = None,
-                 echo_window: BotSpeech | None = None, **kwargs):
+                 echo_window: BotSpeech, **kwargs):
         super().__init__(*args, **kwargs)
-        # Where this connection's spoken text is recorded for the echo filter.
-        # A reference to the STT's own window, handed over in `run_bot`: the
-        # two halves have to be the same object or the filter reads a window
-        # nothing writes to.
+        # Where this connection's spoken text is recorded for the echo filter:
+        # a reference to the STT's own window, so the two halves are the same
+        # object.
+        #
+        # Required, with no default, and that is the whole point. Optional
+        # plus a `None` check meant a TTS built without it spoke into nothing,
+        # the read side went on asking a window that could never fill, every
+        # transcript came back "not an echo", and the log line read
+        # `over_speaker=True` with no verdict — which is to say healthy. That
+        # is the silently-degrading guard this branch removed from the mic
+        # meter, arriving one door over. The module global it replaced could
+        # not be wired wrong; the price of per-connection state is that it can
+        # be, so a missing wire is a TypeError at startup instead.
         self._echo_window = echo_window
         self._speed = speed
         self._exaggeration = exaggeration
@@ -421,12 +435,6 @@ class LocalTTS(OpenAITTSService):
 
     def set_voice_name(self, voice: str) -> None:
         self._settings.voice = voice
-
-    def set_echo_window(self, window: BotSpeech) -> None:
-        """Share the STT's echo window - the same after-construction pattern
-        as `set_affect_key`, and for the same reason: the pair is only known
-        once `run_bot` has built both ends."""
-        self._echo_window = window
 
     def set_affect_key(self, key: str) -> None:
         """Set once `named`/`session_key` are known in `run_bot` - the same
@@ -548,8 +556,7 @@ class LocalTTS(OpenAITTSService):
                     yield ErrorFrame(error=f"TTS error {r.status_code}: {error}")
                     return
                 await self.start_tts_usage_metrics(text)
-                if self._echo_window is not None:
-                    self._echo_window.note(text)
+                self._echo_window.note(text)
                 async for chunk in r.iter_bytes(self.chunk_size):
                     if len(chunk) > 0:
                         await self.stop_ttfb_metrics()

@@ -781,7 +781,9 @@ named by what it can and cannot do.
   reply still interrupts and a speaker across the room does not — this section's
   own warning applies, that 0.010 was tuned on a different microphone, so the
   gated path now **logs the RMS it gated at** and the env var exists to be set
-  from that rather than from a guess. It is bounded below by `MIN_SEGMENT_RMS`
+  from that rather than from a guess — `journalctl -u mecha-voice-worker -f |
+  grep "parakeet segment gated:"`, since `MECHA_LOG` is mecha's *Rust* tracing
+  filter and nothing in the worker reads it. It is bounded below by `MIN_SEGMENT_RMS`
   rather than by zero: under it the graded gate runs *backwards*, holding our
   own echo to a lower bar than room noise, and nothing would say so because
   0.005 is a perfectly good RMS — one keystroke from the value the comment
@@ -798,22 +800,38 @@ named by what it can and cannot do.
   match is gone — and TTS is handed a sentence at a time, so an echo running
   over a sentence boundary was contained in no single phrase. It now matches
   the transcript against the joined window by an **ordered** match — a longest
-  common subsequence — and calls it echo only at four matched words *and* 60%
-  coverage, with exact containment kept as before.
+  common subsequence — and calls it echo only when at least four words match
+  and **nothing is left over**, with exact containment kept as before.
 
-  Both halves of that are load-bearing, and the first version got the first
-  half wrong. An unweighted bag of words puts every function word in a
-  20-second window into the vocabulary, so the bar falls with reply length
-  rather than with resemblance: **"no, cancel it" over "…or would you rather I
-  cancel it?" scored 0.667 against a 0.6 bar and was silenced** — and a
-  three-word confirmation is the commonest legitimate barge-in there is.
-  Because turn-start is transcription-based, a gated transcript is not a
-  degraded turn but no turn at all. The absolute count is what protects it;
-  ordering is what keeps the count honest the other way, since real echo
-  arrives with words dropped from the middle (so contiguity is too strict)
-  while a coincidental match rarely survives having to be in order at all —
-  "actually cancel that" cannot match a window that says "that" before
-  "cancel".
+  **Every fraction tried here silenced a correction, and raising it only moved
+  the failure up the scale.** An unweighted bag of words at 0.6 silenced "no,
+  cancel it" over "…or would you rather I cancel it?". Adding a four-word floor
+  moved it to "can you move it to Friday" over "I can move it to Thursday" —
+  four matched, 0.667. Raising the bar to 0.8 moved it to "book the small room
+  for Tuesday" over "Shall I book the room for Tuesday?" — five of six. Each is
+  a correction, and each shares most of its words with the offer it corrects,
+  because that is what correcting an offer sounds like. Ordering is no defence
+  either: a counter-instruction reuses the offer's word order.
+
+  So the question is not *how much of this was ours* but **is any of it not
+  ours**. An echo is our own sentence coming back; a person saying something is
+  saying something we did not say, and one new word is the whole signal —
+  "small", "Friday". One unmatched word is forgiven only at eight words or
+  more, where a mangled word is plausibly noise; at six a single unmatched word
+  is the point of the sentence. Because turn-start is transcription-based, a
+  gated transcript is not a degraded turn but no turn at all, which is what
+  makes this the expensive direction to be wrong in.
+
+  Ordering still earns its place: real echo arrives with words dropped from the
+  middle, so contiguity is too strict, and a coincidental match rarely survives
+  having to be in order — "actually cancel that" cannot match a window that
+  says "that" before "cancel".
+
+  And the band no text rule can decide is worth stating rather than tuning at:
+  a person repeating our own proposal back over the speaker ("move it to
+  Thursday please") *is*, as text, our sentence. That band belongs to the
+  energy floor, which is why that floor is the load-bearing defence and this is
+  depth behind it.
 
   And the fuzzy arm now runs **only** when the speaker was audible, rather
   than at a higher bar: with nothing playing there was no echo to have, so
@@ -842,9 +860,14 @@ named by what it can and cannot do.
   subsequence made it need only resemblance — to a haystack that was the union
   of every live call, so a second caller could be judged against words it never
   heard, and contamination only ever *adds* echo verdicts. The `BotSpeech`
-  instance now hangs off the per-connection `ParakeetSTT` and `run_bot` hands
-  the same object to `LocalTTS`, the way `set_affect_key` already threads
-  per-connection state after construction.
+  instance now hangs off the per-connection `ParakeetSTT`, and `run_bot` hands
+  the same object to `LocalTTS` as a **required** constructor argument. Not
+  optional with a `None` check: that made a missing wire silent — the TTS would
+  speak into nothing, the read side would ask a window that could never fill,
+  every transcript would come back "not an echo", and the log line would read
+  `over_speaker=True` with no verdict, which is to say healthy. The global it
+  replaced could not be wired wrong; the price of per-connection state is that
+  it can be, so a missing wire is a `TypeError` at startup instead.
 
   It moved to `scripts/voice/echo_filter.py` — a pure module with no pipecat
   import — for the sole reason that testing it used to mean standing up a GPU
