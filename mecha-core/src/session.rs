@@ -31,11 +31,29 @@ use std::path::{Path, PathBuf};
 /// `tool_result` orphaned in the next message, and nothing prunes orphans
 /// at load. Strictly better than dropping the whole message either way,
 /// and the fix when that day comes is a load-time orphan sweep beside this.
-fn lenient_message(line: &str) -> Option<Message> {
+fn lenient_record(line: &str) -> Option<Record> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
-    if v.get("record").and_then(serde_json::Value::as_str) != Some("message") {
-        return None;
+    match v.get("record").and_then(serde_json::Value::as_str)? {
+        "message" => lenient_message(&v).map(Record::Message),
+        // A rewrite carries a whole message list, and is the record where
+        // dropping the line costs a compaction: the resumed conversation would
+        // be the pre-compaction one, oversized, with the summary lost.
+        "rewrite" => {
+            let kept: Vec<Message> = v
+                .get("messages")?
+                .as_array()?
+                .iter()
+                .filter_map(lenient_message)
+                .collect();
+            (!kept.is_empty()).then_some(Record::Rewrite { messages: kept })
+        }
+        _ => None,
     }
+}
+
+/// One message object — `{"role": …, "content": [...]}` — read as far as
+/// this build can. See [`lenient_record`].
+fn lenient_message(v: &serde_json::Value) -> Option<Message> {
     let role: crate::message::Role = serde_json::from_value(v.get("role")?.clone()).ok()?;
     let raw = v.get("content")?.as_array()?;
     let mut content = Vec::with_capacity(raw.len());
@@ -918,7 +936,7 @@ impl Session {
         // function exists to end.
         let mut taint_checkpoints: Vec<(usize, Taint)> = Vec::new();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            match serde_json::from_str::<Record>(line) {
+            match serde_json::from_str::<Record>(line).or_else(|e| lenient_record(line).ok_or(e)) {
                 Ok(Record::Meta(m)) => meta = Some(m),
                 // Last one wins: a conversation is renamed as it grows, and
                 // the newest name is the one a person would recognise it by.
@@ -1022,10 +1040,7 @@ impl Session {
                 }
                 Ok(Record::Outcome(o)) => outcomes.push(o),
                 Ok(Record::Summary { .. }) => {}
-                Err(e) => match lenient_message(line) {
-                    Some(m) => messages.push(m),
-                    None => tracing::warn!(error = %e, "skipping malformed transcript line"),
-                },
+                Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
         }
 
@@ -1101,7 +1116,7 @@ impl Session {
             }
         };
         for line in transcript.lines().filter(|l| !l.trim().is_empty()) {
-            match serde_json::from_str::<Record>(line) {
+            match serde_json::from_str::<Record>(line).or_else(|e| lenient_record(line).ok_or(e)) {
                 Ok(Record::Message(m)) => admit(m, &mut all),
                 Ok(Record::Rewrite { messages }) => {
                     for m in messages {
@@ -1109,10 +1124,7 @@ impl Session {
                     }
                 }
                 Ok(_) => {}
-                Err(e) => match lenient_message(line) {
-                    Some(m) => admit(m, &mut all),
-                    None => tracing::debug!(error = %e, "skipping malformed transcript line"),
-                },
+                Err(e) => tracing::debug!(error = %e, "skipping malformed transcript line"),
             }
         }
         all
@@ -2450,6 +2462,53 @@ mod tests {
         // included — so the directory gets the token-file rule.
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The same leniency for a `rewrite` record, which carries a whole message
+    /// list and is the record where dropping the line costs a compaction: the
+    /// resumed conversation would be the pre-compaction one, oversized, with
+    /// the summary gone.
+    #[test]
+    fn a_rewrite_from_a_newer_build_is_applied_minus_what_this_one_cannot_read() {
+        use std::io::Write;
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-rewrite")).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&session.path)
+            .unwrap();
+        writeln!(
+            file,
+            r#"{{"record":"message","role":"user","content":[{{"type":"text","text":"before"}}]}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"record":"message","role":"assistant","content":[{{"type":"text","text":"long ago"}}]}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"record":"rewrite","messages":[{{"role":"user","content":[{{"type":"text","text":"compacted head"}},{{"type":"hologram","frames":2}}]}}]}}"#
+        )
+        .unwrap();
+        drop(file);
+
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(
+            t.convo.messages.len(),
+            1,
+            "the rewrite replaced the list: {:?}",
+            t.convo.messages
+        );
+        assert!(t.convo.messages[0].text().contains("compacted head"));
+        assert_eq!(
+            t.convo.messages[0].content.len(),
+            1,
+            "the unknown block is dropped"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

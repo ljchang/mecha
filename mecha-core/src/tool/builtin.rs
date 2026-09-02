@@ -625,6 +625,16 @@ impl Tool for HttpFetch {
         // target is a header the remote server chose, and a transport error's
         // text can carry what the far end said. An error built clean let
         // attacker-chosen text enter the conversation untainted.
+        //
+        // Chosen, not overlooked: a DNS failure or a refused connection is
+        // reqwest's own words with no packet from the far end, and marking it
+        // external over-taints — one fetch at an unreachable host arms the
+        // untrusted leg for the rest of the conversation. It stays marked
+        // because a TLS alert *can* carry server-chosen strings and the two are
+        // not told apart from `reqwest::Error` without matching on its kinds,
+        // and over-taint fails closed. The loop's own errors follow the other
+        // rule (`run_tools`: an `Err` before the wire is never external);
+        // this tool touched the wire, so it marks.
         let resp = match client.get(url).send().await {
             Ok(r) => r,
             Err(e) => return Ok(ToolOutput::err(format!("request failed: {e}")).from_outside()),

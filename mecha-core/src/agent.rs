@@ -205,24 +205,6 @@ pub fn is_plain_user_text(m: &Message) -> bool {
             .any(|b| matches!(b, Block::ToolResult { .. }))
 }
 
-/// The text of the last thing the *assistant* said — what a run that stops
-/// before its final turn hands back as its answer.
-///
-/// Not `messages.last()`: after a tool turn the tail is the tool-results
-/// message, and `Message::text` is role-agnostic. Reading it there dropped
-/// the assistant's own words from an interrupted turn and, worse, returned
-/// whatever had been *folded* into that message via `append_user_text` — a
-/// boredom notice, a plan nudge, a peer's mailbox delivery — as the run's
-/// answer. A peer's message must never become `RunOutcome.text`.
-pub fn last_assistant_text(messages: &[Message]) -> String {
-    messages
-        .iter()
-        .rev()
-        .find(|m| m.role == Role::Assistant)
-        .map(Message::text)
-        .unwrap_or_default()
-}
-
 /// What the loop consults that is properly per-*run* rather than per-agent:
 /// what tools may touch, who approves the ones that aren't read-only, and what
 /// this particular run is allowed to spend.
@@ -1459,6 +1441,13 @@ impl Agent {
         let mut trace: Vec<ToolCallTrace> = Vec::new();
         let mut malformed = 0u32;
         let mut blocked_sends = 0u32;
+        // The last thing the assistant said *in this run*, for the paths that
+        // stop before a final turn. Tracked rather than read back off the
+        // list: a resumed conversation's tail is the previous run's answer,
+        // and a cancel observed at the top of turn 1 returned it as this
+        // run's; and a compaction mid-run can move or summarise away the
+        // messages an index into the list would have pointed at.
+        let mut run_said: Option<String> = None;
         // What the provider said the prompt actually cost last turn. The
         // honest measure of context pressure: it counts the cached tokens too,
         // which an estimate over `messages` would miss.
@@ -1515,7 +1504,7 @@ impl Agent {
             if cx.cancelled() {
                 tracing::info!(turns, "interrupted");
                 let mut outcome = self.interrupted(
-                    last_assistant_text(messages),
+                    run_said.clone().unwrap_or_default(),
                     usage,
                     turns,
                     trace,
@@ -1797,7 +1786,7 @@ impl Agent {
 
             if let Some(cause) = ceiling {
                 tracing::info!(cause = cause.describe(), turns, "stopping early");
-                let mut text = last_assistant_text(messages);
+                let mut text = run_said.clone().unwrap_or_default();
                 if self.cfg.force_final_answer {
                     match self.final_answer(cx, messages, &events).await {
                         Ok(Some(answer)) => text = answer,
@@ -2086,6 +2075,10 @@ impl Agent {
             }
 
             messages.push(response.message.clone());
+            let said = response.message.text();
+            if !said.trim().is_empty() {
+                run_said = Some(said);
+            }
 
             // A turn that contains tool calls is a tool turn, whatever the
             // provider called it. Local servers do report `stop` alongside
@@ -9711,6 +9704,30 @@ mod tests {
             outcome.text
         );
         assert!(!outcome.text.contains("the tool's own result"));
+    }
+
+    /// And scoped to *this* run: a resumed conversation's tail is the
+    /// previous run's answer, and a cancel observed at the top of turn 1
+    /// used to hand it back as though this run had said it.
+    #[tokio::test]
+    async fn an_interrupted_run_never_hands_back_a_previous_runs_answer() {
+        let agent = looping_agent(20, PermissionMode::Allow);
+        let token = CancellationToken::new();
+        let cx = agent.context().as_ref().clone().with_cancel(token.clone());
+        token.cancel();
+
+        let mut convo = Conversation::from(vec![
+            Message::user("earlier"),
+            Message::assistant(vec![Block::text("EARLIER ANSWER")]),
+            Message::user("go"),
+        ]);
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(outcome.stop_cause, StopCause::Interrupted);
+        assert!(
+            !outcome.text.contains("EARLIER ANSWER"),
+            "the previous run's words are not this run's: {}",
+            outcome.text
+        );
     }
 
     /// A tool that panics on the first call and answers on the second.
