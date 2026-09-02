@@ -703,7 +703,9 @@ impl TodoTool {
     /// Only [`rehydrate`](Self::rehydrate) has any business calling this: a
     /// list set by anything other than the model's own `todo` write, or a
     /// faithful restoration of one, is a second author of state the tool is
-    /// supposed to own.
+    /// supposed to own. And every resume path goes through `rehydrate`,
+    /// not here: this installs a plan with **no freezes**, which is right
+    /// for a plan with no transcript behind it and wrong for one that has.
     ///
     /// A fresh record, not a plan swapped into the old one: the spans this
     /// tool measures are counted from a run's trace, and a plan restored from
@@ -800,12 +802,23 @@ impl TodoTool {
         Some(n)
     }
 
-    /// Every step a transcript's `todo` echoes show completed against a
-    /// check, with the check as the *latest* echo showed it — which is the
-    /// frozen one, since `advance` renders the echo after putting a
-    /// tampered check back. Walked oldest-first so a later echo overrides
-    /// an earlier one for the same step text; the last plan's items are
-    /// covered by construction, and the trimmed ones are the point.
+    /// Every step a transcript's `todo` echoes — and its carried block —
+    /// show completed against a check, with the check as the *latest*
+    /// record showed it — which is the frozen one, since `advance` renders
+    /// the echo after putting a tampered check back. Walked oldest-first so
+    /// a later echo overrides an earlier one for the same step text; the
+    /// last plan's items are covered by construction, and the trimmed ones
+    /// are the point.
+    ///
+    /// Both places a plan survives, the same two `plan_from_transcript`
+    /// reads: `compact::rebuild` drops every message between the head and
+    /// the cut, so after a compaction the carried block is the *only*
+    /// record of a step completed before it — and a freeze read from echoes
+    /// alone let a step trimmed after the compaction re-add unfrozen on a
+    /// resume, the trimmed-before-resume door with a compaction in the
+    /// middle (found on the eighteenth review pass). The block sits in the
+    /// head message, so the oldest-first walk reaches it first and every
+    /// later echo overrides it.
     pub fn frozen_checks_from_transcript(messages: &[Message]) -> HashMap<String, String> {
         let mut failed: std::collections::HashSet<&str> = Default::default();
         for b in messages.iter().flat_map(|m| m.content.iter()) {
@@ -827,29 +840,39 @@ impl TodoTool {
             }
         }
         let mut frozen = HashMap::new();
-        for b in messages.iter().flat_map(|m| m.content.iter()) {
-            if let Block::ToolResult {
-                tool_use_id,
-                content,
-                is_error: false,
-            } = b
-            {
-                if !todo_ids.contains(tool_use_id.as_str()) {
-                    continue;
-                }
-                // A cut echo is skipped, not merged: a `check:` line that
-                // fell past the cut must not read as "no check", and a
-                // partial list must not override a whole earlier one.
-                let Some(plan) = Self::parse_whole_echo(content) else {
-                    continue;
-                };
-                for item in plan.items {
-                    if item.status == Status::Completed {
-                        if let Some(c) = item.check {
-                            frozen.insert(item.content, c);
-                        }
+        let mut take = |plan: Plan| {
+            for item in plan.items {
+                if item.status == Status::Completed {
+                    if let Some(c) = item.check {
+                        frozen.insert(item.content, c);
                     }
                 }
+            }
+        };
+        for b in messages.iter().flat_map(|m| m.content.iter()) {
+            match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error: false,
+                } => {
+                    if !todo_ids.contains(tool_use_id.as_str()) {
+                        continue;
+                    }
+                    // A cut echo is skipped, not merged: a `check:` line that
+                    // fell past the cut must not read as "no check", and a
+                    // partial list must not override a whole earlier one.
+                    let Some(plan) = Self::parse_whole_echo(content) else {
+                        continue;
+                    };
+                    take(plan);
+                }
+                Block::Text { text } if text.trim_start().starts_with(CARRIED_HEADER) => {
+                    // The block is written whole by `rebuild` and is a
+                    // `Text`, which neither truncator touches.
+                    take(Self::parse_carried(text));
+                }
+                _ => {}
             }
         }
         frozen
@@ -3672,5 +3695,73 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(blank.check, None);
+    }
+
+    /// The trimmed-before-resume door with a compaction in the middle
+    /// (found on the eighteenth review pass): `rebuild` drops the echo that
+    /// completed the step, so the carried block in the head message is the
+    /// only record of its check. A freeze read from echoes alone re-added
+    /// it unfrozen.
+    #[tokio::test]
+    async fn a_step_completed_before_a_compaction_and_trimmed_after_it_stays_frozen() {
+        use crate::message::{Block, Message, Role};
+        let mut done = TodoItem::new("wire it", Status::Completed);
+        done.check = Some("make test".into());
+        let carried = format!(
+            "{CARRIED_HEADER}\n\n## todo\n{}\n",
+            TodoTool::render(&Plan {
+                goal: None,
+                items: vec![done]
+            })
+        );
+        let trimmed_echo = TodoTool::render(&Plan {
+            goal: None,
+            items: vec![TodoItem::new("ship it", Status::InProgress)],
+        });
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![Block::Text { text: carried }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t2".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "ship it", "status": "in_progress"}]}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: trimmed_echo,
+                    is_error: false,
+                }],
+            },
+        ];
+        let frozen = TodoTool::frozen_checks_from_transcript(&messages);
+        assert_eq!(frozen.get("wire it").map(String::as_str), Some("make test"));
+
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        assert_eq!(tool.rehydrate(&ws, &messages), Some(1));
+        let out = tool
+            .call(
+                json!({"items": [
+                    {"content": "ship it", "status": "in_progress"},
+                    {"content": "wire it", "status": "completed", "check": "true"}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("\"wire it\" was changed"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
     }
 }
