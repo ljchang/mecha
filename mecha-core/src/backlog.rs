@@ -613,4 +613,26 @@ mod tests {
         assert_eq!(d.given_up, Some(2));
         assert_eq!(d.owner_facing_cleared(), Some(0));
     }
+
+    /// A read creates nothing (found on review, which noted nothing
+    /// asserted it): every owner-facing reader opens only what exists, and
+    /// a store that has never existed is an empty depth, never an unknown
+    /// one — `anticipated_guilt` is `None` unless all three were read, so
+    /// a machine that had simply never used the front door read as
+    /// unmeasurable. Fails on `open_default` twice over: the directory
+    /// appears, and the depth comes back `None`.
+    #[test]
+    fn reading_the_backlog_creates_no_store_and_reads_a_missing_one_as_empty() {
+        let home = crate::work::tests::HomeGuard::new();
+        let b = Backlog::read();
+        assert_eq!(b.outbox, Some(Depth::default()));
+        assert_eq!(b.questions, Some(Depth::default()));
+        assert_eq!(b.frontdoor, Some(Depth::default()));
+        for store in ["outbox", "questions", "requests"] {
+            assert!(
+                !home.dir().join(store).exists(),
+                "a read created {store}/ under the mecha home"
+            );
+        }
+    }
 }
