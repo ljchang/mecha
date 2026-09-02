@@ -430,11 +430,15 @@ pub enum WireEvent {
         ids: Vec<String>,
     },
     /// §6.2's readout — how the just-finished run appraised. Sent only when
-    /// the label is not `Neutral` (the overwhelming common case per the
-    /// rung 7 corpus), so the page's logo tint has a plain absence to fall
-    /// back to rather than a stream of `"neutral"` events saying nothing.
+    /// there is something to show: a label other than `Neutral`, or a
+    /// valence with at least one signed error (`docs/APPRAISAL-RESEARCH.md`
+    /// §3.1 — the page draws the valence as a two-sided bar, by the owner's
+    /// ruling for this surface). A run with neither sends nothing, so the
+    /// page's tint has a plain absence to fall back to rather than a
+    /// stream of events saying nothing.
     Affect {
         label: String,
+        valence: mecha_core::appraisal::Valence,
     },
     /// This conversation has a name now — see `mecha_core::title`. Sent when
     /// a run's end earns one, carrying the name without its `web: ` prefix,
@@ -898,6 +902,14 @@ fn ensure_session_as<'a>(
                                 .clone()
                                 .unwrap_or_else(|| format!("{WEB_TITLE_PREFIX}{key}")),
                         ),
+                        // The same split the title makes: a delegation opened
+                        // from the board is a task run that happens to be
+                        // driven through the web, not a web chat.
+                        kind: Some(if init.task.is_some() {
+                            mecha_core::session::SessionKind::Task
+                        } else {
+                            mecha_core::session::SessionKind::Web
+                        }),
                     },
                 )?,
                 Conversation::new(),
@@ -1351,12 +1363,21 @@ fn begin_turn(
             // needs where *this run's own* messages start, and `before` is
             // exactly that boundary — captured right after the triggering
             // user turn was appended, before this run added anything.
-            let label =
-                mecha_core::appraisal::live(&session.meta.id, o, &conversation, before.len());
-            if label != mecha_core::appraisal::Affect::Neutral {
-                affect_label = Some(label.wire());
+            let readout = mecha_core::appraisal::live_readout(
+                &session.meta.id,
+                o,
+                &conversation,
+                before.len(),
+            );
+            if readout.label != mecha_core::appraisal::Affect::Neutral {
+                // The voice nudge keys on the word alone: a `cfg_weight`
+                // has no use for a magnitude, and a number is not a mood.
+                affect_label = Some(readout.label.wire());
+            }
+            if !readout.is_silent() {
                 let _ = bcast.send(WireEvent::Affect {
-                    label: affect_label.clone().unwrap(),
+                    label: readout.label.wire(),
+                    valence: readout.valence,
                 });
             }
         }
@@ -2216,6 +2237,7 @@ mod tests {
                 model: "m".into(),
                 workspace: std::path::PathBuf::from("/tmp"),
                 title: Some("web: chat-8f3a".into()),
+                kind: Some(mecha_core::session::SessionKind::Web),
             },
         )
         .unwrap();
@@ -2319,6 +2341,7 @@ mod rollback_tests {
                 model: "m".into(),
                 workspace: std::path::PathBuf::from("/tmp"),
                 title: None,
+                kind: Some(mecha_core::session::SessionKind::Web),
             },
         )
         .unwrap();
@@ -2609,10 +2632,24 @@ mod wire_tests {
     fn an_affect_event_reaches_the_page_under_the_name_the_logo_switches_on() {
         let wire = serde_json::to_value(WireEvent::Affect {
             label: "anger".into(),
+            valence: mecha_core::appraisal::Valence {
+                positive: 1.0,
+                negative: 0.5,
+                positives: 1,
+                negatives: 1,
+                visible: false,
+                partial: false,
+            },
         })
         .unwrap();
         assert_eq!(wire["type"], "affect");
         assert_eq!(wire["label"], "anger");
+        // The page reads these five by name to draw the bar; `partial` is
+        // absent when false so an older page sees the shape it knew.
+        assert_eq!(wire["valence"]["positive"], 1.0);
+        assert_eq!(wire["valence"]["negative"], 0.5);
+        assert_eq!(wire["valence"]["negatives"], 1);
+        assert!(wire["valence"].get("partial").is_none());
     }
 
     #[test]

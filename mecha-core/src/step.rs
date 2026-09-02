@@ -110,6 +110,20 @@ pub struct Work {
     /// [`escalation_candidate`]'s `UnverifiedClaim` branch, which reads this
     /// alongside `verify_like` for exactly that reason.
     pub shell_calls: u32,
+    /// Declared post-condition checks the loop actually ran — a trace named
+    /// `check` (`todo.rs`'s `TodoItem::check`, executed by the loop and
+    /// dispatched as a model `shell` call would be). **Not counted in
+    /// `calls`**: the model did not make the call, so a step's span must
+    /// not grow by one for every check the harness ran on its behalf, and a
+    /// forecast in `expect_calls` is a forecast of the model's own work. A
+    /// refused check is in neither counter — it never ran, and the refusal
+    /// reaches `last` the way any refusal does.
+    pub checks_declared: u32,
+    /// Of those, the ones whose exit code was zero. `checks_declared -
+    /// checks_passed` is the count of steps the harness *knows* did not
+    /// land, which is the one structural discrepancy no keyword list has
+    /// to guess at — Terminal-Bench's "reasoning–action mismatch" as a fact.
+    pub checks_passed: u32,
     /// How the most recent attempt ended. `None` before the run makes one.
     pub last: Option<Outcome>,
     /// Calls approved in *this* turn whose results are not back yet — the
@@ -154,6 +168,11 @@ pub struct Work {
     pub run: u64,
 }
 
+/// The trace name the loop records a declared check's result under. Named
+/// here, beside the only reader that keys on it, so the writer and the
+/// reader cannot drift apart on a string.
+pub const CHECK_TRACE: &str = "check";
+
 /// A fresh run identity. Monotonic within the process, meaningless outside it.
 pub fn next_run() -> u64 {
     static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -170,6 +189,20 @@ impl Work {
         let mut work = Work::default();
         for call in trace {
             let outcome = Outcome::of(call);
+            if call.name == CHECK_TRACE {
+                // The harness's own call, on the model's declaration. See
+                // `checks_declared`: counted apart from `calls`, and a
+                // passing check is verification by construction.
+                if outcome != Outcome::Refused {
+                    work.checks_declared += 1;
+                }
+                if outcome == Outcome::Ok {
+                    work.checks_passed += 1;
+                    work.verify_like += 1;
+                }
+                work.last = Some(outcome);
+                continue;
+            }
             work.calls += 1;
             match outcome {
                 Outcome::Failed => work.failed += 1,
@@ -243,6 +276,8 @@ impl Work {
             refused: self.refused.saturating_sub(start.refused),
             verify_like: self.verify_like.saturating_sub(start.verify_like),
             shell_calls: self.shell_calls.saturating_sub(start.shell_calls),
+            checks_declared: self.checks_declared.saturating_sub(start.checks_declared),
+            checks_passed: self.checks_passed.saturating_sub(start.checks_passed),
             last,
             in_flight: self.in_flight,
             denied: self.denied,
@@ -262,6 +297,11 @@ pub struct Span {
     pub verify_like: u32,
     /// See [`Work::shell_calls`].
     pub shell_calls: u32,
+    /// See [`Work::checks_declared`] and [`Work::checks_passed`]. Read by
+    /// [`appraise`], unlike `verify_like`: a declared check that failed is
+    /// a fact about the step, not evidence for a model to weigh.
+    pub checks_declared: u32,
+    pub checks_passed: u32,
     /// The run's most recent finished attempt — which is the *span's* most
     /// recent one whenever the span holds any, since calls happen in order.
     /// Meaningless when `calls` is zero, and [`appraise`] reads it only after
@@ -291,6 +331,11 @@ pub enum Finding {
     EndedOnFailure,
     /// The last thing tried was refused. The step was blocked, not done.
     EndedOnRefusal,
+    /// A check the step itself declared ran and did not pass. Read before
+    /// the last-attempt readings: the model's own last call may have
+    /// succeeded while its claim did not, which is the whole reason a
+    /// declared check exists.
+    CheckFailed,
 }
 
 /// The deterministic reading. No model, no threshold, no tuned constant.
@@ -304,6 +349,9 @@ pub fn appraise(span: Span) -> Finding {
     // settled, but which step it belongs to is not.
     if span.in_flight > 0 || span.denied > 0 {
         return Finding::Landed;
+    }
+    if span.checks_declared > span.checks_passed {
+        return Finding::CheckFailed;
     }
     if span.calls == 0 {
         return Finding::Null;
@@ -351,6 +399,10 @@ impl Finding {
                 "step \"{step}\" was marked done with its last call refused. \
                  It was blocked rather than finished — the plan should say which."
             ),
+            Finding::CheckFailed => format!(
+                "step \"{step}\" was marked done but the check it declared did not pass. \
+                 Fix what the check found, or say why the check was wrong."
+            ),
         };
         Some(if again {
             // §5.5's bound: one revision per step. A second identical reading
@@ -373,7 +425,7 @@ impl Finding {
 /// On a char boundary, because a step's content is whatever the model typed
 /// and slicing a multi-byte character panics — in the one code path that runs
 /// on every plan revision of every run.
-fn ellipsize(s: &str, max: usize) -> String {
+pub(crate) fn ellipsize(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
@@ -975,6 +1027,8 @@ mod tests {
             refused: 0,
             verify_like,
             shell_calls: calls,
+            checks_declared: 0,
+            checks_passed: 0,
             last: Some(Outcome::Ok),
             in_flight: 0,
             denied: 0,
@@ -1116,6 +1170,8 @@ mod tests {
             refused: 0,
             verify_like: 0,
             shell_calls: 0,
+            checks_declared: 0,
+            checks_passed: 0,
             last: Some(Outcome::Ok),
             in_flight: 0,
             denied: 0,
@@ -1296,4 +1352,55 @@ mod tests {
     // `Agent::escalate_step`, which needs `self.complete` for cancellation
     // and usage accounting — see the module note above `parse_step_verdict`.
     // Its tests live beside `agent.rs`'s own `ScriptedProvider`.
+
+    // --- declared checks -----------------------------------------------------
+
+    fn check(is_error: bool, denied: bool) -> ToolCallTrace {
+        ToolCallTrace {
+            name: CHECK_TRACE.into(),
+            input: json!({"command": "cargo test -q"}),
+            is_error,
+            denied,
+            unknown: false,
+            staged: false,
+        }
+    }
+
+    #[test]
+    fn a_check_is_counted_apart_from_the_models_own_calls() {
+        let work = Work::of(&[ok(), check(false, false), ok(), check(true, false)]);
+        assert_eq!(
+            work.calls, 2,
+            "the harness's checks are not the model's work"
+        );
+        assert_eq!((work.checks_declared, work.checks_passed), (2, 1));
+        assert_eq!(
+            work.verify_like, 1,
+            "a passing check is verification by construction"
+        );
+        assert_eq!(work.last, Some(Outcome::Failed));
+        let refused = Work::of(&[ok(), check(true, true)]);
+        assert_eq!(
+            (refused.checks_declared, refused.checks_passed),
+            (0, 0),
+            "a refused check never ran"
+        );
+        assert_eq!(refused.last, Some(Outcome::Refused));
+    }
+
+    #[test]
+    fn a_failed_check_is_its_own_finding_and_outranks_a_clean_last_call() {
+        let start = Work::of(&[]);
+        // The model's last call succeeded; the declared check did not.
+        let now = Work::of(&[ok(), check(true, false), ok()]);
+        let span = now.since(start, 0, Some(Outcome::Ok)).unwrap();
+        assert_eq!((span.checks_declared, span.checks_passed), (1, 0));
+        assert_eq!(appraise(span), Finding::CheckFailed);
+        let line = Finding::CheckFailed.line("wire it", false).unwrap();
+        assert!(line.contains("did not pass"), "{line}");
+        // A passing check reads as landed even after an earlier failure.
+        let now = Work::of(&[failed(), check(false, false)]);
+        let span = now.since(start, 0, Some(Outcome::Ok)).unwrap();
+        assert_eq!(appraise(span), Finding::Landed);
+    }
 }

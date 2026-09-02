@@ -1517,6 +1517,19 @@ pub enum Trigger {
     /// without any UI for them. These have no replayable intervention point,
     /// so the counterfactual probe must skip them.
     Edit,
+    /// The recorded outcome disagreed with the model's own prediction —
+    /// endogenous, the first trigger that needs no person to fire
+    /// (`docs/APPRAISAL-RESEARCH.md` §3.7; `docs/AUDIT-RESEARCH.md` §3.11).
+    /// Three events and no others: a declared `check` failed on a step
+    /// marked completed, an `expect_calls` forecast blown past
+    /// `step::escalation_candidate`'s outlier constants, or a completed
+    /// step's check rewritten after the fact. Bounded one reflection per
+    /// step and three per run. A critic's false alarm is never one of
+    /// these: it says something about the critic, not the agent. **The
+    /// variant is the wire format; nothing fires it yet** — the firing is
+    /// phase C of the appraisal plan, and a reader meeting `"mismatch"` in
+    /// the store before then must not choke on it.
+    Mismatch,
 }
 
 impl Trigger {
@@ -1526,6 +1539,7 @@ impl Trigger {
             Trigger::Denial => "denial",
             Trigger::Followup => "followup",
             Trigger::Edit => "edit",
+            Trigger::Mismatch => "mismatch",
         }
     }
 
@@ -3537,6 +3551,8 @@ mod tests {
             assert_eq!(t.domain(), "behavior");
         }
         assert_eq!(Trigger::Edit.domain(), "writing");
+        assert_eq!(Trigger::Mismatch.domain(), "behavior");
+        assert_eq!(Trigger::Mismatch.as_str(), "mismatch");
     }
 
     /// The writing domain consolidates with the writing frame; every other

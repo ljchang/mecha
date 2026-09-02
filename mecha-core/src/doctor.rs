@@ -1349,6 +1349,8 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
             // Every workspace: doctor reports the machine's health, and
             // health is not scoped to one job.
             workspace: None,
+            kind: None,
+            include_tests: false,
         },
     ) {
         Ok(c) => c,
@@ -3253,6 +3255,7 @@ mod tests {
                     model: model.to_string(),
                     workspace: std::path::PathBuf::from("/tmp"),
                     title: None,
+                    kind: None,
                 },
             )
             .unwrap();

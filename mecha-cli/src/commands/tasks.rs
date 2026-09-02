@@ -687,7 +687,13 @@ async fn appraise_closure(
 /// on any non-neutral `dropped` closure too — e.g. a `MaxTurns` run the
 /// owner gave up on got a "Revisit" task put right back on the board.
 fn worth_a_follow_up(new_status: &str, a: &mecha_core::appraisal::Appraisal) -> bool {
-    new_status == "done" && a.label != mecha_core::appraisal::Affect::Neutral
+    // The label, or the typed residue predicate beside it. A ceiling used
+    // to reach this gate as the label `Anger`; it labels `Neutral` now (the
+    // owner's own limit — `of_session`'s ceiling arm) and reaches the gate
+    // through `cut_short` instead, which is the same closure named by what
+    // it actually is: a run the owner accepted with work cut off. No
+    // threshold over raw magnitudes is derived here.
+    new_status == "done" && (a.label != mecha_core::appraisal::Affect::Neutral || a.cut_short())
 }
 
 /// Is `id` exactly one ordinary path component — never a root, a `..`,
@@ -812,12 +818,18 @@ fn appraise_session(
 /// `GoalError::cite`'s own rule, carried out to what a human reads: a
 /// pointer, never prose.
 fn describe(a: &mecha_core::appraisal::Appraisal) -> String {
-    let positives = a.errors.iter().filter(|e| e.sign > 0.0).count();
-    let negatives = a.errors.iter().filter(|e| e.sign < 0.0).count();
+    let v = mecha_core::appraisal::Valence::of(a);
+    let reading = if v.is_silent() {
+        "nothing signed".to_string()
+    } else {
+        v.compact()
+    };
     format!(
-        "{:?} ({positives} positive, {negatives} negative signal{})",
+        "{:?} · {reading} ({} positive, {} negative signal{})",
         a.label,
-        if negatives == 1 { "" } else { "s" }
+        v.positives,
+        v.negatives,
+        if v.negatives == 1 { "" } else { "s" }
     )
 }
 
@@ -1411,6 +1423,7 @@ async fn work(
                     // D10 — the drawer filters on this prefix. A run the owner
                     // cannot find is a run they will start twice.
                     title: Some(format!("task: {name}")),
+                    kind: Some(mecha_core::session::SessionKind::Task),
                 },
             )?,
             mecha_core::agent::Conversation::new(),
@@ -2601,34 +2614,52 @@ mod tests {
         }
     }
 
-    /// The follow-up gate reads the derived label, not the raw signed
-    /// errors — `affect_of` already reduced "does this need a human" down
-    /// to one word, and re-deriving a threshold over raw signs here would be
-    /// a second, less-tested version of exactly that reduction. A `Neutral`
-    /// closure — the overwhelming common case per the rung 7 corpus — must
-    /// never stage a follow-up nobody asked for.
+    /// The follow-up gate reads the derived label and the typed residue
+    /// predicate, never a threshold over raw signs — `affect_of` already
+    /// reduced "does this need a human" down to one word, and re-deriving a
+    /// magnitude threshold here would be a second, less-tested version of
+    /// exactly that reduction. A `Neutral` closure with nothing cut off —
+    /// the overwhelming common case — must never stage a follow-up nobody
+    /// asked for, and neither must one whose only negative is a draft the
+    /// owner rejected: that is a verdict, not residue.
     #[test]
     fn a_neutral_closure_never_stages_a_follow_up() {
         assert!(!worth_a_follow_up(
             "done",
             &appraisal(mecha_core::appraisal::Affect::Neutral)
         ));
+        let mut rejected = appraisal(mecha_core::appraisal::Affect::Neutral);
+        rejected.errors = vec![mecha_core::appraisal::GoalError {
+            goal: None,
+            channel: mecha_core::appraisal::Channel::Edit,
+            sign: -1.0,
+            agency: mecha_core::appraisal::Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: mecha_core::appraisal::Cite::Draft("o1".into()),
+        }];
+        assert!(!worth_a_follow_up("done", &rejected));
     }
 
-    /// The one label the free readout can actually put on a closure, pinned
-    /// by name: a ceiling-cut run the owner accepted as `done` anyway is the
-    /// residue-bearing case, and the follow-up captures the cut-off work,
-    /// not blame for the ceiling — `worth_a_follow_up`'s doc carries the
-    /// argument. If this starts failing because someone narrowed the gate to
-    /// the disappointment-family, note that today that makes the gate dead
-    /// code: no probe runs at closure time, so `Disappointment` never
-    /// reaches it.
+    /// The residue-bearing case, pinned by shape rather than by label: a
+    /// ceiling-cut run the owner accepted as `done` anyway labels `Neutral`
+    /// now (the ceiling is the owner's own limit, not `Anger`) and reaches
+    /// the gate through `Appraisal::cut_short` — the follow-up captures the
+    /// cut-off work, not blame for the ceiling.
     #[test]
     fn a_ceiling_cut_run_accepted_anyway_stages_the_residue() {
-        assert!(worth_a_follow_up(
-            "done",
-            &appraisal(mecha_core::appraisal::Affect::Anger)
-        ));
+        let mut cut = appraisal(mecha_core::appraisal::Affect::Neutral);
+        cut.errors = vec![mecha_core::appraisal::GoalError {
+            goal: None,
+            channel: mecha_core::appraisal::Channel::Counter,
+            sign: -0.5,
+            agency: mecha_core::appraisal::Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: mecha_core::appraisal::Cite::Counter("stop_cause".into()),
+        }];
+        assert!(worth_a_follow_up("done", &cut));
+        assert!(!worth_a_follow_up("dropped", &cut));
     }
 
     #[test]
@@ -2705,7 +2736,9 @@ mod tests {
         ];
         let s = describe(&a);
         assert!(s.contains("Frustration"));
+        assert!(s.contains("+1.0 \u{2212}1.0"), "{s}");
         assert!(s.contains("1 positive"));
         assert!(s.contains("1 negative signal"));
+        assert!(!s.contains("o1") && !s.contains("stop_cause"), "{s}");
     }
 }

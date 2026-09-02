@@ -726,6 +726,7 @@ async fn take_slot(
                             model: shared.model.clone(),
                             workspace: shared.agent.context().tools.workspace.clone(),
                             title: Some(format!("voice: {key}")),
+                            kind: Some(mecha_core::session::SessionKind::Voice),
                         },
                     )
                     .and_then(|session| {
@@ -1485,6 +1486,7 @@ mod tests {
                 model: "m".into(),
                 workspace: std::path::PathBuf::from("/tmp"),
                 title: None,
+                kind: Some(mecha_core::session::SessionKind::Voice),
             },
         )
         .unwrap();

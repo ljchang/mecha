@@ -4175,12 +4175,85 @@ to prevent. The diagnostician stopped running blind: it now logs "reading
 source and docs from /home/ljchang/Github/mecha" rather than "no source
 checkout reachable from the path jail".
 
+**2026-09-02 — the appraisal label was hiding the sign, and the corpus was
+measuring the harness's own test runs.** The owner asked for a review of the
+appraisal system, "the newest system that deviates the most from other agent
+harnesses." Re-measured live: 143 sessions appraised, 142 `neutral`, 0 naming
+a goal, 0 board tasks ever `done`, `anticipated_guilt` a constant between
+0.95 and 1.0, `StopCause::Interrupted` conflating Ctrl-C with an `ask_user`
+park, and 22 owner-rejected drafts all reading `neutral` — because
+`label_of` gives an owner- or self-caused negative no word until
+`controllable` is filled, and only a paid replay fills it. Two literature
+passes agreed on the mechanism from opposite sides: every computational
+appraisal model (OCC, Scherer, EMA, Soar-Emote, WASABI) gates once on
+relevance and labels from two variables, and Marinier, Laird and Lewis
+rejected a product over unfilled dimensions by name; the harness
+literature says LLM judges on trajectories are 33–41 kappa points less
+reliable than reported and a 0.94-AUROC critic that intervened lost up to
+26 points — so the design's refusals held and its readout was the defect.
+`docs/APPRAISAL-RESEARCH.md` is the record. The owner's rulings, in one
+session: labels are a readout of current state plus guilt and regret as
+typed signals, nothing more; the error signal is mostly prose,
+Reflexion-shaped, with numbers keeping three jobs (trigger, replay priority,
+consolidation gate); appraisal grounds in the charter, the task's plan as
+the prediction, and memory as the prior. Built the same day on
+`feat/appraisal-record` (uncommitted): `appraisal::Valence` beside the
+label on every surface, `session::SessionKind` with a `test` override that
+only narrows, a ceiling relabelled as the owner's own limit with
+`Appraisal::cut_short` keeping the closure follow-up honest, and the
+prediction record (`TodoItem::{expect, check, expect_calls}`, the frozen
+check, `step::CHECK_TRACE`, the check counters on `Work` and `RunStats`, a
+failed check as a signed error, `Trigger::Mismatch`). The other live lane's
+`AUDIT-RESEARCH.md` §3.11 spec was co-designed across the two sessions by
+message — its arm 1 re-injection carries the prediction, its arm 2 declared
+checks are the structural discrepancy detector, its arm 3 critic is the
+§3.7 predictor scored by the owner's edits — with one correction from this
+side that mattered: a declared check must go through the approver, not only
+the sandbox, or a plan field becomes a way to run a command on a surface
+where `shell` needs approval. Two doc sentences the audit found false
+against the tree were corrected ("three sensors ship with no consumer"
+while `diagnose::Evidence` reads two; "never reported" while `distill`
+writes the label to pkg).
+
 ## Traps already hit
 
 Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**2026-09-02 — the instrument was measuring its own test runs.** 46 of the
+143 sessions the appraisal corpus read were smoke runs from a mecha checkout
+or a Claude scratch directory, and most rejected drafts carried reasons
+naming a self-test; the session record had no field that could say so, so
+the only way to tell was a path heuristic nobody had applied. The rung 7
+measurement that set the build order was taken over the same mix. **A store
+that every harness session writes into is a store the harness's own
+development contaminates, and the mark has to be structural** — a `kind`
+written by the front-end and a `test` override that can only narrow — because
+a reader cannot recover it afterwards; the 46 stay unknown forever.
+
+**2026-09-02 — a process environment variable set in one test module broke
+a test in another, on the first run only.** A `SessionKind` test set
+`MECHA_SESSION_KIND=test` around `Session::create` under a module-local
+mutex; `runlog`'s scan test, in the same binary and another thread, created
+sessions while it was set, and the default scan excluded them as tests. The
+lock covered the module and the variable covered the process. **Anything
+read from the process environment is shared by every test in the binary,
+whatever a mutex says**; isolate it in a child process (`current_exe()` with
+`--exact --ignored` on a probe test) or do not test it through the
+environment at all.
+
+**2026-09-02 — changing a label's producer made a gate dead code, silently.**
+A ceiling stopped reading as `Agency::World`/`Anger` (the owner's own limit is
+not somebody else's fault), which was right — and it was the only
+non-neutral label the free readout ever produced, so the closure follow-up
+gate, which reads `label != Neutral`, could no longer fire on the free path
+at all. Every test stayed green, because the gate's tests constructed labels
+directly. **When a derived value feeds a gate, `grep` the gate before
+changing the derivation**; the fix was a typed predicate beside the label
+(`Appraisal::cut_short`) and a gate test that constructs the *errors*, not
+the label.
 
 **2026-08-31 — a bare filename is a line number's failure mode one level up,
 and two files share the name.** A handoff item cited `setup.rs:879` for a stale

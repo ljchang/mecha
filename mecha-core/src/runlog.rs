@@ -25,7 +25,7 @@
 //! that acts on them. This module counts.
 
 use crate::agent::StopCause;
-use crate::session::{Record, RunStats, Session};
+use crate::session::{Record, RunStats, Session, SessionKind, SessionMeta};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::BTreeMap;
@@ -91,6 +91,41 @@ pub struct Scan {
     /// A prefix rather than an equality test, because a source checkout has
     /// worktrees under it and they are the same population.
     pub workspace: Option<PathBuf>,
+    /// Keep only sessions opened through this surface. A row from before
+    /// the field existed has no kind and matches no filter — asking for one
+    /// surface must not hand back rows that could be any surface.
+    pub kind: Option<SessionKind>,
+    /// Read `SessionKind::Test` rows too. Off by default on every corpus
+    /// reader, because a smoke test that lands in the health readout is the
+    /// contamination `docs/APPRAISAL-RESEARCH.md` §1 measured at a third of
+    /// the store. Asking for `kind: Some(Test)` implies it.
+    pub include_tests: bool,
+}
+
+impl Scan {
+    /// Does this session's header pass the scan's filters? Shared with the
+    /// per-session walk in `sessions appraise`, which reads sessions rather
+    /// than runs and so cannot use [`Corpus::scan`] but must agree with it
+    /// about which sessions are in the population.
+    pub fn admits(&self, meta: &SessionMeta) -> bool {
+        if self.since.is_some_and(|t| meta.created_at < t) {
+            return false;
+        }
+        if self
+            .workspace
+            .as_ref()
+            .is_some_and(|w| !meta.workspace.starts_with(w))
+        {
+            return false;
+        }
+        if let Some(k) = self.kind {
+            return meta.kind == Some(k);
+        }
+        if meta.kind == Some(SessionKind::Test) && !self.include_tests {
+            return false;
+        }
+        true
+    }
 }
 
 impl Corpus {
@@ -104,14 +139,7 @@ impl Corpus {
         let (listed, skipped) = Session::list_counting(dir)?;
         out.unreadable = skipped;
         for (meta, path) in listed {
-            if scan.since.is_some_and(|t| meta.created_at < t) {
-                continue;
-            }
-            if scan
-                .workspace
-                .as_ref()
-                .is_some_and(|w| !meta.workspace.starts_with(w))
-            {
+            if !scan.admits(&meta) {
                 continue;
             }
             if scan.max_sessions.is_some_and(|n| out.sessions_read >= n) {
@@ -525,6 +553,7 @@ mod tests {
                 model: model.to_string(),
                 workspace: PathBuf::from(workspace),
                 title: None,
+                kind: None,
             },
         )
         .unwrap();
@@ -618,6 +647,7 @@ mod tests {
                 model: model.to_string(),
                 workspace: PathBuf::from("/tmp"),
                 title: None,
+                kind: None,
             },
         )
         .unwrap();
@@ -634,6 +664,8 @@ mod tests {
             boredom_notices: None,
             step_escalations_attempted: None,
             step_escalations_revised: None,
+            checks_declared: None,
+            checks_passed: None,
             turns: 3,
             usage: Usage::default(),
             cost_usd: Some(0.25),
@@ -949,6 +981,8 @@ mod tests {
                 max_sessions: Some(2),
                 since: None,
                 workspace: None,
+                kind: None,
+                include_tests: false,
             },
         )
         .unwrap();
@@ -967,6 +1001,8 @@ mod tests {
                         .with_timezone(&Utc),
                 ),
                 workspace: None,
+                kind: None,
+                include_tests: false,
             },
         )
         .unwrap();
@@ -1024,6 +1060,88 @@ mod tests {
         assert_eq!(by_model["opus"].tool_error_rate(), Some(0.1));
         assert_eq!(by_model["tiny-local"].tool_error_rate(), Some(0.9));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- session kind -------------------------------------------------------
+
+    fn session_kinded(dir: &Path, id: &str, kind: Option<SessionKind>) {
+        let s = Session::create(
+            dir,
+            SessionMeta {
+                id: id.to_string(),
+                created_at: DateTime::parse_from_rfc3339("2026-08-01T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+                provider: "local".into(),
+                model: "m".into(),
+                workspace: PathBuf::from("/tmp"),
+                title: None,
+                kind,
+            },
+        )
+        .unwrap();
+        s.append(&Record::Outcome(stats(1, 0, false, StopCause::Completed)))
+            .unwrap();
+    }
+
+    fn ids(c: &Corpus) -> Vec<&str> {
+        let mut v: Vec<&str> = c.rows.iter().map(|r| r.session_id.as_str()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn a_test_session_is_out_of_every_corpus_readout_unless_asked_for_by_name() {
+        let dir = tmpdir();
+        session_kinded(&dir, "20260801T000000-web", Some(SessionKind::Web));
+        session_kinded(&dir, "20260801T000001-test", Some(SessionKind::Test));
+        session_kinded(&dir, "20260801T000002-old", None);
+
+        let default = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(
+            ids(&default),
+            vec!["20260801T000000-web", "20260801T000002-old"],
+            "the test row is out by default; the unknown row stays, it could be use"
+        );
+
+        let with_tests = Corpus::scan(
+            &dir,
+            &Scan {
+                include_tests: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(with_tests.len(), 3);
+
+        let only_tests = Corpus::scan(
+            &dir,
+            &Scan {
+                kind: Some(SessionKind::Test),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&only_tests),
+            vec!["20260801T000001-test"],
+            "`--kind test` implies inclusion"
+        );
+
+        let only_web = Corpus::scan(
+            &dir,
+            &Scan {
+                kind: Some(SessionKind::Web),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&only_web),
+            vec!["20260801T000000-web"],
+            "a row with no kind matches no filter: asking for one surface must not hand back rows that could be any"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

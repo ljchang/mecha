@@ -490,6 +490,11 @@ struct App {
     /// what "show nothing" on the status strip keys off (§16 leaves "what to
     /// show on neutral" open; resolved here the conservative way).
     affect: Option<mecha_core::appraisal::Affect>,
+    /// The dimensional half of the same readout — the signed magnitudes
+    /// the record carries, shown as a number on this surface by the owner's
+    /// ruling (`docs/APPRAISAL-RESEARCH.md` §3.1: a number on the TUI, a
+    /// bar on the web). `None` when silent, same rule as `affect`.
+    valence: Option<mecha_core::appraisal::Valence>,
     /// Detached work whose outcome should be reported without a reopen: a
     /// release, an extraction, a triage run. Polled from the tick — while any
     /// are live the idle tick tightens to a second — and a resolved watch
@@ -653,14 +658,36 @@ impl App {
         // only four exist, and none of them argues for a finer split
         // without a corpus to measure one from (rung 6's own precedent for
         // its own thresholds).
+        // The badge is the number first and the word second: the valence
+        // is signed on every run the record has anything to say about,
+        // where the label needs a probe to say a word (`appraisal.rs`'s
+        // module note, *The label is not the readout*). Both `None`: no
+        // badge, and that absence is the common case on purpose.
+        let mut badge = String::new();
         if let Some(affect) = self.affect {
             // `wire()`, not `{:?}` — the divergence `Affect::wire()` exists
             // to prevent (its own doc comment). Identical for all ten
             // current variants; a future two-word one would make this badge
             // and the web page's tint disagree silently.
+            badge.push_str(&affect.wire());
+        }
+        if let Some(valence) = self.valence {
+            if !badge.is_empty() {
+                badge.push(' ');
+            }
+            badge.push_str(&valence.compact());
+        }
+        if !badge.is_empty() {
+            // Amber on a negative reading, the muted default otherwise: a
+            // run that only went well is worth a glance, not a hazard tick.
+            let negative = self.valence.is_some_and(|v| v.negatives > 0) || self.affect.is_some();
             spans.push(Span::styled(
-                format!(" {} ", affect.wire()),
-                Style::new().fg(Color::Black).bg(Color::Yellow),
+                format!(" {badge} "),
+                if negative {
+                    Style::new().fg(Color::Black).bg(Color::Yellow)
+                } else {
+                    Style::new().fg(Color::Black).bg(Color::Gray)
+                },
             ));
         }
 
@@ -791,6 +818,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
                 model: prepared.model.clone(),
                 workspace: prepared.workspace.clone(),
                 title: None,
+                kind: Some(mecha_core::session::SessionKind::Tui),
             },
         )?);
     }
@@ -887,6 +915,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         pending_outbox_edit: None,
         outbox_pending: outbox_pending_count(),
         affect: None,
+        valence: None,
         review: command::ReviewMode::default(),
         watches: Vec::new(),
         shell_tx,
@@ -1420,13 +1449,15 @@ fn finish_run(
             // `persisted` is exactly that boundary — the conversation as
             // it stood right after the triggering user turn was
             // appended, before this run added anything of its own.
-            let label = mecha_core::appraisal::live(
+            let readout = mecha_core::appraisal::live_readout(
                 session.map(|s| s.meta.id.as_str()).unwrap_or("unsaved"),
                 &outcome,
                 &app.convo,
                 persisted.len(),
             );
-            app.affect = (label != mecha_core::appraisal::Affect::Neutral).then_some(label);
+            app.affect =
+                (readout.label != mecha_core::appraisal::Affect::Neutral).then_some(readout.label);
+            app.valence = (!readout.valence.is_silent()).then_some(readout.valence);
         }
         Err(e) => {
             app.transcript.push(Entry::Error(format!("error: {e:#}")));
@@ -1461,6 +1492,7 @@ fn finish_run(
             // applied here: silence (or a failure) means neutral, not "no
             // update".
             app.affect = None;
+            app.valence = None;
         }
     }
 
@@ -3364,6 +3396,7 @@ fn run_command(
             // read as this brand-new conversation's own mood until the
             // next run finishes.
             app.affect = None;
+            app.valence = None;
             // Whatever the tools were holding for it goes too, for the same
             // reason the taint does. A `skill` narrowing that survived a clear
             // would constrain a task nobody had started yet.
@@ -9821,6 +9854,7 @@ mod tests {
             pending_outbox_edit: None,
             outbox_pending: 0,
             affect: None,
+            valence: None,
             review: command::ReviewMode::default(),
             watches: Vec::new(),
             shell_tx,
@@ -10062,6 +10096,29 @@ mod tests {
         app.affect = Some(mecha_core::appraisal::Affect::Anger);
         let badged = frame_text(&mut app, 110, 12, None);
         assert!(badged.contains("anger"), "{badged}");
+    }
+
+    /// The owner's ruling for this surface: a number. A run with a signed
+    /// reading and no label shows the reading alone; with both, the word
+    /// then the number.
+    #[test]
+    fn the_valence_badge_is_a_number_and_shows_without_a_label() {
+        let mut app = test_app();
+        app.valence = Some(mecha_core::appraisal::Valence {
+            positive: 1.0,
+            negative: 0.5,
+            positives: 1,
+            negatives: 1,
+            visible: false,
+            partial: false,
+        });
+        let badged = frame_text(&mut app, 110, 12, None);
+        assert!(badged.contains("+1.0 \u{2212}0.5"), "{badged}");
+        assert!(!badged.contains("neutral"), "{badged}");
+
+        app.affect = Some(mecha_core::appraisal::Affect::Anger);
+        let both = frame_text(&mut app, 110, 12, None);
+        assert!(both.contains("anger +1.0 \u{2212}0.5"), "{both}");
     }
 
     fn pending_row(id: &str) -> outbox::OutboxRow {
@@ -10309,6 +10366,7 @@ mod tests {
                 } else {
                     Status::Pending
                 },
+                ..Default::default()
             })
             .collect();
 

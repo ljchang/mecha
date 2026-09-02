@@ -30,9 +30,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
+    #[default]
     Pending,
     InProgress,
     Completed,
@@ -48,10 +49,116 @@ impl Status {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One step, and — optionally — the prediction the planner wrote for it.
+///
+/// **The plan is the prediction** (`docs/APPRAISAL-RESEARCH.md` §3.7,
+/// `docs/AUDIT-RESEARCH.md` §3.11's spec). Three optional fields make a
+/// step something that can be *disappointed*: what it should produce, how
+/// the harness can tell, and how much work it should take. None is
+/// required, because the tool's whole job is being cheap to keep updated;
+/// a plan with none is today's plan.
+///
+/// **Two parsing policies, like `serves:`.** From the model a wrong type is
+/// a `ToolOutput` error naming the item (`TodoTool::call`), because the
+/// model can fix it next call and a silently dropped prediction leaves a
+/// plan claiming less than it said. From a record — a transcript, a carried
+/// block — a wrong type reads as absent ([`de_lenient_string`],
+/// [`de_lenient_u32`]), because the record is append-only and may have
+/// been written by a newer binary, where one unrecognised field must cost
+/// the field and never the plan.
+///
+/// All three are the model's own text, trusted in context the way
+/// `content` already is; none is ever rendered into the system prompt.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TodoItem {
     pub content: String,
     pub status: Status,
+    /// The step's expected outcome, one checkable sentence. Re-read with the
+    /// plan, so the model meets its own prediction again after a compaction
+    /// or a re-injection; scored by the appraisal when the step completes.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient_string"
+    )]
+    pub expect: Option<String>,
+    /// A command whose exit code says whether the step landed. **Frozen at
+    /// declaration**: [`Tracked`] keeps a hash of the first `check` an item
+    /// declared, and a later write that changes a *completed* step's check
+    /// is reported back as a tamper rather than accepted — the
+    /// `expect.verify` discipline, one tier down. Executed by the loop, not
+    /// by this tool, and dispatched exactly as a model `shell` call would
+    /// be (approver, sandbox, interlock, hooks); its result is a trace named
+    /// `check` that `step::Work::of` folds into `checks_declared` /
+    /// `checks_passed`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient_string"
+    )]
+    pub check: Option<String>,
+    /// How many tool calls the model expects the step to take. The
+    /// residual against the actual span is the cheapest expectation error
+    /// there is; `step::escalation_candidate` reads it before the sibling
+    /// mean.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient_u32"
+    )]
+    pub expect_calls: Option<u32>,
+}
+
+impl TodoItem {
+    pub fn new(content: impl Into<String>, status: Status) -> Self {
+        TodoItem {
+            content: content.into(),
+            status,
+            ..Default::default()
+        }
+    }
+
+    /// The prediction fields, as the indented lines [`TodoTool::render`]
+    /// writes under an item and [`TodoTool::parse_carried`] reads back.
+    fn prediction_lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(e) = &self.expect {
+            out.push(format!("    {EXPECT_KEY} {e}"));
+        }
+        if let Some(c) = &self.check {
+            out.push(format!("    {CHECK_KEY} {c}"));
+        }
+        if let Some(n) = self.expect_calls {
+            out.push(format!("    {EXPECT_CALLS_KEY} {n}"));
+        }
+        out
+    }
+}
+
+const EXPECT_KEY: &str = "expect:";
+const CHECK_KEY: &str = "check:";
+const EXPECT_CALLS_KEY: &str = "expect_calls:";
+
+/// A record's optional string, leniently: anything that is not a string is
+/// absent, never an error. See [`TodoItem`]'s two policies.
+fn de_lenient_string<'de, D>(d: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<Value>::deserialize(d)?;
+    Ok(v.and_then(|v| v.as_str().map(str::to_string))
+        .filter(|s| !s.trim().is_empty()))
+}
+
+/// A record's optional count, leniently: anything that is not a
+/// non-negative integer that fits is absent.
+fn de_lenient_u32<'de, D>(d: D) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<Value>::deserialize(d)?;
+    Ok(v.and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok()))
 }
 
 /// One conversation's plan: the list, and what the whole of it serves.
@@ -175,6 +282,23 @@ struct Tracked {
     /// revises its plan many times, and this is a rolling sense of "how big
     /// are this plan's steps", not a full history.
     completed: Vec<(String, u32)>,
+    /// Each item's declared `check`, hashed, as of the write that declared
+    /// it — keyed by content like `started`. A step may revise its check
+    /// while it is still open; once it is `completed` the check is frozen,
+    /// and a write that changes it is a tamper: the model rewriting the
+    /// test after the fact, which is exactly what `expect.verify` hashes
+    /// the check to prevent one tier up. The frozen hash stays; the
+    /// tampered write is echoed back as such.
+    checks: HashMap<String, u64>,
+    /// Tampers seen on this plan. Read by [`TodoTool::tampered_in`].
+    tampered: u32,
+}
+
+fn check_hash(check: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    check.trim().hash(&mut h);
+    h.finish()
 }
 
 /// See [`Tracked::completed`].
@@ -312,6 +436,27 @@ impl Tracked {
         let mut lines = Vec::new();
         for item in &next.items {
             let was = before.get(item.content.as_str()).copied();
+            // The check freezes on completion. Before that, the latest
+            // declaration is the check; after, the first one stands and a
+            // change is reported rather than taken.
+            if let Some(check) = &item.check {
+                let hash = check_hash(check);
+                match (self.checks.get(&item.content), was) {
+                    (Some(frozen), Some(Status::Completed)) if *frozen != hash => {
+                        self.tampered += 1;
+                        lines.push(format!(
+                            "the check for step \"{}\" was changed after the step was marked \
+                             done; the check it was completed against stands, and the change \
+                             is recorded",
+                            crate::step::ellipsize(&item.content, 60)
+                        ));
+                    }
+                    (_, Some(Status::Completed)) => {}
+                    _ => {
+                        self.checks.insert(item.content.clone(), hash);
+                    }
+                }
+            }
             match item.status {
                 // Started, or restarted after a revision — either way the span
                 // begins now. A revised step measured from its *first* start
@@ -594,24 +739,42 @@ impl TodoTool {
             .find(|l| !l.trim().is_empty())
             .and_then(|l| l.trim().strip_prefix(SERVES))
             .and_then(GoalRef::parse_lenient);
-        let items = section
-            .iter()
-            .filter_map(|line| {
-                let line = line.trim();
-                let (marker, rest) = line.split_at(line.char_indices().nth(3)?.0);
-                let status = match marker {
-                    "[ ]" => Status::Pending,
-                    "[~]" => Status::InProgress,
-                    "[x]" => Status::Completed,
-                    _ => return None,
-                };
-                let content = rest.trim();
-                (!content.is_empty()).then(|| TodoItem {
-                    content: content.to_string(),
-                    status,
-                })
-            })
-            .collect();
+        let mut items: Vec<TodoItem> = Vec::new();
+        for line in &section {
+            let line = line.trim();
+            // A prediction line belongs to the item above it. Checked before
+            // the marker split so a step whose *content* begins with one of
+            // these words is still an item: the marker comes first on an
+            // item line and never on a prediction line.
+            if let Some(last) = items.last_mut() {
+                if let Some(rest) = line.strip_prefix(EXPECT_KEY) {
+                    last.expect = Some(rest.trim().to_string()).filter(|s| !s.is_empty());
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix(CHECK_KEY) {
+                    last.check = Some(rest.trim().to_string()).filter(|s| !s.is_empty());
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix(EXPECT_CALLS_KEY) {
+                    last.expect_calls = rest.trim().parse().ok();
+                    continue;
+                }
+            }
+            let Some(split) = line.char_indices().nth(3).map(|(i, _)| i) else {
+                continue;
+            };
+            let (marker, rest) = line.split_at(split);
+            let status = match marker {
+                "[ ]" => Status::Pending,
+                "[~]" => Status::InProgress,
+                "[x]" => Status::Completed,
+                _ => continue,
+            };
+            let content = rest.trim();
+            if !content.is_empty() {
+                items.push(TodoItem::new(content, status));
+            }
+        }
         Plan { goal, items }
     }
 
@@ -665,8 +828,28 @@ impl TodoTool {
         out.push_str(&format!("{done}/{} done\n", plan.items.len()));
         for item in &plan.items {
             out.push_str(&format!("{} {}\n", item.status.marker(), item.content));
+            // Under the item, indented, so the prediction rides the same
+            // echo and the same carried block as the step it belongs to —
+            // a re-read plan is a re-read prediction.
+            for line in item.prediction_lines() {
+                out.push_str(&line);
+                out.push('\n');
+            }
         }
         out
+    }
+
+    /// Tampers recorded on this workspace's plan — a completed step's check
+    /// rewritten after the fact. Not yet folded into `RunStats` (the loop
+    /// would have to ask this tool by name, which it never does); exposed so
+    /// a caller that already holds the tool can read it.
+    pub fn tampered_in(&self, workspace: &Path) -> u32 {
+        self.lists
+            .lock()
+            .unwrap()
+            .get(workspace)
+            .map(|t| t.tampered)
+            .unwrap_or(0)
     }
 }
 
@@ -808,9 +991,42 @@ impl Tool for TodoTool {
                     )))
                 }
             };
+            // Strict on the way in, like `serves`: the model can fix a wrong
+            // type on the next call, and a silently dropped prediction
+            // leaves a plan claiming less than the model believed it said.
+            let string_field = |key: &str| -> std::result::Result<Option<String>, String> {
+                match entry.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+                    Some(Value::String(s)) => Ok(Some(s.trim().to_string())),
+                    Some(_) => Err(format!("item {i}: `{key}` must be a string")),
+                }
+            };
+            let expect = match string_field("expect") {
+                Ok(v) => v,
+                Err(e) => return Ok(ToolOutput::err(e)),
+            };
+            let check = match string_field("check") {
+                Ok(v) => v,
+                Err(e) => return Ok(ToolOutput::err(e)),
+            };
+            let expect_calls = match entry.get("expect_calls") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_u64().and_then(|n| u32::try_from(n).ok()) {
+                    Some(n) => Some(n),
+                    None => {
+                        return Ok(ToolOutput::err(format!(
+                            "item {i}: `expect_calls` must be a non-negative integer"
+                        )))
+                    }
+                },
+            };
             items.push(TodoItem {
                 content: content.to_string(),
                 status,
+                expect,
+                check,
+                expect_calls,
             });
         }
 
@@ -1279,18 +1495,9 @@ mod tests {
     #[test]
     fn rendering_and_parsing_round_trip() {
         let items = vec![
-            TodoItem {
-                content: "read the config".into(),
-                status: Status::Completed,
-            },
-            TodoItem {
-                content: "fix the port".into(),
-                status: Status::InProgress,
-            },
-            TodoItem {
-                content: "run the tests".into(),
-                status: Status::Pending,
-            },
+            TodoItem::new("read the config", Status::Completed),
+            TodoItem::new("fix the port", Status::InProgress),
+            TodoItem::new("run the tests", Status::Pending),
         ];
         // With a goal, because *what the steps are for* is exactly the half a
         // summariser drops — carrying the list across a compaction and losing
@@ -2275,5 +2482,139 @@ mod tests {
         )
         .await;
         assert!(slot.lock().unwrap().is_none());
+    }
+
+    // --- the prediction record ----------------------------------------------
+
+    #[test]
+    fn a_prediction_rides_the_carried_block_and_round_trips() {
+        let mut step = TodoItem::new("run the tests", Status::InProgress);
+        step.expect = Some("cargo test passes".into());
+        step.check = Some("cargo test -q".into());
+        step.expect_calls = Some(3);
+        let plan = Plan {
+            goal: None,
+            items: vec![
+                TodoItem::new("read the config", Status::Completed),
+                step.clone(),
+            ],
+        };
+        let rendered = TodoTool::render(&plan);
+        assert!(rendered.contains("[~] run the tests\n    expect: cargo test passes\n    check: cargo test -q\n    expect_calls: 3\n"), "{rendered}");
+        let block = format!("{CARRIED_HEADER}\n\n## todo\n{rendered}\n");
+        let back = TodoTool::parse_carried(&block);
+        assert_eq!(
+            back.items, plan.items,
+            "the prediction survives a compaction with the step"
+        );
+    }
+
+    #[test]
+    fn a_step_whose_content_starts_with_a_prediction_word_is_still_a_step() {
+        let plan = Plan {
+            goal: None,
+            items: vec![
+                TodoItem::new("check: the port is free", Status::Pending),
+                TodoItem::new("expect: nothing", Status::Pending),
+            ],
+        };
+        let block = format!("{CARRIED_HEADER}\n\n## todo\n{}\n", TodoTool::render(&plan));
+        assert_eq!(TodoTool::parse_carried(&block).items, plan.items);
+    }
+
+    #[test]
+    fn a_record_with_a_wrong_typed_prediction_keeps_the_plan_and_loses_the_field() {
+        let items: Vec<TodoItem> = serde_json::from_value(json!([
+            {"content": "a", "status": "pending", "expect": 7, "check": ["no"], "expect_calls": "three"},
+            {"content": "b", "status": "completed", "expect_calls": 2}
+        ]))
+        .unwrap();
+        assert_eq!(items[0], TodoItem::new("a", Status::Pending));
+        assert_eq!(items[1].expect_calls, Some(2));
+    }
+
+    #[tokio::test]
+    async fn the_model_is_told_about_a_wrong_typed_prediction_rather_than_losing_it() {
+        let tool = TodoTool::default();
+        let ctx = ctx_in("/tmp");
+        for (bad, msg) in [
+            (
+                json!({"items": [{"content": "a", "status": "pending", "expect": 7}]}),
+                "`expect` must be a string",
+            ),
+            (
+                json!({"items": [{"content": "a", "status": "pending", "check": 7}]}),
+                "`check` must be a string",
+            ),
+            (
+                json!({"items": [{"content": "a", "status": "pending", "expect_calls": -1}]}),
+                "`expect_calls` must be a non-negative integer",
+            ),
+        ] {
+            let out = tool.call(bad, &ctx).await.unwrap();
+            assert!(out.is_error, "{}", out.content);
+            assert!(out.content.contains(msg), "{}", out.content);
+        }
+        // And a good one is echoed under its step.
+        let out = tool
+            .call(
+                json!({"items": [{"content": "a", "status": "in_progress", "expect": "it works", "expect_calls": 2}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("[~] a\n    expect: it works\n    expect_calls: 2"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn a_completed_steps_check_is_frozen_and_a_change_is_a_tamper() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let write = |status: &str, check: &str| json!({"items": [{"content": "wire it", "status": status, "check": check}]});
+        // Open: the check may be revised.
+        tool.call(write("in_progress", "make check"), &ctx)
+            .await
+            .unwrap();
+        let out = tool
+            .call(write("in_progress", "make test"), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            !out.content.contains("was changed after"),
+            "{}",
+            out.content
+        );
+        // Completed against `make test`.
+        tool.call(write("completed", "make test"), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(tool.tampered_in(&ws), 0);
+        // Rewriting the check after the fact is reported, and counted.
+        let out = tool.call(write("completed", "true"), &ctx).await.unwrap();
+        assert!(
+            out.content
+                .contains("was changed after the step was marked done"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+        // Re-stating the frozen check is not a tamper.
+        let out = tool
+            .call(write("completed", "make test"), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            !out.content.contains("was changed after"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
     }
 }
