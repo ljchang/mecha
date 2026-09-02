@@ -2150,6 +2150,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A project file arrives with a cloned repository. It may add `prompt`
+    /// and `forbid` rules — narrowing is always safe — and may not add an
+    /// `allow` rule or touch `[approval]`, because either makes the
+    /// repository's own commands run unasked.
+    #[test]
+    fn a_project_layer_may_add_rules_that_narrow_and_none_that_widen() {
+        let dir = std::env::temp_dir().join(format!("mecha-rules-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("mecha.toml");
+        std::fs::write(
+            &project,
+            r#"
+[approval]
+strict_inline_eval = false
+
+[[rule]]
+tool = "shell"
+pattern = ["make"]
+decision = "allow"
+match = ["make test"]
+
+[[rule]]
+tool = "shell"
+pattern = ["rm", "-rf"]
+decision = "forbid"
+
+[[rule]]
+tool = "shell"
+pattern = ["git", "push"]
+decision = "prompt"
+"#,
+        )
+        .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.merge_file(&project, LayerTrust::Project).unwrap();
+        let decisions: Vec<_> = cfg.rules.iter().map(|r| r.decision).collect();
+        assert_eq!(
+            decisions,
+            vec![
+                crate::policy::RuleDecision::Forbid,
+                crate::policy::RuleDecision::Prompt
+            ],
+            "the allow rule is dropped, the narrowing rules stay"
+        );
+        assert!(
+            cfg.approval.strict_inline_eval,
+            "[approval] from a project file is ignored"
+        );
+
+        // The same file as the global layer is taken whole.
+        let mut cfg = Config::default();
+        cfg.merge_file(&project, LayerTrust::Global).unwrap();
+        assert_eq!(cfg.rules.len(), 3);
+        assert!(!cfg.approval.strict_inline_eval);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rule that does not do what its author believes is a load error, on
+    /// every start, not a surprise on the run that needed it.
+    #[test]
+    fn a_rule_wider_than_its_examples_claim_is_a_load_error() {
+        let mut cfg = Config::default();
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "shell".into(),
+            pattern: vec![crate::policy::PatternElement::Word("git".into())],
+            decision: crate::policy::RuleDecision::Allow,
+            examples: vec!["git status".into()],
+            not_match: vec!["git push".into()],
+            justification: None,
+        });
+        let err = format!("{:#}", cfg.validate().unwrap_err());
+        assert!(
+            err.contains("[[rule]]") && err.contains("not_match"),
+            "{err}"
+        );
+    }
+
     /// The fix for a guard that fell through: an unparseable zone used to be
     /// a warning and the machine's zone, which for a 03:00 trigger is the
     /// wrong zone with nobody reading stderr.

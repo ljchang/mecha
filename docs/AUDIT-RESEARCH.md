@@ -87,7 +87,18 @@ Ranked by leverage for this project. Each item is one PR through the review
 loop, with a test named up front. Sizes: **S** under a day, **M** a few days,
 **L** a week or more.
 
-### 3.1 Per-command approval policy, with argv binding — L
+### 3.1 ~~Per-command approval policy, with argv binding~~ — built 2026-09-02 on `feat/approval-policy`
+
+Built to the spec below as `mecha-core/src/policy.rs` (`ExecPolicy`,
+`split_segments`, the inline-eval set), `Approver::permit`, `[[rule]]` and
+`[approval]` in config with project-layer narrowing, and rules installed on
+parent and children in setup; `ARCHITECTURE.md` §Approval rules holds the
+invariants. The argv binding holds by construction in-process and is pinned
+by a test rather than by code. What remains of this item is use: a first
+rules file for this box, and the approve-rate measurement that says whether
+the prompts fell.
+
+#### As specified
 
 **What exists.** `ModeApprover::approve` takes `_input` and ignores it;
 `TuiApprover` and `TerminalApprover` remember "always" per tool name;

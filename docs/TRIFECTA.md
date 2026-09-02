@@ -123,6 +123,7 @@ very few characters, so a length cap vouches for nothing.
 | `[sandbox] network = false` | sandbox off entirely | Confines `shell`; local work stops tripping the interlock. Costs: no network in confined commands. |
 | `trifecta = "block" \| "ask" \| "allow"` | `block` | `ask` escalates armed sends to a person through `Approver::escalate`, past any "always" list or permission mode; an approver that cannot reach a person (eval, replay, `--yes`, a headless run) answers `Blocked`, so `ask` never quietly equals `allow`. `allow` waives the injection interlock entirely — the leak guard below still applies. |
 | `block_sends_after_private` | off | The leak guard: refuses sends once private data is present, injection or not. Off by default because it breaks ordinary work — the default posture defends the injection path, not deliberate egress. |
+| `[[rule]]` + `[approval] strict_inline_eval` | none · on | Per-command approval rules (`ARCHITECTURE.md` §Approval rules). A rule narrows and never loosens: `forbid` refuses unasked, `prompt` asks, `allow` only removes the human prompt and never the interlock, an escalation, or a read-only mode. Not a trifecta switch at all — listed because it is the answer to "the approver asks too often", where `trifecta = "allow"` is the wrong one. |
 | `trusted_output` + `answer_shape` | off | Per-answer trust for shape-provable child answers. Costs: the child's answer must literally be a value. |
 | `subagent trusted_output` without shape | — | Refuses to construct. This is not a switch; it is the hole that used to be one. |
 
