@@ -532,6 +532,22 @@ impl ToolCtx {
         let mut resolved = canonical_root;
         for part in trailing.iter().rev() {
             resolved.push(part);
+            // A component that failed to canonicalize but *exists* is a
+            // symlink whose target does not exist yet — the one shape the
+            // ancestor walk cannot see through. Treating it as a new file
+            // let a write follow the link and create its target outside the
+            // workspace; refusing here is the only answer, because a
+            // dangling link has no legitimate use from inside the jail.
+            if resolved
+                .symlink_metadata()
+                .is_ok_and(|m| m.file_type().is_symlink())
+            {
+                anyhow::bail!(
+                    "path {raw:?} passes through a dangling symlink ({}); refusing to \
+                     create its target",
+                    resolved.display()
+                );
+            }
         }
 
         let root = self
@@ -1108,5 +1124,49 @@ mod cap_tests {
         let allowed = r.surface_restriction().unwrap();
         assert!(allowed.contains("a") && allowed.contains("b"));
         assert!(!allowed.contains("c"), "still a subset: {allowed:?}");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod jail_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mecha-jail-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The hole this closes: `canonicalize` fails on a symlink whose target
+    /// does not exist yet, so the link was treated as a not-yet-created file
+    /// inside the workspace and passed containment — and the write that
+    /// followed went through the link and created the target outside. A
+    /// symlink that survives canonicalization is dangling by construction,
+    /// and there is nothing legitimate to do with one from inside the jail.
+    #[test]
+    fn a_dangling_symlink_is_refused_not_treated_as_a_new_file() {
+        let workspace = scratch("ws");
+        let outside = scratch("outside");
+        let target = outside.join("planted.txt");
+        std::os::unix::fs::symlink(&target, workspace.join("link")).unwrap();
+        let ctx = ToolCtx {
+            workspace: workspace.clone(),
+            ..ToolCtx::default()
+        };
+
+        let err = ctx.resolve("link").unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+
+        // A dangling link on a *directory* component is the same escape one
+        // level up: `<link>/file` would create `file` under the target.
+        std::os::unix::fs::symlink(outside.join("newdir"), workspace.join("dirlink")).unwrap();
+        assert!(ctx.resolve("dirlink/file.txt").is_err());
+
+        // A genuinely new file still resolves — that is what the ancestor
+        // walk exists for.
+        assert!(ctx.resolve("fresh/new.txt").is_ok());
+
+        std::fs::remove_dir_all(&workspace).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 }
