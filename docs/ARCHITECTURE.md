@@ -1453,7 +1453,14 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
   appraisal signal from `+1.0 / Own` to `-1.0 / Owner` and feeds the
   harness's own bookkeeping to the writing miner, whose rules ride in every
   future run's cached prefix. That is what moved `outbox_source`'s anchor
-  onto the recorded `call_id` (below). **Pinned, not merely displayed**, because
+  onto the recorded `call_id` (below). The item also records **which keys
+  were pinned**, because a value the harness wrote is not evidence of what
+  the run was doing: `provider_ids` takes every string argument that is
+  neither addressing nor prose, so a pinned `calendar_id: "primary"` became a
+  join key on every calendar draft — and `Join::Asked` has no entropy floor,
+  since it matches key *and* value on the reasoning that a coincidence has to
+  happen twice, which held only while both sides were the model's.
+  **Pinned, not merely displayed**, because
   staging crosses a *time* boundary: a draft is executed verbatim whenever the
   user gets round to it, so an unpinned default is a message whose sender can
   change between the reading and the sending. The approver is handed the same
