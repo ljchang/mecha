@@ -223,10 +223,24 @@ pub fn anticipated_guilt(
 /// owner's standing backlog, which a run inherits and does not change, so
 /// the sensor described the store and not the run
 /// (`docs/APPRAISAL-RESEARCH.md` §1.5). `backlog_delta` was non-zero on 18
-/// of 68 runs beside it. So the delta comes first: a run that cleared
-/// [`COUNT_HALF_AT`] or more recorded commitments reads as no guilt at all,
-/// whatever it inherited, and between zero and that the level is scaled by
-/// the share this run relieved.
+/// of 68 runs beside it. So the delta comes first: the level is scaled down
+/// by the **share of what was waiting** that this run cleared — a run that
+/// cleared everything it inherited reads as no guilt, one that cleared three
+/// of forty reads nearly the level it inherited. The first cut divided by
+/// the constant [`COUNT_HALF_AT`] instead, so three cleared pinned the
+/// reading to zero from any backlog, which is the clamp-to-a-constant
+/// `AGE_HALF_AT_HOURS`'s doc reshaped the level to escape (found on review).
+///
+/// **This composes in the loosening direction, on purpose, and here is the
+/// argument.** [`anticipated_guilt`]'s three alarms may not argue each other
+/// down — that is the "may only narrow, never loosen" rule applied to three
+/// *readings of the same run's situation*. Relief is not a fourth reading
+/// of the situation; it is the run's *act* on it. A run that cleared what
+/// the owner was waiting on has discharged the expectation guilt is
+/// predicted against, and `peak_context_pressure` was only ever a proxy
+/// for the room to do that — a run that did it had the room. So relief
+/// scales the whole level, pressure included, and the level it scales is
+/// still an OR: nothing here lowers one alarm by another being low.
 ///
 /// **A positive delta leaves the level alone.** The first cut drove the
 /// sensor to maximal on a run that added three items, and that is the
@@ -243,7 +257,16 @@ pub fn anticipated_guilt(
 /// marking which; the change only ever lowers a reading, so the corpus
 /// means `diagnose::Evidence` averages across the boundary are a lower
 /// bound on the old formula's, never a different quantity.
-pub fn with_delta(level: Option<f32>, net_delta: Option<i64>) -> Option<f32> {
+///
+/// `waiting_before` is how many recorded commitments the run inherited
+/// across the same three stores the level reads. A negative delta against
+/// nothing waiting cannot happen from a consistent pair of reads; it is
+/// treated as full relief rather than as a division by zero.
+pub fn with_delta(
+    level: Option<f32>,
+    net_delta: Option<i64>,
+    waiting_before: usize,
+) -> Option<f32> {
     let level = level?;
     let Some(net) = net_delta else {
         return Some(level);
@@ -251,8 +274,23 @@ pub fn with_delta(level: Option<f32>, net_delta: Option<i64>) -> Option<f32> {
     if net >= 0 {
         return Some(level);
     }
-    let relief = (net.unsigned_abs() as f32 / COUNT_HALF_AT as f32).min(1.0);
+    let cleared = net.unsigned_abs() as f32;
+    let relief = if waiting_before == 0 {
+        1.0
+    } else {
+        (cleared / waiting_before as f32).min(1.0)
+    };
     Some((level * (1.0 - relief)).clamp(0.0, 1.0))
+}
+
+/// How many recorded commitments a backlog holds across the three stores
+/// [`anticipated_guilt`] reads — the denominator relief is a share of.
+pub fn waiting(backlog: &Backlog) -> usize {
+    [&backlog.outbox, &backlog.questions, &backlog.frontdoor]
+        .into_iter()
+        .flatten()
+        .map(|d| d.waiting)
+        .sum()
 }
 
 /// Hours between an RFC3339 stamp and `now`. `None` on a stamp this can't
@@ -514,25 +552,34 @@ mod tests {
     }
 
     #[test]
-    fn the_delta_comes_first_and_a_cleared_queue_reads_as_no_guilt_whatever_was_inherited() {
-        assert_eq!(with_delta(Some(0.95), Some(-3)), Some(0.0));
-        assert_eq!(with_delta(Some(0.95), Some(-30)), Some(0.0));
-        let relieved = with_delta(Some(0.9), Some(-1)).unwrap();
-        assert!(relieved > 0.0 && relieved < 0.9, "{relieved}");
+    fn the_delta_comes_first_and_relief_is_a_share_of_what_was_waiting() {
+        // Cleared everything it inherited: no guilt, whatever the level.
+        assert_eq!(with_delta(Some(0.95), Some(-3), 3), Some(0.0));
+        assert_eq!(with_delta(Some(0.95), Some(-30), 30), Some(0.0));
+        // Cleared three of forty: nearly the level it inherited — a count
+        // pinned the reading to zero here before (found on review).
+        let three_of_forty = with_delta(Some(0.8), Some(-3), 40).unwrap();
+        assert!((0.7..0.8).contains(&three_of_forty), "{three_of_forty}");
+        let one_of_two = with_delta(Some(0.9), Some(-1), 2).unwrap();
+        assert!((0.44..0.46).contains(&one_of_two), "{one_of_two}");
+        // A negative delta against nothing waiting is an inconsistent pair
+        // of reads, treated as full relief rather than a division by zero.
+        assert_eq!(with_delta(Some(0.5), Some(-1), 0), Some(0.0));
         // `Homeostat::finish`'s stated intent, asserted here rather than only
         // in prose: a trigger that staged three replies is not guilty for it.
-        assert_eq!(with_delta(Some(0.6), Some(3)), Some(0.6));
-        assert_eq!(with_delta(Some(0.2), Some(1)), Some(0.2));
-        assert_eq!(with_delta(Some(0.4), Some(0)), Some(0.4));
+        assert_eq!(with_delta(Some(0.6), Some(3), 5), Some(0.6));
+        assert_eq!(with_delta(Some(0.2), Some(1), 0), Some(0.2));
+        assert_eq!(with_delta(Some(0.4), Some(0), 4), Some(0.4));
         assert_eq!(
-            with_delta(Some(0.4), None),
+            with_delta(Some(0.4), None, 4),
             Some(0.4),
             "no delta sensor: the level stands"
         );
         assert_eq!(
-            with_delta(None, Some(-3)),
+            with_delta(None, Some(-3), 3),
             None,
             "no level: nothing to scale"
         );
+        assert_eq!(waiting(&Backlog::default()), 0);
     }
 }

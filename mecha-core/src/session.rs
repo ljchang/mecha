@@ -519,6 +519,13 @@ impl RunStats {
     /// row's silently discarded every later run's, which for a session that
     /// parks a question is the resume that clears it (found on review: the
     /// commitment channel was reading run 1's delta as the session's).
+    /// Two consequences to know before reading the two fields together:
+    /// `anticipated_guilt` stays the first sampling run's, already folded
+    /// with *that run's own* delta, while `backlog_delta` becomes the
+    /// episode's sum — they no longer describe the same act on a resumed
+    /// session; and a first run with no homeostat at all takes a later
+    /// run's whole snapshot, so "the first run's conditions" means the
+    /// first run that sampled any.
     pub fn merge(&mut self, other: &RunStats) {
         match (&mut self.homeostat, &other.homeostat) {
             (Some(mine), Some(theirs)) => {
