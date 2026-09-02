@@ -793,18 +793,32 @@ impl TodoTool {
 
     /// The same walk, keeping what the plan serves.
     pub fn plan_from_transcript(messages: &[Message]) -> Option<Plan> {
-        let failed: std::collections::HashSet<&str> = messages
-            .iter()
-            .flat_map(|m| m.content.iter())
-            .filter_map(|b| match b {
-                Block::ToolResult {
-                    tool_use_id,
-                    is_error: true,
-                    ..
-                } => Some(tool_use_id.as_str()),
-                _ => None,
-            })
-            .collect();
+        // Every `todo` result, by id: the error flag, and the echo — the
+        // plan as the tool *kept* it, rendered after `advance`. **The echo
+        // outranks the input.** The model's raw `ToolUse.input` is what it
+        // asked for, and after a tamper that carries the rewritten check
+        // while the echo carries the frozen one; restoring the input on a
+        // resume froze the rewrite as a first declaration, which is the
+        // fifth door and the one that would have been executed (found on
+        // review). The input is the fallback for an echo this binary
+        // cannot parse — a result truncated by a newer renderer, say.
+        let mut failed: std::collections::HashSet<&str> = Default::default();
+        let mut echoes: HashMap<&str, &str> = HashMap::new();
+        for b in messages.iter().flat_map(|m| m.content.iter()) {
+            if let Block::ToolResult {
+                tool_use_id,
+                is_error,
+                content,
+                ..
+            } = b
+            {
+                if *is_error {
+                    failed.insert(tool_use_id.as_str());
+                } else {
+                    echoes.insert(tool_use_id.as_str(), content.as_str());
+                }
+            }
+        }
 
         for msg in messages.iter().rev() {
             for block in msg.content.iter().rev() {
@@ -812,6 +826,12 @@ impl TodoTool {
                     Block::ToolUse { id, name, input }
                         if name == "todo" && !failed.contains(id.as_str()) =>
                     {
+                        if let Some(echo) = echoes.get(id.as_str()) {
+                            let plan = Self::parse_rendered(echo);
+                            if !plan.items.is_empty() {
+                                return Some(plan);
+                            }
+                        }
                         if let Some(items) = input.get("items") {
                             if let Ok(items) =
                                 serde_json::from_value::<Vec<TodoItem>>(items.clone())
@@ -853,6 +873,19 @@ impl TodoTool {
         let section: Vec<&str> = lines
             .take_while(|l| !l.trim_start().starts_with("## "))
             .collect();
+        Self::parse_section(&section)
+    }
+
+    /// A `todo` result's echo — [`render`](Self::render)'s output, which is
+    /// the carried section without its header, followed by the findings
+    /// and the headroom line, neither of which carries a marker. The same
+    /// grammar as the carried block, so the two readers cannot drift.
+    fn parse_rendered(text: &str) -> Plan {
+        let lines: Vec<&str> = text.lines().collect();
+        Self::parse_section(&lines)
+    }
+
+    fn parse_section(section: &[&str]) -> Plan {
         // Anchored to the first non-empty line, because `render` always writes
         // it there. Scanning the whole section would let an item whose
         // *content* contains a line beginning `serves task:…` supply the
@@ -863,7 +896,7 @@ impl TodoTool {
             .and_then(|l| l.trim().strip_prefix(SERVES))
             .and_then(GoalRef::parse_lenient);
         let mut items: Vec<TodoItem> = Vec::new();
-        for line in &section {
+        for line in section {
             let line = line.trim();
             // A prediction line belongs to the item above it. Checked before
             // the marker split so a step whose *content* begins with one of
@@ -3024,5 +3057,52 @@ mod tests {
         .unwrap();
         assert_eq!(items[0].check, None);
         assert_eq!(items[0].expect.as_deref(), Some("ok"));
+    }
+
+    /// The fifth door (found on the ninth review pass): a resume reads the
+    /// plan back from the transcript, and the model's raw input is the
+    /// rewrite while the tool's echo is the frozen check. The echo wins.
+    #[test]
+    fn a_resume_reads_the_tools_echo_not_the_models_rewrite() {
+        use crate::message::{Block, Message, Role};
+        let mut frozen = TodoItem::new("wire it", Status::Completed);
+        frozen.check = Some("make test".into());
+        let echo = TodoTool::render(&Plan {
+            goal: Some(GoalRef::Task("01J8ZK".into())),
+            items: vec![frozen.clone()],
+        }) + "\n\nthe check for step \"wire it\" was changed on or after the write that marked it done; the check it was completed against stands, and the change is recorded";
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "wire it", "status": "completed", "check": "true"}], "serves": "task:01J8ZK"}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: echo,
+                    is_error: false,
+                }],
+            },
+        ];
+        let plan = TodoTool::plan_from_transcript(&messages).unwrap();
+        assert_eq!(plan.items, vec![frozen]);
+        assert_eq!(plan.goal, Some(GoalRef::Task("01J8ZK".into())));
+        // And the fallback: an echo this reader cannot parse hands back
+        // the input rather than nothing.
+        let mut garbled = messages.clone();
+        if let Block::ToolResult { content, .. } = &mut garbled[1].content[0] {
+            *content = "…".into();
+        }
+        assert_eq!(
+            TodoTool::plan_from_transcript(&garbled).unwrap().items[0]
+                .check
+                .as_deref(),
+            Some("true")
+        );
     }
 }
