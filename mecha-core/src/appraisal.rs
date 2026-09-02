@@ -131,6 +131,25 @@ pub enum Channel {
     Commitment,
 }
 
+impl Channel {
+    /// Every variant, for a reader that partitions by channel. The
+    /// appraiser's evidence brief used to carry a hand-typed five-entry
+    /// list and `filter(n > 0)` over it, so the sixth channel vanished from
+    /// the brief silently — a session whose only signed errors were
+    /// commitments told the quarantined pass "negative errors: 1, by
+    /// channel: none" (found on review). The exhaustive `match` in the test
+    /// beside `Affect::reachable_today`'s is what makes a seventh a compile
+    /// error rather than a silent omission.
+    pub const ALL: [Channel; 6] = [
+        Channel::Intervention,
+        Channel::Edit,
+        Channel::Counter,
+        Channel::Setpoint,
+        Channel::Appraisal,
+        Channel::Commitment,
+    ];
+}
+
 /// Who caused it.
 ///
 /// The dimension that decides who can act on the error, which is why it is
@@ -1044,25 +1063,24 @@ pub fn of_session(
 
     // --- Commitment: a front-door request this session triaged ---
     //
-    // Closed by a draft that went out is already the draft channel's
-    // positive. What that channel cannot see is a request the owner closed
-    // by hand with nothing sent: the triage produced nothing usable, and
-    // the owner's closing it is the verdict. `answered` and every open
-    // state say nothing here.
+    // A request that produced a draft is the draft channel's: sent is its
+    // positive, rejected is its `-1.0`, and a closed request whose reply
+    // the owner rejected must not sign a second time for the one action
+    // (found on review — the first cut keyed on *sent* and double-counted
+    // a rejection). What the draft channel cannot see is a request the
+    // owner closed by hand that the triage never answered at all: no draft
+    // staged for it, and the owner's closing it is the verdict. `answered`
+    // and every open state say nothing here.
     for req in records.requests {
         if req.triage_session.as_deref() != Some(session_id)
             || req.state != crate::frontdoor::CLOSED
         {
             continue;
         }
-        // Through `writing_outcome`, like the edit channel above: a reply
-        // that went out is a sent message, however it was edited, and a
-        // third status or kind must teach one place, not two.
-        let something_sent = records
-            .drafts
-            .iter()
-            .any(|d| req.outbox.contains(&d.id) && d.writing_outcome().is_some());
-        if something_sent {
+        // Any draft this session staged for the request, whatever became
+        // of it, hands the request to the draft channel.
+        let something_drafted = records.drafts.iter().any(|d| req.outbox.contains(&d.id));
+        if something_drafted {
             continue;
         }
         // Known and accepted: the join depends on the answering draft still
@@ -1513,17 +1531,11 @@ impl AppraiserEvidence {
     pub fn of(a: &Appraisal) -> Self {
         let negative_errors = a.errors.iter().filter(|e| e.sign < 0.0).count();
         let positive_errors = a.errors.iter().filter(|e| e.sign > 0.0).count();
-        let channels = [
-            Channel::Intervention,
-            Channel::Edit,
-            Channel::Counter,
-            Channel::Setpoint,
-            Channel::Appraisal,
-        ]
-        .into_iter()
-        .map(|c| (c, a.errors.iter().filter(|e| e.channel == c).count()))
-        .filter(|(_, n)| *n > 0)
-        .collect();
+        let channels = Channel::ALL
+            .into_iter()
+            .map(|c| (c, a.errors.iter().filter(|e| e.channel == c).count()))
+            .filter(|(_, n)| *n > 0)
+            .collect();
         AppraiserEvidence {
             negative_errors,
             positive_errors,
@@ -3362,11 +3374,16 @@ mod tests {
     #[test]
     fn a_request_closed_with_nothing_sent_is_the_owners_verdict_on_the_triage() {
         let sent = draft("o1", "sent", false);
+        let rejected = draft("o2", "rejected", false);
         let requests = vec![
             request(1, "s1", "closed", &["o9"]),
             request(2, "s1", "closed", &["o1"]),
             request(3, "s1", "answered", &["o1"]),
             request(4, "s2", "closed", &[]),
+            // A rejected reply is the draft channel's `-1.0` already; the
+            // request must not sign again for the same refusal.
+            request(5, "s1", "closed", &["o2"]),
+            request(6, "s1", "closed", &[]),
         ];
         let s = stats();
         let a = of_session(
@@ -3375,7 +3392,7 @@ mod tests {
             &[],
             &[],
             SessionRecords {
-                drafts: &[&sent],
+                drafts: &[&sent, &rejected],
                 requests: &requests,
                 ..Default::default()
             },
@@ -3387,10 +3404,23 @@ mod tests {
             .iter()
             .filter(|e| matches!(e.cite, Cite::Request(_)))
             .collect();
-        assert_eq!(request_errors.len(), 1);
-        assert_eq!(request_errors[0].cite, Cite::Request(1));
-        assert_eq!(request_errors[0].sign, -0.5);
-        assert_eq!(request_errors[0].channel, Channel::Commitment);
+        assert_eq!(
+            request_errors.iter().map(|e| e.cite.clone()).collect::<Vec<_>>(),
+            vec![Cite::Request(1), Cite::Request(6)],
+            "a request nobody drafted for (o9 is not this session's; none at all) signs; one with a sent or rejected reply is the draft channel's"
+        );
+        assert!(request_errors
+            .iter()
+            .all(|e| e.sign == -0.5 && e.channel == Channel::Commitment));
+        let rejected_once = a
+            .errors
+            .iter()
+            .filter(|e| e.cite == Cite::Draft("o2".into()))
+            .count();
+        assert_eq!(
+            rejected_once, 1,
+            "the rejection is signed exactly once, by the draft channel"
+        );
     }
 
     #[test]
@@ -3449,5 +3479,31 @@ mod tests {
             vec![Cite::Setpoint("backlog_delta".into())],
             "the resume's clearing is the session's act"
         );
+    }
+
+    #[test]
+    fn every_channel_is_in_all_and_reaches_the_appraisers_brief() {
+        // The compiler carries the list: a new variant fails this match, and
+        // the arm the author then writes asserts membership in `ALL`.
+        for c in Channel::ALL {
+            match c {
+                Channel::Intervention
+                | Channel::Edit
+                | Channel::Counter
+                | Channel::Setpoint
+                | Channel::Appraisal
+                | Channel::Commitment => {}
+            }
+        }
+        assert_eq!(Channel::ALL.len(), 6);
+        // A session whose only signed error is a commitment must not hand
+        // the appraiser "negative errors: 1, by channel: none".
+        let mut a = appraisal(vec![err(-0.5, Agency::Owner)]);
+        a.errors[0].channel = Channel::Commitment;
+        a.errors[0].cite = Cite::Question("q1".into());
+        let ev = AppraiserEvidence::of(&a);
+        assert_eq!(ev.negative_errors, 1);
+        assert_eq!(ev.channels, vec![(Channel::Commitment, 1)]);
+        assert!(ev.brief().contains("commitment"), "{}", ev.brief());
     }
 }

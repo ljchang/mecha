@@ -138,7 +138,8 @@ impl Homeostat {
             // is still the rule, and `guilt::with_delta` keeps it: a run that
             // added to the queue reads the level it inherited, not a
             // maximum for doing its job.
-            self.anticipated_guilt = crate::guilt::with_delta(level, delta.net());
+            self.anticipated_guilt =
+                crate::guilt::with_delta(level, delta.net(), crate::guilt::waiting(before));
             self.backlog_delta = Some(delta);
         }
         self
