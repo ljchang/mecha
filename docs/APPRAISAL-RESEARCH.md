@@ -167,7 +167,8 @@ label, so the `Neutral`-outright guard can become "valence with a
 *Argues with* §6's "discrete because derivable and testable" — both are
 derivable; the corpus says only one of them is informative today.
 
-> **Built 2026-09-02** (`feat/appraisal-record`): `appraisal::Valence`
+> **Built 2026-09-02** (`feat/appraisal-record`, merged as #140 at
+> `15c628d`): `appraisal::Valence`
 > (positive and negative sums kept apart, counts, `visible`, `partial`) and
 > `Readout { label, valence }`, with `live_readout` beside `live`. The owner
 > ruled the rendering per surface: a number on the TUI badge and in a Slack
@@ -227,7 +228,8 @@ standing `apply_probe` gives the replay's verdict — and it is the owner's
 own next turn that was judged, which is injection-safe under the provenance
 rule. Twenty-two such rows exist today against thirteen raw interventions.
 
-> **Built 2026-09-02** (`feat/appraisal-phase-b`): `of_session` reads
+> **Built 2026-09-02** (`feat/appraisal-phase-b`, merged as #141 at
+> `49166e3`): `of_session` reads
 > `reflections.jsonl` through `SessionRecords::reflexions` and signs a
 > follow-up-triggered reflection for the session as an `Intervention`
 > error, `Owner`, `controllable` unfilled, cite `Cite::Reflexion(id)` —

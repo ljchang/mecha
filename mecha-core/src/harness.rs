@@ -522,6 +522,17 @@ impl HarnessStore {
         Self::open(Self::default_root()?)
     }
 
+    /// Open at the default location only if it already exists — for read
+    /// paths that must not create state as a side effect, on
+    /// `LearningStore::open_existing_default`'s rule. `Backlog::read` is
+    /// the reader that needed it: two reads per run created
+    /// `learning/harness/candidates` on a machine that had never
+    /// ruminated (found on review).
+    pub fn open_existing_default() -> Option<HarnessStore> {
+        let root = Self::default_root().ok()?;
+        root.is_dir().then_some(HarnessStore { root })
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
