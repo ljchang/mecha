@@ -4429,4 +4429,25 @@ mod probation_tests {
         // And it is omitted when false, so an ordinary rule file gains nothing.
         assert!(!serde_json::to_string(&rule).unwrap().contains("probation"));
     }
+
+    #[test]
+    fn reflexions_counting_says_how_many_lines_it_skipped() {
+        let dir = std::env::temp_dir().join(format!("learning-count-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = serde_json::json!({
+            "id": "r1", "domain": "behavior", "session_id": "s1", "trigger": "steer",
+            "context": "…", "intervention": "no, the other one", "reflexion_text": "…",
+            "error_type": null, "confidence": null, "created_at": "2026-08-28T00:00:00Z"
+        });
+        std::fs::write(
+            dir.join("reflections.jsonl"),
+            format!("{good}\n{{not json\n"),
+        )
+        .unwrap();
+        let store = LearningStore::open(&dir).unwrap();
+        let (rows, skipped) = store.reflexions_counting().unwrap();
+        assert_eq!((rows.len(), skipped), (1, 1));
+        assert_eq!(store.reflexions().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
