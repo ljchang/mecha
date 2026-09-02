@@ -40,6 +40,7 @@ something shipped.
 
 | Document | The question it went and answered |
 |---|---|
+| [`AUDIT-RESEARCH.md`](AUDIT-RESEARCH.md) | Where the harness was weakest on 2026-09-02, what was fixed that day, and what to build next — ranked |
 | [`BENCHMARK-RESEARCH.md`](BENCHMARK-RESEARCH.md) | How to measure this harness against public agent benchmarks, and what separates harness from model |
 | [`CANVAS-RESEARCH.md`](CANVAS-RESEARCH.md) | Can mecha reach Canvas LMS — and what Dartmouth's token policy makes impossible |
 | [`CLOUD-HOSTING-RESEARCH.md`](CLOUD-HOSTING-RESEARCH.md) | What it would cost to run the model somewhere other than this box |

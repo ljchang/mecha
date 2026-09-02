@@ -2482,9 +2482,14 @@ IANA name rather than an offset, because an offset is wrong twice a year.
 Every turn sends the whole history, so a long enough session stops being able to
 send anything. `[agent] compact_at_tokens` (or `--compact-at`) summarises the
 middle of the transcript once the *reported* prompt size passes it — reported,
-not estimated, so it counts cached tokens too. Off by default: compaction is
-lossy, and paraphrasing someone's conversation because it got long is their
-decision.
+not estimated, so it counts cached tokens too. **On by default wherever the
+provider declares a context window**: `AgentConfig::compact_at` derives two
+thirds of it when `compact_at_tokens` is unset (§Context accounting has the
+arithmetic), and only a provider with no declared window runs uncompacted.
+Compaction is lossy, which is why it is validated and recorded rather than
+off — for a while this section said "off by default" while the code derived a
+threshold, and a doc that contradicts the code is the shape this file exists
+to prevent.
 
 The things that decide the design:
 
