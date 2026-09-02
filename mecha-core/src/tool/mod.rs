@@ -815,23 +815,25 @@ impl Registry {
         self.tools.values()
     }
 
-    /// The tools that exist to send: they can reach outside, they are not
-    /// reads, and they destroy nothing — `mail_send`, a Slack post, a
-    /// calendar invite. The calls the outbox exists to stage.
+    /// The tools that exist to send: they can reach outside and they are not
+    /// reads — `mail_send`, a Slack post, a calendar invite, and a calendar
+    /// *cancellation*, which emails every attendee and is destructive as well.
+    /// The calls the outbox exists to stage.
     ///
-    /// Not `shell`, which is destructive as well, and not `http_fetch` or
-    /// `web_search`, which are read-only: those are the interlock's to
-    /// refuse, not the outbox's to hold. Setup warns for each of these that
-    /// no `[outbox] tools` entry routes, because a sender registered before
-    /// it is routed executes for real with the interlock as its only guard —
-    /// the mail server was live mail until someone remembered the line.
+    /// Not `http_fetch` or `web_search`, which are read-only: those are the
+    /// interlock's to refuse, not the outbox's to hold. An unconfined `shell`
+    /// is in this list by capability — it can send — and the caller that
+    /// warns about unrouted senders excludes it by name, because `shell`'s
+    /// guard is the sandbox, not the outbox. A `!destructive` filter used to
+    /// stand in for that exclusion and dropped `calendar_delete_event` with
+    /// it: the warning was silent for exactly the tool that emails a
+    /// cancellation to everyone (`ARCHITECTURE.md` §mecha-mail says writes
+    /// must be routed), while `mail_send` beside it warned — a silence that
+    /// read as a clean bill.
     pub fn senders(&self) -> Vec<&str> {
         self.tools
             .values()
-            .filter(|t| {
-                let c = t.capabilities();
-                c.external_send && !c.destructive && !t.read_only()
-            })
+            .filter(|t| t.capabilities().external_send && !t.read_only())
             .map(|t| t.name())
             .collect()
     }
@@ -1206,14 +1208,27 @@ mod sender_tests {
     }
 
     /// The shapes that matter: a mail send (MCP `openWorldHint` derives
-    /// private + untrusted + send, not destructive) is a sender; an
-    /// unconfined shell (destructive) and a fetch (read-only) are not.
+    /// private + untrusted + send) is a sender, and so is a calendar
+    /// cancellation (`openWorldHint` + `destructiveHint`) — the PR review
+    /// found a `!destructive` filter dropping it, silent for exactly the
+    /// tool that emails every attendee. A fetch is read-only and is not. An
+    /// unconfined shell is a sender by capability and is excluded by name
+    /// where the warning is issued, not here.
     #[test]
-    fn senders_are_the_pure_sends_not_the_shell_or_the_fetch() {
+    fn senders_are_every_non_read_sender_including_the_destructive_ones() {
         let mut r = Registry::new();
         r.insert(Arc::new(Shaped(
             "mail_send",
             Capabilities::default().private().untrusted().sends(),
+            false,
+        )));
+        r.insert(Arc::new(Shaped(
+            "calendar_delete_event",
+            Capabilities::default()
+                .private()
+                .untrusted()
+                .sends()
+                .destructive(),
             false,
         )));
         r.insert(Arc::new(Shaped(
@@ -1231,7 +1246,10 @@ mod sender_tests {
             Capabilities::default().private(),
             true,
         )));
-        assert_eq!(r.senders(), vec!["mail_send"]);
+        assert_eq!(
+            r.senders(),
+            vec!["calendar_delete_event", "mail_send", "shell"]
+        );
     }
 }
 

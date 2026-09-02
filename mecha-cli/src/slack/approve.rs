@@ -181,7 +181,7 @@ impl Approver for SlackApprover {
         if self.blanket.lock().is_ok_and(|b| b.contains(tool.name())) {
             return Decision::Allow;
         }
-        self.ask(tool, summarise(tool.name(), input)).await
+        self.ask(tool, summarise(tool.name(), input), false).await
     }
 
     /// Past the modes that would have *passed* the call — `Allow` and the
@@ -200,13 +200,17 @@ impl Approver for SlackApprover {
                 tool.name()
             ));
         }
-        self.ask(tool, format!("{why} {}", summarise(tool.name(), input)))
-            .await
+        self.ask(
+            tool,
+            format!("{why} {}", summarise(tool.name(), input)),
+            true,
+        )
+        .await
     }
 }
 
 impl SlackApprover {
-    async fn ask(&self, tool: &dyn Tool, summary: String) -> Decision {
+    async fn ask(&self, tool: &dyn Tool, summary: String, escalated: bool) -> Decision {
         // After the mode and blanket checks, so a mid-run switch to `Allow` —
         // a button press, which is proof someone is watching after all —
         // still works. But never another card and another wait.
@@ -238,6 +242,11 @@ impl SlackApprover {
 
         match tokio::time::timeout(self.timeout, answer).await {
             Ok(Ok(Answer::Approve)) => Decision::Allow,
+            // "Approve for run" at an escalation would install a standing yes
+            // on the ordinary path that `escalate` deliberately bypasses — the
+            // rule the terminal and TUI approvers already keep. It allows this
+            // call only.
+            Ok(Ok(Answer::ApproveForRun)) if escalated => Decision::Allow,
             Ok(Ok(Answer::ApproveForRun)) => {
                 if let Ok(mut b) = self.blanket.lock() {
                     b.insert(tool.name().to_string());

@@ -1405,6 +1405,35 @@ event as JSON on stdin. The point is that policy, redaction and logging attach
 Config is validated even when `--no-hooks` skips installing, so a typo'd event
 name fails on every start rather than only on the runs that needed it.
 
+## Tool dispatch and panics
+
+`run_tools` wraps every tool call in `catch_unwind`, so a panicking tool costs
+the call, not the run: the model gets an error result naming the panic, and
+every `tool_use` keeps its result. Before this, `join_all` unwound out of
+`run_in` with the assistant's `tool_use` already pushed — the TUI reported the
+conversation lost, and Slack's spawned task never sent its completion, so the
+thread's conversation vanished (2026-09-02). Two consequences a reader should
+carry:
+
+- **Mutex poisoning is now survivable, so it is now reachable.** A tool that
+  panicked while holding a lock leaves it poisoned for the life of the
+  process. The stateful builtins (`TodoTool::lists`, `SkillTool::loaded`) and
+  the loop's `step_escalation` slot recover with `into_inner()`, the same
+  policy `take_queued_input` always had. Two locks in core take the other
+  branch deliberately: `MessageRoute::identity` and `OutboxRoute::session_id`
+  use `.lock().ok()`, so a poisoned lock degrades to `None` — `message_send`
+  refuses for want of an identity, staging drops the session id — which is
+  fail-closed, permanently, until restart. Choose one of the two when adding
+  a lock a tool can reach, and say which.
+- **A panic message is the harness's own words.** It is never marked
+  external, whatever the tool's declared reach; and neither is an `Err` a
+  tool returns before it touched the wire (a missing argument, a refused
+  path). Provenance is marked where the wire was actually touched —
+  `McpTool::call`, `http_fetch`'s arms, `web_search` — which is the
+  `Capabilities::untrusted_input` vs `ToolOutput::external` distinction the
+  security model draws; marking by declared reach armed the untrusted leg on
+  `http_fetch({})` with no packet sent.
+
 ## The outbox
 
 `[outbox] tools = [...]` names tools whose calls are **staged, not executed**:

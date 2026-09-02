@@ -357,6 +357,15 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // nobody reads the registry test as covering the warning.
     if !opts.no_outbox {
         for name in agent.registry().senders() {
+            // `shell` can send when unconfined, and is a sender by
+            // capability; its guard is the sandbox (`[sandbox]`), not the
+            // outbox, and routing a shell command through a draft would stage
+            // nothing a reviewer could read. Excluded here by name rather
+            // than by a capability filter, because the filter that used to do
+            // it (`!destructive`) also dropped the calendar cancellation.
+            if name == "shell" {
+                continue;
+            }
             let routed = agent
                 .context()
                 .outbox
