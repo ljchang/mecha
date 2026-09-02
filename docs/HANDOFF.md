@@ -1239,6 +1239,29 @@ rather than verified, on its author's own flag — the distinction matters
 because "deployed" reads as "working" in a handoff and this one has no
 evidence behind it yet.
 
+**2026-09-02 (~12:30, the graph move completed)** — `personalized_knowledge_graph`
+is no longer a code repo. Its PR #5 removed `eval/gold*.jsonl` and
+`scripts/nightly-mecha.sh`; what remains is HANDOFF, RESEARCH_LOOP,
+OPERATIONS and the roster tooling. mecha-graph#5 landed the input-set alarm's
+memory, so the 54-a-night line becomes one self-naming line carrying the
+backlog's age.
+
+**The catch worth carrying: a repo move leaves behind every consumer that
+names a PATH rather than a binary.** `nightly.sh`'s
+`PKG="$REPO_DIR/target/release/mecha-graph"` still resolved into the retired
+checkout, whose `target/` is frozen at Aug 31 — so the 01:30 decay would have
+run a five-day-old binary and printed the same 54 lines, while
+`mecha-graph --version`, `~/.cargo/bin`, the 08:00 cron and every other
+surface read current. Nothing would have complained. Found by asking which
+binary the cron executes, not by noticing a symptom. `grep -rn
+"target/release" scripts/` is the sweep to run at a move, not after it.
+
+Both cron lines verified end to end this date: 01:30 resolves `PKG` to the
+public tree, 08:00 runs the public `nightly-mecha.sh` whose `$REPO_DIR` is
+already public. The binaries on those paths carry the alarm memory, the Bee
+idempotence fix, `--min-sources`, and the attempt-keyed cooldown;
+`~/.cargo/bin/mecha` carries the pressure-headroom brief for 03:30.
+
 Tests this date: **1132** core, 688 + 133 + 75 + 20 + 9 + 6 + 1 across the
 other suites, 0 failed. Eval 36 cases, 15 tags, unchanged. `deployed-local`
 was deleted by its owner once main was on every surface — its absence again
