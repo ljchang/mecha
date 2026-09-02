@@ -121,21 +121,6 @@ pub fn corpus_slice(
             // nothing" turns a rotting store into a typo. `unreadable` exists
             // for exactly this and its own doc says so — an unreadable store
             // is a finding, not an empty queue.
-            // The fourth zero, and the one the smoke-test mark created:
-            // every session rooted here was recorded as a test and the
-            // diagnosis excludes those by design, so this is the filter
-            // working — not a prefix typo, and not an empty store (found
-            // on review, after CLAUDE.md started telling smoke tests to
-            // set the mark).
-            if sessions_read == 0 && corpus.hidden_tests > 0 {
-                anyhow::bail!(
-                    "the only sessions rooted under {} are {} smoke-test session(s) \
-                     (`MECHA_SESSION_KIND=test`), which the diagnosis excludes — a \
-                     candidate is measured against real use, and there is none here yet.",
-                    w.display(),
-                    corpus.hidden_tests
-                );
-            }
             if sessions_read == 0 && corpus.unreadable > 0 {
                 anyhow::bail!(
                     "no readable sessions are rooted under {}, and {} transcript(s) in the \
@@ -144,6 +129,23 @@ pub fn corpus_slice(
                      store.",
                     w.display(),
                     corpus.unreadable
+                );
+            }
+            // The fourth zero, and the one the smoke-test mark created:
+            // every session rooted here was recorded as a test and the
+            // diagnosis excludes those by design, so this is the filter
+            // working — not a prefix typo, and not an empty store (found
+            // on review, after CLAUDE.md started telling smoke tests to
+            // set the mark). After the unreadable finding, never ahead of
+            // it: a rotting store must not read as a filter working
+            // (found on the next review pass).
+            if sessions_read == 0 && corpus.hidden_tests > 0 {
+                anyhow::bail!(
+                    "the only sessions rooted under {} are {} smoke-test session(s) \
+                     (`MECHA_SESSION_KIND=test`), which the diagnosis excludes — a \
+                     candidate is measured against real use, and there is none here yet.",
+                    w.display(),
+                    corpus.hidden_tests
                 );
             }
             if sessions_read == 0 {
