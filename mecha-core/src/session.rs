@@ -998,7 +998,12 @@ impl Session {
     /// A created title with no prefix at all constrains nothing — there is no
     /// kind to preserve, and every prefix in use today is written by this
     /// crate's own callers.
-    fn keeps_kind(created: Option<&str>, renamed: &str) -> bool {
+    ///
+    /// Public because [`Session::read`] is not the only reader of a rename:
+    /// a listing that scans for the newest `Title` without loading the
+    /// transcript has to apply the same rule, or the drawer shows a name the
+    /// session does not have.
+    pub fn keeps_kind(created: Option<&str>, renamed: &str) -> bool {
         match created.and_then(|c| c.split_once(": ")) {
             Some((kind, _)) => renamed.starts_with(&format!("{kind}: ")),
             None => true,
