@@ -10223,6 +10223,45 @@ match = ["cargo publish"]
         );
     }
 
+    /// The one place a rules file widens what *executes*: under a headless
+    /// `Ask` (a trigger, `batch` at the default mode) an `allow`-ruled write
+    /// runs where the mode alone refused it, because the rule is the yes the
+    /// run had nobody to give. An unruled write beside it stays refused.
+    /// Pinned so the widening is a decision, not a drift.
+    #[tokio::test]
+    async fn an_allow_rule_is_the_yes_a_headless_ask_has_nobody_to_give() {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let (agent, _) = agent_with_tools(
+            vec![
+                shell_call("t0", "git status"),
+                shell_call("t1", "ls"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(RecordingShell(Arc::clone(&ran)))],
+            PermissionMode::Ask,
+        );
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_policy(rules(GIT_RULES));
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let ran = ran.lock().unwrap();
+        assert_eq!(ran.len(), 1, "only the allow-ruled command ran: {ran:?}");
+        assert_eq!(ran[0]["command"], "git status");
+        let refused = convo
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter(|b| matches!(b, Block::ToolResult { content, .. } if content.contains("Blocked by policy")))
+            .count();
+        assert_eq!(
+            refused, 1,
+            "the unruled `ls` was refused by the mode, as before"
+        );
+    }
+
     /// A rule never softens the interlock's escalation: with `ask` and an
     /// armed conversation, an `allow` rule on the sending tool still puts the
     /// call in front of a person.

@@ -700,17 +700,21 @@ fn tokenize(command: &str) -> Option<Vec<Tok>> {
 }
 
 /// A patterned `forbid`'s words, found in a command the splitter refused to
-/// take apart. Whitespace-split with quote characters dropped, matched at
-/// every position, first token of the match reduced to its basename.
+/// take apart. Split on whitespace and the shell's separators with quote
+/// characters dropped, matched at every position, first token of the match
+/// reduced to its basename.
 /// Over-approximate by design: this runs only where the answer would
 /// otherwise be a prompt, and a false forbid is a refusal, not a hole.
 fn forbidden_words(rules: &[&RuleConfig], command: &str) -> Option<Vec<String>> {
     // Quote characters are dropped from every word, not honoured: `"rm" -rf
     // $HOME` and `sh -c 'rm -rf /*'` carry the forbidden words as plainly as
     // the bare spelling does, and the PR review found them coming back as a
-    // prompt — which on a headless `Allow` surface is a yes.
+    // prompt — which on a headless `Allow` surface is a yes. And the shell's
+    // own separators split a word the way whitespace does: `git status;rm
+    // -rf *` is `git status; rm -rf *` to bash, one character apart, and the
+    // review found the glued spelling walking past this check next.
     let words: Vec<String> = command
-        .split_whitespace()
+        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')'))
         .map(|w| {
             w.chars()
                 .filter(|c| !matches!(c, '\'' | '"'))
@@ -1004,6 +1008,11 @@ mod tests {
             rule("shell", &[&["rm"]], RuleDecision::Forbid),
             rule("shell", &[&["ls"]], RuleDecision::Allow),
         ]);
+        // The floor is about inline source and wrappers, not about an
+        // interpreter handed a program: `python3 safe.py` runs a file
+        // `fs_write` can create, and `echo … | python3` needs no flag at all.
+        // An `allow` on a bare interpreter is the operator saying so, with
+        // the sandbox as the containment — stated as residue, not closed.
         assert_eq!(
             p.decide("shell", &cmd("python3 safe.py")).unwrap().decision,
             RuleDecision::Allow
@@ -1237,6 +1246,12 @@ mod tests {
             "r\"m\" '-rf' $HOME",
             "sh -c 'rm -rf /*'",
             "\"/bin/rm\" -rf $HOME",
+            // A separator glued to a word is a separator to the shell.
+            "git status;rm -rf *",
+            "true&&rm -rf $HOME",
+            "(rm -rf $HOME)",
+            "ls|rm -rf *",
+            "bash -ec 'cd /tmp;rm -rf x'",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(quoted)).unwrap().decision,
