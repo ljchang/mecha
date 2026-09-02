@@ -200,9 +200,13 @@ impl Backlog {
     }
 
     fn read_proposals() -> Option<Depth> {
-        let store = LearningStore::default_root()
-            .and_then(LearningStore::open)
-            .ok()?;
+        // The same rule as the three owner-facing readers: a store that
+        // has never existed is empty, and a read creates nothing —
+        // `LearningStore::open` runs `git init` (found on review, after
+        // the test below asserted the rule for three of five readers).
+        let Some(store) = LearningStore::open_existing_default() else {
+            return Some(Depth::default());
+        };
         let proposals = store.proposals().ok()?;
         let pending: Vec<_> = proposals.iter().filter(|p| p.status == "pending").collect();
         Some(Depth::of(
@@ -212,7 +216,10 @@ impl Backlog {
     }
 
     fn read_candidates() -> Option<Depth> {
-        let candidates = HarnessStore::open_default().and_then(|s| s.all()).ok()?;
+        let Some(store) = HarnessStore::open_existing_default() else {
+            return Some(Depth::default());
+        };
+        let candidates = store.all().ok()?;
         let staged: Vec<_> = candidates.iter().filter(|c| c.pending()).collect();
         Some(Depth::of(
             staged.len(),
@@ -628,11 +635,21 @@ mod tests {
         assert_eq!(b.outbox, Some(Depth::default()));
         assert_eq!(b.questions, Some(Depth::default()));
         assert_eq!(b.frontdoor, Some(Depth::default()));
-        for store in ["outbox", "questions", "requests"] {
+        assert_eq!(b.proposals, Some(Depth::default()));
+        assert_eq!(b.candidates, Some(Depth::default()));
+        // All five, not the three owner-facing ones: the first cut of this
+        // test asserted three while `LearningStore::open` and
+        // `HarnessStore::open` still created — and ran `git init` in —
+        // `learning/` twice per run (found on review).
+        for store in ["outbox", "questions", "requests", "learning"] {
             assert!(
                 !home.dir().join(store).exists(),
                 "a read created {store}/ under the mecha home"
             );
         }
+        assert!(
+            std::fs::read_dir(home.dir()).unwrap().next().is_none(),
+            "a read created something under the mecha home"
+        );
     }
 }
