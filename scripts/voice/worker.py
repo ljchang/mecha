@@ -28,6 +28,11 @@ from openai.types.audio import Transcription
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+)
 from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
     TranscriptionUserTurnStartStrategy,
 )
@@ -113,44 +118,82 @@ MIN_SEGMENT_RMS = 0.010
 MIN_SEGMENT_SECONDS = 0.3
 
 
-# What the bot said recently, normalized, for the echo filter: a phone on
-# speaker hears its own TTS, and when client-side echo cancellation fails
-# (a known WebKit trap once WebAudio taps the mic track), the bot's words
-# come back as the owner's. Text is the one signal that survives every
-# acoustic path: if the transcript is contained in what the bot just said,
-# it is the speaker, not the speaker's owner.
-import collections
-import re
+# The echo defence: a phone or a laptop on speaker hears its own TTS, and
+# everything downstream is faithful about it - the VAD finds speech in it and
+# a transducer transcribes it - so the bot's words come back as the owner's.
+# The reasoning, the thresholds and the tests live in `echo_filter`, which is
+# a pure module for exactly that reason; this file owns the frames and the
+# clock that feed it.
 import time as _time
 
-RECENT_BOT_SPEECH: collections.deque = collections.deque(maxlen=12)
-ECHO_WINDOW_SECONDS = 20.0
+from echo_filter import BotSpeech, overlapped
 
-
-def _normalize(text: str) -> str:
-    return re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
+BOT_SPEECH = BotSpeech()
 
 
 def note_bot_speech(text: str) -> None:
-    RECENT_BOT_SPEECH.append((_time.monotonic(), _normalize(text)))
+    BOT_SPEECH.note(text)
 
 
-def is_probable_echo(transcript: str) -> bool:
-    norm = _normalize(transcript)
-    if len(norm) < 8:
-        return False
-    now = _time.monotonic()
-    for stamp, spoken in RECENT_BOT_SPEECH:
-        if now - stamp < ECHO_WINDOW_SECONDS and norm in spoken:
-            return True
-    return False
+# The energy floor while our own speaker is playing. Echo that survives the
+# browser's canceller is far quieter than a voice at the microphone, so this
+# sits above the room-noise floor below and below the owner's measured speech
+# (~0.024 RMS) - a person raising their voice over a reply clears it, a
+# speaker across the room does not.
+#
+# Tunable from the environment because the right value is a property of *this
+# room and this laptop*, not of the code: turn on MECHA_LOG=debug (or read the
+# worker's journal) and every gated segment prints the RMS it was gated at,
+# which is the measurement to set this from. A guessed constant with no way to
+# check it would be the worse half of both worlds.
+ECHO_SEGMENT_RMS = float(os.environ.get("MECHA_VOICE_ECHO_RMS", "0.020"))
 
 
 class SegmentGatedSTT(BaseWhisperSTTService):
     """The energy/duration gate every segment passes before any model sees
     it. Split out from the transcriber because it is a property of the
     *audio*, not of whichever model reads it: room noise and half-second
-    breaths are not speech regardless of what is listening."""
+    breaths are not speech regardless of what is listening.
+
+    It also keeps the clock the echo defence needs: **was our own speaker
+    playing while this segment was captured**. Kept here rather than in a
+    processor of its own because pipecat pushes the bot-speaking edges
+    *upstream* as well as downstream (`base_output.py`), so the STT service
+    sees them where it stands, and because the question is asked in the same
+    breath as the energy floor it changes.
+
+    The edges are the transport's, not the TTS service's, and that is the
+    point: `BotStartedSpeakingFrame` fires when audio starts being written
+    out, which is when a room can hear it. TTS text is generated well before
+    that and would put the window in the wrong place."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._segment_started_at = None
+        self._bot_speaking = False
+        # Never `0.0`: `time.monotonic()` is uptime on Linux, so a zero here
+        # is "the bot stopped speaking at boot", which on a freshly started
+        # box is inside the tail.
+        self._bot_audible_until = float("-inf")
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._segment_started_at = _time.monotonic()
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+            self._bot_audible_until = _time.monotonic()
+
+    def heard_the_speaker(self) -> bool:
+        """Did our own reply overlap the segment about to be transcribed?"""
+        return overlapped(
+            now=_time.monotonic(),
+            segment_started_at=self._segment_started_at,
+            bot_speaking=self._bot_speaking,
+            bot_audible_until=self._bot_audible_until,
+        )
 
     @staticmethod
     def _segment_stats(audio: bytes):
@@ -186,16 +229,30 @@ class ParakeetSTT(SegmentGatedSTT):
             duration, rms = self._segment_stats(audio)
         except Exception:
             duration, rms = 1.0, 1.0
-        if duration < MIN_SEGMENT_SECONDS or rms < MIN_SEGMENT_RMS:
-            logger.debug(f"parakeet segment gated: duration={duration:.2f}s rms={rms:.4f}")
+        # Whether our own speaker was playing changes what this segment has to
+        # clear, and it is asked once here so the floor and the text filter
+        # cannot disagree about it.
+        echoey = self.heard_the_speaker()
+        floor = ECHO_SEGMENT_RMS if echoey else MIN_SEGMENT_RMS
+        if duration < MIN_SEGMENT_SECONDS or rms < floor:
+            # The RMS is printed on the gated path too, and deliberately: it
+            # is the only measurement of what this room's echo actually looks
+            # like, and `MECHA_VOICE_ECHO_RMS` has to be set from something.
+            logger.debug(
+                f"parakeet segment gated: duration={duration:.2f}s rms={rms:.4f} "
+                f"floor={floor:.4f} over_speaker={echoey}"
+            )
             return Transcription(text="")
         r = await self._client.audio.transcriptions.create(
             model="parakeet", file=("segment.wav", audio, "audio/wav")
         )
         text = (r.text or "").strip()
-        logger.debug(f"parakeet: duration={duration:.2f}s rms={rms:.4f} text={text[:100]!r}")
-        if is_probable_echo(text):
-            logger.debug(f"parakeet echo filter: {text[:60]!r}")
+        logger.debug(
+            f"parakeet: duration={duration:.2f}s rms={rms:.4f} "
+            f"over_speaker={echoey} text={text[:100]!r}"
+        )
+        if BOT_SPEECH.is_probable_echo(text, bot_was_audible=echoey):
+            logger.debug(f"parakeet echo filter: {text[:60]!r} over_speaker={echoey}")
             return Transcription(text="")
         return Transcription(text=text)
 

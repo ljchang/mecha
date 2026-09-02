@@ -755,6 +755,59 @@ Verified both directions: synthetic noise at rms 0.0122 — matching the
 0.0124 that interrupted the real call — starts no turn and yields no
 transcript, while a spoken question still transcribes and is answered.
 
+**On speakers, the microphone still heard the reply — three layers,
+2026-09-02.** Reported from a real call without headphones: the mic takes the
+bot's own voice as the owner talking. Every existing defence was in place and
+none of them was the whole answer, so the fix is layered, and each layer is
+named by what it can and cannot do.
+
+- **The mic meter was the suspect worth removing, not tuning.** The page asked
+  for `echoCancellation: true` and analysed a *clone* of the mic track to dodge
+  the known WebKit trap (WebAudio attaching to a getUserMedia track silently
+  disables the canceller — §7's 2026-08-24 sighting). But a clone is not a
+  different microphone: it shares the source, so on the browsers where the trap
+  is real the clone can disarm the canceller for the track actually being sent,
+  and the defence reads as one without being one. The meter now reads
+  `media-source.audioLevel` off `RTCPeerConnection.getStats()`, so **nothing on
+  the page touches the mic through WebAudio at all** — a property that can be
+  checked by reading the file rather than a threshold that has to be tuned.
+  Costs a frame-rate ring (10 Hz now) and gives a still ring on a browser that
+  reports no `audioLevel`; a flat ring is cosmetic, a disabled canceller is the
+  bug.
+- **The energy floor is now graded on whether our own speaker was playing.**
+  0.010 in a silent room as before, `MECHA_VOICE_ECHO_RMS` (default 0.020)
+  while the bot is audible. It sits above room noise (~0.009) and below the
+  owner's measured speech (~0.024), so a person raising their voice over a
+  reply still interrupts and a speaker across the room does not — this section's
+  own warning applies, that 0.010 was tuned on a different microphone, so the
+  gated path now **logs the RMS it gated at** and the env var exists to be set
+  from that rather than from a guess. "Was the speaker playing" comes from
+  `BotStartedSpeakingFrame`/`BotStoppedSpeakingFrame`, which pipecat pushes
+  **upstream as well as downstream**, so the STT service sees them where it
+  already stands; they are the *transport's* edges, firing when audio starts
+  being written out rather than when TTS text was generated, plus a 1.2 s tail
+  for the client's jitter buffer and the room.
+- **The text filter went fuzzy, and got tests.** §6 item 10 already calls it a
+  heuristic on the untrusted-content path; it was also an *exact substring*
+  test against one spoken phrase, which is two failures. Recognition of a
+  speaker across a room is not verbatim — one word lands differently and the
+  match is gone — and TTS is handed a sentence at a time, so an echo running
+  over a sentence boundary was contained in no single phrase. It now matches
+  word overlap against the joined window (0.6 over the speaker, 0.85 in
+  silence, exact containment as before), and never judges one or two words by
+  overlap unless we said them verbatim, because "stop" and "wait" are the whole
+  vocabulary of a barge-in. It moved to `scripts/voice/echo_filter.py` — a pure
+  module with no pipecat import — for the sole reason that testing it used to
+  mean standing up a GPU box and a WebRTC stack, and a heuristic that decides
+  whether a person's turn happens at all had no test of any kind.
+  `python3 scripts/voice/test_echo_filter.py`.
+
+The bias is written down where the thresholds are: a dropped turn costs a
+repeat, a false turn costs an interruption mid-sentence and a reply to nothing
+— but not at any price, because the person saying "no, stop" over a wrong
+answer is exactly who this must not silence. D4 is untouched: barge-in remains
+"finish the phrase and it stops". The structural fix is still §6 item 10.
+
 **Both standbys were removed, 2026-08-25 — a spare nothing fails over to
 is not a spare.** Voxtral (`:8082`) had held the STT seat until the swap
 that morning and then sat idle for the rest of the day: **0 requests**,
