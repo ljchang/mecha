@@ -4226,7 +4226,7 @@ run's own homeostat as the one positive a live surface can show;
 reads, the relief in its own field so the level's corpus mean stays one
 quantity; and `Depth::given_up`, so a rejected draft, an abandoned
 question or a hand-closed request shortens the queue without crediting the
-run. The two PRs took twenty and nineteen review passes; nearly every
+run. The two PRs took twenty-one and nineteen review passes; nearly every
 pass found a real edge on the check freeze or the sign — a thinned echo
 parsing as a prefix, a cut landing after the last marker, the carried
 block as the only record after a compaction, the install-time restore
