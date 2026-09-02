@@ -1433,6 +1433,18 @@ carry:
   `Capabilities::untrusted_input` vs `ToolOutput::external` distinction the
   security model draws; marking by declared reach armed the untrusted leg on
   `http_fetch({})` with no packet sent.
+- **`mcp.rs`'s `pending` lock takes neither branch on purpose.** It is never
+  held across user code — locked, read or written, released — so a panic
+  cannot poison it from inside the guard; it stays `unwrap`, and that is the
+  reasoning to re-check if the client ever runs a callback under it.
+- **An overflow caught mid-stream re-streams.** llama-server can emit
+  `exceed_context_size_error` *after* tokens have streamed; the decoder turns
+  that frame into the error the loop's overflow arm recognises, and the retry
+  re-issues `complete` with the same event sender, so a front-end shows the
+  partial text and then the whole retry. The transcript is unaffected — only
+  the final response lands in `messages` — and the Anthropic decoder has had
+  this shape since it was written. Parity, not a regression, and the shape a
+  Slack thread will show once.
 
 ## The outbox
 
