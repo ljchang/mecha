@@ -69,6 +69,14 @@ impl Approver for TuiApprover {
         self.ask(tool, summary, true).await
     }
 
+    /// Past the `always` list for the same reason: a `prompt` rule is the
+    /// operator asking that a person see *this* call, whatever standing yes
+    /// the tool has collected. The ruling's sentence rides in the summary.
+    async fn consult(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        let summary = format!("{why} {}", crate::approve::summarize(tool.name(), input));
+        self.ask(tool, summary, true).await
+    }
+
     /// A rule's `allow` is a yes written down in advance; this approver has
     /// no mode of its own to consult.
     async fn permit(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
@@ -77,7 +85,10 @@ impl Approver for TuiApprover {
 }
 
 impl TuiApprover {
-    async fn ask(&self, tool: &dyn Tool, summary: String, escalated: bool) -> Decision {
+    /// `forced` for an escalation or a `prompt` rule: the answer "always" then
+    /// allows this call only, because installing a standing yes from a prompt
+    /// that exists to bypass standing yeses would defeat the next one.
+    async fn ask(&self, tool: &dyn Tool, summary: String, forced: bool) -> Decision {
         let (reply, answer) = oneshot::channel();
         let request = Request {
             tool: tool.name().to_string(),
@@ -94,10 +105,7 @@ impl TuiApprover {
 
         match answer.await {
             Ok(Answer::Allow) => Decision::Allow,
-            // "Always" at an escalation would install a standing yes on the
-            // ordinary path that `escalate` deliberately bypasses; it allows
-            // this call only.
-            Ok(Answer::Always) if escalated => Decision::Allow,
+            Ok(Answer::Always) if forced => Decision::Allow,
             Ok(Answer::Always) => {
                 if let Ok(mut always) = self.always.lock() {
                     always.insert(tool.name().to_string());
@@ -109,5 +117,77 @@ impl TuiApprover {
             // it, or the UI quit. Same reasoning as above: nobody spoke.
             Err(_) => Decision::Blocked("the request was dismissed without an answer".into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::tool::{ToolCtx, ToolOutput};
+    use serde_json::json;
+
+    struct Shell;
+    #[async_trait]
+    impl Tool for Shell {
+        fn name(&self) -> &str {
+            "shell"
+        }
+        fn description(&self) -> &str {
+            "a test tool"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            false
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> anyhow::Result<ToolOutput> {
+            unreachable!("the approver never runs the tool")
+        }
+    }
+
+    /// One "always" to `shell: ls` must not cover a later `shell: cargo
+    /// publish` the operator wrote a `prompt` rule for: `consult` asks past
+    /// the standing yes, and answering "always" there installs nothing.
+    #[tokio::test]
+    async fn a_prompt_rule_is_asked_past_the_standing_yes() {
+        let (a, mut rx) = TuiApprover::new();
+        let task = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            while let Some(req) = rx.recv().await {
+                seen.push(req.summary.clone());
+                req.reply.send(Answer::Always).ok();
+            }
+            seen
+        });
+
+        // "Always" on an ordinary approval installs the standing yes …
+        assert!(matches!(
+            a.approve(&Shell, &json!({"command": "ls"})).await,
+            Decision::Allow
+        ));
+        // … which `approve` honours without asking …
+        assert!(matches!(
+            a.approve(&Shell, &json!({"command": "ls -la"})).await,
+            Decision::Allow
+        ));
+        // … and `consult` asks past, twice: "always" at a forced prompt
+        // allows one call only.
+        for _ in 0..2 {
+            assert!(matches!(
+                a.consult(&Shell, &json!({"command": "cargo publish"}), "a rule asks")
+                    .await,
+                Decision::Allow
+            ));
+        }
+        drop(a);
+        let seen = task.await.unwrap();
+        assert_eq!(
+            seen.len(),
+            3,
+            "one ordinary ask, then both consults: {seen:?}"
+        );
+        assert!(seen[1].starts_with("a rule asks"), "{:?}", seen[1]);
+        assert!(seen[2].starts_with("a rule asks"), "{:?}", seen[2]);
     }
 }

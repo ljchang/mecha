@@ -171,6 +171,22 @@ impl Approver for WebApprover {
         self.ask(tool, input, Some(why.to_string())).await
     }
 
+    /// A `prompt` rule puts *this* call on a card whatever the mode would
+    /// have passed — `Allow`, the read-only shortcut — and not past
+    /// `ReadOnly`, the same shape as `escalate`. This approver keeps no
+    /// standing yes of its own, so the card is the whole difference.
+    async fn consult(&self, tool: &dyn Tool, input: &serde_json::Value, why: &str) -> Decision {
+        let mode = self
+            .mode
+            .lock()
+            .map(|m| *m)
+            .unwrap_or(PermissionMode::ReadOnly);
+        if mode == PermissionMode::ReadOnly && !tool.read_only() {
+            return ModeApprover { mode }.approve(tool, input).await;
+        }
+        self.ask(tool, input, Some(why.to_string())).await
+    }
+
     /// A rule's `allow` stands in for the card, not for the mode: a
     /// read-only surface still refuses a write.
     async fn permit(&self, tool: &dyn Tool, input: &serde_json::Value) -> Decision {

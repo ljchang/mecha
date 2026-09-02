@@ -117,7 +117,10 @@ pub struct RuleConfig {
     pub pattern: Vec<PatternElement>,
     pub decision: RuleDecision,
     /// Commands this rule must match. Required and non-empty for `allow`;
-    /// checked at load for every decision.
+    /// checked at load for every decision. For a rule with no `pattern` the
+    /// check proves only that the example splits — an empty pattern matches
+    /// every segment — so there it is a speed bump, not the guarantee it is
+    /// for a patterned rule.
     #[serde(rename = "match")]
     pub examples: Vec<String>,
     /// Commands this rule must not match. Checked at load.
@@ -681,11 +684,15 @@ fn runs_its_arguments(segment: &[String]) -> bool {
         })
     };
     // Interpreters with an inline-source flag.
+    // `-m` and `-r`/`--require` run a module named by an argument — the same
+    // shape as inline source, one level of indirection away.
     if head.starts_with("python") {
-        return has_flag(&['c'], &[]);
+        return has_flag(&['c', 'm'], &[]);
     }
     match head {
-        "node" | "nodejs" | "deno" | "bun" => has_flag(&['e', 'p'], &["--eval", "--print"]),
+        "node" | "nodejs" | "deno" | "bun" => {
+            has_flag(&['e', 'p', 'r'], &["--eval", "--print", "--require"])
+        }
         "ruby" | "lua" | "luajit" | "osascript" => has_flag(&['e'], &[]),
         "perl" => has_flag(&['e', 'E'], &[]),
         "php" => has_flag(&['r'], &[]),

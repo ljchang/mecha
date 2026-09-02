@@ -719,6 +719,27 @@ pub trait Approver: Send + Sync {
         ))
     }
 
+    /// An approval rule has said *a person must see this call*
+    /// (`policy::RuleDecision::Prompt`), and `why` is the ruling's sentence.
+    ///
+    /// Separate from `approve` for the same reason `escalate` is: `approve`
+    /// is allowed to answer from a standing yes — an `[a]lways` on the tool,
+    /// a Slack thread's "approve for run" — and a `prompt` rule exists to
+    /// put *this* call in front of someone whatever the tool's standing is.
+    /// The PR review found the first version routing `prompt` through
+    /// `approve`, so one `[a]lways` to `shell: ls` silently covered a later
+    /// `shell: cargo publish` the operator had written a `prompt` rule for —
+    /// the tool-granularity problem surviving inside the mechanism built to
+    /// fix it. Interactive approvers override this to ask past their
+    /// shortcuts and to allow one call only if the person answers "always".
+    /// The default is `approve`: an approver with no shortcuts to bypass
+    /// keeps today's behaviour, and one that answers from policy (a headless
+    /// mode) answers from policy, which is what its mode means.
+    async fn consult(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        let _ = why;
+        self.approve(tool, input).await
+    }
+
     /// An approval rule has said *no person needs to be asked* about this
     /// call (`policy::RuleDecision::Allow`). Answer with whatever your mode
     /// still forbids, and nothing else.
