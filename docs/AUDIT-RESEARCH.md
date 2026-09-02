@@ -388,6 +388,76 @@ unflagged drafts over a month. Each arm is a candidate; the gate keeps or
 retires it, and the ruling is written into `VERIFICATION-RESEARCH.md` beside
 the sentence it revises.
 
+#### Spec: the prediction the planner writes, and the critic call
+
+Proposed 2026-09-02 to the appraisal lane, which owns the *record* (the
+fields on `todo.rs`'s `Plan`/`TodoItem`/`Tracked`, lenient on read like
+`serves:`), the discrepancy detection that reads it, the reflection trigger
+and the replay priority. This side owns the *ask* — what the model is asked
+to fill in and when it is re-read — and the critic call. The split follows
+the consumer: the scorer owns the wire format it scores.
+
+**The ask.** Three optional fields on each `todo` item, so the plan *is* the
+prediction and no second tool exists to forget:
+
+| field | type | what it is | who reads it |
+|---|---|---|---|
+| `expect` | string, one sentence | The step's expected outcome, phrased so it could be checked ("`cargo test` passes", "the draft names a date") | re-injected every N turns (arm 1); the appraiser's expectation for the step |
+| `check` | string, a command | How the harness can tell, by exit code (arm 2). Runs through the same confined `shell` path a model call would, in the run's workspace; frozen at declaration — a later write that changes a completed step's `check` is recorded as a counter error, the tamper signal `expect.verify` guards against by hashing | the loop, which records the result as a `ToolCallTrace` named `check` (so `step.rs`'s span reading and `RunStats` see it: checks declared, checks passed) |
+| `calls` | integer | How many tool calls the model expects the step to take | `step.rs`, whose span-outlier comparison uses the model's own forecast before falling back to the sibling mean; the residual is a discrepancy the appraiser can read |
+
+Absent fields cost nothing — a plan with none is today's plan. The tool's
+description asks for `expect` on every item and `check` where one exists,
+in the same voice that asks for `serves`. Nothing is required, because the
+tool's whole job is being cheap to keep updated.
+
+**Re-injection (arm 1).** Every N tool turns (N=5 to start, a config knob
+under `[agent]`), and only if the plan has items, the loop folds a rendering
+of the plan — status, content, `expect` — into the tool-results message via
+`append_user_text`, the one legal slot. Bounded to the in-progress item and
+its neighbours plus a count of the rest, so a forty-item plan does not ride
+every fifth turn whole. Zero model calls; this is the periodic reminder the
+plan-decay literature found positive.
+
+**The critic call (arms 0 and 3).** A `QuarantinedPass`: no tools, no
+history, the run's effort clamped at `high`, its usage added to the run's as
+`escalate_step`'s is. Its **input is typed extractions and pointers, never
+the transcript's prose**: the plan with predictions and statuses; per-step
+`Work` counters (calls, errors, denials, check results); for an outbox item,
+the draft itself — the reviewable object, which is the one piece of model
+prose it reads, and only because a verdict about a draft that has not read
+the draft is worthless. Its **output is closed**:
+
+```json
+{"verdict": "accept | flag",
+ "concern": "unverified_claim | contradicts_plan | missing_step | scope_drift | unsafe_send | none",
+ "step": 3,
+ "evidence": "step:3 | call:t7 | draft",
+ "note": "≤ 200 chars"}
+```
+
+parsed as `StepVerdict` is today — the JSON found inside prose, unknown
+concerns degrading to `none` with the verdict kept. Arm 3 runs it **twice
+with opposed instructions** ("argue this is done", "argue it is not"), and
+shows both concerns beside the reviewable object: an outbox item carries
+them as a typed `review` field rendered by `mecha outbox` and the web card;
+a step escalation carries them where its nudge goes today. The verdict is
+recorded as the item's pre-registered expectation (`flag`/`accept`), and the
+owner's `SentUnchanged`/`edit`/`reject` is the score — the appraisal lane's
+§3.7, with the critic as the predictor. **It never gates and never steers**:
+no `Decision`, no `cancel`, no nudge stronger than the one `revise_plan`
+already folds. At most one pair per staged item and one per escalation, so
+the cost is bounded by things that already happen.
+
+**Tests before the corpus.** A plan written with `expect` round-trips through
+the tool and survives compaction via `carried_state`; a `check` that fails
+lands as an error `ToolCallTrace` named `check` and the step's span shows
+it; a changed `check` on a completed step increments the tamper counter; the
+critic's parser takes a verdict wrapped in prose and a concern from the
+future; a flagged outbox item renders both concerns and releases exactly as
+an unflagged one does (never gates); the re-injection appears on turn 5 and
+not on turn 4, and never as its own user message after a tool turn.
+
 ### 3.12 Programmatic tool calling, on monty — L
 
 **What it is.** Instead of the model issuing one tool call per turn and
