@@ -45,87 +45,51 @@ ECHO_WINDOW_SECONDS = 20.0
 # question is treated as suspect.
 BOT_TAIL_SECONDS = 1.2
 
-# How many of a transcript's words must be our own, *in our own order*, before
-# it is called an echo. A count, never a fraction — see `MAX_UNMATCHED_WORDS`
-# for why every fraction that was tried silenced a correction.
+# How long a match must be before **text alone** may call something an echo.
 #
-# The count is what protects a barge-in, and an unweighted bag of words did
-# not: the vocabulary of a 20-second window is every word in it, function
-# words included, so a long reply makes almost any short sentence clear a
-# ratio bar. "No, cancel it" over "…or would you rather I cancel it?" scored
-# 0.667 against a 0.6 bar and was silenced — a three-word confirmation is the
-# commonest legitimate barge-in there is, and because turn-start is
-# transcription-based a gated transcript is not a degraded turn but no turn
-# at all.
+# One floor, both arms, every overlap state — and the single number is the
+# point, because three rounds of splitting it by circumstance kept silencing
+# turns. The circumstances do not distinguish what they were supposed to:
 #
-# Ordered matching (a longest common subsequence, not a substring) is what
-# keeps the count honest in the other direction: real echo arrives with words
-# dropped in the middle, so contiguity is too strict, while order still costs
-# a coincidental match almost everything. "Actually cancel that" cannot match
-# a window that says "that" before "cancel".
-MIN_ECHO_MATCHED_WORDS = 4
+#   - `bot_speaking` at transcribe time means the owner spoke *over* a reply
+#     that is still playing. On speakers that is echo; on headphones it is a
+#     barge-in. Nothing in the text tells them apart.
+#   - The 1.2 s tail is not a speakerphone condition either. It is set when the
+#     last sample is written out, and a person hears it a jitter buffer later
+#     and answers within a second — so "inside the tail" is where a *prompt
+#     answer to a question* lands, which is most of them.
+#
+# So at four words there is no state in which "move it to Thursday" is more
+# likely our echo than the plainest way to accept the offer that prompted it.
+# Below this floor the filter says nothing at all, and the energy floor in
+# `worker.py` is the only defence — which is the honest description, because
+# the two are **ANDed, not layered**: clearing the raised RMS bar does not
+# exempt a transcript from this test, it only earns it the right to be killed
+# by it. Anything this filter rejects is rejected finally, so it must only
+# speak when a person is unlikely to have said exactly that.
+#
+# The cost, stated: a *short* echo that clears the raised RMS floor becomes a
+# turn, and mecha answers something odd. That is recoverable in a way the
+# other direction is not — turn-start is transcription-based, so a wrong
+# suppression is not a degraded turn but no turn, and the owner repeats
+# themselves into a mic that keeps discarding them.
+MIN_ECHO_WORDS = 8
 
-# How many words a transcript may contain that we did not say, and the length
-# at which it may contain one at all.
+# How many words of a transcript this long may fail to be ours, and how fast
+# that budget grows.
 #
-# A *ratio* was the wrong instrument, and raising it only moved the failure up
-# the scale: at 0.6, "no cancel it" was silenced; at four-words-and-0.6, "can
-# you move it to Friday" was; at 0.8, "book the small room for Tuesday" is —
-# each of them a correction, and each sharing most of its words with the offer
-# it corrects, because that is what correcting an offer sounds like. Order is
-# no defence either: a counter-instruction reuses the offer's word order.
+# It has to grow, because recognition error is roughly per-word: a sixteen-word
+# echo comes back with two words mangled about as often as an eight-word one
+# comes back with one, and a flat allowance made the filter weakest exactly
+# where an echo is easiest to be sure about.
 #
-# So the test is not "how much of this was ours" but "**is any of it not
-# ours**". An echo is our own sentence coming back; a person saying something
-# is saying something we did not say, and one new word is the whole signal —
-# "small", "Friday". The allowance exists only because recognition across a
-# room mangles a word now and then, and it is granted only where one word is
-# plausibly noise rather than content: in a long utterance. At six words a
-# single insertion is the point of the sentence.
-#
-# What no bar over text can separate, and it is worth stating rather than
-# tuning at: a person repeating our own proposal back over the speaker ("move
-# it to Thursday please") is, as text, our sentence. That band belongs to the
-# energy floor in `worker.py`, which is why that floor is the load-bearing
-# defence and this is depth behind it.
+# This is not the ratio earlier rounds rejected, and the difference is where
+# each is loosest. A ratio is loosest at short lengths, which is where
+# corrections live — "book the small room for Tuesday" is five of six words
+# ours. A floor plus a slow-growing allowance is loosest at long ones, where
+# what it forgives is a mis-heard word rather than the point of the sentence.
 MAX_UNMATCHED_WORDS = 1
-LONG_ENOUGH_FOR_ONE_SLIP = 8
-
-# One further slip per this many words, above the first.
-#
-# The budget has to grow with the sentence, because recognition error is
-# roughly per-word: a sixteen-word echo of our own reply arrives with two
-# words mangled about as often as an eight-word one arrives with one, and a
-# flat allowance of one made the arm's recall fall off exactly where echo is
-# easiest to be certain about. "Your first meeting tomorrow is at nine with
-# the finance team in a small conference groom" is fourteen of our sixteen
-# words, in order, in one tight span — and it was not an echo.
-#
-# Growing it is not a return to the ratio this module rejected, and the
-# difference is where each is loosest. A ratio is loosest at short lengths,
-# which is exactly where corrections live: "book the small room for Tuesday"
-# is five of six words ours. A floor with a slow-growing allowance is loosest
-# at long lengths, where the thing it forgives is a mis-heard word rather than
-# the point of the sentence. Below `LONG_ENOUGH_FOR_ONE_SLIP` there is still
-# no slack at all.
 WORDS_PER_EXTRA_SLIP = 16
-
-# The verbatim arm's floor when nothing was playing.
-#
-# That arm runs whether or not the speaker was audible, because the timing
-# layer can be wrong and this is the fallback for when it is — but a fallback
-# only ever needs to catch a *long* verbatim echo, and four words is a plain
-# instruction. "Move it to Thursday" is a contiguous span of the offer that
-# prompted it, and in a silent room nothing else is armed to let it through:
-# the energy floor behind it is the ordinary `MIN_SEGMENT_RMS`, not the raised
-# one, because the timing layer correctly said no speaker was playing. Same
-# for "put it in the calendar", "add a note to the entry" — each of them a
-# span of the sentence that offered it, and each the plainest way to accept.
-#
-# The surface grew this branch as well: `recent()` joins the window, so the
-# substring test spans every cross-phrase boundary in twenty seconds where it
-# used to run per phrase.
-MIN_VERBATIM_WORDS_IN_SILENCE = 8
 
 # How much of `blob` the match may be spread across, over and above the words
 # it matched. An echo is a *contiguous stretch* of what we said; one skipped
@@ -156,12 +120,10 @@ def _words(text: str) -> list[str]:
 def _slips_allowed(n_words: int) -> int:
     """How many words of a transcript this long may fail to be ours.
 
-    Zero below `LONG_ENOUGH_FOR_ONE_SLIP`, where a single unmatched word is
-    not noise but what the person called to say; one above it; one more per
-    `WORDS_PER_EXTRA_SLIP` after that.
+    One, plus one more per `WORDS_PER_EXTRA_SLIP`. Only ever asked about a
+    transcript that already cleared `MIN_ECHO_WORDS`, so there is no
+    short-transcript case here — that one is answered by the floor.
     """
-    if n_words < LONG_ENOUGH_FOR_ONE_SLIP:
-        return 0
     return MAX_UNMATCHED_WORDS + n_words // WORDS_PER_EXTRA_SLIP
 
 
@@ -259,43 +221,30 @@ class BotSpeech:
         if not blob:
             return False
 
-        norm = " ".join(words)
-        # Said verbatim, heard verbatim — under the same word count the fuzzy
-        # arm uses, and that guard is not decoration.
-        #
-        # This arm was a character count (>= 8), which is two short words:
-        # "go ahead" is 8, "cancel it" and "delete it" are 9, and each is a
-        # substring of the reply that just offered it. So the shortest, most
-        # natural confirmations in the language were dropped as echo — and
-        # dropped in a *silent room* too, since this arm runs whether or not
-        # the speaker was playing. That is the same failure the fuzzy arm's
-        # floor exists to prevent, arriving through the other door, and
-        # joining the window widened the surface it arrives on: the substring
-        # test now spans phrase boundaries where it used to run per phrase.
-        #
-        # A real verbatim echo of a spoken sentence is far longer than three
-        # words, so the guard costs this arm nothing it is for — and in a
-        # silent room, where this arm is a fallback rather than a defence, it
-        # is far longer than four either.
-        floor = MIN_ECHO_MATCHED_WORDS if bot_was_audible else MIN_VERBATIM_WORDS_IN_SILENCE
-        if len(words) >= floor and norm in blob:
+        # Too short for text to be evidence of anything — see
+        # `MIN_ECHO_WORDS`. This is checked before either arm and in every
+        # overlap state, because the states do not tell an echo from an
+        # answer and only the length does.
+        if len(words) < MIN_ECHO_WORDS:
+            return False
+
+        # Said verbatim, heard verbatim. Unconditional, because the timing
+        # layer can be wrong and this is the fallback for when it is.
+        if " ".join(words) in blob:
             return True
         if not bot_was_audible:
             return False
 
         matched, spread = _aligned(words, blob.split())
-        if matched < MIN_ECHO_MATCHED_WORDS:
-            return False
+        slips = _slips_allowed(len(words))
         # Nothing of ours left out of the match, and nothing of theirs left
         # over. The two guards answer different questions and neither implies
         # the other: a follow-up can leave nothing over and still be gathered
         # from across the whole window, and a correction can be perfectly
-        # contiguous and still say one thing we never did.
-        slips = _slips_allowed(len(words))
-        # One skipped word inside the run is always allowed — that is the same
-        # recognition slip seen from the blob's side, and a short echo needs it
-        # even where no *unmatched* word is forgiven. Beyond that the two share
-        # a budget, since a long echo drops words as readily as it mangles them.
+        # contiguous and still say one thing we never did. One skipped word
+        # inside the run is always allowed — the same recognition slip seen
+        # from the blob's side — and beyond that the two share a budget, since
+        # a long echo drops words as readily as it mangles them.
         if spread > matched + max(MAX_MATCH_SPREAD, slips):
             return False
         return len(words) - matched <= slips
