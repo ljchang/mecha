@@ -327,6 +327,21 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         agent.set_hooks(hooks);
     }
     agent.set_policy(Arc::clone(&policy));
+    // A rule naming a tool that is not registered — `shel`, or an MCP tool
+    // whose server did not come up — loads clean and judges nothing. Same
+    // shape as the `[outbox]` warnings below, and it fires on every start
+    // for the same reason; `--tool` narrowing is the caller saying so, and is
+    // silent.
+    for name in policy.tools() {
+        let narrowed_out =
+            !excluded_by_allowlist(std::slice::from_ref(&name.to_string()), &opts.tools).is_empty();
+        if agent.registry().get(name).is_none() && !narrowed_out {
+            eprintln!(
+                "mecha: [[rule]] names `{name}`, which is not a registered tool — check the \
+                 spelling, or this rule judges nothing"
+            );
+        }
+    }
     if let Some(outbox) = outbox {
         // A typo in `[outbox] tools` means the *real* tool executes unrouted,
         // silently — the degrading-sandbox shape. It cannot be a hard error

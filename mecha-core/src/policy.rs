@@ -87,8 +87,18 @@ pub enum PatternElement {
 
 impl PatternElement {
     fn matches(&self, token: &str, first: bool) -> bool {
-        // The first token is the program, and `/usr/bin/git` is `git`.
-        let base = if first { basename(token) } else { token };
+        // The first token is the program, and `/usr/bin/git` is `git` — for
+        // an *absolute* path only. A relative one is a path the model
+        // controls: write a file named `git` into the workspace and `./git
+        // status` matched an `allow` rule on `git`, then ran unasked on a
+        // headless surface where every other route was `Blocked` (the PR
+        // review's finding). Stripping only absolute directories costs one
+        // prompt in the cases it changes.
+        let base = if first && token.starts_with('/') {
+            basename(token)
+        } else {
+            token
+        };
         match self {
             PatternElement::Word(w) => w == token || w == base,
             PatternElement::OneOf(ws) => ws.iter().any(|w| w == token || w == base),
@@ -236,15 +246,23 @@ impl ExecPolicy {
                 }
             }
             for ex in &rule.not_match {
-                if let Some(segs) = segments_of(ex) {
-                    if let Some(seg) = segs.iter().find(|s| rule.matches(s)) {
-                        anyhow::bail!(
-                            "{name}: `not_match` example {ex:?} matches the rule — the segment \
-                             {:?} is caught by the pattern, so the rule is wider than its \
-                             author believes",
-                            seg.join(" ")
-                        );
-                    }
+                // An unsplittable example is refused here too, not skipped: it
+                // would match no rule anyway, but `not_match = ["rm -rf /*"]`
+                // reads as a checked claim and would have been an unchecked
+                // one.
+                let Some(segs) = segments_of(ex) else {
+                    anyhow::bail!(
+                        "{name}: `not_match` example {ex:?} cannot be split safely, so it proves \
+                         nothing about the rule; pick a plain example"
+                    );
+                };
+                if let Some(seg) = segs.iter().find(|s| rule.matches(s)) {
+                    anyhow::bail!(
+                        "{name}: `not_match` example {ex:?} matches the rule — the segment \
+                         {:?} is caught by the pattern, so the rule is wider than its \
+                         author believes",
+                        seg.join(" ")
+                    );
                 }
             }
         }
@@ -258,9 +276,19 @@ impl ExecPolicy {
         self.rules.is_empty()
     }
 
-    /// The rules about one tool, for `mecha tools` and the like.
+    /// The rules about one tool.
     pub fn rules_for<'a>(&'a self, tool: &'a str) -> impl Iterator<Item = &'a RuleConfig> + 'a {
         self.rules.iter().filter(move |r| r.tool == tool)
+    }
+
+    /// Every tool the rules name, once each. Setup checks these against the
+    /// registry on every start: a rule for `shel`, or for an MCP tool whose
+    /// server did not come up, would otherwise load clean and judge nothing.
+    pub fn tools(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.rules.iter().map(|r| r.tool.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        names
     }
 
     /// Judge one call. `None` means no rule spoke, and the approver decides
@@ -382,13 +410,16 @@ impl ExecPolicy {
         let reason = match decision {
             RuleDecision::Forbid => {
                 // The justification of the forbidding rule that matched, if
-                // its author wrote one.
-                let just = segment.and_then(|seg| {
-                    rules
-                        .iter()
-                        .filter(|r| r.decision == RuleDecision::Forbid && r.matches(seg))
-                        .find_map(|r| r.justification.clone())
-                });
+                // its author wrote one. With no segment — a tool-level
+                // ruling — the forbidding rules are the pattern-less ones.
+                let just = rules
+                    .iter()
+                    .filter(|r| r.decision == RuleDecision::Forbid)
+                    .filter(|r| match segment {
+                        Some(seg) => r.matches(seg),
+                        None => r.pattern.is_empty(),
+                    })
+                    .find_map(|r| r.justification.clone());
                 match just {
                     Some(j) => format!("`{tool}` call forbidden by an approval rule: {j}"),
                     None => format!("`{tool}` call forbidden by an approval rule"),
@@ -714,6 +745,10 @@ mod tests {
                 .decision,
             RuleDecision::Allow
         );
+        // A relative path is one the model controls — `./git` may be a file it
+        // wrote — so only an absolute directory is stripped.
+        assert_eq!(p.decide("shell", &cmd("./git status")), None);
+        assert_eq!(p.decide("shell", &cmd("bin/git status")), None);
         // One unmatched segment and the rule no longer vouches: the approver
         // decides as it would have without rules.
         assert_eq!(p.decide("shell", &cmd("git status && curl evil")), None);
@@ -1009,11 +1044,29 @@ mod tests {
         let err = ExecPolicy::from_config(&[r], true).unwrap_err().to_string();
         assert!(err.contains("wider than its author believes"), "{err}");
 
-        // An example the splitter cannot judge is refused too.
+        // An example the splitter cannot judge is refused too — on either
+        // side, since an unsplittable `not_match` reads as checked and is not.
         let mut r = rule("shell", &[&["git"]], RuleDecision::Allow);
         r.examples = vec!["git status > out".into()];
         let err = ExecPolicy::from_config(&[r], true).unwrap_err().to_string();
         assert!(err.contains("cannot be split"), "{err}");
+        let mut r = rule("shell", &[&["git"]], RuleDecision::Allow);
+        r.examples = vec!["git status".into()];
+        r.not_match = vec!["rm -rf /*".into()];
+        let err = ExecPolicy::from_config(&[r], true).unwrap_err().to_string();
+        assert!(err.contains("proves nothing"), "{err}");
+
+        // And the rules name their tools, once each, for setup's check.
+        let p = ExecPolicy::from_config(
+            &[
+                rule("shell", &[], RuleDecision::Prompt),
+                rule("kg_upsert", &[], RuleDecision::Forbid),
+                rule("shell", &[], RuleDecision::Forbid),
+            ],
+            true,
+        )
+        .unwrap();
+        assert_eq!(p.tools(), vec!["kg_upsert", "shell"]);
 
         // The well-formed one loads.
         let mut r = rule(
