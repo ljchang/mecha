@@ -1471,42 +1471,65 @@ fn begin_turn(
         // it and why the miss is logged rather than shown.
         if name_it {
             let turns = owner_turns.len();
-            match mecha_core::title::summarise(
+            let named = mecha_core::title::summarise(
                 state_for_task.agent.provider(),
                 &state_for_task.model,
                 &owner_turns,
             )
-            .await
-            {
+            .await;
+
+            let recorded = match &named {
                 Ok(Some(name)) => {
                     let recorded = format!("{WEB_TITLE_PREFIX}{name}");
                     // The record first: a name the page shows and the
                     // transcript does not is one that vanishes on the next
                     // restart, which is worse than never having had it.
-                    if let Err(e) = session.append(&Record::Title {
+                    match session.append(&Record::Title {
                         title: recorded.clone(),
                     }) {
-                        tracing::warn!("naming this conversation was not recorded: {e:#}");
-                    } else {
-                        let mut sessions = state_for_task.sessions.lock().await;
-                        if let Some(ws) = sessions.get_mut(&key_for_task) {
-                            let mut meta = ws.session.meta.clone();
-                            meta.title = Some(recorded);
-                            ws.session = Arc::new(Session {
-                                meta,
-                                path: ws.session.path.clone(),
-                            });
-                            ws.titled_at = turns;
+                        Ok(()) => Some((recorded, name.clone())),
+                        Err(e) => {
+                            tracing::warn!("naming this conversation was not recorded: {e:#}");
+                            None
                         }
-                        drop(sessions);
-                        let _ = bcast.send(WireEvent::Titled { title: name });
                     }
                 }
-                // The model had nothing usable to say. A miss, not a name:
-                // the session keeps the one it has, and the next threshold
-                // will ask again.
-                Ok(None) => tracing::debug!("no usable name came back for {key_for_task}"),
-                Err(e) => tracing::debug!("naming {key_for_task} failed: {e:#}"),
+                Ok(None) => {
+                    tracing::debug!("no usable name came back for {key_for_task}");
+                    None
+                }
+                Err(e) => {
+                    tracing::debug!("naming {key_for_task} failed: {e:#}");
+                    None
+                }
+            };
+
+            // **The bookkeeping advances on the attempt, not on the win.**
+            // `due` reads `titled_at`, so leaving it alone after a miss does
+            // not mean "ask again at the next threshold" — it means ask again
+            // on *every* turn, forever, because the `at = 1` threshold is
+            // never satisfied. And the failure modes here are the persistent
+            // ones: a model that refuses, a reply `tidy` keeps rejecting, a
+            // provider that is down. That is one quarantined generation per
+            // owner turn, for the life of the conversation, on a server with
+            // one slot per turn — for a label nobody is waiting on. Three
+            // attempts per session either way; a miss costs the name, not the
+            // budget.
+            let mut sessions = state_for_task.sessions.lock().await;
+            if let Some(ws) = sessions.get_mut(&key_for_task) {
+                ws.titled_at = turns;
+                if let Some((recorded, _)) = &recorded {
+                    let mut meta = ws.session.meta.clone();
+                    meta.title = Some(recorded.clone());
+                    ws.session = Arc::new(Session {
+                        meta,
+                        path: ws.session.path.clone(),
+                    });
+                }
+            }
+            drop(sessions);
+            if let Some((_, name)) = recorded {
+                let _ = bcast.send(WireEvent::Titled { title: name });
             }
         }
     });
