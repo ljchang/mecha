@@ -284,8 +284,9 @@ retirement, and a human accepts the argument.
 ### R3 — Cap the always-loaded block
 
 **Shipped.** The count half landed as `MAX_ACTIVE_RULES_PER_DOMAIN = 15` with
-`budget_refuses`; the paragraph below is the original proposal, kept for the
-reasoning behind the number.
+`budget_refuses`, and was raised to **25** on 2026-08-18 (the constant's own
+doc comment in `learning.rs` carries the argument); the paragraph below is the
+original proposal, kept for the reasoning behind the first number.
 
 A per-domain budget on `rules_prompt_block` (count or tokens; the drift
 paper capped at ~50 entries — for a system prompt, 15–20 per domain is

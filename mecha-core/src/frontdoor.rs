@@ -313,12 +313,32 @@ impl Frontdoor {
         Self::open(crate::work::mecha_home()?.join("requests"))
     }
 
+    /// The store if it has ever been created, and `None` if it has not —
+    /// for readers. `open` creates the directory, so a report that opened
+    /// through it would create `~/.mecha/requests` on a machine that has
+    /// never used the front door, and could not tell "never created" from
+    /// "could not read" (found on review). Same shape as
+    /// `QuestionStore::open_existing_default`.
+    pub fn open_existing_default() -> Option<Self> {
+        let root = crate::work::mecha_home().ok()?.join("requests");
+        root.is_dir().then_some(Frontdoor { root })
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
 
     pub fn records(&self) -> Result<Vec<Record>> {
+        self.records_counting().map(|(records, _)| records)
+    }
+
+    /// [`records`](Self::records), and how many `.json` files it skipped —
+    /// `OutboxStore::items_counting`'s shape, for a reader whose "read"
+    /// claim must cover every row (found on review of the appraisal's
+    /// `frontdoor_read` field).
+    pub fn records_counting(&self) -> Result<(Vec<Record>, usize)> {
         let mut out = Vec::new();
+        let mut skipped = 0usize;
         for entry in std::fs::read_dir(&self.root)? {
             let path = entry?.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -326,11 +346,14 @@ impl Frontdoor {
             }
             match std::fs::read_to_string(&path).map(|t| serde_json::from_str::<Record>(&t)) {
                 Ok(Ok(record)) => out.push(record),
-                _ => tracing::warn!("skipping unreadable request {}", path.display()),
+                _ => {
+                    skipped += 1;
+                    tracing::warn!("skipping unreadable request {}", path.display())
+                }
             }
         }
         out.sort_by_key(|r| r.seq);
-        Ok(out)
+        Ok((out, skipped))
     }
 
     pub fn record(&self, seq: i64) -> Result<Record> {
@@ -1253,5 +1276,17 @@ mod tests {
             back["something_the_drain_knows"],
             json!("and this side does not")
         );
+    }
+
+    #[test]
+    fn records_counting_says_how_many_files_it_skipped() {
+        let dir = std::env::temp_dir().join(format!("frontdoor-count-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("0000000001-bad.json"), "{not json").unwrap();
+        let fd = Frontdoor::open(&dir).unwrap();
+        let (records, skipped) = fd.records_counting().unwrap();
+        assert!(records.is_empty());
+        assert_eq!(skipped, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

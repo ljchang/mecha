@@ -137,6 +137,296 @@ pub struct Failover {
     fallbacks: Vec<(String, Box<dyn Provider>)>,
 }
 
+/// The longest silence a provider connection may go without delivering a
+/// byte before the request is failed: a stall, not a long answer.
+///
+/// Both clients used to put one 900 s `timeout` on the *whole* exchange,
+/// streamed body included. At `LOCAL_MAX_TOKENS = 32_768` and ~60 tok/s a long
+/// answer runs ~550 s before prefill and queue wait, so a legitimate answer
+/// died mid-stream as a plain error and the partial text was discarded.
+/// Per-read is the right shape for a stream: the server is either sending
+/// tokens or it is not. Ten minutes, not five: a cold prefill at 170k tokens
+/// on llama-server is ~120 s of silence before the first token *uncontended*,
+/// and `docs/LLAMA-SERVER.md` measured a ~2.85× slowdown under contention on
+/// this hardware, which puts the worst legitimate silence near 350 s. This is
+/// the one place the change trades a bound rather than only widening one —
+/// the old 900 s exchange cap also covered the pre-first-token wait — so the
+/// margin errs long. A stall that lasts ten minutes is a dead connection.
+pub const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The whole-exchange cap on a *non-streaming* request, where the body arrives
+/// at once and a per-read timeout would count the entire generation as one
+/// read — so this is the only bound that path has.
+///
+/// Thirty minutes, not fifteen. The non-streaming path is not the rare one:
+/// `mecha batch` and `mecha eval` set no cancel token and pass no sink, and
+/// the distiller, the reflector and the eval judge call `complete(req, None)`
+/// at `LOCAL_MAX_TOKENS` — the ~550 s generation the stall bound's own
+/// arithmetic cites, before a contended prefill (~350 s) and queue wait. The
+/// old 900 s could be exceeded by a legitimate answer there, and a timeout on
+/// this path classifies as `Transport` and is retried, re-issuing a generation
+/// the server had already finished — no tool ran, so nothing duplicates, but
+/// with `max_retries = 3` and no overall budget in `send_with_retry` the worst
+/// case is four caps in a row, ~2 h, on the one path that by construction has
+/// no cancel token. The PR review named the scope; the cap now clears the
+/// worst legitimate case with margin, a request still silent after half an
+/// hour is a dead server, and the retry-budget question is the retry
+/// policy's to answer, not this constant's.
+pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+
+/// Time allowed to open the connection, separately from the reads.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The far cap on a *streaming* exchange. A stream is bounded per read so a
+/// long answer survives, but a connection that keeps emitting bytes without
+/// ever finishing — SSE `ping` frames, a proxy keepalive — never trips the
+/// stall bound and would hold the turn forever. An hour: a 128k-token answer
+/// at ~50 tok/s is ~43 minutes, and nothing legitimate runs longer.
+pub const STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// The two HTTP clients a provider needs, chosen per request by whether the
+/// body streams.
+///
+/// Two, because reqwest's `read_timeout` is a *client* setting and applies
+/// to the wait for the response head as well as to the body — and
+/// `RequestBuilder::timeout` overrides only the client's total deadline,
+/// never the read timeout. So one client with `read_timeout(STALL)` bounded a
+/// non-streaming request at `min(whole, stall)`, where the entire generation
+/// is one silent read: the PR review of the first version found the
+/// non-streaming cap had *tightened* from 900 s to 300 s in exactly the
+/// "long answer, not a stall" case the change existed to fix, and the
+/// resulting error classified as transient and retried a generation the
+/// server had already finished. The streaming client bounds each read; the
+/// whole-exchange client bounds the exchange and has no per-read bound at
+/// all.
+#[derive(Clone)]
+pub struct HttpClients {
+    /// For a request whose body arrives at once: the whole exchange is
+    /// capped, and silence before the head is generation, not a stall.
+    /// Private, so `for_body` is the one place the choice is made.
+    whole: reqwest::Client,
+    /// For a streamed request: each read is capped at the stall bound, and
+    /// the exchange only at the far cap a never-finishing stream needs.
+    stream: reqwest::Client,
+}
+
+impl HttpClients {
+    pub fn build() -> reqwest::Result<Self> {
+        Self::with(
+            CONNECT_TIMEOUT,
+            STALL_TIMEOUT,
+            REQUEST_TIMEOUT,
+            STREAM_TIMEOUT,
+        )
+    }
+
+    /// The constructor the test drives with short durations. Crate-private
+    /// for the same reason `plain()` is test-only: nothing outside has a
+    /// reason to choose its own bounds.
+    pub(crate) fn with(
+        connect: std::time::Duration,
+        stall: std::time::Duration,
+        whole: std::time::Duration,
+        stream_cap: std::time::Duration,
+    ) -> reqwest::Result<Self> {
+        Ok(HttpClients {
+            whole: reqwest::Client::builder()
+                .connect_timeout(connect)
+                .timeout(whole)
+                .build()?,
+            // Per read for the stall, and a far total cap so a connection
+            // that never stops emitting bytes cannot hold a turn forever.
+            stream: reqwest::Client::builder()
+                .connect_timeout(connect)
+                .read_timeout(stall)
+                .timeout(stream_cap)
+                .build()?,
+        })
+    }
+
+    /// Two default clients with no timeouts, for tests that measure counts
+    /// and outcomes rather than wall clock. Test-only on purpose: a `pub`
+    /// constructor that removes every bound is the silently-degrading-guard
+    /// shape, and nothing outside a test has a reason to want one.
+    #[cfg(test)]
+    pub fn plain() -> Self {
+        HttpClients {
+            whole: reqwest::Client::new(),
+            stream: reqwest::Client::new(),
+        }
+    }
+
+    /// The client for this body: the streaming one when it says `stream:
+    /// true`, the whole-exchange one otherwise.
+    pub fn for_body(&self, body: &serde_json::Value) -> &reqwest::Client {
+        if body.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
+            &self.stream
+        } else {
+            &self.whole
+        }
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A server that reads the request, stays silent for `quiet`, then
+    /// answers with a tiny 200. The silence stands in for a generation that
+    /// has not produced its first byte yet.
+    async fn quiet_server(quiet: Duration) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    tokio::time::sleep(quiet).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await;
+                });
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    /// The guarantee, measured against a socket rather than a builder field:
+    /// a non-streaming request survives silence longer than the stall bound
+    /// (the generation is one read, and only the exchange is capped), while
+    /// a streaming request on the same silent socket fails at the stall
+    /// bound.
+    #[tokio::test]
+    async fn silence_before_the_head_is_a_stall_only_for_a_stream() {
+        let url = quiet_server(Duration::from_millis(600)).await;
+        let clients = HttpClients::with(
+            Duration::from_secs(5),
+            Duration::from_millis(200),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        let whole = clients.whole.post(&url).body("{}").send().await;
+        assert!(
+            whole.is_ok(),
+            "a non-streaming request must not be bounded per read: {whole:?}"
+        );
+
+        let stream = clients.stream.post(&url).body("{}").send().await;
+        let err = stream.expect_err("a stream that goes quiet past the stall bound must fail");
+        assert!(err.is_timeout(), "{err}");
+    }
+
+    /// And the whole-exchange cap still exists: a socket quieter than the
+    /// cap fails the non-streaming request.
+    #[tokio::test]
+    async fn a_non_streaming_request_still_has_an_exchange_cap() {
+        let url = quiet_server(Duration::from_millis(800)).await;
+        let clients = HttpClients::with(
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Duration::from_millis(200),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let err = clients
+            .whole
+            .post(&url)
+            .body("{}")
+            .send()
+            .await
+            .expect_err("the exchange cap must fire");
+        assert!(err.is_timeout(), "{err}");
+    }
+
+    /// A server that answers the headers and then drips one chunk every
+    /// 50 ms without ever finishing — SSE `ping` frames, a proxy keepalive.
+    async fn dripping_server() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    if sock
+                        .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    loop {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        if sock.write_all(b"1\r\nx\r\n").await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    /// The stall bound cannot see a connection that keeps emitting bytes; the
+    /// far exchange cap is what ends it.
+    #[tokio::test]
+    async fn a_stream_that_never_finishes_is_ended_by_the_far_cap() {
+        let url = dripping_server().await;
+        // A cap of 1.5 s against a 50 ms drip: wide enough that a contended
+        // runner polls several chunks before it fires, so the `chunks > 0`
+        // assertion measures the guarantee and not the scheduler.
+        let clients = HttpClients::with(
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Duration::from_millis(1500),
+        )
+        .unwrap();
+        let resp = clients.stream.post(&url).body("{}").send().await.unwrap();
+        let mut body = resp.bytes_stream();
+        let mut chunks = 0usize;
+        loop {
+            match futures::StreamExt::next(&mut body).await {
+                Some(Ok(_)) => chunks += 1,
+                Some(Err(e)) => {
+                    assert!(e.is_timeout(), "{e}");
+                    break;
+                }
+                None => panic!("the drip ended on its own"),
+            }
+            assert!(chunks < 1_000, "the cap never fired");
+        }
+        assert!(chunks > 0, "bytes were flowing when the cap fired");
+    }
+
+    #[test]
+    fn the_body_picks_the_client() {
+        let c = HttpClients::plain();
+        assert!(std::ptr::eq(
+            c.for_body(&serde_json::json!({"stream": true})),
+            &c.stream
+        ));
+        assert!(std::ptr::eq(c.for_body(&serde_json::json!({})), &c.whole));
+        assert!(std::ptr::eq(
+            c.for_body(&serde_json::json!({"stream": false})),
+            &c.whole
+        ));
+    }
+}
+
 impl Failover {
     pub fn new(primary: Box<dyn Provider>, fallbacks: Vec<(String, Box<dyn Provider>)>) -> Self {
         Failover { primary, fallbacks }
@@ -156,6 +446,15 @@ impl Provider for Failover {
 
     fn default_model(&self) -> &str {
         self.primary.default_model()
+    }
+
+    /// The primary's answer, like `id` and `default_model`. Inheriting the
+    /// trait default (`false`) meant configuring any `fallbacks` silently
+    /// turned every attached image into a `[image: …]` placeholder — a
+    /// feature that degraded another as a side effect, with nothing in the
+    /// transcript to say why.
+    fn vision(&self) -> bool {
+        self.primary.vision()
     }
 
     async fn complete(
@@ -332,6 +631,46 @@ mod failover_tests {
                 "the fallback was consulted"
             );
         }
+    }
+
+    /// Sees images; never called.
+    struct Sighted;
+
+    #[async_trait]
+    impl Provider for Sighted {
+        fn id(&self) -> &str {
+            "sighted"
+        }
+        fn default_model(&self) -> &str {
+            "sighted-model"
+        }
+        fn vision(&self) -> bool {
+            true
+        }
+        async fn complete(
+            &self,
+            _req: &CompletionRequest,
+            _sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            unreachable!("vision() is a static property")
+        }
+    }
+
+    /// Wrapping a vision-capable primary in a `Failover` must not blind it:
+    /// `Agent::vision` asks the outermost provider, and the trait default is
+    /// `false`.
+    #[test]
+    fn a_failover_sees_what_its_primary_sees() {
+        let failover = Failover::new(Box::new(Sighted), vec![]);
+        assert!(failover.vision());
+        let blind = Failover::new(
+            Box::new(Failing {
+                error: || anyhow::anyhow!("never called"),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+            vec![],
+        );
+        assert!(!blind.vision(), "and it invents nothing the primary lacks");
     }
 
     #[tokio::test]

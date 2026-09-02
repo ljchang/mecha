@@ -278,6 +278,7 @@ mod tests {
             model: "none".into(),
             workspace: std::env::temp_dir(),
             title: None,
+            kind: None,
         })
     }
 

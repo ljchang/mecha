@@ -2211,6 +2211,7 @@ async fn draft(
             model: prepared.model.clone(),
             workspace: prepared.workspace.clone(),
             title: Some(format!("{} {}", kind.verb(), handle(thread_id))),
+            kind: Some(mecha_core::session::SessionKind::Mail),
         },
     )?;
     if let Some(route) = &prepared.agent.context().outbox {

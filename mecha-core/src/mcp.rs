@@ -444,8 +444,11 @@ impl Tool for McpTool {
         match self.client.call_tool(&self.remote_name, input).await {
             Ok(out) => Ok(out),
             // A transport failure is the agent's problem to route around, not a
-            // reason to abort the run.
-            Err(e) => Ok(ToolOutput::err(format!("MCP call failed: {e}"))),
+            // reason to abort the run. Marked external like every wire result:
+            // `request` bails with the server's own `error.message` verbatim,
+            // and an error built clean let that text — a third party's — enter
+            // the conversation untainted.
+            Err(e) => Ok(ToolOutput::err(format!("MCP call failed: {e}")).from_outside()),
         }
     }
 }

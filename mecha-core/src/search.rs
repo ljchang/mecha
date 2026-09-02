@@ -558,7 +558,9 @@ impl Tool for WebSearch {
 
         let response = match self.chain.search(query, limit, depth).await {
             Ok(r) => r,
-            Err(e) => return Ok(ToolOutput::err(format!("{e:#}"))),
+            // `from_outside`, like the results: a backend's error carries what
+            // the backend said, which is a third party's text.
+            Err(e) => return Ok(ToolOutput::err(format!("{e:#}")).from_outside()),
         };
 
         if response.results.is_empty() && response.answer.is_none() {

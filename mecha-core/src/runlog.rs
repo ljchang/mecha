@@ -25,7 +25,7 @@
 //! that acts on them. This module counts.
 
 use crate::agent::StopCause;
-use crate::session::{Record, RunStats, Session};
+use crate::session::{Record, RunStats, Session, SessionKind, SessionMeta};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::collections::BTreeMap;
@@ -76,6 +76,14 @@ pub struct Corpus {
     /// queue, and a store rotting one file at a time was invisible from
     /// every reader before this was counted.
     pub unreadable: usize,
+    /// Sessions the default admission hid for being `SessionKind::Test`.
+    /// The same rule as `unreadable`, one filter over: a reader that cannot
+    /// see something must count it, or a store of only smoke tests reads
+    /// "nothing is there" from every readout — the dash-versus-zero
+    /// inversion arriving through the filter added to prevent a different
+    /// one (found on review). Zero when `include_tests` is set or a `kind`
+    /// was asked for by name.
+    pub hidden_tests: usize,
 }
 
 /// How to bound a scan. Both limits are honest about cost rather than about
@@ -91,6 +99,64 @@ pub struct Scan {
     /// A prefix rather than an equality test, because a source checkout has
     /// worktrees under it and they are the same population.
     pub workspace: Option<PathBuf>,
+    /// Keep only sessions opened through this surface. A row from before
+    /// the field existed has no kind and matches no filter — asking for one
+    /// surface must not hand back rows that could be any surface.
+    pub kind: Option<SessionKind>,
+    /// Read `SessionKind::Test` rows too. Off by default on every corpus
+    /// reader, because a smoke test that lands in the health readout is the
+    /// contamination `docs/APPRAISAL-RESEARCH.md` §1 measured at a third of
+    /// the store. Asking for `kind: Some(Test)` implies it.
+    pub include_tests: bool,
+}
+
+impl Scan {
+    /// Would the default admission hide this session only for being a
+    /// smoke test? Counted by every reader rather than silently skipped —
+    /// see [`Corpus::hidden_tests`]. **Ask after [`admits`](Self::admits)
+    /// has refused**, never before: a test row outside the date window or
+    /// the workspace was not hidden *for being a test*, and counting it
+    /// made `health --days 1` report every test row in the store beside a
+    /// one-day population none of them was in (found on review).
+    pub fn hides_test(&self, meta: &SessionMeta) -> bool {
+        // Exact, not merely implied by `!admits`: the row must pass every
+        // other filter and fail only the kind rule. The reviewer's own
+        // suggested ordering (`admits` first, then this) still counted a
+        // test row the window had excluded, because this used to look at
+        // the kind alone.
+        self.in_window(meta)
+            && self.kind.is_none()
+            && !self.include_tests
+            && meta.kind == Some(SessionKind::Test)
+    }
+
+    /// The date and workspace filters, without the kind rule.
+    fn in_window(&self, meta: &SessionMeta) -> bool {
+        if self.since.is_some_and(|t| meta.created_at < t) {
+            return false;
+        }
+        !self
+            .workspace
+            .as_ref()
+            .is_some_and(|w| !meta.workspace.starts_with(w))
+    }
+
+    /// Does this session's header pass the scan's filters? Shared with the
+    /// per-session walk in `sessions appraise`, which reads sessions rather
+    /// than runs and so cannot use [`Corpus::scan`] but must agree with it
+    /// about which sessions are in the population.
+    pub fn admits(&self, meta: &SessionMeta) -> bool {
+        if !self.in_window(meta) {
+            return false;
+        }
+        if let Some(k) = self.kind {
+            return meta.kind == Some(k);
+        }
+        if meta.kind == Some(SessionKind::Test) && !self.include_tests {
+            return false;
+        }
+        true
+    }
 }
 
 impl Corpus {
@@ -104,18 +170,20 @@ impl Corpus {
         let (listed, skipped) = Session::list_counting(dir)?;
         out.unreadable = skipped;
         for (meta, path) in listed {
-            if scan.since.is_some_and(|t| meta.created_at < t) {
-                continue;
-            }
-            if scan
-                .workspace
-                .as_ref()
-                .is_some_and(|w| !meta.workspace.starts_with(w))
-            {
-                continue;
-            }
+            // The cap first: a test row past it was not hidden *for being a
+            // test* any more than one outside the window was, and counting
+            // it put a store-sized caveat beside a capped population (found
+            // on review, the same inversion on the other bound).
             if scan.max_sessions.is_some_and(|n| out.sessions_read >= n) {
                 break;
+            }
+            if !scan.admits(&meta) {
+                // Attributed only once the other filters have had their
+                // say: `hides_test` is exact about the window and the kind.
+                if scan.hides_test(&meta) {
+                    out.hidden_tests += 1;
+                }
+                continue;
             }
             // Attributed rather than taken from the header: a mid-session
             // model switch writes a `Config`, and crediting those runs to the
@@ -156,14 +224,15 @@ impl Corpus {
         self.rows.is_empty()
     }
 
-    /// Keep only the rows a predicate accepts. `sessions_read` and
-    /// `unreadable` are preserved, because they describe the scan and not
-    /// the selection.
+    /// Keep only the rows a predicate accepts. `sessions_read`,
+    /// `unreadable` and `hidden_tests` are preserved, because they describe
+    /// the scan and not the selection.
     pub fn filter(&self, keep: impl Fn(&RunRow) -> bool) -> Corpus {
         Corpus {
             rows: self.rows.iter().filter(|r| keep(r)).cloned().collect(),
             sessions_read: self.sessions_read,
             unreadable: self.unreadable,
+            hidden_tests: self.hidden_tests,
         }
     }
 
@@ -525,6 +594,7 @@ mod tests {
                 model: model.to_string(),
                 workspace: PathBuf::from(workspace),
                 title: None,
+                kind: None,
             },
         )
         .unwrap();
@@ -618,6 +688,7 @@ mod tests {
                 model: model.to_string(),
                 workspace: PathBuf::from("/tmp"),
                 title: None,
+                kind: None,
             },
         )
         .unwrap();
@@ -634,6 +705,8 @@ mod tests {
             boredom_notices: None,
             step_escalations_attempted: None,
             step_escalations_revised: None,
+            checks_declared: None,
+            checks_passed: None,
             turns: 3,
             usage: Usage::default(),
             cost_usd: Some(0.25),
@@ -949,6 +1022,8 @@ mod tests {
                 max_sessions: Some(2),
                 since: None,
                 workspace: None,
+                kind: None,
+                include_tests: false,
             },
         )
         .unwrap();
@@ -967,6 +1042,8 @@ mod tests {
                         .with_timezone(&Utc),
                 ),
                 workspace: None,
+                kind: None,
+                include_tests: false,
             },
         )
         .unwrap();
@@ -1024,6 +1101,161 @@ mod tests {
         assert_eq!(by_model["opus"].tool_error_rate(), Some(0.1));
         assert_eq!(by_model["tiny-local"].tool_error_rate(), Some(0.9));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- session kind -------------------------------------------------------
+
+    fn session_kinded(dir: &Path, id: &str, kind: Option<SessionKind>) {
+        session_kinded_at(dir, id, kind, "2026-08-01T00:00:00Z")
+    }
+
+    /// With a stamp of its own. `Session::list_counting` sorts newest
+    /// first *by `created_at`*, so three fixtures sharing one stamp are a
+    /// total tie and walk in whatever order `read_dir` returns — which is
+    /// how the cap test passed on one machine and failed on another
+    /// (found on review).
+    fn session_kinded_at(dir: &Path, id: &str, kind: Option<SessionKind>, stamp: &str) {
+        let s = Session::create(
+            dir,
+            SessionMeta {
+                id: id.to_string(),
+                created_at: DateTime::parse_from_rfc3339(stamp)
+                    .unwrap()
+                    .with_timezone(&Utc),
+                provider: "local".into(),
+                model: "m".into(),
+                workspace: PathBuf::from("/tmp"),
+                title: None,
+                kind,
+            },
+        )
+        .unwrap();
+        s.append(&Record::Outcome(stats(1, 0, false, StopCause::Completed)))
+            .unwrap();
+    }
+
+    fn ids(c: &Corpus) -> Vec<&str> {
+        let mut v: Vec<&str> = c.rows.iter().map(|r| r.session_id.as_str()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn a_test_session_is_out_of_every_corpus_readout_unless_asked_for_by_name() {
+        let dir = tmpdir();
+        session_kinded(&dir, "20260801T000000-web", Some(SessionKind::Web));
+        session_kinded(&dir, "20260801T000001-test", Some(SessionKind::Test));
+        session_kinded(&dir, "20260801T000002-old", None);
+
+        let default = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(
+            ids(&default),
+            vec!["20260801T000000-web", "20260801T000002-old"],
+            "the test row is out by default; the unknown row stays, it could be use"
+        );
+        assert_eq!(default.hidden_tests, 1, "hidden, and counted as hidden");
+
+        let with_tests = Corpus::scan(
+            &dir,
+            &Scan {
+                include_tests: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(with_tests.len(), 3);
+        assert_eq!(with_tests.hidden_tests, 0);
+
+        let only_tests = Corpus::scan(
+            &dir,
+            &Scan {
+                kind: Some(SessionKind::Test),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&only_tests),
+            vec!["20260801T000001-test"],
+            "`--kind test` implies inclusion"
+        );
+
+        let only_web = Corpus::scan(
+            &dir,
+            &Scan {
+                kind: Some(SessionKind::Web),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&only_web),
+            vec!["20260801T000000-web"],
+            "a row with no kind matches no filter: asking for one surface must not hand back rows that could be any"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_test_row_outside_the_window_was_not_hidden_for_being_a_test() {
+        let dir = tmpdir();
+        session_kinded(&dir, "20260801T000000-web", Some(SessionKind::Web));
+        session_kinded(&dir, "20260801T000001-test", Some(SessionKind::Test));
+        let cut = Corpus::scan(
+            &dir,
+            &Scan {
+                since: Some(
+                    DateTime::parse_from_rfc3339("2026-08-02T00:00:00Z")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                ),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cut.len(), 0);
+        assert_eq!(
+            cut.hidden_tests, 0,
+            "the window excluded it before the kind filter could; counting it would put a caveat beside a population it was never in"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_test_row_past_the_cap_was_not_hidden_for_being_a_test_either() {
+        let dir = tmpdir();
+        // Newest first in the listing — by stamp, not by id or by directory
+        // order: the web row is admitted and fills a cap of one; the two
+        // test rows behind it were never in the population.
+        session_kinded_at(
+            &dir,
+            "20260801T000002-web",
+            Some(SessionKind::Web),
+            "2026-08-01T00:00:02Z",
+        );
+        session_kinded_at(
+            &dir,
+            "20260801T000001-test",
+            Some(SessionKind::Test),
+            "2026-08-01T00:00:01Z",
+        );
+        session_kinded_at(
+            &dir,
+            "20260801T000000-test2",
+            Some(SessionKind::Test),
+            "2026-08-01T00:00:00Z",
+        );
+        let capped = Corpus::scan(
+            &dir,
+            &Scan {
+                max_sessions: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(capped.sessions_read, 1);
+        assert_eq!(capped.hidden_tests, 0, "{capped:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

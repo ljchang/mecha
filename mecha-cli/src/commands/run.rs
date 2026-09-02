@@ -79,6 +79,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 model: prepared.model.clone(),
                 workspace: prepared.workspace.clone(),
                 title: Some(first_words(&prompt)),
+                kind: Some(mecha_core::session::SessionKind::Run),
             },
         )?);
     }

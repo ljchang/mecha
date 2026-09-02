@@ -48,6 +48,10 @@ cargo clippy --all-targets
 ```
 
 `MECHA_LOG=debug` turns on internal tracing (goes to stderr).
+**Smoke-testing a binary against the real store: set `MECHA_SESSION_KIND=test`**
+so the session is recorded as a test and every corpus readout excludes it —
+46 of 143 appraised sessions were development runs before the mark existed,
+and the instrument measured its own tests.
 
 **Deploying or restarting anything: use the `update` skill**
 (`.claude/skills/update/SKILL.md`). "Update everything" spans six surfaces
@@ -154,7 +158,8 @@ step.rs      what a finished plan step actually did, from the run's own trace
 boredom.rs   an approach that has stopped teaching the run anything, named
              while there is still something to do about it
 appraisal.rs how a run went against what it was for: a signed error per
-             channel, and a label derived from them and never reported
+             channel, a valence summed from them, and a label derived from
+             them and never self-reported by a model
 cron.rs      five-field cron, resolved in an IANA zone (both DST directions)
 trigger.rs   scheduled prompts: the store, the ledger, and "is it due?"
 runmarker.rs "is a run in flight, and please stop it", as two files in a directory
@@ -417,8 +422,10 @@ trip over from *outside* the subsystem:
   — the owner edits it from anywhere (`mecha charter edit`, `/charter`, the web
   settings page), no model ever authors a line, and there is no tool and no
   configurable path; `Affect` is a pure function of the record with no way to
-  report one; and the homeostat, boredom's notices and `anticipated_guilt` are
-  all sensors that deliberately ship with no consumer.
+  report one, and the surfaces show `Valence` (signed sums, positive and
+  negative kept apart) with the label beside it; the homeostat and
+  `anticipated_guilt` are sensors whose only reader is the diagnostician's
+  brief (`diagnose::Evidence`), and nothing narrows a run on either yet.
 
 ## Testing without credentials
 

@@ -93,9 +93,16 @@ pub struct Question {
     pub answer: Option<String>,
 }
 
+/// The three states a question can be in. Named so a reader elsewhere
+/// (`appraisal::of_session`) cannot spell one wrong — `frontdoor`'s own
+/// constants exist for the same reason.
+pub const OPEN: &str = "open";
+pub const ANSWERED: &str = "answered";
+pub const ABANDONED: &str = "abandoned";
+
 impl Question {
     pub fn is_open(&self) -> bool {
-        self.status == "open"
+        self.status == OPEN
     }
 
     /// One line for a listing.
@@ -168,14 +175,40 @@ impl QuestionStore {
     /// Every question, newest first. An unreadable record is skipped rather
     /// than failing the listing — one corrupt file must not hide the queue.
     pub fn items(&self) -> Result<Vec<Question>> {
+        self.items_counting().map(|(items, _)| items)
+    }
+
+    /// [`items`](Self::items), and how many `.json` files it skipped — for
+    /// a reader whose "the store was read" claim must mean every row, not
+    /// only that the directory opened (`OutboxStore::items_counting`'s
+    /// shape; found on review of the appraisal's `questions_read` field).
+    pub fn items_counting(&self) -> Result<(Vec<Question>, usize)> {
         let mut out = Vec::new();
+        let mut skipped = 0usize;
         let dir = match std::fs::read_dir(&self.root) {
             Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((out, 0)),
             Err(e) => return Err(e).context("reading the question store"),
         };
-        for entry in dir.flatten() {
-            let path = entry.path();
+        for entry in dir {
+            // An erroring directory entry is a row this read did not see,
+            // and it counts as skipped rather than vanishing: `flatten()`
+            // dropped it silently, so `questions_read: true` could stand
+            // over a store that was not fully read — the one claim this
+            // function exists to make (found on review). The two sibling
+            // counting readers — `Frontdoor::records_counting`,
+            // `OutboxStore::items_impl` — chose the opposite and fail the
+            // whole read on the same error; both are safe, and this one
+            // keeps the listing's skip-and-count shape because a corrupt
+            // entry must not hide the queue.
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(e) => {
+                    skipped += 1;
+                    tracing::warn!("skipping an unreadable question-store entry: {e}");
+                    continue;
+                }
+            };
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
@@ -184,11 +217,14 @@ impl QuestionStore {
                 .and_then(|t| serde_json::from_str::<Question>(&t).ok())
             {
                 Some(q) => out.push(q),
-                None => tracing::warn!(path = %path.display(), "skipping unreadable question"),
+                None => {
+                    skipped += 1;
+                    tracing::warn!(path = %path.display(), "skipping unreadable question")
+                }
             }
         }
         out.sort_by(|a, b| b.asked_at.cmp(&a.asked_at));
-        Ok(out)
+        Ok((out, skipped))
     }
 
     pub fn open_items(&self) -> Result<Vec<Question>> {
@@ -260,7 +296,7 @@ impl QuestionStore {
     ) -> Result<Question> {
         let q = Question {
             id: Session::new_id(),
-            status: "open".into(),
+            status: OPEN.into(),
             question: question.to_string(),
             options,
             session_id: session_id.to_string(),
@@ -292,7 +328,7 @@ impl QuestionStore {
             q.id,
             q.status
         );
-        q.status = "answered".into();
+        q.status = ANSWERED.into();
         q.answered_at = Some(chrono::Utc::now().to_rfc3339());
         q.answer = Some(answer.to_string());
         self.put(&q)?;
@@ -309,7 +345,7 @@ impl QuestionStore {
         let _lock = self.lock()?;
         let mut q = self.find(id)?;
         anyhow::ensure!(q.is_open(), "question {} is already {}", q.id, q.status);
-        q.status = "abandoned".into();
+        q.status = ABANDONED.into();
         q.answered_at = Some(chrono::Utc::now().to_rfc3339());
         self.put(&q)?;
         Ok(q)
@@ -710,5 +746,17 @@ mod tests {
             untrusted: true,
         });
         assert!(s2.get(&id2).unwrap().taint.untrusted, "growth still lands");
+    }
+
+    #[test]
+    fn items_counting_says_how_many_files_it_skipped() {
+        let dir = std::env::temp_dir().join(format!("questions-count-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("20260901T000000-bad.json"), "{not json").unwrap();
+        let store = QuestionStore::open(&dir).unwrap();
+        let (items, skipped) = store.items_counting().unwrap();
+        assert!(items.is_empty());
+        assert_eq!(skipped, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

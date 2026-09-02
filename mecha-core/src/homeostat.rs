@@ -85,14 +85,28 @@ pub struct Homeostat {
     pub peak_context_pressure: Option<f32>,
     /// A harness-computed proxy for anticipated guilt
     /// (`docs/GOAL-SYSTEM-DESIGN.md` §7.4) — predicted error against another
-    /// party's expectation, folded from how long the oldest recorded
-    /// commitment in [`backlog`](Self::backlog)'s stores has waited and how
-    /// much room this run had to act on it. See [`crate::guilt`] for the
-    /// formula and, importantly, for what this is *not* used for yet:
-    /// **nothing consumes this today.** It is recorded so the corpus exists
-    /// before anything is built on it, on `runlog`'s own rule.
+    /// party's expectation: the standing **level**, folded from how long the
+    /// oldest recorded commitment in [`backlog`](Self::backlog)'s stores
+    /// has waited and how much room this run had to act on it. What this
+    /// run did about it is the next field, deliberately not folded in here:
+    /// `Corpus::mean_anticipated_guilt` averages this across every row the
+    /// store holds, and `anticipated_guilt`'s own doc chose `None` over a
+    /// differently-computed number precisely so that mean stays one
+    /// quantity — writing the relief-scaled reading into the same field
+    /// blended two formulas with nothing marking which (found on review).
+    /// See [`crate::guilt`] for the formula and, importantly, for what this
+    /// is *not* used for yet: only the diagnostician's brief reads it. It is
+    /// recorded so the corpus exists before anything is built on it, on
+    /// `runlog`'s own rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anticipated_guilt: Option<f32>,
+    /// The level above, scaled down by the owner-facing share of the
+    /// inherited backlog this run cleared (`guilt::with_backlogs`) — the
+    /// run's *act* on the situation, in its own field so the level stays
+    /// comparable across every row. `None` wherever the level is, or where
+    /// the delta could not be read. Nothing consumes this yet either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guilt_after_relief: Option<f32>,
 }
 
 impl Homeostat {
@@ -128,9 +142,22 @@ impl Homeostat {
             // score a trigger that staged three replies overnight as
             // maximally guilty for doing exactly its job: those drafts are
             // seconds old and this run's own output, not neglected debt.
-            self.anticipated_guilt =
-                crate::guilt::anticipated_guilt(before, self.peak_context_pressure, Utc::now());
-            self.backlog_delta = Some(Backlog::delta(before, &Backlog::read()));
+            let after = Backlog::read();
+            let now = Utc::now();
+            // The level is what the run inherited, and it keeps its own
+            // field so the corpus mean over it stays one quantity. The
+            // delta is what the run did about it, and only relief moves
+            // the second reading — the comment above is still the rule,
+            // and `guilt::with_backlogs` keeps it: a run that added to the
+            // queue reads the level it inherited, not a maximum for doing
+            // its job, and relief is the owner-facing share of what was
+            // waiting (one seam derives both numbers from this same pair of
+            // reads — found on review, when the numerator spanned five
+            // stores and the denominator three).
+            let fold = crate::guilt::with_backlogs(before, &after, self.peak_context_pressure, now);
+            self.anticipated_guilt = fold.level;
+            self.guilt_after_relief = fold.after_relief;
+            self.backlog_delta = Some(fold.delta);
         }
         self
     }
@@ -172,6 +199,7 @@ mod tests {
             peak_prompt_tokens: Some(18_008),
             peak_context_pressure: Some(0.0687),
             anticipated_guilt: Some(0.0),
+            guilt_after_relief: Some(0.0),
         };
         let json = serde_json::to_string(&h).unwrap();
         assert_eq!(serde_json::from_str::<Homeostat>(&json).unwrap(), h);
