@@ -37,7 +37,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 pub struct OpenAiCompatible {
-    http: reqwest::Client,
+    http: crate::provider::HttpClients,
     api_key: Option<String>,
     base_url: String,
     default_model: String,
@@ -51,12 +51,9 @@ pub struct OpenAiCompatible {
 impl OpenAiCompatible {
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
         Ok(Self {
-            http: reqwest::Client::builder()
-                // A stall fails the request; a long answer does not. See
-                // `provider::STALL_TIMEOUT` and `request` below.
-                .connect_timeout(crate::provider::CONNECT_TIMEOUT)
-                .read_timeout(crate::provider::STALL_TIMEOUT)
-                .build()?,
+            // Two clients, chosen per request by the body's `stream` flag —
+            // see `provider::HttpClients` for why one cannot do both jobs.
+            http: crate::provider::HttpClients::build()?,
             // Local servers usually don't check it.
             api_key: cfg.resolve_api_key(),
             base_url: cfg
@@ -120,6 +117,7 @@ impl OpenAiCompatible {
     fn request(&self, body: &Value) -> reqwest::RequestBuilder {
         let mut rb = self
             .http
+            .for_body(body)
             .post(format!(
                 "{}/v1/chat/completions",
                 self.base_url.trim_end_matches('/')
@@ -128,7 +126,7 @@ impl OpenAiCompatible {
         if let Some(key) = &self.api_key {
             rb = rb.bearer_auth(key);
         }
-        crate::provider::anthropic::with_request_timeout(rb, body).json(body)
+        rb.json(body)
     }
 }
 
@@ -800,18 +798,6 @@ mod tests {
             thinking: false,
             cache_prompt: false,
         }
-    }
-
-    /// Same rule as the Anthropic client: a stream is bounded per read and
-    /// may run as long as tokens keep coming; only a non-streaming request
-    /// carries the whole-exchange cap.
-    #[test]
-    fn only_a_non_streaming_request_carries_the_whole_exchange_timeout() {
-        let p = provider(None, None);
-        let streaming = p.request(&json!({"stream": true})).build().unwrap();
-        assert!(streaming.timeout().is_none());
-        let whole = p.request(&json!({})).build().unwrap();
-        assert_eq!(whole.timeout(), Some(&crate::provider::REQUEST_TIMEOUT));
     }
 
     #[test]

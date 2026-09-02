@@ -252,9 +252,11 @@ pub const CARRIED_HEADER: &str =
 /// that reader would go stale the first time this sentence was reworded.
 /// `title::owner_turns` is the reader that needs it.
 ///
-/// Unlike [`CARRIED_HEADER`], these **accumulate**: each summary describes a
-/// different stretch of the conversation, where there is only ever one
-/// current carried state.
+/// Like [`CARRIED_HEADER`], exactly one survives a compaction: `rebuild`
+/// drops the previous summary because the summariser has already read it
+/// (the head is inside every cut) and been told to fold it in. They used to
+/// accumulate, and a long-lived session's head grew by a block per
+/// compaction with nothing ever re-summarising it.
 pub const SUMMARY_HEADER: &str =
     "[Earlier turns were compacted to fit the context window. What happened in them:]";
 
