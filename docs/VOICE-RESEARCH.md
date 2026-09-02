@@ -834,7 +834,20 @@ named by what it can and cannot do.
   correction 2.50. Both guards are kept because neither implies the other — a
   follow-up can leave nothing over and still be gathered from all over the
   window, and a correction can be perfectly contiguous and still say one thing
-  we never did. Because turn-start is transcription-based, a
+  we never did.
+
+  The allowance **grows with the sentence**, and that is recall rather than
+  laxity. Recognition error is roughly per-word, so a sixteen-word echo comes
+  back with two words mangled about as often as an eight-word one comes back
+  with one — and a flat allowance of one made the filter weakest exactly where
+  an echo is easiest to be sure about: "your first meeting tomorrow is at nine
+  with the finance team in a small conference groom" is fourteen of our sixteen
+  words, in order, in one tight span, and it arrived as the owner's turn. Zero
+  slips below eight words, one above, one more per sixteen after that. This is
+  not the ratio the section rejected, and the difference is where each is
+  loosest: a ratio is loosest at short lengths, which is where corrections
+  live; this is loosest at long ones, where what it forgives is a mis-heard
+  word rather than the point of the sentence. Because turn-start is transcription-based, a
   gated transcript is not a degraded turn but no turn at all, which is what
   makes this the expensive direction to be wrong in.
 

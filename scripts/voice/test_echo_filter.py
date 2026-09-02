@@ -153,6 +153,70 @@ class TheTextFilter(unittest.TestCase):
             self.bot.is_probable_echo("book the small room for tuesday", bot_was_audible=True)
         )
 
+    def test_a_long_echo_with_two_slips_is_still_caught(self):
+        """**The recall half**, and the case the branch opened with.
+
+        Recognition error is roughly per-word, so a sixteen-word echo arrives
+        with two words mangled about as often as an eight-word one arrives
+        with one. A flat allowance of one made the arm weakest exactly where
+        an echo is easiest to be certain about: fourteen of our sixteen words,
+        in order, in one tight span, and it was the owner's turn.
+        """
+        self.bot.note(
+            "Your first meeting tomorrow is at nine with the finance team in "
+            "the small conference room."
+        )
+        self.assertTrue(
+            self.bot.is_probable_echo(
+                "your first meeting tomorrow is at nine with the finance team "
+                "in a small conference groom",
+                bot_was_audible=True,
+            )
+        )
+
+    def test_the_allowance_grows_but_the_floor_does_not_move(self):
+        """The growth is not the ratio this module rejected, and the
+        difference is *where each is loosest*.
+
+        A ratio is loosest at short lengths, which is exactly where
+        corrections live. This is loosest at long lengths, where what it
+        forgives is a mis-heard word rather than the point of the sentence.
+        The same single substitution, below the floor and above it, is the
+        cleanest way to say that.
+        """
+        short = BotSpeech(clock=FakeClock())
+        short.note("Your first meeting tomorrow is at nine.")
+        self.assertFalse(
+            short.is_probable_echo("your first meeting today is at nine", bot_was_audible=True),
+            "seven words with one word changed is a correction, not an echo",
+        )
+
+        long_ = BotSpeech(clock=FakeClock())
+        long_.note("Your first meeting tomorrow is at nine with the finance team.")
+        self.assertTrue(
+            long_.is_probable_echo(
+                "your first meeting today is at nine with the finance team",
+                bot_was_audible=True,
+            ),
+            "ten words with one word changed is our sentence, mis-heard",
+        )
+
+    def test_a_longer_follow_up_is_still_not_an_echo(self):
+        """The growing budget must not re-open the band the spread guard
+        closed: a follow-up gathered from across a long reply stays a
+        follow-up however much slack the length buys it."""
+        self.bot.note(
+            "I can add that to your calendar, and I can also add a note to the "
+            "entry if you want, so that one is easy, and I can do the same for "
+            "the others if it would help you keep track of them all."
+        )
+        self.assertFalse(
+            self.bot.is_probable_echo(
+                "can you also add a note to that one and to the others",
+                bot_was_audible=True,
+            )
+        )
+
     def test_a_long_follow_up_against_a_long_reply_is_not_an_echo(self):
         """**The band the one-word allowance re-opened**, and the reason the
         match has to be *tight* as well as complete.
