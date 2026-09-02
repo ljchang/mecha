@@ -814,11 +814,27 @@ named by what it can and cannot do.
   either: a counter-instruction reuses the offer's word order.
 
   So the question is not *how much of this was ours* but **is any of it not
-  ours**. An echo is our own sentence coming back; a person saying something is
-  saying something we did not say, and one new word is the whole signal —
-  "small", "Friday". One unmatched word is forgiven only at eight words or
-  more, where a mangled word is plausibly noise; at six a single unmatched word
-  is the point of the sentence. Because turn-start is transcription-based, a
+  ours**, and **is all of it in one place**. An echo is our own sentence coming
+  back; a person saying something is saying something we did not say, and one
+  new word is the whole signal — "small", "Friday". One unmatched word is
+  forgiven only at eight words or more, where a mangled word is plausibly
+  noise; at six a single unmatched word is the point of the sentence.
+
+  The second half is what that allowance made necessary, and it is the same
+  length-dependence in a new costume. The window is not one offer, it is every
+  phrase of the last twenty seconds joined together, so a *follow-up* on the
+  same topic can gather a whole sentence's worth of words out of it without
+  repeating any phrase: "can you also add a note to that one" matches eight of
+  its nine words, in order, against a twenty-five word reply — leaving one
+  over, which the allowance forgives. What it does not have is contiguity. So
+  the match must be tight as well as complete: an echo is a *contiguous
+  stretch* of what we said, and one skipped word is the same recognition slip
+  seen from the other side. Measured across the matrix, real echoes span
+  1.00-1.17 words of window per word matched; that follow-up spans 1.75 and a
+  correction 2.50. Both guards are kept because neither implies the other — a
+  follow-up can leave nothing over and still be gathered from all over the
+  window, and a correction can be perfectly contiguous and still say one thing
+  we never did. Because turn-start is transcription-based, a
   gated transcript is not a degraded turn but no turn at all, which is what
   makes this the expensive direction to be wrong in.
 
@@ -832,6 +848,17 @@ named by what it can and cannot do.
   Thursday please") *is*, as text, our sentence. That band belongs to the
   energy floor, which is why that floor is the load-bearing defence and this is
   depth behind it.
+
+  The timing layer's own trap belongs beside them: the segment start is
+  **consumed** when read, not left in place. `_bot_audible_until` only ever
+  increases, so a start left behind does not merely go stale — it latches.
+  Once it is older than the most recent `BotStoppedSpeakingFrame`, every later
+  segment reads as overlapping the speaker for the rest of the call, floor and
+  text filter both armed, the log line reading `over_speaker=True` beside a
+  plausible float. `VADUserStartedSpeakingFrame` arriving for turn one and then
+  stopping is all it takes. Read-and-clear collapses that onto the diagnostic
+  that already exists: a segment with no start of its own reports `None`
+  rather than borrowing the last one's.
 
   And the fuzzy arm now runs **only** when the speaker was audible, rather
   than at a higher bar: with nothing playing there was no echo to have, so
