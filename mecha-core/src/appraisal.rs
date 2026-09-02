@@ -1128,6 +1128,15 @@ pub fn of_session(
     // sat at a constant). Adding to the queue is not an error: staging
     // replies is a trigger's job. Absent is not zero — a row without the
     // sensor says nothing.
+    //
+    // Known and accepted: the delta is a global before/after diff of the
+    // stores, not a join on what *this* session touched, so on a machine
+    // running several sessions at once the owner answering session B's
+    // question mid-run signs session A's `+0.5`. Attributing by id — the
+    // question or draft this session's own trace resolved — is the fix,
+    // and it is what the question and request arms above already do; this
+    // arm stays a level-difference until the outbox and question stores
+    // record which session resolved an item, not only which staged it.
     // `owner_facing_net`, not `net`: the harness's own review queue is owed
     // to nobody outside, and a run that cleared five candidates has not
     // shortened what the owner is waiting on (found on review).
@@ -1507,7 +1516,7 @@ pub struct AppraiserEvidence {
     pub negative_errors: usize,
     pub positive_errors: usize,
     /// Only channels that fired, in a fixed order — never keyed on anything
-    /// wider than the five-variant `Channel` enum.
+    /// wider than the `Channel` enum — every variant of it, via `Channel::ALL`.
     pub channels: Vec<(Channel, usize)>,
     pub current_label: Affect,
     pub goal_named: bool,
