@@ -111,26 +111,42 @@ pub struct Scan {
 }
 
 impl Scan {
+    /// Would the default admission hide this session only for being a
+    /// smoke test? Counted by every reader rather than silently skipped —
+    /// see [`Corpus::hidden_tests`]. **Ask after [`admits`](Self::admits)
+    /// has refused**, never before: a test row outside the date window or
+    /// the workspace was not hidden *for being a test*, and counting it
+    /// made `health --days 1` report every test row in the store beside a
+    /// one-day population none of them was in (found on review).
+    pub fn hides_test(&self, meta: &SessionMeta) -> bool {
+        // Exact, not merely implied by `!admits`: the row must pass every
+        // other filter and fail only the kind rule. The reviewer's own
+        // suggested ordering (`admits` first, then this) still counted a
+        // test row the window had excluded, because this used to look at
+        // the kind alone.
+        self.in_window(meta)
+            && self.kind.is_none()
+            && !self.include_tests
+            && meta.kind == Some(SessionKind::Test)
+    }
+
+    /// The date and workspace filters, without the kind rule.
+    fn in_window(&self, meta: &SessionMeta) -> bool {
+        if self.since.is_some_and(|t| meta.created_at < t) {
+            return false;
+        }
+        !self
+            .workspace
+            .as_ref()
+            .is_some_and(|w| !meta.workspace.starts_with(w))
+    }
+
     /// Does this session's header pass the scan's filters? Shared with the
     /// per-session walk in `sessions appraise`, which reads sessions rather
     /// than runs and so cannot use [`Corpus::scan`] but must agree with it
     /// about which sessions are in the population.
-    /// Would the default admission hide this session only for being a
-    /// smoke test? Counted by every reader rather than silently skipped —
-    /// see [`Corpus::hidden_tests`].
-    pub fn hides_test(&self, meta: &SessionMeta) -> bool {
-        self.kind.is_none() && !self.include_tests && meta.kind == Some(SessionKind::Test)
-    }
-
     pub fn admits(&self, meta: &SessionMeta) -> bool {
-        if self.since.is_some_and(|t| meta.created_at < t) {
-            return false;
-        }
-        if self
-            .workspace
-            .as_ref()
-            .is_some_and(|w| !meta.workspace.starts_with(w))
-        {
+        if !self.in_window(meta) {
             return false;
         }
         if let Some(k) = self.kind {
@@ -154,11 +170,12 @@ impl Corpus {
         let (listed, skipped) = Session::list_counting(dir)?;
         out.unreadable = skipped;
         for (meta, path) in listed {
-            if scan.hides_test(&meta) {
-                out.hidden_tests += 1;
-                continue;
-            }
             if !scan.admits(&meta) {
+                // Attributed only once the other filters have had their
+                // say: `hides_test` implies `!admits`, so this is exact.
+                if scan.hides_test(&meta) {
+                    out.hidden_tests += 1;
+                }
                 continue;
             }
             if scan.max_sessions.is_some_and(|n| out.sessions_read >= n) {
@@ -1163,6 +1180,31 @@ mod tests {
             ids(&only_web),
             vec!["20260801T000000-web"],
             "a row with no kind matches no filter: asking for one surface must not hand back rows that could be any"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_test_row_outside_the_window_was_not_hidden_for_being_a_test() {
+        let dir = tmpdir();
+        session_kinded(&dir, "20260801T000000-web", Some(SessionKind::Web));
+        session_kinded(&dir, "20260801T000001-test", Some(SessionKind::Test));
+        let cut = Corpus::scan(
+            &dir,
+            &Scan {
+                since: Some(
+                    DateTime::parse_from_rfc3339("2026-08-02T00:00:00Z")
+                        .unwrap()
+                        .with_timezone(&Utc),
+                ),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cut.len(), 0);
+        assert_eq!(
+            cut.hidden_tests, 0,
+            "the window excluded it before the kind filter could; counting it would put a caveat beside a population it was never in"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
