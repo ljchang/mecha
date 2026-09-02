@@ -559,27 +559,31 @@ async fn appraise(
     // `of_session`. Best-effort like the outbox: a store that cannot be read
     // costs its channel, and the reading says so below rather than folding
     // it into an empty one.
+    // Each `*_read` field means every row was read, not only that the
+    // directory opened: the counting readers say how many rows they
+    // skipped, and one skipped row is enough to mark the store not fully
+    // read (found on review, after the outbox got the same treatment).
     let (questions, questions_unreadable) =
         match mecha_core::questions::QuestionStore::open_existing_default() {
             None => (Vec::new(), false),
-            Some(store) => match store.items() {
-                Ok(items) => (items, false),
+            Some(store) => match store.items_counting() {
+                Ok((items, skipped)) => (items, skipped > 0),
                 Err(_) => (Vec::new(), true),
             },
         };
     let (requests, frontdoor_unreadable) =
         match mecha_core::frontdoor::Frontdoor::open_existing_default() {
             None => (Vec::new(), false),
-            Some(fd) => match fd.records() {
-                Ok(items) => (items, false),
+            Some(fd) => match fd.records_counting() {
+                Ok((items, skipped)) => (items, skipped > 0),
                 Err(_) => (Vec::new(), true),
             },
         };
     let (reflexions, learning_unreadable) =
         match mecha_core::learning::LearningStore::open_existing_default() {
             None => (Vec::new(), false),
-            Some(store) => match store.reflexions() {
-                Ok(items) => (items, false),
+            Some(store) => match store.reflexions_counting() {
+                Ok((items, skipped)) => (items, skipped > 0),
                 Err(_) => (Vec::new(), true),
             },
         };
@@ -887,7 +891,7 @@ async fn appraise(
     }
     if questions_unreadable || frontdoor_unreadable || learning_unreadable {
         println!(
-            "  (a commitment store could not be read — questions: {}, front door: {}, learning: {} — so that channel is missing, not empty)\n",
+            "  (a commitment store could not be fully read — questions: {}, front door: {}, learning: {} — so that channel is incomplete, not empty)\n",
             if questions_unreadable { "unreadable" } else { "ok" },
             if frontdoor_unreadable { "unreadable" } else { "ok" },
             if learning_unreadable { "unreadable" } else { "ok" },

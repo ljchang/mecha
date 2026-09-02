@@ -1080,12 +1080,15 @@ pub fn of_session(
     // owner closed by hand that the triage never answered at all: no draft
     // staged for it, and the owner's closing it is the verdict. `answered`
     // and every open state say nothing here.
-    for req in records.requests {
-        if records.outbox_unreadable {
-            // Unknown drafts: the arm's whole question ("was anything
-            // drafted for it?") cannot be answered, so it asks nothing.
-            break;
-        }
+    // Unknown drafts: the arm's whole question ("was anything drafted for
+    // it?") cannot be answered, so it asks nothing — stated once, at the
+    // arm's boundary.
+    let requests: &[crate::frontdoor::Record] = if records.outbox_unreadable {
+        &[]
+    } else {
+        records.requests
+    };
+    for req in requests {
         if req.triage_session.as_deref() != Some(session_id)
             || req.state != crate::frontdoor::CLOSED
         {
