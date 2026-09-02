@@ -819,26 +819,60 @@ fn appraise_session(
     // The three commitment stores, on the same best-effort terms as the
     // outbox above: a store that could not be read costs its channel and
     // says so, never the appraisal.
+    // Counting readers, so a skipped row is said out loud here the way an
+    // unreadable store is: these arms only ever add a sign, so a skip
+    // under-signs rather than inverting one, but a decision that is never
+    // rerun deserves to know its evidence was short.
+    let skipped_note = |store: &str, skipped: usize| {
+        if skipped > 0 {
+            eprintln!(
+                "mecha: {skipped} {store} row(s) could not be parsed while appraising {task_id} — \
+                 that channel is incomplete"
+            );
+        }
+    };
     let questions = match mecha_core::questions::QuestionStore::open_existing_default() {
         None => Vec::new(),
-        Some(store) => store.items().unwrap_or_else(|e| {
-            eprintln!("mecha: could not read the question store while appraising {task_id}: {e:#}");
-            Vec::new()
-        }),
+        Some(store) => {
+            match store.items_counting() {
+                Ok((items, skipped)) => {
+                    skipped_note("question", skipped);
+                    items
+                }
+                Err(e) => {
+                    eprintln!("mecha: could not read the question store while appraising {task_id}: {e:#}");
+                    Vec::new()
+                }
+            }
+        }
     };
     let requests = match mecha_core::frontdoor::Frontdoor::open_existing_default() {
         None => Vec::new(),
-        Some(fd) => fd.records().unwrap_or_else(|e| {
-            eprintln!("mecha: could not read the front door while appraising {task_id}: {e:#}");
-            Vec::new()
-        }),
+        Some(fd) => match fd.records_counting() {
+            Ok((items, skipped)) => {
+                skipped_note("front-door", skipped);
+                items
+            }
+            Err(e) => {
+                eprintln!("mecha: could not read the front door while appraising {task_id}: {e:#}");
+                Vec::new()
+            }
+        },
     };
     let reflexions = match mecha_core::learning::LearningStore::open_existing_default() {
         None => Vec::new(),
-        Some(store) => store.reflexions().unwrap_or_else(|e| {
-            eprintln!("mecha: could not read the learning store while appraising {task_id}: {e:#}");
-            Vec::new()
-        }),
+        Some(store) => {
+            match store.reflexions_counting() {
+                Ok((items, skipped)) => {
+                    skipped_note("reflection", skipped);
+                    items
+                }
+                Err(e) => {
+                    eprintln!("mecha: could not read the learning store while appraising {task_id}: {e:#}");
+                    Vec::new()
+                }
+            }
+        }
     };
     let goal = mecha_core::goal::GoalRef::Task(task_id.to_string());
     Ok(Some(mecha_core::appraisal::of_session(

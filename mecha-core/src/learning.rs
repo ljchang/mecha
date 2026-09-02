@@ -673,11 +673,20 @@ impl LearningStore {
     }
 
     pub fn reflexions(&self) -> Result<Vec<Reflexion>> {
+        self.reflexions_counting().map(|(r, _)| r)
+    }
+
+    /// [`reflexions`](Self::reflexions), and how many lines it skipped —
+    /// `OutboxStore::items_counting`'s shape, for a reader whose "read"
+    /// claim must cover every row (found on review of the appraisal's
+    /// `learning_read` field).
+    pub fn reflexions_counting(&self) -> Result<(Vec<Reflexion>, usize)> {
         let path = self.root.join("reflections.jsonl");
         if !path.exists() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
         let mut out = Vec::new();
+        let mut skipped = 0usize;
         for line in std::fs::read_to_string(&path)?.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -686,10 +695,13 @@ impl LearningStore {
             // One corrupt line loses one reflection, not the store.
             match serde_json::from_str(line) {
                 Ok(r) => out.push(r),
-                Err(e) => tracing::warn!("skipping corrupt reflection line: {e}"),
+                Err(e) => {
+                    skipped += 1;
+                    tracing::warn!("skipping corrupt reflection line: {e}")
+                }
             }
         }
-        Ok(out)
+        Ok((out, skipped))
     }
 
     /// Sessions already mined, so `mecha reflect` never re-reads one.

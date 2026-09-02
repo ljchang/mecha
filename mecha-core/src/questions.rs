@@ -175,10 +175,19 @@ impl QuestionStore {
     /// Every question, newest first. An unreadable record is skipped rather
     /// than failing the listing — one corrupt file must not hide the queue.
     pub fn items(&self) -> Result<Vec<Question>> {
+        self.items_counting().map(|(items, _)| items)
+    }
+
+    /// [`items`](Self::items), and how many `.json` files it skipped — for
+    /// a reader whose "the store was read" claim must mean every row, not
+    /// only that the directory opened (`OutboxStore::items_counting`'s
+    /// shape; found on review of the appraisal's `questions_read` field).
+    pub fn items_counting(&self) -> Result<(Vec<Question>, usize)> {
         let mut out = Vec::new();
+        let mut skipped = 0usize;
         let dir = match std::fs::read_dir(&self.root) {
             Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((out, 0)),
             Err(e) => return Err(e).context("reading the question store"),
         };
         for entry in dir.flatten() {
@@ -191,11 +200,14 @@ impl QuestionStore {
                 .and_then(|t| serde_json::from_str::<Question>(&t).ok())
             {
                 Some(q) => out.push(q),
-                None => tracing::warn!(path = %path.display(), "skipping unreadable question"),
+                None => {
+                    skipped += 1;
+                    tracing::warn!(path = %path.display(), "skipping unreadable question")
+                }
             }
         }
         out.sort_by(|a, b| b.asked_at.cmp(&a.asked_at));
-        Ok(out)
+        Ok((out, skipped))
     }
 
     pub fn open_items(&self) -> Result<Vec<Question>> {
@@ -717,5 +729,17 @@ mod tests {
             untrusted: true,
         });
         assert!(s2.get(&id2).unwrap().taint.untrusted, "growth still lands");
+    }
+
+    #[test]
+    fn items_counting_says_how_many_files_it_skipped() {
+        let dir = std::env::temp_dir().join(format!("questions-count-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("20260901T000000-bad.json"), "{not json").unwrap();
+        let store = QuestionStore::open(&dir).unwrap();
+        let (items, skipped) = store.items_counting().unwrap();
+        assert!(items.is_empty());
+        assert_eq!(skipped, 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
