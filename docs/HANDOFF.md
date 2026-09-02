@@ -60,8 +60,9 @@ the merges in it had landed with no changelog entry (#119, #121, #123,
 #125, #127, #128, #130) and were written up at release time; the next tag
 is v0.1.18.
 
-**One lane is still live off `main` as of the evening of 2026-09-02; the
-other landed that day as two PRs, in the agreed order.** `fix/harness-review`
+**One lane is still live off `main` as of the evening of 2026-09-02, plus
+two small follow-ups; the other lane landed that day as two PRs, in the
+agreed order.** `fix/harness-review`
 (**PR #139**, the audit lane, merged at `089952f`) carried the six-lane
 review's nine fixes — the jail's dangling-symlink follow, the subagent
 send-laundering, the cumulative usage frame, `Approver::escalate`,
@@ -77,16 +78,21 @@ appraisal merges is textual on that one file and semantic nowhere else.
 #140 (`feat/appraisal-record`, phase A of `docs/APPRAISAL-RESEARCH.md` §3
 and the prediction record) at `15c628d` and #141 (`feat/appraisal-phase-b`,
 phase B) at `49166e3`, both on 2026-09-02 after #139 and #142 — see the
-goal-system section below for what each holds. Still open from that lane,
-in order: the `StopCause::Interrupted` split (Parked vs Cancelled; the
-`ask_user` park in `questions.rs` is the one park site, stopping through
-`ToolCtx::cancel`) and cancel-then-
-re-prompt as a steer, both now unblocked by #139's lenient `stop_cause`
-read; the audit lane's planner ask and critic call, which base on the
-merged record; charter sensors, designed at `GOAL-SYSTEM-DESIGN.md` §11.1
-and unbuilt. The main checkout may still hold an untracked
-`docs/APPRAISAL-RESEARCH.md` from before the branch existed; the tracked
-one is now on `main`, so the copy is safe to delete.
+goal-system section below for what each holds. Two follow-ups are open
+on `main` from that lane: **#147** (`fix/backlog-read-creates-nothing`:
+`backlog.rs`, `harness.rs`, `work.rs`'s test guard, `mecha-cli`'s
+`testenv.rs`), out of #141's post-merge review pass, and **#146**, this
+docs change. Still open from that lane, in order: the
+`StopCause::Interrupted` split (Parked vs Cancelled; the `ask_user` park
+in `questions.rs` is the one park site, stopping through
+`ToolCtx::cancel`) and cancel-then-re-prompt as a steer, both now
+unblocked by #139's lenient `stop_cause` read; phase B's three trajectory
+counters and the trigger read receipt; the audit lane's planner ask and
+critic call, which base on the merged record; charter sensors, designed
+at `GOAL-SYSTEM-DESIGN.md` §11.1 and unbuilt. The untracked
+`docs/APPRAISAL-RESEARCH.md` the main checkout held from before the
+branch existed was a strict subset of the tracked one and was deleted on
+2026-09-02.
 
 **0.1.14 is thirty-one commits from three sessions working the same day**,
 which is the thing to know about reading its history: the lanes interleave,
@@ -2218,10 +2224,11 @@ repeated here.
   forced off under `mecha eval`, never a prompt). The corpus numbers in
   the rest of this section (119 of 120, 120 of 459) are the rung 7
   measurement and are superseded by the valence read above for any
-  decision about what to build next. **Deploy note:** `WireEvent::Affect` is now sent for a
-  `neutral` label with a signed valence, and a page served from a stale
-  `web/dist` sets the chip to `ev.label` unconditionally — it will read a
-  literal `neutral` until the bundle is rebuilt (update skill surface 1b).
+  decision about what to build next. **Deploy note:** `WireEvent::Affect`
+  is now sent for a `neutral` label with a signed valence, and a page
+  served from a stale `web/dist` sets the chip to `ev.label`
+  unconditionally — it will read a literal `neutral` until the bundle is
+  rebuilt (update skill surface 1b).
   **Phase B followed the same evening, as #141**: `SessionRecords` with a
   per-store short flag that lands on the record as `Appraisal::partial`,
   `Channel::Commitment` (questions answered or abandoned, a triaged request
