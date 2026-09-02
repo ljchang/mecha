@@ -239,7 +239,7 @@ fn is_safe_cut(messages: &[Message], i: usize) -> bool {
 /// neither.
 pub const CARRIED_HEADER: &str =
     "[Live state, carried past the compaction and current as of now — it supersedes \
-     anything about it in the summaries above:]";
+     anything about it in the summary above:]";
 
 /// Marks the summary block [`rebuild`] appends to the head message.
 ///
@@ -1297,10 +1297,30 @@ mod tests {
         );
     }
 
-    /// The bug a second compaction would otherwise introduce: two task lists in
-    /// the prompt, one of them wrong, with nothing to say which.
+    /// The one place the replace-the-summary guarantee can drift apart: the
+    /// summariser is told to fold an earlier summary by quoting how its
+    /// header *begins*, while `rebuild` deletes by matching the constant.
+    /// Reword `SUMMARY_HEADER` and the model stops being told to fold while
+    /// the deletion keeps happening — silently, with no test to say so. This
+    /// is that test.
     #[test]
-    fn a_second_compaction_replaces_the_carried_state_rather_than_stacking_it() {
+    fn the_fold_clause_quotes_the_header_that_rebuild_deletes() {
+        let opener = &SUMMARY_HEADER[..SUMMARY_HEADER.find(" to fit").expect("header shape")];
+        assert!(
+            SUMMARY_INSTRUCTION.contains(opener),
+            "the instruction must quote {opener:?} so the summariser recognises what it is \
+             told to fold"
+        );
+        // And the carried block speaks of one summary, since one is all there is.
+        assert!(CARRIED_HEADER.contains("summary above"));
+        assert!(!CARRIED_HEADER.contains("summaries"));
+    }
+
+    /// The bug a second compaction would otherwise introduce: two task lists in
+    /// the prompt, one of them wrong, with nothing to say which — and, since
+    /// 2026-09-02, two summaries.
+    #[test]
+    fn a_second_compaction_replaces_the_carried_state_and_the_summary_rather_than_stacking_them() {
         let messages = transcript(6);
         let cut = cut_point(&messages, 6).unwrap();
         let first = rebuild(&messages, cut, "summary one", &[("todo", "[ ] step one")]);

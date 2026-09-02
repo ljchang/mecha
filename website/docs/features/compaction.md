@@ -281,9 +281,12 @@ anything about it in the summaries above:]
 
 That header is a sentinel, not a convention. `rebuild` finds the previous
 carried block by it and **replaces** it, so exactly one copy survives a second
-compaction — summaries accumulate on purpose, each describing a different
-stretch, but there is only ever one *current* state and keeping the old copy
-would be keeping a wrong one.
+compaction: there is only ever one *current* state, and keeping the old copy
+would be keeping a wrong one. The summary is replaced the same way. The
+summariser is shown the whole stretch it is compacting, the earlier summary
+included, and is told to fold that summary into the new one — so a long
+session carries one summary, not a growing stack of them, and the validator
+checks the new summary against a rendering that still holds the old one.
 
 The loop learns that some tools have state, never which one. See
 [Tools and MCP](/docs/features/tools-and-mcp).
