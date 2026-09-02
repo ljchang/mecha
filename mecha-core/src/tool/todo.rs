@@ -723,13 +723,14 @@ impl TodoTool {
     /// frozen against that check in the new process too, or a resume was
     /// the fourth door — `Tracked::default()` zeroed `checks`, so the next
     /// write could swap the check as a first declaration with nothing
-    /// counted (found on review). `extra` carries the steps the transcript
-    /// froze that the last plan trimmed ([`frozen_checks_from_transcript`]
-    /// (Self::frozen_checks_from_transcript)); the plan's own completed
-    /// steps win where both say something. `tampered` starts at zero, as
-    /// the counter is per process and the transcript's own echoes already
-    /// carry the earlier lines.
-    fn install_in(&self, workspace: &Path, plan: Plan, extra: HashMap<String, String>) {
+    /// counted (found on review). `extra` carries every step the transcript
+    /// froze ([`frozen_checks_from_transcript`]
+    /// (Self::frozen_checks_from_transcript)) — the trimmed ones, and the
+    /// plan's own — and **`extra` wins where both say something**, in the
+    /// freeze map and in the plan itself: the body says why. `tampered`
+    /// starts at zero, as the counter is per process and the transcript's
+    /// own echoes already carry the earlier lines.
+    fn install_in(&self, workspace: &Path, mut plan: Plan, extra: HashMap<String, String>) {
         // The plan's own completed checks first, then the echo-derived
         // ones *over* them: when the plan came from a whole echo the two
         // agree, and when it came from the input fallback (a thinned echo)
@@ -759,6 +760,23 @@ impl TodoTool {
                     check: c,
                 },
             );
+        }
+        // And the plan carries the frozen command too, not only the map:
+        // corrected in the map alone, the input fallback's rewrite stayed
+        // in `tracked.plan`, so until the next write the echo and the
+        // carried block re-read the rewrite to the model — and once checks
+        // run, the plan is what runs (found on the nineteenth review pass).
+        // The same restore `advance` performs on a tamper, at install time.
+        for i in plan
+            .items
+            .iter_mut()
+            .filter(|i| i.status == Status::Completed)
+        {
+            if let Some(f) = checks.get(&i.content) {
+                if i.check.as_deref() != Some(f.check.as_str()) {
+                    i.check = Some(f.check.clone());
+                }
+            }
         }
         self.lists.lock().unwrap_or_else(|e| e.into_inner()).insert(
             workspace.into(),
@@ -3598,8 +3616,8 @@ mod tests {
         let wire = kept.iter().find(|i| i.content == "wire it").unwrap();
         assert_eq!(
             wire.check.as_deref(),
-            Some("true"),
-            "the plan itself is the input's"
+            Some("make test"),
+            "the plan carries the frozen command, not the input's rewrite (nineteenth pass)"
         );
         let lists = tool.lists.lock().unwrap();
         let tracked = lists.get(&ws).unwrap();
