@@ -1325,6 +1325,16 @@ mod tests {
             "[Live state, carried past the compaction and current as of now — it supersedes \
              anything about it in the summaries above:]"
         );
+        // And `SUMMARY_HEADER` is a wire format now too: `rebuild` matches it
+        // with `starts_with` against heads written by older binaries (as
+        // `title.rs` always has), and the fold-clause assertion above derives
+        // its opener from the constant, so it would pass under any rewording
+        // — including the one that resurrects the stacking bug for every old
+        // session. Pinned byte-for-byte for the same reason.
+        assert_eq!(
+            SUMMARY_HEADER,
+            "[Earlier turns were compacted to fit the context window. What happened in them:]"
+        );
     }
 
     /// The bug a second compaction would otherwise introduce: two task lists in

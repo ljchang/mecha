@@ -165,10 +165,13 @@ pub const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60
 /// arithmetic cites, before a contended prefill (~350 s) and queue wait. The
 /// old 900 s could be exceeded by a legitimate answer there, and a timeout on
 /// this path classifies as `Transport` and is retried, re-issuing a generation
-/// the server had already finished (no tool ran, so nothing duplicates, but
-/// the wait doubles). The PR review named the scope; the cap now clears the
-/// worst legitimate case with margin, and a request that is still silent
-/// after half an hour is a dead server.
+/// the server had already finished — no tool ran, so nothing duplicates, but
+/// with `max_retries = 3` and no overall budget in `send_with_retry` the worst
+/// case is four caps in a row, ~2 h, on the one path that by construction has
+/// no cancel token. The PR review named the scope; the cap now clears the
+/// worst legitimate case with margin, a request still silent after half an
+/// hour is a dead server, and the retry-budget question is the retry
+/// policy's to answer, not this constant's.
 pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 /// Time allowed to open the connection, separately from the reads.
@@ -217,8 +220,10 @@ impl HttpClients {
         )
     }
 
-    /// The constructor the test drives with short durations.
-    pub fn with(
+    /// The constructor the test drives with short durations. Crate-private
+    /// for the same reason `plain()` is test-only: nothing outside has a
+    /// reason to choose its own bounds.
+    pub(crate) fn with(
         connect: std::time::Duration,
         stall: std::time::Duration,
         whole: std::time::Duration,
@@ -380,11 +385,14 @@ mod timeout_tests {
     #[tokio::test]
     async fn a_stream_that_never_finishes_is_ended_by_the_far_cap() {
         let url = dripping_server().await;
+        // A cap of 1.5 s against a 50 ms drip: wide enough that a contended
+        // runner polls several chunks before it fires, so the `chunks > 0`
+        // assertion measures the guarantee and not the scheduler.
         let clients = HttpClients::with(
             Duration::from_secs(5),
             Duration::from_secs(5),
             Duration::from_secs(5),
-            Duration::from_millis(400),
+            Duration::from_millis(1500),
         )
         .unwrap();
         let resp = clients.stream.post(&url).body("{}").send().await.unwrap();
