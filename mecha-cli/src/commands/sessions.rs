@@ -1174,6 +1174,10 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         // Store-wide, like the scan that produced it — a skipped file has no
         // readable date to window on.
         "sessions_unreadable": corpus.unreadable,
+        // The machine reader is where the dash-versus-zero inversion costs
+        // something: a script grading the store cannot tell "no runs" from
+        // "every run filtered" without this (found on review).
+        "tests_hidden": corpus.hidden_tests,
         "tool_calls": corpus.tool_calls(),
         "tool_errors": corpus.tool_errors(),
         "tool_error_rate": corpus.tool_error_rate(),
