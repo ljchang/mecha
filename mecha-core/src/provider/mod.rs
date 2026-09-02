@@ -157,6 +157,167 @@ pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// Time allowed to open the connection, separately from the reads.
 pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The two HTTP clients a provider needs, chosen per request by whether the
+/// body streams.
+///
+/// Two, because reqwest's `read_timeout` is a *client* setting and applies
+/// to the wait for the response head as well as to the body — and
+/// `RequestBuilder::timeout` overrides only the client's total deadline,
+/// never the read timeout. So one client with `read_timeout(STALL)` bounded a
+/// non-streaming request at `min(whole, stall)`, where the entire generation
+/// is one silent read: the PR review of the first version found the
+/// non-streaming cap had *tightened* from 900 s to 300 s in exactly the
+/// "long answer, not a stall" case the change existed to fix, and the
+/// resulting error classified as transient and retried a generation the
+/// server had already finished. The streaming client bounds each read; the
+/// whole-exchange client bounds the exchange and has no per-read bound at
+/// all.
+#[derive(Clone)]
+pub struct HttpClients {
+    /// For a request whose body arrives at once: the whole exchange is
+    /// capped, and silence before the head is generation, not a stall.
+    pub whole: reqwest::Client,
+    /// For a streamed request: each read is capped, the exchange is not.
+    pub stream: reqwest::Client,
+}
+
+impl HttpClients {
+    pub fn build() -> reqwest::Result<Self> {
+        Self::with(CONNECT_TIMEOUT, STALL_TIMEOUT, REQUEST_TIMEOUT)
+    }
+
+    /// The constructor the test drives with short durations.
+    pub fn with(
+        connect: std::time::Duration,
+        stall: std::time::Duration,
+        whole: std::time::Duration,
+    ) -> reqwest::Result<Self> {
+        Ok(HttpClients {
+            whole: reqwest::Client::builder()
+                .connect_timeout(connect)
+                .timeout(whole)
+                .build()?,
+            stream: reqwest::Client::builder()
+                .connect_timeout(connect)
+                .read_timeout(stall)
+                .build()?,
+        })
+    }
+
+    /// Two default clients with no timeouts, for tests that measure counts
+    /// and outcomes rather than wall clock.
+    pub fn plain() -> Self {
+        HttpClients {
+            whole: reqwest::Client::new(),
+            stream: reqwest::Client::new(),
+        }
+    }
+
+    /// The client for this body: the streaming one when it says `stream:
+    /// true`, the whole-exchange one otherwise.
+    pub fn for_body(&self, body: &serde_json::Value) -> &reqwest::Client {
+        if body.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
+            &self.stream
+        } else {
+            &self.whole
+        }
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A server that reads the request, stays silent for `quiet`, then
+    /// answers with a tiny 200. The silence stands in for a generation that
+    /// has not produced its first byte yet.
+    async fn quiet_server(quiet: Duration) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    tokio::time::sleep(quiet).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await;
+                });
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    /// The guarantee, measured against a socket rather than a builder field:
+    /// a non-streaming request survives silence longer than the stall bound
+    /// (the generation is one read, and only the exchange is capped), while
+    /// a streaming request on the same silent socket fails at the stall
+    /// bound.
+    #[tokio::test]
+    async fn silence_before_the_head_is_a_stall_only_for_a_stream() {
+        let url = quiet_server(Duration::from_millis(600)).await;
+        let clients = HttpClients::with(
+            Duration::from_secs(5),
+            Duration::from_millis(200),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        let whole = clients.whole.post(&url).body("{}").send().await;
+        assert!(
+            whole.is_ok(),
+            "a non-streaming request must not be bounded per read: {whole:?}"
+        );
+
+        let stream = clients.stream.post(&url).body("{}").send().await;
+        let err = stream.expect_err("a stream that goes quiet past the stall bound must fail");
+        assert!(err.is_timeout(), "{err}");
+    }
+
+    /// And the whole-exchange cap still exists: a socket quieter than the
+    /// cap fails the non-streaming request.
+    #[tokio::test]
+    async fn a_non_streaming_request_still_has_an_exchange_cap() {
+        let url = quiet_server(Duration::from_millis(800)).await;
+        let clients = HttpClients::with(
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        let err = clients
+            .whole
+            .post(&url)
+            .body("{}")
+            .send()
+            .await
+            .expect_err("the exchange cap must fire");
+        assert!(err.is_timeout(), "{err}");
+    }
+
+    #[test]
+    fn the_body_picks_the_client() {
+        let c = HttpClients::plain();
+        assert!(std::ptr::eq(
+            c.for_body(&serde_json::json!({"stream": true})),
+            &c.stream
+        ));
+        assert!(std::ptr::eq(c.for_body(&serde_json::json!({})), &c.whole));
+        assert!(std::ptr::eq(
+            c.for_body(&serde_json::json!({"stream": false})),
+            &c.whole
+        ));
+    }
+}
+
 impl Failover {
     pub fn new(primary: Box<dyn Provider>, fallbacks: Vec<(String, Box<dyn Provider>)>) -> Self {
         Failover { primary, fallbacks }
