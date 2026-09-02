@@ -725,19 +725,14 @@ impl TodoTool {
     /// the counter is per process and the transcript's own echoes already
     /// carry the earlier lines.
     fn install_in(&self, workspace: &Path, plan: Plan, extra: HashMap<String, String>) {
-        let mut checks: HashMap<String, Freeze> = extra
-            .into_iter()
-            .map(|(content, c)| {
-                (
-                    content,
-                    Freeze {
-                        hash: check_hash(&c),
-                        frozen: true,
-                        check: c,
-                    },
-                )
-            })
-            .collect();
+        // The plan's own completed checks first, then the echo-derived
+        // ones *over* them: when the plan came from a whole echo the two
+        // agree, and when it came from the input fallback (a thinned echo)
+        // the input may carry a tamper's rewrite while an earlier whole
+        // echo carries the frozen command — the first cut let the plan win
+        // and so let the fallback path re-freeze the rewrite (found on
+        // review).
+        let mut checks: HashMap<String, Freeze> = HashMap::new();
         for i in plan.items.iter().filter(|i| i.status == Status::Completed) {
             if let Some(c) = &i.check {
                 checks.insert(
@@ -749,6 +744,16 @@ impl TodoTool {
                     },
                 );
             }
+        }
+        for (content, c) in extra {
+            checks.insert(
+                content,
+                Freeze {
+                    hash: check_hash(&c),
+                    frozen: true,
+                    check: c,
+                },
+            );
         }
         self.lists.lock().unwrap_or_else(|e| e.into_inner()).insert(
             workspace.into(),
@@ -1273,6 +1278,19 @@ impl Tool for TodoTool {
             if content.contains(['\n', '\r']) {
                 return Ok(ToolOutput::err(format!(
                     "item {i}: `content` must be a single line"
+                )));
+            }
+            // Trimmed and non-empty at the door, exactly as `parse_section`
+            // reads a step back: a blank step rendered as `[ ] ` parsed to
+            // nothing, so the echo's item count fell one short of its own
+            // header and `parse_whole_echo` refused every echo in the
+            // transcript — reverting every resume to the input, silently;
+            // and a step padded with whitespace re-keyed its freeze without
+            // the model rewording it (found on review).
+            let content = content.trim();
+            if content.is_empty() {
+                return Ok(ToolOutput::err(format!(
+                    "item {i}: `content` must not be empty"
                 )));
             }
             let status = match entry.get("status").and_then(Value::as_str) {
@@ -3410,6 +3428,148 @@ mod tests {
         assert!(
             TodoTool::frozen_checks_from_transcript(&messages).is_empty(),
             "a cut echo is skipped, never merged"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_step_is_trimmed_and_never_empty_at_the_door() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-trim-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let out = tool
+            .call(
+                json!({"items": [{"content": "   ", "status": "pending"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("must not be empty"),
+            "{}",
+            out.content
+        );
+        // Whitespace padding does not re-key a frozen step.
+        tool.call(
+            json!({"items": [{"content": "wire it", "status": "completed", "check": "make test"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let out = tool
+            .call(
+                json!({"items": [{"content": "  wire it  ", "status": "completed", "check": "true"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("\"wire it\" was changed"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+    }
+
+    /// The input fallback must not out-freeze an earlier whole echo (found
+    /// on the fourteenth review pass): with the last echo thinned, the plan
+    /// comes from the input, which may carry a tamper's rewrite, while an
+    /// earlier whole echo carries the frozen command.
+    #[test]
+    fn an_echo_derived_freeze_outranks_the_input_fallbacks_check() {
+        use crate::compact::{thin_old_results, THINNED_RESULT_CHARS};
+        use crate::message::{Block, Message, Role};
+        let mut frozen = TodoItem::new("wire it", Status::Completed);
+        frozen.check = Some("make test".into());
+        let first_echo = TodoTool::render(&Plan {
+            goal: None,
+            items: vec![frozen],
+        });
+        // A later, long plan whose echo will be thinned; its input carries
+        // the rewrite `true` for the frozen step.
+        let mut long: Vec<TodoItem> = (0..10)
+            .map(|i| {
+                TodoItem::new(
+                    format!("step number {i} with enough words to be long"),
+                    Status::Pending,
+                )
+            })
+            .collect();
+        let mut rewritten = TodoItem::new("wire it", Status::Completed);
+        rewritten.check = Some("true".into());
+        long.insert(0, rewritten.clone());
+        let long_echo = TodoTool::render(&Plan {
+            goal: None,
+            items: long.clone(),
+        });
+        assert!(long_echo.len() > THINNED_RESULT_CHARS);
+        let input_items: Vec<serde_json::Value> = long
+            .iter()
+            .map(|i| {
+                let mut v = json!({"content": i.content, "status": if i.status == Status::Completed { "completed" } else { "pending" }});
+                if let Some(c) = &i.check {
+                    v["check"] = json!(c);
+                }
+                v
+            })
+            .collect();
+        let mut messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "wire it", "status": "completed", "check": "make test"}]}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: first_echo,
+                    is_error: false,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t2".into(),
+                    name: "todo".into(),
+                    input: json!({"items": input_items}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: long_echo,
+                    is_error: false,
+                }],
+            },
+        ];
+        // Only the long echo is cut; the short first one stays whole, which
+        // is exactly what lets its freeze outrank the input below.
+        assert_eq!(thin_old_results(&mut messages, 0, THINNED_RESULT_CHARS), 1);
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        assert_eq!(
+            tool.rehydrate(&ws, &messages),
+            Some(11),
+            "the plan came from the input fallback"
+        );
+        // The first echo survived whole; its freeze must outrank the
+        // input's rewritten check.
+        let kept = tool.items_in(&ws);
+        let wire = kept.iter().find(|i| i.content == "wire it").unwrap();
+        assert_eq!(
+            wire.check.as_deref(),
+            Some("true"),
+            "the plan itself is the input's"
+        );
+        let lists = tool.lists.lock().unwrap();
+        let tracked = lists.get(&ws).unwrap();
+        assert_eq!(
+            tracked.checks.get("wire it").map(|f| f.check.as_str()),
+            Some("make test")
         );
     }
 }

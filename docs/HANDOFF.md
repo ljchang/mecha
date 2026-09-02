@@ -69,15 +69,16 @@ subagent send-laundering, the cumulative usage frame, `Approver::escalate`,
 to `feat/approval-policy` on top of it (`policy.rs`, `Approver::permit`,
 `[[rule]]`/`[approval]` config), touching `run_tools` and `tool/mod.rs` and
 nothing the appraisal lane touches. **`feat/appraisal-record`** (this
-lane, worktree `.claude/worktrees/appraisal-phase-a`, **uncommitted**, 27
-files, base `102bacc`) carries phase A of `docs/APPRAISAL-RESEARCH.md` §3
-and the prediction record — see the goal-system section below for what
-that is. Order: #139 merges first; the appraisal branch rebases onto it and
-only then splits `StopCause::Interrupted`, because the split rides #139's
-lenient `stop_cause` read; the audit lane's planner ask and critic call
-base on the merged record. The research doc lives on the appraisal branch
-and, as a copy, uncommitted in the main checkout — one of the two must be
-dropped at commit time.
+lane, worktree `.claude/worktrees/appraisal-phase-a`, **PR #140**, base
+`102bacc`) carries phase A of `docs/APPRAISAL-RESEARCH.md` §3 and the
+prediction record, and **`feat/appraisal-phase-b`** (**PR #141**, stacked
+on it) carries phase B — see the goal-system section below for both. Order:
+#139 merges first; #140 rebases onto it and only then splits
+`StopCause::Interrupted`, because the split rides #139's lenient
+`stop_cause` read; #141 retargets `main` after #140; the audit lane's
+planner ask and critic call base on the merged record. The research doc
+lives on the branch; the main checkout still holds an untracked copy from
+before the branch existed, to be discarded once #140 lands.
 
 **0.1.14 is thirty-one commits from three sessions working the same day**,
 which is the thing to know about reading its history: the lanes interleave,
