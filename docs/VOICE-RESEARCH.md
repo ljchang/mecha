@@ -890,12 +890,8 @@ named by what it can and cannot do.
   It now takes a word floor, which costs it nothing it is for: a real verbatim
   echo of a spoken sentence is much longer than three words. It stays
   unconditional, because the timing layer can be wrong and this is the fallback
-  for when it is — but at a **longer** floor when nothing was playing. Four
-  words is a plain instruction: "move it to Thursday" is a contiguous span of
-  the offer that prompted it, and on headphones the timing layer correctly
-  reports no speaker, so the energy floor behind it is the ordinary one and the
-  defence this band is supposed to fall back on is not armed. A fallback only
-  ever needs to catch a whole sentence, so in silence it asks for one.
+  for when it is — and it takes the same eight-word floor as the fuzzy arm,
+  since a fallback only ever needs to catch a whole sentence.
 
   **The window is per-connection**, like everything else per-call in the
   worker. It was a module global, which mattered less when matching was

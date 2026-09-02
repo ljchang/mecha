@@ -35,10 +35,11 @@ class TheTextFilter(unittest.TestCase):
         self.bot = BotSpeech(clock=self.clock)
 
     def test_a_verbatim_echo_is_caught(self):
-        self.bot.note("Your first meeting tomorrow is at nine.")
+        self.bot.note("Your first meeting tomorrow is at nine with the finance team.")
         self.assertTrue(
             self.bot.is_probable_echo(
-                "your first meeting tomorrow is at nine", bot_was_audible=True
+                "your first meeting tomorrow is at nine with the finance team",
+                bot_was_audible=True,
             )
         )
 
@@ -118,12 +119,15 @@ class TheTextFilter(unittest.TestCase):
     def test_a_correction_that_reuses_the_offer_is_not_an_echo(self):
         """**The band a count floor alone does not cover.**
 
-        A four-word floor stops "no cancel it"; it does not stop the same
-        shape two words further up. "Can you move it to Friday" over "I can
-        move it to Thursday" shares four words *in order* — and order is no
-        help here, because a counter-instruction naturally reuses the word
-        order of the offer it is correcting. It cleared a count of four and a
-        0.6 ratio, and it is not an echo, it is the correction.
+        The four-word floor this file used to carry stopped "no cancel it"
+        and not the same shape two words further up. "Can you move it to
+        Friday" over "I can move it to Thursday" shares four words *in order*
+        — and order is no help here, because a counter-instruction naturally
+        reuses the word order of the offer it is correcting. It cleared a
+        count of four and a 0.6 ratio, and it is not an echo, it is the
+        correction. The floor is `MIN_ECHO_WORDS` now, which rules this out by
+        length as well; the case is kept because the ordering argument is what
+        would break first if the floor ever came down.
         """
         self.bot.note("I can move it to Thursday if you want me to.")
         for said in [
@@ -136,21 +140,41 @@ class TheTextFilter(unittest.TestCase):
                 f"{said!r} was silenced as an echo",
             )
 
-    def test_one_new_word_in_a_short_turn_keeps_it(self):
-        """The property the rule is built on, rather than a number: an echo is
-        *our* sentence coming back, so anything the reply did not say is
-        evidence that a person is saying it.
+    def test_below_the_floor_the_filter_says_nothing_in_any_state(self):
+        """**The accept-the-offer band, and it must survive every state.**
 
-        "book the small room for tuesday" is five of our six words in order,
-        and the sixth is the entire point of the sentence. Every fraction
-        tried here silenced it.
+        Each of these is a contiguous span of the sentence that offered it and
+        the plainest way to say yes to it. The states do not separate them
+        from an echo and only the length does — `bot_speaking` is a barge-in on
+        headphones and an echo on speakers, and the 1.2 s tail is where a
+        prompt answer to a question lands, not a speakerphone condition.
+
+        Asserted at `bot_was_audible=True` as well, because the earlier split
+        left that side unguarded: there is nothing behind this filter to catch
+        the mistake. The energy floor runs *before* it and returns, so clearing
+        the raised RMS bar does not exempt a transcript from this test — it
+        only earns it the right to be killed by it.
         """
-        self.bot.note("Shall I book the room for Tuesday?")
-        self.assertTrue(
-            self.bot.is_probable_echo("shall i book the room for tuesday", bot_was_audible=True)
+        self.bot.note(
+            "I can move it to Thursday, or put it in the calendar, or add a "
+            "note to the entry."
         )
-        self.assertFalse(
-            self.bot.is_probable_echo("book the small room for tuesday", bot_was_audible=True)
+        for said in ["move it to thursday", "put it in the calendar", "add a note to the entry"]:
+            for audible in (False, True):
+                self.assertFalse(
+                    self.bot.is_probable_echo(said, bot_was_audible=audible),
+                    f"{said!r} was silenced with bot_was_audible={audible}",
+                )
+
+    def test_one_new_word_above_the_floor_is_forgiven_as_a_slip(self):
+        """And the other half: above the floor, a single word that is not ours
+        is the recognition slip the allowance exists for, not a correction."""
+        self.bot.note("Your first meeting tomorrow is at nine with the finance team.")
+        self.assertTrue(
+            self.bot.is_probable_echo(
+                "your first meeting today is at nine with the finance team",
+                bot_was_audible=True,
+            )
         )
 
     def test_a_long_echo_with_two_slips_is_still_caught(self):
@@ -260,9 +284,11 @@ class TheTextFilter(unittest.TestCase):
         """Why the match is ordered rather than contiguous: recognition of a
         speaker across a room drops words as readily as it mangles them, and a
         substring test cannot survive one falling out of the middle."""
-        self.bot.note("Your first meeting tomorrow is at nine.")
+        self.bot.note("Your first meeting tomorrow is at nine with the finance team.")
         self.assertTrue(
-            self.bot.is_probable_echo("your first meeting is at nine", bot_was_audible=True)
+            self.bot.is_probable_echo(
+                "your first meeting is at nine with the finance team", bot_was_audible=True
+            )
         )
 
     def test_agreeing_in_a_silent_room_is_not_an_echo(self):
@@ -349,11 +375,12 @@ class TheTextFilter(unittest.TestCase):
 
     def test_the_window_closes(self):
         # Audible, so the verdict turns on the window rather than on a floor.
-        self.bot.note("Your first meeting tomorrow is at nine.")
+        self.bot.note("Your first meeting tomorrow is at nine with the finance team.")
         self.clock.advance(30)
         self.assertFalse(
             self.bot.is_probable_echo(
-                "your first meeting tomorrow is at nine", bot_was_audible=True
+                "your first meeting tomorrow is at nine with the finance team",
+                bot_was_audible=True,
             )
         )
 
