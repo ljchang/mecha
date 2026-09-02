@@ -278,7 +278,12 @@ pub struct Appraisal {
     /// can never be rerun: a reading assembled with the outbox unparseable
     /// printed as a full one and gated a follow-up on short evidence, with
     /// the caveat on a separate stderr line that did not travel with it
-    /// (found on review). Absent on the wire when false.
+    /// (found on review). Absent on the wire when false. **Not set by a
+    /// caller that passes no stores at all** (`live_readout`, `distill`):
+    /// there the commitment stores were never a channel, so "not
+    /// consulted" is the reading's whole shape, not a gap in it — a
+    /// consumer reading this off a distilled episode gets the run's own
+    /// record, complete on its own terms.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
 }

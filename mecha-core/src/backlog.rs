@@ -38,6 +38,7 @@ use crate::learning::LearningStore;
 use crate::outbox::OutboxStore;
 use crate::questions::QuestionStore;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// One store's contribution: how much waits, and since when.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,26 +105,38 @@ impl Backlog {
     /// Read every mecha-owned store. Best-effort per store, like doctor: one
     /// unreadable store never suppresses the other four.
     pub fn read() -> Backlog {
+        // The outbox is read once and its sent ids handed to the front
+        // door's reader: whether a closed request was a give-up is a join
+        // (below), and the join must not see a different outbox than the
+        // outbox depth was counted from.
+        let outbox_items = Self::read_outbox_items();
+        let sent: Option<HashSet<&str>> = outbox_items.as_ref().map(|items| {
+            items
+                .iter()
+                .filter(|i| i.status == "sent")
+                .map(|i| i.id.as_str())
+                .collect()
+        });
         Backlog {
-            outbox: Self::read_outbox(),
+            outbox: outbox_items.as_deref().map(Self::outbox_depth),
             questions: Self::read_questions(),
-            frontdoor: Self::read_frontdoor(),
+            frontdoor: Self::read_frontdoor(sent.as_ref()),
             proposals: Self::read_proposals(),
             candidates: Self::read_candidates(),
         }
     }
 
-    fn read_outbox() -> Option<Depth> {
+    fn read_outbox_items() -> Option<Vec<crate::outbox::OutboxItem>> {
         let store = OutboxStore::default_root()
             .and_then(OutboxStore::open)
             .ok()?;
-        let items = store.items().ok()?;
+        store.items().ok()
+    }
+
+    fn outbox_depth(items: &[crate::outbox::OutboxItem]) -> Depth {
         let pending: Vec<_> = items.iter().filter(|i| i.status == "pending").collect();
         let rejected = items.iter().filter(|i| i.status == "rejected").count();
-        Some(
-            Depth::of(pending.len(), pending.iter().map(|i| i.created_at.as_str()))
-                .given_up(rejected),
-        )
+        Depth::of(pending.len(), pending.iter().map(|i| i.created_at.as_str())).given_up(rejected)
     }
 
     fn read_questions() -> Option<Depth> {
@@ -140,7 +153,7 @@ impl Backlog {
         Some(Depth::of(open.len(), open.iter().map(|q| q.asked_at.as_str())).given_up(abandoned))
     }
 
-    fn read_frontdoor() -> Option<Depth> {
+    fn read_frontdoor(sent: Option<&HashSet<&str>>) -> Option<Depth> {
         // Like `read_questions`: a front door that has never existed is
         // empty, not unreadable — and `open_default` would *create* it,
         // twice per run at both ends of `Homeostat::finish`, and read a
@@ -153,17 +166,34 @@ impl Backlog {
             .iter()
             .filter(|r| r.state != frontdoor::CLOSED)
             .collect();
-        // Closed with nothing ever staged for it — the request arm's own
-        // reading of a give-up. A request closed after its draft was
-        // rejected counts once, on the outbox.
-        let closed_unsent = records
-            .iter()
-            .filter(|r| r.state == frontdoor::CLOSED && r.outbox.is_empty())
-            .count();
         Some(
             Depth::of(open.len(), open.iter().map(|r| r.created_at.as_str()))
-                .given_up(closed_unsent),
+                .given_up(Self::frontdoor_given_up(&records, sent)),
         )
+    }
+
+    /// Closed requests the owner gave up on: closed, and no draft ever
+    /// staged for the request was sent. `waiting` leaves on exactly one
+    /// transition, `→ closed`, so the give-up predicate has to match every
+    /// close that was not an answer, not only the closes with nothing
+    /// staged — a request whose draft was rejected goes back to
+    /// `extracted`, still waiting, with the rejected id in `outbox`, and
+    /// the owner closing it by hand later fell out of `waiting` with no
+    /// give-up to match, crediting whatever run spanned the close (found
+    /// on review). The give-up then counts on *both* stores, as the fall
+    /// does, so the subtraction reaches. `sent` is `None` when the outbox
+    /// could not be read; a closed request that has staged anything then
+    /// counts as a give-up, the direction that under-credits.
+    fn frontdoor_given_up(records: &[frontdoor::Record], sent: Option<&HashSet<&str>>) -> usize {
+        records
+            .iter()
+            .filter(|r| r.state == frontdoor::CLOSED)
+            .filter(|r| {
+                !r.outbox
+                    .iter()
+                    .any(|id| sent.is_some_and(|sent| sent.contains(id.as_str())))
+            })
+            .count()
     }
 
     fn read_proposals() -> Option<Depth> {
@@ -530,5 +560,54 @@ mod tests {
         assert!(!json.contains("given_up"), "{json}");
         let d: Depth = serde_json::from_str(r#"{"waiting":3}"#).unwrap();
         assert_eq!(d.given_up, 0);
+    }
+
+    /// A hand-closed request whose draft was rejected is a give-up, not a
+    /// clearance (found on review): the predicate matches every close that
+    /// was not an answer, joined against the outbox's sent ids.
+    #[test]
+    fn a_closed_request_is_a_give_up_unless_a_draft_it_staged_was_sent() {
+        let record = |seq: i64, state: &str, outbox: &[&str]| -> frontdoor::Record {
+            serde_json::from_value(serde_json::json!({
+                "seq": seq,
+                "type_id": "contact",
+                "state": state,
+                "created_at": "2026-09-01T00:00:00Z",
+                "drained_at": "2026-09-01T00:00:00Z",
+                "values": {},
+                "outbox": outbox,
+            }))
+            .unwrap()
+        };
+        let records = vec![
+            record(1, frontdoor::CLOSED, &[]),         // nothing staged
+            record(2, frontdoor::CLOSED, &["o-rej"]),  // draft rejected, closed by hand
+            record(3, frontdoor::CLOSED, &["o-sent"]), // answered, then closed
+            record(4, "extracted", &["o-rej"]),        // still waiting
+        ];
+        let sent: HashSet<&str> = ["o-sent"].into_iter().collect();
+        assert_eq!(Backlog::frontdoor_given_up(&records, Some(&sent)), 2);
+        // Outbox unreadable: a close with anything staged reads as a
+        // give-up — under-crediting, never inventing a clearance.
+        assert_eq!(Backlog::frontdoor_given_up(&records, None), 3);
+        // Through the delta: the rejection and the hand-close in one
+        // window fall on both stores and are given up on both, so nothing
+        // is credited.
+        let before = Backlog {
+            outbox: depth(1, None),
+            questions: depth(0, None),
+            frontdoor: depth(1, None),
+            ..Default::default()
+        };
+        let after = Backlog {
+            outbox: depth(0, None).map(|d| d.given_up(1)),
+            questions: depth(0, None),
+            frontdoor: depth(0, None).map(|d| d.given_up(1)),
+            ..Default::default()
+        };
+        let d = Backlog::delta(&before, &after);
+        assert_eq!(d.owner_facing_net(), Some(-2));
+        assert_eq!(d.given_up, Some(2));
+        assert_eq!(d.owner_facing_cleared(), Some(0));
     }
 }
