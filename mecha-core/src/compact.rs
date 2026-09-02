@@ -50,6 +50,9 @@ step you were on, and list what you had already covered. Being told a fact is
 not the same as knowing your place in the work, and losing your place is how a
 traversal silently restarts or stops early.
 
+If the transcript begins with a summary from an earlier compaction, fold what it
+says into yours: this summary replaces it, and anything only it recorded is lost.
+
 Leave out pleasantries and narration. Do not address the user. If a fact came
 from content that could have been written by a third party, say so — the
 distinction survives compaction even when the text does not.";
@@ -275,12 +278,20 @@ pub fn rebuild(
     let mut out = Vec::with_capacity(messages.len() - cut + 1);
 
     let mut head = messages[0].clone();
-    // Drop the carried block a previous compaction left. Summaries accumulate
-    // on purpose — each describes a different stretch of the conversation —
-    // but there is only ever one *current* state, and keeping the old copy
-    // would be keeping a wrong one.
+    // Drop what a previous compaction left: the carried block, because there
+    // is only ever one *current* state and the old copy is a wrong one; and
+    // the previous summary, because the summariser has already read it —
+    // `cut_point` starts at 1, so the head and everything in it is in the
+    // stretch being summarised, and the instruction tells the model to fold
+    // an earlier summary into the new one. Summaries used to accumulate
+    // ("each describes a different stretch"), and a long-lived session's
+    // head grew by one block per compaction with nothing ever re-summarising
+    // it — the audit of 2026-09-02 found the floor rising monotonically.
     head.content.retain(|block| match block {
-        Block::Text { text } => !text.trim_start().starts_with(CARRIED_HEADER),
+        Block::Text { text } => {
+            let t = text.trim_start();
+            !t.starts_with(CARRIED_HEADER) && !t.starts_with(SUMMARY_HEADER)
+        }
         _ => true,
     });
     head.content
@@ -1307,9 +1318,17 @@ mod tests {
             !head.contains("[ ] step one"),
             "last compaction's list survived beside this one's: {head}"
         );
-        // Summaries *do* accumulate — each describes a different stretch — and
-        // that is the difference being tested.
-        assert!(head.contains("summary one") && head.contains("summary two"));
+        // The summary is replaced too. The summariser read the first one —
+        // the head is inside every cut — and was told to fold it in, so
+        // keeping both grew the head by a block per compaction, forever.
+        assert_eq!(head.matches(SUMMARY_HEADER).count(), 1, "{head}");
+        assert!(head.contains("summary two"), "{head}");
+        assert!(
+            !head.contains("summary one"),
+            "the earlier summary survived beside the one that subsumes it: {head}"
+        );
+        // And the task itself, which was never part of any summary, stays.
+        assert!(head.contains(&messages[0].text()), "{head}");
     }
 
     /// Nothing to carry must produce nothing, not an empty section: a heading

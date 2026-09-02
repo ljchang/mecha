@@ -52,7 +52,10 @@ impl OpenAiCompatible {
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
         Ok(Self {
             http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(900))
+                // A stall fails the request; a long answer does not. See
+                // `provider::STALL_TIMEOUT` and `request` below.
+                .connect_timeout(crate::provider::CONNECT_TIMEOUT)
+                .read_timeout(crate::provider::STALL_TIMEOUT)
                 .build()?,
             // Local servers usually don't check it.
             api_key: cfg.resolve_api_key(),
@@ -125,7 +128,7 @@ impl OpenAiCompatible {
         if let Some(key) = &self.api_key {
             rb = rb.bearer_auth(key);
         }
-        rb.json(body)
+        crate::provider::anthropic::with_request_timeout(rb, body).json(body)
     }
 }
 
@@ -797,6 +800,18 @@ mod tests {
             thinking: false,
             cache_prompt: false,
         }
+    }
+
+    /// Same rule as the Anthropic client: a stream is bounded per read and
+    /// may run as long as tokens keep coming; only a non-streaming request
+    /// carries the whole-exchange cap.
+    #[test]
+    fn only_a_non_streaming_request_carries_the_whole_exchange_timeout() {
+        let p = provider(None, None);
+        let streaming = p.request(&json!({"stream": true})).build().unwrap();
+        assert!(streaming.timeout().is_none());
+        let whole = p.request(&json!({})).build().unwrap();
+        assert_eq!(whole.timeout(), Some(&crate::provider::REQUEST_TIMEOUT));
     }
 
     #[test]

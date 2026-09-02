@@ -47,9 +47,11 @@ impl Anthropic {
             .context("no Anthropic credentials found. Set ANTHROPIC_API_KEY, or put api_key_env / api_key in the provider config")?;
         Ok(Self {
             http: reqwest::Client::builder()
-                // Long turns are normal at high effort; the per-request cap is
-                // generous and streaming keeps the connection alive anyway.
-                .timeout(std::time::Duration::from_secs(900))
+                // A stall fails the request; a long answer does not. The
+                // whole-exchange cap applies to non-streaming requests only —
+                // see `request` and `provider::STALL_TIMEOUT`.
+                .connect_timeout(crate::provider::CONNECT_TIMEOUT)
+                .read_timeout(crate::provider::STALL_TIMEOUT)
                 .build()?,
             api_key,
             base_url: cfg
@@ -183,15 +185,29 @@ impl Anthropic {
     }
 
     fn request(&self, body: &Value) -> reqwest::RequestBuilder {
-        self.http
+        let rb = self
+            .http
             .post(format!(
                 "{}/v1/messages",
                 self.base_url.trim_end_matches('/')
             ))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
-            .header("content-type", "application/json")
-            .json(body)
+            .header("content-type", "application/json");
+        with_request_timeout(rb, body).json(body)
+    }
+}
+
+/// A non-streaming request gets the whole-exchange cap; a streaming one is
+/// bounded per read by the client and may run as long as tokens keep coming.
+pub(crate) fn with_request_timeout(
+    rb: reqwest::RequestBuilder,
+    body: &Value,
+) -> reqwest::RequestBuilder {
+    if body.get("stream").and_then(Value::as_bool) == Some(true) {
+        rb
+    } else {
+        rb.timeout(crate::provider::REQUEST_TIMEOUT)
     }
 }
 
@@ -700,6 +716,25 @@ mod tests {
 
     fn client() -> Anthropic {
         client_at("http://localhost:1")
+    }
+
+    /// A streamed request is bounded per read and may run as long as tokens
+    /// keep coming; a non-streaming one keeps the whole-exchange cap. Before
+    /// this, one 900 s cap on the exchange killed a legitimate long answer
+    /// mid-stream and discarded the partial.
+    #[test]
+    fn only_a_non_streaming_request_carries_the_whole_exchange_timeout() {
+        let c = client();
+        let streaming = c
+            .request(&serde_json::json!({"stream": true}))
+            .build()
+            .unwrap();
+        assert!(
+            streaming.timeout().is_none(),
+            "a stream is bounded per read"
+        );
+        let whole = c.request(&serde_json::json!({})).build().unwrap();
+        assert_eq!(whole.timeout(), Some(&crate::provider::REQUEST_TIMEOUT));
     }
 
     /// The wire contract: `message_start` opens the usage (input, both cache
