@@ -622,10 +622,16 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
 /// for saying how much went right and wrong.
 ///
 /// `partial` marks a reading computed from fewer channels than the record
-/// normally carries. [`live_readout`] sets it on a compacted run, where the
-/// interventions are unknowable (the message indices were rewritten in
-/// place) and the counters are still facts: a number with a caveat beats
-/// the `Neutral`-outright the label still, correctly, gives there.
+/// normally carries, from two sources. [`live_readout`] sets it on a
+/// compacted run, where the interventions are unknowable (the message
+/// indices were rewritten in place) and the counters are still facts: a
+/// number with a caveat beats the `Neutral`-outright the label still,
+/// correctly, gives there. And [`Valence::of`] carries [`Appraisal::partial`]
+/// — a store one of the arms reads was unreadable or short. The web chip's
+/// tooltip names neither cause, on purpose: the live path passes no stores,
+/// so today only compaction reaches it there, and a string that said so
+/// would go false the first time a live surface handed the readout a
+/// store (found on review).
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Valence {
     /// Sum of the positive errors' magnitudes.
