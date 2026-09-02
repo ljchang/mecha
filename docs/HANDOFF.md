@@ -60,15 +60,17 @@ the merges in it had landed with no changelog entry (#119, #121, #123,
 #125, #127, #128, #130) and were written up at release time; the next tag
 is v0.1.18.
 
-**Two lanes are live off `main` as of 2026-09-02, and their landing order
-is agreed.** `fix/harness-review` (**PR #139**, the audit lane) carries the
-six-lane review's nine fixes — the jail's dangling-symlink follow, the
-subagent send-laundering, the cumulative usage frame, `Approver::escalate`,
+**One lane is still live off `main` as of the evening of 2026-09-02; the
+other two landed that day in the agreed order.** `fix/harness-review`
+(**PR #139**, the audit lane, merged at `089952f`) carried the six-lane
+review's nine fixes — the jail's dangling-symlink follow, the subagent
+send-laundering, the cumulative usage frame, `Approver::escalate`,
 `last_assistant_text`, `&None` events on in-run side calls, lenient
-`stop_cause` reads — and `docs/AUDIT-RESEARCH.md`; that lane has moved on
-to `feat/approval-policy` on top of it (`policy.rs`, `Approver::permit`,
+`stop_cause` reads — and `docs/AUDIT-RESEARCH.md`; its follow-ups landed as
+#142 at `9a5ca23`; that lane has moved on to `feat/approval-policy`
+(**PR #143**, open, rebased onto main: `policy.rs`, `Approver::permit`,
 `[[rule]]`/`[approval]` config), touching `run_tools` and `tool/mod.rs` and
-nothing the appraisal lane touches. **The appraisal lane is merged**:
+nothing the appraisal lane touched. **The appraisal lane is merged**:
 #140 (`feat/appraisal-record`, phase A of `docs/APPRAISAL-RESEARCH.md` §3
 and the prediction record) at `15c628d` and #141 (`feat/appraisal-phase-b`,
 phase B) at `49166e3`, both on 2026-09-02 after #139 and #142 — see the
