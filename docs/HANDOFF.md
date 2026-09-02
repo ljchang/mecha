@@ -80,10 +80,15 @@ different sections.
 The third session's **#144** (`fix/draft-shows-its-account`: `OutboxItem`
 gains `call_id` and `filled_defaults`, `OutboxStore::stage` takes an
 `outbox::Provenance`) merged `main` after both appraisal PRs and
-auto-merged the three files it shares with them — `appraisal.rs`,
-`doctor.rs`, `tool/mod.rs` — so its only textual conflict was #142's in
-`agent.rs` and its remaining risk is the semantic one an empty conflict
-list does not cover; **#145** (`fix/voice-echo-on-speakers`) touches
+auto-merged the seven code files it shares with them — `appraisal.rs`,
+`doctor.rs`, `tool/mod.rs`, `mecha-cli`'s `commands/mail.rs` and
+`slack/connector.rs` (all #140), and `outbox.rs` and `frontdoor.rs` (both
+#141), plus `docs/ARCHITECTURE.md` — so its only textual conflict was
+#142's in `agent.rs` and its remaining risk is the semantic one an empty
+conflict list does not cover: `outbox.rs` is the one to re-check, since
+#144 changes the staging store's shape while #141 added readers of it
+(`Channel::Commitment`, `Depth::given_up`); **#145**
+(`fix/voice-echo-on-speakers`) touches
 `scripts/voice/`, `VOICE-RESEARCH.md` and one CI job, and nothing any
 other lane touches. **The appraisal lane is merged**:
 #140 (`feat/appraisal-record`, phase A of `docs/APPRAISAL-RESEARCH.md` §3
