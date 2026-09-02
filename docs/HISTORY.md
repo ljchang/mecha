@@ -4197,8 +4197,9 @@ typed signals, nothing more; the error signal is mostly prose,
 Reflexion-shaped, with numbers keeping three jobs (trigger, replay priority,
 consolidation gate); appraisal grounds in the charter, the task's plan as
 the prediction, and memory as the prior. Built the same day on
-`feat/appraisal-record` and merged as #140 at `15c628d`: `appraisal::Valence` beside the
-label on every surface, `session::SessionKind` with a `test` override that
+`feat/appraisal-record` and merged as #140 at `15c628d`:
+`appraisal::Valence` beside the label on every surface,
+`session::SessionKind` with a `test` override that
 only narrows, a ceiling relabelled as the owner's own limit with
 `Appraisal::cut_short` keeping the closure follow-up honest, and the
 prediction record (`TodoItem::{expect, check, expect_calls}`, the frozen
