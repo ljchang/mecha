@@ -732,12 +732,22 @@ pub trait Approver: Send + Sync {
     /// the tool-granularity problem surviving inside the mechanism built to
     /// fix it. Interactive approvers override this to ask past their
     /// shortcuts and to allow one call only if the person answers "always".
-    /// The default is `approve`: an approver with no shortcuts to bypass
-    /// keeps today's behaviour, and one that answers from policy (a headless
-    /// mode) answers from policy, which is what its mode means.
+    ///
+    /// The default is `Blocked`, the shape `escalate` set: a rule that says
+    /// a person must see this call fails closed where there is none. The
+    /// first version defaulted to `approve`, so under `ModeApprover { Allow }`
+    /// (`--yes`, `batch`, a trigger) a `prompt` rule allowed the call
+    /// silently while blocking it under `Ask` — the ordering the rules are
+    /// built on, inverted on exactly the surface nobody watches (the PR
+    /// review's finding). `Blocked`, not `Deny`: no human spoke.
     async fn consult(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
-        let _ = why;
-        self.approve(tool, input).await
+        let _ = input;
+        Decision::Blocked(format!(
+            "{why} — and this run's approver answers from policy, so `{}` was not put in \
+             front of anyone. Run from a surface with someone watching, or write the rule \
+             as `allow` or `forbid` if no person needs to decide.",
+            tool.name()
+        ))
     }
 
     /// An approval rule has said *no person needs to be asked* about this

@@ -450,6 +450,19 @@ impl ExecPolicy {
                 if let Some(w) = wrapped {
                     decision = Some(decision.map_or(w, |d| d.max(w)));
                 }
+                // A quoted argument the splitter finds opaque — `bash -ec 'cd
+                // /tmp; rm -rf x'`, the `;` glued to a word — gets the same
+                // word search an opaque outer command gets, so a `forbid` is
+                // not laundered by quoting it into an interpreter. This was
+                // stated as residue for two passes; it closes for the price
+                // of the check that already existed.
+                let opaque_inner = segment[1..]
+                    .iter()
+                    .filter(|arg| arg.contains(char::is_whitespace) && segments_of(arg).is_none())
+                    .any(|arg| forbidden_words(&rules, arg).is_some());
+                if opaque_inner {
+                    decision = Some(RuleDecision::Forbid);
+                }
                 // Under the strict check, never below Prompt: an allowlisted
                 // interpreter is not an allowlisted command.
                 if self.strict_inline_eval {
@@ -1074,12 +1087,19 @@ mod tests {
             p.decide("shell", &cmd("sudo ls")).unwrap().decision,
             RuleDecision::Prompt
         );
-        // The residue, stated: an inner string the splitter finds opaque (a
-        // `;` glued to a word) cannot be judged, so it asks. Under a headless
-        // `Allow` mode that is a yes — which is why `forbid` is a control
-        // against mistakes and ordinary injection, not containment at `--yes`.
+        // An inner string the splitter finds opaque (a `;` glued to a word)
+        // cannot be judged segment by segment, but its words can be searched
+        // the way an opaque outer command's are — so the `forbid` on `rm` is
+        // found here too, where two passes ago this was the stated residue.
         assert_eq!(
             p.decide("shell", &cmd("bash -ec 'cd /tmp; rm -rf x'"))
+                .unwrap()
+                .decision,
+            RuleDecision::Forbid
+        );
+        // And an opaque inner string with nothing forbidden in it still asks.
+        assert_eq!(
+            p.decide("shell", &cmd("bash -ec 'cd /tmp; ls'"))
                 .unwrap()
                 .decision,
             RuleDecision::Prompt
