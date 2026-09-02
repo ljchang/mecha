@@ -110,9 +110,12 @@ pub struct Work {
     /// [`escalation_candidate`]'s `UnverifiedClaim` branch, which reads this
     /// alongside `verify_like` for exactly that reason.
     pub shell_calls: u32,
-    /// Declared post-condition checks the loop actually ran — a trace named
-    /// `check` (`todo.rs`'s `TodoItem::check`, executed by the loop and
-    /// dispatched as a model `shell` call would be). **Not counted in
+    /// Declared post-condition checks the loop ran — a trace named
+    /// [`CHECK_TRACE`] (`todo.rs`'s `TodoItem::check`, to be executed by the
+    /// loop and dispatched as a model `shell` call would be). **Nothing
+    /// writes that trace yet** — the executor is the audit lane's
+    /// (`AUDIT-RESEARCH.md` §3.11) — so both counters read zero on every run
+    /// until it lands; the readers are here so it has somewhere to land. **Not counted in
     /// `calls`**: the model did not make the call, so a step's span must
     /// not grow by one for every check the harness ran on its behalf, and a
     /// forecast in `expect_calls` is a forecast of the model's own work. A
@@ -176,7 +179,16 @@ pub struct Work {
 /// The trace name the loop records a declared check's result under. Named
 /// here, beside the only reader that keys on it, so the writer and the
 /// reader cannot drift apart on a string.
-pub const CHECK_TRACE: &str = "check";
+///
+/// **Unforgeable by construction.** `ToolCallTrace::name` is the model's
+/// tool-name space — `shell`, an MCP tool, a subagent profile — and the
+/// providers' tool-name grammar is `[A-Za-z0-9_-]`, so a name with a dot in
+/// it can never be a tool the model called. The first spelling was `check`,
+/// which a subagent profile or an unprefixed MCP tool could legitimately be
+/// called; under that name every one of that tool's calls would have left
+/// `calls`, counted as a declared check, and on failure staged a follow-up
+/// task at closure for a tool that declared nothing (found on review).
+pub const CHECK_TRACE: &str = "step.check";
 
 /// A fresh run identity. Monotonic within the process, meaningless outside it.
 pub fn next_run() -> u64 {
@@ -1414,5 +1426,25 @@ mod tests {
         let now = Work::of(&[failed(), check(false, false)]);
         let span = now.since(start, 0, Some(Outcome::Ok)).unwrap();
         assert_eq!(appraise(span), Finding::Landed);
+    }
+
+    #[test]
+    fn the_check_trace_name_is_not_a_name_a_model_tool_can_have() {
+        assert!(
+            !CHECK_TRACE
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "{CHECK_TRACE} is inside the providers' tool-name grammar and a tool could collide with it"
+        );
+        let mcp_tool_called_check = ToolCallTrace {
+            name: "check".into(),
+            input: json!({}),
+            is_error: true,
+            denied: false,
+            unknown: false,
+            staged: false,
+        };
+        let work = Work::of(&[mcp_tool_called_check]);
+        assert_eq!((work.calls, work.checks_declared), (1, 0));
     }
 }
