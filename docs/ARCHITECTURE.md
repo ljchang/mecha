@@ -2257,8 +2257,10 @@ answered whose run then finished (`+0.5`, `Own`), a question abandoned
 (`-0.5`, `Owner`), a triaged request the owner closed with nothing sent
 (`-0.5`, `Owner`), a run whose `backlog_delta` came out negative (`+0.5`,
 `Own`), and a follow-up the reflector judged a correction (`-1.0`, `Owner`,
-`Channel::Intervention`, only where the origin is clean or the reflector saw
-the owner's turns alone). Every cite is an id the harness minted
+`Channel::Intervention`, only where `Reflexion::provenance()` is clean —
+the learning loop's own gate, by the owner's ruling, because a reflection
+written from a tainted session is already clean by construction and a
+wider clause had no row to apply to). Every cite is an id the harness minted
 (`Cite::Question`, `Cite::Request`, `Cite::Reflexion`). A store that cannot
 be read costs its channel and is reported as unreadable, never folded into
 empty — the readouts carry `questions_read` / `frontdoor_read` /
