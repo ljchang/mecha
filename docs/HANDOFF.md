@@ -68,17 +68,19 @@ subagent send-laundering, the cumulative usage frame, `Approver::escalate`,
 `stop_cause` reads — and `docs/AUDIT-RESEARCH.md`; that lane has moved on
 to `feat/approval-policy` on top of it (`policy.rs`, `Approver::permit`,
 `[[rule]]`/`[approval]` config), touching `run_tools` and `tool/mod.rs` and
-nothing the appraisal lane touches. **`feat/appraisal-record`** (this
-lane, worktree `.claude/worktrees/appraisal-phase-a`, **PR #140**, base
-`102bacc`) carries phase A of `docs/APPRAISAL-RESEARCH.md` §3 and the
-prediction record, and **`feat/appraisal-phase-b`** (**PR #141**, stacked
-on it) carries phase B — see the goal-system section below for both. Order:
-#139 merges first; #140 rebases onto it and only then splits
-`StopCause::Interrupted`, because the split rides #139's lenient
-`stop_cause` read; #141 retargets `main` after #140; the audit lane's
-planner ask and critic call base on the merged record. The research doc
-lives on the branch; the main checkout still holds an untracked copy from
-before the branch existed, to be discarded once #140 lands.
+nothing the appraisal lane touches. **The appraisal lane is merged**:
+#140 (`feat/appraisal-record`, phase A of `docs/APPRAISAL-RESEARCH.md` §3
+and the prediction record) at `15c628d` and #141 (`feat/appraisal-phase-b`,
+phase B) at `49166e3`, both on 2026-09-02 after #139 and #142 — see the
+goal-system section below for what each holds. Still open from that lane,
+in order: the `StopCause::Interrupted` split (Parked vs Cancelled; the
+`ask_user` park in `questions.rs` is the cancel site) and cancel-then-
+re-prompt as a steer, both now unblocked by #139's lenient `stop_cause`
+read; the audit lane's planner ask and critic call, which base on the
+merged record; charter sensors, designed at `GOAL-SYSTEM-DESIGN.md` §11.1
+and unbuilt. The main checkout may still hold an untracked
+`docs/APPRAISAL-RESEARCH.md` from before the branch existed; the tracked
+one is now on `main`, so the copy is safe to delete.
 
 **0.1.14 is thirty-one commits from three sessions working the same day**,
 which is the thing to know about reading its history: the lanes interleave,
