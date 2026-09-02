@@ -210,7 +210,10 @@ impl HttpClients {
     }
 
     /// Two default clients with no timeouts, for tests that measure counts
-    /// and outcomes rather than wall clock.
+    /// and outcomes rather than wall clock. Test-only on purpose: a `pub`
+    /// constructor that removes every bound is the silently-degrading-guard
+    /// shape, and nothing outside a test has a reason to want one.
+    #[cfg(test)]
     pub fn plain() -> Self {
         HttpClients {
             whole: reqwest::Client::new(),

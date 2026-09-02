@@ -7682,6 +7682,46 @@ mod tests {
         (agent, provider)
     }
 
+    /// The coupling `compact::rebuild` rests on when it drops the previous
+    /// summary: the summariser must have *read* it, which is true only
+    /// because the loop renders `&messages[..cut]` and `cut_point` starts at
+    /// 1 — the head, and any earlier summary in it, is inside every stretch.
+    /// Asserted in prose in two places and, until this test, tested in
+    /// neither; narrowing the render range would have deleted every prior
+    /// summary unread.
+    #[tokio::test]
+    async fn the_summariser_is_shown_the_head_of_the_transcript() {
+        let mut turns = three_calls();
+        turns.push(assistant(
+            vec![Block::text("first summary")],
+            StopReason::EndTurn,
+        ));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, provider) = compacting_agent(turns);
+        agent.cfg.compact_validate = false;
+
+        let mut convo = Conversation::user("the original task, which lives in the head");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo.messages[0].text().contains("first summary"));
+
+        let summariser_requests: Vec<CompletionRequest> = provider
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.system.as_deref() == Some(crate::compact::SUMMARY_SYSTEM))
+            .cloned()
+            .collect();
+        assert!(!summariser_requests.is_empty(), "compaction must have run");
+        for request in &summariser_requests {
+            let rendered: String = request.messages.iter().map(|m| m.text()).collect();
+            assert!(
+                rendered.contains("[user] the original task, which lives in the head"),
+                "the head is inside every stretch the summariser reads: {rendered}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_summary_that_fails_validation_is_regenerated_with_the_omissions_named() {
         let mut turns = three_calls();
