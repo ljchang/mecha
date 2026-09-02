@@ -175,19 +175,14 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-On **`feat/appraisal-record`** (the appraisal lane's worktree branch,
-uncommitted, based on `main` at `102bacc`), measured 2026-09-02 (~17:30
-UTC): **2,085 tests**, no failures — **690** in `mecha-cli` (1 ignored),
-**20** in `first_run`, **1,150** in `mecha-core` (1 ignored: the
-`kind_override_probe` child half of an environment test), 6 `mcp_server`,
-9 `sandbox_backends`, 133 `mecha-mail`, 1 in its `mecha-mail` binary, 75
-`mecha-slack`, 1 doctest; clippy clean. **Not a delta against the 2,029
-below**: `main` moved from `b132157` to `102bacc` between the two
-measurements and was not re-measured, so the branch's own additions are
-named rather than subtracted — 22 tests, in `session::tests` (the five
-`SessionKind` tests and the probe), `runlog::tests` (1), `appraisal::tests`
-(5), `step::tests` (2), `tool::todo::tests` (5), `tui::tests` (1), the
-Slack connector (1), and `learning`'s trigger test extended in place.
+On **`main` at `49166e3`** (#139, #140, #141 and #142 all in), measured
+2026-09-02 (~20:30 UTC): **2,160 tests**, no failures — **691** in
+`mecha-cli` (1 ignored), **20** in `first_run`, **1,224** in `mecha-core`
+(1 ignored: the `kind_override_probe` child half of an environment test),
+6 `mcp_server`, 9 `sandbox_backends`, 133 `mecha-mail`, 1 in its
+`mecha-mail` binary, 75 `mecha-slack`, 1 doctest; clippy clean. A delta
+against the 2,029 below is four merges' worth and is not itemised here;
+diff `cargo test -- --list` between the two commits if a count matters.
 
 Expect **2,029 tests**, no failures — measured 2026-08-31 (~12:50 UTC) in
 this checkout on `main` at **b132157** (the 0.1.17 release commit): **682** in
@@ -2176,8 +2171,8 @@ repeated here.
 
 **Open now:**
 
-- **2026-09-02 — the appraisal review, phase A, and the prediction record
-  are built on `feat/appraisal-record` and uncommitted.**
+- **2026-09-02 — the appraisal review, phase A, phase B and the prediction
+  record are on `main`** (#140 at `15c628d`, #141 at `49166e3`).
   `docs/APPRAISAL-RESEARCH.md` is the review (corpus measured live, two
   literature passes, a ranked change list); its §3.1, §3.2, §3.7 and §3.11
   carry *Built* notes naming every symbol, and `ARCHITECTURE.md`'s
@@ -2205,33 +2200,33 @@ repeated here.
   follow-up **may** be a channel; charter lines **may** carry owner-written
   sensors (with the seven containments §3.6/§3.11 of the review's reply
   name — never a `Metric`, never in the prompt, id-join attribution, doctor
-  reports saturation, the editor shows the reading). **Open, in order:**
-  the `Interrupted` split (parked vs cancelled; `questions.rs`'s cancel is
-  the one park site; waits on #139); phase B — cancel-and-re-prompt as an
-  intervention, judged follow-ups read from `reflections.jsonl`, the
-  answered-question and front-door-closed positive channels, guilt from
-  `backlog_delta`, the three trajectory counters; phase C — firing
+  reports saturation, the editor shows the reading; designed since at
+  `GOAL-SYSTEM-DESIGN.md` §11.1). **Open, in order:** the `Interrupted`
+  split (parked vs cancelled; `questions.rs`'s cancel is the one park
+  site; unblocked now that #139's lenient `stop_cause` read is on `main`)
+  and cancel-and-re-prompt as an intervention; phase B's leftovers — the
+  three trajectory counters and the trigger read receipt; phase C — firing
   `Mismatch` (one per step, three per run), the reflection that cites turn
-  ids, the next-turn prior and the per-kind retrieval prior; a design
-  section for charter sensors; the tamper count folded into `RunStats`;
-  and the experiments and ablations the owner asked for once this round
-  lands (`EXPERIMENT-DESIGN.md`, structural switches forced off under
-  `mecha eval`, never a prompt). The corpus numbers in the rest of this
+  ids, the next-turn prior and the per-kind retrieval prior; charter
+  sensors, from the design section; the tamper count folded into
+  `RunStats`; and the experiments and ablations the owner asked for now
+  that this round has landed (`EXPERIMENT-DESIGN.md`, structural switches
+  forced off under `mecha eval`, never a prompt). The corpus numbers in the rest of this
   section (119 of 120, 120 of 459) are the rung 7 measurement and are
   superseded by the valence read above for any decision about what to
   build next. **Deploy note:** `WireEvent::Affect` is now sent for a
   `neutral` label with a signed valence, and a page served from a stale
   `web/dist` sets the chip to `ev.label` unconditionally — it will read a
   literal `neutral` until the bundle is rebuilt (update skill surface 1b).
-  **Phase B followed the same evening on
-  `feat/appraisal-phase-b`, stacked on the record**: `SessionRecords`,
+  **Phase B followed the same evening as #141**: `SessionRecords` with a
+  per-store short flag that lands on the record as `Appraisal::partial`,
   `Channel::Commitment` (questions answered or abandoned, a triaged request
-  closed with nothing sent, a run that shortened the owner's queue), judged
-  follow-ups from `reflections.jsonl` as `Intervention` errors,
-  `guilt::with_delta` folding the run's own delta over the standing level.
-  Re-read after review: **27 of 144 sessions signed, `+16.5 −34.5`**. Still open from
-  phase B: the `Interrupted` split (after #139) and cancel-then-re-prompt
-  as a steer, the three trajectory counters, and the trigger read receipt.
+  closed with nothing sent, a run that shortened the owner's queue — net of
+  what the owner gave up on, `Depth::given_up`), judged follow-ups from
+  `reflections.jsonl` as `Intervention` errors on clean provenance only,
+  `guilt::with_backlogs` folding level, delta and relief from one pair of
+  reads with the relief in its own field. Re-read after review, before the
+  give-up counter: **27 of 144 sessions signed, `+16.5 −34.5`**.
 
 - **Rung 7's measurement came back, and it decides what to build next.**
   `mecha sessions appraise` over the live store: 459 sessions read, **120
