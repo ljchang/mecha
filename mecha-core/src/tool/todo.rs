@@ -157,8 +157,11 @@ where
     // holding a newline would forge plan lines through `render` →
     // `parse_carried`, and `TodoTool::call` refuses it; a record carrying
     // one (no reachable writer today) loses the field, never the plan.
-    Ok(v.and_then(|v| v.as_str().map(str::to_string))
-        .filter(|s| !s.trim().is_empty() && !s.contains(['\n', '\r'])))
+    // Trimmed, as the model door trims: the two doors are described as
+    // symmetric, and `check_hash` already trims, so a padded record value
+    // was the same freeze rendered with different spacing (found on review).
+    Ok(v.and_then(|v| v.as_str().map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty() && !s.contains(['\n', '\r'])))
 }
 
 /// A record's optional count, leniently: anything that is not a
@@ -3651,5 +3654,23 @@ mod tests {
         let plan = TodoTool::plan_from_transcript(&messages).unwrap();
         assert_eq!(plan.items[2].check.as_deref(), Some("make check-2"));
         assert!(TodoTool::frozen_checks_from_transcript(&messages).is_empty());
+    }
+
+    /// The record door trims as the model door does (found on the
+    /// seventeenth review pass): the same freeze must render the same.
+    #[test]
+    fn a_record_value_is_trimmed_like_a_model_one() {
+        let item: TodoItem = serde_json::from_value(json!({
+            "content": "wire it", "status": "completed",
+            "check": "  make test  ", "expect": "\tone call\t"
+        }))
+        .unwrap();
+        assert_eq!(item.check.as_deref(), Some("make test"));
+        assert_eq!(item.expect.as_deref(), Some("one call"));
+        let blank: TodoItem = serde_json::from_value(json!({
+            "content": "wire it", "status": "completed", "check": "   "
+        }))
+        .unwrap();
+        assert_eq!(blank.check, None);
     }
 }

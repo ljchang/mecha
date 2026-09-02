@@ -442,15 +442,20 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
     // `visible`/`controllable` conservative, so a `self`/`owner` verdict
     // reduces to `Neutral` under `label_of` whatever magnitude the model
     // picked — and the magnitude-first reduce above would let that outrank a
-    // smaller, already-informative error (an `Anger` from a ceiling, say)
-    // purely on size. `says_more`'s own stated principle ("a label that names
+    // smaller, already-informative error purely on size. (Which error: one
+    // the appraiser itself signed with a `world`/`other` agency, since the
+    // ceiling reclassified to `Agency::Owner`, those two agencies reach the
+    // record only through the parsed verdict, and no free-readout error
+    // earns a label at all — the point `the_free_readouts_label_is_always_
+    // neutral_and_its_valence_is_not` pins.) `says_more`'s own stated principle ("a label that names
     // nothing must never mask one that names something") already covers this
     // in spirit; the reduce above only ever applied it within an exact tie.
     //
     // **Deliberately scoped to `Channel::Appraisal`, not every channel.** The
-    // identical shape is reachable today from deterministic channels alone
-    // (`ended_on_failed_call` at a fixed `-1.0` can already outrank a `-0.5`
-    // `Anger`), but that is `of_session`'s free readout — the number
+    // identical shape exists among deterministic channels too
+    // (`ended_on_failed_call` at a fixed `-1.0` outranks any `-0.5`), and
+    // today it buries nothing there, because every free-readout error is
+    // `Neutral`; but that is `of_session`'s free readout — the number
     // `GOAL-SYSTEM-DESIGN.md`'s 120-session measurement and `HANDOFF.md`'s
     // "today affect is a constant" are stated against — and a general fix
     // changes it without either document saying so. The appraiser is what
