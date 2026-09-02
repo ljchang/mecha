@@ -999,10 +999,11 @@ pub fn of_session(
     // already decided, per session, which follow-ups were the owner
     // correcting the run, and recorded its verdict with provenance — a
     // judged verdict with the same standing `apply_probe` gives the
-    // replay's. Read only where the verdict cannot have been written by
-    // third-party text: a clean origin, or a reflector that saw the owner's
-    // own turns and nothing else. A lesson the owner dropped is withdrawn
-    // evidence and reads as nothing.
+    // replay's. Admitted on the gate below — clean provenance, the
+    // learning loop's own question — and nothing wider; the rule is stated
+    // once, there, so this header cannot drift from it (an earlier draft
+    // of this sentence described a wider gate the code never kept). A
+    // lesson the owner dropped is withdrawn evidence and reads as nothing.
     for r in records.reflexions {
         if r.session_id != session_id
             || r.trigger != crate::learning::Trigger::Followup.as_str()
@@ -3217,6 +3218,7 @@ mod tests {
         assert_eq!(r.label, Affect::Neutral);
         assert_eq!((r.valence.positives, r.valence.positive), (0, 0.0));
         assert!(r.valence.negatives >= 2);
+    }
 
     // --- phase B channels ----------------------------------------------------
 
@@ -3281,7 +3283,7 @@ mod tests {
     }
 
     #[test]
-    fn a_judged_follow_up_is_an_intervention_only_when_the_owner_authored_the_evidence() {
+    fn a_judged_follow_up_is_an_intervention_only_on_a_clean_reflection() {
         let clean = reflexion("r1", "s1", "followup", "clean", "full");
         let user_turns = reflexion("r2", "s1", "followup", "untrusted", "user_turns");
         let laundered = reflexion("r3", "s1", "followup", "untrusted", "full");
