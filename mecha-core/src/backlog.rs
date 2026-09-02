@@ -127,9 +127,12 @@ impl Backlog {
     }
 
     fn read_outbox_items() -> Option<Vec<crate::outbox::OutboxItem>> {
-        let store = OutboxStore::default_root()
-            .and_then(OutboxStore::open)
-            .ok()?;
+        // An outbox that has never existed is empty, not unreadable, and a
+        // reader must not create it — the same rule as the two readers
+        // below (found on review).
+        let Some(store) = OutboxStore::open_existing_default() else {
+            return Some(Vec::new());
+        };
         store.items().ok()
     }
 
