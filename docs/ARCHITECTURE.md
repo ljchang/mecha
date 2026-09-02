@@ -2308,8 +2308,9 @@ result as a trace named `step::CHECK_TRACE`, and the readers are already in
 place: `Work::of` keeps those out of `calls` (the harness's work is not the
 model's, and `expect_calls` forecasts the model's), counts `checks_declared`
 / `checks_passed` (a refused check in neither), lets a passing check count
-as `verify_like`, and **never lets a check set `last`** — `Tracked::observe`
-refreshes its copy of `last` on the model's own call count, so a check
+as `verify_like`, and **never lets a check set `last`** — the `continue` in
+`Work::of` is the enforcement; `Tracked::observe` is why it matters, since
+it refreshes its copy of `last` on the model's own call count, so a check
 landing last beside real work would have read as the step's own failure or
 refusal (found on review). `Finding::CheckFailed` is read from the counters
 before the last-attempt readings, because the model's last call can succeed
