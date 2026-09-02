@@ -1076,9 +1076,9 @@
 
 <style>
   .page { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 22px 56px 12px 20px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 22px var(--gutter-gear) 12px var(--gutter); }
   .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; }
-  .scroll { flex: 1; overflow-y: auto; padding: 2px 20px 90px; display: flex; flex-direction: column; gap: 10px; }
+  .scroll { flex: 1; overflow-y: auto; padding: 2px var(--gutter) 90px; display: flex; flex-direction: column; gap: 10px; }
   .row { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 8px; color: var(--text); }
   /* Only this is the tap target that opens the card. */
   .cardhead { text-align: left; display: flex; flex-direction: column; gap: 8px; background: none; border: none; padding: 0; margin: 0; color: inherit; font: inherit; cursor: pointer; width: 100%; }
@@ -1209,7 +1209,7 @@
   .dcount { font-size: 13px; font-weight: 500; color: var(--accent-400); text-align: right; }
   .dblurb { grid-column: 1 / -1; font-size: 11px; color: var(--text-muted); }
   .donebtn { color: var(--accent-400); border-color: var(--accent-700); }
-  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px 20px 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px var(--gutter) 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
   .grip { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-900); align-self: center; }
   .sheettitle { font-size: 15px; font-weight: 500; }
   .field { background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; padding: 12px 14px; min-height: 44px; box-sizing: border-box; width: 100%; }

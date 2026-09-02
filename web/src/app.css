@@ -28,8 +28,41 @@
   --radius: 8px;
   --radius-chip: 6px;
 
+  /* Desktop geometry, in one place because six views agree on it.
+   * `--measure` is the reading column a wide window keeps instead of
+   * stretching a phone layout to a monitor: every view's scroller stays
+   * full-bleed (so the scrollbar is where a desktop expects it) and pads
+   * its own content in to this width. `--rail` is the left nav the bottom
+   * bar becomes at 900px; `--sessions` is the chat drawer that stops being
+   * a drawer at 1180px. */
+  --measure: 880px;
+  --rail: 76px;
+  --sessions: 264px;
+  /* **Every view's side margin goes through these two, never through a
+   * literal.** A percentage inside a custom property is resolved where it
+   * is *used*, so one definition centres each view's own content in
+   * whatever width that view happens to have — the chat's column is
+   * narrower than the board's by exactly the docked session panel, and
+   * neither needs to know that. Nine components had their own copy of
+   * `20px` and a tenth would have been written the same way; the same
+   * argument as `tui::list_height` in CLAUDE.md, in CSS.
+   *
+   * `--gutter-gear` is the right-hand side of a view *header*, which on a
+   * phone must leave the shell's floating gear its corner. On a wide
+   * window the gear has moved to the foot of the nav rail, so the reason
+   * for the difference is gone and the two agree again. */
+  --gutter: 20px;
+  --gutter-gear: 56px;
+
   --sans: Inter, system-ui, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+@media (min-width: 900px) {
+  :root {
+    --gutter: max(20px, calc((100% - var(--measure)) / 2));
+    --gutter-gear: max(20px, calc((100% - var(--measure)) / 2));
+  }
 }
 
 * {

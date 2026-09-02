@@ -69,6 +69,46 @@ pub enum Record {
     Rewrite {
         messages: Vec<Message>,
     },
+    /// A better name for this conversation than the one it was created with.
+    ///
+    /// **Appended, never patched.** The header is the first line of the file
+    /// and [`Session::peek_meta`] reads exactly that line, which is what
+    /// makes listing thousands of sessions cheap; rewriting it in place would
+    /// trade an append-only store for one line of tidiness. So a rename is a
+    /// record like everything else, and [`Session::read`] applies the last
+    /// one it sees over the header's.
+    ///
+    /// A consequence worth knowing at the call sites: `peek_meta` and
+    /// therefore [`Session::list`] still report the *created* title. That is
+    /// deliberate rather than merely cheap — the created title is where the
+    /// `web: ` / `voice: ` / `task: ` prefix that classifies a session comes
+    /// from.
+    ///
+    /// **And that prefix *is* load-bearing, so a rename may not change it.**
+    /// An earlier version of this comment said the opposite, which was the
+    /// dangerous half-truth: `Session::read` applies renames, `load` is a
+    /// thin wrapper over `read`, and `serve::chat`'s resume path feeds the
+    /// loaded title straight to `task_withholding` — which gates
+    /// `kg_task_update` on `task: ` and is how D6 (*the agent may not close
+    /// its own task*) is enforced by absence. A rename that dropped the
+    /// prefix would hand a resumed delegation back the tool that closes its
+    /// own task. Today only `web: ` sessions are ever renamed and the rename
+    /// re-stamps the prefix, so the hazard is one careless caller away
+    /// rather than present — which is exactly the kind of thing that should
+    /// not be guarded by a sentence in a doc comment. [`Session::read`]
+    /// enforces it instead: a rename whose prefix disagrees with the
+    /// header's is ignored.
+    ///
+    /// A struct variant, not a newtype one, because this enum is internally
+    /// tagged: `#[serde(tag = "record")]` merges the variant's fields into
+    /// the object beside the tag, and a bare `String` has no fields to merge
+    /// — serialization fails at *runtime*, which for an append-only store is
+    /// a record silently not written. Every other variant here happens to
+    /// wrap a struct, so this is the first one that could have found out the
+    /// hard way; `a_rename_survives_a_round_trip` is what does instead.
+    Title {
+        title: String,
+    },
 }
 
 /// What a run was configured with, recorded so it can be replayed.
@@ -802,6 +842,7 @@ impl Session {
         let mut config_positions: Vec<usize> = Vec::new();
         let mut outcomes = Vec::new();
         let mut meta = None;
+        let mut title = None;
         let mut messages = Vec::new();
         let mut taint = Taint::default();
         // Built here with `TaintTimeline::from_records`'s exact state
@@ -814,6 +855,9 @@ impl Session {
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
             match serde_json::from_str::<Record>(line) {
                 Ok(Record::Meta(m)) => meta = Some(m),
+                // Last one wins: a conversation is renamed as it grows, and
+                // the newest name is the one a person would recognise it by.
+                Ok(Record::Title { title: t }) => title = Some(t),
                 Ok(Record::Message(m)) => messages.push(m),
                 // The conversation state as of the rewrite, wholesale. Taint
                 // is deliberately not touched: summarising away the text of a
@@ -917,7 +961,20 @@ impl Session {
             }
         }
 
-        let meta = meta.with_context(|| format!("{} has no session header", path.display()))?;
+        let mut meta = meta.with_context(|| format!("{} has no session header", path.display()))?;
+        // A rename recorded later in the file is the current name; the header
+        // keeps the created one so `peek_meta` stays a one-line read.
+        //
+        // **A rename may not change what the session is.** The `task: ` /
+        // `voice: ` / `web: ` prefix on the created title is read by
+        // `serve::chat`'s `task_withholding`, which is how D6 — the agent may
+        // not close its own task — is enforced by absence; a rename that
+        // dropped it would hand a resumed delegation back `kg_task_update`.
+        // Enforced here rather than trusted to every writer, because there is
+        // one reader and there will be more writers.
+        if let Some(t) = title.filter(|t| Self::keeps_kind(meta.title.as_deref(), t)) {
+            meta.title = Some(t);
+        }
         Ok(Transcript {
             meta,
             convo: Conversation::resumed(messages, taint),
@@ -928,6 +985,29 @@ impl Session {
                 checkpoints: taint_checkpoints,
             },
         })
+    }
+
+    /// Does a rename leave the session the same *kind* of session?
+    ///
+    /// The kind is the `<word>: ` prefix the title was created with. A rename
+    /// must carry it; one that does not is dropped rather than applied, and
+    /// the session keeps the name it had. Fail-closed in the direction that
+    /// matters: an ignored rename costs a stale label, where an applied one
+    /// can cost a withheld tool.
+    ///
+    /// A created title with no prefix at all constrains nothing — there is no
+    /// kind to preserve, and every prefix in use today is written by this
+    /// crate's own callers.
+    ///
+    /// Public because [`Session::read`] is not the only reader of a rename:
+    /// a listing that scans for the newest `Title` without loading the
+    /// transcript has to apply the same rule, or the drawer shows a name the
+    /// session does not have.
+    pub fn keeps_kind(created: Option<&str>, renamed: &str) -> bool {
+        match created.and_then(|c| c.split_once(": ")) {
+            Some((kind, _)) => renamed.starts_with(&format!("{kind}: ")),
+            None => true,
+        }
     }
 
     /// Every message the conversation ever contained, in first-seen order.
@@ -1225,6 +1305,98 @@ mod homeostat_record_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// A rename is a record, and it has to survive the file it is written to.
+    ///
+    /// Two things this pins, both of which fail silently otherwise: that a
+    /// `Title` record *serializes at all* (this enum is internally tagged, so
+    /// a newtype variant wrapping a bare `String` fails at runtime, and the
+    /// only symptom is a record that never lands); and that a reader applies
+    /// the last one over the header while `peek_meta` keeps reporting the
+    /// created title, which is where the `web: ` / `task: ` classification
+    /// comes from.
+    #[test]
+    fn a_rename_survives_a_round_trip() {
+        let dir = std::env::temp_dir().join(format!("mecha-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Session::create(
+            &dir,
+            SessionMeta {
+                id: "20260901T000000-t".into(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "first".into(),
+                workspace: std::path::PathBuf::from("/tmp"),
+                title: Some("web: chat-8f3a".into()),
+            },
+        )
+        .unwrap();
+        s.append_messages(&[crate::message::Message::user("go")])
+            .unwrap();
+        s.append(&Record::Title {
+            title: "web: Ostrander nomination".into(),
+        })
+        .unwrap();
+        s.append(&Record::Title {
+            title: "web: Cape Town dates".into(),
+        })
+        .unwrap();
+
+        let (meta, convo) = Session::load(&s.path).unwrap();
+        assert_eq!(meta.title.as_deref(), Some("web: Cape Town dates"));
+        assert_eq!(convo.messages.len(), 1, "a rename is not a message");
+        assert_eq!(
+            Session::peek_meta(&s.path).and_then(|m| m.title).as_deref(),
+            Some("web: chat-8f3a"),
+            "the header keeps the created title, so listing stays a one-line read"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D6 is enforced by the absence of a tool, and the absence is decided
+    /// from the title's prefix — so a rename that changed the prefix would
+    /// hand a resumed delegation back `kg_task_update`. Nothing writes such
+    /// a rename today; the guard exists so that nothing can.
+    #[test]
+    fn a_rename_cannot_change_what_kind_of_session_this_is() {
+        let dir = std::env::temp_dir().join(format!("mecha-kind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Session::create(
+            &dir,
+            SessionMeta {
+                id: "20260902T000000-k".into(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "first".into(),
+                workspace: std::path::PathBuf::from("/tmp"),
+                title: Some("task: nominate someone for the Ostrander".into()),
+            },
+        )
+        .unwrap();
+        s.append_messages(&[crate::message::Message::user("go")])
+            .unwrap();
+        // A rename that drops the kind: refused, and the session keeps the
+        // name that decides its withholding.
+        s.append(&Record::Title {
+            title: "web: Ostrander nomination".into(),
+        })
+        .unwrap();
+        let (meta, _) = Session::load(&s.path).unwrap();
+        assert_eq!(
+            meta.title.as_deref(),
+            Some("task: nominate someone for the Ostrander"),
+            "a rename must not be able to turn a delegation into a chat"
+        );
+
+        // A rename that keeps it: applied as normal.
+        s.append(&Record::Title {
+            title: "task: Ostrander nomination".into(),
+        })
+        .unwrap();
+        let (meta, _) = Session::load(&s.path).unwrap();
+        assert_eq!(meta.title.as_deref(), Some("task: Ostrander nomination"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// One walk has to answer exactly what three walks answered, or the
     /// caller that swapped to it is reading a different transcript from the

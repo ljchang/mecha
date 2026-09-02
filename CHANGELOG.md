@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The web app has a desktop layout** (`REMOTE-SURFACE-DESIGN.md` D10). It
+  was nine phone screens faithfully built, so a 1500px window rendered a
+  560px column and left the rest of the screen empty. Two breakpoints, each
+  because something specific stops fitting: at **900px** the bottom nav
+  becomes a left rail and the shell's floating gear docks to its foot, and
+  every view keeps a reading measure instead of stretching; at **1180px**
+  the chat's session drawer stops being a drawer and simply stays open —
+  the one thing a phone could not afford, and the whole reason the drawer
+  existed. The phone layout is unchanged apart from the chat header, whose
+  status chips now wrap under the session name rather than squeezing it to
+  nothing.
+
+- **A conversation names itself** (`REMOTE-SURFACE-DESIGN.md` D11,
+  `mecha_core::title`). A session was created under a key, and a key is an
+  address rather than a name; asking for one moved the friction rather than
+  removing it. `mecha serve` now derives a short name after a run and
+  re-derives it as the conversation grows (owner turns 1, 3 and 8),
+  recorded as a `Record::Title` and applied over the header by
+  `Session::read`. The titler reads **only the owner's own turns** — never
+  assistant text, never tool results: a title is rendered in the owner's
+  session list for as long as the session exists, which is a longer-lived
+  display than any single answer.
+
+### Changed
+
+- **Starting a web conversation asks nothing.** The "new" button moved out
+  of the session drawer into the chat header, where it is one tap from
+  anywhere, and no longer prompts for a lowercase-and-dashes name.
+
 ## [0.1.17] - 2026-08-31
 
 ### Changed
