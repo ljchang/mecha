@@ -184,10 +184,14 @@ pub struct Work {
 /// here, beside the only reader that keys on it, so the writer and the
 /// reader cannot drift apart on a string.
 ///
-/// **Unforgeable by construction.** `ToolCallTrace::name` is the model's
-/// tool-name space — `shell`, an MCP tool, a subagent profile — and the
-/// providers' tool-name grammar is `[A-Za-z0-9_-]`, so a name with a dot in
-/// it can never be a tool the model called. The first spelling was `check`,
+/// **Unforgeable in the direction that matters.** `ToolCallTrace::name` is
+/// the model's tool-name space — `shell`, an MCP tool, a subagent profile
+/// — and the providers' tool-name grammar is `[A-Za-z0-9_-]`, so a model
+/// emitting this name as a `tool_use` lands as `unknown: true`, which
+/// `Outcome::of` reads as `Failed`: it can manufacture a *failed* check
+/// against itself, never a passing one. (An MCP server with
+/// `prefix_tools = false` could register a dotted name verbatim; that is
+/// the operator's configuration, not the model's reach.) The first spelling was `check`,
 /// which a subagent profile or an unprefixed MCP tool could legitimately be
 /// called; under that name every one of that tool's calls would have left
 /// `calls`, counted as a declared check, and on failure staged a follow-up
