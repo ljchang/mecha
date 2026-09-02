@@ -220,9 +220,23 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
             "default": d,
         })
     };
+    // One account is its own default, configured or not. `resolve` answers
+    // `names.len() == 1` *before* it reaches the `Mode::Create` arm, so with a
+    // single mailbox the account a create will use is known whether or not
+    // anybody ran `mecha-mail default` — and a draft from the only mailbox
+    // there is should still say which one it is. The whole point is that a
+    // reviewer never has to know how many accounts exist to read a draft.
+    let only_account = match names {
+        [only] => Some(only.clone()),
+        _ => None,
+    };
+    let mail_default = only_account
+        .clone()
+        .or_else(|| file.mail_default().map(String::from));
+    let calendar_default = only_account.or_else(|| file.calendar_default().map(String::from));
     let account = |rule: &str| plain(rule);
-    let mail_account = |rule: &str| with_default(rule, file.mail_default());
-    let calendar_account = |rule: &str| with_default(rule, file.calendar_default());
+    let mail_account = |rule: &str| with_default(rule, mail_default.as_deref());
+    let calendar_account = |rule: &str| with_default(rule, calendar_default.as_deref());
 
     json!([
         {
@@ -1902,6 +1916,27 @@ mod tests {
                 spec["description"]
             );
         }
+    }
+
+    /// The single-account install still says who a draft is from.
+    ///
+    /// `resolve` answers `names.len() == 1` before it consults a default at
+    /// all, so the account is known even with nothing configured — and a
+    /// draft that omits it for want of a config line is the same unsigned
+    /// letter, on the install least likely to have run `mecha-mail default`.
+    #[test]
+    fn one_account_is_its_own_default_without_being_configured() {
+        let defs = tool_definitions(&names(&["personal"]), &conf(None, None, None));
+        for tool in ["mail_send", "calendar_create_event"] {
+            let spec = &defs.iter().find(|d| d["name"] == tool).unwrap()["inputSchema"]
+                ["properties"]["account"];
+            assert_eq!(spec["default"], json!("personal"), "{tool}: {spec}");
+        }
+        // And it is still only a create that claims one: omitting `account`
+        // on a read means every account, which happens to be the same one.
+        let search = &defs.iter().find(|d| d["name"] == "mail_search").unwrap()["inputSchema"]
+            ["properties"]["account"];
+        assert!(search.get("default").is_none(), "{search}");
     }
 
     /// With no default configured there is nothing to declare, and inventing
