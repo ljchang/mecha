@@ -195,8 +195,12 @@ impl QuestionStore {
             // and it counts as skipped rather than vanishing: `flatten()`
             // dropped it silently, so `questions_read: true` could stand
             // over a store that was not fully read — the one claim this
-            // function exists to make (found on review; the two sibling
-            // counting readers fail the whole read on the same error).
+            // function exists to make (found on review). The two sibling
+            // counting readers — `Frontdoor::records_counting`,
+            // `OutboxStore::items_impl` — chose the opposite and fail the
+            // whole read on the same error; both are safe, and this one
+            // keeps the listing's skip-and-count shape because a corrupt
+            // entry must not hide the queue.
             let path = match entry {
                 Ok(entry) => entry.path(),
                 Err(e) => {

@@ -498,16 +498,19 @@ opinion without knowing which store it came from.
 | `mecha tasks set --status done` | Appraises the session that served the task, prints the verdict, and may stage a follow-up. |
 | [`mecha distill`](/docs/features/distillation) | The label and the goal errors ride on an episode's `meta`, beside — not inside — its content. |
 
-**What a live surface can show today is the negative half, and no word.**
-The live readout passes no drafts, and a draft sent unchanged is the one
-positive the record can sign from a run alone — so the TUI badge is always
-amber, the web bar draws only its left half, and the Slack line only ever
-reads `−N.N`. The free readout's *label* is neutral on every error a live
-run can build, so the label word never reaches a chip or badge and the voice
-nudge above never fires. Both halves are real on the offline readers —
-`mecha sessions appraise` and the closure appraisal read the outbox and can
-run the probe. A channel that signs a positive off the run's own record is
-what changes this; the queue-delta commitment channel is the first.
+**What a live surface can show today: the negative half, one positive, and
+no word.** The live readout passes no drafts, so a draft sent unchanged — the
+outbox's positive — never reaches it; the one positive a live run can carry
+is the queue-delta commitment: a run that left fewer things waiting on you
+than it found shows a grey badge, a right-hand bar, a `+0.5` in the thread.
+That delta is a before/after diff of the stores rather than a join on what
+the session touched, so on a machine running several sessions at once, you
+answering one session's question can put the `+0.5` on another's badge; the
+by-id attribution that closes this is named in the code. The free readout's
+*label* is neutral on every error a live run can build, so the label word
+never reaches a chip or badge and the voice nudge above never fires. Both
+halves and the labels are real on the offline readers — `mecha sessions
+appraise` and the closure appraisal read the outbox and can run the probe.
 
 **A compacted run's label reads as neutral outright, and its valence is
 partial.** Compaction rewrites the message
