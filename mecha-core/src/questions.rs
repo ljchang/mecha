@@ -190,8 +190,21 @@ impl QuestionStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((out, 0)),
             Err(e) => return Err(e).context("reading the question store"),
         };
-        for entry in dir.flatten() {
-            let path = entry.path();
+        for entry in dir {
+            // An erroring directory entry is a row this read did not see,
+            // and it counts as skipped rather than vanishing: `flatten()`
+            // dropped it silently, so `questions_read: true` could stand
+            // over a store that was not fully read — the one claim this
+            // function exists to make (found on review; the two sibling
+            // counting readers fail the whole read on the same error).
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(e) => {
+                    skipped += 1;
+                    tracing::warn!("skipping an unreadable question-store entry: {e}");
+                    continue;
+                }
+            };
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
