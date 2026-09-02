@@ -40,11 +40,13 @@
 //! `timeout 5 rm -rf`. `[approval] strict_inline_eval` is on by default;
 //! turning it off is a decision someone makes on purpose.
 //!
-//! **Examples are checked at load.** An `allow` rule must carry `match`
-//! examples, every `match` example must match the rule and every `not_match`
-//! must not — so a rule that does not do what its author believes fails at
-//! startup, on every start, rather than on the run that needed it. Same
-//! principle as validating hook config even under `--no-hooks`.
+//! **Examples are checked at load.** An `allow` rule and every patterned
+//! rule must carry `match` examples, every `match` example must match the
+//! rule and every `not_match` must not — so a rule that does not do what its
+//! author believes fails at startup, on every start, rather than on the run
+//! that needed it: an `allow` too wide is the hole, a `forbid` too narrow is
+//! the guard that protects nothing. Same principle as validating hook config
+//! even under `--no-hooks`.
 //!
 //! **A project layer may only narrow.** `allow` rules load from the global
 //! config only; a cloned repository's `mecha.toml` may add `prompt` and
@@ -86,12 +88,15 @@ pub enum PatternElement {
 }
 
 impl PatternElement {
-    /// `lenient` says which way to err when the first token is a path. A
-    /// rule that *widens* (`allow`, and `prompt` beside it) reduces a program
-    /// path to its name only from a system directory: `/usr/bin/git` is
-    /// `git`, and `/home/me/repo/git` is a file whose name the model chose.
-    /// A rule that *narrows* (`forbid`) reduces any path: `./rm`, `bin/rm`
-    /// and `/tmp/x/rm` are all `rm`, and a false forbid is a refusal.
+    /// `lenient` says which way to err when the first token is a path. The
+    /// one rule that *widens* (`allow`) reduces a program path to its name
+    /// only from a system directory: `/usr/bin/git` is `git`, and
+    /// `/home/me/repo/git` is a file whose name the model chose. A rule that
+    /// *narrows* (`prompt`, `forbid`) reduces any path: `./rm`, `bin/rm` and
+    /// `/tmp/x/rm` are all `rm`, and a false prompt or forbid costs a prompt.
+    /// The first version grouped `prompt` with `allow`, so `./cargo publish`
+    /// walked past a `prompt` on `cargo publish` to a standing yes — the PR
+    /// review's finding; `prompt` never widens, so leniency there is free.
     fn matches(&self, token: &str, first: bool, lenient: bool) -> bool {
         // The PR review found this twice. First `./git status` matched an
         // `allow` on `git` by basename — a file the model wrote into the
@@ -139,11 +144,11 @@ pub struct RuleConfig {
     /// applies to every call of the tool, whatever its input.
     pub pattern: Vec<PatternElement>,
     pub decision: RuleDecision,
-    /// Commands this rule must match. Required and non-empty for `allow`;
-    /// checked at load for every decision. For a rule with no `pattern` the
-    /// check proves only that the example splits — an empty pattern matches
-    /// every segment — so there it is a speed bump, not the guarantee it is
-    /// for a patterned rule.
+    /// Commands this rule must match. Required and non-empty for `allow` and
+    /// for every patterned rule; checked at load for every decision. For an
+    /// `allow` with no `pattern` the check proves only that the example
+    /// splits — an empty pattern matches every segment — so there it is a
+    /// speed bump, not the guarantee it is for a patterned rule.
     #[serde(rename = "match")]
     pub examples: Vec<String>,
     /// Commands this rule must not match. Checked at load.
@@ -158,7 +163,7 @@ impl RuleConfig {
         if self.pattern.len() > segment.len() {
             return false;
         }
-        let lenient = self.decision == RuleDecision::Forbid;
+        let lenient = self.decision != RuleDecision::Allow;
         self.pattern
             .iter()
             .zip(segment)
@@ -257,11 +262,49 @@ impl ExecPolicy {
                     rule.tool
                 );
             }
-            if rule.decision == RuleDecision::Allow && rule.examples.is_empty() {
+            // A pattern element with nothing in it matches nothing, so the
+            // rule never fires — inert for `forbid`, and for `allow` the
+            // example check below would only say "does not match".
+            if let Some(i) = rule
+                .pattern
+                .iter()
+                .position(|p| matches!(p, PatternElement::OneOf(ws) if ws.is_empty()))
+            {
                 anyhow::bail!(
-                    "{name}: an `allow` rule must carry at least one `match` example — a rule \
-                     that widens approval has to prove it matches what its author thinks it \
-                     does"
+                    "{name}: pattern element {} is an empty list, which matches nothing — the \
+                     rule would never fire",
+                    i + 1
+                );
+            }
+            // An `allow` rule has to prove it matches what its author thinks
+            // it does — there a false match is the hole. A *patterned*
+            // `forbid` or `prompt` has to prove it fires at all: `["rm",
+            // "-fr"]`, one transposition off, loaded clean, was reported by
+            // `tools()` as covering `shell`, warned nowhere, and judged
+            // nothing — the silently-degrading guard, found by the PR review.
+            // A pattern-less rule applies to every call and an example would
+            // prove nothing, so none is asked for.
+            let needs_example = rule.decision == RuleDecision::Allow || !rule.pattern.is_empty();
+            if needs_example && rule.examples.is_empty() {
+                let why = match rule.decision {
+                    RuleDecision::Allow => {
+                        "a rule that widens approval has to prove it matches what its author \
+                         thinks it does"
+                    }
+                    _ => "a rule that narrows has to prove it fires at all",
+                };
+                anyhow::bail!(
+                    "{name}: a{} `{}` rule must carry at least one `match` example — {why}",
+                    if rule.decision == RuleDecision::Allow {
+                        "n"
+                    } else {
+                        " patterned"
+                    },
+                    match rule.decision {
+                        RuleDecision::Allow => "allow",
+                        RuleDecision::Prompt => "prompt",
+                        RuleDecision::Forbid => "forbid",
+                    }
                 );
             }
             for ex in &rule.examples {
@@ -1317,7 +1360,8 @@ mod tests {
 
         // An MCP tool the crate cannot know about: the rule loads, and at
         // call time asks with the reason rather than doing nothing.
-        let r = rule("kg_upsert", &[&["delete"]], RuleDecision::Forbid);
+        let mut r = rule("kg_upsert", &[&["delete"]], RuleDecision::Forbid);
+        r.examples = vec!["delete".into()];
         let p = ExecPolicy::from_config(&[r], true).unwrap();
         let ruling = p.decide("kg_upsert", &json!({"entity": "x"})).unwrap();
         assert_eq!(ruling.decision, RuleDecision::Prompt);
@@ -1334,6 +1378,63 @@ mod tests {
                 .decision,
             RuleDecision::Forbid
         );
+    }
+
+    /// A patterned `forbid` or `prompt` with no example is refused at load:
+    /// `["rm", "-fr"]` is one transposition from the rule its author meant,
+    /// and would otherwise load clean and protect nothing. A pattern-less
+    /// one applies to every call and needs none.
+    #[test]
+    fn a_patterned_narrowing_rule_must_prove_it_fires() {
+        for decision in [RuleDecision::Forbid, RuleDecision::Prompt] {
+            let bare = rule("shell", &[&["rm"], &["-fr"]], decision);
+            let err = ExecPolicy::from_config(&[bare], true)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("prove it fires"), "{err}");
+            // With the example, the typo is caught by the example check.
+            let mut r = rule("shell", &[&["rm"], &["-fr"]], decision);
+            r.examples = vec!["rm -rf build".into()];
+            let err = ExecPolicy::from_config(&[r], true).unwrap_err().to_string();
+            assert!(err.contains("does not match"), "{err}");
+            // Spelled right, it loads.
+            let mut r = rule("shell", &[&["rm"], &["-rf"]], decision);
+            r.examples = vec!["rm -rf build".into()];
+            ExecPolicy::from_config(&[r], true).unwrap();
+            // Pattern-less: applies to every call, no example asked for.
+            ExecPolicy::from_config(&[rule("shell", &[], decision)], true).unwrap();
+        }
+        // An empty alternation matches nothing and is refused whatever the
+        // decision.
+        let mut r = rule("shell", &[&["git"], &[]], RuleDecision::Forbid);
+        r.examples = vec!["git push".into()];
+        let err = ExecPolicy::from_config(&[r], true).unwrap_err().to_string();
+        assert!(err.contains("matches nothing"), "{err}");
+    }
+
+    /// A `prompt` rule reduces a program path the way `forbid` does — any
+    /// path, not only a system one — because `prompt` never widens and a
+    /// path spelling was walking past it to a standing yes.
+    #[test]
+    fn a_prompt_rule_reduces_any_path_like_a_forbid() {
+        let p = policy(vec![rule(
+            "shell",
+            &[&["cargo"], &["publish"]],
+            RuleDecision::Prompt,
+        )]);
+        for spelled in [
+            "cargo publish",
+            "./cargo publish",
+            "bin/cargo publish",
+            "/usr/local/bin/cargo publish",
+            "/home/me/.cargo/bin/cargo publish",
+        ] {
+            assert_eq!(
+                p.decide("shell", &cmd(spelled)).unwrap().decision,
+                RuleDecision::Prompt,
+                "{spelled}"
+            );
+        }
     }
 
     #[test]
@@ -1414,6 +1515,7 @@ not_match = ["git push", "git commit"]
 tool = "shell"
 pattern = ["rm", "-rf"]
 decision = "forbid"
+match = ["rm -rf build"]
 justification = "never recursive-force from a model-supplied path"
 "#,
         )

@@ -2175,11 +2175,13 @@ match = ["make test"]
 tool = "shell"
 pattern = ["rm", "-rf"]
 decision = "forbid"
+match = ["rm -rf build"]
 
 [[rule]]
 tool = "shell"
 pattern = ["git", "push"]
 decision = "prompt"
+match = ["git push origin main"]
 "#,
         )
         .unwrap();

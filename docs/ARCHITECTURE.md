@@ -1520,8 +1520,8 @@ refusal. The specification and the survey behind it are
   `git` and nothing outside `SYSTEM_BIN_DIRS` (`/bin`, `/sbin`, `/usr/bin`,
   `/usr/sbin`): `./git` may be a file the model wrote, and
   `/abs/path/to/workspace/git` may be one a cloned repository shipped — the
-  PR review found each in turn. `forbid` reduces any path, because there the
-  false positive is a refusal. A rule that wants a binary elsewhere spells
+  PR review found each in turn. `prompt` and `forbid` reduce any path,
+  because there the false positive costs a prompt. A rule that wants a binary elsewhere spells
   the path and matches it literally.
 - **An allowlisted interpreter is not an allowlisted command.** `python -c`,
   `node -e`, `sh -c`, `sed -e`, `find -exec`, and the wrappers that run their
@@ -1534,11 +1534,17 @@ refusal. The specification and the survey behind it are
   once made turning the knob off silently disable the `timeout 5 rm -rf` rule.
   A quoted argument the splitter finds opaque (`bash -ec 'cd /tmp; rm -rf
   x'`) gets the same forbidden-word search an opaque outer command gets.
-- **Examples are checked at load.** An `allow` rule must carry `match`
-  examples; every `match` must match the rule and every `not_match` must not,
-  or `Config::validate` fails the start naming the rule. The principle is the
-  hooks one: a policy that does not do what its author believes fails on every
-  start, not on the run that needed it.
+- **Examples are checked at load.** An `allow` rule and every patterned rule
+  must carry `match` examples; every `match` must match the rule and every
+  `not_match` must not, or `Config::validate` fails the start naming the rule.
+  The principle is the hooks one: a policy that does not do what its author
+  believes fails on every start, not on the run that needed it — and it cuts
+  both ways: an `allow` too wide is the hole, and a `forbid` too narrow
+  (`["rm", "-fr"]`, one transposition off) loaded clean, was reported as
+  covering `shell`, and judged nothing until the PR review asked why only the
+  harmless direction was checked. An empty alternation (`["git", []]`) is
+  refused for the same reason. A pattern-less rule applies to every call and
+  needs no example.
 - **A project layer may only narrow.** `merge_file` drops a project file's
   `allow` rules with a warning and ignores its `[approval]`; `prompt` and
   `forbid` rules are appended. A cloned repository must not be able to make

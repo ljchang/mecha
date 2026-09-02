@@ -10082,12 +10082,14 @@ not_match = ["git push"]
 tool = "shell"
 pattern = ["rm", "-rf"]
 decision = "forbid"
+match = ["rm -rf build"]
 justification = "never recursive-force from a model-supplied path"
 
 [[rule]]
 tool = "shell"
 pattern = ["cargo", "publish"]
 decision = "prompt"
+match = ["cargo publish"]
 "#;
 
     /// A `forbid` rule refuses with nobody consulted — the approver here
