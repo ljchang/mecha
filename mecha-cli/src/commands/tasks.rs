@@ -832,9 +832,11 @@ fn appraise_session(
         }
     };
     // Each store hands back what it read and whether that was everything:
-    // the flag travels into the record as `partial`, so the printout and
-    // the follow-up decision carry the caveat with them rather than on a
-    // stderr line above (found on review).
+    // the flag travels into the record as `partial`, so the printout
+    // below and the record `stage_follow_up` cites carry the caveat with
+    // them rather than only on a stderr line above (found on review).
+    // `worth_a_follow_up` does not read it yet — a short reading gates the
+    // same way a full one does, and says so.
     let (questions, questions_unreadable) =
         match mecha_core::questions::QuestionStore::open_existing_default() {
             None => (Vec::new(), false),
@@ -910,10 +912,13 @@ fn appraise_session(
 /// pointer, never prose.
 fn describe(a: &mecha_core::appraisal::Appraisal) -> String {
     let v = mecha_core::appraisal::Valence::of(a);
-    let reading = if v.is_silent() {
-        "nothing signed".to_string()
-    } else {
-        v.compact()
+    // A silent reading drops `compact()`'s `…`, and silent-and-partial is
+    // exactly where the caveat matters most — every store unreadable
+    // reads as "nothing signed" (found on review).
+    let reading = match (v.is_silent(), v.partial) {
+        (true, true) => "nothing signed, partial reading".to_string(),
+        (true, false) => "nothing signed".to_string(),
+        (false, _) => v.compact(),
     };
     format!(
         "{:?} · {reading} ({} positive, {} negative signal{})",
@@ -2832,5 +2837,19 @@ mod tests {
         assert!(s.contains("1 positive"));
         assert!(s.contains("1 negative signal"));
         assert!(!s.contains("o1") && !s.contains("stop_cause"), "{s}");
+    }
+
+    #[test]
+    fn describe_says_partial_when_silent_and_short() {
+        let mut a = appraisal(mecha_core::appraisal::Affect::Neutral);
+        a.errors.clear();
+        assert!(describe(&a).contains("nothing signed"));
+        assert!(!describe(&a).contains("partial"));
+        a.partial = true;
+        assert!(
+            describe(&a).contains("nothing signed, partial reading"),
+            "{}",
+            describe(&a)
+        );
     }
 }
