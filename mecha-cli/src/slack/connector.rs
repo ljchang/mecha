@@ -59,6 +59,10 @@ struct Completion {
     key: String,
     conversation: Conversation,
     outcome: Result<Box<RunOutcome>, String>,
+    /// Where this run's own messages start in `conversation` — the count
+    /// before its user turn was appended — so the appraisal readout scopes
+    /// interventions to this run and not to the whole thread.
+    run_started_at: usize,
 }
 
 /// An approval waiting for a button.
@@ -899,6 +903,7 @@ impl State {
             };
 
             let before = conversation.messages.clone();
+            let run_started_at = before.len();
             let outcome = agent
                 .run_in(&cx, &mut conversation, Some(events_tx))
                 .await
@@ -919,6 +924,7 @@ impl State {
                     key: key_for_task,
                     conversation,
                     outcome,
+                    run_started_at,
                 })
                 .await;
         });
@@ -1028,6 +1034,18 @@ impl State {
             Ok(o) => println!("[{}] run finished — {} turns", done.key, o.turns),
             Err(e) => println!("[{}] run failed — {e}", done.key),
         }
+        // §6.2's readout on this surface, computed while the conversation
+        // is still in hand: a number in the thread, by the owner's ruling
+        // (`docs/APPRAISAL-RESEARCH.md` §3.1). The word rides along only
+        // when the label says one. Silent runs post nothing.
+        let readout = done.outcome.as_ref().ok().map(|o| {
+            mecha_core::appraisal::live_readout(
+                &done.key,
+                o,
+                &done.conversation,
+                done.run_started_at,
+            )
+        });
         self.live.remove(&done.key);
         self.conversations
             .insert(done.key.clone(), done.conversation);
@@ -1055,6 +1073,17 @@ impl State {
                         "{ended} · mode `{}`",
                         r.mode
                     ))]),
+                )
+                .await;
+            }
+            if let Some(readout) = readout.filter(|r| !r.is_silent()) {
+                let line = appraisal_line(&readout);
+                let _ = chat::post_message(
+                    &self.slack,
+                    &r.channel_id,
+                    Some(&r.thread_ts),
+                    &line,
+                    Some(vec![blocks::context(&line)]),
                 )
                 .await;
             }
@@ -1152,6 +1181,7 @@ impl State {
                 model: self.model.clone(),
                 workspace: record.workspace.clone().unwrap_or_default(),
                 title: Some(format!("slack: {}", record.key)),
+                kind: Some(mecha_core::session::SessionKind::Slack),
             },
         )
         .ok()?;
@@ -2179,6 +2209,23 @@ fn outcome_delivery(dispatch_landed: bool, slow: bool) -> (bool, bool) {
     (dispatch_landed, !dispatch_landed || slow)
 }
 
+/// The appraisal footer for a finished run: `appraisal · −0.5`, or
+/// `appraisal · anger −0.5` when the label says a word. Numbers and a closed
+/// enum's wire word only — nothing here was written by a model.
+fn appraisal_line(readout: &mecha_core::appraisal::Readout) -> String {
+    let mut line = String::from("appraisal ·");
+    if readout.label != mecha_core::appraisal::Affect::Neutral {
+        line.push(' ');
+        line.push_str(&readout.label.wire());
+    }
+    let n = readout.valence.compact();
+    if !n.is_empty() {
+        line.push(' ');
+        line.push_str(&n);
+    }
+    line
+}
+
 /// F13: whether a finished send needs the draft's card posted afterwards — a
 /// release nobody was carded for (`review auto`) that left the item pending
 /// has no other phone path back to review. Card-tapped releases already have
@@ -2518,9 +2565,9 @@ fn thread_workspace(key: &str) -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        confirm_press, draft_offer_blocks, failed_auto_release_needs_card, outcome_delivery,
-        releases_without_card, review_here_note, safe_filename, tainted_confirm_blocks,
-        tainted_confirm_card, ConfirmPress, REVIEW_HERE_MAX,
+        appraisal_line, confirm_press, draft_offer_blocks, failed_auto_release_needs_card,
+        outcome_delivery, releases_without_card, review_here_note, safe_filename,
+        tainted_confirm_blocks, tainted_confirm_card, ConfirmPress, REVIEW_HERE_MAX,
     };
     use crate::review_policy::ReviewMode;
     use crate::slack::actions;
@@ -2741,6 +2788,33 @@ mod tests {
     /// slow Reply-target action whose dispatch post had failed, and gave a
     /// slow Rewrite (an outbox release with an MCP startup) no fresh
     /// notification at all.
+    #[test]
+    fn the_appraisal_footer_is_a_number_and_a_wire_word_at_most() {
+        use mecha_core::appraisal::{Affect, Readout, Valence};
+        let v = Valence {
+            positive: 0.0,
+            negative: 0.5,
+            positives: 0,
+            negatives: 1,
+            visible: false,
+            partial: false,
+        };
+        assert_eq!(
+            appraisal_line(&Readout {
+                label: Affect::Neutral,
+                valence: v
+            }),
+            "appraisal · \u{2212}0.5"
+        );
+        assert_eq!(
+            appraisal_line(&Readout {
+                label: Affect::Anger,
+                valence: v
+            }),
+            "appraisal · anger \u{2212}0.5"
+        );
+    }
+
     #[test]
     fn an_outcome_lands_exactly_once_plus_a_fresh_reply_when_slow_or_lost() {
         // (dispatch landed, slow) -> (update the card, fresh reply)

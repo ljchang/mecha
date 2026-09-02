@@ -579,6 +579,12 @@ impl ToolCtx {
 /// division stops and the total budget is allowed to overrun instead.
 pub const SPILL_FLOOR_BYTES: usize = 4_096;
 
+/// The line a capped tool result carries in place of what was cut. Named
+/// so a reader that must not mistake a prefix for the whole — the plan
+/// tool's echo reader — can key on it rather than on a count a tail cut
+/// cannot disturb (found on review).
+pub const CAP_MARKER: &str = "[truncated by the harness:";
+
 /// Cut an oversized tool result down to `cap` bytes, saving the full output
 /// where the model can get it back.
 ///
@@ -626,14 +632,14 @@ pub fn cap_result(
 
     match saved {
         Some(path) => format!(
-            "{head}\n\n[truncated by the harness: showing the first {cut} of {total} bytes; \
+            "{head}\n\n{CAP_MARKER} showing the first {cut} of {total} bytes; \
              the rest begins on line {line}. The full output is saved at {path} — continue \
              with fs_read {{\"path\": \"{path}\", \"offset\": {line}}}, or search it with \
              grep.]",
             path = path.display()
         ),
         None => format!(
-            "{head}\n\n[truncated by the harness: {omitted} of {total} bytes were dropped \
+            "{head}\n\n{CAP_MARKER} {omitted} of {total} bytes were dropped \
              from line {line} on, and the full output could not be saved. Narrow the \
              request and re-run the tool if the rest is needed.]",
             omitted = total - cut

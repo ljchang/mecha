@@ -1873,6 +1873,18 @@ The design decisions, each of which is a bug if undone:
 - **Every scan is bounded** (`Scan { max_sessions, since }`), because reading
   the whole store to answer one question is how a reader becomes one nobody
   runs. Doctor's constraint — one pass, no network, no model — is the bar.
+- **A session has a kind, written by the front-end and never inferred**
+  (`SessionKind` on `SessionMeta`: run, chat, tui, web, voice, task,
+  trigger, frontdoor, mail, slack, test). `Test` is excluded
+  from every corpus readout by default, `--kind test` implies inclusion, a
+  row with no kind matches no `--kind` filter, and the hidden rows are
+  *counted* at every reader (`Corpus::hidden_tests`, and the same number on
+  `health`, `appraise`, `list` and the doctor) — a filter that drops rows
+  silently is the dash-versus-zero inversion one bullet up. Smoke tests set
+  `MECHA_SESSION_KIND=test`, and the override may only narrow: it can turn
+  a chat into a test, never a test into anything else. The incident: 46 of
+  143 appraised sessions were development runs before the mark existed, and
+  the instrument measured its own tests.
 - **A rate over a zero denominator is `None`, never zero.** "Nothing went
   wrong" and "nothing happened" are different answers, and printing them the
   same way is how a component that stopped working reads as healthy — the
@@ -2245,13 +2257,25 @@ can pull only if guilt can be talked into existing, and a sentence in a fetched
 page cannot write a row into `OutboxStore`. Do not widen this to the graph's
 `due_at` without also paying for a subprocess in the path of every run.
 
-**Three sensors ship with no consumer on purpose** — the homeostat, boredom's
-recorded notices, and `anticipated_guilt`. `runlog`'s rule: build the corpus
-before anything is built on it, and check the labels are not degenerate first.
-The rung 7 corpus found 119 of 120 sessions `Neutral`, which is the finding, not
-a tuning failure — the free readout's whole range is `Neutral | Anger` by
-construction. Inventing precedence until every run gets an interesting word
-manufactures the signal the measurement exists to test for.
+**Two sensors have a reader and no behavioural consumer, on purpose** — the
+homeostat and `anticipated_guilt` are recorded on every run and rendered into
+the diagnostician's brief (`diagnose::Evidence`: peak pressure, mean guilt),
+and nothing narrows a run on either. Boredom's notices do reach the model,
+in-run, as a templated line; they are the one sensor here with a consumer.
+An earlier version of this paragraph said all three shipped with no consumer,
+which was false against the tree by the time it was written. `runlog`'s rule
+still holds: build the corpus before anything is built on it, and check the
+labels are not degenerate first. The rung 7 corpus found 119 of 120 sessions
+`Neutral`, which is the finding, not a tuning failure — and
+`docs/APPRAISAL-RESEARCH.md` §1 found the reason narrower than "five
+dimensions nothing measures": the label gates on `controllable`, a paid
+replay, and discards the sign every error carries. **The surfaces show
+`Valence`** — positive and negative sums kept apart, never netted — with the
+label as the second line; the free readout's label range is `Neutral` alone
+now that a ceiling reads as the owner's own limit rather than `World`
+agency. Inventing precedence until every run gets an interesting word
+manufactures the signal the measurement exists to test for; showing the sign
+the record already holds does not.
 
 **Boredom fires once per rung, never per turn** (`==`, not `>=`). A model is
 measurably likelier to fail a step when its context holds its own earlier
@@ -2259,13 +2283,57 @@ errors, so nagging about being stuck is a way of making it stick. It keys on the
 call *and* its result via `compact::target_of` — identical arguments with a
 changing result is polling, which must never grade as stuck.
 
-**The closure follow-up gate is `done`-only and reads the derived label.**
-`dropped` is the owner declining the work, so staging a follow-up there
-overrides a decision they just made — found on review, after a `MaxTurns` run
-the owner gave up on got a "Revisit" task put straight back on the board. And it
-reads `a.label`, never the raw signs: re-deriving a threshold there would be a
-second, less-tested copy of `affect_of`, and it would fire on almost every
-closure.
+**The closure follow-up gate is `done`-only and reads the derived label
+beside one typed predicate.** `dropped` is the owner declining the work, so
+staging a follow-up there overrides a decision they just made — found on
+review, after a `MaxTurns` run the owner gave up on got a "Revisit" task put
+straight back on the board. It reads `a.label` and `Appraisal::cut_short`
+(a negative counter whose pointer is the stop cause, the silent failure, or
+a failed declared check), never a threshold over raw magnitudes: re-deriving
+one there would be a second, less-tested copy of `affect_of`, and a rejected
+draft is a verdict with no residue to put on a board. `cut_short` exists
+because a ceiling stopped labelling `Anger` when it became the owner's own
+limit (`Agency::Owner`), and the residue of a ceiling-cut `done` still
+wants capturing.
+
+**The plan is the prediction, and the record of it is the appraisal
+lane's.** `TodoItem` carries three optional fields — `expect` (one
+checkable sentence), `check` (a command whose exit code says whether the
+step landed), `expect_calls` (the model's own forecast) — strict from the
+model (`TodoTool::call` names the item and the field) and lenient from a
+record, on `serves:`'s two policies; they render as indented lines under
+the step so the carried block re-reads the prediction with the plan. **A
+completed step's `check` is frozen on the write that completes it**:
+`Tracked` keeps the hash of the latest declaration while the step is open,
+and from the completing write that declaration stands — a different check
+on that write or any later one is a tamper, echoed back as such, counted
+(`TodoTool::tampered_in`), never taken — with one named residual: the
+freeze is keyed on the step's text, like every other per-step mark in
+`Tracked`, so a reworded step is a new step and its check starts unfrozen;
+closing that needs a per-item id the plan tool refuses for cost, and the
+docstring on `Tracked::checks` says so. The first cut gated on the
+*previous* status and let the one write that both completes the step and
+swaps its check through, which is exactly the rewrite the freeze exists for.
+**Nothing runs a check yet.** When the loop does — dispatched as a model
+`shell` call would be: approver, sandbox, interlock, hooks — it records the
+result as a trace named `step::CHECK_TRACE`, and the readers are already in
+place: `Work::of` keeps those out of `calls` (the harness's work is not the
+model's, and `expect_calls` forecasts the model's), counts `checks_declared`
+/ `checks_passed` (a refused check in neither), lets a passing check count
+as `verify_like`, and **never lets a check set `last`** — the `continue` in
+`Work::of` is the enforcement; `Tracked::observe` is why it matters, since
+it refreshes its copy of `last` on the model's own call count, so a check
+landing last beside real work would have read as the step's own failure or
+refusal (found on review). `Finding::CheckFailed` is read from the counters
+before the last-attempt readings, because the model's last call can succeed
+while its claim does not. `RunStats` carries both counts as `Option`, folded like
+`boredom_notices`, and `of_session` signs a failed check `-1.0`, `Own`,
+cite `checks_passed` — the first structural discrepancy between a
+prediction and its outcome. `learning::Trigger::Mismatch` is the wire word
+for that discrepancy as a reflection trigger; the variant exists so the
+store's readers do not choke on it, and nothing fires it yet. The check's
+execution and the planner's ask are the other lane's (`AUDIT-RESEARCH.md`
+§3.11).
 
 **`tasks.rs::appraise_session` deliberately does not call `appraisal::for_session`**,
 which does the identical assembly. `for_session` folds "could not read the file"

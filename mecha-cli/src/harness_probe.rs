@@ -187,6 +187,12 @@ pub fn draw_episodes(
     let pool_size = want.saturating_mul(POOL_MULTIPLE).max(want);
     let mut pool: Vec<(EpisodePrep, f64)> = Vec::new();
     let mut skipped = 0usize;
+    // The same admission the diagnosis applies (`Scan::admits`), built once:
+    // see the comment at its use below.
+    let admission = mecha_core::runlog::Scan {
+        workspace: workspace.map(std::path::Path::to_path_buf),
+        ..Default::default()
+    };
     for (meta, path) in listed {
         if pool.len() >= pool_size {
             break;
@@ -205,8 +211,13 @@ pub fn draw_episodes(
         // the diagnosis was visibly scoped, and only the arms were not.
         //
         // Prefix, matching `runlog::Scan`: a checkout's worktrees are the same
-        // population as the checkout.
-        if workspace.is_some_and(|w| !meta.workspace.starts_with(w)) {
+        // population as the checkout. Through `Scan::admits` itself rather
+        // than a second spelling of the rule, so the draw and the diagnosis
+        // cannot disagree again through a new filter — the second time this
+        // paragraph's incident recurred, it was the `kind` filter: the
+        // diagnosis excluded smoke-test sessions and the draw did not, so
+        // real-model budget was spent replaying them (found on review).
+        if !admission.admits(&meta) {
             continue;
         }
         match prepare_episode(&path, &meta.id)? {
@@ -476,6 +487,7 @@ mod tests {
                     model: "m".into(),
                     workspace: std::path::PathBuf::from(workspace),
                     title: None,
+                    kind: None,
                 },
             )
             .unwrap();
@@ -526,6 +538,7 @@ mod tests {
             model: "m".into(),
             workspace: std::path::PathBuf::from("/tmp"),
             title: None,
+            kind: None,
         };
         // One tool call, so the "no recorded tool calls" skip does not fire.
         let turns = |s: &Session| {

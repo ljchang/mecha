@@ -60,6 +60,26 @@ the merges in it had landed with no changelog entry (#119, #121, #123,
 #125, #127, #128, #130) and were written up at release time; the next tag
 is v0.1.18.
 
+**Two lanes are live off `main` as of 2026-09-02, and their landing order
+is agreed.** `fix/harness-review` (**PR #139**, the audit lane) carries the
+six-lane review's nine fixes — the jail's dangling-symlink follow, the
+subagent send-laundering, the cumulative usage frame, `Approver::escalate`,
+`last_assistant_text`, `&None` events on in-run side calls, lenient
+`stop_cause` reads — and `docs/AUDIT-RESEARCH.md`; that lane has moved on
+to `feat/approval-policy` on top of it (`policy.rs`, `Approver::permit`,
+`[[rule]]`/`[approval]` config), touching `run_tools` and `tool/mod.rs` and
+nothing the appraisal lane touches. **`feat/appraisal-record`** (this
+lane, worktree `.claude/worktrees/appraisal-phase-a`, **PR #140**, base
+`102bacc`) carries phase A of `docs/APPRAISAL-RESEARCH.md` §3 and the
+prediction record, and **`feat/appraisal-phase-b`** (**PR #141**, stacked
+on it) carries phase B — see the goal-system section below for both. Order:
+#139 merges first; #140 rebases onto it and only then splits
+`StopCause::Interrupted`, because the split rides #139's lenient
+`stop_cause` read; #141 retargets `main` after #140; the audit lane's
+planner ask and critic call base on the merged record. The research doc
+lives on the branch; the main checkout still holds an untracked copy from
+before the branch existed, to be discarded once #140 lands.
+
 **0.1.14 is thirty-one commits from three sessions working the same day**,
 which is the thing to know about reading its history: the lanes interleave,
 so `--ancestry-path` answers "what is in this release" and a date range does
@@ -150,6 +170,20 @@ First thing to run in a fresh context:
 ```bash
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
+
+On **`feat/appraisal-record`** (the appraisal lane's worktree branch,
+uncommitted, based on `main` at `102bacc`), measured 2026-09-02 (~17:30
+UTC): **2,085 tests**, no failures — **690** in `mecha-cli` (1 ignored),
+**20** in `first_run`, **1,150** in `mecha-core` (1 ignored: the
+`kind_override_probe` child half of an environment test), 6 `mcp_server`,
+9 `sandbox_backends`, 133 `mecha-mail`, 1 in its `mecha-mail` binary, 75
+`mecha-slack`, 1 doctest; clippy clean. **Not a delta against the 2,029
+below**: `main` moved from `b132157` to `102bacc` between the two
+measurements and was not re-measured, so the branch's own additions are
+named rather than subtracted — 22 tests, in `session::tests` (the five
+`SessionKind` tests and the probe), `runlog::tests` (1), `appraisal::tests`
+(5), `step::tests` (2), `tool::todo::tests` (5), `tui::tests` (1), the
+Slack connector (1), and `learning`'s trigger test extended in place.
 
 Expect **2,029 tests**, no failures — measured 2026-08-31 (~12:50 UTC) in
 this checkout on `main` at **b132157** (the 0.1.17 release commit): **682** in
@@ -2137,6 +2171,54 @@ to be false against the tree. Full detail belongs in `HISTORY.md`, not
 repeated here.
 
 **Open now:**
+
+- **2026-09-02 — the appraisal review, phase A, and the prediction record
+  are built on `feat/appraisal-record` and uncommitted.**
+  `docs/APPRAISAL-RESEARCH.md` is the review (corpus measured live, two
+  literature passes, a ranked change list); its §3.1, §3.2, §3.7 and §3.11
+  carry *Built* notes naming every symbol, and `ARCHITECTURE.md`'s
+  goal-system section carries the invariants. The finding that reordered
+  the plan: the label gated on `controllable` (a paid replay) and discarded
+  the sign every error carries — 22 owner-rejected drafts all read
+  `Neutral`. Built: `appraisal::Valence`/`Readout`/`live_readout` shown on
+  the TUI badge and a Slack context line as a number and on the web chip
+  as a two-sided bar (the owner's per-surface ruling); `session::SessionKind`
+  on the meta record with `MECHA_SESSION_KIND=test` and `--kind` /
+  `--include-tests` on the three corpus readouts (46 of 143 appraised
+  sessions were dev smoke runs — old rows stay unknown); a ceiling as the
+  owner's own limit (`Agency::Owner`, label `Neutral`, `-0.5` on the
+  valence) with `Appraisal::cut_short` keeping the closure follow-up alive;
+  and the record half of the audit lane's §3.11 spec — `TodoItem::{expect,
+  check, expect_calls}`, the frozen check with a tamper echo,
+  `step::CHECK_TRACE`, `Work::{checks_declared, checks_passed}`,
+  `Finding::CheckFailed`, `RunStats::{checks_declared, checks_passed}`, a
+  failed check signed `-1.0`/`Own` in `of_session`, and
+  `learning::Trigger::Mismatch` as a wire word nothing fires yet. Re-read
+  the same day with the branch binary: **18 of 143 sessions signed,
+  `+12.0 −19.5` across them, label `neutral` on all 143.** Four owner
+  rulings recorded in the research doc and this session: valence per
+  surface as above; cancel-then-re-prompt **is** a steer; a model-judged
+  follow-up **may** be a channel; charter lines **may** carry owner-written
+  sensors (with the seven containments §3.6/§3.11 of the review's reply
+  name — never a `Metric`, never in the prompt, id-join attribution, doctor
+  reports saturation, the editor shows the reading). **Open, in order:**
+  the `Interrupted` split (parked vs cancelled; `questions.rs`'s cancel is
+  the one park site; waits on #139); phase B — cancel-and-re-prompt as an
+  intervention, judged follow-ups read from `reflections.jsonl`, the
+  answered-question and front-door-closed positive channels, guilt from
+  `backlog_delta`, the three trajectory counters; phase C — firing
+  `Mismatch` (one per step, three per run), the reflection that cites turn
+  ids, the next-turn prior and the per-kind retrieval prior; a design
+  section for charter sensors; the tamper count folded into `RunStats`;
+  and the experiments and ablations the owner asked for once this round
+  lands (`EXPERIMENT-DESIGN.md`, structural switches forced off under
+  `mecha eval`, never a prompt). The corpus numbers in the rest of this
+  section (119 of 120, 120 of 459) are the rung 7 measurement and are
+  superseded by the valence read above for any decision about what to
+  build next. **Deploy note:** `WireEvent::Affect` is now sent for a
+  `neutral` label with a signed valence, and a page served from a stale
+  `web/dist` sets the chip to `ev.label` unconditionally — it will read a
+  literal `neutral` until the bundle is rebuilt (update skill surface 1b).
 
 - **Rung 7's measurement came back, and it decides what to build next.**
   `mecha sessions appraise` over the live store: 459 sessions read, **120
