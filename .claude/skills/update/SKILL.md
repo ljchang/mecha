@@ -49,22 +49,45 @@ cargo install --path mecha-cli  --locked --force   # mecha
 cargo install --path mecha-mail --locked --force   # mecha-mail, mecha-google, mecha-outlook
 ```
 
-And the graph, from `~/Github/personalized_knowledge_graph` — installed *with*
-mecha since 2026-08-16, because `~/.mecha/config.toml` runs
-`~/.cargo/bin/mecha-graph-mcp`, not a repo path.
+And the graph, from **`~/Github/mecha-graph`** — installed *with* mecha since
+2026-08-16, because `~/.mecha/config.toml` runs `~/.cargo/bin/mecha-graph-mcp`,
+not a repo path.
 
-**That path is right, and it is not the `mecha-graph` checkout beside it.**
-The project is called mecha-graph and its crates are `mecha-graph*`, so
-`~/Github/mecha-graph` looks like the obvious source and is not one: it is a
-**generated artifact**, `git archive HEAD` from the private repo minus a
-hardcoded exclusion list, run through `check-public-denylist.sh` — a gate that
-*deletes* the tree it refuses rather than flagging it. The two histories are
-disjoint. Building from the public mirror would drop `eval/gold.jsonl`, the
-operational docs and the export tooling, and would put authoring on the far
-side of the gate that keeps life-derived text out of a public repo. Develop in
-the private repo; export to publish. Confirmed 2026-08-22, after this
-parenthetical's earlier wording ("the mecha-graph repo") sent a session looking
-for which of the two was authoritative.
+**This inverted on 2026-09-01, and the old rule is the trap now.** Until then
+the public checkout was a generated artifact — `git archive HEAD` from
+`~/Github/personalized_knowledge_graph` minus an exclusion list, through a
+gate that *deletes* the tree it refuses — and this file said in bold that
+`~/Github/mecha-graph` was not a source. It is the source now. Work happens
+there; the private repo keeps only the ten files the export used to strip
+(the gold eval sets derived from real episodes, the operator docs, and the
+roster tooling) and is no longer where code is written.
+
+What made that safe was moving the gate rather than dropping it. The public
+repo carries `.githooks/pre-push` and `.github/workflows/denylist.yml`, both
+running the same roster from outside the repository (`~/.mecha-graph/
+denylist.txt`, 0600, and the `PUBLIC_DENYLIST` secret), and both fail closed:
+a missing or empty roster refuses the push rather than waving it through.
+Install the hooks once per clone — `git config core.hooksPath .githooks` —
+because a clone without it is a clone with no gate.
+
+The version drift is what forced it: the export existed to keep two repos
+level and had let them reach 0.1.3 against 0.1.4, which is the cost the
+split was charging. The last export ran on 2026-09-01 and is
+`mecha-graph#2`; the histories stay disjoint, and nothing was back-published.
+
+**The boundary is not clean, and the exception is operational.**
+`scripts/nightly-mecha.sh` is private-only *by design* — the export strips
+it — and the 08:00 crontab line runs it from
+`~/Github/personalized_knowledge_graph`. So the private repo is not retired:
+it still holds that script, the gold eval sets and the roster tooling, and
+both crontab lines still point at it. `scripts/nightly.sh` exists in both;
+the cron runs the private copy.
+
+A change spanning the two must land **public first**. The gossip cooldown
+arc is the worked example: `--min-sources` is a flag on the public binary
+and `nightly-mecha.sh` is the private caller that passes it, so landing the
+private half first gives the nightly a flag the installed binary does not
+have.
 
 ```bash
 cargo install --path mecha-graph     --locked --force   # mecha-graph (CLI)
@@ -196,7 +219,7 @@ have re-run the old linker and re-staged the same damage while every version
 string on the machine read current. So:
 
 ```bash
-cd ~/Github/personalized_knowledge_graph && cargo build --release
+cd ~/Github/mecha-graph && cargo build --release
 ls -l target/release/mecha-graph     # must be today
 ```
 
