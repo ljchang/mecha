@@ -146,7 +146,38 @@ def note_bot_speech(text: str) -> None:
 # worker's journal) and every gated segment prints the RMS it was gated at,
 # which is the measurement to set this from. A guessed constant with no way to
 # check it would be the worse half of both worlds.
-ECHO_SEGMENT_RMS = float(os.environ.get("MECHA_VOICE_ECHO_RMS", "0.020"))
+_ECHO_RMS_DEFAULT = 0.020
+
+
+def _echo_rms_from_env() -> float:
+    """The floor, or the default and a complaint.
+
+    Not `float(os.environ[...])` bare: this is a knob the comment above
+    *invites* the owner to set from a log line, and a typo in a systemd unit
+    would otherwise be an import-time `ValueError` — voice down, restart
+    looping, over one character in a tuning constant. Falling back is not the
+    silent kind: the value is refused by name and the effective one is logged,
+    so the setting that did not take says so.
+    """
+    raw = os.environ.get("MECHA_VOICE_ECHO_RMS")
+    if raw is None:
+        return _ECHO_RMS_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        value = None
+    if value is None or not 0 < value < 1:
+        from loguru import logger
+
+        logger.warning(
+            f"MECHA_VOICE_ECHO_RMS={raw!r} is not an RMS between 0 and 1 - "
+            f"using {_ECHO_RMS_DEFAULT}"
+        )
+        return _ECHO_RMS_DEFAULT
+    return value
+
+
+ECHO_SEGMENT_RMS = _echo_rms_from_env()
 
 
 class SegmentGatedSTT(BaseWhisperSTTService):
