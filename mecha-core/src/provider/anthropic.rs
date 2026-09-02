@@ -267,6 +267,7 @@ impl Anthropic {
             }
         }
 
+        acc.closed_cleanly()?;
         acc.finish()
     }
 }
@@ -460,6 +461,27 @@ struct StreamAccumulator {
     usage: Usage,
     refusal: Option<Refusal>,
     model: String,
+    /// `message_stop` arrived: the server closed the envelope itself.
+    stopped: bool,
+}
+
+impl StreamAccumulator {
+    /// Did the stream end the way a finished message ends?
+    ///
+    /// A finished message carries a `stop_reason` in its `message_delta` and
+    /// closes with `message_stop`. A stream that ends with neither is a
+    /// dropped connection, and `finish()` would have handed back the partial
+    /// text as a plausible whole turn with `StopReason::Other`, into the
+    /// transcript, with nothing to say it was cut.
+    fn closed_cleanly(&self) -> Result<()> {
+        if self.stopped || self.stop_reason.is_some() {
+            return Ok(());
+        }
+        bail!(
+            "the stream ended before message_stop with no stop_reason, so the answer may be \
+             truncated; the connection was probably dropped"
+        )
+    }
 }
 
 enum PartialBlock {
@@ -601,6 +623,7 @@ impl StreamAccumulator {
                 apply_cumulative_usage(&mut self.usage, event.get("usage"));
                 let _ = sink.send(StreamEvent::Usage(self.usage.clone()));
             }
+            "message_stop" => self.stopped = true,
             "error" => {
                 bail!(
                     "anthropic stream error: {}",
@@ -740,6 +763,42 @@ mod tests {
         .unwrap();
         assert_eq!(acc.usage.input_tokens, 100);
         assert_eq!(acc.usage.output_tokens, 12);
+    }
+
+    /// A stream that ends without `message_stop` or a `stop_reason` is a
+    /// dropped connection, not a finished answer.
+    #[test]
+    fn a_stream_that_ends_without_message_stop_is_an_error_not_a_turn() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut acc = StreamAccumulator::default();
+        acc.push(
+            &serde_json::json!({"type": "message_start", "message": {"model": "m", "usage": {}}}),
+            &tx,
+        )
+        .unwrap();
+        acc.push(
+            &serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+            &tx,
+        )
+        .unwrap();
+        acc.push(
+            &serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "half an ans"}}),
+            &tx,
+        )
+        .unwrap();
+        assert!(acc.closed_cleanly().is_err());
+
+        // Either closing signal suffices.
+        acc.push(
+            &serde_json::json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 3}}),
+            &tx,
+        )
+        .unwrap();
+        assert!(acc.closed_cleanly().is_ok());
+        let mut acc = StreamAccumulator::default();
+        acc.push(&serde_json::json!({"type": "message_stop"}), &tx)
+            .unwrap();
+        assert!(acc.closed_cleanly().is_ok());
     }
 
     /// Shared with `retry_tests` below.
