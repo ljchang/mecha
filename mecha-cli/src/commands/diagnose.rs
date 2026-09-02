@@ -164,6 +164,17 @@ pub fn corpus_slice(
                 w.display()
             );
         }
+        // The same order as the `--from-workspace` arm: a rotting store
+        // outranks a filter working, so the unreadable finding comes first
+        // (found on review as an asymmetry between the two arms).
+        if sessions_read == 0 && corpus.unreadable > 0 {
+            anyhow::bail!(
+                "no readable sessions recorded an outcome, and {} transcript(s) in the store \
+                 could not be read at all — a damaged store rather than an empty one. `mecha \
+                 doctor` reports on the session store.",
+                corpus.unreadable
+            );
+        }
         if corpus.hidden_tests > 0 && sessions_read == 0 {
             anyhow::bail!(
                 "the store holds only {} smoke-test session(s) (`MECHA_SESSION_KIND=test`), \
