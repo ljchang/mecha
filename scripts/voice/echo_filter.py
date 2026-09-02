@@ -250,6 +250,41 @@ class BotSpeech:
         return len(words) - matched <= slips
 
 
+def echo_rms(raw: str | None, *, floor: float, default: float) -> tuple[float, str | None]:
+    """The over-the-speaker energy floor, read from a configured string.
+
+    Pure so it can be *tested*, which is the whole reason this module exists:
+    it is the branch's one fail-closed guard, and it lived in `worker.py`,
+    which cannot be imported without pipecat — so the CI job that runs these
+    tests could not reach it, and a value that silently inverts the gate would
+    have been caught by nobody. The caller keeps `os.environ` and the logger;
+    this keeps the decision.
+
+    Bounded **below by the ordinary segment floor**, not by zero. Under it the
+    graded gate runs backwards — our own echo held to a lower bar than room
+    noise — and nothing would say so, because 0.005 is a perfectly good RMS and
+    one keystroke from the value the operator was told to type. `nan` and `inf`
+    parse as floats and are refused by the same comparison, which is worth an
+    assertion rather than a happy accident.
+
+    Returns the value to use, and a complaint to log if the configured one was
+    refused. A refusal is never silent and never fatal: an unusable threshold
+    must not take voice down, and must not quietly become one.
+    """
+    if raw is None:
+        return default, None
+    try:
+        value = float(raw)
+    except ValueError:
+        value = None
+    if value is None or not floor <= value < 1:
+        return default, (
+            f"MECHA_VOICE_ECHO_RMS={raw!r} is not an RMS in "
+            f"[{floor}, 1) - using {default}"
+        )
+    return value, None
+
+
 def overlapped(
     *,
     segment_started_at: float | None,

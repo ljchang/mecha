@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 
-from echo_filter import BotSpeech, overlapped  # noqa: E402
+from echo_filter import BotSpeech, echo_rms, overlapped  # noqa: E402
 
 
 class FakeClock:
@@ -388,6 +388,62 @@ class TheTextFilter(unittest.TestCase):
         self.assertTrue(self.bot.recent() == "")
         self.assertFalse(self.bot.is_probable_echo("hello", bot_was_audible=True))
         self.assertFalse(self.bot.is_probable_echo("", bot_was_audible=True))
+
+
+class TheEnergyFloorSetting(unittest.TestCase):
+    """The branch's one fail-closed guard, and the only new logic its own
+    testing argument did not reach until now — it lived in `worker.py`, which
+    cannot be imported without pipecat, so the stdlib-only CI job could not
+    see it."""
+
+    FLOOR, DEFAULT = 0.010, 0.020
+
+    def read(self, raw):
+        return echo_rms(raw, floor=self.FLOOR, default=self.DEFAULT)
+
+    def test_unset_is_the_default_and_no_complaint(self):
+        self.assertEqual(self.read(None), (self.DEFAULT, None))
+
+    def test_a_usable_value_is_taken(self):
+        value, complaint = self.read("0.035")
+        self.assertEqual(value, 0.035)
+        self.assertIsNone(complaint)
+
+    def test_below_the_segment_floor_is_refused(self):
+        """The inversion this guard exists for: under `MIN_SEGMENT_RMS` the
+        over-the-speaker floor becomes *more* permissive than the silent-room
+        one, so our own echo is held to a lower bar than room noise — and
+        nothing would say so, because 0.002 is a perfectly good RMS and one
+        keystroke from the value the operator was told to type."""
+        value, complaint = self.read("0.002")
+        self.assertEqual(value, self.DEFAULT)
+        self.assertIn("0.002", complaint)
+
+    def test_the_float_shaped_nonsense_is_refused_too(self):
+        """`nan` and `inf` parse as floats and reach the comparison. `nan`
+        fails it because every comparison with `nan` is False, which is a
+        correct answer arrived at by accident — so it is asserted rather than
+        relied upon."""
+        # `"２"` is a full-width digit: `float` accepts it as 2.0, so it
+        # arrives at the range check rather than the parse failure.
+        for raw in ["nan", "inf", "-inf", "1", "0", "-0.5", "２"]:
+            value, complaint = self.read(raw)
+            self.assertEqual(value, self.DEFAULT, f"{raw!r} was accepted")
+            self.assertIsNotNone(complaint, f"{raw!r} was refused silently")
+
+    def test_unparseable_is_refused_and_named(self):
+        for raw in ["", "abc", "0,02", "0.02f"]:
+            value, complaint = self.read(raw)
+            self.assertEqual(value, self.DEFAULT, f"{raw!r} was accepted")
+            self.assertIn(repr(raw), complaint)
+
+    def test_a_value_pasted_with_whitespace_still_works(self):
+        """`float` strips surrounding space, and for a value typed into a
+        systemd unit that is the wanted behaviour rather than a laxity — the
+        alternative is a floor silently reverting because a line was pasted."""
+        value, complaint = self.read(" 0.035\n")
+        self.assertEqual(value, 0.035)
+        self.assertIsNone(complaint)
 
 
 class TheOverlapTest(unittest.TestCase):
