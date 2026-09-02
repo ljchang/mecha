@@ -55,15 +55,34 @@
 //!
 //! What is left is narrower than it looks, and saying so is the point. The
 //! **free** readout — [`of_session`] over on-disk records, no model — can
-//! only ever say *neutral* or *anger*: every negative it assembles is either
-//! invisible `Own`/`Owner` with `controllable` unfilled (which reduces to
-//! `Neutral`) or a ceiling nobody here caused (`Anger`), and no counter kind
-//! fires twice in one session, so `Frustration`'s repetition cannot occur.
+//! only ever *label* a session `Neutral`: every negative it assembles is
+//! `Own`/`Owner` with `controllable` unfilled, which is the one branch of
+//! [`label_of`] with no word for it, and no counter kind fires twice in one
+//! session, so `Frustration`'s repetition cannot occur. (`Anger` is the
+//! quarantined appraiser's alone now — a ceiling used to read as `World`
+//! agency, and a limit the owner set is not something nobody here caused.)
 //! The **probe** (§5.3, a paid replay per intervention) is what buys the
 //! rest: `Regret` and `Disappointment` directly, and `Frustration` when two
 //! probed steers on one goal both come back load-bearing. The alternative to
 //! stating this is inventing precedence until every run gets an interesting
 //! word, which manufactures the signal this rung exists to test for.
+//!
+//! ## The label is not the readout
+//!
+//! That the label is `Neutral` on nearly every session was the finding of
+//! rung 7's corpus, and `docs/APPRAISAL-RESEARCH.md` §1 found the reason
+//! narrower than the design's "five dimensions nothing measures": the
+//! label gates on the most expensive dimension it has (`controllable`, a
+//! paid replay) and discards the cheapest — the **sign**, which every error
+//! carries. Twenty-two owner-rejected drafts all read `Neutral`. So the
+//! readout every surface shows is [`Valence`]: the signed magnitudes the
+//! record already holds, positive and negative kept apart (averaging them is
+//! the mixed-polarity mistake `candidate::Metric`'s docstring forbids), with
+//! the label beside it as the second line, derived exactly as before and
+//! firing when its dimensions are filled. Every computational appraisal
+//! model that pass reviewed puts its one gate at relevance and then labels
+//! from two variables; a product over unfilled dimensions collapses, and
+//! [`label_of`] was that product in a different costume.
 //!
 //! ## Mood is not here
 //!
@@ -282,9 +301,11 @@ impl Affect {
     /// neither was recorded at the time, which is why the split below is
     /// spelled out:
     ///
-    /// - `Neutral` and `Anger` are the **free** readout's whole range — see
-    ///   the module note on why [`of_session`] alone can produce nothing
-    ///   else.
+    /// - `Neutral` is the **free** readout's whole label range — see the
+    ///   module note on why [`of_session`] alone can produce nothing else,
+    ///   and why the surfaces show [`Valence`] instead. `Anger` is
+    ///   reachable through the quarantined appraiser's `other`/`world`
+    ///   agency verdict alone, since a ceiling stopped reading as `World`.
     /// - `Regret`, `Disappointment` and `Frustration` are **probe-gated**:
     ///   the counterfactual pass (§5.3, shipped in the appraisal probe) is
     ///   the only thing that fills `controllable` or turns an intervention
@@ -421,15 +442,20 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
     // `visible`/`controllable` conservative, so a `self`/`owner` verdict
     // reduces to `Neutral` under `label_of` whatever magnitude the model
     // picked — and the magnitude-first reduce above would let that outrank a
-    // smaller, already-informative error (an `Anger` from a ceiling, say)
-    // purely on size. `says_more`'s own stated principle ("a label that names
+    // smaller, already-informative error purely on size. (Which error: one
+    // the appraiser itself signed with a `world`/`other` agency, since the
+    // ceiling reclassified to `Agency::Owner`, those two agencies reach the
+    // record only through the parsed verdict, and no free-readout error
+    // earns a label at all — the point `the_free_readouts_label_is_always_
+    // neutral_and_its_valence_is_not` pins.) `says_more`'s own stated principle ("a label that names
     // nothing must never mask one that names something") already covers this
     // in spirit; the reduce above only ever applied it within an exact tie.
     //
     // **Deliberately scoped to `Channel::Appraisal`, not every channel.** The
-    // identical shape is reachable today from deterministic channels alone
-    // (`ended_on_failed_call` at a fixed `-1.0` can already outrank a `-0.5`
-    // `Anger`), but that is `of_session`'s free readout — the number
+    // identical shape exists among deterministic channels too
+    // (`ended_on_failed_call` at a fixed `-1.0` outranks any `-0.5`), and
+    // today it buries nothing there, because every free-readout error is
+    // `Neutral`; but that is `of_session`'s free readout — the number
     // `GOAL-SYSTEM-DESIGN.md`'s 120-session measurement and `HANDOFF.md`'s
     // "today affect is a constant" are stated against — and a general fix
     // changes it without either document saying so. The appraiser is what
@@ -504,7 +530,7 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
     // **And this may only ever upgrade `reduced`, never bury it.** The first
     // cut returned `Frustration` the moment `repeated` was true, before
     // `label_of`'s reduce ran at all — which outranked agency and exposure
-    // both, the one ordering this module argues hardest for: a ceiling
+    // both, the one ordering this module argues hardest for: an outage
     // nobody here caused (`Agency::World`) plus a draft the owner rewrote
     // (`Agency::Owner`, visible) would report `Frustration` and discard the
     // fact that something went out wrong, exactly what `says_more`'s
@@ -535,6 +561,124 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
     }
 
     reduced
+}
+
+/// The dimensional readout: what the record says before any label is
+/// derived from it. See the module note *The label is not the readout*.
+///
+/// Positive and negative are **kept apart, never netted**. A run that
+/// released one draft unchanged and had one rejected is not a zero; it is
+/// one of each, and a surface shows both. Sums rather than maxima, so a
+/// second rejection reads worse than one — a magnitude-first *reduce* is
+/// right for choosing which single error a label should name, and wrong
+/// for saying how much went right and wrong.
+///
+/// `partial` marks a reading computed from fewer channels than the record
+/// normally carries. [`live_readout`] sets it on a compacted run, where the
+/// interventions are unknowable (the message indices were rewritten in
+/// place) and the counters are still facts: a number with a caveat beats
+/// the `Neutral`-outright the label still, correctly, gives there.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Valence {
+    /// Sum of the positive errors' magnitudes.
+    pub positive: f32,
+    /// Sum of the negative errors' magnitudes, as a positive number.
+    pub negative: f32,
+    pub positives: u32,
+    pub negatives: u32,
+    /// Any negative error reached a third party.
+    pub visible: bool,
+    /// Computed with a channel missing — see the type's doc.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
+}
+
+impl Valence {
+    /// Pure, like [`affect_of`], and the only place a valence is decided.
+    pub fn of(appraisal: &Appraisal) -> Valence {
+        let mut v = Valence::default();
+        for e in &appraisal.errors {
+            if e.sign > 0.0 {
+                v.positive += e.sign;
+                v.positives += 1;
+            } else if e.sign < 0.0 {
+                v.negative += -e.sign;
+                v.negatives += 1;
+                v.visible |= e.visible;
+            }
+        }
+        v
+    }
+
+    /// Nothing signed at all — no error either way. The surfaces show
+    /// nothing here, on the TUI badge's own rule that a gauge always showing
+    /// something trains people to stop seeing it.
+    pub fn is_silent(&self) -> bool {
+        self.positives == 0 && self.negatives == 0
+    }
+
+    /// The one-line form for a status strip or a message footer: `+1.0`,
+    /// `−2.0`, or `+1.0 −2.0`; empty when silent; a trailing `…` when
+    /// partial. One decimal, because the magnitudes are the record's own
+    /// `±1.0`/`±0.5` steps and a second decimal would be false precision.
+    pub fn compact(&self) -> String {
+        let mut parts = Vec::new();
+        if self.positives > 0 {
+            parts.push(format!("+{:.1}", self.positive));
+        }
+        if self.negatives > 0 {
+            parts.push(format!("\u{2212}{:.1}", self.negative));
+        }
+        let mut out = parts.join(" ");
+        if self.partial && !out.is_empty() {
+            out.push('\u{2026}');
+        }
+        out
+    }
+}
+
+impl Appraisal {
+    /// Did the run stop before it was done? A negative counter error whose
+    /// pointer is the stop cause (a ceiling, a loop, no output), the silent
+    /// failure (`ended_on_failed_call`), or a declared check that did not
+    /// pass (`checks_passed`). The closure follow-up gate
+    /// reads this beside the label: §5.4's "the owner took it anyway" case
+    /// is a run with *cut-off work*, which is what a follow-up captures — a
+    /// rejected draft or a steer is a negative too, and stages nothing,
+    /// because there is no residue in it to put on the board. A typed
+    /// predicate over a pointer, not a threshold over magnitudes, which is
+    /// the re-derivation `worth_a_follow_up`'s own doc refuses.
+    pub fn cut_short(&self) -> bool {
+        self.errors.iter().any(|e| {
+            e.sign < 0.0
+                && e.channel == Channel::Counter
+                && matches!(&e.cite, Cite::Counter(name) if name == "stop_cause" || name == "ended_on_failed_call" || name == "checks_passed")
+        })
+    }
+}
+
+/// What a surface shows about a finished run: the dimensional reading and
+/// the label beside it. Both are pure functions of the same record and
+/// computed together so no surface can show one derivation's label next to
+/// another's numbers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Readout {
+    pub label: Affect,
+    pub valence: Valence,
+}
+
+impl Readout {
+    pub fn of(appraisal: &Appraisal) -> Readout {
+        Readout {
+            label: appraisal.label,
+            valence: Valence::of(appraisal),
+        }
+    }
+
+    /// Nothing to show: the label says nothing and no error is signed.
+    pub fn is_silent(&self) -> bool {
+        self.label == Affect::Neutral && self.valence.is_silent()
+    }
 }
 
 /// Build one **session's** appraisal from records that already exist.
@@ -633,9 +777,15 @@ pub fn of_session(
             controllable: None,
             cite: Cite::Counter("stop_cause".into()),
         }),
-        // A ceiling is a number somebody set, and hitting one is not a thing
-        // this run could have done differently — `World`, the agency for what
-        // has no address here.
+        // A ceiling is a number the owner set, and hitting one is the
+        // owner's limit meeting the run's size — `Owner`, not `World`. It
+        // used to be `World` ("nobody here caused it"), which `label_of`
+        // reads as `Anger`, and that was the only non-neutral label a
+        // surface ever showed: a budget the owner chose, reported as
+        // somebody else's fault. Whether the run could have fit is the
+        // probe's question, exactly as for a steer, so `controllable` stays
+        // unfilled and the label stays `Neutral` while the valence carries
+        // the `-0.5`.
         Some(
             crate::agent::StopCause::MaxTurns
             | crate::agent::StopCause::OutputTokenBudget
@@ -644,7 +794,7 @@ pub fn of_session(
             goal: goal.clone(),
             channel: Channel::Counter,
             sign: -0.5,
-            agency: Agency::World,
+            agency: Agency::Owner,
             visible: false,
             controllable: None,
             cite: Cite::Counter("stop_cause".into()),
@@ -667,6 +817,25 @@ pub fn of_session(
             controllable: None,
             cite: Cite::Counter("ended_on_failed_call".into()),
         });
+    }
+
+    // A declared check that did not pass: the step said what would be true
+    // and the harness found it false. The first structural discrepancy
+    // between a prediction and its outcome (`docs/APPRAISAL-RESEARCH.md`
+    // §3.7), and `Own` without a guess — the model wrote both the claim and
+    // the test. Absent is not zero, as for every `Option` counter here.
+    if let (Some(declared), Some(passed)) = (stats.checks_declared, stats.checks_passed) {
+        if declared > passed {
+            errors.push(GoalError {
+                goal: goal.clone(),
+                channel: Channel::Counter,
+                sign: -1.0,
+                agency: Agency::Own,
+                visible: false,
+                controllable: None,
+                cite: Cite::Counter("checks_passed".into()),
+            });
+        }
     }
 
     // An approach that stopped teaching the run anything (§9.1). Absent is not
@@ -923,6 +1092,39 @@ pub fn live(
     conversation: &crate::agent::Conversation,
     run_started_at: usize,
 ) -> Affect {
+    live_readout(session_id, outcome, conversation, run_started_at).label
+}
+
+/// [`live`], with the dimensional reading beside the label — what the
+/// surfaces actually show (`docs/APPRAISAL-RESEARCH.md` §3.1).
+///
+/// **Negative-only, and neutral-only, on every live surface today — said
+/// here because the surfaces' own docs describe a two-sided bar.** This
+/// passes no drafts (below), and a draft sent unchanged is the one signed
+/// positive `of_session` can assemble from a run's own record, so
+/// `Valence::positive` is always zero here: the TUI badge is always amber,
+/// the web bar draws only its negative half, and the Slack line only ever
+/// reads `−N.N`. And the free readout's *label* is `Neutral` on every
+/// error it can build (`Own`/`Owner`, `controllable` unfilled), so the
+/// label word never reaches a live chip or badge and the voice nudge
+/// behind `affect_label` never fires. The positive half and the labels
+/// live on the offline readers — `sessions appraise`, the closure
+/// appraisal — which read the outbox and can run the probe. A channel
+/// that signs a positive off the run's own record is what changes this,
+/// and phase B's queue-delta arm (`Channel::Commitment`, read from the
+/// run's own homeostat) is the first (found on review).
+///
+/// On a compacted run the label is `Neutral` outright, for the reason
+/// [`live`]'s body gives, and the valence is computed from the counters
+/// alone and marked `partial`: the interventions are unknowable, the
+/// counters are not, and a number with a caveat is more honest than
+/// silence about a run that hit a ceiling.
+pub fn live_readout(
+    session_id: &str,
+    outcome: &crate::agent::RunOutcome,
+    conversation: &crate::agent::Conversation,
+    run_started_at: usize,
+) -> Readout {
     // A mid-run compaction rewrites `conversation.messages` *in place*
     // (docs/ARCHITECTURE.md, "The session record survives compaction too" — the same
     // rewrite `Session::record_run` compares against rather than slicing
@@ -945,14 +1147,16 @@ pub fn live(
     // rather than a partial evidence set that reads worse than the full
     // one. `a_compacted_run_reads_as_neutral_rather_than_a_louder_partial_signal`
     // is the regression: without this guard the same fixture reads `Anger`.
-    if outcome.compactions > 0 {
-        return Affect::Neutral;
-    }
+    let compacted = outcome.compactions > 0;
     let stats = crate::session::RunStats::from(outcome);
-    let interventions: Vec<_> = crate::learning::extract_interventions(&conversation.messages)
-        .into_iter()
-        .filter(|i| i.at >= run_started_at)
-        .collect();
+    let interventions: Vec<_> = if compacted {
+        Vec::new()
+    } else {
+        crate::learning::extract_interventions(&conversation.messages)
+            .into_iter()
+            .filter(|i| i.at >= run_started_at)
+            .collect()
+    };
     let goal = crate::tool::todo::TodoTool::plan_from_transcript(&conversation.messages)
         .and_then(|p| p.goal);
     let goals: Vec<GoalRef> = goal.into_iter().collect();
@@ -969,7 +1173,12 @@ pub fn live(
         Some(outcome.taint),
         chrono::Utc::now().to_rfc3339(),
     );
-    a.label
+    let mut valence = Valence::of(&a);
+    valence.partial = compacted;
+    Readout {
+        label: if compacted { Affect::Neutral } else { a.label },
+        valence,
+    }
 }
 
 /// What a counterfactual probe found about one intervention.
@@ -1526,10 +1735,10 @@ mod tests {
     }
 
     /// Two *different* failures on one goal must not read as one repeated
-    /// one — a ceiling nobody here caused, plus a draft the owner rewrote,
+    /// one — an outage nobody here caused, plus a draft the owner rewrote,
     /// share a goal only because `of_session` stamps the same reference on
     /// every error it builds. Frustration's own definition is "repeated,
-    /// one goal, self-agency" (§6.1); a ceiling is `Agency::World`, so it
+    /// one goal, self-agency" (§6.1); an outage is `Agency::World`, so it
     /// cannot be the repetition, and exposure — the fact `says_more` says a
     /// person most needs out of this — must win instead.
     #[test]
@@ -1712,14 +1921,16 @@ mod tests {
         assert_ne!(a.label, Affect::Embarrassment);
     }
 
-    /// The free readout's whole range, pinned. `of_session` with no probe
-    /// verdict reduces every negative it can assemble to `Neutral` (invisible
-    /// `Own`/`Owner`, `controllable` unfilled) or `Anger` (a ceiling), and no
-    /// counter kind fires twice in one session, so `Frustration`'s
-    /// repetition cannot occur — it is probe-gated, not deterministic, which
-    /// this would catch changing silently in either direction.
+    /// The free readout's whole label range, pinned. `of_session` with no
+    /// probe verdict reduces every negative it can assemble to `Neutral`
+    /// (invisible `Own`/`Owner`, `controllable` unfilled), and no counter
+    /// kind fires twice in one session, so `Frustration`'s repetition cannot
+    /// occur — it is probe-gated, not deterministic, which this would catch
+    /// changing silently in either direction. The *valence* is what varies
+    /// across these fixtures, and the second assertion pins that it does:
+    /// a label that says nothing must not mean a reading that says nothing.
     #[test]
-    fn the_free_readout_can_only_ever_say_neutral_or_anger() {
+    fn the_free_readouts_label_is_always_neutral_and_its_valence_is_not() {
         use crate::agent::StopCause;
         let goal = GoalRef::Task("01J8ZK".into());
         let steer = crate::learning::Intervention {
@@ -1770,12 +1981,17 @@ mod tests {
                 Some(s.taint),
                 "2026-08-28T00:00:00Z".into(),
             );
-            assert!(
-                matches!(a.label, Affect::Neutral | Affect::Anger),
-                "the free readout produced {:?} under {cause:?} — a new \
+            assert_eq!(
+                a.label,
+                Affect::Neutral,
+                "the free readout produced a label under {cause:?} — a new \
                  deterministic label; update the module note and \
-                 reachable_today's split",
-                a.label
+                 reachable_today's split"
+            );
+            let v = Valence::of(&a);
+            assert!(
+                v.negatives >= 2 && !v.is_silent(),
+                "the rejected draft and the failed last call are signed whatever the cause: {v:?}"
             );
         }
     }
@@ -1886,11 +2102,20 @@ mod tests {
         assert_eq!(a.label, Affect::Neutral);
     }
 
+    /// A ceiling is the owner's own limit, so it is a signed error the
+    /// valence carries and not a label — it used to read `Anger` through
+    /// `Agency::World`, the one non-neutral word a surface ever showed, and
+    /// "somebody else's fault" is the wrong word for a budget you set.
     #[test]
-    fn a_ceiling_is_nobody_here_s_fault_and_a_loop_is() {
+    fn a_ceiling_is_the_owners_limit_and_a_loop_is_the_runs_own_fault() {
         let mut ceiling = stats();
         ceiling.stop_cause = Some(crate::agent::StopCause::MaxTurns);
-        assert_eq!(built(&ceiling, &[], &[]).label, Affect::Anger);
+        let a = built(&ceiling, &[], &[]);
+        assert_eq!(a.label, Affect::Neutral);
+        assert_eq!(a.errors.len(), 1);
+        assert_eq!(a.errors[0].agency, Agency::Owner);
+        assert_eq!(a.errors[0].sign, -0.5);
+        assert_eq!(Valence::of(&a).compact(), "\u{2212}0.5");
 
         let mut stuck = stats();
         stuck.stop_cause = Some(crate::agent::StopCause::Loop);
@@ -2507,17 +2732,93 @@ mod tests {
         assert_eq!(live("s1", &outcome, &convo, 0), Affect::Neutral);
     }
 
-    /// A run the harness cut short (`MaxTurns`) is `Agency::World` —
-    /// "nobody here caused it" — which `label_of` reports as `Anger`. This is
-    /// the one condition already reachable today without any goal at all, so
-    /// it is what a manual TUI/web check should force to see the badge.
+    /// A run the harness cut short (`MaxTurns`) labels `Neutral` — the
+    /// owner's limit, `controllable` unfilled — and reads `−0.5` on the
+    /// valence. This is the one condition reachable without any goal at
+    /// all, so it is what a manual TUI/web check should force to see the
+    /// badge: the badge is the number now, not a word.
     #[test]
-    fn a_run_cut_short_by_a_ceiling_is_not_neutral() {
+    fn a_run_cut_short_by_a_ceiling_is_silent_in_label_and_signed_in_valence() {
         let mut outcome = bare_outcome();
         outcome.stop_cause = crate::agent::StopCause::MaxTurns;
         outcome.exhausted = true;
         let convo = crate::agent::Conversation::default();
-        assert_eq!(live("s1", &outcome, &convo, 0), Affect::Anger);
+        let r = live_readout("s1", &outcome, &convo, 0);
+        assert_eq!(r.label, Affect::Neutral);
+        assert_eq!(r.valence.compact(), "\u{2212}0.5");
+        assert!(!r.valence.partial);
+        assert!(!r.is_silent());
+        assert_eq!(live("s1", &outcome, &convo, 0), Affect::Neutral);
+    }
+
+    #[test]
+    fn a_declared_check_that_failed_is_the_runs_own_signed_error() {
+        let mut s = stats();
+        s.checks_declared = Some(2);
+        s.checks_passed = Some(1);
+        let a = built(&s, &[], &[]);
+        assert_eq!(a.errors.len(), 1);
+        assert_eq!(a.errors[0].agency, Agency::Own);
+        assert_eq!(a.errors[0].cite, Cite::Counter("checks_passed".into()));
+        assert!(a.cut_short(), "a step that did not land is residue");
+        let mut all_passed = stats();
+        all_passed.checks_declared = Some(2);
+        all_passed.checks_passed = Some(2);
+        assert!(built(&all_passed, &[], &[]).errors.is_empty());
+        let mut unknown = stats();
+        unknown.checks_declared = Some(1);
+        unknown.checks_passed = None;
+        assert!(
+            built(&unknown, &[], &[]).errors.is_empty(),
+            "half a record is no record"
+        );
+    }
+
+    #[test]
+    fn cut_short_reads_the_stop_pointer_and_nothing_else() {
+        let mut ceiling = stats();
+        ceiling.stop_cause = Some(crate::agent::StopCause::MaxTurns);
+        assert!(built(&ceiling, &[], &[]).cut_short());
+        let mut silent = stats();
+        silent.ended_on_failed_call = true;
+        assert!(built(&silent, &[], &[]).cut_short());
+        let rejected = draft("o1", "rejected", false);
+        assert!(
+            !built(&stats(), &[&rejected], &[]).cut_short(),
+            "a rejected draft is negative and is not cut-off work"
+        );
+        assert!(!built(&stats(), &[], &[]).cut_short());
+    }
+
+    #[test]
+    fn a_clean_run_is_silent_on_both_lines() {
+        let outcome = bare_outcome();
+        let convo = crate::agent::Conversation::default();
+        assert!(live_readout("s1", &outcome, &convo, 0).is_silent());
+    }
+
+    #[test]
+    fn valence_keeps_positive_and_negative_apart_and_never_nets_them() {
+        let good = err(1.0, Agency::Own);
+        let bad = err(-1.0, Agency::Owner);
+        let worse = GoalError {
+            visible: true,
+            ..err(-0.5, Agency::Own)
+        };
+        let v = Valence::of(&appraisal(vec![good, bad, worse]));
+        assert_eq!((v.positive, v.negative), (1.0, 1.5));
+        assert_eq!((v.positives, v.negatives), (1, 2));
+        assert!(v.visible);
+        assert_eq!(v.compact(), "+1.0 \u{2212}1.5");
+        assert_eq!(Valence::default().compact(), "");
+        let mut partial = v;
+        partial.partial = true;
+        assert!(partial.compact().ends_with('\u{2026}'));
+        // The wire form omits `partial` when false, so an old reader sees
+        // exactly the five fields and a new one reads absence as false.
+        let json = serde_json::to_string(&v).unwrap();
+        assert!(!json.contains("partial"), "{json}");
+        assert_eq!(serde_json::from_str::<Valence>(&json).unwrap(), v);
     }
 
     /// Live and offline agree on the same recorded outcome — `live` is not a
@@ -2636,15 +2937,46 @@ mod tests {
         // contrast: the same fixture, only `compactions` differs.
         let mut clean = bare_outcome();
         clean.stop_cause = crate::agent::StopCause::MaxTurns;
-        assert_eq!(live("s1", &clean, &convo, 0), Affect::Neutral);
+        let uncompacted = live_readout("s1", &clean, &convo, 0);
+        assert_eq!(uncompacted.label, Affect::Neutral);
+        assert_eq!(
+            uncompacted.valence.negatives, 2,
+            "the steer and the ceiling are both signed on an uncompacted run"
+        );
 
         // With a compaction recorded, the interventions are unknowable, and
-        // the honest reading of an unknowable evidence set is `Neutral` —
-        // never the ceiling's `Anger` reading through unmasked, which is
-        // what an uncompacted run's own `MaxTurns` would have looked like
-        // and is not evidence this run actually had.
+        // the honest reading of an unknowable evidence set is `Neutral` for
+        // the label — never a reading through unmasked, which is what an
+        // uncompacted run's own `MaxTurns` would have looked like and is
+        // not evidence this run actually had. The valence keeps what *is*
+        // known — the ceiling — and says the reading is partial.
         let mut compacted = clean.clone();
         compacted.compactions = 1;
+        let r = live_readout("s1", &compacted, &convo, 0);
+        assert_eq!(r.label, Affect::Neutral);
+        assert!(r.valence.partial);
+        assert_eq!(
+            r.valence.negatives, 1,
+            "the steer is dropped, the ceiling stays"
+        );
+        assert_eq!(r.valence.compact(), "\u{2212}0.5\u{2026}");
         assert_eq!(live("s1", &compacted, &convo, 0), Affect::Neutral);
+    }
+
+    /// Pins the disclosure on `live_readout`: with no drafts and no probe,
+    /// nothing a live run records can sign positive or earn a label. When
+    /// this fails, the docs that say "negative-only" are stale — update
+    /// them, not this.
+    #[test]
+    fn the_live_readout_is_negative_only_and_neutral_only_today() {
+        let mut outcome = bare_outcome();
+        outcome.stop_cause = crate::agent::StopCause::MaxTurns;
+        outcome.ended_on_failed_call = true;
+        outcome.boredom_notices = 2;
+        let convo = crate::agent::Conversation::default();
+        let r = live_readout("s1", &outcome, &convo, 0);
+        assert_eq!(r.label, Affect::Neutral);
+        assert_eq!((r.valence.positives, r.valence.positive), (0, 0.0));
+        assert!(r.valence.negatives >= 2);
     }
 }

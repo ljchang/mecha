@@ -60,7 +60,11 @@ pub struct Args {
 /// Scan the run corpus and pick one model's slice — one model, because a rate
 /// blended across two describes neither. `Ok(None)` means the corpus holds no
 /// recorded outcomes at all, which callers report in their own register: an
-/// error at a terminal, a quiet skip at 03:30.
+/// error at a terminal, a quiet skip at 03:30. Two emptinesses are *not*
+/// that, on either path, and return an error instead: a store with
+/// transcripts it could not read, and a store holding only smoke-test
+/// sessions the diagnosis excludes — a rotting store and a filter working
+/// are findings, and at 03:30 a non-zero exit is the register they get.
 pub fn corpus_slice(
     want: Option<&str>,
     days: Option<i64>,
@@ -82,6 +86,15 @@ pub fn corpus_slice(
             max_sessions: Some(limit),
             since,
             workspace: workspace.clone(),
+            // A diagnosis over smoke tests would send a change at code that
+            // was only ever exercised by a test. The same admission is
+            // applied to the measurement half's episode draw
+            // (`harness_probe`'s `Scan::admits`), so both halves of one
+            // night see one population; the surface filter is not exposed
+            // on either, because a candidate is measured against every
+            // surface it will run in.
+            kind: None,
+            include_tests: false,
         },
     )?;
     let sessions_read = corpus.sessions_read;
@@ -122,6 +135,23 @@ pub fn corpus_slice(
                     corpus.unreadable
                 );
             }
+            // The fourth zero, and the one the smoke-test mark created:
+            // every session rooted here was recorded as a test and the
+            // diagnosis excludes those by design, so this is the filter
+            // working — not a prefix typo, and not an empty store (found
+            // on review, after CLAUDE.md started telling smoke tests to
+            // set the mark). After the unreadable finding, never ahead of
+            // it: a rotting store must not read as a filter working
+            // (found on the next review pass).
+            if sessions_read == 0 && corpus.hidden_tests > 0 {
+                anyhow::bail!(
+                    "the only sessions rooted under {} are {} smoke-test session(s) \
+                     (`MECHA_SESSION_KIND=test`), which the diagnosis excludes — a \
+                     candidate is measured against real use, and there is none here yet.",
+                    w.display(),
+                    corpus.hidden_tests
+                );
+            }
             if sessions_read == 0 {
                 anyhow::bail!(
                     "no sessions are rooted under {} — the filter matched nothing, which is \
@@ -136,6 +166,24 @@ pub fn corpus_slice(
                  finding from the filter matching nothing. A session records an outcome only \
                  when a run completes under it.",
                 w.display()
+            );
+        }
+        // The same order as the `--from-workspace` arm: a rotting store
+        // outranks a filter working, so the unreadable finding comes first
+        // (found on review as an asymmetry between the two arms).
+        if sessions_read == 0 && corpus.unreadable > 0 {
+            anyhow::bail!(
+                "no readable sessions recorded an outcome, and {} transcript(s) in the store \
+                 could not be read at all — a damaged store rather than an empty one. `mecha \
+                 doctor` reports on the session store.",
+                corpus.unreadable
+            );
+        }
+        if corpus.hidden_tests > 0 && sessions_read == 0 {
+            anyhow::bail!(
+                "the store holds only {} smoke-test session(s) (`MECHA_SESSION_KIND=test`), \
+                 which the diagnosis excludes — nothing recorded as real use yet.",
+                corpus.hidden_tests
             );
         }
         return Ok(None);

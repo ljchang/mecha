@@ -1077,6 +1077,7 @@ mod tests {
                 model: "a-model".into(),
                 workspace: dir.to_path_buf(),
                 title: Some("task: something".into()),
+                kind: Some(mecha_core::session::SessionKind::Task),
             },
         )
         .unwrap()

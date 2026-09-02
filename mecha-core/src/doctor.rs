@@ -1349,6 +1349,8 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
             // Every workspace: doctor reports the machine's health, and
             // health is not scoped to one job.
             workspace: None,
+            kind: None,
+            include_tests: false,
         },
     ) {
         Ok(c) => c,
@@ -1383,6 +1385,39 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
                 sessions.display()
             ),
         ));
+    }
+
+    // The run check reads the store with smoke tests excluded, like every
+    // corpus reader now does — and it is the one reader whose job is the
+    // store itself, so a window dominated by smoke tests must not read as
+    // "runs are healthy" on a denominator nobody was told shrank (found on
+    // review). Reported only when the tests outnumber what was read: a
+    // handful beside real use is the mark working, not a finding.
+    if corpus.hidden_tests > corpus.sessions_read {
+        out.push(Finding {
+            component: "runs".into(),
+            severity: Severity::Attention,
+            summary: format!(
+                "the run check is reading {} real session(s) beside {} smoke-test session(s) it hid",
+                corpus.sessions_read, corpus.hidden_tests
+            ),
+            detail: format!(
+                "{}: sessions recorded with MECHA_SESSION_KIND=test are excluded from every \
+                 corpus readout by default, so the rates below describe the few real runs, \
+                 not the store; `--include-tests` shows the rest",
+                sessions.display()
+            ),
+            remedy: Some(Remedy {
+                description: "read the run-quality summary with the smoke tests shown".into(),
+                argv: vec![
+                    "mecha".into(),
+                    "sessions".into(),
+                    "health".into(),
+                    "--include-tests".into(),
+                ],
+                needs_terminal: false,
+            }),
+        });
     }
 
     let remedy = |what: &str| {
@@ -3253,6 +3288,7 @@ mod tests {
                     model: model.to_string(),
                     workspace: std::path::PathBuf::from("/tmp"),
                     title: None,
+                    kind: None,
                 },
             )
             .unwrap();
@@ -3940,5 +3976,53 @@ mod proposal_review_tests {
         let dir = std::env::temp_dir().join("mecha-doctor-proposals-absent");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(check_proposal_review(&dir, now()).is_empty());
+    }
+
+    #[test]
+    fn a_window_dominated_by_smoke_tests_is_a_finding_not_a_healthy_store() {
+        use crate::session::{Record, RunStats, Session, SessionKind, SessionMeta};
+        let dir = std::env::temp_dir().join(format!("doctor-hidden-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mk = |id: &str, kind: SessionKind, stamp: &str| {
+            let s = Session::create(
+                &dir,
+                SessionMeta {
+                    id: id.into(),
+                    created_at: chrono::DateTime::parse_from_rfc3339(stamp)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    provider: "local".into(),
+                    model: "m".into(),
+                    workspace: std::path::PathBuf::from("/tmp"),
+                    title: None,
+                    kind: Some(kind),
+                },
+            )
+            .unwrap();
+            s.append(&Record::Outcome(RunStats::default())).unwrap();
+        };
+        mk(
+            "20260801T000003-web",
+            SessionKind::Web,
+            "2026-08-01T00:00:03Z",
+        );
+        mk(
+            "20260801T000002-t1",
+            SessionKind::Test,
+            "2026-08-01T00:00:02Z",
+        );
+        mk(
+            "20260801T000001-t2",
+            SessionKind::Test,
+            "2026-08-01T00:00:01Z",
+        );
+        let findings = check_runs(&dir);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.summary.contains("2 smoke-test session(s) it hid")),
+            "{findings:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
