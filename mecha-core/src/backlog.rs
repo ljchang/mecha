@@ -638,9 +638,14 @@ mod tests {
         assert_eq!(b.proposals, Some(Depth::default()));
         assert_eq!(b.candidates, Some(Depth::default()));
         // All five, not the three owner-facing ones: the first cut of this
-        // test asserted three while `LearningStore::open` and
-        // `HarnessStore::open` still created — and ran `git init` in —
-        // `learning/` twice per run (found on review).
+        // test asserted three while `LearningStore::open` (which also runs
+        // `git init`) and `HarnessStore::open` still created `learning/`
+        // and `learning/harness/candidates` twice per run (found on
+        // review). The empty-home assertion below is the strong form, and
+        // it is what makes this test sensitive to any test in this binary
+        // that writes under `MECHA_HOME` without holding `work::tests::ENV`
+        // — none does today; if this goes flaky, that is the first place
+        // to look.
         for store in ["outbox", "questions", "requests", "learning"] {
             assert!(
                 !home.dir().join(store).exists(),
