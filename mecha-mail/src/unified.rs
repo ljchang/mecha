@@ -187,12 +187,12 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
     // sends resolve to `dartmouth` is worse than saying nothing: the model
     // omits `account` believing it knows where the message goes.
     //
-    // Which is why only a **create** carries one at all. `resolve` consults
-    // a default in `Mode::Create` and nowhere else — a read fans out over
-    // every account and an item op errors until one is named — so a default
-    // note on `mail_search` or `mail_get_thread` describes behaviour that
-    // does not exist, and contradicts the sentence beside it ("Omit to
-    // search every account").
+    // Which is why a default is declared only where omitting `account` really
+    // does resolve to one, and the **resolution mode** decides rather than the
+    // verb: see `item_account` below for the mode-by-mode rule. A `Mode::Read`
+    // fans out over every account, so a default note on `mail_search`
+    // describes behaviour that does not exist and contradicts the sentence
+    // beside it ("Omit to search every account").
     //
     // The `default` **key**, not just the prose, and that is the load-bearing
     // half: a caller cannot resolve this — `mecha-core` has no dependency on
@@ -1976,8 +1976,10 @@ mod tests {
                 ["properties"]["account"];
             assert_eq!(spec["default"], json!("personal"), "{tool}: {spec}");
         }
-        // And it is still only a create that claims one: omitting `account`
-        // on a read means every account, which happens to be the same one.
+        // A read still claims none: omitting `account` there means *every*
+        // account, and with one configured the two coincide only by
+        // arithmetic. (An item op does claim it here — that is
+        // `item_ops_declare_the_single_account_and_never_a_configured_one`.)
         let search = &defs.iter().find(|d| d["name"] == "mail_search").unwrap()["inputSchema"]
             ["properties"]["account"];
         assert!(search.get("default").is_none(), "{search}");
