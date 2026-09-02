@@ -793,13 +793,35 @@ named by what it can and cannot do.
   speaker across a room is not verbatim — one word lands differently and the
   match is gone — and TTS is handed a sentence at a time, so an echo running
   over a sentence boundary was contained in no single phrase. It now matches
-  word overlap against the joined window (0.6 over the speaker, 0.85 in
-  silence, exact containment as before), and never judges one or two words by
-  overlap unless we said them verbatim, because "stop" and "wait" are the whole
-  vocabulary of a barge-in. It moved to `scripts/voice/echo_filter.py` — a pure
-  module with no pipecat import — for the sole reason that testing it used to
-  mean standing up a GPU box and a WebRTC stack, and a heuristic that decides
-  whether a person's turn happens at all had no test of any kind.
+  the transcript against the joined window by an **ordered** match — a longest
+  common subsequence — and calls it echo only at four matched words *and* 60%
+  coverage, with exact containment kept as before.
+
+  Both halves of that are load-bearing, and the first version got the first
+  half wrong. An unweighted bag of words puts every function word in a
+  20-second window into the vocabulary, so the bar falls with reply length
+  rather than with resemblance: **"no, cancel it" over "…or would you rather I
+  cancel it?" scored 0.667 against a 0.6 bar and was silenced** — and a
+  three-word confirmation is the commonest legitimate barge-in there is.
+  Because turn-start is transcription-based, a gated transcript is not a
+  degraded turn but no turn at all. The absolute count is what protects it;
+  ordering is what keeps the count honest the other way, since real echo
+  arrives with words dropped from the middle (so contiguity is too strict)
+  while a coincidental match rarely survives having to be in order at all —
+  "actually cancel that" cannot match a window that says "that" before
+  "cancel".
+
+  And the fuzzy arm now runs **only** when the speaker was audible, rather
+  than at a higher bar: with nothing playing there was no echo to have, so
+  resemblance is a person agreeing in the words of the question they were
+  asked. That also retired a margin far too thin to keep — "yes, move the
+  seminar to Thursday" against "Shall I move the seminar to Thursday?" scored
+  0.833 against 0.85, one word from silencing the plainest yes in the language.
+
+  It moved to `scripts/voice/echo_filter.py` — a pure module with no pipecat
+  import — for the sole reason that testing it used to mean standing up a GPU
+  box and a WebRTC stack, and a heuristic that decides whether a person's turn
+  happens at all had no test of any kind.
   `python3 scripts/voice/test_echo_filter.py`.
 
 The bias is written down where the thresholds are: a dropped turn costs a

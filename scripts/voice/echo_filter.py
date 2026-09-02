@@ -45,17 +45,24 @@ ECHO_WINDOW_SECONDS = 20.0
 # question is treated as suspect.
 BOT_TAIL_SECONDS = 1.2
 
-# Fraction of a transcript's words that must also be in what we just said.
-# Two bars, because the same words mean different things depending on whether
-# the speaker was audible: over our own voice, agreeing in our own vocabulary
-# is what echo looks like; in a silent room it is what conversation looks like.
-ECHO_OVERLAP_OVER_SPEAKER = 0.6
-ECHO_OVERLAP_IN_SILENCE = 0.85
-
-# Below this a transcript is judged only by exact containment. "Stop", "wait",
-# "no" are the whole vocabulary of a barge-in, and word overlap cannot tell
-# them from an echo — so it does not try.
-MIN_WORDS_FOR_OVERLAP = 3
+# How much of a transcript must be our own words, *in our own order*, before
+# it is called an echo — as a count and as a fraction, and it has to be both.
+#
+# The count is what protects a barge-in. An unweighted bag of words does not:
+# `vocab` would be every word in a 20-second window, function words included,
+# so a long reply makes almost any short sentence clear a ratio bar. "No,
+# cancel it" over "…or would you rather I cancel it?" scored 0.667 against a
+# 0.6 bar and was silenced — a three-word confirmation is the commonest
+# legitimate barge-in there is, and because turn-start is transcription-based
+# a gated transcript is not a degraded turn but no turn at all.
+#
+# Ordered matching (a longest common subsequence, not a substring) is what
+# keeps the count honest in the other direction: real echo arrives with words
+# dropped in the middle, so contiguity is too strict, while order still costs
+# a coincidental match almost everything. "Actually cancel that" cannot match
+# a window that says "that" before "cancel".
+MIN_ECHO_MATCHED_WORDS = 4
+ECHO_COVERAGE = 0.6
 
 
 def normalize(text: str) -> str:
@@ -64,6 +71,24 @@ def normalize(text: str) -> str:
 
 def _words(text: str) -> list[str]:
     return normalize(text).split()
+
+
+def _matched_in_order(words: list[str], blob: list[str]) -> int:
+    """How many of `words` appear in `blob`, in the same order.
+
+    A longest common subsequence. Order is the whole point: it is what
+    separates our own sentence coming back with a word misheard in the middle
+    from a person reusing two of our words to disagree with us.
+    """
+    if not words or not blob:
+        return 0
+    prev = [0] * (len(blob) + 1)
+    for w in words:
+        cur = [0]
+        for j, b in enumerate(blob):
+            cur.append(prev[j] + 1 if w == b else max(cur[j], prev[j + 1]))
+        prev = cur
+    return prev[-1]
 
 
 class BotSpeech:
@@ -101,10 +126,14 @@ class BotSpeech:
         """Are these our own words coming back?
 
         `bot_was_audible` is the caller's answer to "was the speaker playing
-        while this segment was captured" ([`overlapped`]). It only ever
-        *loosens* the bars — with nothing playing there was no echo to have,
-        so a transcript that merely resembles the last reply is treated as a
-        person agreeing, which is the thing it almost certainly is.
+        while this segment was captured" ([`overlapped`]), and it gates the
+        fuzzy arm entirely rather than merely loosening it: **with nothing
+        playing there was no echo to have.** A transcript that resembles the
+        last reply in a silent room is a person agreeing in the words of the
+        question they were asked, which is what conversation sounds like. The
+        verbatim arm still applies either way, because the timing layer can be
+        wrong — a missing frame, an unrecorded segment start — and that is the
+        one claim cheap enough to make unconditionally.
         """
         words = _words(transcript)
         if not words:
@@ -114,23 +143,18 @@ class BotSpeech:
             return False
 
         norm = " ".join(words)
-        # The original test, unchanged: said verbatim, heard verbatim.
+        # Said verbatim, heard verbatim. The original test, unchanged.
         if len(norm) >= 8 and norm in blob:
             return True
-        if len(words) < MIN_WORDS_FOR_OVERLAP:
-            return False
-        if not bot_was_audible and len(norm) < 8:
+        if not bot_was_audible:
             return False
 
-        vocab = set(blob.split())
-        overlap = sum(1 for w in words if w in vocab) / len(words)
-        bar = ECHO_OVERLAP_OVER_SPEAKER if bot_was_audible else ECHO_OVERLAP_IN_SILENCE
-        return overlap >= bar
+        matched = _matched_in_order(words, blob.split())
+        return matched >= MIN_ECHO_MATCHED_WORDS and matched / len(words) >= ECHO_COVERAGE
 
 
 def overlapped(
     *,
-    now: float,
     segment_started_at: float | None,
     bot_speaking: bool,
     bot_audible_until: float,

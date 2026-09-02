@@ -218,9 +218,18 @@ class SegmentGatedSTT(BaseWhisperSTTService):
             self._bot_audible_until = _time.monotonic()
 
     def heard_the_speaker(self) -> bool:
-        """Did our own reply overlap the segment about to be transcribed?"""
+        """Did our own reply overlap the segment about to be transcribed?
+
+        `_segment_started_at` is logged beside the answer, not just the
+        answer. `over_speaker=False` reads identically whether the timing
+        layer decided "no overlap" or whether the start was never recorded
+        because `VADUserStartedSpeakingFrame` stopped reaching this processor
+        — a pipecat upgrade renaming that frame would collapse `overlapped`
+        to `bot_speaking` alone, the graded floor would quietly stop applying
+        to everything but a live barge-in, and every log line would still read
+        healthy. `segment_start=None` is what makes that visible.
+        """
         return overlapped(
-            now=_time.monotonic(),
             segment_started_at=self._segment_started_at,
             bot_speaking=self._bot_speaking,
             bot_audible_until=self._bot_audible_until,
@@ -271,7 +280,8 @@ class ParakeetSTT(SegmentGatedSTT):
             # like, and `MECHA_VOICE_ECHO_RMS` has to be set from something.
             logger.debug(
                 f"parakeet segment gated: duration={duration:.2f}s rms={rms:.4f} "
-                f"floor={floor:.4f} over_speaker={echoey}"
+                f"floor={floor:.4f} over_speaker={echoey} "
+                f"segment_start={self._segment_started_at}"
             )
             return Transcription(text="")
         r = await self._client.audio.transcriptions.create(
@@ -280,7 +290,8 @@ class ParakeetSTT(SegmentGatedSTT):
         text = (r.text or "").strip()
         logger.debug(
             f"parakeet: duration={duration:.2f}s rms={rms:.4f} "
-            f"over_speaker={echoey} text={text[:100]!r}"
+            f"over_speaker={echoey} segment_start={self._segment_started_at} "
+            f"text={text[:100]!r}"
         )
         if BOT_SPEECH.is_probable_echo(text, bot_was_audible=echoey):
             logger.debug(f"parakeet echo filter: {text[:60]!r} over_speaker={echoey}")

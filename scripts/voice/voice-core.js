@@ -219,6 +219,11 @@ export function createVoiceSession(opts = {}) {
         });
       } catch { /* a closing connection; the next tick is the recovery */ }
       finally { levelBusy = false; }
+      // Re-checked *after* the await, not only before it: a tick already in
+      // flight when `end()` runs resolves afterwards, and would light the
+      // ring back up a moment after the teardown zeroed it - leaving it lit
+      // for the whole of the idle state that follows.
+      if (!pc) return;
       // A display curve, not a measurement: audioLevel is linear amplitude,
       // where ordinary speech sits low enough that a linear ring barely
       // moves. The square root spends the ring's travel where the voice is.
