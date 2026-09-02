@@ -1471,6 +1471,60 @@ carry:
   this shape since it was written. Parity, not a regression, and the shape a
   Slack thread will show once.
 
+## Approval rules
+
+`mecha-core/src/policy.rs`. `[[rule]]` entries in config make approval
+per-command: `tool`, a prefix `pattern` of words and alternatives
+(`["git", ["status", "diff"]]`), a decision of `allow | prompt | forbid`,
+`match` / `not_match` examples, and a `justification` the model reads in a
+refusal. The specification and the survey behind it are
+`PRIOR-ART-RESEARCH.md` §4; the invariants are these.
+
+- **A rule narrows and never loosens.** Where several rules match, the most
+  restrictive wins. `forbid` refuses with nobody consulted and renders as
+  `Blocked by policy:` — machine policy, never mined as a correction.
+  `prompt` asks even for a read-only tool. `allow` says only that *no person
+  needs to be asked*: it reaches the approver through `Approver::permit`, and
+  a read-only run, a read-only Slack thread or a read-only web surface still
+  refuses a write — a config rule may stand in for the human's yes and for
+  nothing else. Rules sit after the interlock, the hook and outbox staging
+  and before the approver, and an escalation (`trifecta = "ask"`) is never
+  softened by one: the interlock chose to put a person in front of the call,
+  and a config line is not that person.
+- **The splitter is conservative on purpose.** A command is judged one
+  segment at a time (`&&`, `||`, `|`, `;`), and allowed only if every segment
+  is. Anything `split_segments` cannot take apart with certainty —
+  substitution, redirection, globs, braces, backslashes, comments, control
+  flow, an unterminated quote, an operator glued to a word — is one opaque
+  invocation that matches no prefix rule, so under a policy it prompts. A
+  false "cannot split" costs one prompt; a false "can" costs the feature.
+- **An allowlisted interpreter is not an allowlisted command.** `python -c`,
+  `node -e`, `sh -c`, `sed -e`, `find -exec`, and the wrappers that run their
+  arguments — `xargs`, `env`, `sudo`, `timeout`, `nohup`, `watch` — are judged
+  as at least `prompt` whatever the rules say, because a prefix rule on `rm`
+  is bypassed by `timeout 5 rm -rf`. `[approval] strict_inline_eval` is on by
+  default and loads from the global file only.
+- **Examples are checked at load.** An `allow` rule must carry `match`
+  examples; every `match` must match the rule and every `not_match` must not,
+  or `Config::validate` fails the start naming the rule. The principle is the
+  hooks one: a policy that does not do what its author believes fails on every
+  start, not on the run that needed it.
+- **A project layer may only narrow.** `merge_file` drops a project file's
+  `allow` rules with a warning and ignores its `[approval]`; `prompt` and
+  `forbid` rules are appended. A cloned repository must not be able to make
+  its own commands run unasked — the `[messages]`/`[slack]`/triggers rule.
+- **Children inherit the rules**, like hooks and the outbox route, so
+  delegating is not the way around a `forbid`. Empty rules are exactly the
+  behaviour before this section existed: `ExecPolicy::decide` returns `None`
+  and the approver decides alone.
+
+There is deliberately no `--no-rules`: a `forbid` is the operator's standing
+word, and a flag that lifts it for one run is the silently-degrading-guard
+shape. The approve-then-execute binding the survey asked for holds by
+construction in-process — the `input` the approver saw is the value the tool
+receives — and a test (`the_tool_receives_exactly_the_input_that_was_approved`)
+is what keeps a refactor from making it two values.
+
 ## The outbox
 
 `[outbox] tools = [...]` names tools whose calls are **staged, not executed**:
