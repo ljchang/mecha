@@ -46,9 +46,11 @@ streams** (`provider::HttpClients`, `for_body`). reqwest's `read_timeout` is a
 *client* setting that also bounds the wait for the response head, and
 `RequestBuilder::timeout` overrides only the total deadline — so one client
 cannot both bound a stream per read and give a non-streaming request its long
-exchange cap. The streaming client bounds each read at `STALL_TIMEOUT` and
-never the exchange (a long answer is not a stall; the server is either sending
-tokens or it is not); the whole-exchange client bounds the exchange at
+exchange cap. The streaming client bounds each read at `STALL_TIMEOUT` (a long
+answer is not a stall; the server is either sending tokens or it is not) and
+the exchange only at `STREAM_TIMEOUT`, a far cap for the connection that keeps
+emitting keepalive bytes and never finishes; the whole-exchange client bounds
+the exchange at
 `REQUEST_TIMEOUT` and has no per-read bound, because with `stream: false` the
 entire generation is one silent read. Both providers used to put one 900 s
 `timeout` on the whole exchange, streamed body included, and a legitimate

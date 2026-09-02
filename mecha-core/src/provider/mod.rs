@@ -162,6 +162,13 @@ pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// Time allowed to open the connection, separately from the reads.
 pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The far cap on a *streaming* exchange. A stream is bounded per read so a
+/// long answer survives, but a connection that keeps emitting bytes without
+/// ever finishing — SSE `ping` frames, a proxy keepalive — never trips the
+/// stall bound and would hold the turn forever. An hour: a 128k-token answer
+/// at ~50 tok/s is ~43 minutes, and nothing legitimate runs longer.
+pub const STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
+
 /// The two HTTP clients a provider needs, chosen per request by whether the
 /// body streams.
 ///
@@ -182,13 +189,19 @@ pub struct HttpClients {
     /// For a request whose body arrives at once: the whole exchange is
     /// capped, and silence before the head is generation, not a stall.
     pub whole: reqwest::Client,
-    /// For a streamed request: each read is capped, the exchange is not.
+    /// For a streamed request: each read is capped at the stall bound, and
+    /// the exchange only at the far cap a never-finishing stream needs.
     pub stream: reqwest::Client,
 }
 
 impl HttpClients {
     pub fn build() -> reqwest::Result<Self> {
-        Self::with(CONNECT_TIMEOUT, STALL_TIMEOUT, REQUEST_TIMEOUT)
+        Self::with(
+            CONNECT_TIMEOUT,
+            STALL_TIMEOUT,
+            REQUEST_TIMEOUT,
+            STREAM_TIMEOUT,
+        )
     }
 
     /// The constructor the test drives with short durations.
@@ -196,15 +209,19 @@ impl HttpClients {
         connect: std::time::Duration,
         stall: std::time::Duration,
         whole: std::time::Duration,
+        stream_cap: std::time::Duration,
     ) -> reqwest::Result<Self> {
         Ok(HttpClients {
             whole: reqwest::Client::builder()
                 .connect_timeout(connect)
                 .timeout(whole)
                 .build()?,
+            // Per read for the stall, and a far total cap so a connection
+            // that never stops emitting bytes cannot hold a turn forever.
             stream: reqwest::Client::builder()
                 .connect_timeout(connect)
                 .read_timeout(stall)
+                .timeout(stream_cap)
                 .build()?,
         })
     }
@@ -276,6 +293,7 @@ mod timeout_tests {
             Duration::from_secs(5),
             Duration::from_millis(200),
             Duration::from_secs(5),
+            Duration::from_secs(5),
         )
         .unwrap();
 
@@ -299,6 +317,7 @@ mod timeout_tests {
             Duration::from_secs(5),
             Duration::from_secs(5),
             Duration::from_millis(200),
+            Duration::from_secs(5),
         )
         .unwrap();
         let err = clients
@@ -309,6 +328,67 @@ mod timeout_tests {
             .await
             .expect_err("the exchange cap must fire");
         assert!(err.is_timeout(), "{err}");
+    }
+
+    /// A server that answers the headers and then drips one chunk every
+    /// 50 ms without ever finishing — SSE `ping` frames, a proxy keepalive.
+    async fn dripping_server() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    if sock
+                        .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    loop {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        if sock.write_all(b"1\r\nx\r\n").await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    /// The stall bound cannot see a connection that keeps emitting bytes; the
+    /// far exchange cap is what ends it.
+    #[tokio::test]
+    async fn a_stream_that_never_finishes_is_ended_by_the_far_cap() {
+        let url = dripping_server().await;
+        let clients = HttpClients::with(
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Duration::from_millis(400),
+        )
+        .unwrap();
+        let resp = clients.stream.post(&url).body("{}").send().await.unwrap();
+        let mut body = resp.bytes_stream();
+        let mut chunks = 0usize;
+        loop {
+            match futures::StreamExt::next(&mut body).await {
+                Some(Ok(_)) => chunks += 1,
+                Some(Err(e)) => {
+                    assert!(e.is_timeout(), "{e}");
+                    break;
+                }
+                None => panic!("the drip ended on its own"),
+            }
+            assert!(chunks < 1_000, "the cap never fired");
+        }
+        assert!(chunks > 0, "bytes were flowing when the cap fired");
     }
 
     #[test]
