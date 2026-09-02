@@ -41,6 +41,23 @@ leaking.
 
 ## Provider notes (Claude 5 family)
 
+**Two HTTP clients per provider, chosen per request by whether the body
+streams** (`provider::HttpClients`, `for_body`). reqwest's `read_timeout` is a
+*client* setting that also bounds the wait for the response head, and
+`RequestBuilder::timeout` overrides only the total deadline — so one client
+cannot both bound a stream per read and give a non-streaming request its long
+exchange cap. The streaming client bounds each read at `STALL_TIMEOUT` and
+never the exchange (a long answer is not a stall; the server is either sending
+tokens or it is not); the whole-exchange client bounds the exchange at
+`REQUEST_TIMEOUT` and has no per-read bound, because with `stream: false` the
+entire generation is one silent read. Both providers used to put one 900 s
+`timeout` on the whole exchange, streamed body included, and a legitimate
+long answer died mid-stream with the partial discarded (found by the
+2026-09-02 audit); the first fix used one client with a read timeout and
+*tightened* the non-streaming cap to that read bound, which the PR review
+caught. The guarantee is measured against a socket that goes quiet, not a
+builder field.
+
 There is no official Anthropic SDK for Rust, so `provider/anthropic.rs` speaks
 raw HTTP. Things that will 400 if forgotten:
 
@@ -2552,7 +2569,10 @@ The things that decide the design:
   accumulate, and a long-lived session's head grew by a block per compaction
   with nothing ever re-summarising it (found by the 2026-09-02 audit). The
   validator grades the new summary against a rendering that still holds the
-  old one, so an unfolded earlier summary surfaces as an omission.
+  old one, so an unfolded earlier summary surfaces as an omission. That is
+  the net: replacing turned a structural guarantee (nothing was ever lost,
+  because everything accumulated) into a model-follows-instructions one, and
+  `compact_validate = false` runs without it.
 - **Stale results are evicted before anything is summarised.**
   `evict_superseded_results` runs first at both compaction sites (threshold
   and overflow recovery): when a later call covers the same target — the same
