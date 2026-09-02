@@ -75,7 +75,7 @@ Ranked by cost of leaving it. None blocks the plan; each is one small PR.
 | Nothing checks `max_tokens` against `--reasoning-budget`; CLAUDE.md's "clients refuse that by name" is `StopCause::NoOutput`'s message after the fact | `onboarding.rs` / `doctor.rs` | An onboarding item that reads `/props` and compares |
 | `process_alive` returns true on `EPERM`, so a reused pid keeps a permit seat or a running marker | `permit.rs`, `runmarker.rs` | Compare process start time beside the pid |
 | The `if results.is_empty()` guard after `run_tools` cannot fire, and if it did it would return with a `tool_use` pushed and no results | `run_loop` | Delete it |
-| `slot.lock().unwrap()` on `step_escalation` panics on poison where `take_queued_input` recovers with `into_inner()` | `run_loop` | Same policy in both places |
+| ~~`slot.lock().unwrap()` on `step_escalation` panics on poison where `take_queued_input` recovers with `into_inner()`~~ **Fixed on this branch** after the PR review made it reachable: the slot recovers as `take_queued_input` does, and so do the stateful builtins' own locks (`TodoTool::lists`, `SkillTool::loaded`), which a caught panic would otherwise leave poisoned forever | `run_loop`, `todo.rs`, `skill.rs` | — |
 | `is_internal` omits NAT64 `64:ff9b::/96` and 6to4 `2002::/16` | `builtin.rs` | Add the ranges; host-dependent reachability |
 | Hooks spawn `sh -c` with mecha's full environment; `Sandbox::child_env` exists | `hooks.rs` | Hooks are user-authored, so this is hygiene, not a hole |
 | `Session::append` is an unbuffered `writeln!` with no lock; two attachers can interleave a body and its newline | `session.rs` | An advisory lock per append, or one writer per file |

@@ -622,7 +622,11 @@ fn accept_frame(acc: &mut Accumulator, data: &str, sink: &StreamSink) -> Result<
         return Ok(Frame::Done);
     }
     let v: Value = serde_json::from_str(data).context("malformed SSE data frame")?;
-    if let Some(err) = v.get("error") {
+    // Present-and-null is not an error: several compatible gateways emit
+    // `"error": null` on every chunk, and keying on presence alone aborted
+    // the whole stream with the message `null`. The Anthropic decoder keys on
+    // the event *type* and cannot trip this way — the asymmetry was the tell.
+    if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
         let message = err
             .pointer("/message")
             .and_then(Value::as_str)
@@ -1191,6 +1195,16 @@ mod tests {
             accept_frame(
                 &mut acc,
                 r#"{"choices":[{"index":0,"delta":{"content":"hi"}}]}"#,
+                &tx
+            )
+            .unwrap(),
+            Frame::Data
+        );
+        // Including the `"error": null` some gateways put on every chunk.
+        assert_eq!(
+            accept_frame(
+                &mut acc,
+                r#"{"error":null,"choices":[{"index":0,"delta":{"content":"!"}}]}"#,
                 &tx
             )
             .unwrap(),
