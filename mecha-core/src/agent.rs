@@ -205,6 +205,24 @@ pub fn is_plain_user_text(m: &Message) -> bool {
             .any(|b| matches!(b, Block::ToolResult { .. }))
 }
 
+/// The text of the last thing the *assistant* said — what a run that stops
+/// before its final turn hands back as its answer.
+///
+/// Not `messages.last()`: after a tool turn the tail is the tool-results
+/// message, and `Message::text` is role-agnostic. Reading it there dropped
+/// the assistant's own words from an interrupted turn and, worse, returned
+/// whatever had been *folded* into that message via `append_user_text` — a
+/// boredom notice, a plan nudge, a peer's mailbox delivery — as the run's
+/// answer. A peer's message must never become `RunOutcome.text`.
+pub fn last_assistant_text(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::Assistant)
+        .map(Message::text)
+        .unwrap_or_default()
+}
+
 /// What the loop consults that is properly per-*run* rather than per-agent:
 /// what tools may touch, who approves the ones that aren't read-only, and what
 /// this particular run is allowed to spend.
@@ -1497,7 +1515,7 @@ impl Agent {
             if cx.cancelled() {
                 tracing::info!(turns, "interrupted");
                 let mut outcome = self.interrupted(
-                    messages.last().map(Message::text).unwrap_or_default(),
+                    last_assistant_text(messages),
                     usage,
                     turns,
                     trace,
@@ -1779,7 +1797,7 @@ impl Agent {
 
             if let Some(cause) = ceiling {
                 tracing::info!(cause = cause.describe(), turns, "stopping early");
-                let mut text = messages.last().map(Message::text).unwrap_or_default();
+                let mut text = last_assistant_text(messages);
                 if self.cfg.force_final_answer {
                     match self.final_answer(cx, messages, &events).await {
                         Ok(Some(answer)) => text = answer,
@@ -2356,7 +2374,15 @@ impl Agent {
             crate::compact::SUMMARY_INSTRUCTION
         ));
 
-        let response = match self.complete(cx, &request, events).await? {
+        // `&None`, not `events`: the summariser's output is not the
+        // assistant's. With the run's sender, every `TextDelta` of the
+        // summary reached the front-end as the model speaking — Slack's pump
+        // posted it to the thread, the TUI appended it to the assistant's
+        // entry — while it never landed in `messages`, so screen and
+        // transcript disagreed. `escalate_step` had this right from the
+        // start; the two older side-calls did not. Cancellation still
+        // works: `complete` streams whenever `cx.cancel` is set.
+        let response = match self.complete(cx, &request, &None).await? {
             Completion::Finished(response) => *response,
             // Cancelled mid-summary. Leave the transcript alone: a half-written
             // summary is worse than an oversized conversation, and the run is
@@ -2387,7 +2413,7 @@ impl Agent {
         // completion gate — an unusable verdict is a warning, not a veto,
         // because a run that needs to compact to survive must still compact.
         if self.cfg.compact_validate {
-            match self.validate_summary(cx, &rendered, &summary, events).await {
+            match self.validate_summary(cx, &rendered, &summary).await {
                 Ok((usage, Some(omissions))) => {
                     spent.add(&usage);
                     tracing::info!(
@@ -2402,8 +2428,7 @@ impl Agent {
                         "{rendered}\n---\n{}",
                         crate::compact::retry_instruction(&omissions)
                     ));
-                    if let Completion::Finished(second) =
-                        self.complete(cx, &request, events).await?
+                    if let Completion::Finished(second) = self.complete(cx, &request, &None).await?
                     {
                         spent.add(&second.usage);
                         let text = second.message.text();
@@ -2585,14 +2610,15 @@ impl Agent {
         cx: &RunContext,
         rendered: &str,
         summary: &str,
-        events: &Option<UnboundedSender<AgentEvent>>,
     ) -> Result<(Usage, Option<Vec<String>>)> {
         // Same rule as the summariser: its own budget, not the agent's.
         let request = crate::quarantine::QuarantinedPass::new(&self.model, 8192)
             .system(crate::compact::VALIDATE_SYSTEM)
             .effort(self.cfg.effort)
             .ask(crate::compact::validate_instruction(rendered, summary));
-        let response = match self.complete(cx, &request, events).await? {
+        // `&None` for the same reason as the summariser: a verdict about
+        // omissions is not something the assistant said.
+        let response = match self.complete(cx, &request, &None).await? {
             Completion::Finished(response) => *response,
             // Cancelled mid-verdict: the run is ending, install what exists.
             Completion::Interrupted(..) => return Ok((Usage::default(), None)),
@@ -9389,5 +9415,178 @@ mod tests {
         assert_eq!(convo.messages.len(), 4);
         assert!(!convo.messages[2].text().contains("budget went entirely"));
         assert_eq!(provider.seen.lock().unwrap().len(), 2);
+    }
+
+    /// A scripted provider that also *streams*: when handed a sink, it sends
+    /// the turn's text as one delta before returning, the way a real
+    /// provider does. A summariser request — recognisable by its system
+    /// prompt — is answered with a fixed summary rather than a scripted
+    /// turn, so the test does not depend on which turn compaction consumes.
+    /// What `ScriptedProvider` cannot show is which side-calls reach the
+    /// front-end; this can.
+    struct StreamingScripted(Arc<ScriptedProvider>);
+
+    #[async_trait]
+    impl Provider for StreamingScripted {
+        fn id(&self) -> &str {
+            "scripted"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-1"
+        }
+        async fn complete(
+            &self,
+            req: &CompletionRequest,
+            sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            let response = if req.system.as_deref() == Some(crate::compact::SUMMARY_SYSTEM) {
+                assistant(
+                    vec![Block::text("THE SUMMARY of what happened")],
+                    StopReason::EndTurn,
+                )
+            } else {
+                self.0.complete(req, None).await?
+            };
+            if let Some(sink) = sink {
+                let _ = sink.send(StreamEvent::TextDelta(response.message.text()));
+            }
+            Ok(response)
+        }
+    }
+
+    /// The summariser's words are not the assistant's. With the run's event
+    /// sender passed through, every delta of the summary reached the
+    /// front-end as the model speaking — posted to the Slack thread, appended
+    /// to the TUI's assistant entry — while never landing in `messages`.
+    #[tokio::test]
+    async fn the_compaction_summary_never_streams_as_the_assistants_words() {
+        // Several tool turns, each reporting a prompt over the threshold, so
+        // compaction fires at least once; the summariser's answer comes from
+        // the provider wrapper, not from this script.
+        let mut turns: Vec<CompletionResponse> = (0..6)
+            .map(|i| {
+                assistant(
+                    vec![
+                        Block::text(format!("step {i}")),
+                        Block::ToolUse {
+                            id: format!("t{i}"),
+                            name: "echo".into(),
+                            // Distinct per turn, or the post-compaction loop
+                            // guard reads the repeats as a stuck run.
+                            input: json!({"value": format!("x{i}")}),
+                        },
+                    ],
+                    StopReason::ToolUse,
+                )
+            })
+            .collect();
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let scripted = Arc::new(ScriptedProvider {
+            turns: Mutex::new(turns),
+            seen: Mutex::new(Vec::new()),
+        });
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(EchoTool));
+        let mut agent = Agent::new(
+            Box::new(StreamingScripted(Arc::clone(&scripted))),
+            registry,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+            ToolCtx::default(),
+            AgentConfig::default(),
+            Some("scripted-1".into()),
+        )
+        .unwrap();
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.compact_validate = false;
+        agent.cfg.force_final_answer = false;
+        agent.cfg.max_turns = 10;
+
+        let (tx, mut rx) = unbounded_channel::<AgentEvent>();
+        let mut convo = Conversation::user("the task");
+        let outcome = agent.run(&mut convo, Some(tx)).await.unwrap();
+        assert_eq!(outcome.text, "done");
+        assert!(
+            convo.messages[0].text().contains("THE SUMMARY"),
+            "the scripted summary must have been installed: {:?}",
+            convo.messages[0].text()
+        );
+
+        let mut streamed = String::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::TextDelta(t) = event {
+                streamed.push_str(&t);
+            }
+        }
+        assert!(
+            streamed.contains("step 0") && streamed.contains("done"),
+            "the assistant's own turns still stream: {streamed:?}"
+        );
+        assert!(
+            !streamed.contains("THE SUMMARY"),
+            "the summariser's output reached the front-end as assistant text: {streamed:?}"
+        );
+    }
+
+    /// Cancels the run from inside its own call, so the loop's top-of-turn
+    /// check fires with a tool-results message as the tail.
+    struct CancelsRun;
+    #[async_trait]
+    impl Tool for CancelsRun {
+        fn name(&self) -> &str {
+            "stop"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+            if let Some(cancel) = ctx.cancel.as_ref() {
+                cancel.cancel();
+            }
+            Ok(ToolOutput::ok("the tool's own result"))
+        }
+    }
+
+    /// After a tool turn the tail is the tool-results message, and reading
+    /// the run's answer off it dropped what the assistant had said — and
+    /// returned whatever notice had been folded into the results instead.
+    #[tokio::test]
+    async fn an_interrupted_run_hands_back_the_assistants_words_not_the_tail() {
+        let token = CancellationToken::new();
+        let (agent, _) = agent_with_tools(
+            vec![assistant(
+                vec![
+                    Block::text("partial answer so far"),
+                    Block::ToolUse {
+                        id: "t0".into(),
+                        name: "stop".into(),
+                        input: json!({}),
+                    },
+                ],
+                StopReason::ToolUse,
+            )],
+            vec![Arc::new(CancelsRun)],
+            PermissionMode::Allow,
+        );
+        let cx = agent.context().as_ref().clone().with_cancel(token);
+
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.stop_cause, StopCause::Interrupted);
+        assert!(
+            outcome.text.contains("partial answer so far"),
+            "the assistant's words are the answer: {}",
+            outcome.text
+        );
+        assert!(!outcome.text.contains("the tool's own result"));
     }
 }
