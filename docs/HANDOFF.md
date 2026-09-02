@@ -2225,7 +2225,7 @@ repeated here.
   closed with nothing sent, a run that shortened the owner's queue), judged
   follow-ups from `reflections.jsonl` as `Intervention` errors,
   `guilt::with_delta` folding the run's own delta over the standing level.
-  Re-read: **26 of 144 sessions signed, `+14.0 −33.5`**. Still open from
+  Re-read after review: **27 of 144 sessions signed, `+16.5 −34.5`**. Still open from
   phase B: the `Interrupted` split (after #139) and cancel-then-re-prompt
   as a steer, the three trajectory counters, and the trigger read receipt.
 

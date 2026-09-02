@@ -246,9 +246,15 @@ on `OutboxStore` cannot be manufactured by a sentence in a fetched page.
 
 > **Built 2026-09-02**: `guilt::with_delta(level, net_delta)` — a run that
 > cleared three or more recorded commitments reads as no guilt whatever it
-> inherited, one that added three reads as maximal, and between them the
-> level is scaled by the run's own share; `Homeostat::finish` computes the
-> delta first and folds the level through it. And the delta is a channel:
+> inherited, and below that the level is scaled down by the run's own
+> share; a run that *added* to the queue reads the level it inherited,
+> because staging is its job and the first cut's "added three reads as
+> maximal" was exactly the reading `Homeostat::finish` refuses by name
+> (found on review). `Homeostat::finish` computes the delta first and folds
+> the level through it, and `RunStats::merge` sums `backlog_delta` across a
+> session's runs where it kept the first run's before — a session that
+> parks a question is resumed by construction, and the resume is where the
+> clearing happens. And the delta is a channel:
 > a session whose `backlog_delta` net is negative signs `+0.5`, `Own`,
 > `Channel::Commitment`, cite `Setpoint("backlog_delta")`; adding to the
 > queue signs nothing, because staging is a trigger's job.
@@ -276,9 +282,10 @@ be a channel, and is named here rather than proposed.
 > closure appraisal read all three stores best-effort and say which could
 > not be read; `distill` and the live readout read drafts only. The trigger
 > read receipt is still unbuilt. Re-read over the live store with phases A
-> and B together: **26 of 144 sessions signed, `+14.0 −33.5` across them**
-> (intervention 26, edit 19, commitment 3, counter 2), label `neutral` on
-> all 144 — the judged follow-ups doubled the intervention channel.
+> and B together, after review: **27 of 144 sessions signed, `+16.5 −34.5`
+> across them** (intervention 26, edit 22, commitment 4, counter 2), label
+> `neutral` on all 144 — the judged follow-ups doubled the intervention
+> channel.
 
 ### 3.7 Pre-register an expectation, and score it
 

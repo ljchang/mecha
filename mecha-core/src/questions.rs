@@ -93,9 +93,16 @@ pub struct Question {
     pub answer: Option<String>,
 }
 
+/// The three states a question can be in. Named so a reader elsewhere
+/// (`appraisal::of_session`) cannot spell one wrong — `frontdoor`'s own
+/// constants exist for the same reason.
+pub const OPEN: &str = "open";
+pub const ANSWERED: &str = "answered";
+pub const ABANDONED: &str = "abandoned";
+
 impl Question {
     pub fn is_open(&self) -> bool {
-        self.status == "open"
+        self.status == OPEN
     }
 
     /// One line for a listing.
@@ -260,7 +267,7 @@ impl QuestionStore {
     ) -> Result<Question> {
         let q = Question {
             id: Session::new_id(),
-            status: "open".into(),
+            status: OPEN.into(),
             question: question.to_string(),
             options,
             session_id: session_id.to_string(),
@@ -292,7 +299,7 @@ impl QuestionStore {
             q.id,
             q.status
         );
-        q.status = "answered".into();
+        q.status = ANSWERED.into();
         q.answered_at = Some(chrono::Utc::now().to_rfc3339());
         q.answer = Some(answer.to_string());
         self.put(&q)?;
@@ -309,7 +316,7 @@ impl QuestionStore {
         let _lock = self.lock()?;
         let mut q = self.find(id)?;
         anyhow::ensure!(q.is_open(), "question {} is already {}", q.id, q.status);
-        q.status = "abandoned".into();
+        q.status = ABANDONED.into();
         q.answered_at = Some(chrono::Utc::now().to_rfc3339());
         self.put(&q)?;
         Ok(q)

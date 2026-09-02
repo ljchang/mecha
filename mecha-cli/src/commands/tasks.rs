@@ -811,12 +811,12 @@ fn appraise_session(
             Vec::new()
         }),
     };
-    let requests = match mecha_core::frontdoor::Frontdoor::open_default() {
-        Ok(fd) => fd.records().unwrap_or_else(|e| {
+    let requests = match mecha_core::frontdoor::Frontdoor::open_existing_default() {
+        None => Vec::new(),
+        Some(fd) => fd.records().unwrap_or_else(|e| {
             eprintln!("mecha: could not read the front door while appraising {task_id}: {e:#}");
             Vec::new()
         }),
-        Err(_) => Vec::new(),
     };
     let reflexions = match mecha_core::learning::LearningStore::open_existing_default() {
         None => Vec::new(),
