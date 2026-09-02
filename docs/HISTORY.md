@@ -4197,8 +4197,9 @@ typed signals, nothing more; the error signal is mostly prose,
 Reflexion-shaped, with numbers keeping three jobs (trigger, replay priority,
 consolidation gate); appraisal grounds in the charter, the task's plan as
 the prediction, and memory as the prior. Built the same day on
-`feat/appraisal-record` (uncommitted): `appraisal::Valence` beside the
-label on every surface, `session::SessionKind` with a `test` override that
+`feat/appraisal-record` and merged as #140 at `15c628d`:
+`appraisal::Valence` beside the label on every surface,
+`session::SessionKind` with a `test` override that
 only narrows, a ceiling relabelled as the owner's own limit with
 `Appraisal::cut_short` keeping the closure follow-up honest, and the
 prediction record (`TodoItem::{expect, check, expect_calls}`, the frozen
@@ -4213,7 +4214,29 @@ the sandbox, or a plan field becomes a way to run a command on a surface
 where `shell` needs approval. Two doc sentences the audit found false
 against the tree were corrected ("three sensors ship with no consumer"
 while `diagnose::Evidence` reads two; "never reported" while `distill`
-writes the label to pkg).
+writes the label to pkg). **Phase B followed as #141 at `49166e3`** the
+same evening: `appraisal::SessionRecords` handing `of_session` the
+question, front-door and reflection stores beside the drafts, with a
+per-store "short" flag that lands on the record as `Appraisal::partial`;
+`Channel::Commitment` signing a question answered and the session finishing,
+a question abandoned, a request closed with nothing sent, and a
+judged follow-up reflection (clean provenance only — stricter than
+`learnable()`, the owner's ruling); the queue-delta positive read off the
+run's own homeostat as the one positive a live surface can show;
+`guilt::with_backlogs` folding level, delta and relief from one pair of
+reads, the relief in its own field so the level's corpus mean stays one
+quantity; and `Depth::given_up`, so a rejected draft, an abandoned
+question or a hand-closed request shortens the queue without crediting the
+run. The two PRs drew twenty-one and twenty review summaries from the
+workflow — counted as its comments on each PR, #141's last one landing
+after the merge and yielding #147; nearly every
+pass found a real edge on the check freeze or the sign — a thinned echo
+parsing as a prefix, a cut landing after the last marker, the carried
+block as the only record after a compaction, the install-time restore
+skipping non-completed steps, a marker a model could write into a step,
+the owner's give-up reading as clearance — each closed with a test that
+fails on the previous cut. Charter sensors were ruled in and designed
+(`GOAL-SYSTEM-DESIGN.md` §11.1, seven containments), not built.
 
 ## Traps already hit
 
