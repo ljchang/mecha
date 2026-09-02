@@ -437,7 +437,14 @@ pub enum WireEvent {
     /// page's tint has a plain absence to fall back to rather than a
     /// stream of events saying nothing.
     Affect {
-        label: String,
+        /// Absent when the label says nothing, so a page that predates the
+        /// valence — or a stale `web/dist` under a fresh binary — keeps
+        /// the plain absence its `affect = ev.label` fallback relied on,
+        /// rather than growing a permanent `neutral` chip on every signed
+        /// run (found on review; the same compatibility rule `partial`'s
+        /// omission follows).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
         valence: mecha_core::appraisal::Valence,
     },
     /// This conversation has a name now — see `mecha_core::title`. Sent when
@@ -1376,7 +1383,8 @@ fn begin_turn(
             }
             if !readout.is_silent() {
                 let _ = bcast.send(WireEvent::Affect {
-                    label: readout.label.wire(),
+                    label: (readout.label != mecha_core::appraisal::Affect::Neutral)
+                        .then(|| readout.label.wire()),
                     valence: readout.valence,
                 });
             }
@@ -2631,7 +2639,7 @@ mod wire_tests {
     #[test]
     fn an_affect_event_reaches_the_page_under_the_name_the_logo_switches_on() {
         let wire = serde_json::to_value(WireEvent::Affect {
-            label: "anger".into(),
+            label: Some("anger".into()),
             valence: mecha_core::appraisal::Valence {
                 positive: 1.0,
                 negative: 0.5,
@@ -2650,6 +2658,14 @@ mod wire_tests {
         assert_eq!(wire["valence"]["negative"], 0.5);
         assert_eq!(wire["valence"]["negatives"], 1);
         assert!(wire["valence"].get("partial").is_none());
+        // A neutral label is absent on the wire, not the word `neutral`: an
+        // older page falls back to nothing rather than a chip that says so.
+        let silent_label = serde_json::to_value(WireEvent::Affect {
+            label: None,
+            valence: mecha_core::appraisal::Valence::default(),
+        })
+        .unwrap();
+        assert!(silent_label.get("label").is_none(), "{silent_label}");
     }
 
     #[test]

@@ -245,6 +245,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             if sessions.len() > limit {
                 println!("… {} more", sessions.len() - limit);
             }
+            // Unconditionally, as `health` and `appraise` do — not only when
+            // the list came back empty (found on review).
+            if hidden_tests > 0 {
+                println!(
+                    "({hidden_tests} smoke-test session(s) hidden; `--include-tests` shows them)"
+                );
+            }
         }
 
         Args::Show { id, json } => {

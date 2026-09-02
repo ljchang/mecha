@@ -210,6 +210,8 @@
         case 'affect':
           // `neutral` is a label saying nothing; the event is sent for its
           // valence in that case, and the chip shows the numbers alone.
+          // The server omits `label` when it says nothing; the `neutral`
+          // guard stays for a binary that predates the omission.
           affect = ev.label && ev.label !== 'neutral' ? ev.label : null;
           valence = ev.valence && (ev.valence.positives || ev.valence.negatives) ? ev.valence : null;
           sawAffectThisRun = true;
