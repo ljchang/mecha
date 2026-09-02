@@ -77,9 +77,55 @@ class TheTextFilter(unittest.TestCase):
                 f"{said!r} was silenced as an echo",
             )
 
+    def test_a_short_answer_over_the_speaker_is_not_an_echo(self):
+        """**The case the unweighted word-overlap version got wrong**, and the
+        one that costs the most: a three-word confirmation is the commonest
+        legitimate barge-in there is, and because turn-start is
+        transcription-based a gated transcript is not a degraded turn — the
+        turn never happens at all.
+
+        Both of these reuse the bot's own words to *disagree* with it, and
+        both scored above the old 0.6 bag-of-words bar (0.667 and 1.0).
+        """
+        self.bot.note("Yes, I can do that.")
+        self.bot.note("Do you want me to move it to Thursday, or would you rather I cancel it?")
+        for said in ["no cancel it", "yes cancel it"]:
+            self.assertFalse(
+                self.bot.is_probable_echo(said, bot_was_audible=True),
+                f"{said!r} was silenced as an echo",
+            )
+
+    def test_function_words_alone_do_not_carry_a_transcript_over_the_bar(self):
+        """The mechanism behind the case above: a long reply puts most of
+        English into the window, so any bar computed over an unordered bag of
+        words falls with reply length rather than with resemblance."""
+        self.bot.note(
+            "I can do that, and it is the sort of thing you would want me to "
+            "check on first, so let me have a look at what is there and I will "
+            "tell you what I find when I am done with it."
+        )
+        self.assertFalse(
+            self.bot.is_probable_echo("can you do it now", bot_was_audible=True)
+        )
+
+    def test_an_echo_with_a_word_dropped_in_the_middle_is_still_caught(self):
+        """Why the match is ordered rather than contiguous: recognition of a
+        speaker across a room drops words as readily as it mangles them, and a
+        substring test cannot survive one falling out of the middle."""
+        self.bot.note("Your first meeting tomorrow is at nine.")
+        self.assertTrue(
+            self.bot.is_probable_echo("your first meeting is at nine", bot_was_audible=True)
+        )
+
     def test_agreeing_in_a_silent_room_is_not_an_echo(self):
         """The false positive that would matter most: a person answering a
-        question using the words of the question, with nothing playing."""
+        question using the words of the question, with nothing playing.
+
+        It is not a near miss any more. With no speaker there was no echo to
+        have, so the fuzzy arm does not run at all — the phrase used to score
+        0.833 against a 0.85 bar, which is one word from silencing the plainest
+        "yes" in the language.
+        """
         self.bot.note("Shall I move the seminar to Thursday?")
         self.assertFalse(
             self.bot.is_probable_echo("yes move the seminar to thursday", bot_was_audible=False)
@@ -99,7 +145,7 @@ class TheTextFilter(unittest.TestCase):
 class TheOverlapTest(unittest.TestCase):
     def test_a_segment_while_the_bot_is_speaking_overlaps(self):
         self.assertTrue(
-            overlapped(now=100.0, segment_started_at=99.0, bot_speaking=True, bot_audible_until=0.0)
+            overlapped(segment_started_at=99.0, bot_speaking=True, bot_audible_until=0.0)
         )
 
     def test_a_segment_inside_the_tail_overlaps(self):
@@ -108,14 +154,14 @@ class TheOverlapTest(unittest.TestCase):
         hearing it."""
         self.assertTrue(
             overlapped(
-                now=101.0, segment_started_at=100.5, bot_speaking=False, bot_audible_until=100.0
+                segment_started_at=100.5, bot_speaking=False, bot_audible_until=100.0
             )
         )
 
     def test_a_segment_well_after_the_tail_does_not(self):
         self.assertFalse(
             overlapped(
-                now=105.0, segment_started_at=104.0, bot_speaking=False, bot_audible_until=100.0
+                segment_started_at=104.0, bot_speaking=False, bot_audible_until=100.0
             )
         )
 
@@ -124,7 +170,7 @@ class TheOverlapTest(unittest.TestCase):
         barge-in on the strength of a missing timestamp."""
         self.assertFalse(
             overlapped(
-                now=100.0, segment_started_at=None, bot_speaking=False, bot_audible_until=99.9
+                segment_started_at=None, bot_speaking=False, bot_audible_until=99.9
             )
         )
 
