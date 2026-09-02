@@ -831,49 +831,58 @@ fn appraise_session(
             );
         }
     };
-    let questions = match mecha_core::questions::QuestionStore::open_existing_default() {
-        None => Vec::new(),
-        Some(store) => {
-            match store.items_counting() {
+    // Each store hands back what it read and whether that was everything:
+    // the flag travels into the record as `partial`, so the printout and
+    // the follow-up decision carry the caveat with them rather than on a
+    // stderr line above (found on review).
+    let (questions, questions_unreadable) =
+        match mecha_core::questions::QuestionStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.items_counting() {
                 Ok((items, skipped)) => {
                     skipped_note("question", skipped);
-                    items
+                    (items, skipped > 0)
                 }
                 Err(e) => {
-                    eprintln!("mecha: could not read the question store while appraising {task_id}: {e:#}");
-                    Vec::new()
+                    eprintln!(
+                        "mecha: could not read the question store while appraising {task_id}: {e:#}"
+                    );
+                    (Vec::new(), true)
                 }
-            }
-        }
-    };
-    let requests = match mecha_core::frontdoor::Frontdoor::open_existing_default() {
-        None => Vec::new(),
-        Some(fd) => match fd.records_counting() {
-            Ok((items, skipped)) => {
-                skipped_note("front-door", skipped);
-                items
-            }
-            Err(e) => {
-                eprintln!("mecha: could not read the front door while appraising {task_id}: {e:#}");
-                Vec::new()
-            }
-        },
-    };
-    let reflexions = match mecha_core::learning::LearningStore::open_existing_default() {
-        None => Vec::new(),
-        Some(store) => {
-            match store.reflexions_counting() {
+            },
+        };
+    let (requests, frontdoor_unreadable) =
+        match mecha_core::frontdoor::Frontdoor::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(fd) => match fd.records_counting() {
+                Ok((items, skipped)) => {
+                    skipped_note("front-door", skipped);
+                    (items, skipped > 0)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "mecha: could not read the front door while appraising {task_id}: {e:#}"
+                    );
+                    (Vec::new(), true)
+                }
+            },
+        };
+    let (reflexions, learning_unreadable) =
+        match mecha_core::learning::LearningStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.reflexions_counting() {
                 Ok((items, skipped)) => {
                     skipped_note("reflection", skipped);
-                    items
+                    (items, skipped > 0)
                 }
                 Err(e) => {
-                    eprintln!("mecha: could not read the learning store while appraising {task_id}: {e:#}");
-                    Vec::new()
+                    eprintln!(
+                        "mecha: could not read the learning store while appraising {task_id}: {e:#}"
+                    );
+                    (Vec::new(), true)
                 }
-            }
-        }
-    };
+            },
+        };
     let goal = mecha_core::goal::GoalRef::Task(task_id.to_string());
     Ok(Some(mecha_core::appraisal::of_session(
         session_id,
@@ -884,8 +893,11 @@ fn appraise_session(
             drafts: &mine,
             outbox_unreadable,
             questions: &questions,
+            questions_unreadable,
             requests: &requests,
+            frontdoor_unreadable,
             reflexions: &reflexions,
+            learning_unreadable,
         },
         end_taint,
         chrono::Utc::now().to_rfc3339(),
@@ -2621,6 +2633,7 @@ mod tests {
             origin: mecha_core::learning::Origin::Clean,
             taint: mecha_core::agent::Taint::default(),
             created_at: "2026-08-27T00:00:00Z".into(),
+            partial: false,
         }
     }
 

@@ -272,6 +272,15 @@ pub struct Appraisal {
     #[serde(default)]
     pub taint: crate::agent::Taint,
     pub created_at: String,
+    /// Computed with a store one of the arms reads unreadable or short —
+    /// see [`Valence::partial`], which carries it to every surface. On the
+    /// record rather than only on the readout because the closure path
+    /// can never be rerun: a reading assembled with the outbox unparseable
+    /// printed as a full one and gated a follow-up on short evidence, with
+    /// the caveat on a separate stderr line that did not travel with it
+    /// (found on review). Absent on the wire when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 /// The readout. **Events only** — see the module note on mood.
@@ -630,7 +639,10 @@ pub struct Valence {
 impl Valence {
     /// Pure, like [`affect_of`], and the only place a valence is decided.
     pub fn of(appraisal: &Appraisal) -> Valence {
-        let mut v = Valence::default();
+        let mut v = Valence {
+            partial: appraisal.partial,
+            ..Valence::default()
+        };
         for e in &appraisal.errors {
             if e.sign > 0.0 {
                 v.positive += e.sign;
@@ -738,8 +750,25 @@ pub struct SessionRecords<'a> {
     /// short read of the outbox inverted the request arm's answer.
     pub outbox_unreadable: bool,
     pub questions: &'a [crate::questions::Question],
+    /// `questions` is short: the store could not be read, or a row was
+    /// skipped. The arm still runs on what was read (it only ever adds a
+    /// sign), but the reading is marked partial — a channel switched off
+    /// or thinned must say so on the record, not beside it.
+    pub questions_unreadable: bool,
     pub requests: &'a [crate::frontdoor::Record],
+    pub frontdoor_unreadable: bool,
     pub reflexions: &'a [crate::learning::Reflexion],
+    pub learning_unreadable: bool,
+}
+
+impl SessionRecords<'_> {
+    /// Any store an arm reads was not fully read — the reading is partial.
+    pub fn short(&self) -> bool {
+        self.outbox_unreadable
+            || self.questions_unreadable
+            || self.frontdoor_unreadable
+            || self.learning_unreadable
+    }
 }
 
 /// Build one **session's** appraisal from records that already exist.
@@ -1150,16 +1179,22 @@ pub fn of_session(
     // and it is what the question and request arms above already do; this
     // arm stays a level-difference until the outbox and question stores
     // record which session resolved an item, not only which staged it.
-    // `owner_facing_net`, not `net`: the harness's own review queue is owed
-    // to nobody outside, and a run that cleared five candidates has not
-    // shortened what the owner is waiting on (found on review).
-    if let Some(net) = stats
+    // `owner_facing_cleared`, not `net`: the harness's own review queue is
+    // owed to nobody outside, and a run that cleared five candidates has
+    // not shortened what the owner is waiting on (found on review); and
+    // the fall *net of give-ups*, because `waiting` drops on an abandoned
+    // question, a closed-unsent request and a rejected draft exactly as on
+    // an answer or a send, so this arm signed `+0.5` for the act the
+    // question and request arms had just signed `-0.5` — the sign inverted
+    // in the same channel, not only the session misattributed (found on
+    // review). A give-up count the row does not carry reads as zero.
+    if let Some(cleared) = stats
         .homeostat
         .as_ref()
         .and_then(|h| h.backlog_delta.as_ref())
-        .and_then(|d| d.owner_facing_net())
+        .and_then(|d| d.owner_facing_cleared())
     {
-        if net < 0 {
+        if cleared > 0 {
             errors.push(GoalError {
                 goal: goal.clone(),
                 channel: Channel::Commitment,
@@ -1182,6 +1217,7 @@ pub fn of_session(
         origin: crate::learning::classify_origin(end_taint),
         taint: stats.taint,
         created_at,
+        partial: records.short(),
     };
     a.label = affect_of(&a);
     a
@@ -1421,7 +1457,7 @@ pub fn live_readout(
         chrono::Utc::now().to_rfc3339(),
     );
     let mut valence = Valence::of(&a);
-    valence.partial = compacted;
+    valence.partial |= compacted;
     Readout {
         label: if compacted { Affect::Neutral } else { a.label },
         valence,
@@ -1881,6 +1917,7 @@ mod tests {
             origin: crate::learning::Origin::Clean,
             taint: crate::agent::Taint::default(),
             created_at: "2026-08-27T00:00:00Z".into(),
+            partial: false,
         }
     }
 
@@ -3609,5 +3646,110 @@ mod tests {
             ..Default::default()
         });
         assert!(built(&s, &[], &[]).errors.is_empty());
+    }
+
+    /// The owner giving up shrinks the queue; the run gets no credit for it
+    /// (found on review): the arm reads clearance net of give-ups, so the
+    /// same act cannot sign `-0.5` in one arm and `+0.5` in this one.
+    #[test]
+    fn a_give_up_inside_the_window_signs_no_commitment_positive() {
+        let goal = GoalRef::Task("t1".into());
+        let with = |questions: i64, given_up: Option<i64>| {
+            let mut s = stats();
+            s.homeostat = Some(crate::homeostat::Homeostat {
+                backlog_delta: Some(crate::backlog::BacklogDelta {
+                    questions: Some(questions),
+                    given_up,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            of_session(
+                "s1",
+                &s,
+                std::slice::from_ref(&goal),
+                &[],
+                SessionRecords::default(),
+                Some(s.taint),
+                "2026-08-28T00:00:00Z".into(),
+            )
+        };
+        let positives = |a: &Appraisal| {
+            a.errors
+                .iter()
+                .filter(|e| e.channel == Channel::Commitment && e.sign > 0.0)
+                .count()
+        };
+        assert_eq!(
+            positives(&with(-1, Some(1))),
+            0,
+            "the fall was an abandonment"
+        );
+        assert_eq!(positives(&with(-1, Some(0))), 1, "the fall was an answer");
+        assert_eq!(
+            positives(&with(-2, Some(1))),
+            1,
+            "one of each: the answer counts"
+        );
+        assert_eq!(
+            positives(&with(-1, None)),
+            1,
+            "a row from before the counter reads as it did"
+        );
+    }
+
+    /// A store an arm reads that could not be read marks the reading
+    /// partial on the record itself (found on review), so the closure
+    /// path's printout and JSON carry the caveat rather than a stderr
+    /// line beside them.
+    #[test]
+    fn a_short_store_marks_the_reading_partial_on_the_record() {
+        let goal = GoalRef::Task("t1".into());
+        let mut s = stats();
+        s.ended_on_failed_call = true;
+        let build = |records: SessionRecords<'_>| {
+            of_session(
+                "s1",
+                &s,
+                std::slice::from_ref(&goal),
+                &[],
+                records,
+                Some(s.taint),
+                "2026-08-28T00:00:00Z".into(),
+            )
+        };
+        let full = build(SessionRecords::default());
+        assert!(!full.partial);
+        assert!(!Valence::of(&full).partial);
+        for records in [
+            SessionRecords {
+                outbox_unreadable: true,
+                ..Default::default()
+            },
+            SessionRecords {
+                questions_unreadable: true,
+                ..Default::default()
+            },
+            SessionRecords {
+                frontdoor_unreadable: true,
+                ..Default::default()
+            },
+            SessionRecords {
+                learning_unreadable: true,
+                ..Default::default()
+            },
+        ] {
+            let a = build(records);
+            assert!(a.partial, "{records:?}");
+            let v = Valence::of(&a);
+            assert!(v.partial);
+            assert!(v.compact().ends_with('\u{2026}'), "{}", v.compact());
+            let json = serde_json::to_string(&a).unwrap();
+            assert!(json.contains("\"partial\":true"), "{json}");
+            let back: Appraisal = serde_json::from_str(&json).unwrap();
+            assert!(back.partial);
+        }
+        let json = serde_json::to_string(&full).unwrap();
+        assert!(!json.contains("partial"), "absent when false: {json}");
     }
 }

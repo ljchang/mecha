@@ -256,7 +256,13 @@ on `OutboxStore` cannot be manufactured by a sentence in a fetched page.
 > to zero from any backlog — found on review). Both numbers come from the
 > three owner-facing stores (`BacklogDelta::owner_facing_net`, `guilt::
 > waiting`), never the five-store `net`, and `guilt::with_backlogs` derives
-> them from one pair of reads. The fold lands in its own field,
+> them from one pair of reads. Both read *clearance*, not the fall:
+> `Depth::given_up` counts the rejected drafts, abandoned questions and
+> closed-unsent requests, and `BacklogDelta::owner_facing_cleared` takes
+> the rise in those off the fall before either the relief or the
+> commitment arm's positive is credited — a queue the owner shortened by
+> giving up had signed `+0.5` in the same channel the question and request
+> arms signed `-0.5` for the same act (found on review). The fold lands in its own field,
 > `Homeostat::guilt_after_relief`, so the level's corpus mean stays one
 > quantity across old and new rows. A run that *added* to the queue reads
 > the level it inherited,

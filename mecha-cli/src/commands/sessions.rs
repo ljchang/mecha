@@ -656,8 +656,11 @@ async fn appraise(
                 drafts: &mine,
                 outbox_unreadable,
                 questions: &questions,
+                questions_unreadable,
                 requests: &requests,
+                frontdoor_unreadable,
                 reflexions: &reflexions,
+                learning_unreadable,
             },
             None,
         ) else {

@@ -260,8 +260,10 @@ pub fn anticipated_guilt(
 /// neither formula's, on a field whose own doc chose `None` over a
 /// differently-computed number for exactly that reason (found on review).
 ///
-/// `net_delta` is [`crate::backlog::BacklogDelta::owner_facing_net`] and
-/// `waiting_before` is [`waiting`], both over the same three stores the
+/// `net_delta` is the negated
+/// [`crate::backlog::BacklogDelta::owner_facing_cleared`] — the fall net of
+/// what the owner gave up on, since an abandoned question is no relief —
+/// and `waiting_before` is [`waiting`], both over the same three stores the
 /// level reads — never the five-store `net`, whose proposals and candidates
 /// are the harness's own queue. A negative delta against
 /// nothing waiting cannot happen from a consistent pair of reads; it is
@@ -316,7 +318,14 @@ pub fn with_backlogs(
 ) -> Fold {
     let level = anticipated_guilt(before, peak_context_pressure, now);
     let delta = Backlog::delta(before, after);
-    let after_relief = with_delta(level, delta.owner_facing_net(), waiting(before));
+    // Cleared, not merely fallen: a queue the owner shortened by giving
+    // up is no relief for the run (found on review, beside the appraisal's
+    // commitment arm which read the same fall as a positive).
+    let after_relief = with_delta(
+        level,
+        delta.owner_facing_cleared().map(|c| -(c as i64)),
+        waiting(before),
+    );
     Fold {
         level,
         delta,
@@ -353,6 +362,7 @@ mod tests {
         Depth {
             waiting,
             oldest: oldest.map(str::to_string),
+            given_up: 0,
         }
     }
 
@@ -658,5 +668,41 @@ mod tests {
             (relieved - level * (2.0 / 3.0)).abs() < 1e-5,
             "{relieved} vs {level}"
         );
+    }
+
+    /// An abandoned question is not relief (found on review): the fold
+    /// reads clearance, not the fall.
+    #[test]
+    fn a_give_up_brings_no_relief() {
+        let now = Utc::now();
+        let stamp = (now - chrono::Duration::hours(72)).to_rfc3339();
+        let before = Backlog {
+            outbox: Some(depth(0, None)),
+            questions: Some(depth(1, Some(&stamp))),
+            frontdoor: Some(depth(0, None)),
+            ..Default::default()
+        };
+        let mut abandoned = depth(0, None);
+        abandoned.given_up = 1;
+        let after = Backlog {
+            outbox: Some(depth(0, None)),
+            questions: Some(abandoned),
+            frontdoor: Some(depth(0, None)),
+            ..Default::default()
+        };
+        let fold = with_backlogs(&before, &after, Some(0.5), now);
+        assert!(fold.level.unwrap() > 0.0);
+        assert_eq!(fold.delta.owner_facing_net(), Some(-1));
+        assert_eq!(
+            fold.after_relief, fold.level,
+            "the fall was a give-up, not clearance"
+        );
+        // The same fall by an answer clears it.
+        let answered = Backlog {
+            questions: Some(depth(0, None)),
+            ..after.clone()
+        };
+        let fold = with_backlogs(&before, &answered, Some(0.5), now);
+        assert_eq!(fold.after_relief, Some(0.0));
     }
 }
