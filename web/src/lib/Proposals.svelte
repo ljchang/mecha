@@ -296,11 +296,11 @@
 
 <style>
   .page { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
-  .chips { display: flex; gap: 8px; padding: 12px 20px 0; overflow-x: auto; }
+  .chips { display: flex; gap: 8px; padding: 12px var(--gutter) 0; overflow-x: auto; }
   .chipbtn { flex-shrink: 0; display: flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 13px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius-chip); color: var(--text-muted); font-family: var(--mono); font-size: 12px; cursor: pointer; }
   .chipbtn.active { color: var(--text); background: var(--accent-900); border-color: var(--accent-700); }
   .chipcount { color: var(--accent-400); font-size: 13px; }
-  .scroll { flex: 1; overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .scroll { flex: 1; overflow-y: auto; padding: 14px var(--gutter); display: flex; flex-direction: column; gap: 10px; }
   .scroll > * { flex-shrink: 0; }
   .rowbtn { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; color: var(--text); font: inherit; overflow: hidden; }
   .rowtop { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -325,7 +325,7 @@
   .btnrow { display: flex; gap: 10px; }
   .btnrow .abtn { flex: 1; }
   .editbox { width: 100%; background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; padding: 12px 14px; resize: vertical; box-sizing: border-box; }
-  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px 20px 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px var(--gutter) 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
   .sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-900); align-self: center; }
   .sheet-text { font-size: 15px; font-weight: 500; }
   .sheetnote { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.45; color: var(--hazard); }

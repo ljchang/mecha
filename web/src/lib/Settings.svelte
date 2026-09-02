@@ -186,7 +186,7 @@
     align-items: center;
     gap: 8px;
     /* Room for the shell's gear, which floats in this corner on every view. */
-    padding: 22px 56px 12px 20px;
+    padding: 22px var(--gutter-gear) 12px var(--gutter);
   }
   /* Both header states sit on the same 24px row. */
   header .kicker {
@@ -217,7 +217,7 @@
   main {
     flex: 1;
     overflow-y: auto;
-    padding: 0 20px 24px;
+    padding: 0 var(--gutter) 24px;
     display: flex;
     flex-direction: column;
     gap: 14px;

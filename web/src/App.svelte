@@ -74,21 +74,30 @@
 </script>
 
 <div class="screen">
-  {#if view === 'chat'}
-    <Chat resume={route.sub} />
-  {:else if view === 'mail'}
-    <Mail />
-  {:else if view === 'review'}
-    <Review initial={route.sub} {navigate} />
-  {:else if view === 'tasks'}
-    <Tasks />
-  {:else if view === 'graph'}
-    <Graph initial={route.sub} />
-  {:else if view === 'settings'}
-    <Settings initial={route.sub} {navigate} {backTo} />
-  {:else}
-    <Home {navigate} />
-  {/if}
+  <!-- One element per view, whatever a view is made of. Views do not all
+       have a single root — Home and Settings are a `<header>` beside a
+       `<main>` — and on a phone that never showed, because the shell was a
+       column and two stacked children stack. The moment the shell becomes a
+       row for the desktop rail, every root element of a view becomes its own
+       column: Home laid its header out *beside* its content. So the shell
+       owns the frame and the views keep their shape inside it. -->
+  <div class="viewport">
+    {#if view === 'chat'}
+      <Chat resume={route.sub} />
+    {:else if view === 'mail'}
+      <Mail />
+    {:else if view === 'review'}
+      <Review initial={route.sub} {navigate} />
+    {:else if view === 'tasks'}
+      <Tasks />
+    {:else if view === 'graph'}
+      <Graph initial={route.sub} />
+    {:else if view === 'settings'}
+      <Settings initial={route.sub} {navigate} {backTo} />
+    {:else}
+      <Home {navigate} />
+    {/if}
+  </div>
 
   <!-- Settings is chrome, not a seventh place to be, so it does not take a
        slot in the nav — but it has to be reachable from wherever you are.
@@ -124,6 +133,13 @@
        resolve to the viewport and drift off the centred column. */
     position: relative;
   }
+  .viewport {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
   .gear {
     position: absolute;
     top: 17px;
@@ -145,5 +161,31 @@
   }
   .gear.active {
     color: var(--accent-400);
+  }
+
+  /* ---- the wide window ----
+     Not a second design: the same views, laid out side by side instead of
+     stacked, because a desktop has the width a phone did not. Two moves.
+     The column stops being a column — `.screen` becomes a row, and `Nav`
+     takes `order: -1` to sit on the left as a rail. And the gear leaves
+     the floating corner it needs on a phone (where there is nowhere else
+     to put it) and docks to the foot of that rail, which is why the rail
+     reserves padding there. Views keep their own reading measure; see
+     `--measure` in app.css. */
+  @media (min-width: 900px) {
+    .screen {
+      max-width: none;
+      flex-direction: row;
+    }
+    .gear {
+      top: auto;
+      bottom: 20px;
+      left: 21px;
+      right: auto;
+      border-radius: var(--radius);
+    }
+    .gear:hover {
+      background: var(--bg);
+    }
   }
 </style>
