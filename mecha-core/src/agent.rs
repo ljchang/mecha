@@ -2651,8 +2651,13 @@ impl Agent {
         messages: &mut Vec<Message>,
         events: &Option<UnboundedSender<AgentEvent>>,
     ) -> Result<Option<String>> {
-        let nudge = Message::user(FINAL_ANSWER_NUDGE);
-        messages.push(nudge);
+        // Folded, not pushed: after a tool turn the tail is the tool-results
+        // message, and a bare `Message::user` beside it is two user messages
+        // in a row — the shape this file names as invalid. `append_user_text`
+        // folds into a user tail and pushes only after an assistant one. The
+        // miner still recognises the nudge, because `is_harness_voice`
+        // matches the block's text, not the message's position.
+        append_user_text(messages, FINAL_ANSWER_NUDGE.to_string());
 
         let request = CompletionRequest {
             model: self.model.clone(),
@@ -4164,6 +4169,59 @@ mod tests {
 
         assert!(outcome.exhausted);
         assert_eq!(outcome.turns, 3);
+    }
+
+    /// The forced final-answer nudge used to be pushed as its own user
+    /// message; after a tool turn that put two user messages in a row, the
+    /// shape this file names as invalid. It now folds into the tool-results
+    /// tail, and the miner still recognises it by its text.
+    #[tokio::test]
+    async fn the_final_answer_nudge_folds_into_the_tool_results_rather_than_following_them() {
+        let looping = || {
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t".into(),
+                    name: "echo".into(),
+                    input: json!({"value": "again"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let mut turns: Vec<CompletionResponse> = (0..3).map(|_| looping()).collect();
+        turns.push(assistant(
+            vec![Block::text("here is what I have")],
+            StopReason::EndTurn,
+        ));
+        let (mut agent, _) = agent_with(turns, PermissionMode::Allow);
+        agent.cfg.max_turns = 3;
+        agent.cfg.force_final_answer = true;
+
+        let mut convo = Conversation::user("loop forever");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.text, "here is what I have");
+
+        let roles: Vec<Role> = convo.messages.iter().map(|m| m.role).collect();
+        assert!(
+            roles.windows(2).all(|w| w[0] != w[1]),
+            "roles must alternate: {roles:?}"
+        );
+        let carrier = convo
+            .messages
+            .iter()
+            .find(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::Text { text } if text == FINAL_ANSWER_NUDGE))
+            })
+            .expect("the nudge is in the transcript");
+        assert!(
+            carrier
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. })),
+            "the nudge rides beside the tool results, not after them"
+        );
+        assert!(is_harness_voice(FINAL_ANSWER_NUDGE));
     }
 
     // --- hooks ---
@@ -7622,6 +7680,46 @@ mod tests {
         agent.cfg.compact_keep_recent = 2;
         agent.cfg.force_final_answer = false;
         (agent, provider)
+    }
+
+    /// The coupling `compact::rebuild` rests on when it drops the previous
+    /// summary: the summariser must have *read* it, which is true only
+    /// because the loop renders `&messages[..cut]` and `cut_point` starts at
+    /// 1 — the head, and any earlier summary in it, is inside every stretch.
+    /// Asserted in prose in two places and, until this test, tested in
+    /// neither; narrowing the render range would have deleted every prior
+    /// summary unread.
+    #[tokio::test]
+    async fn the_summariser_is_shown_the_head_of_the_transcript() {
+        let mut turns = three_calls();
+        turns.push(assistant(
+            vec![Block::text("first summary")],
+            StopReason::EndTurn,
+        ));
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, provider) = compacting_agent(turns);
+        agent.cfg.compact_validate = false;
+
+        let mut convo = Conversation::user("the original task, which lives in the head");
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(convo.messages[0].text().contains("first summary"));
+
+        let summariser_requests: Vec<CompletionRequest> = provider
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.system.as_deref() == Some(crate::compact::SUMMARY_SYSTEM))
+            .cloned()
+            .collect();
+        assert!(!summariser_requests.is_empty(), "compaction must have run");
+        for request in &summariser_requests {
+            let rendered: String = request.messages.iter().map(|m| m.text()).collect();
+            assert!(
+                rendered.contains("[user] the original task, which lives in the head"),
+                "the head is inside every stretch the summariser reads: {rendered}"
+            );
+        }
     }
 
     #[tokio::test]

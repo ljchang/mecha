@@ -41,6 +41,31 @@ leaking.
 
 ## Provider notes (Claude 5 family)
 
+**Two HTTP clients per provider, chosen per request by whether the body
+streams** (`provider::HttpClients`, `for_body`). reqwest's `read_timeout` is a
+*client* setting that also bounds the wait for the response head, and
+`RequestBuilder::timeout` overrides only the total deadline — so one client
+cannot both bound a stream per read and give a non-streaming request its long
+exchange cap. The streaming client bounds each read at `STALL_TIMEOUT` (a long
+answer is not a stall; the server is either sending tokens or it is not) and
+the exchange only at `STREAM_TIMEOUT`, a far cap for the connection that keeps
+emitting keepalive bytes and never finishes; the whole-exchange client bounds
+the exchange at
+`REQUEST_TIMEOUT` and has no per-read bound, because with `stream: false` the
+entire generation is one silent read. Both providers used to put one 900 s
+`timeout` on the whole exchange, streamed body included, and a legitimate
+long answer died mid-stream with the partial discarded (found by the
+2026-09-02 audit); the first fix used one client with a read timeout and
+*tightened* the non-streaming cap to that read bound, which the PR review
+caught. The guarantee is measured against a socket that goes quiet, not a
+builder field. **The scope is the request, not the run:** only a request with
+an event sink or a cancel token streams (`Agent::complete`), so `mecha batch`,
+`mecha eval`, the distiller, the reflector and the eval judge take the
+non-streaming path and keep the exchange cap — raised to clear a long local
+generation, and still the only bound that path has. A timeout there classifies
+as `Transport` and is retried, which re-issues a generation the server already
+finished; no tool runs on that path, so nothing duplicates, but the wait does.
+
 There is no official Anthropic SDK for Rust, so `provider/anthropic.rs` speaks
 raw HTTP. Things that will 400 if forgotten:
 
@@ -2545,6 +2570,23 @@ to prevent.
 
 The things that decide the design:
 
+- **Exactly one summary survives a compaction, like the carried state.**
+  `cut_point` starts at 1, so the head — and any earlier summary in it — is
+  inside every stretch the summariser reads, and the instruction tells it to
+  fold that summary in; `rebuild` then drops the old block. Summaries used to
+  accumulate, and a long-lived session's head grew by a block per compaction
+  with nothing ever re-summarising it (found by the 2026-09-02 audit). The
+  validator grades the new summary against a rendering that still holds the
+  old one, so an unfolded earlier summary surfaces as an omission. That is
+  the net: replacing turned a structural guarantee (nothing was ever lost,
+  because everything accumulated) into a model-follows-instructions one, and
+  `compact_validate = false` runs without it. The failure mode it sharpens: a
+  summary that must cover the whole session trends toward the summariser's
+  fixed 8192-token budget, and a summary cut off at that budget is never
+  installed — `compact` bails and leaves the transcript, previous summary
+  included, alone, so the next threshold check tries again. A run that hits
+  that wall every turn will eventually overflow; the fallback that keeps the
+  old block is the next thing to build if a session ever reports it.
 - **Stale results are evicted before anything is summarised.**
   `evict_superseded_results` runs first at both compaction sites (threshold
   and overflow recovery): when a later call covers the same target — the same

@@ -24,7 +24,7 @@ const API_VERSION: &str = "2023-06-01";
 pub const DEFAULT_MODEL: &str = "claude-opus-5";
 
 pub struct Anthropic {
-    http: reqwest::Client,
+    http: crate::provider::HttpClients,
     api_key: String,
     base_url: String,
     default_model: String,
@@ -46,11 +46,10 @@ impl Anthropic {
             .resolve_api_key()
             .context("no Anthropic credentials found. Set ANTHROPIC_API_KEY, or put api_key_env / api_key in the provider config")?;
         Ok(Self {
-            http: reqwest::Client::builder()
-                // Long turns are normal at high effort; the per-request cap is
-                // generous and streaming keeps the connection alive anyway.
-                .timeout(std::time::Duration::from_secs(900))
-                .build()?,
+            // A stall fails a stream; a long answer does not. A non-streaming
+            // request keeps the whole-exchange cap. Two clients, because the
+            // per-read bound is a client setting — see `provider::HttpClients`.
+            http: crate::provider::HttpClients::build()?,
             api_key,
             base_url: cfg
                 .base_url
@@ -184,6 +183,7 @@ impl Anthropic {
 
     fn request(&self, body: &Value) -> reqwest::RequestBuilder {
         self.http
+            .for_body(body)
             .post(format!(
                 "{}/v1/messages",
                 self.base_url.trim_end_matches('/')
@@ -824,7 +824,7 @@ mod tests {
     /// Shared with `retry_tests` below.
     pub(super) fn client_at(base_url: &str) -> Anthropic {
         Anthropic {
-            http: reqwest::Client::new(),
+            http: crate::provider::HttpClients::plain(),
             api_key: "test-key".into(),
             base_url: base_url.into(),
             default_model: DEFAULT_MODEL.into(),

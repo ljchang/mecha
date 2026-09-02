@@ -37,7 +37,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 pub struct OpenAiCompatible {
-    http: reqwest::Client,
+    http: crate::provider::HttpClients,
     api_key: Option<String>,
     base_url: String,
     default_model: String,
@@ -51,9 +51,9 @@ pub struct OpenAiCompatible {
 impl OpenAiCompatible {
     pub fn from_config(cfg: &ProviderConfig) -> Result<Self> {
         Ok(Self {
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(900))
-                .build()?,
+            // Two clients, chosen per request by the body's `stream` flag —
+            // see `provider::HttpClients` for why one cannot do both jobs.
+            http: crate::provider::HttpClients::build()?,
             // Local servers usually don't check it.
             api_key: cfg.resolve_api_key(),
             base_url: cfg
@@ -117,6 +117,7 @@ impl OpenAiCompatible {
     fn request(&self, body: &Value) -> reqwest::RequestBuilder {
         let mut rb = self
             .http
+            .for_body(body)
             .post(format!(
                 "{}/v1/chat/completions",
                 self.base_url.trim_end_matches('/')
