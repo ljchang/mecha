@@ -145,9 +145,14 @@ pub struct Failover {
 /// answer runs ~550 s before prefill and queue wait, so a legitimate answer
 /// died mid-stream as a plain error and the partial text was discarded.
 /// Per-read is the right shape for a stream: the server is either sending
-/// tokens or it is not. Five minutes because a cold prefill at 170k tokens on
-/// llama-server is ~120 s of silence before the first one.
-pub const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// tokens or it is not. Ten minutes, not five: a cold prefill at 170k tokens
+/// on llama-server is ~120 s of silence before the first token *uncontended*,
+/// and `docs/LLAMA-SERVER.md` measured a ~2.85× slowdown under contention on
+/// this hardware, which puts the worst legitimate silence near 350 s. This is
+/// the one place the change trades a bound rather than only widening one —
+/// the old 900 s exchange cap also covered the pre-first-token wait — so the
+/// margin errs long. A stall that lasts ten minutes is a dead connection.
+pub const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// The whole-exchange cap that still applies to a *non-streaming* request,
 /// where the body arrives at once and a per-read timeout would count the
