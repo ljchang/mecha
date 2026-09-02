@@ -60,7 +60,11 @@ pub struct Args {
 /// Scan the run corpus and pick one model's slice — one model, because a rate
 /// blended across two describes neither. `Ok(None)` means the corpus holds no
 /// recorded outcomes at all, which callers report in their own register: an
-/// error at a terminal, a quiet skip at 03:30.
+/// error at a terminal, a quiet skip at 03:30. Two emptinesses are *not*
+/// that, on either path, and return an error instead: a store with
+/// transcripts it could not read, and a store holding only smoke-test
+/// sessions the diagnosis excludes — a rotting store and a filter working
+/// are findings, and at 03:30 a non-zero exit is the register they get.
 pub fn corpus_slice(
     want: Option<&str>,
     days: Option<i64>,

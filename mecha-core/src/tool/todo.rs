@@ -994,6 +994,16 @@ impl TodoTool {
     /// or capped echo is a prefix, and a prefix must not stand in for the
     /// plan or for its freezes.
     fn parse_whole_echo(text: &str) -> Option<Plan> {
+        // A marker anywhere is a cut somewhere, and a cut that lands at or
+        // after the last item's marker leaves the count intact while
+        // dropping that step's `check:` line — a prefix the header could
+        // not see (found on review). Both truncators write a marker, so the
+        // marker is the honest test and the count is the second one.
+        if text.contains(crate::compact::TRUNCATION_MARKER.trim())
+            || text.contains(crate::tool::CAP_MARKER)
+        {
+            return None;
+        }
         let plan = Self::parse_rendered(text);
         let whole = Self::rendered_total(text).is_some_and(|n| n == plan.items.len());
         (whole && !plan.items.is_empty()).then_some(plan)
@@ -3571,5 +3581,75 @@ mod tests {
             tracked.checks.get("wire it").map(|f| f.check.as_str()),
             Some("make test")
         );
+    }
+
+    /// A cut that lands after the last item's marker keeps the header's
+    /// count honest and still drops that step's check (found on the
+    /// sixteenth review pass): the marker, not the count, is what refuses
+    /// it.
+    #[test]
+    fn a_cut_after_the_last_marker_is_still_a_prefix() {
+        use crate::compact::TRUNCATION_MARKER;
+        use crate::message::{Block, Message, Role};
+        let items: Vec<TodoItem> = (0..3)
+            .map(|i| {
+                let mut it =
+                    TodoItem::new(format!("wire the adapter number {i}"), Status::Completed);
+                it.check = Some(format!("make check-{i}"));
+                it
+            })
+            .collect();
+        let echo = TodoTool::render(&Plan {
+            goal: None,
+            items: items.clone(),
+        });
+        // Cut exactly before the last step's check line, the way a
+        // character-count thinning can land.
+        let cut_at = echo.rfind("\n    check: make check-2").unwrap() + 1;
+        let cut = format!("{}{}", &echo[..cut_at], TRUNCATION_MARKER);
+        assert_eq!(TodoTool::rendered_total(&cut), Some(3));
+        assert_eq!(
+            TodoTool::parse_rendered(&cut).items.len(),
+            3,
+            "the count alone would pass"
+        );
+        assert!(
+            TodoTool::parse_whole_echo(&cut).is_none(),
+            "the marker refuses it"
+        );
+        // And the cap marker, which the other truncator writes.
+        let capped = format!(
+            "{}\n\n{} showing the first 200 of 400 bytes]",
+            &echo[..cut_at],
+            crate::tool::CAP_MARKER
+        );
+        assert!(TodoTool::parse_whole_echo(&capped).is_none());
+        // Through the transcript: the input stands in, and no freeze is
+        // read off the cut echo.
+        let input_items: Vec<serde_json::Value> = items
+            .iter()
+            .map(|i| json!({"content": i.content, "status": "completed", "check": i.check}))
+            .collect();
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": input_items}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: cut,
+                    is_error: false,
+                }],
+            },
+        ];
+        let plan = TodoTool::plan_from_transcript(&messages).unwrap();
+        assert_eq!(plan.items[2].check.as_deref(), Some("make check-2"));
+        assert!(TodoTool::frozen_checks_from_transcript(&messages).is_empty());
     }
 }
