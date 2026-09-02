@@ -154,10 +154,22 @@ pub struct Failover {
 /// margin errs long. A stall that lasts ten minutes is a dead connection.
 pub const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// The whole-exchange cap that still applies to a *non-streaming* request,
-/// where the body arrives at once and a per-read timeout would count the
-/// entire generation as one read.
-pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+/// The whole-exchange cap on a *non-streaming* request, where the body arrives
+/// at once and a per-read timeout would count the entire generation as one
+/// read — so this is the only bound that path has.
+///
+/// Thirty minutes, not fifteen. The non-streaming path is not the rare one:
+/// `mecha batch` and `mecha eval` set no cancel token and pass no sink, and
+/// the distiller, the reflector and the eval judge call `complete(req, None)`
+/// at `LOCAL_MAX_TOKENS` — the ~550 s generation the stall bound's own
+/// arithmetic cites, before a contended prefill (~350 s) and queue wait. The
+/// old 900 s could be exceeded by a legitimate answer there, and a timeout on
+/// this path classifies as `Transport` and is retried, re-issuing a generation
+/// the server had already finished (no tool ran, so nothing duplicates, but
+/// the wait doubles). The PR review named the scope; the cap now clears the
+/// worst legitimate case with margin, and a request that is still silent
+/// after half an hour is a dead server.
+pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 /// Time allowed to open the connection, separately from the reads.
 pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -188,10 +200,11 @@ pub const STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3
 pub struct HttpClients {
     /// For a request whose body arrives at once: the whole exchange is
     /// capped, and silence before the head is generation, not a stall.
-    pub whole: reqwest::Client,
+    /// Private, so `for_body` is the one place the choice is made.
+    whole: reqwest::Client,
     /// For a streamed request: each read is capped at the stall bound, and
     /// the exchange only at the far cap a never-finishing stream needs.
-    pub stream: reqwest::Client,
+    stream: reqwest::Client,
 }
 
 impl HttpClients {
