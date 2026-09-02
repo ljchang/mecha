@@ -116,8 +116,13 @@ pub struct Work {
     /// `calls`**: the model did not make the call, so a step's span must
     /// not grow by one for every check the harness ran on its behalf, and a
     /// forecast in `expect_calls` is a forecast of the model's own work. A
-    /// refused check is in neither counter — it never ran, and the refusal
-    /// reaches `last` the way any refusal does.
+    /// refused check is in neither counter — it never ran — **and no check
+    /// ever sets `last`**: `last` is the model's most recent attempt, and
+    /// `Tracked::observe` refreshes its own copy of it whenever the model's
+    /// call count moves, so a check landing last in a turn beside real work
+    /// would have been attributed to the step as the model's own failure or
+    /// refusal (found on review). `Finding::CheckFailed` is read from the
+    /// counters, ahead of `last`, so nothing needs the check there.
     pub checks_declared: u32,
     /// Of those, the ones whose exit code was zero. `checks_declared -
     /// checks_passed` is the count of steps the harness *knows* did not
@@ -200,7 +205,6 @@ impl Work {
                     work.checks_passed += 1;
                     work.verify_like += 1;
                 }
-                work.last = Some(outcome);
                 continue;
             }
             work.calls += 1;
@@ -1378,14 +1382,22 @@ mod tests {
             work.verify_like, 1,
             "a passing check is verification by construction"
         );
-        assert_eq!(work.last, Some(Outcome::Failed));
+        assert_eq!(
+            work.last,
+            Some(Outcome::Ok),
+            "a failed check is not the model's last attempt — the model's last call succeeded"
+        );
         let refused = Work::of(&[ok(), check(true, true)]);
         assert_eq!(
             (refused.checks_declared, refused.checks_passed),
             (0, 0),
             "a refused check never ran"
         );
-        assert_eq!(refused.last, Some(Outcome::Refused));
+        assert_eq!(
+            refused.last,
+            Some(Outcome::Ok),
+            "a refused check must not read as the step's own refusal"
+        );
     }
 
     #[test]

@@ -769,8 +769,13 @@ where
     D: serde::Deserializer<'de>,
 {
     use serde::Deserialize;
-    Ok(Option::<String>::deserialize(d)?
-        .as_deref()
+    // `Value`, not `String`: a kind that is a number or an object (a newer
+    // binary's shape, a hand edit) must cost the field and never the
+    // record, and `Option<String>` would fail the whole `meta` row on it
+    // (found on review).
+    Ok(Option::<serde_json::Value>::deserialize(d)?
+        .as_ref()
+        .and_then(|v| v.as_str())
         .and_then(SessionKind::parse_lenient))
 }
 
@@ -2808,6 +2813,16 @@ mod tests {
         let row = r#"{"id":"20260101T000000-new","created_at":"2026-01-01T00:00:00Z","provider":"local","model":"m","workspace":"/tmp","kind":"hologram"}"#;
         let meta: SessionMeta = serde_json::from_str(row).unwrap();
         assert_eq!(meta.kind, None, "unknown, never an error");
+        // And a kind of the wrong shape entirely — not merely an unknown
+        // word — costs the field, never the record (found on review).
+        for bad in ["7", r#"{"surface":"web"}"#, r#"["web"]"#, "true"] {
+            let row = format!(
+                r#"{{"id":"x","created_at":"2026-01-01T00:00:00Z","provider":"local","model":"m","workspace":"/tmp","kind":{bad}}}"#
+            );
+            let meta: SessionMeta =
+                serde_json::from_str(&row).unwrap_or_else(|e| panic!("{bad}: {e}"));
+            assert_eq!(meta.kind, None);
+        }
     }
 
     #[test]

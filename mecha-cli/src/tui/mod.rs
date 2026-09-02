@@ -680,7 +680,17 @@ impl App {
         if !badge.is_empty() {
             // Amber on a negative reading, the muted default otherwise: a
             // run that only went well is worth a glance, not a hazard tick.
-            let negative = self.valence.is_some_and(|v| v.negatives > 0) || self.affect.is_some();
+            // A label is negative unless it is one of the two positive
+            // words — neither reachable today, and the sentence above would
+            // be false the day one is (found on review).
+            let negative = self.valence.is_some_and(|v| v.negatives > 0)
+                || self.affect.is_some_and(|a| {
+                    !matches!(
+                        a,
+                        mecha_core::appraisal::Affect::Pride
+                            | mecha_core::appraisal::Affect::Excitement
+                    )
+                });
             spans.push(Span::styled(
                 format!(" {badge} "),
                 if negative {
