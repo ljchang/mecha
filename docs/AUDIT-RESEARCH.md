@@ -437,8 +437,10 @@ counts the *model's* calls in a span, and a harness-run check is not one, so
 `checks_declared` / `checks_passed`; a `check` trace counts toward
 `verify_like` without the keyword list (the list stays — a `cargo test` with
 no declared check still counts); and a failed check is its own finding,
-distinct from the last-call-failed one, because the model's last call may
-have succeeded while its claim did not. `RunStats` carries
+`Finding::CheckFailed`, distinct from `Finding::EndedOnFailure` because the
+model's last call may have succeeded while its claim did not — and a denied
+check reads as `Finding::EndedOnRefusal`, the refused case, never the
+failed one. `RunStats` carries
 `checks_declared` / `checks_passed` as `Option<u32>` — unknown is never zero
 — folded like `boredom_notices`.
 
