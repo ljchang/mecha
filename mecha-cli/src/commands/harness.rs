@@ -464,6 +464,25 @@ async fn measure(
     let mut holdout_pairs: Vec<Pair> = Vec::new();
     let mut diverged: Vec<String> = Vec::new();
     let mut replay_caveats: Vec<String> = Vec::new();
+    // See `Measurement::divergence_detail`.
+    let mut divergence_detail: Vec<mecha_core::harness::Divergence> = Vec::new();
+    // Recorded as each arm finishes, never after both. Review finding: the
+    // push used to sit past the candidate's `Err` arm, so an episode whose
+    // BASELINE left the recording and whose candidate then failed to replay
+    // at all lost the baseline's reason entirely and landed in `skipped`
+    // with no account of itself — the same loss this branch exists to fix,
+    // one case narrower.
+    macro_rules! note_divergence {
+        ($arm:expr, $outcome:expr, $id:expr) => {
+            if let Some(why) = &$outcome.divergence {
+                divergence_detail.push(mecha_core::harness::Divergence {
+                    episode: $id.clone(),
+                    arm: $arm,
+                    reason: why.clone(),
+                });
+            }
+        };
+    }
     let mut skipped = unusable;
     let total = draw.selection.len() + draw.holdout.len();
     // The flag decides the slice; the label only decides the column width.
@@ -511,6 +530,7 @@ async fn measure(
                         continue;
                     }
                 };
+            note_divergence!(mecha_core::harness::Arm::Baseline, baseline, prep.id);
             eprint!(" candidate…");
             let candidate = match harness_probe::drive_episode(
                 &prepared,
@@ -528,7 +548,21 @@ async fn measure(
                     continue;
                 }
             };
-            if baseline.diverged || candidate.diverged {
+            // Which arm left the recording, and why — beside the id, never
+            // folded into it (`Measurement::diverged`'s ids stay joinable,
+            // the same contract `replay_caveats` respects).
+            //
+            // **The distinction the bare bool destroyed.** A baseline
+            // divergence says the replay is unreliable on this episode; a
+            // candidate-only divergence says the change altered behaviour,
+            // which is the measurement working, not failing. On 2026-09-01
+            // twelve of sixteen episodes were dropped as one undifferentiated
+            // pile, and the four that paired were all far below the
+            // threshold the candidate moved — so the tally scored only the
+            // episodes where the change provably did nothing, and reported
+            // it as a thin sample rather than a censored one.
+            note_divergence!(mecha_core::harness::Arm::Candidate, candidate, prep.id);
+            if baseline.diverged() || candidate.diverged() {
                 // The recording has nothing truthful to say past a divergence;
                 // stats over the tracked prefix would grade a behaviour-visible
                 // change on the fraction it happened to track.
@@ -570,12 +604,55 @@ async fn measure(
         } else {
             format!("; replay caveats: {}", replay_caveats.join(", "))
         };
+        // Which arm, in the same breath. "Everything diverged" is two very
+        // different findings depending on whether the BASELINE did: if it
+        // did, the recording is the problem; if only the candidate did, the
+        // change moves behaviour on every episode drawn, which is a result
+        // about the change and not an absence of one.
+        let arms = mecha_core::harness::Divergence::arms_summary(&divergence_detail, skipped);
         cand.reason = Some(format!(
             "nothing measurable: {} diverged, {} skipped — a change the replay cannot hold on \
-             the recording needs the eval arm instead{caveats}",
+             the recording needs the eval arm instead{arms}{caveats}",
             diverged.len(),
             skipped
         ));
+        // **Store the Measurement even here.** Review finding: this early
+        // return wrote none, so the diverged ids, the per-arm reasons, the
+        // seed and the caveats were all discarded in exactly the case they
+        // exist to explain — a single sentence survived where the evidence
+        // should have. The tallies are empty because nothing paired; that is
+        // the honest record, and it is not the same as having no record.
+        let empty = judge_drawn(
+            cand.class,
+            &Prediction {
+                metric: cand.metric,
+                rationale: cand.rationale.clone(),
+            },
+            &[],
+            &[],
+        );
+        let mut record = Measurement::record(
+            &empty,
+            model,
+            now.clone(),
+            mecha_core::harness::Drawn {
+                episodes: Vec::new(),
+                holdout_episodes: Vec::new(),
+                seed: draw.seed,
+                diverged,
+                replay_caveats,
+                divergence_detail,
+                skipped,
+            },
+        );
+        // **The stored reason must not be the floor text.** `judge_drawn`
+        // over two empty slices yields "only 0 paired episode(s) … below the
+        // floor of 8" — the sample-size framing this whole branch argues
+        // misdirects, and `show` would print it directly above the arm
+        // split that contradicts it. Nothing paired because every arm left
+        // the recording, which is a different finding from too small a draw.
+        record.reason = cand.reason.clone().unwrap_or_default();
+        cand.measurement = Some(record);
         store.write(&cand)?;
         println!(
             "\nstaged for review — {}",
@@ -605,6 +682,7 @@ async fn measure(
             seed: draw.seed,
             diverged,
             replay_caveats,
+            divergence_detail,
             skipped,
         },
     ));
@@ -771,6 +849,35 @@ fn show(id: &str) -> Result<()> {
                 "diverged:   {} (dropped, not scored)",
                 m.diverged.join(", ")
             );
+        }
+        // Its own block, like `replay caveats` below and for the same
+        // reason: the ids above stay a bare joinable list, and the reader
+        // deciding on this candidate gets the arm and the cause without
+        // parsing them back out.
+        if !m.divergence_detail.is_empty() {
+            let baseline_arms =
+                mecha_core::harness::Divergence::baseline_count(&m.divergence_detail);
+            let candidate_arms =
+                mecha_core::harness::Divergence::candidate_count(&m.divergence_detail);
+            println!(
+                "divergence detail ({baseline_arms} baseline-arm, {candidate_arms} \
+                 candidate-arm):"
+            );
+            for d in &m.divergence_detail {
+                println!("  {} — {} arm: {}", d.episode, d.arm.as_str(), d.reason);
+            }
+            // The reading, stated once rather than left to be re-derived.
+            // Scoped on `skipped` as well as on the arm split: episodes lost
+            // before either arm ran are not evidence that the change moved
+            // anything.
+            if baseline_arms == 0 && candidate_arms > 0 && m.skipped == 0 {
+                println!(
+                    "  → every divergence was the candidate arm: the change moved behaviour \
+                     on these episodes, so they are dropped for being unscoreable, NOT for \
+                     showing nothing. Check whether the episodes that DID pair are ones the \
+                     change can affect at all."
+                );
+            }
         }
         // Its own block with its own label, not indented under `diverged:`
         // — found on review: these cover *every* episode the replay

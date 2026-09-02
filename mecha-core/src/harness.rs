@@ -303,9 +303,116 @@ pub struct Measurement {
     /// `diverged` rather than folded into it, so the ids stay joinable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replay_caveats: Vec<String>,
+    /// Why an arm left the recording, and which arm — one entry per arm
+    /// that diverged.
+    ///
+    /// **Not joinable one-to-one against [`Self::diverged`], and that is
+    /// deliberate.** Each arm is recorded as it finishes, so an episode
+    /// whose baseline diverged and whose candidate then failed to replay at
+    /// all contributes an entry here while landing in `skipped` rather than
+    /// in `diverged`. Recording later would lose that reason entirely,
+    /// which is the loss this field exists to prevent — so the entry stays
+    /// and the contract is "an arm that diverged", not "a dropped episode".
+    ///
+    /// Beside [`Self::diverged`] rather than folded into it, the same shape
+    /// and for the same reason as [`Self::replay_caveats`]: those ids are a
+    /// joinable list by contract and must not need parsing.
+    ///
+    /// **The two arms want opposite responses, and the old bool could not
+    /// tell them apart.** A baseline divergence is the replay failing on
+    /// that episode; a candidate-only divergence is the change altering
+    /// behaviour — evidence the change does something, on precisely the
+    /// episodes where it bites. Dropping both as one pile is individually
+    /// correct (a truncated arm cannot be scored) and collectively biased:
+    /// on 2026-09-01 a `compact_at_tokens=16384` candidate paired only on
+    /// episodes far below 16384 tokens, so the sample it scored was the
+    /// sample where it provably did nothing, and the gate reported a thin
+    /// sample rather than a censored one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub divergence_detail: Vec<Divergence>,
     /// Sessions that could not be replayed at all (unreadable, no recorded
     /// calls, tool surface moved). Never evidence for either arm.
     pub skipped: usize,
+}
+
+/// Which arm of a paired replay left the recording.
+///
+/// A closed enum written into an append-only store, so it is a wire format:
+/// an unknown variant on load degrades rather than failing the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Arm {
+    Baseline,
+    Candidate,
+    /// A variant written by a newer build than this one. Never counted as
+    /// either arm — unknown is not clean.
+    #[serde(other)]
+    Unrecognised,
+}
+
+impl Arm {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Arm::Baseline => "baseline",
+            Arm::Candidate => "candidate",
+            Arm::Unrecognised => "unrecognised",
+        }
+    }
+}
+
+/// One arm of one episode leaving the recording, and why.
+///
+/// **Structured, not a formatted line.** The first version of this was
+/// `Vec<String>` rendered as "id — baseline arm: reason" and read back with
+/// `contains("— baseline arm:")` in two places. Losing the em dash, or
+/// rewording the prefix, would have silently zeroed the baseline count and
+/// made `mecha harness show` assert "every divergence was the candidate arm
+/// — the change moved behaviour" for a run in which every divergence was the
+/// baseline. A format string is not a data structure.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Divergence {
+    pub episode: String,
+    pub arm: Arm,
+    pub reason: String,
+}
+
+impl Divergence {
+    /// The one-line arm split for a measurement that produced no pairs.
+    ///
+    /// Extracted so it can be tested: it lands in the candidate's stored
+    /// reason, which on the all-diverged path is the whole durable record
+    /// of the run, and it was previously built inline where no test could
+    /// reach it — including the case where the two `Arm` literals are
+    /// swapped at the call site, which makes the reporter assert the
+    /// opposite of what happened.
+    pub fn arms_summary(all: &[Divergence], skipped: usize) -> String {
+        let baseline = Self::baseline_count(all);
+        let candidate = Self::candidate_count(all);
+        if all.is_empty() {
+            return String::new();
+        }
+        if baseline == 0 && skipped == 0 {
+            return format!(
+                "; all {candidate} divergence(s) were the CANDIDATE arm and nothing was \
+                 skipped — the change moved behaviour on every episode that diverged, \
+                 which is a finding about the change, not a missing measurement"
+            );
+        }
+        format!(
+            "; {baseline} baseline-arm and {candidate} candidate-arm divergence(s) — a \
+             baseline divergence says the replay is unreliable here, a candidate one says \
+             the change moved behaviour; read the split before concluding either"
+        )
+    }
+
+    /// How many of these were the baseline arm — the count both the report
+    /// and the renderer key on, derived rather than parsed.
+    pub fn baseline_count(all: &[Divergence]) -> usize {
+        all.iter().filter(|d| d.arm == Arm::Baseline).count()
+    }
+    pub fn candidate_count(all: &[Divergence]) -> usize {
+        all.iter().filter(|d| d.arm == Arm::Candidate).count()
+    }
 }
 
 /// Which episodes a measurement drew, where they went, and what it could not
@@ -320,6 +427,8 @@ pub struct Drawn {
     pub diverged: Vec<String>,
     /// See [`Measurement::replay_caveats`].
     pub replay_caveats: Vec<String>,
+    /// See [`Measurement::divergence_detail`].
+    pub divergence_detail: Vec<Divergence>,
     pub skipped: usize,
 }
 
@@ -336,6 +445,7 @@ impl Measurement {
             seed,
             diverged,
             replay_caveats,
+            divergence_detail,
             skipped,
         } = drawn;
         use crate::candidate::Disposition;
@@ -363,6 +473,7 @@ impl Measurement {
             seed,
             diverged,
             replay_caveats,
+            divergence_detail,
             skipped,
         }
     }
@@ -780,5 +891,113 @@ accepted_at = "2026-08-22T00:00:00Z"
         future.status = "escalated".into();
         store.write(&future).unwrap();
         assert_eq!(store.all().unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod divergence_arm_tests {
+    use super::*;
+
+    fn d(episode: &str, arm: Arm) -> Divergence {
+        Divergence {
+            episode: episode.into(),
+            arm,
+            reason: "recorded call #0 was `a`, not `b`".into(),
+        }
+    }
+
+    /// **Review finding.** The arm was encoded into a formatted line and
+    /// recovered with `contains("— baseline arm:")` in two places, with no
+    /// shared constant and no test. Rewording the prefix — or losing the em
+    /// dash — would silently zero the baseline count and make the reporter
+    /// assert "every divergence was the candidate arm" for a run in which
+    /// every divergence was the baseline.
+    ///
+    /// Counting from the enum cannot break that way, and this test is what
+    /// says so.
+    #[test]
+    fn the_arm_split_is_counted_from_data_not_from_prose() {
+        let all = vec![
+            d("a", Arm::Baseline),
+            d("b", Arm::Candidate),
+            d("c", Arm::Candidate),
+        ];
+        assert_eq!(Divergence::baseline_count(&all), 1);
+        assert_eq!(Divergence::candidate_count(&all), 2);
+        // The rendered form is free to change without moving either count.
+        assert_eq!(Arm::Baseline.as_str(), "baseline");
+        assert_eq!(Arm::Candidate.as_str(), "candidate");
+    }
+
+    /// **The swapped-literal case.** Every other test here would still pass
+    /// if the two `Arm::` literals were exchanged at the call site — and
+    /// that swap is exactly what makes the reporter assert the opposite of
+    /// what happened. Pinning the summary to the counts is what catches it.
+    #[test]
+    fn the_summary_follows_the_arms_and_would_catch_a_swap() {
+        // All candidate, nothing skipped: the strong claim is allowed.
+        let all_candidate = vec![d("a", Arm::Candidate), d("b", Arm::Candidate)];
+        let s = Divergence::arms_summary(&all_candidate, 0);
+        assert!(
+            s.contains("all 2 divergence(s) were the CANDIDATE arm"),
+            "{s}"
+        );
+        assert!(
+            s.contains("moved behaviour on every episode that diverged"),
+            "{s}"
+        );
+
+        // Swap the arms and the strong claim must disappear.
+        let all_baseline = vec![d("a", Arm::Baseline), d("b", Arm::Baseline)];
+        let s = Divergence::arms_summary(&all_baseline, 0);
+        assert!(
+            !s.contains("CANDIDATE arm"),
+            "a swap must not keep the claim: {s}"
+        );
+        assert!(s.contains("2 baseline-arm and 0 candidate-arm"), "{s}");
+    }
+
+    /// `skipped > 0` withdraws the strong claim: episodes never driven are
+    /// not evidence the change moved anything.
+    #[test]
+    fn skipped_episodes_withdraw_the_strong_claim() {
+        let all = vec![d("a", Arm::Candidate)];
+        let s = Divergence::arms_summary(&all, 9);
+        assert!(!s.contains("every episode that diverged"), "{s}");
+        assert!(s.contains("0 baseline-arm and 1 candidate-arm"), "{s}");
+    }
+
+    /// Nothing diverged, nothing to say.
+    #[test]
+    fn no_divergences_render_no_summary() {
+        assert!(Divergence::arms_summary(&[], 0).is_empty());
+        assert!(Divergence::arms_summary(&[], 5).is_empty());
+    }
+
+    /// A closed enum written into an append-only store is a wire format: a
+    /// variant from a newer build degrades rather than failing the record,
+    /// and is never silently counted as one of the known arms.
+    #[test]
+    fn an_unknown_arm_from_a_newer_build_is_neither_arm() {
+        let parsed: Divergence =
+            serde_json::from_str(r#"{"episode":"e","arm":"third_arm","reason":"r"}"#)
+                .expect("an unknown variant must not fail the record");
+        assert_eq!(parsed.arm, Arm::Unrecognised);
+        let all = vec![parsed];
+        assert_eq!(Divergence::baseline_count(&all), 0);
+        assert_eq!(Divergence::candidate_count(&all), 0);
+    }
+
+    /// Round-trips through the store, since this rides in a persisted
+    /// `Measurement`.
+    #[test]
+    fn a_divergence_survives_the_store() {
+        let all = vec![d("ep-1", Arm::Baseline), d("ep-2", Arm::Candidate)];
+        let json = serde_json::to_string(&all).unwrap();
+        let back: Vec<Divergence> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].arm, Arm::Baseline);
+        assert_eq!(back[1].episode, "ep-2");
+        assert!(back[0].reason.contains("recorded call #0"));
     }
 }
