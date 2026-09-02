@@ -239,7 +239,7 @@ fn is_safe_cut(messages: &[Message], i: usize) -> bool {
 /// neither.
 pub const CARRIED_HEADER: &str =
     "[Live state, carried past the compaction and current as of now — it supersedes \
-     anything about it in the summary above:]";
+     anything about it in the summaries above:]";
 
 /// Marks the summary block [`rebuild`] appends to the head message.
 ///
@@ -1311,9 +1311,20 @@ mod tests {
             "the instruction must quote {opener:?} so the summariser recognises what it is \
              told to fold"
         );
-        // And the carried block speaks of one summary, since one is all there is.
-        assert!(CARRIED_HEADER.contains("summary above"));
-        assert!(!CARRIED_HEADER.contains("summaries"));
+        // The carried header is a **wire format**: `rebuild`, `todo.rs` and
+        // `title.rs` all match it with `starts_with` against `rewrite` records
+        // already on disk, so its text is frozen even where it is now
+        // inaccurate ("summaries", plural, where one survives). Rewording it
+        // orphans every transcript compacted by an older binary — the stale
+        // carried block stays beside the current one, the plan stops being
+        // recovered, and the title reader takes it for the owner's words —
+        // and no test built from the constant can see that. The PR review
+        // caught exactly that rewording; this pins the byte string.
+        assert_eq!(
+            CARRIED_HEADER,
+            "[Live state, carried past the compaction and current as of now — it supersedes \
+             anything about it in the summaries above:]"
+        );
     }
 
     /// The bug a second compaction would otherwise introduce: two task lists in
