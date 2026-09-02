@@ -2295,7 +2295,11 @@ completed step's `check` is frozen on the write that completes it**:
 `Tracked` keeps the hash of the latest declaration while the step is open,
 and from the completing write that declaration stands — a different check
 on that write or any later one is a tamper, echoed back as such, counted
-(`TodoTool::tampered_in`), never taken. The first cut gated on the
+(`TodoTool::tampered_in`), never taken — with one named residual: the
+freeze is keyed on the step's text, like every other per-step mark in
+`Tracked`, so a reworded step is a new step and its check starts unfrozen;
+closing that needs a per-item id the plan tool refuses for cost, and the
+docstring on `Tracked::checks` says so. The first cut gated on the
 *previous* status and let the one write that both completes the step and
 swaps its check through, which is exactly the rewrite the freeze exists for.
 **Nothing runs a check yet.** When the loop does — dispatched as a model

@@ -76,6 +76,14 @@ pub struct Corpus {
     /// queue, and a store rotting one file at a time was invisible from
     /// every reader before this was counted.
     pub unreadable: usize,
+    /// Sessions the default admission hid for being `SessionKind::Test`.
+    /// The same rule as `unreadable`, one filter over: a reader that cannot
+    /// see something must count it, or a store of only smoke tests reads
+    /// "nothing is there" from every readout — the dash-versus-zero
+    /// inversion arriving through the filter added to prevent a different
+    /// one (found on review). Zero when `include_tests` is set or a `kind`
+    /// was asked for by name.
+    pub hidden_tests: usize,
 }
 
 /// How to bound a scan. Both limits are honest about cost rather than about
@@ -107,6 +115,13 @@ impl Scan {
     /// per-session walk in `sessions appraise`, which reads sessions rather
     /// than runs and so cannot use [`Corpus::scan`] but must agree with it
     /// about which sessions are in the population.
+    /// Would the default admission hide this session only for being a
+    /// smoke test? Counted by every reader rather than silently skipped —
+    /// see [`Corpus::hidden_tests`].
+    pub fn hides_test(&self, meta: &SessionMeta) -> bool {
+        self.kind.is_none() && !self.include_tests && meta.kind == Some(SessionKind::Test)
+    }
+
     pub fn admits(&self, meta: &SessionMeta) -> bool {
         if self.since.is_some_and(|t| meta.created_at < t) {
             return false;
@@ -139,6 +154,10 @@ impl Corpus {
         let (listed, skipped) = Session::list_counting(dir)?;
         out.unreadable = skipped;
         for (meta, path) in listed {
+            if scan.hides_test(&meta) {
+                out.hidden_tests += 1;
+                continue;
+            }
             if !scan.admits(&meta) {
                 continue;
             }
@@ -184,14 +203,15 @@ impl Corpus {
         self.rows.is_empty()
     }
 
-    /// Keep only the rows a predicate accepts. `sessions_read` and
-    /// `unreadable` are preserved, because they describe the scan and not
-    /// the selection.
+    /// Keep only the rows a predicate accepts. `sessions_read`,
+    /// `unreadable` and `hidden_tests` are preserved, because they describe
+    /// the scan and not the selection.
     pub fn filter(&self, keep: impl Fn(&RunRow) -> bool) -> Corpus {
         Corpus {
             rows: self.rows.iter().filter(|r| keep(r)).cloned().collect(),
             sessions_read: self.sessions_read,
             unreadable: self.unreadable,
+            hidden_tests: self.hidden_tests,
         }
     }
 
@@ -1104,6 +1124,7 @@ mod tests {
             vec!["20260801T000000-web", "20260801T000002-old"],
             "the test row is out by default; the unknown row stays, it could be use"
         );
+        assert_eq!(default.hidden_tests, 1, "hidden, and counted as hidden");
 
         let with_tests = Corpus::scan(
             &dir,
@@ -1114,6 +1135,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(with_tests.len(), 3);
+        assert_eq!(with_tests.hidden_tests, 0);
 
         let only_tests = Corpus::scan(
             &dir,

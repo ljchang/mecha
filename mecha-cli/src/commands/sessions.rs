@@ -205,6 +205,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             };
             let all = Session::list(&dir)?;
             let unkinded = all.iter().filter(|(meta, _)| meta.kind.is_none()).count();
+            let hidden_tests = all.iter().filter(|(meta, _)| scan.hides_test(meta)).count();
+            let total = all.len();
             let sessions: Vec<_> = all
                 .into_iter()
                 .filter(|(meta, _)| scan.admits(meta))
@@ -212,15 +214,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             if sessions.is_empty() {
                 // "Nothing matched" and "nothing is there" are opposite
                 // findings, and a filter that hides every row must say so —
-                // most of all the kind filter, which no transcript from
-                // before kinds were recorded can ever match.
-                match kind {
-                    Some(k) => println!(
-                        "no sessions of kind `{}` in {} ({unkinded} recorded before kinds existed match no filter)",
-                        k.as_str(),
+                // the kind filter, which no transcript from before kinds
+                // were recorded can ever match, and the default test
+                // exclusion, which is a filter too (found on review: a
+                // store of only smoke tests printed "no sessions").
+                if total == 0 {
+                    println!("no sessions in {}", dir.display());
+                } else {
+                    let what = match kind {
+                        Some(k) => format!("no sessions of kind `{}`", k.as_str()),
+                        None => "no sessions shown".to_string(),
+                    };
+                    println!(
+                        "{what} in {} — of {total} recorded: {hidden_tests} smoke-test session(s) hidden (`--include-tests` shows them), {unkinded} recorded before kinds existed match no `--kind`",
                         dir.display()
-                    ),
-                    None => println!("no sessions in {}", dir.display()),
+                    );
                 }
                 return Ok(());
             }
@@ -535,7 +543,12 @@ async fn appraise(
     // entirely — it appeared in no count at all, which on this surface of
     // all surfaces is the dash-versus-zero inversion.
     let (listed, mut sessions_unreadable) = Session::list_counting(dir)?;
+    let mut tests_hidden = 0usize;
     for (meta, path) in listed {
+        if scan.hides_test(&meta) {
+            tests_hidden += 1;
+            continue;
+        }
         if !scan.admits(&meta) {
             continue;
         }
@@ -740,6 +753,7 @@ async fn appraise(
                 "appraised": appraisals.len(),
                 "sessions_read": sessions_read,
                 "sessions_unreadable": sessions_unreadable,
+                "tests_hidden": tests_hidden,
                 "named_a_goal": named_a_goal,
                 "labels": labels,
                 "valence": {
@@ -803,6 +817,12 @@ async fn appraise(
         println!(
             "  ({sessions_unreadable} transcript(s) in the store could not be read and are in \
              no count above)\n"
+        );
+    }
+    if tests_hidden > 0 {
+        println!(
+            "  ({tests_hidden} smoke-test session(s) hidden and in no count above; \
+             `--include-tests` shows them)\n"
         );
     }
     if appraisals.is_empty() {
@@ -983,10 +1003,20 @@ fn health(
     } else {
         String::new()
     };
+    // The same rule for the filter this readout applies by default: a
+    // hidden row is counted where the reader can see the count.
+    let hidden_line = if corpus.hidden_tests > 0 {
+        format!(
+            " · {} smoke-test session(s) hidden (`--include-tests` shows them)",
+            corpus.hidden_tests
+        )
+    } else {
+        String::new()
+    };
 
     if corpus.is_empty() {
         println!(
-            "no recorded run outcomes in {} ({} session(s) read{unreadable_line})",
+            "no recorded run outcomes in {} ({} session(s) read{unreadable_line}{hidden_line})",
             dir.display(),
             corpus.sessions_read
         );
@@ -998,7 +1028,7 @@ fn health(
     }
 
     println!(
-        "{} run(s) across {} session(s){}{unreadable_line}\n",
+        "{} run(s) across {} session(s){}{unreadable_line}{hidden_line}\n",
         corpus.len(),
         corpus.sessions_read,
         days.map(|d| format!(", last {d} day(s)"))

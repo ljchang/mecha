@@ -299,6 +299,17 @@ struct Tracked {
     /// never pruned by the live sweep. A write with a different check on a
     /// frozen step, whatever its status, is a tamper; the frozen hash
     /// stays and the write is echoed back as such.
+    ///
+    /// **Accepted residual: a reworded step is a new step.** The key is the
+    /// item's content, as it is for `started`, `flagged` and `completed`,
+    /// because content is the only handle a plan write offers; so
+    /// completing `wire it` against `make test` and then writing `wire it.`
+    /// completed against `true` freezes the second as a fresh step, with no
+    /// tamper echoed (found on review). Closing it needs a key the model
+    /// cannot rewrite — a per-item id, which costs the field the plan tool
+    /// refuses for the reason its docstring gives, or a fold over the whole
+    /// plan's frozen hashes. Named here beside the re-add case so a reader
+    /// who sees re-add closed does not assume rename is.
     checks: HashMap<String, Freeze>,
     /// Tampers seen on this plan. Read by [`TodoTool::tampered_in`].
     tampered: u32,
