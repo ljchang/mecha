@@ -829,7 +829,13 @@ impl TodoTool {
                 if !todo_ids.contains(tool_use_id.as_str()) {
                     continue;
                 }
-                for item in Self::parse_rendered(content).items {
+                // A cut echo is skipped, not merged: a `check:` line that
+                // fell past the cut must not read as "no check", and a
+                // partial list must not override a whole earlier one.
+                let Some(plan) = Self::parse_whole_echo(content) else {
+                    continue;
+                };
+                for item in plan.items {
                     if item.status == Status::Completed {
                         if let Some(c) = item.check {
                             frozen.insert(item.content, c);
@@ -899,8 +905,17 @@ impl TodoTool {
                         if name == "todo" && !failed.contains(id.as_str()) =>
                     {
                         if let Some(echo) = echoes.get(id.as_str()) {
-                            let plan = Self::parse_rendered(echo);
-                            if !plan.items.is_empty() {
+                            // Only a *whole* echo. The way results get cut
+                            // in this repo — `compact::thin_old_results`,
+                            // `tool::cap_result` — leaves a parseable
+                            // prefix, not an unparseable blob: a twelve-step
+                            // plan thinned to 240 chars parses to four
+                            // steps, and taking those as the plan installed
+                            // a third of the work and lost every `check:`
+                            // past the cut (found on review). The echo's own
+                            // `done/total` header says how many steps the
+                            // tool kept, and that is the integrity check.
+                            if let Some(plan) = Self::parse_whole_echo(echo) {
                                 return Some(plan);
                             }
                         }
@@ -955,6 +970,28 @@ impl TodoTool {
     fn parse_rendered(text: &str) -> Plan {
         let lines: Vec<&str> = text.lines().collect();
         Self::parse_section(&lines)
+    }
+
+    /// The `{done}/{total} done` line `render` writes above the list, as
+    /// the total. `None` when the echo has no such line — an empty list's
+    /// echo, or one cut before it.
+    fn rendered_total(text: &str) -> Option<usize> {
+        text.lines().find_map(|l| {
+            let l = l.trim();
+            let rest = l.strip_suffix(" done")?;
+            let (_, total) = rest.split_once('/')?;
+            total.parse().ok()
+        })
+    }
+
+    /// [`parse_rendered`](Self::parse_rendered), trusted only when the list
+    /// it yields is as long as the header says the tool kept — a thinned
+    /// or capped echo is a prefix, and a prefix must not stand in for the
+    /// plan or for its freezes.
+    fn parse_whole_echo(text: &str) -> Option<Plan> {
+        let plan = Self::parse_rendered(text);
+        let whole = Self::rendered_total(text).is_some_and(|n| n == plan.items.len());
+        (whole && !plan.items.is_empty()).then_some(plan)
     }
 
     fn parse_section(section: &[&str]) -> Plan {
@@ -3289,6 +3326,90 @@ mod tests {
                 .and_then(|i| i.check.clone())
                 .as_deref(),
             Some("make test")
+        );
+    }
+
+    /// A thinned echo is a parseable prefix, not an unparseable blob (found
+    /// on the twelfth review pass): the header's total is what says the
+    /// echo is whole. Fails on the old behaviour, which took the prefix.
+    #[test]
+    fn a_thinned_echo_is_a_prefix_and_the_input_stands_in_for_it() {
+        use crate::compact::{thin_old_results, THINNED_RESULT_CHARS};
+        use crate::message::{Block, Message, Role};
+        let items: Vec<TodoItem> = (0..12)
+            .map(|i| {
+                let mut it = TodoItem::new(
+                    format!("step number {i} with enough words to make the echo long"),
+                    if i < 6 {
+                        Status::Completed
+                    } else {
+                        Status::Pending
+                    },
+                );
+                if i < 6 {
+                    it.check = Some(format!("make check-{i}"));
+                }
+                it
+            })
+            .collect();
+        let plan = Plan {
+            goal: None,
+            items: items.clone(),
+        };
+        let echo = TodoTool::render(&plan);
+        assert!(echo.len() > THINNED_RESULT_CHARS);
+        assert_eq!(TodoTool::rendered_total(&echo), Some(12));
+        let input_items: Vec<serde_json::Value> = items
+            .iter()
+            .map(|i| {
+                let mut v = json!({"content": i.content, "status": if i.status == Status::Completed { "completed" } else { "pending" }});
+                if let Some(c) = &i.check {
+                    v["check"] = json!(c);
+                }
+                v
+            })
+            .collect();
+        let mut messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": input_items}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: echo,
+                    is_error: false,
+                }],
+            },
+        ];
+        // Whole: the echo is the plan.
+        assert_eq!(
+            TodoTool::plan_from_transcript(&messages)
+                .unwrap()
+                .items
+                .len(),
+            12
+        );
+        assert_eq!(TodoTool::frozen_checks_from_transcript(&messages).len(), 6);
+        // Thinned: the echo is a prefix, so the input stands in and the
+        // freezes come from nowhere rather than from the prefix.
+        let thinned = thin_old_results(&mut messages, 0, THINNED_RESULT_CHARS);
+        assert_eq!(thinned, 1);
+        let restored = TodoTool::plan_from_transcript(&messages).unwrap();
+        assert_eq!(
+            restored.items.len(),
+            12,
+            "every step, from the input the thinning never touches"
+        );
+        assert_eq!(restored.items[0].check.as_deref(), Some("make check-0"));
+        assert!(
+            TodoTool::frozen_checks_from_transcript(&messages).is_empty(),
+            "a cut echo is skipped, never merged"
         );
     }
 }
