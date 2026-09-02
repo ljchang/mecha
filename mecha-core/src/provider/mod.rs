@@ -137,6 +137,26 @@ pub struct Failover {
     fallbacks: Vec<(String, Box<dyn Provider>)>,
 }
 
+/// The longest silence a provider connection may go without delivering a
+/// byte before the request is failed: a stall, not a long answer.
+///
+/// Both clients used to put one 900 s `timeout` on the *whole* exchange,
+/// streamed body included. At `LOCAL_MAX_TOKENS = 32_768` and ~60 tok/s a long
+/// answer runs ~550 s before prefill and queue wait, so a legitimate answer
+/// died mid-stream as a plain error and the partial text was discarded.
+/// Per-read is the right shape for a stream: the server is either sending
+/// tokens or it is not. Five minutes because a cold prefill at 170k tokens on
+/// llama-server is ~120 s of silence before the first one.
+pub const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The whole-exchange cap that still applies to a *non-streaming* request,
+/// where the body arrives at once and a per-read timeout would count the
+/// entire generation as one read.
+pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Time allowed to open the connection, separately from the reads.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl Failover {
     pub fn new(primary: Box<dyn Provider>, fallbacks: Vec<(String, Box<dyn Provider>)>) -> Self {
         Failover { primary, fallbacks }
