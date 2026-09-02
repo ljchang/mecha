@@ -4138,6 +4138,34 @@ re-injecting the list at compaction time, not more prompting.
 
 ---
 
+**2026-09-02** — the graph stopped being two repositories. Ten files had been
+private; only four held roster terms, and `scripts/nightly-mecha.sh` was
+private *by association* — it sat in `scripts/` beside the gold-set tooling
+and nobody had read it. Read line by line, it carried nothing: no names, no
+emails, no hostnames, every path `$HOME`- or `$BASH_SOURCE`-relative. It is
+public now, and the gold sets moved to `~/.mecha-graph/eval/` behind
+`eval::gold_path_from`, which mirrors `db::default_db_path`'s env-then-`$HOME`
+shape. What made the move safe was relocating the gate rather than retiring
+it: `.githooks/pre-push` and `.github/workflows/denylist.yml` run the same
+roster from outside the repository, both fail closed, and `.gitignore` gained
+`eval/*gold*.jsonl` as a second layer — the export used to be what stood
+between those files and the world, and working in the repo directly removes
+it. The private checkout keeps the notes and the roster tooling;
+`export-public.sh` is retained for history and called by nothing.
+
+Two long-running silences ended with it. `is_missing_fact` made the Bee push
+idempotent — one verdict had retried nightly since 2026-08-24 because
+`bee facts delete` answered "Fact not found" for a fact that was already
+gone, and the code called the achieved end state a failure; the diagnosis
+came from the same branch's own error-recording fix, on its first run.
+`Divergence::arms_summary` and the attempt-keyed gossip ledger closed the
+other: a probe that legitimately refused ("one witness cannot gossip") wrote
+no row, never aged, and was re-selected on five consecutive nights.
+
+Seven review rounds on that PR found one MAJOR, five MEDIUM and twenty-one
+MINOR; the MAJOR and three of the MEDIUMs were defects in *previous rounds'
+fixes* rather than in the original change.
+
 ## Traps already hit
 
 Recorded so they are not hit twice. Each says what broke; the sentence that
@@ -5789,6 +5817,28 @@ it.** The phrasing is the peer's own, offered unprompted after the fact; both
 sessions had spent the day refusing the same shape in other forms without
 noticing it in this one.
 
+**A green check is not evidence a review happened.** On 2026-09-01 the
+`Claude PR review` job on a new repo reported SUCCESS and posted nothing,
+three separate ways: no credential at all (the action validated, then did
+nothing); a PR that *modifies the workflow*, which the action refuses to run
+and exits success on; and a review that completed — 39 turns, real model
+usage — then took 14 permission denials trying to publish, because the
+prompt had been ported without the `gh pr comment` instruction or the
+`--allowedTools` grant. A PR was merged on the strength of the first. **The
+artifact is the comment, not the tick**: assert a comment exists before
+treating a review as done, and note that a workflow-touching PR structurally
+cannot review itself and needs a human read.
+
+**A trailing newline is present, non-empty, and invalid.** A
+`CLAUDE_CODE_OAUTH_TOKEN` set with `echo` carried a `\n`, passed every "is
+it set" check, and was rejected at the first API call — `is_error: true`,
+`modelUsage: {}`, 1.9 seconds. Three re-runs looked like three identical
+failures. The load-bearing diagnostic was the secret's `updated_at`
+timestamp, which distinguished "the new token is also bad" from "the new
+token never arrived" — twice it was the latter. **Use `printf '%s'`, and
+check the timestamp before re-running anything.**
+
+
 ### Environment
 
 **2026-08-30 — this box's clippy is 1.97, CI's is 1.98, and an `async fn`
@@ -6465,6 +6515,30 @@ question about this branch alone. **A CI failure with no local repro is not
 necessarily flaky**: fetch and diff against `origin/main` before assuming the
 runner is wrong, because the runner may be testing a tree that does not exist
 in any local checkout yet.
+
+**A review invoked by PR number moves the checkout under you.** The standing
+rule is "work `main` from a separate worktree and leave this clone where
+`llama-local.service` points", and it reads as advice about where you *type*.
+On 2026-09-01 `/code-review 135` put `~/Github/mecha` on a `pr-135` branch —
+`gh pr checkout` resolves a PR-number target in the current repo — and left
+it there. Every branch of the session's actual work was in scratchpad
+worktrees and it tripped anyway; a peer found it hours later, and it was
+inert only because `scripts/start-moe-mtp.sh` happened to be byte-identical
+on both. **A rule about where you type does not cover a command that moves
+the clone for you.** Check `git branch --show-current` in the primary
+checkout after any tool that takes a PR number.
+
+**The instructions can be the stale artifact, not just the binary.** On
+2026-09-02 the Skill tool served a cached `update/SKILL.md` from before the
+commit that inverted the graph's source repo — it still said to build from
+the private checkout and called the public one "a generated artifact, not a
+source". The file on disk was already correct. Following the load rather
+than the file would have reinstalled the graph from the retired repo and
+silently undone the move, with nothing complaining. The skill's own thesis
+is *verify the running thing, never the repo*; this is the same rule turned
+around, and the check is to read the file when a loaded instruction contests
+something you just changed.
+
 
 ### A merge, made under a standing authorization, can race a fix in flight elsewhere
 

@@ -1179,6 +1179,50 @@ for it: `mecha serve` reads assets per request through `ServeDir`, so an asset
 deploy needs no restart and a *binary* change still does.
 
 
+**2026-09-02 (~10:30, after the repo move and a full update)** — the graph
+stopped being two repositories. `~/Github/mecha-graph` is now the working
+checkout and the private `personalized_knowledge_graph` keeps only notes
+(HANDOFF, RESEARCH_LOOP, OPERATIONS) and the roster tooling. What made that
+safe was moving the gate rather than dropping it: the public repo carries
+`.githooks/pre-push` and `.github/workflows/denylist.yml`, both reading the
+roster from `~/.mecha-graph/denylist.txt` (0600) and the `PUBLIC_DENYLIST`
+secret, both fail-closed on a missing or empty roster. Verified on four
+negatives, including that it refused its own first commit — the comments
+explaining the word-boundary rule quoted two roster terms.
+
+Ten files were private; only four held roster terms. `nightly-mecha.sh` was
+private *by association* (it sat in `scripts/` beside the gold-set tooling)
+and was read line by line before publishing: no names, no emails, no
+hostnames, every path `$HOME`- or `$BASH_SOURCE`-relative, one endpoint
+`127.0.0.1:8080`. The gold sets moved to `~/.mecha-graph/eval/` (0600) and
+`eval::gold_path_from` resolves them on `db::default_db_path`'s shape;
+`.gitignore` gained `eval/*gold*.jsonl` as the belt, tested by copying a real
+set in and confirming `git add -A` refuses it.
+
+**Installed state, verified by asking the artifacts.** `mecha --version` →
+**0.1.17** from `~/.cargo/bin`, and `strings` on it contains both
+`never needed, NOT` (the diagnostician brief fix) and `candidate-arm` (the
+arm split) — capability, not version string. The graph binaries now install
+from the *public* checkout and cargo said so itself: `Replaced package
+mecha-graph v0.1.4 (personalized_knowledge_graph) with … (mecha-graph)`.
+`mecha-graph-mcp` answers 13 tools from the installed path. The 08:00 crontab
+runs `~/Github/mecha-graph/scripts/nightly-mecha.sh`; the 01:30 line still
+runs the private `nightly.sh`. Benchmark musl was **stale at 0.1.16** and was
+rebuilt to 0.1.17, statically linked — a scorecard run before that would have
+measured old code and labelled it current. Factory client 0.2.8 = newest tag;
+droplet read-only check `factory 0.2.8`, `active`, untouched. Sandbox image
+cargo 1.97.1 matches host exactly. Stale-process sweep clean. All five
+long-running units restarted with their own startup lines (slack "Connected
+to cosanlab as mecha. 1 owner(s), 16 thread(s)", triggers "1 trigger(s), 1
+enabled", serve's two doors, voice-worker's Uvicorn). `~/.mecha/web/dist` was
+**not** rsynced: `deployed-local` named `a8e0629`, which is now an ancestor
+of main, and `git log -1 -- web/` returns that same commit — so the served
+bundle already matches what main builds. `deployed-local` still points there
+and is worth deleting now that main is deployed.
+
+Tests this date: **1132** core, 688 + 133 + 75 + 20 + 9 + 6 + 1 across the
+other suites, 0 failed. Eval 36 cases, 15 tags, unchanged.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -1221,19 +1265,6 @@ one person's mailbox rather than a public fact.
 ---
 
 ## What to do next
-
-- **The graph's public mirror is a release behind, deliberately.** The private
-  checkout is tagged **v0.1.4** (2026-08-31) and `~/Github/mecha-graph` is
-  still **0.1.3**, so the two version lines have diverged for the first time.
-  Catching up means `scripts/export-public.sh`, which runs the denylist gate —
-  outward-facing, irreversible, and pushing life-derived-adjacent material to
-  a public repo, so it was left for the owner rather than done as part of the
-  release. Nothing is broken by the gap; the crates on crates.io are mecha's,
-  not the graph's, and the graph is installed locally from the private
-  checkout as it always is. **Whoever runs the export: the gate deletes the
-  tree it refuses rather than flagging it, and a new private artifact has to
-  be registered in two places** (the `rm -f` list and the presence check) — see
-  the export-arc notes in HISTORY.
 
 - **Two macOS residues from #113's CI arm, parked deliberately** (that
   lane's own flag, so they are not lost): `homeostat.rs` reads
