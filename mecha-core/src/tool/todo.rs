@@ -1464,7 +1464,7 @@ impl Tool for TodoTool {
         // showed the rewrite directly under the line saying the old check
         // stood (found on review).
         let (findings, rendered) = {
-            let mut lists = self.lists.lock().unwrap();
+            let mut lists = self.lists.lock().unwrap_or_else(|e| e.into_inner());
             let tracked = lists.entry(ctx.workspace.clone()).or_default();
             let findings = tracked.advance(
                 plan,
