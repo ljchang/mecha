@@ -47,6 +47,21 @@ pub struct Depth {
     /// waiting — an absent age, never a zero one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oldest: Option<String>,
+    /// Rows that stopped waiting because the owner *gave up* on them — a
+    /// rejected draft, an abandoned question, a request closed with nothing
+    /// sent — rather than because the commitment was kept. `waiting` falls
+    /// on both, so a delta over `waiting` alone read the owner throwing a
+    /// commitment away as the run having shortened the queue, and signed
+    /// the same act positive in one arm and negative in another (found on
+    /// review). Zero on the harness's own two queues, which nobody outside
+    /// is owed. Absent on a row written before the counter, which reads as
+    /// zero — an old row can only over-credit, never sign a new positive.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub given_up: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 impl Depth {
@@ -54,7 +69,13 @@ impl Depth {
         Depth {
             waiting,
             oldest: stamps.into_iter().min().map(str::to_string),
+            given_up: 0,
         }
+    }
+
+    fn given_up(mut self, n: usize) -> Depth {
+        self.given_up = n;
+        self
     }
 }
 
@@ -98,10 +119,11 @@ impl Backlog {
             .ok()?;
         let items = store.items().ok()?;
         let pending: Vec<_> = items.iter().filter(|i| i.status == "pending").collect();
-        Some(Depth::of(
-            pending.len(),
-            pending.iter().map(|i| i.created_at.as_str()),
-        ))
+        let rejected = items.iter().filter(|i| i.status == "rejected").count();
+        Some(
+            Depth::of(pending.len(), pending.iter().map(|i| i.created_at.as_str()))
+                .given_up(rejected),
+        )
     }
 
     fn read_questions() -> Option<Depth> {
@@ -111,10 +133,11 @@ impl Backlog {
         };
         let items = store.items().ok()?;
         let open: Vec<_> = items.iter().filter(|q| q.is_open()).collect();
-        Some(Depth::of(
-            open.len(),
-            open.iter().map(|q| q.asked_at.as_str()),
-        ))
+        let abandoned = items
+            .iter()
+            .filter(|q| q.status == crate::questions::ABANDONED)
+            .count();
+        Some(Depth::of(open.len(), open.iter().map(|q| q.asked_at.as_str())).given_up(abandoned))
     }
 
     fn read_frontdoor() -> Option<Depth> {
@@ -123,10 +146,17 @@ impl Backlog {
             .iter()
             .filter(|r| r.state != frontdoor::CLOSED)
             .collect();
-        Some(Depth::of(
-            open.len(),
-            open.iter().map(|r| r.created_at.as_str()),
-        ))
+        // Closed with nothing ever staged for it — the request arm's own
+        // reading of a give-up. A request closed after its draft was
+        // rejected counts once, on the outbox.
+        let closed_unsent = records
+            .iter()
+            .filter(|r| r.state == frontdoor::CLOSED && r.outbox.is_empty())
+            .count();
+        Some(
+            Depth::of(open.len(), open.iter().map(|r| r.created_at.as_str()))
+                .given_up(closed_unsent),
+        )
     }
 
     fn read_proposals() -> Option<Depth> {
@@ -194,12 +224,28 @@ impl Backlog {
             (Some(a), Some(b)) => Some(b.waiting as i64 - a.waiting as i64),
             _ => None,
         };
+        // Give-ups over the three owner-facing stores, summed — `Some`
+        // wherever any of the three was readable at both ends, on the same
+        // rule as `owner_facing_net`.
+        let g = |a: &Option<Depth>, b: &Option<Depth>| match (a, b) {
+            (Some(a), Some(b)) => Some(b.given_up as i64 - a.given_up as i64),
+            _ => None,
+        };
+        let given_up: Vec<i64> = [
+            g(&before.outbox, &after.outbox),
+            g(&before.questions, &after.questions),
+            g(&before.frontdoor, &after.frontdoor),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         BacklogDelta {
             outbox: d(&before.outbox, &after.outbox),
             questions: d(&before.questions, &after.questions),
             frontdoor: d(&before.frontdoor, &after.frontdoor),
             proposals: d(&before.proposals, &after.proposals),
             candidates: d(&before.candidates, &after.candidates),
+            given_up: (!given_up.is_empty()).then(|| given_up.iter().sum()),
         }
     }
 }
@@ -223,6 +269,12 @@ pub struct BacklogDelta {
     pub proposals: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidates: Option<i64>,
+    /// How many more rows the owner had given up on at the end than at the
+    /// start, over the three owner-facing stores (`Depth::given_up`).
+    /// `None` on a row written before the counter, or where none of the
+    /// three could be read at both ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub given_up: Option<i64>,
 }
 
 impl BacklogDelta {
@@ -243,7 +295,23 @@ impl BacklogDelta {
             frontdoor: f(self.frontdoor, other.frontdoor),
             proposals: f(self.proposals, other.proposals),
             candidates: f(self.candidates, other.candidates),
+            given_up: f(self.given_up, other.given_up),
         }
+    }
+
+    /// How many owner-facing rows this run *cleared* — at least. The queue
+    /// shrinks when a commitment is kept and when the owner gives one up,
+    /// and only the first is the run's doing, so the give-ups are taken
+    /// off the fall before it is credited: a run whose window held one
+    /// abandoned question and a one-row fall cleared nothing it can claim.
+    /// A lower bound, because rows the run *added* inside the window hide
+    /// clearances one-for-one, and the honest direction for a positive is
+    /// under. `None` where [`owner_facing_net`](Self::owner_facing_net) is;
+    /// an absent give-up count (a row from before it) reads as zero.
+    pub fn owner_facing_cleared(&self) -> Option<u64> {
+        let net = self.owner_facing_net()?;
+        let given_up = self.given_up.unwrap_or(0).max(0);
+        Some((-net - given_up).max(0) as u64)
     }
 
     /// Net change across the three stores somebody *outside* is waiting on
@@ -289,6 +357,7 @@ mod tests {
         Some(Depth {
             waiting,
             oldest: oldest.map(str::to_string),
+            given_up: 0,
         })
     }
 
@@ -388,6 +457,7 @@ mod tests {
             frontdoor: None,
             proposals: Some(-3),
             candidates: Some(-5),
+            given_up: None,
         };
         assert_eq!(d.net(), Some(-9));
         assert_eq!(d.owner_facing_net(), Some(-1));
@@ -400,5 +470,58 @@ mod tests {
             None,
             "nothing owner-facing was read"
         );
+    }
+
+    /// A give-up shrinks the queue exactly as a kept commitment does, and
+    /// only the second is clearance (found on review): the run gets credit
+    /// for the fall *net of* the rows the owner gave up on.
+    #[test]
+    fn a_give_up_is_not_clearance() {
+        let before = Backlog {
+            outbox: depth(2, None),
+            questions: depth(1, None),
+            frontdoor: depth(0, None),
+            ..Default::default()
+        };
+        // One question abandoned, one draft sent.
+        let after = Backlog {
+            outbox: depth(1, None),
+            questions: depth(0, None).map(|d| d.given_up(1)),
+            frontdoor: depth(0, None),
+            ..Default::default()
+        };
+        let d = Backlog::delta(&before, &after);
+        assert_eq!(d.owner_facing_net(), Some(-2));
+        assert_eq!(d.given_up, Some(1));
+        assert_eq!(
+            d.owner_facing_cleared(),
+            Some(1),
+            "the sent draft, not the abandoned question"
+        );
+        // Only the give-up: nothing to claim.
+        let only_given_up = Backlog {
+            outbox: depth(2, None),
+            questions: depth(0, None).map(|d| d.given_up(1)),
+            frontdoor: depth(0, None),
+            ..Default::default()
+        };
+        let d = Backlog::delta(&before, &only_given_up);
+        assert_eq!(d.owner_facing_net(), Some(-1));
+        assert_eq!(d.owner_facing_cleared(), Some(0));
+        // A row from before the counter reads the fall as clearance — the
+        // old behaviour, over-crediting rather than inventing.
+        let old = BacklogDelta {
+            questions: Some(-1),
+            ..Default::default()
+        };
+        assert_eq!(old.owner_facing_cleared(), Some(1));
+        // Unknown stays unknown.
+        assert_eq!(BacklogDelta::default().owner_facing_cleared(), None);
+        // The wire form omits a zero give-up count, so an old reader sees
+        // the row it always did.
+        let json = serde_json::to_string(&before.outbox).unwrap();
+        assert!(!json.contains("given_up"), "{json}");
+        let d: Depth = serde_json::from_str(r#"{"waiting":3}"#).unwrap();
+        assert_eq!(d.given_up, 0);
     }
 }

@@ -1581,6 +1581,7 @@ mod homeostat_record_tests {
                 outbox: Some(Depth {
                     waiting: 2,
                     oldest: Some("2026-08-20T09:00:00Z".into()),
+                    given_up: 0,
                 }),
                 ..Backlog::default()
             }),

@@ -502,7 +502,9 @@ opinion without knowing which store it came from.
 no word.** The live readout passes no drafts, so a draft sent unchanged — the
 outbox's positive — never reaches it; the one positive a live run can carry
 is the queue-delta commitment: a run that left fewer things waiting on you
-than it found shows a grey badge, a right-hand bar, a `+0.5` in the thread.
+than it found — net of anything you gave up on meanwhile, since a rejected
+draft or an abandoned question shortens the queue without the run's help —
+shows a grey badge, a right-hand bar, a `+0.5` in the thread.
 That delta is a before/after diff of the stores rather than a join on what
 the session touched, so on a machine running several sessions at once, you
 answering one session's question can put the `+0.5` on another's badge; the
