@@ -510,10 +510,34 @@ impl RunStats {
     /// spellings of this is how a measurement arm and the thing it measures
     /// stop being comparable without anyone noticing.
     ///
-    /// `homeostat` is untouched, as it always was: the conditions belong to
-    /// the run that sampled them, and an episode's several runs happened under
-    /// several. The first one set keeps the field.
+    /// `homeostat`'s *conditions* are untouched, as they always were: load,
+    /// memory, the backlog level and the guilt read off it belong to the run
+    /// that sampled them, and an episode's several runs happened under
+    /// several. The first one set keeps those. **`backlog_delta` is the
+    /// exception and is summed**, because it is an act rather than a
+    /// condition — what the run did to the queue — and keeping the first
+    /// row's silently discarded every later run's, which for a session that
+    /// parks a question is the resume that clears it (found on review: the
+    /// commitment channel was reading run 1's delta as the session's).
+    /// Two consequences to know before reading the two fields together:
+    /// `anticipated_guilt` and `guilt_after_relief` stay the first sampling
+    /// run's — the level it inherited, and that level folded with *that
+    /// run's own* delta — while `backlog_delta` becomes the episode's sum,
+    /// so on a resumed session neither guilt field describes the same act
+    /// as the delta beside it; and a first run with no homeostat at all takes a later
+    /// run's whole snapshot, so "the first run's conditions" means the
+    /// first run that sampled any.
     pub fn merge(&mut self, other: &RunStats) {
+        match (&mut self.homeostat, &other.homeostat) {
+            (Some(mine), Some(theirs)) => {
+                mine.backlog_delta = match (mine.backlog_delta, theirs.backlog_delta) {
+                    (Some(a), Some(b)) => Some(a.plus(&b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            (None, Some(theirs)) => self.homeostat = Some(theirs.clone()),
+            _ => {}
+        }
         self.turns += other.turns;
         self.usage.add(&other.usage);
         self.cost_usd = match (self.cost_usd, other.cost_usd) {
@@ -1557,6 +1581,7 @@ mod homeostat_record_tests {
                 outbox: Some(Depth {
                     waiting: 2,
                     oldest: Some("2026-08-20T09:00:00Z".into()),
+                    given_up: 0,
                 }),
                 ..Backlog::default()
             }),
@@ -3017,5 +3042,51 @@ mod tests {
         assert_eq!(mixed.checks_declared, Some(2));
         let row: RunStats = serde_json::from_str(r#"{"turns":1,"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}"#).unwrap();
         assert_eq!(row.checks_passed, None);
+    }
+
+    #[test]
+    fn backlog_delta_sums_across_an_episodes_runs_while_the_conditions_stay_the_first_runs() {
+        use crate::backlog::BacklogDelta;
+        use crate::homeostat::Homeostat;
+        let run = |load: f32, delta: Option<BacklogDelta>| RunStats {
+            homeostat: Some(Homeostat {
+                load_avg_1m: Some(load),
+                backlog_delta: delta,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut folded = run(
+            1.0,
+            Some(BacklogDelta {
+                questions: Some(1),
+                ..Default::default()
+            }),
+        );
+        folded.merge(&run(
+            9.0,
+            Some(BacklogDelta {
+                questions: Some(-2),
+                outbox: Some(-1),
+                ..Default::default()
+            }),
+        ));
+        let h = folded.homeostat.unwrap();
+        assert_eq!(h.load_avg_1m, Some(1.0), "a condition: the first run's");
+        assert_eq!(h.backlog_delta.unwrap().net(), Some(-2), "an act: summed");
+        // A first run without the sensor takes the later run's delta rather
+        // than pinning the field to absent forever.
+        let mut none_first = run(1.0, None);
+        none_first.merge(&run(
+            2.0,
+            Some(BacklogDelta {
+                outbox: Some(-1),
+                ..Default::default()
+            }),
+        ));
+        assert_eq!(
+            none_first.homeostat.unwrap().backlog_delta.unwrap().net(),
+            Some(-1)
+        );
     }
 }

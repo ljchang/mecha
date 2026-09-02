@@ -982,6 +982,7 @@ mod tests {
             origin: crate::learning::Origin::Clean,
             taint: crate::agent::Taint::default(),
             created_at: "2026-08-05T12:00:00Z".into(),
+            partial: false,
         };
         let untrusted = upsert_args(
             "s",
@@ -1068,6 +1069,7 @@ mod tests {
             origin: crate::learning::Origin::Clean,
             taint: crate::agent::Taint::default(),
             created_at: "2026-08-05T12:00:00Z".into(),
+            partial: false,
         };
         let args = upsert_args(
             "s",

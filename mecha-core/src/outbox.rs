@@ -374,7 +374,19 @@ impl OutboxStore {
     /// listing, which should show what it can. See [`Self::items_strict`]
     /// for the caller that cannot accept a silent skip.
     pub fn items(&self) -> Result<Vec<OutboxItem>> {
-        self.items_impl(false)
+        self.items_counting().map(|(items, _)| items)
+    }
+
+    /// [`items`](Self::items), and how many `.json` files it skipped. For a
+    /// reader that must not mistake a short list for a small store: the
+    /// appraisal's request arm asks "was anything drafted for this?", and
+    /// a skew-version draft skipped into a `tracing::warn!` nobody reads
+    /// answered "no" for a request the triage had answered (found on
+    /// review). `Session::list_counting`'s shape, one store over.
+    pub fn items_counting(&self) -> Result<(Vec<OutboxItem>, usize)> {
+        let mut skipped = 0usize;
+        let items = self.items_impl(false, &mut skipped)?;
+        Ok((items, skipped))
     }
 
     /// Every item, oldest first — but a single unparseable file fails the
@@ -399,10 +411,11 @@ impl OutboxStore {
     /// operator to retry will keep failing the same way every night; see
     /// that caller's own handling for how it names the distinction.
     pub fn items_strict(&self) -> Result<Vec<OutboxItem>> {
-        self.items_impl(true)
+        let mut skipped = 0usize;
+        self.items_impl(true, &mut skipped)
     }
 
-    fn items_impl(&self, strict: bool) -> Result<Vec<OutboxItem>> {
+    fn items_impl(&self, strict: bool, skipped: &mut usize) -> Result<Vec<OutboxItem>> {
         let mut out = Vec::new();
         for entry in std::fs::read_dir(&self.root)? {
             let path = entry?.path();
@@ -415,6 +428,7 @@ impl OutboxStore {
                     bail!("outbox item {} failed to parse: {e}", path.display())
                 }
                 Err(e) => {
+                    *skipped += 1;
                     tracing::warn!("skipping unreadable outbox item {}: {e}", path.display())
                 }
             }
@@ -1568,5 +1582,18 @@ mod tests {
         // No prose, no body edit — the caller must fall back rather than
         // silently save nothing.
         assert!(with_body(&json!({"event_id": "e1", "response": "accept"}), "x").is_none());
+    }
+
+    #[test]
+    fn items_counting_says_how_many_files_the_lenient_read_skipped() {
+        let dir = std::env::temp_dir().join(format!("outbox-count-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("20260901T000000-bad.json"), "{not json").unwrap();
+        let store = OutboxStore::open(&dir).unwrap();
+        let (items, skipped) = store.items_counting().unwrap();
+        assert!(items.is_empty());
+        assert_eq!(skipped, 1);
+        assert!(store.items_strict().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

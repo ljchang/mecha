@@ -539,11 +539,51 @@ async fn appraise(
     // *empty* case and not a read failure. Conflating the two prints "the
     // outbox could not be read" on a machine that has nothing to read, which
     // is the dash-versus-zero inversion this whole surface exists to avoid.
+    // `items_counting`, not `items`: a skew-version draft the lenient read
+    // skips is an unread row, and the request arm would answer "nothing
+    // drafted" for a request it answered (found on review). One skipped
+    // file marks the store unreadable for this walk's purposes — the
+    // channel is missing, not empty, and the readout says which.
     let (drafts, outbox_unreadable): (Vec<mecha_core::outbox::OutboxItem>, bool) =
         match mecha_core::outbox::OutboxStore::open_existing_default() {
             None => (Vec::new(), false),
-            Some(store) => match store.items() {
-                Ok(items) => (items, false),
+            Some(store) => match store.items_counting() {
+                Ok((items, 0)) => (items, false),
+                Ok((items, _skipped)) => (items, true),
+                Err(_) => (Vec::new(), true),
+            },
+        };
+
+    // The three commitment stores (`docs/APPRAISAL-RESEARCH.md` §3.4, §3.6),
+    // read once for the whole walk and filtered per session inside
+    // `of_session`. Best-effort like the outbox: a store that cannot be read
+    // costs its channel, and the reading says so below rather than folding
+    // it into an empty one.
+    // Each `*_read` field means every row was read, not only that the
+    // directory opened: the counting readers say how many rows they
+    // skipped, and one skipped row is enough to mark the store not fully
+    // read (found on review, after the outbox got the same treatment).
+    let (questions, questions_unreadable) =
+        match mecha_core::questions::QuestionStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.items_counting() {
+                Ok((items, skipped)) => (items, skipped > 0),
+                Err(_) => (Vec::new(), true),
+            },
+        };
+    let (requests, frontdoor_unreadable) =
+        match mecha_core::frontdoor::Frontdoor::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(fd) => match fd.records_counting() {
+                Ok((items, skipped)) => (items, skipped > 0),
+                Err(_) => (Vec::new(), true),
+            },
+        };
+    let (reflexions, learning_unreadable) =
+        match mecha_core::learning::LearningStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.reflexions_counting() {
+                Ok((items, skipped)) => (items, skipped > 0),
                 Err(_) => (Vec::new(), true),
             },
         };
@@ -612,7 +652,16 @@ async fn appraise(
             &transcript,
             &meta.id,
             meta.created_at.to_rfc3339(),
-            &mine,
+            appraisal::SessionRecords {
+                drafts: &mine,
+                outbox_unreadable,
+                questions: &questions,
+                questions_unreadable,
+                requests: &requests,
+                frontdoor_unreadable,
+                reflexions: &reflexions,
+                learning_unreadable,
+            },
             None,
         ) else {
             continue;
@@ -757,6 +806,9 @@ async fn appraise(
             named_a_goal += 1;
         }
         let v = appraisal::Valence::of(a);
+        // Partial whether or not anything was signed: a silent reading
+        // over a short store is the one that most needs the mark.
+        valence.partial |= v.partial;
         if !v.is_silent() {
             signed += 1;
             valence.positive += v.positive;
@@ -790,10 +842,16 @@ async fn appraise(
                     "positives": valence.positives,
                     "negatives": valence.negatives,
                     "visible": valence.visible,
+                    // Any session's reading was computed over a short
+                    // store — the four `*_read` flags below say which.
+                    "partial": valence.partial,
                 },
                 "channels": channels,
                 "positive_errors": positive,
                 "outbox_read": !outbox_unreadable,
+                "questions_read": !questions_unreadable,
+                "frontdoor_read": !frontdoor_unreadable,
+                "learning_read": !learning_unreadable,
                 // Absent, not zero, when no probe ran: "nothing was probed"
                 // and "probed and found nothing" are opposite findings, and a
                 // reader that cannot tell them apart is the bug this whole
@@ -835,7 +893,18 @@ async fn appraise(
     // came back empty — the one path where a reader most needs to know the
     // edit channel is missing rather than genuinely empty.
     if outbox_unreadable {
-        println!("  (the outbox could not be read, so the edit channel is missing — not empty)\n");
+        println!(
+            "  (the outbox could not be fully read, so the edit channel is incomplete and the \
+             request arm is off — missing, not empty)\n"
+        );
+    }
+    if questions_unreadable || frontdoor_unreadable || learning_unreadable {
+        println!(
+            "  (a commitment store could not be fully read — questions: {}, front door: {}, learning: {} — so that channel is incomplete, not empty)\n",
+            if questions_unreadable { "unreadable" } else { "ok" },
+            if frontdoor_unreadable { "unreadable" } else { "ok" },
+            if learning_unreadable { "unreadable" } else { "ok" },
+        );
     }
     // Same rule for the session store itself: a corrupt transcript is in no
     // count above, and "skipped" must not read as "the store held less".
