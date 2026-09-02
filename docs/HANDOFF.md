@@ -563,6 +563,40 @@ mislead a scorecard, and `bench/run.sh` builds it via `build-portable.sh`.
 Worth knowing that the build will therefore happen *inside* whatever window
 someone starts a benchmark in.
 
+> **Superseded on the binary and the assets, 2026-09-01 ~19:44.** Another lane
+> deployed a live test over this — `~/.cargo/bin/mecha` rebuilt from an
+> **uncommitted** tree, `~/.mecha/web/dist` replaced (`index-klt_h5v8.js`,
+> 8443 confirmed serving it; the 0.1.17 bundle is kept at
+> `~/.mecha/web/dist.prev`), five services restarted. Everything else above —
+> the graph binaries, the nightly's seventh binary, factory, droplet, sandbox
+> — is untouched and still current.
+>
+> **`mecha --version` reports 0.1.17 and is not the release build.** The tree
+> it was built from carries that workspace version, so the version string,
+> a fresh mtime and a green install all agree with each other and are all
+> wrong together. Do not read the paragraph above as describing the binary
+> currently on this box.
+>
+> The discriminator is the artifact, not the version:
+> `strings ~/.cargo/bin/mecha | grep -c "You name conversations"` returns
+> **1** on the deployed test build and **0** on released 0.1.17 (verified
+> both ways). **`deployed-local` is deliberately NOT set** — that tag names
+> the *commit* whose build is installed, and an uncommitted tree has none, so
+> pointing it at `HEAD` would assert the release is deployed: the same false
+> inference, written down more confidently. The tag becomes honest when that
+> work is branched and committed, and that lane will set it then.
+>
+> **The tree has moved since that binary was built, and rebuilding will not
+> reproduce it byte-for-byte.** A `cargo fmt --all` landed on
+> `mecha-core/src/session.rs` and `title.rs` afterwards, so the install is
+> from pre-format source: whitespace only, no behavioural difference, and the
+> probe above still answers 1. Deliberately not reinstalled — spending a build
+> against ~19 GB free and no swap to change indentation inside a binary is the
+> wrong trade while two llama-servers hold the machine, and a server that
+> reloads under memory contention does not recover (`LLAMA-SERVER.md`).
+> Recorded because "the tree builds what is installed" is the assumption a
+> reader makes for free, and here it is false in a way nothing announces.
+
 **2026-08-24 (re-verified this date, evening)**: `~/.cargo/bin/mecha`
 reinstalled again for the web-review-surfaces arc (final at merge `cfab345`)
 and `~/.cargo/bin/mecha-graph` + `mecha-graph-mcp` reinstalled from the
