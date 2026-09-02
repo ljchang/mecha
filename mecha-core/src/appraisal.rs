@@ -983,8 +983,18 @@ pub fn of_session(
         {
             continue;
         }
-        let owner_authored = r.origin == crate::learning::Origin::Clean
-            || r.evidence == crate::learning::Evidence::UserTurns;
+        // `provenance()`, not the stored field: a record written before
+        // `is_harness_voice` existed carries `clean` for a nudge mecha wrote
+        // itself (two are on disk), and an owner-edited lesson is a promotion
+        // the stored field does not show. `Derived` is excluded on both arms
+        // — a self-authored follow-up is not the owner correcting the run
+        // whatever the reflector was shown, which is `learnable()`'s own
+        // `Origin::Derived => false`; this is provenance's second consumer
+        // and it must not disagree with the first (found on review).
+        let provenance = r.provenance();
+        let owner_authored = provenance == crate::learning::Origin::Clean
+            || (provenance != crate::learning::Origin::Derived
+                && r.evidence == crate::learning::Evidence::UserTurns);
         if !owner_authored {
             continue;
         }
@@ -1045,10 +1055,13 @@ pub fn of_session(
         {
             continue;
         }
+        // Through `writing_outcome`, like the edit channel above: a reply
+        // that went out is a sent message, however it was edited, and a
+        // third status or kind must teach one place, not two.
         let something_sent = records
             .drafts
             .iter()
-            .any(|d| req.outbox.contains(&d.id) && d.status == "sent");
+            .any(|d| req.outbox.contains(&d.id) && d.writing_outcome().is_some());
         if something_sent {
             continue;
         }
@@ -1059,6 +1072,11 @@ pub fn of_session(
         // so the case is not reachable through the paths that exist today;
         // if a `closed` request can ever carry a swept, sent draft this arm
         // over-signs by `-0.5` and should read the sweep's ledger instead.
+        // The same shape one step over: a re-triage overwrites
+        // `triage_session` while `outbox` accumulates, so a request whose
+        // sent draft belongs to an *earlier* triage session joins against
+        // the later session's drafts — equally unreachable today, since the
+        // sent draft routes the request to `answered` first.
         errors.push(GoalError {
             goal: goal.clone(),
             channel: Channel::Commitment,
@@ -3184,9 +3202,27 @@ mod tests {
         origin: &str,
         evidence: &str,
     ) -> crate::learning::Reflexion {
+        reflexion_saying(
+            id,
+            session,
+            trigger,
+            origin,
+            evidence,
+            "no, the other account",
+        )
+    }
+
+    fn reflexion_saying(
+        id: &str,
+        session: &str,
+        trigger: &str,
+        origin: &str,
+        evidence: &str,
+        intervention: &str,
+    ) -> crate::learning::Reflexion {
         serde_json::from_value(serde_json::json!({
             "id": id, "domain": "behavior", "session_id": session, "trigger": trigger,
-            "context": "…", "intervention": "…", "reflexion_text": "…",
+            "context": "…", "intervention": intervention, "reflexion_text": "…",
             "error_type": null, "confidence": null, "created_at": "2026-08-28T00:00:00Z",
             "origin": origin, "evidence": evidence
         }))
@@ -3212,7 +3248,35 @@ mod tests {
         let steer = reflexion("r5", "s1", "steer", "clean", "full");
         let mut dropped = reflexion("r6", "s1", "followup", "clean", "full");
         dropped.dropped_at = Some("2026-08-29T00:00:00Z".into());
-        let reflexions = vec![clean, user_turns, laundered, other_session, steer, dropped];
+        // Two rows that pass the stored field and fail the derived one
+        // (found on review): a pre-`is_harness_voice` record storing `clean`
+        // for a nudge mecha wrote itself, and a live-path harness-voice
+        // follow-up in a tainted session, which `evidence_for` records as
+        // `(derived, user_turns)`.
+        let stored_clean_nudge = reflexion_saying(
+            "r7",
+            "s1",
+            "followup",
+            "clean",
+            "full",
+            crate::agent::EMPTY_TURN_NUDGE,
+        );
+        let derived_user_turns = reflexion("r8", "s1", "followup", "derived", "user_turns");
+        // And the promotion the stored field cannot show: an owner-edited
+        // lesson is the owner's whatever prompted it.
+        let mut edited = reflexion("r9", "s1", "followup", "untrusted", "full");
+        edited.edited_at = Some("2026-08-29T00:00:00Z".into());
+        let reflexions = vec![
+            clean,
+            user_turns,
+            laundered,
+            other_session,
+            steer,
+            dropped,
+            stored_clean_nudge,
+            derived_user_turns,
+            edited,
+        ];
         let s = stats();
         let a = of_session(
             "s1",
@@ -3229,8 +3293,12 @@ mod tests {
         let cites: Vec<_> = a.errors.iter().map(|e| e.cite.clone()).collect();
         assert_eq!(
             cites,
-            vec![Cite::Reflexion("r1".into()), Cite::Reflexion("r2".into())],
-            "a tainted full-excerpt verdict, another session's, a steer (already the raw channel's) and a dropped one all read as nothing"
+            vec![
+                Cite::Reflexion("r1".into()),
+                Cite::Reflexion("r2".into()),
+                Cite::Reflexion("r9".into())
+            ],
+            "a tainted full-excerpt verdict, another session's, a steer (already the raw channel's), a dropped one, a stored-clean nudge and a derived user-turns row all read as nothing; an owner-edited lesson counts"
         );
         assert!(a
             .errors
