@@ -61,7 +61,7 @@ the merges in it had landed with no changelog entry (#119, #121, #123,
 is v0.1.18.
 
 **One lane is still live off `main` as of the evening of 2026-09-02; the
-other two landed that day in the agreed order.** `fix/harness-review`
+other landed that day as two PRs, in the agreed order.** `fix/harness-review`
 (**PR #139**, the audit lane, merged at `089952f`) carried the six-lane
 review's nine fixes — the jail's dangling-symlink follow, the subagent
 send-laundering, the cumulative usage frame, `Approver::escalate`,
@@ -2215,14 +2215,14 @@ repeated here.
   sensors, from the design section; the tamper count folded into
   `RunStats`; and the experiments and ablations the owner asked for now
   that this round has landed (`EXPERIMENT-DESIGN.md`, structural switches
-  forced off under `mecha eval`, never a prompt). The corpus numbers in the rest of this
-  section (119 of 120, 120 of 459) are the rung 7 measurement and are
-  superseded by the valence read above for any decision about what to
-  build next. **Deploy note:** `WireEvent::Affect` is now sent for a
+  forced off under `mecha eval`, never a prompt). The corpus numbers in
+  the rest of this section (119 of 120, 120 of 459) are the rung 7
+  measurement and are superseded by the valence read above for any
+  decision about what to build next. **Deploy note:** `WireEvent::Affect` is now sent for a
   `neutral` label with a signed valence, and a page served from a stale
   `web/dist` sets the chip to `ev.label` unconditionally — it will read a
   literal `neutral` until the bundle is rebuilt (update skill surface 1b).
-  **Phase B followed the same evening as #141**: `SessionRecords` with a
+  **Phase B followed the same evening, as #141**: `SessionRecords` with a
   per-store short flag that lands on the record as `Appraisal::partial`,
   `Channel::Commitment` (questions answered or abandoned, a triaged request
   closed with nothing sent, a run that shortened the owner's queue — net of
