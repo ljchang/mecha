@@ -148,20 +148,32 @@ const EXPECT_CALLS_KEY: &str = "expect_calls:";
 
 /// A record's optional string, leniently: anything that is not a string is
 /// absent, never an error. See [`TodoItem`]'s two policies.
+/// What no plan field may carry, at either door. A newline would forge
+/// plan lines through `render` → `parse_section`; a truncation marker —
+/// `cap_result`'s or `thin_old_results`'s — would make every echo that
+/// renders the step read as cut, so `parse_whole_echo` refused it, the
+/// resume fell back to the raw input and the freeze read as empty: the
+/// fifth door re-opened with a string instead of a truncation (found on
+/// review). Both doors ask this one question so they cannot drift.
+fn forges_a_line(s: &str) -> bool {
+    s.contains(['\n', '\r'])
+        || s.contains(crate::tool::CAP_MARKER)
+        || s.contains(crate::compact::TRUNCATION_MARKER.trim())
+}
+
 fn de_lenient_string<'de, D>(d: D) -> std::result::Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let v = Option::<Value>::deserialize(d)?;
-    // The record door agrees with the model door on one line: a value
-    // holding a newline would forge plan lines through `render` →
-    // `parse_carried`, and `TodoTool::call` refuses it; a record carrying
-    // one (no reachable writer today) loses the field, never the plan.
-    // Trimmed, as the model door trims: the two doors are described as
-    // symmetric, and `check_hash` already trims, so a padded record value
-    // was the same freeze rendered with different spacing (found on review).
+    // The record door agrees with the model door ([`forges_a_line`]): a
+    // record carrying a newline or a marker (no reachable writer today)
+    // loses the field, never the plan. Trimmed, as the model door trims:
+    // the two doors are described as symmetric, and `check_hash` already
+    // trims, so a padded record value was the same freeze rendered with
+    // different spacing (found on review).
     Ok(v.and_then(|v| v.as_str().map(|s| s.trim().to_string()))
-        .filter(|s| !s.is_empty() && !s.contains(['\n', '\r'])))
+        .filter(|s| !s.is_empty() && !forges_a_line(s)))
 }
 
 /// A record's optional count, leniently: anything that is not a
@@ -766,12 +778,11 @@ impl TodoTool {
         // in `tracked.plan`, so until the next write the echo and the
         // carried block re-read the rewrite to the model — and once checks
         // run, the plan is what runs (found on the nineteenth review pass).
-        // The same restore `advance` performs on a tamper, at install time.
-        for i in plan
-            .items
-            .iter_mut()
-            .filter(|i| i.status == Status::Completed)
-        {
+        // The same restore `advance` performs on a tamper, at install time,
+        // and status-blind as that one is: a frozen step the input fallback
+        // hands back as `in_progress` kept its rewrite through a filter on
+        // `Completed` (found on the twentieth).
+        for i in plan.items.iter_mut() {
             if let Some(f) = checks.get(&i.content) {
                 if i.check.as_deref() != Some(f.check.as_str()) {
                     i.check = Some(f.check.clone());
@@ -1170,7 +1181,7 @@ impl TodoTool {
     pub fn tampered_in(&self, workspace: &Path) -> u32 {
         self.lists
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(workspace)
             .map(|t| t.tampered)
             .unwrap_or(0)
@@ -1329,9 +1340,9 @@ impl Tool for TodoTool {
             // freeze never saw. The hole predates the predictions in the
             // carried block; every resume now reads through this grammar
             // (found on review).
-            if content.contains(['\n', '\r']) {
+            if forges_a_line(content) {
                 return Ok(ToolOutput::err(format!(
-                    "item {i}: `content` must be a single line"
+                    "item {i}: `content` must be a single line without a harness truncation marker"
                 )));
             }
             // Trimmed and non-empty at the door, exactly as `parse_section`
@@ -1373,9 +1384,9 @@ impl Tool for TodoTool {
                 match entry.get(key) {
                     None | Some(Value::Null) => Ok(None),
                     Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
-                    Some(Value::String(s)) if s.contains(['\n', '\r']) => {
-                        Err(format!("item {i}: `{key}` must be a single line"))
-                    }
+                    Some(Value::String(s)) if forges_a_line(s) => Err(format!(
+                        "item {i}: `{key}` must be a single line without a harness truncation marker"
+                    )),
                     Some(Value::String(s)) => Ok(Some(s.trim().to_string())),
                     Some(_) => Err(format!("item {i}: `{key}` must be a string")),
                 }
@@ -3781,5 +3792,74 @@ mod tests {
             out.content
         );
         assert_eq!(tool.tampered_in(&ws), 1);
+    }
+
+    /// A truncation marker in a step's text made every echo of that step
+    /// read as cut, which dropped the resume to the raw input and emptied
+    /// the freeze (found on the twentieth review pass): refused at the
+    /// model door, dropped at the record door.
+    #[tokio::test]
+    async fn a_marker_in_a_plan_field_is_refused_like_a_newline() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-marker-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let cap = format!("wire it {} 1 of 2]", crate::tool::CAP_MARKER);
+        let thin = format!("wire it {}", crate::compact::TRUNCATION_MARKER.trim());
+        for (field, value) in [
+            ("content", cap.as_str()),
+            ("content", thin.as_str()),
+            ("check", cap.as_str()),
+            ("expect", thin.as_str()),
+        ] {
+            let mut item = json!({"content": "wire it", "status": "completed"});
+            item[field] = json!(value);
+            let out = tool.call(json!({"items": [item]}), &ctx).await.unwrap();
+            assert!(out.is_error, "{field}: {}", out.content);
+            assert!(
+                out.content.contains("truncation marker"),
+                "{field}: {}",
+                out.content
+            );
+        }
+        assert!(tool.items_in(&ws).is_empty(), "nothing was installed");
+        let item: TodoItem = serde_json::from_value(json!({
+            "content": "wire it", "status": "completed", "check": cap
+        }))
+        .unwrap();
+        assert_eq!(item.check, None, "the record door drops it");
+        // And the same step through a whole echo still parses as whole,
+        // because no field can carry the marker into it.
+        let mut fine = TodoItem::new("wire it", Status::Completed);
+        fine.check = Some("make test".into());
+        let echo = TodoTool::render(&Plan {
+            goal: None,
+            items: vec![fine],
+        });
+        assert!(TodoTool::parse_whole_echo(&echo).is_some());
+    }
+
+    /// The install-time restore is status-blind (found on the twentieth
+    /// review pass): a frozen step the input fallback hands back as
+    /// `in_progress` takes the frozen command too.
+    #[test]
+    fn install_restores_a_frozen_check_whatever_the_steps_status() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-restore-{}", uuid::Uuid::new_v4()));
+        let mut reopened = TodoItem::new("wire it", Status::InProgress);
+        reopened.check = Some("true".into());
+        let extra: HashMap<String, String> = [("wire it".to_string(), "make test".to_string())]
+            .into_iter()
+            .collect();
+        tool.install_in(
+            &ws,
+            Plan {
+                goal: None,
+                items: vec![reopened],
+            },
+            extra,
+        );
+        let kept = tool.items_in(&ws);
+        assert_eq!(kept[0].status, Status::InProgress);
+        assert_eq!(kept[0].check.as_deref(), Some("make test"));
     }
 }
