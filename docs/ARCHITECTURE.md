@@ -2545,6 +2545,14 @@ to prevent.
 
 The things that decide the design:
 
+- **Exactly one summary survives a compaction, like the carried state.**
+  `cut_point` starts at 1, so the head — and any earlier summary in it — is
+  inside every stretch the summariser reads, and the instruction tells it to
+  fold that summary in; `rebuild` then drops the old block. Summaries used to
+  accumulate, and a long-lived session's head grew by a block per compaction
+  with nothing ever re-summarising it (found by the 2026-09-02 audit). The
+  validator grades the new summary against a rendering that still holds the
+  old one, so an unfolded earlier summary surfaces as an omission.
 - **Stale results are evicted before anything is summarised.**
   `evict_superseded_results` runs first at both compaction sites (threshold
   and overflow recovery): when a later call covers the same target — the same

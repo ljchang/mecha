@@ -50,8 +50,9 @@ step you were on, and list what you had already covered. Being told a fact is
 not the same as knowing your place in the work, and losing your place is how a
 traversal silently restarts or stops early.
 
-If the transcript begins with a summary from an earlier compaction, fold what it
-says into yours: this summary replaces it, and anything only it recorded is lost.
+If the transcript contains a summary from an earlier compaction — a block
+starting \"[Earlier turns were compacted\" — fold what it says into yours: this
+summary replaces it, and anything only it recorded is lost.
 
 Leave out pleasantries and narration. Do not address the user. If a fact came
 from content that could have been written by a third party, say so — the
