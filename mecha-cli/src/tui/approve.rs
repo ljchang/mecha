@@ -57,21 +57,41 @@ impl Approver for TuiApprover {
         if self.always.lock().is_ok_and(|a| a.contains(tool.name())) {
             return Decision::Allow;
         }
+        self.ask(tool, crate::approve::summarize(tool.name(), input), false)
+            .await
+    }
 
+    /// Past the `always` list on purpose: an escalation is the interlock
+    /// asking a person about *this* call, and a standing yes for the tool is
+    /// not that. The reason rides in the summary the modal shows.
+    async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        let summary = format!("{why} {}", crate::approve::summarize(tool.name(), input));
+        self.ask(tool, summary, true).await
+    }
+}
+
+impl TuiApprover {
+    async fn ask(&self, tool: &dyn Tool, summary: String, escalated: bool) -> Decision {
         let (reply, answer) = oneshot::channel();
         let request = Request {
             tool: tool.name().to_string(),
-            summary: crate::approve::summarize(tool.name(), input),
+            summary,
             reply,
         };
 
+        // The UI is gone, so nobody can consent — and nobody said no either.
+        // `Blocked`, not `Deny`: a refusal no human made must not be mined as
+        // a correction, the rule `Approver::escalate`'s default states.
         if self.tx.send(request).is_err() {
-            // The UI is gone, so nobody can consent. Silence is not approval.
-            return Decision::Deny("the interface closed before this was approved".into());
+            return Decision::Blocked("the interface closed before this was approved".into());
         }
 
         match answer.await {
             Ok(Answer::Allow) => Decision::Allow,
+            // "Always" at an escalation would install a standing yes on the
+            // ordinary path that `escalate` deliberately bypasses; it allows
+            // this call only.
+            Ok(Answer::Always) if escalated => Decision::Allow,
             Ok(Answer::Always) => {
                 if let Ok(mut always) = self.always.lock() {
                     always.insert(tool.name().to_string());
@@ -80,8 +100,8 @@ impl Approver for TuiApprover {
             }
             Ok(Answer::Deny) => Decision::Deny("the user declined this call".into()),
             // Dropped without answering — the run was cancelled out from under
-            // it, or the UI quit. Same reasoning as above.
-            Err(_) => Decision::Deny("the request was dismissed without an answer".into()),
+            // it, or the UI quit. Same reasoning as above: nobody spoke.
+            Err(_) => Decision::Blocked("the request was dismissed without an answer".into()),
         }
     }
 }

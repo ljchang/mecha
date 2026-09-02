@@ -237,6 +237,17 @@ worth carrying: **a vision model is two files**, and the second one is
 invisible when missing — nothing errors, `/props` reports what is *loaded*
 rather than what is supported, and the model simply says it cannot see.
 
+**With `fallbacks` configured, "can the model see" is the primary's answer.**
+`Failover::vision()` forwards to the primary (it used to inherit the trait's
+`false`, so configuring any fallback silently turned every image into a
+placeholder). The honest residue: a turn that fails over to a fallback with
+`vision = false` is still rendered with the image blocks the primary
+accepted, because both renderers emit an image the request carries. That
+turn may be rejected, which is the loud failure and the right one — a
+fallback answering a question about a picture it cannot see would be the
+quiet one. Pair a sighted primary with sighted fallbacks, or accept that
+fallback turns on image conversations fail.
+
 ## Security model
 
 **The full trifecta map lives in `docs/TRIFECTA.md`** — the four ways a
@@ -1394,6 +1405,47 @@ event as JSON on stdin. The point is that policy, redaction and logging attach
 Config is validated even when `--no-hooks` skips installing, so a typo'd event
 name fails on every start rather than only on the runs that needed it.
 
+## Tool dispatch and panics
+
+`run_tools` wraps every tool call in `catch_unwind`, so a panicking tool costs
+the call, not the run: the model gets an error result naming the panic, and
+every `tool_use` keeps its result. Before this, `join_all` unwound out of
+`run_in` with the assistant's `tool_use` already pushed — the TUI reported the
+conversation lost, and Slack's spawned task never sent its completion, so the
+thread's conversation vanished (2026-09-02). Two consequences a reader should
+carry:
+
+- **Mutex poisoning is now survivable, so it is now reachable.** A tool that
+  panicked while holding a lock leaves it poisoned for the life of the
+  process. The stateful builtins (`TodoTool::lists`, `SkillTool::loaded`) and
+  the loop's `step_escalation` slot recover with `into_inner()`, the same
+  policy `take_queued_input` always had. Two locks in core take the other
+  branch deliberately: `MessageRoute::identity` and `OutboxRoute::session_id`
+  use `.lock().ok()`, so a poisoned lock degrades to `None` — `message_send`
+  refuses for want of an identity, staging drops the session id — which is
+  fail-closed, permanently, until restart. Choose one of the two when adding
+  a lock a tool can reach, and say which.
+- **A panic message is the harness's own words.** It is never marked
+  external, whatever the tool's declared reach; and neither is an `Err` a
+  tool returns before it touched the wire (a missing argument, a refused
+  path). Provenance is marked where the wire was actually touched —
+  `McpTool::call`, `http_fetch`'s arms, `web_search` — which is the
+  `Capabilities::untrusted_input` vs `ToolOutput::external` distinction the
+  security model draws; marking by declared reach armed the untrusted leg on
+  `http_fetch({})` with no packet sent.
+- **`mcp.rs`'s `pending` lock takes neither branch on purpose.** It is never
+  held across user code — locked, read or written, released — so a panic
+  cannot poison it from inside the guard; it stays `unwrap`, and that is the
+  reasoning to re-check if the client ever runs a callback under it.
+- **An overflow caught mid-stream re-streams.** llama-server can emit
+  `exceed_context_size_error` *after* tokens have streamed; the decoder turns
+  that frame into the error the loop's overflow arm recognises, and the retry
+  re-issues `complete` with the same event sender, so a front-end shows the
+  partial text and then the whole retry. The transcript is unaffected — only
+  the final response lands in `messages` — and the Anthropic decoder has had
+  this shape since it was written. Parity, not a regression, and the shape a
+  Slack thread will show once.
+
 ## The outbox
 
 `[outbox] tools = [...]` names tools whose calls are **staged, not executed**:
@@ -2482,9 +2534,14 @@ IANA name rather than an offset, because an offset is wrong twice a year.
 Every turn sends the whole history, so a long enough session stops being able to
 send anything. `[agent] compact_at_tokens` (or `--compact-at`) summarises the
 middle of the transcript once the *reported* prompt size passes it — reported,
-not estimated, so it counts cached tokens too. Off by default: compaction is
-lossy, and paraphrasing someone's conversation because it got long is their
-decision.
+not estimated, so it counts cached tokens too. **On by default wherever the
+provider declares a context window**: `AgentConfig::compact_at` derives two
+thirds of it when `compact_at_tokens` is unset (§Context accounting has the
+arithmetic), and only a provider with no declared window runs uncompacted.
+Compaction is lossy, which is why it is validated and recorded rather than
+off — for a while this section said "off by default" while the code derived a
+threshold, and a doc that contradicts the code is the shape this file exists
+to prevent.
 
 The things that decide the design:
 

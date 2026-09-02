@@ -532,6 +532,22 @@ impl ToolCtx {
         let mut resolved = canonical_root;
         for part in trailing.iter().rev() {
             resolved.push(part);
+            // A component that failed to canonicalize but *exists* is a
+            // symlink whose target does not exist yet — the one shape the
+            // ancestor walk cannot see through. Treating it as a new file
+            // let a write follow the link and create its target outside the
+            // workspace; refusing here is the only answer, because a
+            // dangling link has no legitimate use from inside the jail.
+            if resolved
+                .symlink_metadata()
+                .is_ok_and(|m| m.file_type().is_symlink())
+            {
+                anyhow::bail!(
+                    "path {raw:?} passes through a dangling symlink ({}); refusing to \
+                     create its target",
+                    resolved.display()
+                );
+            }
         }
 
         let root = self
@@ -668,6 +684,34 @@ pub enum Decision {
 #[async_trait]
 pub trait Approver: Send + Sync {
     async fn approve(&self, tool: &dyn Tool, input: &Value) -> Decision;
+
+    /// Put a call in front of a person even though policy would have passed
+    /// it. The trifecta interlock's `ask` comes here, never to `approve`.
+    ///
+    /// Separate because `approve` is allowed to answer from policy — a
+    /// permission mode, an "always" list, a headless `--yes` — and none of
+    /// those is a human deciding, which is the whole content of `ask`. On
+    /// 2026-09-02 `ask` was a flag that forced `approve`, so under
+    /// `ModeApprover { Allow }` (eval, replay, `--yes`) it equalled `allow`
+    /// with nothing in the transcript to say so.
+    ///
+    /// The default is `Blocked`: an approver that does not know how to reach
+    /// a person must say so rather than answer. `Blocked`, not `Deny`, because
+    /// no human spoke. An interactive approver overrides this to show `why`
+    /// beside the call and wait for an answer, bypassing its own shortcuts.
+    async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        let _ = input;
+        // `why` names the control that fired and its remedy — the caller
+        // knows which of two it was (the interlock under `ask`, or the leak
+        // guard) and this default cannot. Its own sentence says only what it
+        // knows: nobody could be asked.
+        Decision::Blocked(format!(
+            "{why} Asking needs an approver that can reach a person, and this run's approver \
+             answers from policy — `{}` was not asked. Run from a surface with someone \
+             watching, or choose the refusing setting instead of the asking one.",
+            tool.name()
+        ))
+    }
 }
 
 /// Answers from the configured [`PermissionMode`] without asking anyone.
@@ -769,6 +813,29 @@ impl Registry {
 
     pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Tool>> {
         self.tools.values()
+    }
+
+    /// The tools that exist to send: they can reach outside and they are not
+    /// reads — `mail_send`, a Slack post, a calendar invite, and a calendar
+    /// *cancellation*, which emails every attendee and is destructive as well.
+    /// The calls the outbox exists to stage.
+    ///
+    /// Not `http_fetch` or `web_search`, which are read-only: those are the
+    /// interlock's to refuse, not the outbox's to hold. An unconfined `shell`
+    /// is in this list by capability — it can send — and the caller that
+    /// warns about unrouted senders excludes it by name, because `shell`'s
+    /// guard is the sandbox, not the outbox. A `!destructive` filter used to
+    /// stand in for that exclusion and dropped `calendar_delete_event` with
+    /// it: the warning was silent for exactly the tool that emails a
+    /// cancellation to everyone (`ARCHITECTURE.md` §mecha-mail says writes
+    /// must be routed), while `mail_send` beside it warned — a silence that
+    /// read as a clean bill.
+    pub fn senders(&self) -> Vec<&str> {
+        self.tools
+            .values()
+            .filter(|t| t.capabilities().external_send && !t.read_only())
+            .map(|t| t.name())
+            .collect()
     }
 
     /// Everything the registered tools want carried across a compaction.
@@ -1108,5 +1175,124 @@ mod cap_tests {
         let allowed = r.surface_restriction().unwrap();
         assert!(allowed.contains("a") && allowed.contains("b"));
         assert!(!allowed.contains("c"), "still a subset: {allowed:?}");
+    }
+}
+
+#[cfg(test)]
+mod sender_tests {
+    use super::*;
+    use serde_json::json;
+
+    struct Shaped(&'static str, Capabilities, bool);
+
+    #[async_trait]
+    impl Tool for Shaped {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            self.2
+        }
+        fn capabilities(&self) -> Capabilities {
+            self.1
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok(""))
+        }
+    }
+
+    /// The shapes that matter: a mail send (MCP `openWorldHint` derives
+    /// private + untrusted + send) is a sender, and so is a calendar
+    /// cancellation (`openWorldHint` + `destructiveHint`) — the PR review
+    /// found a `!destructive` filter dropping it, silent for exactly the
+    /// tool that emails every attendee. A fetch is read-only and is not. An
+    /// unconfined shell is a sender by capability and is excluded by name
+    /// where the warning is issued, not here.
+    #[test]
+    fn senders_are_every_non_read_sender_including_the_destructive_ones() {
+        let mut r = Registry::new();
+        r.insert(Arc::new(Shaped(
+            "mail_send",
+            Capabilities::default().private().untrusted().sends(),
+            false,
+        )));
+        r.insert(Arc::new(Shaped(
+            "calendar_delete_event",
+            Capabilities::default()
+                .private()
+                .untrusted()
+                .sends()
+                .destructive(),
+            false,
+        )));
+        r.insert(Arc::new(Shaped(
+            "shell",
+            Capabilities::default().private().sends().destructive(),
+            false,
+        )));
+        r.insert(Arc::new(Shaped(
+            "http_fetch",
+            Capabilities::default().untrusted().sends(),
+            true,
+        )));
+        r.insert(Arc::new(Shaped(
+            "fs_read",
+            Capabilities::default().private(),
+            true,
+        )));
+        assert_eq!(
+            r.senders(),
+            vec!["calendar_delete_event", "mail_send", "shell"]
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod jail_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mecha-jail-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The hole this closes: `canonicalize` fails on a symlink whose target
+    /// does not exist yet, so the link was treated as a not-yet-created file
+    /// inside the workspace and passed containment — and the write that
+    /// followed went through the link and created the target outside. A
+    /// symlink that survives canonicalization is dangling by construction,
+    /// and there is nothing legitimate to do with one from inside the jail.
+    #[test]
+    fn a_dangling_symlink_is_refused_not_treated_as_a_new_file() {
+        let workspace = scratch("ws");
+        let outside = scratch("outside");
+        let target = outside.join("planted.txt");
+        std::os::unix::fs::symlink(&target, workspace.join("link")).unwrap();
+        let ctx = ToolCtx {
+            workspace: workspace.clone(),
+            ..ToolCtx::default()
+        };
+
+        let err = ctx.resolve("link").unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+
+        // A dangling link on a *directory* component is the same escape one
+        // level up: `<link>/file` would create `file` under the target.
+        std::os::unix::fs::symlink(outside.join("newdir"), workspace.join("dirlink")).unwrap();
+        assert!(ctx.resolve("dirlink/file.txt").is_err());
+
+        // A genuinely new file still resolves — that is what the ancestor
+        // walk exists for.
+        assert!(ctx.resolve("fresh/new.txt").is_ok());
+
+        std::fs::remove_dir_all(&workspace).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 }

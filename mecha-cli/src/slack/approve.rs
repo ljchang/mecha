@@ -181,7 +181,36 @@ impl Approver for SlackApprover {
         if self.blanket.lock().is_ok_and(|b| b.contains(tool.name())) {
             return Decision::Allow;
         }
+        self.ask(tool, summarise(tool.name(), input), false).await
+    }
 
+    /// Past the modes that would have *passed* the call — `Allow` and the
+    /// run's blanket approvals — on purpose: an escalation is the interlock
+    /// asking a person about *this* call. Not past `ReadOnly`, which is a
+    /// refusal the thread already made: an escalation narrows and never
+    /// loosens, and the PR review of this change found the first version
+    /// widening past it. The reason rides in the card's summary. An earlier
+    /// unanswered card still blocks — nobody is watching, and that answer
+    /// does not change.
+    async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        if self.mode() == Mode::ReadOnly && !tool.read_only() {
+            return Decision::Blocked(format!(
+                "`{}` modifies state and this thread is read-only; an escalation cannot widen \
+                 that",
+                tool.name()
+            ));
+        }
+        self.ask(
+            tool,
+            format!("{why} {}", summarise(tool.name(), input)),
+            true,
+        )
+        .await
+    }
+}
+
+impl SlackApprover {
+    async fn ask(&self, tool: &dyn Tool, summary: String, escalated: bool) -> Decision {
         // After the mode and blanket checks, so a mid-run switch to `Allow` —
         // a button press, which is proof someone is watching after all —
         // still works. But never another card and another wait.
@@ -199,7 +228,7 @@ impl Approver for SlackApprover {
         let request = Request {
             thread_key: self.thread_key.clone(),
             tool: tool.name().to_string(),
-            summary: summarise(tool.name(), input),
+            summary,
             reply,
         };
 
@@ -213,6 +242,11 @@ impl Approver for SlackApprover {
 
         match tokio::time::timeout(self.timeout, answer).await {
             Ok(Ok(Answer::Approve)) => Decision::Allow,
+            // "Approve for run" at an escalation would install a standing yes
+            // on the ordinary path that `escalate` deliberately bypasses — the
+            // rule the terminal and TUI approvers already keep. It allows this
+            // call only.
+            Ok(Ok(Answer::ApproveForRun)) if escalated => Decision::Allow,
             Ok(Ok(Answer::ApproveForRun)) => {
                 if let Ok(mut b) = self.blanket.lock() {
                     b.insert(tool.name().to_string());

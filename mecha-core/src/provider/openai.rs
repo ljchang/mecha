@@ -30,7 +30,7 @@
 use crate::config::ProviderConfig;
 use crate::message::*;
 use crate::provider::{Provider, StreamEvent, StreamSink};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{json, Value};
@@ -175,6 +175,7 @@ impl Provider for OpenAiCompatible {
         let mut acc = Accumulator::default();
         let mut buf = crate::provider::sse::SseBuffer::default();
         let mut stream = resp.bytes_stream();
+        let mut done = false;
         while let Some(chunk) = stream.next().await {
             buf.push(&chunk?);
             // Lines are split on bytes, not decoded text: a network chunk can
@@ -184,14 +185,12 @@ impl Provider for OpenAiCompatible {
                 let Some(data) = line.trim().strip_prefix("data:") else {
                     continue;
                 };
-                let data = data.trim();
-                if data.is_empty() || data == "[DONE]" {
-                    continue;
+                if accept_frame(&mut acc, data.trim(), sink)? == Frame::Done {
+                    done = true;
                 }
-                let v: Value = serde_json::from_str(data).context("malformed SSE data frame")?;
-                acc.push(&v, sink);
             }
         }
+        acc.closed_cleanly(done)?;
         Ok(acc.finish())
     }
 }
@@ -596,6 +595,52 @@ fn decode_response(v: &Value) -> Result<CompletionResponse> {
     })
 }
 
+/// What one SSE `data:` payload was.
+#[derive(Debug, PartialEq, Eq)]
+enum Frame {
+    /// A chunk (or an empty keep-alive), folded into the accumulator.
+    Data,
+    /// The `[DONE]` terminator.
+    Done,
+}
+
+/// Fold one `data:` payload into the accumulator.
+///
+/// **Check the envelope before the content.** llama-server reports a failure
+/// after the headers have gone out — the prompt exceeding the context during
+/// generation is the common one — as a `data: {"error": {...}}` frame and
+/// then closes. Read as a chunk, it has no `choices`, so the turn decoded as
+/// empty content with no finish reason: the loop nudged the model for an
+/// empty turn, and the text that names an overflow never reached
+/// `is_context_overflow`. The Anthropic decoder has handled its `error`
+/// event since it was written; this one did not.
+fn accept_frame(acc: &mut Accumulator, data: &str, sink: &StreamSink) -> Result<Frame> {
+    if data.is_empty() {
+        return Ok(Frame::Data);
+    }
+    if data == "[DONE]" {
+        return Ok(Frame::Done);
+    }
+    let v: Value = serde_json::from_str(data).context("malformed SSE data frame")?;
+    // Present-and-null is not an error: several compatible gateways emit
+    // `"error": null` on every chunk, and keying on presence alone aborted
+    // the whole stream with the message `null`. The Anthropic decoder keys on
+    // the event *type* and cannot trip this way — the asymmetry was the tell.
+    if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
+        let message = err
+            .pointer("/message")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| err.to_string());
+        // A plain error, deliberately without a `ProviderError` in its chain:
+        // this is mid-stream, and the failover wrapper must not re-issue it.
+        // The message rides verbatim so `overflow_text` can still read it.
+        bail!("the server reported an error mid-stream: {message}");
+    }
+    acc.push(&v, sink);
+    Ok(Frame::Data)
+}
+
 #[derive(Default)]
 struct Accumulator {
     text: String,
@@ -670,6 +715,25 @@ impl Accumulator {
                 entry.2.push_str(args);
             }
         }
+    }
+
+    /// Did the stream end the way a finished answer ends?
+    ///
+    /// A finished answer closes with `[DONE]`, and every chunk before it that
+    /// ends a choice carries a `finish_reason`. A stream that stops with
+    /// neither is a connection that dropped — a proxy timing out, the server
+    /// dying mid-token — and `finish()` would have handed back the partial
+    /// text as a plausible-looking whole turn with `StopReason::Other`, into
+    /// the transcript, with nothing to say it was cut. Either signal is
+    /// accepted because some compatible servers omit `[DONE]`.
+    fn closed_cleanly(&self, done: bool) -> Result<()> {
+        if done || self.finish.is_some() {
+            return Ok(());
+        }
+        bail!(
+            "the stream ended before its terminator — no [DONE] and no finish_reason — so the \
+             answer may be truncated; the connection was probably dropped"
+        )
     }
 
     fn finish(self) -> CompletionResponse {
@@ -1102,6 +1166,70 @@ mod tests {
         call.insert("function".into(), Value::Object(function));
 
         chunk(json!({"tool_calls": [Value::Object(call)]}))
+    }
+
+    /// llama-server's post-header failure shape: a `data: {"error": …}`
+    /// frame, then the stream closes. It used to decode as an empty turn.
+    #[test]
+    fn a_mid_stream_error_frame_is_an_error_that_still_names_the_overflow() {
+        let (tx, _rx) = sink();
+        let mut acc = Accumulator::default();
+        let err = accept_frame(
+            &mut acc,
+            r#"{"error":{"code":400,"message":"the request exceeds the available context size. try increasing the context size or enable context shift","type":"exceed_context_size_error"}}"#,
+            &tx,
+        )
+        .unwrap_err();
+        assert!(
+            crate::provider::retry::overflow_text(&format!("{err:#}")),
+            "the loop's overflow recovery must be able to read it: {err:#}"
+        );
+        assert!(
+            err.downcast_ref::<crate::provider::retry::ProviderError>()
+                .is_none(),
+            "mid-stream: the failover wrapper must not re-issue it"
+        );
+
+        // Ordinary frames and the terminator are unchanged.
+        assert_eq!(
+            accept_frame(
+                &mut acc,
+                r#"{"choices":[{"index":0,"delta":{"content":"hi"}}]}"#,
+                &tx
+            )
+            .unwrap(),
+            Frame::Data
+        );
+        // Including the `"error": null` some gateways put on every chunk.
+        assert_eq!(
+            accept_frame(
+                &mut acc,
+                r#"{"error":null,"choices":[{"index":0,"delta":{"content":"!"}}]}"#,
+                &tx
+            )
+            .unwrap(),
+            Frame::Data
+        );
+        assert_eq!(accept_frame(&mut acc, "[DONE]", &tx).unwrap(), Frame::Done);
+        assert_eq!(accept_frame(&mut acc, "", &tx).unwrap(), Frame::Data);
+    }
+
+    /// A stream that stops without `[DONE]` or a `finish_reason` is a dropped
+    /// connection, not a finished answer.
+    #[test]
+    fn a_stream_that_ends_without_its_terminator_is_an_error_not_a_turn() {
+        let (tx, _rx) = sink();
+        let mut acc = Accumulator::default();
+        acc.push(&chunk(json!({"content": "half an ans"})), &tx);
+        assert!(acc.closed_cleanly(false).is_err());
+
+        // Either signal suffices: some compatible servers omit `[DONE]`.
+        assert!(acc.closed_cleanly(true).is_ok());
+        acc.push(
+            &json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+            &tx,
+        );
+        assert!(acc.closed_cleanly(false).is_ok());
     }
 
     #[test]
