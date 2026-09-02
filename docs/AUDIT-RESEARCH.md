@@ -403,13 +403,67 @@ prediction and no second tool exists to forget:
 | field | type | what it is | who reads it |
 |---|---|---|---|
 | `expect` | string, one sentence | The step's expected outcome, phrased so it could be checked ("`cargo test` passes", "the draft names a date") | re-injected every N turns (arm 1); the appraiser's expectation for the step |
-| `check` | string, a command | How the harness can tell, by exit code (arm 2). Runs through the same confined `shell` path a model call would, in the run's workspace; frozen at declaration — a later write that changes a completed step's `check` is recorded as a counter error, the tamper signal `expect.verify` guards against by hashing | the loop, which records the result as a `ToolCallTrace` named `check` (so `step.rs`'s span reading and `RunStats` see it: checks declared, checks passed) |
-| `calls` | integer | How many tool calls the model expects the step to take | `step.rs`, whose span-outlier comparison uses the model's own forecast before falling back to the sibling mean; the residual is a discrepancy the appraiser can read |
+| `check` | string, a command | How the harness can tell, by exit code (arm 2) | the loop, which dispatches it **exactly as a model `shell` call** — see below — and records the result as a `ToolCallTrace` named `check` |
+| `expect_calls` | integer | How many tool calls the model expects the step to take | `step.rs`, whose span-outlier comparison uses the model's own forecast before falling back to the sibling mean; the residual is a discrepancy the appraiser reads |
 
-Absent fields cost nothing — a plan with none is today's plan. The tool's
-description asks for `expect` on every item and `check` where one exists,
-in the same voice that asks for `serves`. Nothing is required, because the
-tool's whole job is being cheap to keep updated.
+(Names settled with the appraisal lane 2026-09-02: `expect_calls`, not
+`calls`, because `Work::calls` is the *actual* count in the module that
+compares them, and `item.calls` beside `work.calls` invites the swap.) All
+three are model text, trusted in context exactly as `content` is, and none
+is ever rendered into the system prompt. Absent fields cost nothing — a
+plan with none is today's plan. The tool's description asks for `expect` on
+every item and `check` where one exists, in the same voice that asks for
+`serves`. Nothing is required, because the tool's whole job is being cheap
+to keep updated.
+
+**A check is approved, not only confined.** A `check` is a model-authored
+command the harness would execute without the model calling `shell`. Run
+on the confined path alone, it is a way to execute a command on a surface
+where `shell` needs approval or is not registered, laundered through a plan
+field — "confined" and "approved" are different guards. So a check is
+dispatched exactly as a model `shell` call is: interlock, `pre_tool` hook,
+approver (`escalate` where the trifecta says so), sandbox, in that order,
+with the trace `name: "check"`, `input: {command}`. A refused check is
+`denied: true` and `step.rs` reads it as refused, never failed; on a surface
+with no `shell` tool, a declared check does not run and the step's finding
+says so. The record freezes each item's `check` at the first write that
+declared it (a hash in `Tracked`); a later write that changes it on a
+`completed` item is the tamper counter — the signal `expect.verify` guards
+against by hashing the test file.
+
+**Where the result lands, and why the name is load-bearing.** `Work::calls`
+counts the *model's* calls in a span, and a harness-run check is not one, so
+`Work::of` excludes `check` traces from `calls` by name. `Work` gains
+`checks_declared` / `checks_passed`; a `check` trace counts toward
+`verify_like` without the keyword list (the list stays — a `cargo test` with
+no declared check still counts); and a failed check is its own finding,
+distinct from the last-call-failed one, because the model's last call may
+have succeeded while its claim did not. `RunStats` carries
+`checks_declared` / `checks_passed` as `Option<u32>` — unknown is never zero
+— folded like `boredom_notices`.
+
+**The trigger (the appraisal lane's, cited here).** `learning::Trigger::
+Mismatch`, `"mismatch"`, domain `behavior`: the recorded outcome disagreed
+with the model's own prediction. Fires on three structural events only: a
+declared `check` failed on a step marked completed (magnitude 1.0, always);
+the `expect_calls` residual crossed the outlier constants `step.rs` already
+uses (≥3× with the floor of 6 — no new constant); a tamper counter
+incremented. Bounded on §5.5's own rule: one reflection per step, at most
+three per run. A critic `flag` followed by `SentUnchanged` is a datum for
+the critic's precision and **never** a `Mismatch` — the learning loop mines
+rules for the agent, and a false alarm says nothing about the agent's
+behaviour; `accept` then edit or reject is already the `Edit` trigger. So
+critic verdicts are scored by appraisal and never start a reflection.
+
+**Landing order.** The record lands first and small on
+`feat/appraisal-record` from `main`: three fields on `TodoItem`, the
+`Tracked` freeze, lenient read, the `Work`/`RunStats` counters, tests. This
+branch merges before it (both touch `agent.rs` and `step.rs`; the record
+rebases onto this). The ask — tool description, re-injection cadence, the
+critic call beside `escalate_step` — then bases on the merged record.
+Holders, one each: guilt's level→delta and the two stale goal-system
+sentences are the appraisal lane's; the gossip eval (§3.8) stays here, being
+a different subsystem with its gold sets in the graph repo.
 
 **Re-injection (arm 1).** Every N tool turns (N=5 to start, a config knob
 under `[agent]`), and only if the plan has items, the loop folds a rendering
