@@ -48,6 +48,10 @@ cargo clippy --all-targets
 ```
 
 `MECHA_LOG=debug` turns on internal tracing (goes to stderr).
+**Smoke-testing a binary against the real store: set `MECHA_SESSION_KIND=test`**
+so the session is recorded as a test and every corpus readout excludes it —
+46 of 143 appraised sessions were development runs before the mark existed,
+and the instrument measured its own tests.
 
 **Deploying or restarting anything: use the `update` skill**
 (`.claude/skills/update/SKILL.md`). "Update everything" spans six surfaces
