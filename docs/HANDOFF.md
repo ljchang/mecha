@@ -69,14 +69,18 @@ send-laundering, the cumulative usage frame, `Approver::escalate`,
 `stop_cause` reads — and `docs/AUDIT-RESEARCH.md`; its follow-ups landed as
 #142 at `9a5ca23`; that lane has moved on to `feat/approval-policy`
 (**PR #143**, open, rebased onto main: `policy.rs`, `Approver::permit`,
-`[[rule]]`/`[approval]` config), touching `run_tools` and `tool/mod.rs` and
-nothing the appraisal lane touched. **The appraisal lane is merged**:
+`[[rule]]`/`[approval]` config), touching `run_tools`, `agent.rs`,
+`config.rs`, `subagent.rs` and `tool/mod.rs` — the last of which #140 also
+rewrote (`cap_result`'s marker, `CAP_MARKER`), so #143's rebase behind the
+appraisal merges is textual on that one file and semantic nowhere else.
+**The appraisal lane is merged**:
 #140 (`feat/appraisal-record`, phase A of `docs/APPRAISAL-RESEARCH.md` §3
 and the prediction record) at `15c628d` and #141 (`feat/appraisal-phase-b`,
 phase B) at `49166e3`, both on 2026-09-02 after #139 and #142 — see the
 goal-system section below for what each holds. Still open from that lane,
 in order: the `StopCause::Interrupted` split (Parked vs Cancelled; the
-`ask_user` park in `questions.rs` is the cancel site) and cancel-then-
+`ask_user` park in `questions.rs` is the one park site, stopping through
+`ToolCtx::cancel`) and cancel-then-
 re-prompt as a steer, both now unblocked by #139's lenient `stop_cause`
 read; the audit lane's planner ask and critic call, which base on the
 merged record; charter sensors, designed at `GOAL-SYSTEM-DESIGN.md` §11.1
