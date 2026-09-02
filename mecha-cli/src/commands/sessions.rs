@@ -561,13 +561,14 @@ async fn appraise(
                 Err(_) => (Vec::new(), true),
             },
         };
-    let (requests, frontdoor_unreadable) = match mecha_core::frontdoor::Frontdoor::open_default() {
-        Ok(fd) => match fd.records() {
-            Ok(items) => (items, false),
-            Err(_) => (Vec::new(), true),
-        },
-        Err(_) => (Vec::new(), false),
-    };
+    let (requests, frontdoor_unreadable) =
+        match mecha_core::frontdoor::Frontdoor::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(fd) => match fd.records() {
+                Ok(items) => (items, false),
+                Err(_) => (Vec::new(), true),
+            },
+        };
     let (reflexions, learning_unreadable) =
         match mecha_core::learning::LearningStore::open_existing_default() {
             None => (Vec::new(), false),

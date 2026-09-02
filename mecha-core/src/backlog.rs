@@ -226,6 +226,26 @@ pub struct BacklogDelta {
 }
 
 impl BacklogDelta {
+    /// Two runs' deltas, summed per store — `Some` wherever either run
+    /// could read the store, on the `Option` fold `RunStats::merge` uses
+    /// for every per-run counter. An episode's change to the queue is the
+    /// sum of its runs' changes, which is what makes a session-scoped
+    /// reading of this honest where the level beside it stays the first
+    /// run's (a level is a condition, a delta is an act).
+    pub fn plus(&self, other: &BacklogDelta) -> BacklogDelta {
+        let f = |a: Option<i64>, b: Option<i64>| match (a, b) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+        BacklogDelta {
+            outbox: f(self.outbox, other.outbox),
+            questions: f(self.questions, other.questions),
+            frontdoor: f(self.frontdoor, other.frontdoor),
+            proposals: f(self.proposals, other.proposals),
+            candidates: f(self.candidates, other.candidates),
+        }
+    }
+
     /// Net change across the stores that could be read at both ends.
     ///
     /// `None` when none could — not zero, which would read as "this run

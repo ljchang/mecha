@@ -225,24 +225,34 @@ pub fn anticipated_guilt(
 /// (`docs/APPRAISAL-RESEARCH.md` §1.5). `backlog_delta` was non-zero on 18
 /// of 68 runs beside it. So the delta comes first: a run that cleared
 /// [`COUNT_HALF_AT`] or more recorded commitments reads as no guilt at all,
-/// whatever it inherited; one that added that many reads as maximal; in
-/// between, the level is scaled by how much this run relieved or added.
+/// whatever it inherited, and between zero and that the level is scaled by
+/// the share this run relieved.
+///
+/// **A positive delta leaves the level alone.** The first cut drove the
+/// sensor to maximal on a run that added three items, and that is the
+/// reading `Homeostat::finish` refuses by name — a trigger that staged three
+/// replies overnight scored as maximally guilty for doing exactly its job —
+/// arriving from the other end (found on review). Staging is a run's job,
+/// not neglect; what this run *added* is the next run's inherited level, and
+/// it will be read there. The appraisal's commitment channel takes the same
+/// line: a negative delta signs positive, a positive one signs nothing.
+///
 /// `None` in, `None` out — and a level with no delta is the level, because
 /// a row without the delta sensor says nothing about what the run did.
+/// Rows recorded before this fold and after it share the field with nothing
+/// marking which; the change only ever lowers a reading, so the corpus
+/// means `diagnose::Evidence` averages across the boundary are a lower
+/// bound on the old formula's, never a different quantity.
 pub fn with_delta(level: Option<f32>, net_delta: Option<i64>) -> Option<f32> {
     let level = level?;
     let Some(net) = net_delta else {
         return Some(level);
     };
-    let share = (net.unsigned_abs() as f32 / COUNT_HALF_AT as f32).min(1.0);
-    let out = if net < 0 {
-        level * (1.0 - share)
-    } else if net > 0 {
-        level + (1.0 - level) * share
-    } else {
-        level
-    };
-    Some(out.clamp(0.0, 1.0))
+    if net >= 0 {
+        return Some(level);
+    }
+    let relief = (net.unsigned_abs() as f32 / COUNT_HALF_AT as f32).min(1.0);
+    Some((level * (1.0 - relief)).clamp(0.0, 1.0))
 }
 
 /// Hours between an RFC3339 stamp and `now`. `None` on a stamp this can't
@@ -507,11 +517,12 @@ mod tests {
     fn the_delta_comes_first_and_a_cleared_queue_reads_as_no_guilt_whatever_was_inherited() {
         assert_eq!(with_delta(Some(0.95), Some(-3)), Some(0.0));
         assert_eq!(with_delta(Some(0.95), Some(-30)), Some(0.0));
-        assert_eq!(with_delta(Some(0.6), Some(3)), Some(1.0));
         let relieved = with_delta(Some(0.9), Some(-1)).unwrap();
         assert!(relieved > 0.0 && relieved < 0.9, "{relieved}");
-        let added = with_delta(Some(0.2), Some(1)).unwrap();
-        assert!(added > 0.2 && added < 1.0, "{added}");
+        // `Homeostat::finish`'s stated intent, asserted here rather than only
+        // in prose: a trigger that staged three replies is not guilty for it.
+        assert_eq!(with_delta(Some(0.6), Some(3)), Some(0.6));
+        assert_eq!(with_delta(Some(0.2), Some(1)), Some(0.2));
         assert_eq!(with_delta(Some(0.4), Some(0)), Some(0.4));
         assert_eq!(
             with_delta(Some(0.4), None),

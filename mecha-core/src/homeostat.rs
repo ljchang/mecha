@@ -85,9 +85,11 @@ pub struct Homeostat {
     pub peak_context_pressure: Option<f32>,
     /// A harness-computed proxy for anticipated guilt
     /// (`docs/GOAL-SYSTEM-DESIGN.md` §7.4) — predicted error against another
-    /// party's expectation, folded from how long the oldest recorded
-    /// commitment in [`backlog`](Self::backlog)'s stores has waited and how
-    /// much room this run had to act on it. See [`crate::guilt`] for the
+    /// party's expectation: the standing level, folded from how long the
+    /// oldest recorded commitment in [`backlog`](Self::backlog)'s stores
+    /// has waited and how much room this run had to act on it, scaled down
+    /// by what this run itself cleared (`guilt::with_delta`) and never up
+    /// by what it added. See [`crate::guilt`] for the
     /// formula and, importantly, for what this is *not* used for yet:
     /// **nothing consumes this today.** It is recorded so the corpus exists
     /// before anything is built on it, on `runlog`'s own rule.
@@ -132,8 +134,10 @@ impl Homeostat {
                 crate::guilt::anticipated_guilt(before, self.peak_context_pressure, Utc::now());
             let delta = Backlog::delta(before, &Backlog::read());
             // The level is what the run inherited; the delta is what it did
-            // about it, and it comes first — `guilt::with_delta` carries the
-            // measurement that made the level alone a constant.
+            // about it, and only relief moves the reading — the comment above
+            // is still the rule, and `guilt::with_delta` keeps it: a run that
+            // added to the queue reads the level it inherited, not a
+            // maximum for doing its job.
             self.anticipated_guilt = crate::guilt::with_delta(level, delta.net());
             self.backlog_delta = Some(delta);
         }

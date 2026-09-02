@@ -97,7 +97,7 @@ use crate::goal::GoalRef;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// Which of the five signal paths an error arrived on.
+/// Which of the six signal paths an error arrived on.
 ///
 /// Named rather than merged, on §1's finding: five loops converged on one word
 /// for "what this was decided from" without converging on the concept. The
@@ -696,6 +696,21 @@ impl Readout {
     }
 }
 
+/// The stores one session's appraisal reads beside its transcript. Every
+/// slice may be empty; a caller that could not read a store passes nothing
+/// and says so on its own surface, on `sessions appraise`'s
+/// `outbox_unreadable` rule. `drafts` is the session's own items,
+/// pre-filtered by the caller as it always was; the other three carry a
+/// session id and are filtered here, so a caller can hand over a whole
+/// store once.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionRecords<'a> {
+    pub drafts: &'a [&'a crate::outbox::OutboxItem],
+    pub questions: &'a [crate::questions::Question],
+    pub requests: &'a [crate::frontdoor::Record],
+    pub reflexions: &'a [crate::learning::Reflexion],
+}
+
 /// Build one **session's** appraisal from records that already exist.
 ///
 /// **Derived, not stored, and that is a correction to §10.** The design gives
@@ -738,21 +753,6 @@ impl Readout {
 /// Rung 4 paid for this exact mistake in the other direction, reading headroom
 /// off one run's outcome for a whole episode; `RunStats::fold` exists so the
 /// fold is written once, and `Session::episode_stats` is the caller's way to it.
-/// The stores one session's appraisal reads beside its transcript. Every
-/// slice may be empty; a caller that could not read a store passes nothing
-/// and says so on its own surface, on `sessions appraise`'s
-/// `outbox_unreadable` rule. `drafts` is the session's own items,
-/// pre-filtered by the caller as it always was; the other three carry a
-/// session id and are filtered here, so a caller can hand over a whole
-/// store once.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SessionRecords<'a> {
-    pub drafts: &'a [&'a crate::outbox::OutboxItem],
-    pub questions: &'a [crate::questions::Question],
-    pub requests: &'a [crate::frontdoor::Record],
-    pub reflexions: &'a [crate::learning::Reflexion],
-}
-
 pub fn of_session(
     session_id: &str,
     stats: &crate::session::RunStats,
@@ -1009,11 +1009,16 @@ pub fn of_session(
         if q.session_id != session_id {
             continue;
         }
+        // `stop_cause` is the folded episode's, which `RunStats::merge` takes
+        // from the *last* run — the right run for "did the resumed work
+        // finish", since the answer arrives as a later run by construction.
         let (sign, agency) = match q.status.as_str() {
-            "answered" if stats.stop_cause == Some(crate::agent::StopCause::Completed) => {
+            crate::questions::ANSWERED
+                if stats.stop_cause == Some(crate::agent::StopCause::Completed) =>
+            {
                 (0.5, Agency::Own)
             }
-            "abandoned" => (-0.5, Agency::Owner),
+            crate::questions::ABANDONED => (-0.5, Agency::Owner),
             _ => continue,
         };
         errors.push(GoalError {
@@ -1035,7 +1040,9 @@ pub fn of_session(
     // the owner's closing it is the verdict. `answered` and every open
     // state say nothing here.
     for req in records.requests {
-        if req.triage_session.as_deref() != Some(session_id) || req.state != "closed" {
+        if req.triage_session.as_deref() != Some(session_id)
+            || req.state != crate::frontdoor::CLOSED
+        {
             continue;
         }
         let something_sent = records
@@ -1045,6 +1052,13 @@ pub fn of_session(
         if something_sent {
             continue;
         }
+        // Known and accepted: the join depends on the answering draft still
+        // being in the outbox when the owner closes the request. A draft the
+        // sweep removed first would read as nothing sent. Reconcile moves a
+        // request answered by a released draft to `answered`, not `closed`,
+        // so the case is not reachable through the paths that exist today;
+        // if a `closed` request can ever carry a swept, sent draft this arm
+        // over-signs by `-0.5` and should read the sweep's ledger instead.
         errors.push(GoalError {
             goal: goal.clone(),
             channel: Channel::Commitment,
@@ -3339,6 +3353,33 @@ mod tests {
         assert!(
             built(&stats(), &[], &[]).errors.is_empty(),
             "no sensor, no reading"
+        );
+    }
+
+    /// Finding 2 on the phase B review: `for_transcript` hands `of_session`
+    /// the folded episode, and the first cut of `RunStats::merge` kept the
+    /// first run's `backlog_delta` — so a session that parked a question
+    /// (run 1: +1) and cleared it on resume (run 2: −2) signed nothing.
+    #[test]
+    fn a_resumed_sessions_delta_is_the_sum_of_its_runs_not_the_first_runs() {
+        use crate::backlog::BacklogDelta;
+        let run = |questions: i64| crate::session::RunStats {
+            homeostat: Some(crate::homeostat::Homeostat {
+                backlog_delta: Some(BacklogDelta {
+                    questions: Some(questions),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..stats()
+        };
+        let mut episode = run(1);
+        episode.merge(&run(-2));
+        let a = built(&episode, &[], &[]);
+        assert_eq!(
+            a.errors.iter().map(|e| e.cite.clone()).collect::<Vec<_>>(),
+            vec![Cite::Setpoint("backlog_delta".into())],
+            "the resume's clearing is the session's act"
         );
     }
 }
