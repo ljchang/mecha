@@ -2249,6 +2249,23 @@ run reads the recorded snapshot. Every field is `Option` and `None` means the
 sensor could not be read. It never reaches the system prompt — a per-turn value
 there re-pays the whole prefix, tools included, every request.
 
+**A `Commitment` is read from the stores mecha itself writes, and only
+there.** `of_session` takes a `SessionRecords` bundle — the session's own
+drafts, plus the question store, the front-door records and the learning
+store's reflections, filtered by session id inside — and signs: a question
+answered whose run then finished (`+0.5`, `Own`), a question abandoned
+(`-0.5`, `Owner`), a triaged request the owner closed with nothing sent
+(`-0.5`, `Owner`), a run whose `backlog_delta` came out negative (`+0.5`,
+`Own`), and a follow-up the reflector judged a correction (`-1.0`, `Owner`,
+`Channel::Intervention`, only where the origin is clean or the reflector saw
+the owner's turns alone). Every cite is an id the harness minted
+(`Cite::Question`, `Cite::Request`, `Cite::Reflexion`). A store that cannot
+be read costs its channel and is reported as unreadable, never folded into
+empty — the readouts carry `questions_read` / `frontdoor_read` /
+`learning_read` beside `outbox_read`. The live readout and `distill` pass
+drafts only: a store read on every turn end is the cost the closure
+appraisal pays once.
+
 **Anticipated guilt reads only stores mecha itself writes.** An expectation is a
 *recorded* commitment (`outbox`, `questions`, `frontdoor` — exactly `backlog`'s
 own three), never a claimed one. That is the whole safety argument for §7.2's

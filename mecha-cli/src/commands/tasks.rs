@@ -801,13 +801,42 @@ fn appraise_session(
             },
         };
     let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts.iter().collect();
+    // The three commitment stores, on the same best-effort terms as the
+    // outbox above: a store that could not be read costs its channel and
+    // says so, never the appraisal.
+    let questions = match mecha_core::questions::QuestionStore::open_existing_default() {
+        None => Vec::new(),
+        Some(store) => store.items().unwrap_or_else(|e| {
+            eprintln!("mecha: could not read the question store while appraising {task_id}: {e:#}");
+            Vec::new()
+        }),
+    };
+    let requests = match mecha_core::frontdoor::Frontdoor::open_default() {
+        Ok(fd) => fd.records().unwrap_or_else(|e| {
+            eprintln!("mecha: could not read the front door while appraising {task_id}: {e:#}");
+            Vec::new()
+        }),
+        Err(_) => Vec::new(),
+    };
+    let reflexions = match mecha_core::learning::LearningStore::open_existing_default() {
+        None => Vec::new(),
+        Some(store) => store.reflexions().unwrap_or_else(|e| {
+            eprintln!("mecha: could not read the learning store while appraising {task_id}: {e:#}");
+            Vec::new()
+        }),
+    };
     let goal = mecha_core::goal::GoalRef::Task(task_id.to_string());
     Ok(Some(mecha_core::appraisal::of_session(
         session_id,
         &stats,
         &[goal],
         &interventions,
-        &mine,
+        mecha_core::appraisal::SessionRecords {
+            drafts: &mine,
+            questions: &questions,
+            requests: &requests,
+            reflexions: &reflexions,
+        },
         end_taint,
         chrono::Utc::now().to_rfc3339(),
     )))

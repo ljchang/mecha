@@ -215,6 +215,36 @@ pub fn anticipated_guilt(
     Some(combined.clamp(0.0, 1.0))
 }
 
+/// The run's own contribution, folded over the standing level.
+///
+/// **The level was a constant, and the delta is where the variance is.**
+/// Over the first nineteen runs that recorded it, [`anticipated_guilt`] read
+/// between 0.95 and 1.0 on every one — the age and count terms measure the
+/// owner's standing backlog, which a run inherits and does not change, so
+/// the sensor described the store and not the run
+/// (`docs/APPRAISAL-RESEARCH.md` §1.5). `backlog_delta` was non-zero on 18
+/// of 68 runs beside it. So the delta comes first: a run that cleared
+/// [`COUNT_HALF_AT`] or more recorded commitments reads as no guilt at all,
+/// whatever it inherited; one that added that many reads as maximal; in
+/// between, the level is scaled by how much this run relieved or added.
+/// `None` in, `None` out — and a level with no delta is the level, because
+/// a row without the delta sensor says nothing about what the run did.
+pub fn with_delta(level: Option<f32>, net_delta: Option<i64>) -> Option<f32> {
+    let level = level?;
+    let Some(net) = net_delta else {
+        return Some(level);
+    };
+    let share = (net.unsigned_abs() as f32 / COUNT_HALF_AT as f32).min(1.0);
+    let out = if net < 0 {
+        level * (1.0 - share)
+    } else if net > 0 {
+        level + (1.0 - level) * share
+    } else {
+        level
+    };
+    Some(out.clamp(0.0, 1.0))
+}
+
 /// Hours between an RFC3339 stamp and `now`. `None` on a stamp this can't
 /// parse — a record written by a newer or older binary must cost the reading,
 /// not the whole computation (the [`crate::goal::GoalRef`] record-parsing
@@ -471,5 +501,27 @@ mod tests {
             ..readable_and_empty()
         };
         assert_eq!(anticipated_guilt(&backlog, Some(0.0), now), None);
+    }
+
+    #[test]
+    fn the_delta_comes_first_and_a_cleared_queue_reads_as_no_guilt_whatever_was_inherited() {
+        assert_eq!(with_delta(Some(0.95), Some(-3)), Some(0.0));
+        assert_eq!(with_delta(Some(0.95), Some(-30)), Some(0.0));
+        assert_eq!(with_delta(Some(0.6), Some(3)), Some(1.0));
+        let relieved = with_delta(Some(0.9), Some(-1)).unwrap();
+        assert!(relieved > 0.0 && relieved < 0.9, "{relieved}");
+        let added = with_delta(Some(0.2), Some(1)).unwrap();
+        assert!(added > 0.2 && added < 1.0, "{added}");
+        assert_eq!(with_delta(Some(0.4), Some(0)), Some(0.4));
+        assert_eq!(
+            with_delta(Some(0.4), None),
+            Some(0.4),
+            "no delta sensor: the level stands"
+        );
+        assert_eq!(
+            with_delta(None, Some(-3)),
+            None,
+            "no level: nothing to scale"
+        );
     }
 }

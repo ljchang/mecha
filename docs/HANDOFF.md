@@ -2219,6 +2219,15 @@ repeated here.
   `neutral` label with a signed valence, and a page served from a stale
   `web/dist` sets the chip to `ev.label` unconditionally — it will read a
   literal `neutral` until the bundle is rebuilt (update skill surface 1b).
+  **Phase B followed the same evening on
+  `feat/appraisal-phase-b`, stacked on the record**: `SessionRecords`,
+  `Channel::Commitment` (questions answered or abandoned, a triaged request
+  closed with nothing sent, a run that shortened the owner's queue), judged
+  follow-ups from `reflections.jsonl` as `Intervention` errors,
+  `guilt::with_delta` folding the run's own delta over the standing level.
+  Re-read: **26 of 144 sessions signed, `+14.0 −33.5`**. Still open from
+  phase B: the `Interrupted` split (after #139) and cancel-then-re-prompt
+  as a steer, the three trajectory counters, and the trigger read receipt.
 
 - **Rung 7's measurement came back, and it decides what to build next.**
   `mecha sessions appraise` over the live store: 459 sessions read, **120

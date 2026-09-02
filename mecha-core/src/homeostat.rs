@@ -128,9 +128,14 @@ impl Homeostat {
             // score a trigger that staged three replies overnight as
             // maximally guilty for doing exactly its job: those drafts are
             // seconds old and this run's own output, not neglected debt.
-            self.anticipated_guilt =
+            let level =
                 crate::guilt::anticipated_guilt(before, self.peak_context_pressure, Utc::now());
-            self.backlog_delta = Some(Backlog::delta(before, &Backlog::read()));
+            let delta = Backlog::delta(before, &Backlog::read());
+            // The level is what the run inherited; the delta is what it did
+            // about it, and it comes first — `guilt::with_delta` carries the
+            // measurement that made the level alone a constant.
+            self.anticipated_guilt = crate::guilt::with_delta(level, delta.net());
+            self.backlog_delta = Some(delta);
         }
         self
     }
