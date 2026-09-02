@@ -127,6 +127,16 @@ struct WebSession {
     mode: Arc<StdMutex<PermissionMode>>,
     /// Outstanding approval/ask cards for this session.
     questions: super::present::Questions,
+    /// How many owner turns this conversation had when it was last named.
+    ///
+    /// Zero for one that has never been: a session is created under a key,
+    /// and a key is an address rather than a name. The schedule that reads
+    /// this is `title::due` — front-loaded, three names in a session's life,
+    /// so a long conversation does not spend a generation per turn moving a
+    /// label. Not persisted: on a resume the recorded name comes back with
+    /// the transcript, and re-earning it once is cheaper than another record
+    /// that can disagree with the one beside it.
+    titled_at: usize,
     /// Was the last turn spoken? Since D3 typed and spoken turns share one
     /// conversation, so "does this turn need the voice block" is no longer
     /// answerable from the messages — a spoken turn and a typed one look
@@ -425,6 +435,15 @@ pub enum WireEvent {
     /// back to rather than a stream of `"neutral"` events saying nothing.
     Affect {
         label: String,
+    },
+    /// This conversation has a name now — see `mecha_core::title`. Sent when
+    /// a run's end earns one, carrying the name without its `web: ` prefix,
+    /// which is a storage detail no header should render. The page reloads
+    /// the rail rather than trusting this string into its own state: the
+    /// rail is where every other surface reads a session's name, and two
+    /// paths to one label is how a header and a drawer row start disagreeing.
+    Titled {
+        title: String,
     },
     Done {
         ok: bool,
@@ -789,6 +808,14 @@ pub(super) fn task_withholding(title: &Option<String>) -> Vec<String> {
 /// The prefix the drawer filters on and `task_withholding` reads.
 pub(super) const TASK_TITLE_PREFIX: &str = "task: ";
 
+/// The same, for an ordinary chat. Sessions are *renamed* as they grow
+/// (`mecha_core::title`), and the prefix is what `history` filters on and
+/// what tells a renamed session apart from a delegation — so a rename
+/// carries it, and only sessions wearing it are eligible to be renamed at
+/// all. A task conversation already has the task's name, and its title is
+/// read by `task_withholding`.
+pub(super) const WEB_TITLE_PREFIX: &str = "web: ";
+
 /// What a session should be created *as*, when it does not exist yet.
 ///
 /// Only a task conversation needs any of this today, and it is threaded
@@ -866,7 +893,11 @@ fn ensure_session_as<'a>(
                         // `task: …` for a delegation, so the drawer's task filter
                         // and `runlog` see it as the delegation it is rather than as
                         // an unrelated web chat that happens to mention one.
-                        title: Some(init.title.clone().unwrap_or_else(|| format!("web: {key}"))),
+                        title: Some(
+                            init.title
+                                .clone()
+                                .unwrap_or_else(|| format!("{WEB_TITLE_PREFIX}{key}")),
+                        ),
                     },
                 )?,
                 Conversation::new(),
@@ -914,6 +945,7 @@ fn ensure_session_as<'a>(
                 mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
                 questions,
                 last_turn_spoken: false,
+                titled_at: 0,
                 withheld: Arc::from(init.withheld),
                 task: init.task,
             },
@@ -1380,14 +1412,57 @@ fn begin_turn(
             },
         };
 
+        // What the titler is allowed to read, taken before the conversation
+        // goes back: the owner's own turns and nothing else (`title`'s module
+        // comment has the argument — a title outlives every answer in the
+        // conversation and is rendered on every surface, so third-party text
+        // must not reach the thing that composes one).
+        // The one thing a block filter in core cannot strip, because it is
+        // not a block: a spoken turn is `VOICE_BLOCK` *prefixed onto* the
+        // owner's own words, and since D3 it lands in this same `web:`
+        // conversation. The constant is this crate's, so the stripping is
+        // too — the same helper the session listing already runs for the
+        // same reason.
+        let owner_turns: Vec<String> = mecha_core::title::owner_turns(&conversation.messages)
+            .iter()
+            .map(|t| strip_voice_preamble(t).to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+
         // Hand the conversation back, then announce the end — a stream left
         // open is indistinguishable from a run still working. A failed
         // turn's conversation was already rolled back beside the record
         // above, where the file and this hand-back could be made to agree.
         let mut sessions = state_for_task.sessions.lock().await;
+        let mut name_it = false;
         if let Some(ws) = sessions.get_mut(&key_for_task) {
             ws.conversation = Some(conversation);
             ws.live = None;
+            // Only an ordinary chat is renamed: a delegation already carries
+            // the task's name (and `task_withholding` reads that title), and
+            // a voice session is the same conversation from another door.
+            name_it = ws
+                .session
+                .meta
+                .title
+                .as_deref()
+                .is_some_and(|t| t.starts_with(WEB_TITLE_PREFIX))
+                && mecha_core::title::due(owner_turns.len(), ws.titled_at);
+            // **Claimed here, under the lock that decided it.** Advancing the
+            // bookmark after the generation (which is where the previous fix
+            // put it) leaves a window the owner's typing speed decides: the
+            // generation is a network round-trip, and a turn submitted while
+            // it is in flight reads `titled_at` still at its old value —
+            // `due`'s first threshold is satisfied by any zero — and starts a
+            // second one against the same single-slot server. Both then
+            // append a `Record::Title`, and `Session::read` takes the last in
+            // the *file*, which is whichever generation returned last rather
+            // than whichever saw more turns. So a fast turn-1 name could land
+            // after the turn-2 name and the conversation would keep the less
+            // informative label.
+            if name_it {
+                ws.titled_at = owner_turns.len();
+            }
         }
         drop(sessions);
         let _ = bcast.send(done);
@@ -1402,6 +1477,70 @@ fn begin_turn(
             }),
             Err(e) => Err(format!("{e:#}")),
         });
+
+        // **Last of all, because nothing waits on it.** Naming the
+        // conversation costs a small generation on the same server the run
+        // just used; doing it before the hand-back would hold the session,
+        // and before the answer would delay it. A failure here is a session
+        // that keeps the name it has, which is why nothing above depends on
+        // it and why the miss is logged rather than shown.
+        if name_it {
+            let named = mecha_core::title::summarise(
+                state_for_task.agent.provider(),
+                &state_for_task.model,
+                &owner_turns,
+            )
+            .await;
+
+            let recorded = match &named {
+                Ok(Some(name)) => {
+                    let recorded = format!("{WEB_TITLE_PREFIX}{name}");
+                    // The record first: a name the page shows and the
+                    // transcript does not is one that vanishes on the next
+                    // restart, which is worse than never having had it.
+                    match session.append(&Record::Title {
+                        title: recorded.clone(),
+                    }) {
+                        Ok(()) => Some((recorded, name.clone())),
+                        Err(e) => {
+                            tracing::warn!("naming this conversation was not recorded: {e:#}");
+                            None
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::debug!("no usable name came back for {key_for_task}");
+                    None
+                }
+                Err(e) => {
+                    tracing::debug!("naming {key_for_task} failed: {e:#}");
+                    None
+                }
+            };
+
+            // The bookmark was already claimed above, on the attempt rather
+            // than on the win — `due` reads it, so a miss that left it alone
+            // would ask again on *every* turn rather than at the next
+            // threshold, and the failure modes here are the persistent ones
+            // (a model that refuses, a reply `tidy` keeps rejecting, a
+            // provider that is down). Three attempts per session; a miss
+            // costs the name, not the budget.
+            let mut sessions = state_for_task.sessions.lock().await;
+            if let Some(ws) = sessions.get_mut(&key_for_task) {
+                if let Some((recorded, _)) = &recorded {
+                    let mut meta = ws.session.meta.clone();
+                    meta.title = Some(recorded.clone());
+                    ws.session = Arc::new(Session {
+                        meta,
+                        path: ws.session.path.clone(),
+                    });
+                }
+            }
+            drop(sessions);
+            if let Some((_, name)) = recorded {
+                let _ = bcast.send(WireEvent::Titled { title: name });
+            }
+        }
     });
 
     Ok(Started {
@@ -1681,30 +1820,100 @@ pub async fn set_mode(
 /// megabytes, and a listing that reads whole files is a listing nobody
 /// opens twice. `None` means no user ever spoke — a shell created by a page
 /// load — and the listing skips it.
-fn first_user_snippet(path: &std::path::Path) -> Option<String> {
+fn first_user_snippet(path: &std::path::Path) -> Option<Listing> {
     use std::io::BufRead;
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
-    for line in reader.lines().take(300) {
+    let mut listing = Listing::default();
+    let mut read = 0usize;
+    for line in reader.lines().take(LISTING_SCAN_LINES) {
         let line = line.ok()?;
+        // **Bound the bytes, not just the lines.** A line count is not a cost
+        // here: a `rewrite` record is the entire message list on one line, so
+        // a session that compacted twice contributes two lines each the size
+        // of the whole conversation, and the pre-filter below removes the
+        // *parse*, never the read. Forty transcripts of those is a listing
+        // that stalls the drawer — which now refetches on open, on `titled`,
+        // and when the layout docks. A title record is ~60 bytes and is
+        // written at owner turn 1, so the early rename this listing exists to
+        // show is nowhere near either bound.
+        read += line.len();
+        if read > LISTING_SCAN_BYTES {
+            break;
+        }
+        // **Rule the line out on its bytes before parsing it.** This loop
+        // used to return at the first user message — line two or three of
+        // the file — and a later `title` has to win, so it cannot any more.
+        // What that costs is not the extra lines, it is what a line *is*: a
+        // `message` record carries whole tool results and a `rewrite` record
+        // carries the entire message list, so parsing forty transcripts'
+        // worth of them to learn they are not titles is the whole cost of
+        // this scan. Two record types matter and both are a substring test.
+        let could_be_title = line.contains("\"record\":\"title\"");
+        if !could_be_title && listing.snippet.is_some() {
+            continue;
+        }
         let v: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if v["record"] == "message" && v["role"] == "user" {
+        // A rename, from `mecha_core::title`. Last one within the scan wins.
+        if v["record"] == "title" {
+            if let Some(t) = v["title"].as_str() {
+                listing.title = Some(t.to_string());
+            }
+        }
+        if listing.snippet.is_none() && v["record"] == "message" && v["role"] == "user" {
             for block in v["content"].as_array().into_iter().flatten() {
                 if let Some(text) = block["text"].as_str() {
                     let text = strip_voice_preamble(text).trim();
                     if !text.is_empty() {
-                        let head: String = text.chars().take(140).collect();
-                        return Some(head);
+                        listing.snippet = Some(text.chars().take(140).collect());
+                        break;
                     }
                 }
             }
         }
     }
-    None
+    listing.snippet.is_some().then_some(listing)
 }
+
+/// What one row of the "earlier" listing needs from a transcript.
+#[derive(Default)]
+struct Listing {
+    /// The owner's opening line. `None` means no user ever spoke — a shell
+    /// created by a page load, which the listing skips.
+    snippet: Option<String>,
+    /// The recorded name, when the session has earned one.
+    title: Option<String>,
+}
+
+/// How far into a transcript a *listing* reads.
+///
+/// The bound is the whole reason this is a scan and not a `Session::read`: a
+/// transcript can be megabytes and a listing walks forty of them, so a
+/// listing that read whole files is a listing nobody opens twice.
+///
+/// **The baseline this has to be honest against is three lines, not the
+/// whole file** — found in review. Before renaming existed the loop returned
+/// at the first user message, so `/api/history` parsed about three JSON
+/// values per transcript; a later title has to win, so it cannot return
+/// early any more, and the line count alone would have made this endpoint
+/// forty times more expensive on records that carry whole tool results. The
+/// byte pre-filter in the loop is what keeps the *parse* count near the old
+/// baseline; this constant only bounds the read.
+///
+/// What the bound itself costs is small: renaming is front-loaded
+/// (`title::due` names a session at its 1st, 3rd and 8th owner turn), so a
+/// rename past this line lives in the rail without reaching the listing,
+/// where the opening line stands in for it.
+const LISTING_SCAN_LINES: usize = 400;
+
+/// And how many *bytes*, which is the bound that actually holds.
+///
+/// Lines are not a cost model for this file — see the loop. Whichever bound
+/// trips first ends the scan.
+const LISTING_SCAN_BYTES: usize = 256 * 1024;
 
 /// GET /api/history — recorded web and voice sessions from the store,
 /// newest first: what the drawer's "earlier" section lists. A row carries
@@ -1740,7 +1949,9 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
             // back: it was started from a card and left a question or a
             // draft behind.
             .is_some_and(|t| {
-                t.starts_with("web: ") || t.starts_with("voice: ") || t.starts_with("task: ")
+                t.starts_with(WEB_TITLE_PREFIX)
+                    || t.starts_with("voice: ")
+                    || t.starts_with(TASK_TITLE_PREFIX)
             })
     });
     metas.sort_by_key(|(m, _)| std::cmp::Reverse(m.created_at));
@@ -1749,7 +1960,7 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
         if rows.len() >= 40 {
             break;
         }
-        let Some(snippet) = first_user_snippet(&path) else {
+        let Some(listing) = first_user_snippet(&path) else {
             continue; // a page load that never spoke is not a conversation
         };
         let kind = match meta.title.as_deref() {
@@ -1761,7 +1972,18 @@ pub async fn history(State(state): Chat) -> axum::response::Response {
             "id": meta.id,
             "kind": kind,
             "created_at": meta.created_at.to_rfc3339(),
-            "snippet": snippet,
+            "snippet": listing.snippet,
+            // The name it earned, when it has one — the page prefers this and
+            // falls back to the opening line, which is what it showed before
+            // conversations had names at all.
+            //
+            // Through the same rule `Session::read` applies, because this is
+            // the second reader of a rename and two readers that disagree
+            // about one record is how a drawer ends up showing a name the
+            // session does not have.
+            "title": listing
+                .title
+                .filter(|t| Session::keeps_kind(meta.title.as_deref(), t)),
             "attached_key": attached.get(&meta.id),
         }));
     }
@@ -1911,6 +2133,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
             mode: Arc::new(StdMutex::new(PermissionMode::ReadOnly)),
             questions,
             last_turn_spoken: false,
+            titled_at: 0,
             // **A resumed delegation is still a delegation.** D6 is a
             // property of the conversation, not of how it was opened, so
             // picking a task transcript back up must not hand back the tool
@@ -1959,6 +2182,81 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
+    /// A spoken turn is the owner's words with the voice preamble *prefixed
+    /// onto them*, in the same conversation as the typed turns (D3) — so it
+    /// is not a block the core filter can drop, and the door that added the
+    /// decoration is the one that has to remove it. Without this the titler
+    /// names a voice conversation after the harness's own instructions to
+    /// itself.
+    /// The listing rules a line out on its **bytes** before parsing it, which
+    /// is a hand-written copy of serde's wire encoding for `Record::Title`
+    /// that the compiler cannot see in either direction: rename the tag or
+    /// the variant, add a `#[serde(rename)]`, or switch the writer to
+    /// `to_string_pretty`, and the predicate goes permanently false. The
+    /// failure is silent and reads as a feature that is merely not very good
+    /// — every earned name vanishes from the drawer and each row falls back
+    /// to its opening line. So the fixture is written through
+    /// `Session::append`, never as a literal: a serialization change fails
+    /// here rather than in a drawer nobody is diffing.
+    ///
+    /// It covers the two rules beside it as well: the last title within the
+    /// scan wins, and finding the snippet does not stop the scan looking for
+    /// one.
+    #[test]
+    fn the_listing_finds_the_newest_recorded_name_through_serdes_own_encoding() {
+        use mecha_core::session::{Record, Session, SessionMeta};
+        let dir = std::env::temp_dir().join(format!("mecha-listing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Session::create(
+            &dir,
+            SessionMeta {
+                id: "20260902T000000-l".into(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "m".into(),
+                workspace: std::path::PathBuf::from("/tmp"),
+                title: Some("web: chat-8f3a".into()),
+            },
+        )
+        .unwrap();
+        s.append_messages(&[mecha_core::message::Message::user(
+            "what did I promise Hollis in March?",
+        )])
+        .unwrap();
+        s.append(&Record::Title {
+            title: "web: Hollis in March".into(),
+        })
+        .unwrap();
+        s.append(&Record::Title {
+            title: "web: Ostrander nomination".into(),
+        })
+        .unwrap();
+
+        let listing = super::first_user_snippet(&s.path).expect("a session that spoke");
+        assert_eq!(
+            listing.snippet.as_deref(),
+            Some("what did I promise Hollis in March?")
+        );
+        assert_eq!(
+            listing.title.as_deref(),
+            Some("web: Ostrander nomination"),
+            "the newest name within the scan wins, and the scan does not stop at the snippet"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_spoken_turn_reaches_the_titler_as_what_was_said() {
+        let spoken = crate::voice::open_spoken_turn("what did I promise Hollis?", false);
+        assert!(
+            spoken.starts_with(crate::voice::VOICE_BLOCK),
+            "fixture is not decorated"
+        );
+        let stripped = super::strip_voice_preamble(&spoken);
+        assert_eq!(stripped, "what did I promise Hollis?");
+        assert!(!stripped.contains("Voice mode"));
+    }
+
     #[test]
     fn session_keys_that_could_leave_the_producer_dir_are_refused() {
         use super::valid_key;

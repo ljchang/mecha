@@ -66,4 +66,41 @@
     opacity: 0.45;
     cursor: default;
   }
+
+  /* The same six places, turned ninety degrees. A bottom bar is a thumb
+     affordance; on a desktop the thumb is a cursor and the bottom of a
+     1400px window is the furthest point from where the eye already is —
+     so the bar becomes a left rail. `order: -1` does the moving: the shell
+     turns `.screen` into a row at the same breakpoint and this element is
+     still written last in the markup, which is where it belongs for a
+     screen reader and for a phone. */
+  @media (min-width: 900px) {
+    nav {
+      order: -1;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 2px;
+      width: var(--rail);
+      flex-shrink: 0;
+      overflow-y: auto;
+      border-top: none;
+      border-right: 1px solid var(--accent-900);
+      background: var(--void);
+      /* Room at the foot for the shell's gear, which docks to the rail on
+         this breakpoint rather than floating over the content. */
+      padding: 14px 8px 76px;
+    }
+    .nav-item {
+      width: 100%;
+      padding: 10px 0;
+      border-radius: var(--radius);
+    }
+    .nav-item:not(.disabled):hover {
+      color: var(--text);
+      background: var(--bg);
+    }
+    .nav-item.active {
+      background: var(--accent-900);
+    }
+  }
 </style>
