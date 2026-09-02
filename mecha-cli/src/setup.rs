@@ -346,6 +346,27 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         }
         agent.set_outbox(outbox);
     }
+    // A tool that exists to send and is not routed executes for real, with
+    // the interlock as its only guard — a mail server registered before
+    // `[outbox] tools` named it was live mail, and nothing said so. Same
+    // shape as the two warnings above, and it fires on every start for the
+    // same reason. `--no-outbox` is the caller saying so deliberately, and
+    // is silent.
+    if !opts.no_outbox {
+        for name in agent.registry().senders() {
+            let routed = agent
+                .context()
+                .outbox
+                .as_ref()
+                .is_some_and(|o| o.routes(name));
+            if !routed {
+                eprintln!(
+                    "mecha: `{name}` can send and is not routed through the outbox — add it to \
+                     `[outbox] tools`, or it executes unstaged"
+                );
+            }
+        }
+    }
     if let Some(mb) = &tools.mailbox {
         agent.set_mailbox(Arc::clone(mb));
     }

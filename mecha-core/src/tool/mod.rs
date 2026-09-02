@@ -811,6 +811,27 @@ impl Registry {
         self.tools.values()
     }
 
+    /// The tools that exist to send: they can reach outside, they are not
+    /// reads, and they destroy nothing — `mail_send`, a Slack post, a
+    /// calendar invite. The calls the outbox exists to stage.
+    ///
+    /// Not `shell`, which is destructive as well, and not `http_fetch` or
+    /// `web_search`, which are read-only: those are the interlock's to
+    /// refuse, not the outbox's to hold. Setup warns for each of these that
+    /// no `[outbox] tools` entry routes, because a sender registered before
+    /// it is routed executes for real with the interlock as its only guard —
+    /// the mail server was live mail until someone remembered the line.
+    pub fn senders(&self) -> Vec<&str> {
+        self.tools
+            .values()
+            .filter(|t| {
+                let c = t.capabilities();
+                c.external_send && !c.destructive && !t.read_only()
+            })
+            .map(|t| t.name())
+            .collect()
+    }
+
     /// Everything the registered tools want carried across a compaction.
     ///
     /// In the registry's stable order, so a compaction does not reorder the
@@ -1148,6 +1169,65 @@ mod cap_tests {
         let allowed = r.surface_restriction().unwrap();
         assert!(allowed.contains("a") && allowed.contains("b"));
         assert!(!allowed.contains("c"), "still a subset: {allowed:?}");
+    }
+}
+
+#[cfg(test)]
+mod sender_tests {
+    use super::*;
+    use serde_json::json;
+
+    struct Shaped(&'static str, Capabilities, bool);
+
+    #[async_trait]
+    impl Tool for Shaped {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            self.2
+        }
+        fn capabilities(&self) -> Capabilities {
+            self.1
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok(""))
+        }
+    }
+
+    /// The shapes that matter: a mail send (MCP `openWorldHint` derives
+    /// private + untrusted + send, not destructive) is a sender; an
+    /// unconfined shell (destructive) and a fetch (read-only) are not.
+    #[test]
+    fn senders_are_the_pure_sends_not_the_shell_or_the_fetch() {
+        let mut r = Registry::new();
+        r.insert(Arc::new(Shaped(
+            "mail_send",
+            Capabilities::default().private().untrusted().sends(),
+            false,
+        )));
+        r.insert(Arc::new(Shaped(
+            "shell",
+            Capabilities::default().private().sends().destructive(),
+            false,
+        )));
+        r.insert(Arc::new(Shaped(
+            "http_fetch",
+            Capabilities::default().untrusted().sends(),
+            true,
+        )));
+        r.insert(Arc::new(Shaped(
+            "fs_read",
+            Capabilities::default().private(),
+            true,
+        )));
+        assert_eq!(r.senders(), vec!["mail_send"]);
     }
 }
 

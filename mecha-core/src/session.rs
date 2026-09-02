@@ -13,6 +13,59 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+/// A `message` record whose blocks a newer build wrote, read as far as this
+/// build can.
+///
+/// `Block` is a closed enum written to an append-only store — a wire format
+/// — and `serde` fails the whole record on a variant it does not know. Read
+/// strictly, a message carrying one new block kind was *dropped from the
+/// resumed conversation*, which can orphan a `tool_result` and 400 every
+/// later request on the session. So a line that failed the strict parse is
+/// retried block by block: the blocks this build knows are kept, the rest
+/// are counted and logged, and the message survives with what it has. A
+/// message left with no blocks at all, or a role this build does not know,
+/// is still dropped — there is nothing left to keep.
+fn lenient_message(line: &str) -> Option<Message> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("record").and_then(serde_json::Value::as_str) != Some("message") {
+        return None;
+    }
+    let role: crate::message::Role = serde_json::from_value(v.get("role")?.clone()).ok()?;
+    let raw = v.get("content")?.as_array()?;
+    let mut content = Vec::with_capacity(raw.len());
+    let mut dropped = 0usize;
+    for block in raw {
+        match serde_json::from_value::<crate::message::Block>(block.clone()) {
+            Ok(b) => content.push(b),
+            Err(_) => dropped += 1,
+        }
+    }
+    if content.is_empty() {
+        return None;
+    }
+    tracing::warn!(
+        dropped,
+        kept = content.len(),
+        "a transcript message carried blocks this build cannot read; kept the rest"
+    );
+    Some(Message { role, content })
+}
+
+/// Read a `stop_cause` that may have been written by a newer build.
+///
+/// Same rule as [`lenient_message`]: `StopCause` is a wire format, and a
+/// variant this build does not know degrades to `None` rather than failing
+/// the `Outcome` record — which would erase the run from the corpus on load.
+fn lenient_stop_cause<'de, D>(
+    d: D,
+) -> std::result::Result<Option<crate::agent::StopCause>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 pub enum Record {
@@ -309,7 +362,11 @@ pub struct RunStats {
     /// Why the loop stopped. The single most informative field here: it
     /// separates "the model decided it was done" from every way the harness
     /// cut it short, and none of that is visible in the answer text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_stop_cause"
+    )]
     pub stop_cause: Option<crate::agent::StopCause>,
     #[serde(default)]
     pub exhausted: bool,
@@ -957,7 +1014,10 @@ impl Session {
                 }
                 Ok(Record::Outcome(o)) => outcomes.push(o),
                 Ok(Record::Summary { .. }) => {}
-                Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
+                Err(e) => match lenient_message(line) {
+                    Some(m) => messages.push(m),
+                    None => tracing::warn!(error = %e, "skipping malformed transcript line"),
+                },
             }
         }
 
@@ -1041,7 +1101,10 @@ impl Session {
                     }
                 }
                 Ok(_) => {}
-                Err(e) => tracing::debug!(error = %e, "skipping malformed transcript line"),
+                Err(e) => match lenient_message(line) {
+                    Some(m) => admit(m, &mut all),
+                    None => tracing::debug!(error = %e, "skipping malformed transcript line"),
+                },
             }
         }
         all
@@ -2379,6 +2442,72 @@ mod tests {
         // included — so the directory gets the token-file rule.
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A closed enum in an append-only store is a wire format. A newer build
+    /// writing a block kind or a stop cause this one does not know must cost
+    /// the field, never the record: the message was dropped from the resumed
+    /// conversation (orphaning any `tool_result` beside it) and the outcome
+    /// vanished from the corpus.
+    #[test]
+    fn records_from_a_newer_build_degrade_to_what_this_one_can_read() {
+        use std::io::Write;
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-newer")).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&session.path)
+            .unwrap();
+        // An assistant turn carrying a block kind from the future beside one
+        // we know, then the tool result that answers the known block.
+        writeln!(
+            file,
+            r#"{{"record":"message","role":"assistant","content":[{{"type":"hologram","frames":3}},{{"type":"tool_use","id":"t1","name":"echo","input":{{}}}}]}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"record":"message","role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"ok","is_error":false}}]}}"#
+        )
+        .unwrap();
+        // An outcome whose stop cause this build has never heard of.
+        writeln!(
+            file,
+            r#"{{"record":"outcome","turns":2,"stop_cause":"from_the_future","exhausted":false}}"#
+        )
+        .unwrap();
+        // A message made only of unknown blocks has nothing to keep.
+        writeln!(
+            file,
+            r#"{{"record":"message","role":"assistant","content":[{{"type":"hologram","frames":1}}]}}"#
+        )
+        .unwrap();
+        drop(file);
+
+        let t = Session::read(&session.path).unwrap();
+        let messages = &t.convo.messages;
+        assert_eq!(
+            messages.len(),
+            2,
+            "the readable message and its result survive"
+        );
+        assert_eq!(
+            messages[0].content.len(),
+            1,
+            "only the unknown block is dropped: {:?}",
+            messages[0]
+        );
+        assert!(
+            crate::compact::orphaned_tool_results(messages).is_empty(),
+            "keeping the message is what keeps the pairing"
+        );
+        let episode = t.episode.expect("the outcome record survives");
+        assert!(
+            episode.stop_cause.is_none(),
+            "an unknown cause is None, not a lost record"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
