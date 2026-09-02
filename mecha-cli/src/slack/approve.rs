@@ -181,7 +181,21 @@ impl Approver for SlackApprover {
         if self.blanket.lock().is_ok_and(|b| b.contains(tool.name())) {
             return Decision::Allow;
         }
+        self.ask(tool, summarise(tool.name(), input)).await
+    }
 
+    /// Past the thread's mode and the run's blanket approvals on purpose: an
+    /// escalation is the interlock asking a person about *this* call. The
+    /// reason rides in the card's summary. An earlier unanswered card still
+    /// blocks — nobody is watching, and that answer does not change.
+    async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        self.ask(tool, format!("{why} {}", summarise(tool.name(), input)))
+            .await
+    }
+}
+
+impl SlackApprover {
+    async fn ask(&self, tool: &dyn Tool, summary: String) -> Decision {
         // After the mode and blanket checks, so a mid-run switch to `Allow` —
         // a button press, which is proof someone is watching after all —
         // still works. But never another card and another wait.
@@ -199,7 +213,7 @@ impl Approver for SlackApprover {
         let request = Request {
             thread_key: self.thread_key.clone(),
             tool: tool.name().to_string(),
-            summary: summarise(tool.name(), input),
+            summary,
             reply,
         };
 

@@ -121,7 +121,7 @@ very few characters, so a length cap vouches for nothing.
 | Switch | Default | What it changes |
 |---|---|---|
 | `[sandbox] network = false` | sandbox off entirely | Confines `shell`; local work stops tripping the interlock. Costs: no network in confined commands. |
-| `trifecta = "block" \| "ask" \| "allow"` | `block` | `ask` escalates armed sends to a human; `allow` waives the injection interlock entirely — the leak guard below still applies. |
+| `trifecta = "block" \| "ask" \| "allow"` | `block` | `ask` escalates armed sends to a person through `Approver::escalate`, past any "always" list or permission mode; an approver that cannot reach a person (eval, replay, `--yes`, a headless run) answers `Blocked`, so `ask` never quietly equals `allow`. `allow` waives the injection interlock entirely — the leak guard below still applies. |
 | `block_sends_after_private` | off | The leak guard: refuses sends once private data is present, injection or not. Off by default because it breaks ordinary work — the default posture defends the injection path, not deliberate egress. |
 | `trusted_output` + `answer_shape` | off | Per-answer trust for shape-provable child answers. Costs: the child's answer must literally be a value. |
 | `subagent trusted_output` without shape | — | Refuses to construct. This is not a switch; it is the hole that used to be one. |

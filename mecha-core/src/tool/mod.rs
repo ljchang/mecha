@@ -684,6 +684,30 @@ pub enum Decision {
 #[async_trait]
 pub trait Approver: Send + Sync {
     async fn approve(&self, tool: &dyn Tool, input: &Value) -> Decision;
+
+    /// Put a call in front of a person even though policy would have passed
+    /// it. The trifecta interlock's `ask` comes here, never to `approve`.
+    ///
+    /// Separate because `approve` is allowed to answer from policy — a
+    /// permission mode, an "always" list, a headless `--yes` — and none of
+    /// those is a human deciding, which is the whole content of `ask`. On
+    /// 2026-09-02 `ask` was a flag that forced `approve`, so under
+    /// `ModeApprover { Allow }` (eval, replay, `--yes`) it equalled `allow`
+    /// with nothing in the transcript to say so.
+    ///
+    /// The default is `Blocked`: an approver that does not know how to reach
+    /// a person must say so rather than answer. `Blocked`, not `Deny`, because
+    /// no human spoke. An interactive approver overrides this to show `why`
+    /// beside the call and wait for an answer, bypassing its own shortcuts.
+    async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        let _ = input;
+        Decision::Blocked(format!(
+            "{why} `trifecta = \"ask\"` needs an approver that can reach a person, and this \
+             run's approver answers from policy — `{}` was not asked. Run from a surface \
+             with someone watching, or set `trifecta = \"block\"`.",
+            tool.name()
+        ))
+    }
 }
 
 /// Answers from the configured [`PermissionMode`] without asking anyone.
