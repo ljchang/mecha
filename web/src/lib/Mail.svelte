@@ -381,10 +381,10 @@
 
 <style>
   .page { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
-  header { display: flex; align-items: center; gap: 10px; padding: 14px 56px 12px 20px; border-bottom: 1px solid var(--accent-900); }
+  header { display: flex; align-items: center; gap: 10px; padding: 14px var(--gutter-gear) 12px var(--gutter); border-bottom: 1px solid var(--accent-900); }
   header .title { font-weight: 500; font-size: 17px; letter-spacing: -0.02em; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .backbtn { background: none; border: none; color: var(--text-muted); min-width: 44px; min-height: 44px; margin: -12px 0 -12px -12px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-  .scroll { flex: 1; overflow-y: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .scroll { flex: 1; overflow-y: auto; padding: 14px var(--gutter); display: flex; flex-direction: column; gap: 10px; }
   /* A flex item with overflow!=visible has automatic min-size ZERO, so a
      long list's cards silently shrink to fit the viewport and clip their
      own text — 24 rows rendered as 30px slivers on a real phone. Never
@@ -431,7 +431,7 @@
   .editline { width: 100%; background: var(--surface); border: 1px solid var(--accent-700); border-radius: var(--radius); color: var(--text); font-family: var(--mono); font-size: 13px; padding: 12px 14px; box-sizing: border-box; }
   /* Above the scrim (5) and the fab (4), matching Tasks/Frontdoor — at
      z auto the scrim paints over the sheet and swallows every tap. */
-  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px 20px 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--accent-500); border-radius: 16px 16px 0 0; padding: 14px var(--gutter) 28px; display: flex; flex-direction: column; gap: 12px; z-index: 6; }
   .sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--accent-900); align-self: center; }
   .sheet-text { font-size: 15px; font-weight: 500; }
   .sheet-sub { font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }

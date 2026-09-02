@@ -96,6 +96,7 @@ pub mod step;
 pub mod subagent;
 pub mod surface;
 pub(crate) mod text;
+pub mod title;
 pub mod tool;
 pub mod trigger;
 pub mod work;
