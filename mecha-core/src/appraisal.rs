@@ -732,6 +732,10 @@ pub struct SessionRecords<'a> {
     /// signed each one `-0.5` — an unreadable store manufacturing errors in
     /// a different channel, which inverts the rule this surface is built on
     /// (found on review). The request arm is skipped when this is set.
+    /// Only the outbox carries such a flag, and the asymmetry is
+    /// load-bearing: the question, request and reflection arms only ever
+    /// *add* a sign, so a short read of those stores under-signs, where a
+    /// short read of the outbox inverted the request arm's answer.
     pub outbox_unreadable: bool,
     pub questions: &'a [crate::questions::Question],
     pub requests: &'a [crate::frontdoor::Record],
@@ -1326,21 +1330,28 @@ pub fn live(
 /// [`live`], with the dimensional reading beside the label — what the
 /// surfaces actually show (`docs/APPRAISAL-RESEARCH.md` §3.1).
 ///
-/// **Negative-only, and neutral-only, on every live surface today — said
-/// here because the surfaces' own docs describe a two-sided bar.** This
-/// passes no drafts (below), and a draft sent unchanged is the one signed
-/// positive `of_session` can assemble from a run's own record, so
-/// `Valence::positive` is always zero here: the TUI badge is always amber,
-/// the web bar draws only its negative half, and the Slack line only ever
-/// reads `−N.N`. And the free readout's *label* is `Neutral` on every
-/// error it can build (`Own`/`Owner`, `controllable` unfilled), so the
-/// label word never reaches a live chip or badge and the voice nudge
-/// behind `affect_label` never fires. The positive half and the labels
-/// live on the offline readers — `sessions appraise`, the closure
-/// appraisal — which read the outbox and can run the probe. A channel
-/// that signs a positive off the run's own record is what changes this,
-/// and phase B's queue-delta arm (`Channel::Commitment`, read from the
-/// run's own homeostat) is the first (found on review).
+/// **One positive is reachable on a live surface, and no label word is.**
+/// This passes no drafts (below), so a draft sent unchanged — the outbox's
+/// positive — never signs here; the one positive a live run can carry is
+/// the queue-delta arm (`Channel::Commitment`, `+0.5`), read off the run's
+/// own homeostat, which every ordinary front-end records: a run that left
+/// fewer things waiting on the owner than it found shows a grey badge, a
+/// right-hand bar, a `+0.5` in the thread. The free readout's *label* is
+/// still `Neutral` on every error it can build (`Own`/`Owner`,
+/// `controllable` unfilled), so the label word never reaches a live chip
+/// or badge and the voice nudge behind `affect_label` never fires. The
+/// draft positive and the labels live on the offline readers — `sessions
+/// appraise`, the closure appraisal — which read the outbox and can run
+/// the probe.
+///
+/// **Accepted, and said here because it is visible:** the delta is a
+/// global before/after diff of the stores, not a join on what this session
+/// touched, so on a machine running several sessions at once the owner
+/// answering session B's question mid-run puts the `+0.5` on session A's
+/// badge with nothing on the surface to explain it (found on review). The
+/// queue arm's own comment names the by-id attribution that closes this;
+/// until the stores record which session resolved an item, a live positive
+/// means "the owner's queue got shorter while this ran", no more.
 ///
 /// On a compacted run the label is `Neutral` outright, for the reason
 /// [`live`]'s body gives, and the valence is computed from the counters
@@ -3203,12 +3214,13 @@ mod tests {
         assert_eq!(live("s1", &compacted, &convo, 0), Affect::Neutral);
     }
 
-    /// Pins the disclosure on `live_readout`: with no drafts and no probe,
-    /// nothing a live run records can sign positive or earn a label. When
-    /// this fails, the docs that say "negative-only" are stale — update
-    /// them, not this.
+    /// Pins the disclosure on `live_readout`: with no drafts, no probe and
+    /// no homeostat, nothing a live run records can sign positive or earn a
+    /// label. The queue-delta arm is the one live positive, and the next
+    /// test pins that it — and only it — is reachable. When either fails,
+    /// the docs are stale — update them, not this.
     #[test]
-    fn the_live_readout_is_negative_only_and_neutral_only_today() {
+    fn the_live_readout_is_neutral_only_and_negative_only_without_a_queue_delta() {
         let mut outcome = bare_outcome();
         outcome.stop_cause = crate::agent::StopCause::MaxTurns;
         outcome.ended_on_failed_call = true;
@@ -3218,6 +3230,27 @@ mod tests {
         assert_eq!(r.label, Affect::Neutral);
         assert_eq!((r.valence.positives, r.valence.positive), (0, 0.0));
         assert!(r.valence.negatives >= 2);
+    }
+
+    #[test]
+    fn a_live_run_that_shortened_the_owners_queue_signs_the_one_live_positive() {
+        let mut outcome = bare_outcome();
+        outcome.homeostat = Some(crate::homeostat::Homeostat {
+            backlog_delta: Some(crate::backlog::BacklogDelta {
+                outbox: Some(-1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let convo = crate::agent::Conversation::default();
+        let r = live_readout("s1", &outcome, &convo, 0);
+        assert_eq!(r.label, Affect::Neutral, "still no word on a live surface");
+        assert_eq!((r.valence.positives, r.valence.positive), (1, 0.5));
+        assert!(
+            !r.is_silent(),
+            "the badge, the bar and the thread line all show it"
+        );
+        assert_eq!(r.valence.compact(), "+0.5");
     }
 
     // --- phase B channels ----------------------------------------------------
