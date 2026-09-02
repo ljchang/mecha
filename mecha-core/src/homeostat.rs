@@ -154,11 +154,10 @@ impl Homeostat {
             // waiting (one seam derives both numbers from this same pair of
             // reads — found on review, when the numerator spanned five
             // stores and the denominator three).
-            self.anticipated_guilt =
-                crate::guilt::anticipated_guilt(before, self.peak_context_pressure, now);
-            self.guilt_after_relief =
-                crate::guilt::with_backlogs(before, &after, self.peak_context_pressure, now);
-            self.backlog_delta = Some(Backlog::delta(before, &after));
+            let fold = crate::guilt::with_backlogs(before, &after, self.peak_context_pressure, now);
+            self.anticipated_guilt = fold.level;
+            self.guilt_after_relief = fold.after_relief;
+            self.backlog_delta = Some(fold.delta);
         }
         self
     }
