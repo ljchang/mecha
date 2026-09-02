@@ -199,9 +199,11 @@ Triggers are read-only unless the file says otherwise. Triggers read the global
 config only, never a project's `mecha.toml`, because a cloned repository must
 not be able to shape a scheduled agent run on your machine. Provider fallback is
 empty by default — answering with a different model than the one you named is
-worse than failing. Compaction is off by default, because paraphrasing someone's
-conversation because it got long is their decision to make. Unfurling is off on
-everything a model authors, with no parameter to enable it.
+worse than failing. Compaction is lossy, so it never fires silently: the
+threshold derives from the window the provider declares (two thirds of it, or
+`compact_at_tokens` if you set one), the summary is validated against what it
+replaced before it is installed, and the transcript records every rewrite.
+Unfurling is off on everything a model authors, with no parameter to enable it.
 
 ## What is deliberately not here
 
@@ -210,7 +212,9 @@ had twice:
 
 - **No decay, TTLs, or usage-based eviction on learned rules.** The rule that
   fires rarely may be the one that must never expire. Only measured harm argues
-  for retirement, and a human accepts the argument.
+  for retirement, and the argument is a measurement: a rule that fails its
+  probes is retired by the nightly loop, flagged rather than deleted, and can
+  be revived. No model ever asserts that a rule is bad.
 - **No policy built on model-rated confidence.** A model's certainty about its
   own output is not evidence.
 - **No scheduled shell commands.** A trigger's action is a prompt. Scheduled

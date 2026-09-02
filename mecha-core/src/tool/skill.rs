@@ -57,7 +57,10 @@ impl SkillTool {
 
     /// What has been loaded, for a UI or a test.
     pub fn loaded(&self) -> Vec<String> {
-        self.loaded.lock().unwrap().clone()
+        self.loaded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// What this run actually carries — the level-1 set, after config
@@ -82,7 +85,10 @@ impl SkillTool {
     /// *within* a conversation on purpose: a procedure that has been read
     /// cannot be un-read, and the narrowing is the fail-closed direction.
     pub fn clear(&self) {
-        self.loaded.lock().unwrap().clear();
+        self.loaded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     fn skill(&self, name: &str) -> Option<&Skill> {
@@ -255,7 +261,7 @@ impl Tool for SkillTool {
             });
         }
 
-        let mut loaded = self.loaded.lock().unwrap();
+        let mut loaded = self.loaded.lock().unwrap_or_else(|e| e.into_inner());
         if !loaded.iter().any(|n| n == name) {
             loaded.push(name.to_string());
         }
@@ -278,7 +284,7 @@ impl Tool for SkillTool {
     /// summary, as the part of the rebuilt head known to be current rather
     /// than paraphrased.
     fn carried_state(&self, _ctx: &ToolCtx) -> Option<CarriedState> {
-        let loaded = self.loaded.lock().unwrap();
+        let loaded = self.loaded.lock().unwrap_or_else(|e| e.into_inner());
         if loaded.is_empty() {
             return None;
         }
@@ -342,7 +348,7 @@ impl Tool for SkillTool {
     }
 
     fn narrows_surface_to(&self) -> Option<Vec<String>> {
-        let loaded = self.loaded.lock().unwrap();
+        let loaded = self.loaded.lock().unwrap_or_else(|e| e.into_inner());
         let mut names: Vec<String> = Vec::new();
         let mut any = false;
         for skill in loaded.iter().filter_map(|n| self.skill(n)) {

@@ -158,6 +158,15 @@ impl Provider for Failover {
         self.primary.default_model()
     }
 
+    /// The primary's answer, like `id` and `default_model`. Inheriting the
+    /// trait default (`false`) meant configuring any `fallbacks` silently
+    /// turned every attached image into a `[image: …]` placeholder — a
+    /// feature that degraded another as a side effect, with nothing in the
+    /// transcript to say why.
+    fn vision(&self) -> bool {
+        self.primary.vision()
+    }
+
     async fn complete(
         &self,
         req: &CompletionRequest,
@@ -332,6 +341,46 @@ mod failover_tests {
                 "the fallback was consulted"
             );
         }
+    }
+
+    /// Sees images; never called.
+    struct Sighted;
+
+    #[async_trait]
+    impl Provider for Sighted {
+        fn id(&self) -> &str {
+            "sighted"
+        }
+        fn default_model(&self) -> &str {
+            "sighted-model"
+        }
+        fn vision(&self) -> bool {
+            true
+        }
+        async fn complete(
+            &self,
+            _req: &CompletionRequest,
+            _sink: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            unreachable!("vision() is a static property")
+        }
+    }
+
+    /// Wrapping a vision-capable primary in a `Failover` must not blind it:
+    /// `Agent::vision` asks the outermost provider, and the trait default is
+    /// `false`.
+    #[test]
+    fn a_failover_sees_what_its_primary_sees() {
+        let failover = Failover::new(Box::new(Sighted), vec![]);
+        assert!(failover.vision());
+        let blind = Failover::new(
+            Box::new(Failing {
+                error: || anyhow::anyhow!("never called"),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+            vec![],
+        );
+        assert!(!blind.vision(), "and it invents nothing the primary lacks");
     }
 
     #[tokio::test]

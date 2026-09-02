@@ -154,6 +154,28 @@ impl Tool for FsRead {
     }
 }
 
+/// Create or replace a file without following a symlink at its final
+/// component.
+///
+/// `ToolCtx::resolve` already refuses a symlink it can see, but approval is
+/// sequential and execution concurrent, so a link planted by a sibling call
+/// in the same turn (`shell: ln -s ~/.mecha/… x` beside `fs_write x`) can
+/// appear between the check and the open. `O_NOFOLLOW` makes the open itself
+/// refuse, so the jail does not depend on nothing changing in between. The
+/// directory components are still followed — those are the canonicalized
+/// root, and a race on them is a race the kernel wins for us only with
+/// `openat2`, which is not portable to the macOS this also builds on.
+pub(crate) async fn write_no_follow(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let mut file = options.open(path).await?;
+    file.write_all(bytes).await?;
+    file.flush().await
+}
+
 pub struct FsWrite;
 
 #[async_trait]
@@ -188,7 +210,7 @@ impl Tool for FsWrite {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        match tokio::fs::write(&path, content).await {
+        match write_no_follow(&path, content.as_bytes()).await {
             Ok(()) => Ok(ToolOutput::ok(format!(
                 "wrote {} bytes to {}",
                 content.len(),
@@ -257,7 +279,7 @@ impl Tool for FsEdit {
             }
         }
 
-        tokio::fs::write(&path, text.replacen(old, new, 1)).await?;
+        write_no_follow(&path, text.replacen(old, new, 1).as_bytes()).await?;
         Ok(ToolOutput::ok(format!("edited {}", path.display())))
     }
 }
@@ -599,9 +621,23 @@ impl Tool for HttpFetch {
             builder = builder.resolve_to_addrs(host, addrs);
         }
         let client = builder.build()?;
+        // Every failure past this point is `from_outside`: the redirect
+        // target is a header the remote server chose, and a transport error's
+        // text can carry what the far end said. An error built clean let
+        // attacker-chosen text enter the conversation untainted.
+        //
+        // Chosen, not overlooked: a DNS failure or a refused connection is
+        // reqwest's own words with no packet from the far end, and marking it
+        // external over-taints — one fetch at an unreachable host arms the
+        // untrusted leg for the rest of the conversation. It stays marked
+        // because a TLS alert *can* carry server-chosen strings and the two are
+        // not told apart from `reqwest::Error` without matching on its kinds,
+        // and over-taint fails closed. The loop's own errors follow the other
+        // rule (`run_tools`: an `Err` before the wire is never external);
+        // this tool touched the wire, so it marks.
         let resp = match client.get(url).send().await {
             Ok(r) => r,
-            Err(e) => return Ok(ToolOutput::err(format!("request failed: {e}"))),
+            Err(e) => return Ok(ToolOutput::err(format!("request failed: {e}")).from_outside()),
         };
 
         if resp.status().is_redirection() {
@@ -613,7 +649,8 @@ impl Tool for HttpFetch {
             return Ok(ToolOutput::err(format!(
                 "{} redirect to {target} — not followed. Call http_fetch again with that URL if you want it.",
                 resp.status()
-            )));
+            ))
+            .from_outside());
         }
 
         let status = resp.status();
@@ -626,9 +663,13 @@ impl Tool for HttpFetch {
             match chunk {
                 Ok(c) => raw.extend_from_slice(&c),
                 Err(e) => {
-                    return Ok(ToolOutput::err(format!(
-                        "reading the response body failed: {e}"
-                    )))
+                    // A body that broke partway is still what the far end
+                    // sent — a malformed chunk, a bad encoding — and the
+                    // conversation may already hold part of a hostile page.
+                    return Ok(
+                        ToolOutput::err(format!("reading the response body failed: {e}"))
+                            .from_outside(),
+                    );
                 }
             }
             if raw.len() > MAX_OUTPUT_BYTES {
@@ -842,6 +883,35 @@ mod tests {
             network,
             ..SandboxConfig::default()
         })))
+    }
+
+    /// The race `ToolCtx::resolve` cannot close on its own: a link that
+    /// appears between the containment check and the open. The open itself
+    /// must refuse to follow, or a same-turn `shell` sibling can redirect a
+    /// write anywhere the process can reach.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_writer_refuses_to_follow_a_symlink_planted_after_the_check() {
+        let dir = std::env::temp_dir().join(format!("mecha-nofollow-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("outside").join("planted.txt");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = write_no_follow(&link, b"payload").await.unwrap_err();
+        assert!(!target.exists(), "the target must not be created: {err}");
+
+        // An ordinary path is unaffected.
+        write_no_follow(&dir.join("plain.txt"), b"ok")
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("plain.txt")).unwrap(),
+            "ok"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

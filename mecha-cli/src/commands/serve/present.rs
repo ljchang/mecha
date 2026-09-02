@@ -150,7 +150,35 @@ impl Approver for WebApprover {
         if tool.read_only() {
             return Decision::Allow;
         }
+        self.ask(tool, input, None).await
+    }
 
+    /// Past the modes that would have *passed* the call — `Allow`, the
+    /// read-only shortcut — on purpose: an escalation is the interlock asking
+    /// a person about *this* call. Not past `ReadOnly`, which is a refusal
+    /// the surface already made: an escalation narrows and never loosens,
+    /// and the PR review of this change found the first version widening
+    /// past it. The reason rides on the card as its question.
+    async fn escalate(&self, tool: &dyn Tool, input: &serde_json::Value, why: &str) -> Decision {
+        let mode = self
+            .mode
+            .lock()
+            .map(|m| *m)
+            .unwrap_or(PermissionMode::ReadOnly);
+        if mode == PermissionMode::ReadOnly && !tool.read_only() {
+            return ModeApprover { mode }.approve(tool, input).await;
+        }
+        self.ask(tool, input, Some(why.to_string())).await
+    }
+}
+
+impl WebApprover {
+    async fn ask(
+        &self,
+        tool: &dyn Tool,
+        input: &serde_json::Value,
+        question: Option<String>,
+    ) -> Decision {
         let (qid, rx) = self.questions.open();
         let card = WireEvent::Question {
             qid,
@@ -162,7 +190,7 @@ impl Approver for WebApprover {
             // anyway — which is the failure this card exists to prevent,
             // not a cosmetic complaint about JSON.
             draft: super::chat::WireDraft::of(input),
-            question: None,
+            question,
             options: Vec::new(),
             timeout_secs: self.timeout.as_secs(),
         };
