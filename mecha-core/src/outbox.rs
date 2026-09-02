@@ -1377,6 +1377,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A record written before this branch's fields existed is **read**, not
+    /// counted as unreadable.
+    ///
+    /// The tie between two changes that landed together: `items_counting`
+    /// (#141) reports how many files the lenient read could not parse, and
+    /// this branch adds two fields to the very struct it parses. Defaulted,
+    /// they cost nothing; *un*defaulted, every draft already on disk would
+    /// fail `serde_json::from_str`, every one would land in `skipped`, and a
+    /// counter built to surface a corrupt store would report the whole store
+    /// corrupt the moment the binary was upgraded.
+    #[test]
+    fn a_legacy_record_is_read_rather_than_counted_as_unreadable() {
+        let root = std::env::temp_dir().join(format!(
+            "outbox-legacy-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = OutboxStore::open(&root).unwrap();
+        // Exactly the shape written before  and .
+        std::fs::write(
+            root.join("20260101-000000-abc.json"),
+            serde_json::to_string(&json!({
+                "id": "20260101-000000-abc",
+                "status": "pending",
+                "tool": "mail__mail_send",
+                "args_before": {"to": "ada@example.com"},
+                "args": {"to": "ada@example.com"},
+                "summary": "mail__mail_send",
+                "created_at": "2026-01-01T00:00:00Z",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let (items, skipped) = store.items_counting().unwrap();
+        assert_eq!(skipped, 0, "a legacy draft read as unparseable");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].call_id, None);
+        assert!(items[0].filled_defaults.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Items written before the field existed must load as what they in fact
     /// were, or an upgrade would reclassify every staged email as unknown.
     #[test]
