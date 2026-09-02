@@ -176,7 +176,69 @@ pub fn evidence_for(model: &str, slice: &Corpus, history: Vec<String>) -> Eviden
         }
     }
     evidence.history = history;
+    evidence.compact_at_fraction = compact_at_fraction(slice);
     evidence
+}
+
+/// The fraction of the context window at which compaction fires for the runs
+/// in this slice, when it is knowable.
+///
+/// **The provider comes from the corpus, not from the default.** The slice is
+/// keyed by model and every `RunRow` records the provider that served it, so
+/// looking the window up on `cfg.provider(None)` would divide this model's
+/// token threshold by a different model's window — 40 000 against a 65 536
+/// window reads as 61%, against a 200 000 window as 20%, and only one of
+/// those describes the runs being diagnosed. A slice whose rows disagree
+/// about the provider yields `None`: there is no single threshold to name.
+///
+/// **`None` whenever there is no fraction to report — which is not the same
+/// set as `AgentConfig::compact_at` returning `None`.** With neither
+/// `compact_at_tokens` nor a window there is no threshold at all, and an
+/// earlier draft returned `Some(COMPACT_FRACTION)` there — printing
+/// "compaction fires at 66.0% ... never needed, NOT disabled" for a
+/// configuration in which it is genuinely disabled. With an explicit
+/// `compact_at_tokens` and no window, `compact_at` returns `Some(n)` and
+/// compaction IS on; what is missing is the denominator, so there is no
+/// fraction to put beside a pressure reading. Both yield `None` here, for
+/// two different reasons, and conflating them was the earlier wording.
+///
+/// Still the *currently configured* threshold rather than the one each run
+/// used. `RunConfig` does record `compact_at_tokens` per session, so a
+/// per-row threshold is reachable and is the better answer; it is not this
+/// change, and the brief says "fires at" rather than "fired at" so the
+/// sentence stays true of the corpus as configured now.
+fn compact_at_fraction(slice: &Corpus) -> Option<f64> {
+    compact_at_fraction_of(&mecha_core::config::Config::load_global().ok()?, slice)
+}
+
+/// [`compact_at_fraction`] against an explicit config, so the branch that
+/// decides whether the reassuring sentence appears at all is testable.
+///
+/// Split out on review: the renderer had five tests and this function had
+/// none, and it *could not* get one while it loaded the config itself. Its
+/// own doc records that an earlier draft got one of these branches wrong in
+/// the direction that prints "never needed, NOT disabled" for a config where
+/// compaction is genuinely off — the exact regression nothing would have
+/// caught.
+fn compact_at_fraction_of(cfg: &mecha_core::config::Config, slice: &Corpus) -> Option<f64> {
+    // One provider, or nothing to name.
+    let mut providers = slice.rows.iter().map(|r| r.provider.as_str());
+    let provider_name = providers.next()?;
+    if providers.any(|p| p != provider_name) {
+        return None;
+    }
+    let (_, provider) = cfg.provider(Some(provider_name)).ok()?;
+    let window = provider.context_window;
+
+    match cfg.agent.compact_at_tokens {
+        // Derived: the threshold *is* the fraction — but only when there is
+        // a window for it to be a fraction of.
+        None => window.map(|_| mecha_core::config::AgentConfig::COMPACT_FRACTION),
+        Some(tokens) => {
+            let window = window?;
+            (window > 0).then(|| tokens as f64 / window as f64)
+        }
+    }
 }
 
 /// The checkout the diagnostician may read, if one is configured and present.
@@ -545,6 +607,134 @@ pub fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── The threshold derivation ────────────────────────────────────────
+    //
+    // Added on review: the renderer had five tests and this function had
+    // none, and could not get one while it loaded config itself. Its doc
+    // records that an earlier draft returned `Some(COMPACT_FRACTION)` with
+    // no window — which prints "never needed, NOT disabled" for a config
+    // where compaction is genuinely off. These are what would catch that.
+
+    fn row(provider: &str, model: &str) -> mecha_core::runlog::RunRow {
+        mecha_core::runlog::RunRow {
+            session_id: "s".into(),
+            started_at: chrono::Utc::now(),
+            provider: provider.into(),
+            model: model.into(),
+            title: None,
+            workspace: std::path::PathBuf::from("/tmp"),
+            run: 0,
+            stats: Default::default(),
+        }
+    }
+
+    fn corpus(rows: Vec<mecha_core::runlog::RunRow>) -> Corpus {
+        Corpus {
+            rows,
+            sessions_read: 1,
+            ..Default::default()
+        }
+    }
+
+    /// **The invariant the other tests could not see.** All three set
+    /// `default_provider` to the same name the rows carry, so
+    /// `cfg.provider(Some(name))` and `cfg.provider(None)` returned the
+    /// same thing and the fix was unmeasured. Here the default provider has
+    /// a different window from the one the rows name: the fraction must be
+    /// computed against the ROWS\' provider, or the brief divides this
+    /// model\'s threshold by another model\'s window.
+    #[test]
+    fn the_window_comes_from_the_rows_provider_not_the_default() {
+        let mut cfg = mecha_core::config::Config::default();
+        cfg.agent.compact_at_tokens = Some(40_000);
+        cfg.providers.insert(
+            "small".into(),
+            mecha_core::config::ProviderConfig {
+                context_window: Some(65_536),
+                ..Default::default()
+            },
+        );
+        cfg.providers.insert(
+            "big".into(),
+            mecha_core::config::ProviderConfig {
+                context_window: Some(200_000),
+                ..Default::default()
+            },
+        );
+        // The default is the SMALL window; the rows ran on the big one.
+        cfg.default_provider = "small".into();
+        let got = compact_at_fraction_of(&cfg, &corpus(vec![row("big", "m")])).unwrap();
+        assert!(
+            (got - 0.2).abs() < 1e-9,
+            "40000/200000 = 0.20 against the rows\' provider; \
+             40000/65536 = 0.61 would be the default\'s window — got {got}"
+        );
+    }
+
+    /// Unset `compact_at_tokens` with a window: the threshold *is* the
+    /// fraction.
+    #[test]
+    fn a_derived_threshold_is_the_fraction() {
+        let mut cfg = mecha_core::config::Config::default();
+        cfg.agent.compact_at_tokens = None;
+        cfg.providers.insert(
+            "local".into(),
+            mecha_core::config::ProviderConfig {
+                context_window: Some(262_144),
+                ..Default::default()
+            },
+        );
+        cfg.default_provider = "local".into();
+        assert_eq!(
+            compact_at_fraction_of(&cfg, &corpus(vec![row("local", "m")])),
+            Some(mecha_core::config::AgentConfig::COMPACT_FRACTION)
+        );
+    }
+
+    /// **The draft bug.** An explicit token count with no window has no
+    /// fraction — `AgentConfig::compact_at` returns `None` there, and so
+    /// must this, or the brief reassures about a threshold that does not
+    /// exist.
+    #[test]
+    fn an_explicit_threshold_without_a_window_is_unknown() {
+        let mut cfg = mecha_core::config::Config::default();
+        cfg.agent.compact_at_tokens = Some(16_384);
+        cfg.providers.insert(
+            "local".into(),
+            mecha_core::config::ProviderConfig {
+                context_window: None,
+                ..Default::default()
+            },
+        );
+        cfg.default_provider = "local".into();
+        assert_eq!(
+            compact_at_fraction_of(&cfg, &corpus(vec![row("local", "m")])),
+            None
+        );
+    }
+
+    /// Rows disagreeing about the provider name no single threshold.
+    #[test]
+    fn a_mixed_provider_slice_has_no_one_threshold() {
+        let mut cfg = mecha_core::config::Config::default();
+        cfg.agent.compact_at_tokens = None;
+        cfg.providers.insert(
+            "local".into(),
+            mecha_core::config::ProviderConfig {
+                context_window: Some(262_144),
+                ..Default::default()
+            },
+        );
+        cfg.default_provider = "local".into();
+        assert_eq!(
+            compact_at_fraction_of(
+                &cfg,
+                &corpus(vec![row("local", "m"), row("anthropic", "m")])
+            ),
+            None
+        );
+    }
 
     /// The defect this closes: the brief resolved its filter and the draw did
     /// not, so a path the user could reasonably type scoped one and matched
