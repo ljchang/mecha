@@ -231,9 +231,12 @@ rule. Twenty-two such rows exist today against thirteen raw interventions.
 > `reflections.jsonl` through `SessionRecords::reflexions` and signs a
 > follow-up-triggered reflection for the session as an `Intervention`
 > error, `Owner`, `controllable` unfilled, cite `Cite::Reflexion(id)` —
-> only where the verdict cannot have been written by third-party text
-> (origin `clean`, or evidence `user_turns`), never a dropped one, and
-> never a steer or denial (the raw channel already has those).
+> only where `Reflexion::provenance()` is clean, the same question the
+> learning loop's `learnable()` asks (the owner's ruling, 2026-09-02: a
+> wider owner-turns clause admitted nothing the live path writes, since a
+> tainted session's reflection is recorded clean by construction), never
+> a dropped one, and never a steer or denial (the raw channel already has
+> those).
 
 ### 3.5 Replace the guilt sensor's level with the run's delta
 

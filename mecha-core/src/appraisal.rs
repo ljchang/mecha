@@ -1005,16 +1005,17 @@ pub fn of_session(
         // `provenance()`, not the stored field: a record written before
         // `is_harness_voice` existed carries `clean` for a nudge mecha wrote
         // itself (two are on disk), and an owner-edited lesson is a promotion
-        // the stored field does not show. `Derived` is excluded on both arms
-        // — a self-authored follow-up is not the owner correcting the run
-        // whatever the reflector was shown, which is `learnable()`'s own
-        // `Origin::Derived => false`; this is provenance's second consumer
-        // and it must not disagree with the first (found on review).
-        let provenance = r.provenance();
-        let owner_authored = provenance == crate::learning::Origin::Clean
-            || (provenance != crate::learning::Origin::Derived
-                && r.evidence == crate::learning::Evidence::UserTurns);
-        if !owner_authored {
+        // the stored field does not show. **Clean only — the same question
+        // `learnable()` asks, by the owner's ruling.** An appraisal never
+        // rides a prompt, so a wider gate was arguable; but a reflection
+        // written from a tainted session is already recorded *clean* by
+        // construction, because the reflector was handed the owner's turns
+        // alone (`evidence_for_taint`), so a "not derived, and owner-turns
+        // evidence" clause admitted nothing the live path writes and left
+        // provenance's two consumers disagreeing on a rule with no row to
+        // apply to. One function, one answer, measured at 15 of 22 on the
+        // live store under either spelling.
+        if r.provenance() != crate::learning::Origin::Clean {
             continue;
         }
         errors.push(GoalError {
@@ -3305,12 +3306,8 @@ mod tests {
         let cites: Vec<_> = a.errors.iter().map(|e| e.cite.clone()).collect();
         assert_eq!(
             cites,
-            vec![
-                Cite::Reflexion("r1".into()),
-                Cite::Reflexion("r2".into()),
-                Cite::Reflexion("r9".into())
-            ],
-            "a tainted full-excerpt verdict, another session's, a steer (already the raw channel's), a dropped one, a stored-clean nudge and a derived user-turns row all read as nothing; an owner-edited lesson counts"
+            vec![Cite::Reflexion("r1".into()), Cite::Reflexion("r9".into())],
+            "clean provenance only, the learning loop's rule: a stored-untrusted row is out even with owner-turns evidence (the live path records those as clean, so the row is a hand edit or an older binary's), as are another session's, a steer, a dropped one, a stored-clean nudge and a derived row; an owner-edited lesson counts"
         );
         assert!(a
             .errors
