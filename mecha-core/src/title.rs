@@ -79,6 +79,19 @@ const MAX_INPUT_CHARS: usize = 1_200;
 /// appended to it. One entry per surviving message, so the length still
 /// means "owner turns".
 ///
+/// **What this cannot see, and the caller must.** Everything above is a
+/// whole block or a whole message, which is why a block filter answers it.
+/// A door that *decorates* an owner turn — prefixing its own preamble onto
+/// the person's words inside one block — is invisible here by construction,
+/// and `mecha serve` has one: a spoken turn arrives as
+/// `voice::open_spoken_turn`'s `VOICE_BLOCK` followed by what was said, in
+/// the same `web:` conversation as the typed turns (D3). That constant
+/// belongs to the front-end, not to this crate, so the front-end strips it
+/// before calling here — `serve::chat` does, through the same
+/// `strip_voice_preamble` its session listing already uses. Stated rather
+/// than assumed: a new door that decorates a turn has to do the same, and
+/// this paragraph is where it should find that out.
+///
 /// [`agent::is_plain_user_text`]: crate::agent::is_plain_user_text
 /// [`agent::is_harness_voice`]: crate::agent::is_harness_voice
 /// [`compact::rebuild`]: crate::compact::rebuild
