@@ -431,6 +431,25 @@ class TheEnergyFloorSetting(unittest.TestCase):
             self.assertEqual(value, self.DEFAULT, f"{raw!r} was accepted")
             self.assertIsNotNone(complaint, f"{raw!r} was refused silently")
 
+    def test_a_default_under_the_floor_is_clamped_and_named(self):
+        """The unset path is where an inverted *pairing* would land, and there
+        is nothing configured to complain about there.
+
+        `MIN_SEGMENT_RMS` is a constant VOICE-RESEARCH expects to be
+        re-measured per microphone; raising it past the default would make the
+        over-the-speaker floor the *lower* of the two, which is the inversion
+        this guard exists to refuse — arriving through the one door the guard
+        was not watching.
+        """
+        value, complaint = echo_rms(None, floor=0.030, default=self.DEFAULT)
+        self.assertEqual(value, 0.030, "the stricter floor is the safe clamp")
+        self.assertIsNotNone(complaint)
+
+        # And a configured value is still judged against the real floor.
+        value, complaint = echo_rms("0.025", floor=0.030, default=self.DEFAULT)
+        self.assertEqual(value, 0.030)
+        self.assertIsNotNone(complaint)
+
     def test_unparseable_is_refused_and_named(self):
         for raw in ["", "abc", "0,02", "0.02f"]:
             value, complaint = self.read(raw)

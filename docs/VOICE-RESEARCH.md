@@ -878,9 +878,27 @@ named by what it can and cannot do.
   so clearing the raised bar does not exempt a transcript, it only earns it the
   right to be killed by the text test. Anything the filter rejects is rejected
   finally, which is why it may only speak where a person is unlikely to have
-  said exactly that. The cost, stated: a short echo that clears the raised RMS
-  floor becomes a turn and mecha answers something odd — recoverable, where a
-  wrong suppression is not a degraded turn but no turn at all.
+  said exactly that.
+
+  **The cost, stated accurately.** A short echo that clears the raised RMS
+  floor becomes a turn — and a spoken turn is not always an answer. Production
+  runs `mecha serve --voice-yes`, which sets `TurnOpts::approve_all` and runs
+  the spoken turn with the approver **off**. Sends still stage through the
+  outbox and the trifecta interlock is untouched, but a `destructive` local
+  call is gated by the approver alone, and `mail_triage` is deliberately not
+  outbox-routed. So on speakers, mecha offering "I can cancel it, delete it,
+  or do it now" and hearing "delete it" back is that call with no human in it,
+  and below the floor the only thing left is `ECHO_SEGMENT_RMS` — a guess
+  pending measurement, shipped commented out.
+
+  The floor stays, because the other direction is worse in the way that
+  matters most: a wrong suppression is not a degraded turn but no turn, and
+  the owner repeats themselves into a mic that keeps discarding them. **Open
+  for the owner**: the sub-eight-word band wants a defence with more state
+  than a text filter has — a spoken turn that is a verbatim span of the offer
+  it answers might reasonably not inherit `approve_all`. That is a change to
+  the approval model in `mecha-cli`, not to this filter, and it is not made
+  here.
 
   The timing layer's own trap belongs beside them: the segment start is
   **consumed** when read, not left in place. `_bot_audible_until` only ever
