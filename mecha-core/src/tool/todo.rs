@@ -709,34 +709,47 @@ impl TodoTool {
     /// one's — the exact wrong-units mistake rung 4 made reading headroom off
     /// one run's outcome for a whole episode.
     pub fn set_plan_in(&self, workspace: &Path, plan: Plan) {
-        // The marks are dropped (above) but the freezes are not: a step the
-        // restored plan shows completed against a check is frozen against
-        // that check in the new process too, or a resume was the fourth
-        // door — `Tracked::default()` zeroed `checks`, so the next write
-        // could swap the check as a first declaration with nothing counted
-        // (found on review). The restored plan is transcript-derived and
-        // could itself carry an earlier tamper's rewrite; `advance` put the
-        // frozen command back into the plan the echo was rendered from, so
-        // the transcript's last echo is the frozen one. `tampered` starts
-        // at zero, as the counter is per process and the transcript's own
-        // echoes already carry the earlier lines.
-        let checks = plan
-            .items
-            .iter()
-            .filter(|i| i.status == Status::Completed)
-            .filter_map(|i| {
-                i.check.as_ref().map(|c| {
-                    (
-                        i.content.clone(),
-                        Freeze {
-                            hash: check_hash(c),
-                            frozen: true,
-                            check: c.clone(),
-                        },
-                    )
-                })
+        self.install_in(workspace, plan, HashMap::new());
+    }
+
+    /// [`set_plan_in`](Self::set_plan_in), plus freezes the plan itself
+    /// no longer shows. The marks are dropped (above) but the freezes are
+    /// not: a step the restored plan shows completed against a check is
+    /// frozen against that check in the new process too, or a resume was
+    /// the fourth door — `Tracked::default()` zeroed `checks`, so the next
+    /// write could swap the check as a first declaration with nothing
+    /// counted (found on review). `extra` carries the steps the transcript
+    /// froze that the last plan trimmed ([`frozen_checks_from_transcript`]
+    /// (Self::frozen_checks_from_transcript)); the plan's own completed
+    /// steps win where both say something. `tampered` starts at zero, as
+    /// the counter is per process and the transcript's own echoes already
+    /// carry the earlier lines.
+    fn install_in(&self, workspace: &Path, plan: Plan, extra: HashMap<String, String>) {
+        let mut checks: HashMap<String, Freeze> = extra
+            .into_iter()
+            .map(|(content, c)| {
+                (
+                    content,
+                    Freeze {
+                        hash: check_hash(&c),
+                        frozen: true,
+                        check: c,
+                    },
+                )
             })
             .collect();
+        for i in plan.items.iter().filter(|i| i.status == Status::Completed) {
+            if let Some(c) = &i.check {
+                checks.insert(
+                    i.content.clone(),
+                    Freeze {
+                        hash: check_hash(c),
+                        frozen: true,
+                        check: c.clone(),
+                    },
+                );
+            }
+        }
         self.lists.lock().unwrap_or_else(|e| e.into_inner()).insert(
             workspace.into(),
             Tracked {
@@ -765,8 +778,67 @@ impl TodoTool {
     pub fn rehydrate(&self, workspace: &Path, messages: &[Message]) -> Option<usize> {
         let plan = Self::plan_from_transcript(messages)?;
         let n = plan.items.len();
-        self.set_plan_in(workspace, plan);
+        // Freezes from every echo the transcript holds, not only the plan
+        // it ends on: a completed step trimmed from the plan before the
+        // resume — the tool's own docstring encourages trimming finished
+        // steps — was absent from the restored plan and so re-added
+        // unfrozen, the drop-then-re-add door with a process boundary in
+        // the middle (found on review).
+        self.install_in(
+            workspace,
+            plan,
+            Self::frozen_checks_from_transcript(messages),
+        );
         Some(n)
+    }
+
+    /// Every step a transcript's `todo` echoes show completed against a
+    /// check, with the check as the *latest* echo showed it — which is the
+    /// frozen one, since `advance` renders the echo after putting a
+    /// tampered check back. Walked oldest-first so a later echo overrides
+    /// an earlier one for the same step text; the last plan's items are
+    /// covered by construction, and the trimmed ones are the point.
+    pub fn frozen_checks_from_transcript(messages: &[Message]) -> HashMap<String, String> {
+        let mut failed: std::collections::HashSet<&str> = Default::default();
+        for b in messages.iter().flat_map(|m| m.content.iter()) {
+            if let Block::ToolResult {
+                tool_use_id,
+                is_error: true,
+                ..
+            } = b
+            {
+                failed.insert(tool_use_id.as_str());
+            }
+        }
+        let mut todo_ids: std::collections::HashSet<&str> = Default::default();
+        for b in messages.iter().flat_map(|m| m.content.iter()) {
+            if let Block::ToolUse { id, name, .. } = b {
+                if name == "todo" && !failed.contains(id.as_str()) {
+                    todo_ids.insert(id.as_str());
+                }
+            }
+        }
+        let mut frozen = HashMap::new();
+        for b in messages.iter().flat_map(|m| m.content.iter()) {
+            if let Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error: false,
+            } = b
+            {
+                if !todo_ids.contains(tool_use_id.as_str()) {
+                    continue;
+                }
+                for item in Self::parse_rendered(content).items {
+                    if item.status == Status::Completed {
+                        if let Some(c) = item.check {
+                            frozen.insert(item.content, c);
+                        }
+                    }
+                }
+            }
+        }
+        frozen
     }
 
     /// The most recent plan a transcript records, from either of the two
@@ -3134,6 +3206,89 @@ mod tests {
             out.content.contains("`content` must be a single line"),
             "{}",
             out.content
+        );
+    }
+
+    /// Drop-then-re-add with a process boundary in the middle (found on the
+    /// eleventh review pass): a completed step trimmed from the plan before
+    /// a resume must still be frozen after it.
+    #[tokio::test]
+    async fn a_step_trimmed_before_a_resume_stays_frozen_after_it() {
+        use crate::message::{Block, Message, Role};
+        let mut done = TodoItem::new("wire it", Status::Completed);
+        done.check = Some("make test".into());
+        let first_echo = TodoTool::render(&Plan {
+            goal: None,
+            items: vec![done],
+        });
+        let trimmed_echo = TodoTool::render(&Plan {
+            goal: None,
+            items: vec![TodoItem::new("ship it", Status::InProgress)],
+        });
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "wire it", "status": "completed", "check": "make test"}]}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: first_echo,
+                    is_error: false,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t2".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "ship it", "status": "in_progress"}]}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: trimmed_echo,
+                    is_error: false,
+                }],
+            },
+        ];
+        let frozen = TodoTool::frozen_checks_from_transcript(&messages);
+        assert_eq!(frozen.get("wire it").map(String::as_str), Some("make test"));
+
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        assert_eq!(tool.rehydrate(&ws, &messages), Some(1));
+        let out = tool
+            .call(
+                json!({"items": [
+                    {"content": "ship it", "status": "in_progress"},
+                    {"content": "wire it", "status": "completed", "check": "true"}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("\"wire it\" was changed"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(
+            tool.items_in(&ws)
+                .iter()
+                .find(|i| i.content == "wire it")
+                .and_then(|i| i.check.clone())
+                .as_deref(),
+            Some("make test")
         );
     }
 }
