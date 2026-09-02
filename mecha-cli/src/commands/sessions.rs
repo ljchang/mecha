@@ -548,6 +548,35 @@ async fn appraise(
             },
         };
 
+    // The three commitment stores (`docs/APPRAISAL-RESEARCH.md` §3.4, §3.6),
+    // read once for the whole walk and filtered per session inside
+    // `of_session`. Best-effort like the outbox: a store that cannot be read
+    // costs its channel, and the reading says so below rather than folding
+    // it into an empty one.
+    let (questions, questions_unreadable) =
+        match mecha_core::questions::QuestionStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.items() {
+                Ok(items) => (items, false),
+                Err(_) => (Vec::new(), true),
+            },
+        };
+    let (requests, frontdoor_unreadable) = match mecha_core::frontdoor::Frontdoor::open_default() {
+        Ok(fd) => match fd.records() {
+            Ok(items) => (items, false),
+            Err(_) => (Vec::new(), true),
+        },
+        Err(_) => (Vec::new(), false),
+    };
+    let (reflexions, learning_unreadable) =
+        match mecha_core::learning::LearningStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.reflexions() {
+                Ok(items) => (items, false),
+                Err(_) => (Vec::new(), true),
+            },
+        };
+
     // Walked here rather than through `runlog::Corpus`, and the difference is
     // the unit: that reader yields one row per **run**, which is right for
     // counting what runs cost and wrong for this — an intervention carries a
@@ -612,7 +641,12 @@ async fn appraise(
             &transcript,
             &meta.id,
             meta.created_at.to_rfc3339(),
-            &mine,
+            appraisal::SessionRecords {
+                drafts: &mine,
+                questions: &questions,
+                requests: &requests,
+                reflexions: &reflexions,
+            },
             None,
         ) else {
             continue;
@@ -794,6 +828,9 @@ async fn appraise(
                 "channels": channels,
                 "positive_errors": positive,
                 "outbox_read": !outbox_unreadable,
+                "questions_read": !questions_unreadable,
+                "frontdoor_read": !frontdoor_unreadable,
+                "learning_read": !learning_unreadable,
                 // Absent, not zero, when no probe ran: "nothing was probed"
                 // and "probed and found nothing" are opposite findings, and a
                 // reader that cannot tell them apart is the bug this whole
@@ -836,6 +873,14 @@ async fn appraise(
     // edit channel is missing rather than genuinely empty.
     if outbox_unreadable {
         println!("  (the outbox could not be read, so the edit channel is missing — not empty)\n");
+    }
+    if questions_unreadable || frontdoor_unreadable || learning_unreadable {
+        println!(
+            "  (a commitment store could not be read — questions: {}, front door: {}, learning: {} — so that channel is missing, not empty)\n",
+            if questions_unreadable { "unreadable" } else { "ok" },
+            if frontdoor_unreadable { "unreadable" } else { "ok" },
+            if learning_unreadable { "unreadable" } else { "ok" },
+        );
     }
     // Same rule for the session store itself: a corrupt transcript is in no
     // count above, and "skipped" must not read as "the store held less".

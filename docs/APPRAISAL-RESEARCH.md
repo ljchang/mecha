@@ -227,6 +227,14 @@ standing `apply_probe` gives the replay's verdict — and it is the owner's
 own next turn that was judged, which is injection-safe under the provenance
 rule. Twenty-two such rows exist today against thirteen raw interventions.
 
+> **Built 2026-09-02** (`feat/appraisal-phase-b`): `of_session` reads
+> `reflections.jsonl` through `SessionRecords::reflexions` and signs a
+> follow-up-triggered reflection for the session as an `Intervention`
+> error, `Owner`, `controllable` unfilled, cite `Cite::Reflexion(id)` —
+> only where the verdict cannot have been written by third-party text
+> (origin `clean`, or evidence `user_turns`), never a dropped one, and
+> never a steer or denial (the raw channel already has those).
+
 ### 3.5 Replace the guilt sensor's level with the run's delta
 
 `anticipated_guilt` should be computed from `backlog_delta` (what this run
@@ -235,6 +243,15 @@ other way round — and the delta is signed, so a run that cleared a question
 or released a draft is the first *positive* commitment channel, read from a
 store only the harness writes. §7.4's safety argument is unchanged: a delta
 on `OutboxStore` cannot be manufactured by a sentence in a fetched page.
+
+> **Built 2026-09-02**: `guilt::with_delta(level, net_delta)` — a run that
+> cleared three or more recorded commitments reads as no guilt whatever it
+> inherited, one that added three reads as maximal, and between them the
+> level is scaled by the run's own share; `Homeostat::finish` computes the
+> delta first and folds the level through it. And the delta is a channel:
+> a session whose `backlog_delta` net is negative signs `+0.5`, `Own`,
+> `Channel::Commitment`, cite `Setpoint("backlog_delta")`; adding to the
+> queue signs nothing, because staging is a trigger's job.
 
 ### 3.6 Build the two positive channels §5.2 named and nobody built
 
@@ -248,6 +265,20 @@ are owner-authored by construction. The third — a trigger's artifact acted on
 morning trigger has run 14 times into that silence. That one needs a surface
 change (a read receipt on the briefing page or the Slack post) before it can
 be a channel, and is named here rather than proposed.
+
+> **Built 2026-09-02**, as `Channel::Commitment`: a question this session
+> parked and the owner answered, with the session then finishing of its own
+> accord, signs `+0.5`/`Own` (`Cite::Question`); an abandoned one signs
+> `-0.5`/`Owner`. A front-door request this session triaged that the owner
+> closed with none of its drafts sent signs `-0.5`/`Owner`
+> (`Cite::Request(seq)`); one answered by a sent draft is already the draft
+> channel's positive and is not counted twice. `sessions appraise` and the
+> closure appraisal read all three stores best-effort and say which could
+> not be read; `distill` and the live readout read drafts only. The trigger
+> read receipt is still unbuilt. Re-read over the live store with phases A
+> and B together: **26 of 144 sessions signed, `+14.0 −33.5` across them**
+> (intervention 26, edit 19, commitment 3, counter 2), label `neutral` on
+> all 144 — the judged follow-ups doubled the intervention channel.
 
 ### 3.7 Pre-register an expectation, and score it
 

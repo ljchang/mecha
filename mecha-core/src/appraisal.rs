@@ -121,6 +121,14 @@ pub enum Channel {
     /// [`appraise_with_model`], run offline via
     /// `mecha sessions appraise --appraise`.
     Appraisal,
+    /// A recorded commitment kept, dropped, or cleared — a question the
+    /// owner answered or abandoned, a front-door request closed with
+    /// nothing sent, a run that left the owner's queue shorter than it
+    /// found it. §5.2 named these beside the draft channel and nothing
+    /// built them; `docs/APPRAISAL-RESEARCH.md` §3.5/§3.6. Read only from
+    /// stores mecha itself writes, on §7.4's rule: a sentence in a fetched
+    /// page cannot write a row into any of them.
+    Commitment,
 }
 
 /// Who caused it.
@@ -201,6 +209,13 @@ pub enum Cite {
     Counter(String),
     /// A homeostatic variable, by name.
     Setpoint(String),
+    /// A reflection in the learning store, by id — a follow-up the reflector
+    /// judged to be a correction (`docs/APPRAISAL-RESEARCH.md` §3.4).
+    Reflexion(String),
+    /// A parked question, by id.
+    Question(String),
+    /// A front-door request, by sequence number.
+    Request(i64),
     /// The whole run, from the quarantined appraiser (§5.1). Not a pointer
     /// into one transcript position, draft or counter — this is the model's
     /// own account of the run, read off numbers only (see
@@ -723,12 +738,27 @@ impl Readout {
 /// Rung 4 paid for this exact mistake in the other direction, reading headroom
 /// off one run's outcome for a whole episode; `RunStats::fold` exists so the
 /// fold is written once, and `Session::episode_stats` is the caller's way to it.
+/// The stores one session's appraisal reads beside its transcript. Every
+/// slice may be empty; a caller that could not read a store passes nothing
+/// and says so on its own surface, on `sessions appraise`'s
+/// `outbox_unreadable` rule. `drafts` is the session's own items,
+/// pre-filtered by the caller as it always was; the other three carry a
+/// session id and are filtered here, so a caller can hand over a whole
+/// store once.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionRecords<'a> {
+    pub drafts: &'a [&'a crate::outbox::OutboxItem],
+    pub questions: &'a [crate::questions::Question],
+    pub requests: &'a [crate::frontdoor::Record],
+    pub reflexions: &'a [crate::learning::Reflexion],
+}
+
 pub fn of_session(
     session_id: &str,
     stats: &crate::session::RunStats,
     goals: &[GoalRef],
     interventions: &[crate::learning::Intervention],
-    drafts: &[&crate::outbox::OutboxItem],
+    records: SessionRecords<'_>,
     // Coverage at the end of the session, from `Session::taint_timeline` —
     // `None` when the caller could not establish it, which includes a
     // transcript recorded before checkpoints existed. Deliberately not read
@@ -889,7 +919,7 @@ pub fn of_session(
     }
 
     // --- Edit: what the owner did with a draft written in their name ---
-    for item in drafts {
+    for item in records.drafts {
         // `writing_outcome` already decides `sent` vs `sent-and-edited` vs
         // "says nothing about drafting" — including a publish, on
         // `mineable_as_writing`'s reasoning that its arguments are a path
@@ -933,6 +963,124 @@ pub fn of_session(
             controllable: None,
             cite: Cite::Draft(item.id.clone()),
         });
+    }
+
+    // --- Intervention, judged: a follow-up the reflector read as a correction ---
+    //
+    // `extract_interventions`'s raw `Followup` is skipped above because a
+    // later user turn is usually just the next question. The reflector has
+    // already decided, per session, which follow-ups were the owner
+    // correcting the run, and recorded its verdict with provenance — a
+    // judged verdict with the same standing `apply_probe` gives the
+    // replay's. Read only where the verdict cannot have been written by
+    // third-party text: a clean origin, or a reflector that saw the owner's
+    // own turns and nothing else. A lesson the owner dropped is withdrawn
+    // evidence and reads as nothing.
+    for r in records.reflexions {
+        if r.session_id != session_id
+            || r.trigger != crate::learning::Trigger::Followup.as_str()
+            || r.dropped_at.is_some()
+        {
+            continue;
+        }
+        let owner_authored = r.origin == crate::learning::Origin::Clean
+            || r.evidence == crate::learning::Evidence::UserTurns;
+        if !owner_authored {
+            continue;
+        }
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Intervention,
+            sign: -1.0,
+            agency: Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: Cite::Reflexion(r.id.clone()),
+        });
+    }
+
+    // --- Commitment: a question this session put to the owner ---
+    //
+    // Answered, and the session then finished of its own accord: asking
+    // was the right call and the work completed — the positive §5.2 named
+    // beside the draft channel. Abandoned is the owner declining to answer,
+    // a recorded verdict like a rejected draft. Open says nothing yet.
+    for q in records.questions {
+        if q.session_id != session_id {
+            continue;
+        }
+        let (sign, agency) = match q.status.as_str() {
+            "answered" if stats.stop_cause == Some(crate::agent::StopCause::Completed) => {
+                (0.5, Agency::Own)
+            }
+            "abandoned" => (-0.5, Agency::Owner),
+            _ => continue,
+        };
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Commitment,
+            sign,
+            agency,
+            visible: false,
+            controllable: None,
+            cite: Cite::Question(q.id.clone()),
+        });
+    }
+
+    // --- Commitment: a front-door request this session triaged ---
+    //
+    // Closed by a draft that went out is already the draft channel's
+    // positive. What that channel cannot see is a request the owner closed
+    // by hand with nothing sent: the triage produced nothing usable, and
+    // the owner's closing it is the verdict. `answered` and every open
+    // state say nothing here.
+    for req in records.requests {
+        if req.triage_session.as_deref() != Some(session_id) || req.state != "closed" {
+            continue;
+        }
+        let something_sent = records
+            .drafts
+            .iter()
+            .any(|d| req.outbox.contains(&d.id) && d.status == "sent");
+        if something_sent {
+            continue;
+        }
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Commitment,
+            sign: -0.5,
+            agency: Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: Cite::Request(req.seq),
+        });
+    }
+
+    // --- Commitment: what this session did to the owner's queue ---
+    //
+    // A run that left fewer things waiting on the owner than it found is a
+    // positive, read from the one number the homeostat records with
+    // variance (`backlog_delta`, non-zero on 18 of 68 runs where the level
+    // sat at a constant). Adding to the queue is not an error: staging
+    // replies is a trigger's job. Absent is not zero — a row without the
+    // sensor says nothing.
+    if let Some(net) = stats
+        .homeostat
+        .as_ref()
+        .and_then(|h| h.backlog_delta.as_ref())
+        .and_then(|d| d.net())
+    {
+        if net < 0 {
+            errors.push(GoalError {
+                goal: goal.clone(),
+                channel: Channel::Commitment,
+                sign: 0.5,
+                agency: Agency::Own,
+                visible: false,
+                controllable: None,
+                cite: Cite::Setpoint("backlog_delta".into()),
+            });
+        }
     }
 
     let mut a = Appraisal {
@@ -981,11 +1129,11 @@ pub fn for_session(
     path: &std::path::Path,
     session_id: &str,
     created_at: String,
-    drafts: &[&crate::outbox::OutboxItem],
+    records: SessionRecords<'_>,
     goal: Option<GoalRef>,
 ) -> Option<SessionAppraisal> {
     let transcript = crate::session::Session::read(path).ok()?;
-    for_transcript(&transcript, session_id, created_at, drafts, goal)
+    for_transcript(&transcript, session_id, created_at, records, goal)
 }
 
 /// The same, for a caller that already read the transcript — `mecha
@@ -999,7 +1147,7 @@ pub fn for_transcript(
     transcript: &crate::session::Transcript,
     session_id: &str,
     created_at: String,
-    drafts: &[&crate::outbox::OutboxItem],
+    records: SessionRecords<'_>,
     goal: Option<GoalRef>,
 ) -> Option<SessionAppraisal> {
     let stats = transcript.episode.as_ref()?;
@@ -1020,7 +1168,7 @@ pub fn for_transcript(
         stats,
         &goals,
         &interventions,
-        drafts,
+        records,
         end_taint,
         created_at,
     );
@@ -1165,7 +1313,10 @@ pub fn live_readout(
         &stats,
         &goals,
         &interventions,
-        &[],
+        // No drafts (the doc comment above) and no stores: a live readout
+        // is a function of the run in hand, and a store read on every turn
+        // end is the cost the closure appraisal pays once instead.
+        SessionRecords::default(),
         // The outcome's own taint at run end, not a timeline lookup — there
         // is no torn-transcript or before-checkpoints-existed case to guard
         // against here, because this is the object itself, not a file read
@@ -1977,7 +2128,10 @@ mod tests {
                 &s,
                 std::slice::from_ref(&goal),
                 std::slice::from_ref(&steer),
-                &[&rewrote, &rejected],
+                SessionRecords {
+                    drafts: &[&rewrote, &rejected],
+                    ..Default::default()
+                },
                 Some(s.taint),
                 "2026-08-28T00:00:00Z".into(),
             );
@@ -2039,7 +2193,10 @@ mod tests {
             stats,
             &[],
             interventions,
-            drafts,
+            SessionRecords {
+                drafts,
+                ..Default::default()
+            },
             Some(stats.taint),
             "2026-08-27T00:00:00Z".into(),
         )
@@ -2139,7 +2296,7 @@ mod tests {
             &s,
             &[goal],
             &[],
-            &[],
+            SessionRecords::default(),
             Some(s.taint),
             "2026-08-27T00:00:00Z".into(),
         );
@@ -2185,7 +2342,16 @@ mod tests {
     fn no_established_coverage_classifies_untrusted_rather_than_clean() {
         let s = stats();
         assert_eq!(
-            of_session("s1", &s, &[], &[], &[], None, "t".into()).origin,
+            of_session(
+                "s1",
+                &s,
+                &[],
+                &[],
+                SessionRecords::default(),
+                None,
+                "t".into()
+            )
+            .origin,
             crate::learning::Origin::Untrusted
         );
     }
@@ -2837,7 +3003,7 @@ mod tests {
             &stats,
             &[],
             &[],
-            &[],
+            SessionRecords::default(),
             Some(outcome.taint),
             "2026-08-27T00:00:00Z".into(),
         )
@@ -2978,5 +3144,201 @@ mod tests {
         assert_eq!(r.label, Affect::Neutral);
         assert_eq!((r.valence.positives, r.valence.positive), (0, 0.0));
         assert!(r.valence.negatives >= 2);
+
+    // --- phase B channels ----------------------------------------------------
+
+    fn question(id: &str, session: &str, status: &str) -> crate::questions::Question {
+        crate::questions::Question {
+            id: id.into(),
+            status: status.into(),
+            question: "which account?".into(),
+            options: vec![],
+            session_id: session.into(),
+            task_id: None,
+            workspace: None,
+            taint: crate::agent::Taint::default(),
+            asked_at: "2026-08-28T00:00:00Z".into(),
+            answered_at: (status != "open").then(|| "2026-08-28T01:00:00Z".to_string()),
+            answer: (status == "answered").then(|| "personal".to_string()),
+        }
+    }
+
+    fn reflexion(
+        id: &str,
+        session: &str,
+        trigger: &str,
+        origin: &str,
+        evidence: &str,
+    ) -> crate::learning::Reflexion {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "domain": "behavior", "session_id": session, "trigger": trigger,
+            "context": "…", "intervention": "…", "reflexion_text": "…",
+            "error_type": null, "confidence": null, "created_at": "2026-08-28T00:00:00Z",
+            "origin": origin, "evidence": evidence
+        }))
+        .unwrap()
+    }
+
+    fn request(seq: i64, session: &str, state: &str, outbox: &[&str]) -> crate::frontdoor::Record {
+        serde_json::from_value(serde_json::json!({
+            "seq": seq, "type_id": "book", "state": state,
+            "created_at": "2026-08-28T00:00:00Z", "drained_at": "2026-08-28T00:00:00Z",
+            "valid": true, "values": {}, "free_text": [],
+            "triage_session": session, "outbox": outbox
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_judged_follow_up_is_an_intervention_only_when_the_owner_authored_the_evidence() {
+        let clean = reflexion("r1", "s1", "followup", "clean", "full");
+        let user_turns = reflexion("r2", "s1", "followup", "untrusted", "user_turns");
+        let laundered = reflexion("r3", "s1", "followup", "untrusted", "full");
+        let other_session = reflexion("r4", "s2", "followup", "clean", "full");
+        let steer = reflexion("r5", "s1", "steer", "clean", "full");
+        let mut dropped = reflexion("r6", "s1", "followup", "clean", "full");
+        dropped.dropped_at = Some("2026-08-29T00:00:00Z".into());
+        let reflexions = vec![clean, user_turns, laundered, other_session, steer, dropped];
+        let s = stats();
+        let a = of_session(
+            "s1",
+            &s,
+            &[],
+            &[],
+            SessionRecords {
+                reflexions: &reflexions,
+                ..Default::default()
+            },
+            Some(s.taint),
+            "t".into(),
+        );
+        let cites: Vec<_> = a.errors.iter().map(|e| e.cite.clone()).collect();
+        assert_eq!(
+            cites,
+            vec![Cite::Reflexion("r1".into()), Cite::Reflexion("r2".into())],
+            "a tainted full-excerpt verdict, another session's, a steer (already the raw channel's) and a dropped one all read as nothing"
+        );
+        assert!(a
+            .errors
+            .iter()
+            .all(|e| e.channel == Channel::Intervention && e.agency == Agency::Owner));
+    }
+
+    #[test]
+    fn a_question_answered_and_finished_is_positive_and_an_abandoned_one_is_the_owners_verdict() {
+        let questions = vec![
+            question("q1", "s1", "answered"),
+            question("q2", "s1", "abandoned"),
+            question("q3", "s1", "open"),
+            question("q4", "s2", "answered"),
+        ];
+        let mut s = stats();
+        s.stop_cause = Some(crate::agent::StopCause::Completed);
+        let a = of_session(
+            "s1",
+            &s,
+            &[],
+            &[],
+            SessionRecords {
+                questions: &questions,
+                ..Default::default()
+            },
+            Some(s.taint),
+            "t".into(),
+        );
+        let signs: Vec<_> = a.errors.iter().map(|e| (e.cite.clone(), e.sign)).collect();
+        assert_eq!(
+            signs,
+            vec![
+                (Cite::Question("q1".into()), 0.5),
+                (Cite::Question("q2".into()), -0.5)
+            ]
+        );
+        assert_eq!(a.errors[0].agency, Agency::Own);
+        assert_eq!(a.errors[1].agency, Agency::Owner);
+        // An answered question whose resumed run did not finish is not yet a kept commitment.
+        let mut cut = stats();
+        cut.stop_cause = Some(crate::agent::StopCause::MaxTurns);
+        let a = of_session(
+            "s1",
+            &cut,
+            &[],
+            &[],
+            SessionRecords {
+                questions: &questions,
+                ..Default::default()
+            },
+            Some(cut.taint),
+            "t".into(),
+        );
+        assert!(!a
+            .errors
+            .iter()
+            .any(|e| e.cite == Cite::Question("q1".into())));
+    }
+
+    #[test]
+    fn a_request_closed_with_nothing_sent_is_the_owners_verdict_on_the_triage() {
+        let sent = draft("o1", "sent", false);
+        let requests = vec![
+            request(1, "s1", "closed", &["o9"]),
+            request(2, "s1", "closed", &["o1"]),
+            request(3, "s1", "answered", &["o1"]),
+            request(4, "s2", "closed", &[]),
+        ];
+        let s = stats();
+        let a = of_session(
+            "s1",
+            &s,
+            &[],
+            &[],
+            SessionRecords {
+                drafts: &[&sent],
+                requests: &requests,
+                ..Default::default()
+            },
+            Some(s.taint),
+            "t".into(),
+        );
+        let request_errors: Vec<_> = a
+            .errors
+            .iter()
+            .filter(|e| matches!(e.cite, Cite::Request(_)))
+            .collect();
+        assert_eq!(request_errors.len(), 1);
+        assert_eq!(request_errors[0].cite, Cite::Request(1));
+        assert_eq!(request_errors[0].sign, -0.5);
+        assert_eq!(request_errors[0].channel, Channel::Commitment);
+    }
+
+    #[test]
+    fn a_run_that_shortened_the_owners_queue_is_positive_and_one_that_lengthened_it_is_nothing() {
+        let with_delta = |net: i64| {
+            let mut s = stats();
+            s.homeostat = Some(crate::homeostat::Homeostat {
+                backlog_delta: Some(crate::backlog::BacklogDelta {
+                    outbox: Some(net),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            s
+        };
+        let cleared = built(&with_delta(-2), &[], &[]);
+        assert_eq!(cleared.errors.len(), 1);
+        assert_eq!(cleared.errors[0].sign, 0.5);
+        assert_eq!(
+            cleared.errors[0].cite,
+            Cite::Setpoint("backlog_delta".into())
+        );
+        assert!(
+            built(&with_delta(3), &[], &[]).errors.is_empty(),
+            "staging is a job, not an error"
+        );
+        assert!(built(&with_delta(0), &[], &[]).errors.is_empty());
+        assert!(
+            built(&stats(), &[], &[]).errors.is_empty(),
+            "no sensor, no reading"
+        );
     }
 }
