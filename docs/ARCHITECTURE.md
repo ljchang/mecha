@@ -1506,9 +1506,17 @@ refusal. The specification and the survey behind it are
   false "cannot split" costs one prompt; a false "can" costs the feature.
   `forbid` is the one rule that reaches into an opaque command: a pattern-less
   one by construction, a patterned one by its words (`forbidden_words` —
-  whitespace-split, matched at every position, deliberately over-approximate),
-  so `rm -rf $HOME` and `git status; rm -rf *` are refused rather than
-  downgraded to the prompt a headless `Allow` mode answers yes to.
+  whitespace-split with quote characters dropped, matched at every position,
+  deliberately over-approximate), so `rm -rf $HOME`, `"rm" -rf $HOME` and
+  `git status; rm -rf *` are refused rather than downgraded to the prompt a
+  headless `Allow` mode answers yes to. **A program path names its program
+  only where the model cannot write.** `allow` reduces `/usr/bin/git` to
+  `git` and nothing outside `SYSTEM_BIN_DIRS` (`/bin`, `/sbin`, `/usr/bin`,
+  `/usr/sbin`): `./git` may be a file the model wrote, and
+  `/abs/path/to/workspace/git` may be one a cloned repository shipped — the
+  PR review found each in turn. `forbid` reduces any path, because there the
+  false positive is a refusal. A rule that wants a binary elsewhere spells
+  the path and matches it literally.
 - **An allowlisted interpreter is not an allowlisted command.** `python -c`,
   `node -e`, `sh -c`, `sed -e`, `find -exec`, and the wrappers that run their
   arguments — `xargs`, `env`, `sudo`, `timeout`, `nohup`, `watch` — are judged

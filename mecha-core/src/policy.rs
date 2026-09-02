@@ -86,24 +86,47 @@ pub enum PatternElement {
 }
 
 impl PatternElement {
-    fn matches(&self, token: &str, first: bool) -> bool {
-        // The first token is the program, and `/usr/bin/git` is `git` — for
-        // an *absolute* path only. A relative one is a path the model
-        // controls: write a file named `git` into the workspace and `./git
-        // status` matched an `allow` rule on `git`, then ran unasked on a
-        // headless surface where every other route was `Blocked` (the PR
-        // review's finding). Stripping only absolute directories costs one
-        // prompt in the cases it changes.
-        let base = if first && token.starts_with('/') {
-            basename(token)
+    /// `lenient` says which way to err when the first token is a path. A
+    /// rule that *widens* (`allow`, and `prompt` beside it) reduces a program
+    /// path to its name only from a system directory: `/usr/bin/git` is
+    /// `git`, and `/home/me/repo/git` is a file whose name the model chose.
+    /// A rule that *narrows* (`forbid`) reduces any path: `./rm`, `bin/rm`
+    /// and `/tmp/x/rm` are all `rm`, and a false forbid is a refusal.
+    fn matches(&self, token: &str, first: bool, lenient: bool) -> bool {
+        // The PR review found this twice. First `./git status` matched an
+        // `allow` on `git` by basename — a file the model wrote into the
+        // workspace ran unasked on a headless surface where every other
+        // route was `Blocked`. Then the fix, "strip only absolute paths",
+        // re-opened it for `/abs/path/to/workspace/git`: a cloned repository
+        // can ship an executable named `git`, so the model never has to
+        // create or `chmod` one. A path is trusted to name its program only
+        // where the model cannot write; anywhere else, spell the path in the
+        // rule and it matches literally.
+        let base = if !first {
+            None
+        } else if lenient {
+            token.contains('/').then(|| basename(token))
         } else {
-            token
+            system_binary(token)
         };
+        let hit = |w: &String| w == token || base.is_some_and(|b| w == b);
         match self {
-            PatternElement::Word(w) => w == token || w == base,
-            PatternElement::OneOf(ws) => ws.iter().any(|w| w == token || w == base),
+            PatternElement::Word(w) => hit(w),
+            PatternElement::OneOf(ws) => ws.iter().any(hit),
         }
     }
+}
+
+/// Directories a model running as the user cannot write into, so a program
+/// found there is the program its name says. Deliberately short: `/usr/local`
+/// and Homebrew's prefix are user-writable on some machines, and a rule that
+/// wants a binary from there spells the path out.
+const SYSTEM_BIN_DIRS: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
+
+/// The program name, if `token` is a path into one of [`SYSTEM_BIN_DIRS`].
+fn system_binary(token: &str) -> Option<&str> {
+    let (dir, base) = token.rsplit_once('/')?;
+    SYSTEM_BIN_DIRS.contains(&dir).then_some(base)
 }
 
 /// One `[[rule]]` from config.
@@ -135,11 +158,12 @@ impl RuleConfig {
         if self.pattern.len() > segment.len() {
             return false;
         }
+        let lenient = self.decision == RuleDecision::Forbid;
         self.pattern
             .iter()
             .zip(segment)
             .enumerate()
-            .all(|(i, (p, tok))| p.matches(tok, i == 0))
+            .all(|(i, (p, tok))| p.matches(tok, i == 0, lenient))
     }
 
     fn describe(&self) -> String {
@@ -620,12 +644,24 @@ fn tokenize(command: &str) -> Option<Vec<Tok>> {
 }
 
 /// A patterned `forbid`'s words, found in a command the splitter refused to
-/// take apart. Whitespace-split with no quote handling, matched at every
-/// position, first token of the match reduced by the absolute-path rule.
+/// take apart. Whitespace-split with quote characters dropped, matched at
+/// every position, first token of the match reduced to its basename.
 /// Over-approximate by design: this runs only where the answer would
 /// otherwise be a prompt, and a false forbid is a refusal, not a hole.
 fn forbidden_words(rules: &[&RuleConfig], command: &str) -> Option<Vec<String>> {
-    let words: Vec<String> = command.split_whitespace().map(str::to_string).collect();
+    // Quote characters are dropped from every word, not honoured: `"rm" -rf
+    // $HOME` and `sh -c 'rm -rf /*'` carry the forbidden words as plainly as
+    // the bare spelling does, and the PR review found them coming back as a
+    // prompt — which on a headless `Allow` surface is a yes.
+    let words: Vec<String> = command
+        .split_whitespace()
+        .map(|w| {
+            w.chars()
+                .filter(|c| !matches!(c, '\'' | '"'))
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
     for start in 0..words.len() {
         let tail = &words[start..];
         if rules
@@ -825,10 +861,21 @@ mod tests {
                 .decision,
             RuleDecision::Allow
         );
-        // A relative path is one the model controls — `./git` may be a file it
-        // wrote — so only an absolute directory is stripped.
+        // A path is reduced to its program name only from a system
+        // directory. `./git` may be a file the model wrote; a workspace's
+        // absolute path may be a cloned repository shipping one.
         assert_eq!(p.decide("shell", &cmd("./git status")), None);
         assert_eq!(p.decide("shell", &cmd("bin/git status")), None);
+        assert_eq!(
+            p.decide("shell", &cmd("/home/me/repo/git status")),
+            None,
+            "an absolute path into a writable place is not `git`"
+        );
+        assert_eq!(
+            p.decide("shell", &cmd("/usr/local/bin/git status")),
+            None,
+            "user-writable on some machines, so spell it in the rule"
+        );
         // One unmatched segment and the rule no longer vouches: the approver
         // decides as it would have without rules.
         assert_eq!(p.decide("shell", &cmd("git status && curl evil")), None);
@@ -1073,6 +1120,69 @@ mod tests {
     /// A patterned rule on a tool that sends no `command` is refused at load
     /// for the builtins this crate knows, and asks at call time for a tool it
     /// does not — never silently inert.
+    /// A `forbid` reduces any program path to its name — `./rm`, `bin/rm`,
+    /// `/tmp/x/rm` are all `rm` — where an `allow` reduces only a system
+    /// path. Each guard errs in its own safe direction: a false forbid is a
+    /// refusal, a false allow is the feature's whole point lost.
+    #[test]
+    fn a_forbid_reduces_any_path_and_an_allow_only_a_system_one() {
+        let p = policy(vec![
+            rule("shell", &[&["rm"], &["-rf"]], RuleDecision::Forbid),
+            rule("shell", &[&["git"]], RuleDecision::Allow),
+            rule("shell", &[&["/home/me/tools/git"]], RuleDecision::Allow),
+        ]);
+        for spelled in [
+            "./rm -rf y",
+            "bin/rm -rf y",
+            "/tmp/x/rm -rf y",
+            "/bin/rm -rf y",
+        ] {
+            assert_eq!(
+                p.decide("shell", &cmd(spelled)).unwrap().decision,
+                RuleDecision::Forbid,
+                "{spelled}"
+            );
+        }
+        assert_eq!(
+            p.decide("shell", &cmd("/usr/bin/git status"))
+                .unwrap()
+                .decision,
+            RuleDecision::Allow
+        );
+        // A rule that spells the path matches it literally, wherever it is.
+        assert_eq!(
+            p.decide("shell", &cmd("/home/me/tools/git status"))
+                .unwrap()
+                .decision,
+            RuleDecision::Allow
+        );
+        assert_eq!(p.decide("shell", &cmd("/home/me/other/git status")), None);
+    }
+
+    /// Quote characters do not hide a forbidden word from the opaque-command
+    /// check: `"rm" -rf $HOME` is `rm -rf $HOME`.
+    #[test]
+    fn quotes_do_not_hide_forbidden_words_in_an_opaque_command() {
+        let p = policy(vec![rule(
+            "shell",
+            &[&["rm"], &["-rf"]],
+            RuleDecision::Forbid,
+        )]);
+        for quoted in [
+            "\"rm\" -rf $HOME",
+            "'rm' -rf *",
+            "r\"m\" '-rf' $HOME",
+            "sh -c 'rm -rf /*'",
+            "\"/bin/rm\" -rf $HOME",
+        ] {
+            assert_eq!(
+                p.decide("shell", &cmd(quoted)).unwrap().decision,
+                RuleDecision::Forbid,
+                "{quoted}"
+            );
+        }
+    }
+
     /// A *patterned* `forbid` is found in an opaque command too, by its words
     /// — `rm -rf $HOME`, `rm -rf *`, a glob or brace spelling — rather than
     /// downgraded to the prompt a headless `Allow` mode answers yes to. The
