@@ -225,9 +225,29 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         Some(k) => format!("no sessions of kind `{}`", k.as_str()),
                         None => "no sessions shown".to_string(),
                     };
+                    // Each clause only when it says something: with a
+                    // `--kind` named, nothing is hidden *for being a test*
+                    // and "0 hidden" read oddly (found on review), and the
+                    // unkinded rows match no filter only when one was named.
+                    let mut why = Vec::new();
+                    if hidden_tests > 0 {
+                        why.push(format!(
+                            "{hidden_tests} smoke-test session(s) hidden (`--include-tests` shows them)"
+                        ));
+                    }
+                    if unkinded > 0 && kind.is_some() {
+                        why.push(format!(
+                            "{unkinded} recorded before kinds existed match no `--kind`"
+                        ));
+                    }
                     println!(
-                        "{what} in {} — of {total} recorded: {hidden_tests} smoke-test session(s) hidden (`--include-tests` shows them), {unkinded} recorded before kinds existed match no `--kind`",
-                        dir.display()
+                        "{what} in {} — of {total} recorded{}",
+                        dir.display(),
+                        if why.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {}", why.join(", "))
+                        }
                     );
                 }
                 return Ok(());
