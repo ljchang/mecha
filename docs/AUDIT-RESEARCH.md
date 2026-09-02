@@ -552,16 +552,48 @@ no numpy or pandas, and an interpreter escape lands in the agent process —
 so the host functions keep the path jail and the approver, and the tool is
 for orchestration, never a general "run a script".
 
+**The interpreter question, researched.** `CODE-MODE-RESEARCH.md`
+(2026-09-02) compared monty against RustPython, starlark-rust, Rhai,
+mlua/Luau, piccolo, rquickjs, Boa, Deno/V8 and wasmtime guests on nine
+weighted criteria. Verdict: **stay on monty, run out of process through
+`monty-pool`** as Pydantic now tells Rust embedders to, and keep the
+interpreter behind a small trait (`start`, `resume`, `dump`, `load`) so the
+runner-up — wasmtime with a Python guest — is reachable if Hack Monty round
+3 lands a second escape or V1 slips past the build. Monty is the only
+candidate that is deny-by-construction on the bridge, Python (the local
+model's strongest language by a wide margin: Qwen2.5-Coder-32B at 92.7 on
+MultiPL-E Python against 85.7 JavaScript, and Lua low-resource), and pauses
+at a host call *as its API*, which an outbox-routed send needs. Every
+startup figure in that file is the vendor's own; the doc asks for two local
+measurements before any number decides a design.
+
 **Shape.** Depends on §3.7's dispatch split: the gate in `run_tools` becomes
-a `Gate` that both a model-issued call and a program's host call pass
-through, so there is one gate and not a copy. Then a `code` tool with a
-single `call(name, args)` host function.
+a `Gate` that both a model-issued call and a program's `FunctionCall` pass
+through, so there is one gate and not a copy. Then a `code` tool taking
+`{ program }`, exposing **one function per registered tool** — not a generic
+`call(name, args)`: every reference design (Anthropic's programmatic tool
+calling, Cloudflare's Code Mode, openclaw, the MCP client best-practices
+spec) does this, it is what the model has seen, and it makes the reach
+analysis cheap because the tools a program can touch are its free names,
+where a generic `call` hides the name in a string. Parameters and a `ty`
+stub come from `Tool::input_schema`; results are the tool's text and the
+model parses; `is_error` raises a catchable error; what re-enters the
+context is `print` output plus the final expression under the existing
+output budget and spill rule. The tool's declared `Capabilities` are the
+union of the tools the program reaches, so the interlock's view of the turn
+is honest before anything executes. A third hazard the research added: a
+paused program's `dump()` at an outbox gate carries locals — private data
+already read — and must carry the `Taint` beside it, as the session file
+does; a `DUMP_VERSION` mismatch after an upgrade fails closed, never re-runs.
 
 **Landed when.** The two hazard tests fail on the naive build and pass; a
-task done as ten sequential calls and as one program is measured on
-context bytes, prompts issued and wall clock; the static capability
-extraction is either shown sound on the test corpus or replaced by per-call
-approval with a written reason.
+program that tries to reach a host function by string through `getattr`
+fails (the soundness test the reach analysis rests on); a task done as ten
+sequential calls and as one program is measured on context bytes, prompts
+issued and wall clock; monty's startup and a wasmtime MicroPython start are
+measured on this box and written into `CODE-MODE-RESEARCH.md`; the static
+capability extraction is either shown sound or replaced by per-call approval
+with a written reason.
 
 ### 3.13 Micro-compaction, measured against the prefix — S to run, then a ruling
 

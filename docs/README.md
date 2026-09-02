@@ -44,6 +44,7 @@ something shipped.
 | [`BENCHMARK-RESEARCH.md`](BENCHMARK-RESEARCH.md) | How to measure this harness against public agent benchmarks, and what separates harness from model |
 | [`CANVAS-RESEARCH.md`](CANVAS-RESEARCH.md) | Can mecha reach Canvas LMS — and what Dartmouth's token policy makes impossible |
 | [`CLOUD-HOSTING-RESEARCH.md`](CLOUD-HOSTING-RESEARCH.md) | What it would cost to run the model somewhere other than this box |
+| [`CODE-MODE-RESEARCH.md`](CODE-MODE-RESEARCH.md) | Which embeddable interpreter should run the model's tool-calling programs, and what contract the model sees |
 | [`CONTEXT-RESEARCH.md`](CONTEXT-RESEARCH.md) | What is actually established about context management, compaction and distractors |
 | [`DOCS-RESEARCH.md`](DOCS-RESEARCH.md) | Which Google scope buys document access, and what each one costs in review |
 | [`GRAPH-UX-RESEARCH.md`](GRAPH-UX-RESEARCH.md) | What user interfaces work for a personal knowledge graph, and which features are worth exposing |
