@@ -4166,6 +4166,15 @@ Seven review rounds on that PR found one MAJOR, five MEDIUM and twenty-one
 MINOR; the MAJOR and three of the MEDIUMs were defects in *previous rounds'
 fixes* rather than in the original change.
 
+**2026-09-01/02** — `[harness] source_dir` is set. The ordering the handoff
+specified was followed: every binary reinstalled first, then the key written,
+because `ConfigLayer` is `deny_unknown_fields` and the section is a startup
+parse error on any binary predating #127. Verified against the *installed*
+binary before trusting it, not the branch build — the trap that item existed
+to prevent. The diagnostician stopped running blind: it now logs "reading
+source and docs from /home/ljchang/Github/mecha" rather than "no source
+checkout reachable from the path jail".
+
 ## Traps already hit
 
 Recorded so they are not hit twice. Each says what broke; the sentence that

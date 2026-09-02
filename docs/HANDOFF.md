@@ -1463,18 +1463,6 @@ What is actually open now:
   [`SELF-IMPROVEMENT-RESEARCH.md`](SELF-IMPROVEMENT-RESEARCH.md) says it
   is**, and the stratification argument there needs revisiting. A
   prediction that can only confirm is not one.
-- **`[harness] source_dir` is not set, and must not be until every binary
-  is reinstalled.** #127 shipped the key; nothing has been written to
-  `~/.mecha/config.toml`. `ConfigLayer` is `deny_unknown_fields`, so the
-  section is a **startup config-parse error** on any binary predating the
-  merge — measured against the then-installed one on 2026-08-31:
-  `unknown field \`harness\`, expected one of \`default_provider\`, …`.
-  The services were restarted onto `main` before #127 landed, so the
-  ordering is: run the `update` skill everywhere, *then* add the key.
-  Until it is set the diagnostician runs blind — but `diagnose_system(None)`
-  now says so and forbids naming a config key the brief did not name first,
-  which is the failure mode #127 removed. Reference:
-  `website/docs/reference/configuration.md`.
 - **`prepare_tools` decides inbound mail on the wrong property, and its own
   config doc says so.** `MessagesConfig::inbound` in
   `mecha-core/src/config.rs` states the contract: *"Unset — the default —
