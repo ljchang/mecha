@@ -91,6 +91,25 @@ MIN_ECHO_MATCHED_WORDS = 4
 MAX_UNMATCHED_WORDS = 1
 LONG_ENOUGH_FOR_ONE_SLIP = 8
 
+# One further slip per this many words, above the first.
+#
+# The budget has to grow with the sentence, because recognition error is
+# roughly per-word: a sixteen-word echo of our own reply arrives with two
+# words mangled about as often as an eight-word one arrives with one, and a
+# flat allowance of one made the arm's recall fall off exactly where echo is
+# easiest to be certain about. "Your first meeting tomorrow is at nine with
+# the finance team in a small conference groom" is fourteen of our sixteen
+# words, in order, in one tight span — and it was not an echo.
+#
+# Growing it is not a return to the ratio this module rejected, and the
+# difference is where each is loosest. A ratio is loosest at short lengths,
+# which is exactly where corrections live: "book the small room for Tuesday"
+# is five of six words ours. A floor with a slow-growing allowance is loosest
+# at long lengths, where the thing it forgives is a mis-heard word rather than
+# the point of the sentence. Below `LONG_ENOUGH_FOR_ONE_SLIP` there is still
+# no slack at all.
+WORDS_PER_EXTRA_SLIP = 16
+
 # The verbatim arm's floor when nothing was playing.
 #
 # That arm runs whether or not the speaker was audible, because the timing
@@ -132,6 +151,18 @@ def normalize(text: str) -> str:
 
 def _words(text: str) -> list[str]:
     return normalize(text).split()
+
+
+def _slips_allowed(n_words: int) -> int:
+    """How many words of a transcript this long may fail to be ours.
+
+    Zero below `LONG_ENOUGH_FOR_ONE_SLIP`, where a single unmatched word is
+    not noise but what the person called to say; one above it; one more per
+    `WORDS_PER_EXTRA_SLIP` after that.
+    """
+    if n_words < LONG_ENOUGH_FOR_ONE_SLIP:
+        return 0
+    return MAX_UNMATCHED_WORDS + n_words // WORDS_PER_EXTRA_SLIP
 
 
 def _aligned(words: list[str], blob: list[str]) -> tuple[int, int]:
@@ -260,11 +291,14 @@ class BotSpeech:
         # the other: a follow-up can leave nothing over and still be gathered
         # from across the whole window, and a correction can be perfectly
         # contiguous and still say one thing we never did.
-        if spread > matched + MAX_MATCH_SPREAD:
+        slips = _slips_allowed(len(words))
+        # One skipped word inside the run is always allowed — that is the same
+        # recognition slip seen from the blob's side, and a short echo needs it
+        # even where no *unmatched* word is forgiven. Beyond that the two share
+        # a budget, since a long echo drops words as readily as it mangles them.
+        if spread > matched + max(MAX_MATCH_SPREAD, slips):
             return False
-        unmatched = len(words) - matched
-        allowed = MAX_UNMATCHED_WORDS if len(words) >= LONG_ENOUGH_FOR_ONE_SLIP else 0
-        return unmatched <= allowed
+        return len(words) - matched <= slips
 
 
 def overlapped(
