@@ -387,6 +387,28 @@ fn decode_usage(v: Option<&Value>) -> Usage {
     }
 }
 
+/// Overlay a cumulative usage frame onto the running total: each field the
+/// frame carries replaces; a field it omits is left alone. See the
+/// `message_delta` arm for why this is not `Usage::add`.
+fn apply_cumulative_usage(usage: &mut Usage, v: Option<&Value>) {
+    let Some(v) = v else { return };
+    let set = |key: &str, slot: &mut u64| {
+        if let Some(n) = v.get(key).and_then(Value::as_u64) {
+            *slot = n;
+        }
+    };
+    set("input_tokens", &mut usage.input_tokens);
+    set("output_tokens", &mut usage.output_tokens);
+    set(
+        "cache_creation_input_tokens",
+        &mut usage.cache_creation_input_tokens,
+    );
+    set(
+        "cache_read_input_tokens",
+        &mut usage.cache_read_input_tokens,
+    );
+}
+
 fn decode_refusal(v: &Value) -> Option<Refusal> {
     let d = v.get("stop_details")?;
     if d.is_null() {
@@ -565,7 +587,18 @@ impl StreamAccumulator {
                         self.refusal = Some(r);
                     }
                 }
-                self.usage.add(&decode_usage(event.get("usage")));
+                // **Cumulative, so it replaces rather than adds.** The
+                // `message_delta` frame carries the message's running
+                // totals — the same `output_tokens` that `message_start`
+                // opened at 1, and on the current API the input and both
+                // cache tiers again. Adding it on top of `message_start`
+                // over-reported every streamed turn by one output token at
+                // best and doubled the prompt at worst, and the prompt total
+                // is what `pressure` predicts from, what the compaction
+                // threshold compares against, and what the cache lens
+                // judges. Only fields the frame actually carries replace;
+                // an absent field keeps what `message_start` said.
+                apply_cumulative_usage(&mut self.usage, event.get("usage"));
                 let _ = sink.send(StreamEvent::Usage(self.usage.clone()));
             }
             "error" => {
@@ -639,6 +672,74 @@ mod tests {
 
     fn client() -> Anthropic {
         client_at("http://localhost:1")
+    }
+
+    /// The wire contract: `message_start` opens the usage (input, both cache
+    /// tiers, `output_tokens: 1`) and `message_delta` carries the message's
+    /// *cumulative* totals. Adding the two counted the prompt twice and the
+    /// first output token twice — and the doubled prompt fed `pressure`, the
+    /// compaction threshold and the cache lens.
+    #[test]
+    fn a_streamed_message_delta_replaces_the_usage_instead_of_adding_to_it() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut acc = StreamAccumulator::default();
+        acc.push(
+            &serde_json::json!({
+                "type": "message_start",
+                "message": {
+                    "model": "m",
+                    "usage": {
+                        "input_tokens": 100,
+                        "cache_read_input_tokens": 50,
+                        "cache_creation_input_tokens": 0,
+                        "output_tokens": 1
+                    }
+                }
+            }),
+            &tx,
+        )
+        .unwrap();
+        acc.push(
+            &serde_json::json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {
+                    "input_tokens": 100,
+                    "cache_read_input_tokens": 50,
+                    "cache_creation_input_tokens": 0,
+                    "output_tokens": 12
+                }
+            }),
+            &tx,
+        )
+        .unwrap();
+        assert_eq!(acc.usage.input_tokens, 100);
+        assert_eq!(acc.usage.cache_read_input_tokens, 50);
+        assert_eq!(acc.usage.output_tokens, 12);
+        assert_eq!(acc.usage.total_input(), 150);
+
+        // An older-shaped delta that carries only `output_tokens` must not
+        // zero the input that `message_start` reported.
+        let mut acc = StreamAccumulator::default();
+        acc.push(
+            &serde_json::json!({
+                "type": "message_start",
+                "message": {"model": "m", "usage": {"input_tokens": 100, "output_tokens": 1}}
+            }),
+            &tx,
+        )
+        .unwrap();
+        acc.push(
+            &serde_json::json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 12}
+            }),
+            &tx,
+        )
+        .unwrap();
+        assert_eq!(acc.usage.input_tokens, 100);
+        assert_eq!(acc.usage.output_tokens, 12);
     }
 
     /// Shared with `retry_tests` below.
