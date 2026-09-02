@@ -1921,8 +1921,16 @@ mod tests {
     /// op carried the note "The default account is `dartmouth`" while
     /// `resolve` consults a default in `Mode::Create` alone — a promise the
     /// code does not keep, next to a sentence saying the opposite.
+    ///
+    /// **With several accounts** is in the name because it is the condition
+    /// the assertions rest on. An item op declares the single account when
+    /// there is only one — `resolve` answers that case before it reaches any
+    /// default — which is
+    /// [`item_ops_declare_the_single_account_and_never_a_configured_one`]. A
+    /// name saying "only a create, ever" would be this file's own stale-rule
+    /// failure, one layer down from the schema it is testing.
     #[test]
-    fn only_a_create_declares_a_default_and_it_declares_it_machine_readably() {
+    fn with_several_accounts_only_a_create_declares_a_default() {
         let defs = tool_definitions(
             &names(&["personal", "dartmouth"]),
             &conf(None, Some("dartmouth"), Some("personal")),
