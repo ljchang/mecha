@@ -138,6 +138,14 @@ fn is_derived(text: &str) -> bool {
 /// the subject, and by the eighth the conversation has either stayed on it or
 /// become something else. Re-titling every turn would spend a generation per
 /// turn to move a label most people are not looking at.
+///
+/// **`titled_at` is the attempt, not the win** — the caller advances it
+/// whatever came back. Leaving it behind after a miss reads like "ask again
+/// at the next threshold" and is not: the `at = 1` arm is satisfied by any
+/// `titled_at` of zero, so a session that never got a usable name would ask
+/// on every turn for the rest of its life, and the failure modes here are
+/// the persistent ones. Three attempts, then the session keeps whatever
+/// name it has.
 pub fn due(owner_turns: usize, titled_at: usize) -> bool {
     [1, 3, 8]
         .iter()
@@ -245,8 +253,12 @@ pub fn tidy(raw: &str) -> Option<String> {
     // Cut on a word boundary where there is one within reach, so the result
     // reads as a short name rather than as a truncation.
     let head: String = cleaned.chars().take(MAX_CHARS).collect();
-    let cut = match head.rfind(' ') {
-        Some(i) if i >= MAX_CHARS / 2 => &head[..i],
+    // `rfind` answers in **bytes** and the budget is in **chars**; comparing
+    // them coincides only for ASCII. A German or French name can put its last
+    // space at byte 24 with fourteen characters before it, and the guard —
+    // meant to refuse a cut shorter than half the budget — would admit it.
+    let cut = match head.char_indices().rev().find(|(_, c)| *c == ' ') {
+        Some((i, _)) if head[..i].chars().count() >= MAX_CHARS / 2 => &head[..i],
         _ => head.as_str(),
     };
     Some(format!("{}…", cut.trim_end()))
@@ -373,6 +385,22 @@ mod tests {
         );
     }
 
+    /// The word-boundary guard is a *char* budget, and `rfind` answers in
+    /// bytes — so a multi-byte name is where the two units stop coinciding
+    /// and the cut lands much shorter than half the budget.
+    #[test]
+    fn the_word_boundary_guard_counts_characters_not_bytes() {
+        // Every character here is two bytes, so byte offsets run at twice
+        // char positions: the last space sits well past `MAX_CHARS / 2`
+        // bytes while only a few characters precede it.
+        let t = tidy(&format!("{} zzz", "üü ".repeat(9))).unwrap();
+        let kept = t.trim_end_matches('…').chars().count();
+        assert!(
+            kept >= MAX_CHARS / 2,
+            "cut to {kept} chars, shorter than half the budget: {t:?}"
+        );
+    }
+
     #[test]
     fn a_paragraph_is_bounded_on_a_word() {
         let t =
@@ -393,6 +421,20 @@ mod tests {
         assert_eq!(tidy(""), None);
         assert_eq!(tidy("   \n  "), None);
         assert_eq!(tidy("\u{7}\u{7}"), None);
+    }
+
+    /// The shape that makes advancing on *attempt* load-bearing: with the
+    /// bookmark left at zero, the first threshold re-fires forever.
+    #[test]
+    fn a_bookmark_left_behind_would_ask_on_every_turn() {
+        for n in 1..40 {
+            assert!(due(n, 0), "turn {n} with titled_at=0 is still due");
+        }
+        // Advanced on the attempt instead, the thresholds are the bound
+        // they were meant to be.
+        assert!(!due(2, 1));
+        assert!(!due(9, 8));
+        assert!(!due(400, 8));
     }
 
     #[test]

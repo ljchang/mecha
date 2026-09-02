@@ -82,9 +82,22 @@ pub enum Record {
     /// therefore [`Session::list`] still report the *created* title. That is
     /// deliberate rather than merely cheap — the created title is where the
     /// `web: ` / `voice: ` / `task: ` prefix that classifies a session comes
-    /// from, and a listing that filtered on a renamed one would depend on
-    /// whoever wrote the rename having kept the prefix. Renames carry the
-    /// prefix anyway; nothing load-bearing depends on their doing so.
+    /// from.
+    ///
+    /// **And that prefix *is* load-bearing, so a rename may not change it.**
+    /// An earlier version of this comment said the opposite, which was the
+    /// dangerous half-truth: `Session::read` applies renames, `load` is a
+    /// thin wrapper over `read`, and `serve::chat`'s resume path feeds the
+    /// loaded title straight to `task_withholding` — which gates
+    /// `kg_task_update` on `task: ` and is how D6 (*the agent may not close
+    /// its own task*) is enforced by absence. A rename that dropped the
+    /// prefix would hand a resumed delegation back the tool that closes its
+    /// own task. Today only `web: ` sessions are ever renamed and the rename
+    /// re-stamps the prefix, so the hazard is one careless caller away
+    /// rather than present — which is exactly the kind of thing that should
+    /// not be guarded by a sentence in a doc comment. [`Session::read`]
+    /// enforces it instead: a rename whose prefix disagrees with the
+    /// header's is ignored.
     ///
     /// A struct variant, not a newtype one, because this enum is internally
     /// tagged: `#[serde(tag = "record")]` merges the variant's fields into
@@ -951,7 +964,15 @@ impl Session {
         let mut meta = meta.with_context(|| format!("{} has no session header", path.display()))?;
         // A rename recorded later in the file is the current name; the header
         // keeps the created one so `peek_meta` stays a one-line read.
-        if let Some(t) = title {
+        //
+        // **A rename may not change what the session is.** The `task: ` /
+        // `voice: ` / `web: ` prefix on the created title is read by
+        // `serve::chat`'s `task_withholding`, which is how D6 — the agent may
+        // not close its own task — is enforced by absence; a rename that
+        // dropped it would hand a resumed delegation back `kg_task_update`.
+        // Enforced here rather than trusted to every writer, because there is
+        // one reader and there will be more writers.
+        if let Some(t) = title.filter(|t| Self::keeps_kind(meta.title.as_deref(), t)) {
             meta.title = Some(t);
         }
         Ok(Transcript {
@@ -964,6 +985,24 @@ impl Session {
                 checkpoints: taint_checkpoints,
             },
         })
+    }
+
+    /// Does a rename leave the session the same *kind* of session?
+    ///
+    /// The kind is the `<word>: ` prefix the title was created with. A rename
+    /// must carry it; one that does not is dropped rather than applied, and
+    /// the session keeps the name it had. Fail-closed in the direction that
+    /// matters: an ignored rename costs a stale label, where an applied one
+    /// can cost a withheld tool.
+    ///
+    /// A created title with no prefix at all constrains nothing — there is no
+    /// kind to preserve, and every prefix in use today is written by this
+    /// crate's own callers.
+    fn keeps_kind(created: Option<&str>, renamed: &str) -> bool {
+        match created.and_then(|c| c.split_once(": ")) {
+            Some((kind, _)) => renamed.starts_with(&format!("{kind}: ")),
+            None => true,
+        }
     }
 
     /// Every message the conversation ever contained, in first-seen order.
@@ -1306,6 +1345,51 @@ mod tests {
             Some("web: chat-8f3a"),
             "the header keeps the created title, so listing stays a one-line read"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D6 is enforced by the absence of a tool, and the absence is decided
+    /// from the title's prefix — so a rename that changed the prefix would
+    /// hand a resumed delegation back `kg_task_update`. Nothing writes such
+    /// a rename today; the guard exists so that nothing can.
+    #[test]
+    fn a_rename_cannot_change_what_kind_of_session_this_is() {
+        let dir = std::env::temp_dir().join(format!("mecha-kind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let s = Session::create(
+            &dir,
+            SessionMeta {
+                id: "20260902T000000-k".into(),
+                created_at: chrono::Utc::now(),
+                provider: "local".into(),
+                model: "first".into(),
+                workspace: std::path::PathBuf::from("/tmp"),
+                title: Some("task: nominate someone for the Ostrander".into()),
+            },
+        )
+        .unwrap();
+        s.append_messages(&[crate::message::Message::user("go")])
+            .unwrap();
+        // A rename that drops the kind: refused, and the session keeps the
+        // name that decides its withholding.
+        s.append(&Record::Title {
+            title: "web: Ostrander nomination".into(),
+        })
+        .unwrap();
+        let (meta, _) = Session::load(&s.path).unwrap();
+        assert_eq!(
+            meta.title.as_deref(),
+            Some("task: nominate someone for the Ostrander"),
+            "a rename must not be able to turn a delegation into a chat"
+        );
+
+        // A rename that keeps it: applied as normal.
+        s.append(&Record::Title {
+            title: "task: Ostrander nomination".into(),
+        })
+        .unwrap();
+        let (meta, _) = Session::load(&s.path).unwrap();
+        assert_eq!(meta.title.as_deref(), Some("task: Ostrander nomination"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
