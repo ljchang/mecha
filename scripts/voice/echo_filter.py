@@ -91,6 +91,23 @@ MIN_ECHO_MATCHED_WORDS = 4
 MAX_UNMATCHED_WORDS = 1
 LONG_ENOUGH_FOR_ONE_SLIP = 8
 
+# The verbatim arm's floor when nothing was playing.
+#
+# That arm runs whether or not the speaker was audible, because the timing
+# layer can be wrong and this is the fallback for when it is — but a fallback
+# only ever needs to catch a *long* verbatim echo, and four words is a plain
+# instruction. "Move it to Thursday" is a contiguous span of the offer that
+# prompted it, and in a silent room nothing else is armed to let it through:
+# the energy floor behind it is the ordinary `MIN_SEGMENT_RMS`, not the raised
+# one, because the timing layer correctly said no speaker was playing. Same
+# for "put it in the calendar", "add a note to the entry" — each of them a
+# span of the sentence that offered it, and each the plainest way to accept.
+#
+# The surface grew this branch as well: `recent()` joins the window, so the
+# substring test spans every cross-phrase boundary in twenty seconds where it
+# used to run per phrase.
+MIN_VERBATIM_WORDS_IN_SILENCE = 8
+
 # How much of `blob` the match may be spread across, over and above the words
 # it matched. An echo is a *contiguous stretch* of what we said; one skipped
 # word is the same recognition slip `MAX_UNMATCHED_WORDS` allows, seen from
@@ -196,12 +213,13 @@ class BotSpeech:
         last reply in a silent room is a person agreeing in the words of the
         question they were asked, which is what conversation sounds like. The
         verbatim arm still applies either way, because the timing layer can be
-        wrong — a missing frame, an unrecorded segment start — and with a word
-        floor under it that claim is cheap enough to make unconditionally.
-        Without one it was not: at two short words against a joined window it
-        was a bag of every phrase spoken in the last twenty seconds, and
-        short confirmations quoting the assistant are the commonest legitimate
-        turn there is.
+        wrong — a missing frame, an unrecorded segment start — but it applies
+        at a *longer* floor when nothing was playing, since there it is a
+        fallback rather than a defence and nothing else is armed behind it.
+        Without any floor it was not cheap at all: at two short words against
+        a joined window it was a bag of every phrase spoken in the last twenty
+        seconds, and short confirmations quoting the assistant are the
+        commonest legitimate turn there is.
         """
         words = _words(transcript)
         if not words:
@@ -225,8 +243,11 @@ class BotSpeech:
         # test now spans phrase boundaries where it used to run per phrase.
         #
         # A real verbatim echo of a spoken sentence is far longer than three
-        # words, so the guard costs this arm nothing it is for.
-        if len(words) >= MIN_ECHO_MATCHED_WORDS and norm in blob:
+        # words, so the guard costs this arm nothing it is for — and in a
+        # silent room, where this arm is a fallback rather than a defence, it
+        # is far longer than four either.
+        floor = MIN_ECHO_MATCHED_WORDS if bot_was_audible else MIN_VERBATIM_WORDS_IN_SILENCE
+        if len(words) >= floor and norm in blob:
             return True
         if not bot_was_audible:
             return False
