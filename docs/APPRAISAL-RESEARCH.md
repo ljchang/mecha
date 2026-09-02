@@ -247,10 +247,16 @@ or released a draft is the first *positive* commitment channel, read from a
 store only the harness writes. §7.4's safety argument is unchanged: a delta
 on `OutboxStore` cannot be manufactured by a sentence in a fetched page.
 
-> **Built 2026-09-02**: `guilt::with_delta(level, net_delta)` — a run that
-> cleared three or more recorded commitments reads as no guilt whatever it
-> inherited, and below that the level is scaled down by the run's own
-> share; a run that *added* to the queue reads the level it inherited,
+> **Built 2026-09-02**: `guilt::with_delta(level, net_delta, waiting_before)`
+> — the level is scaled down by the *share* of what was waiting that this
+> run cleared: a run that cleared everything it inherited reads as no guilt,
+> one that cleared three of forty reads nearly the level it inherited (the
+> first cut divided by the constant `COUNT_HALF_AT` and pinned three cleared
+> to zero from any backlog — found on review). Both numbers come from the
+> three owner-facing stores (`BacklogDelta::owner_facing_net`, `guilt::
+> waiting`), never the five-store `net`, and `guilt::with_backlogs` derives
+> them from one pair of reads. A run that *added* to the queue reads the
+> level it inherited,
 > because staging is its job and the first cut's "added three reads as
 > maximal" was exactly the reading `Homeostat::finish` refuses by name
 > (found on review). `Homeostat::finish` computes the delta first and folds
