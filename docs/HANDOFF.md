@@ -60,9 +60,10 @@ the merges in it had landed with no changelog entry (#119, #121, #123,
 #125, #127, #128, #130) and were written up at release time; the next tag
 is v0.1.18.
 
-**One lane is still live off `main` as of the evening of 2026-09-02, plus
-two small follow-ups; the other lane landed that day as two PRs, in the
-agreed order.** `fix/harness-review`
+**Three lanes were off `main` on the evening of 2026-09-02: the audit
+lane, still live; the appraisal lane, landed that day as two PRs in the
+agreed order and holding two small follow-ups; and a third session's pair
+(#144, #145), open and not either lane's to sequence.** `fix/harness-review`
 (**PR #139**, the audit lane, merged at `089952f`) carried the six-lane
 review's nine fixes — the jail's dangling-symlink follow, the subagent
 send-laundering, the cumulative usage frame, `Approver::escalate`,
@@ -74,7 +75,15 @@ send-laundering, the cumulative usage frame, `Approver::escalate`,
 `config.rs`, `subagent.rs` and `tool/mod.rs` — the last of which #140 also
 rewrote (`cap_result`'s marker, `CAP_MARKER`), so #143's rebase behind the
 appraisal merges is textual on that one file and semantic nowhere else.
-**The appraisal lane is merged**:
+The third session's **#144** (`fix/draft-shows-its-account`: `OutboxItem`
+gains `call_id` and `filled_defaults`, `OutboxStore::stage` takes an
+`outbox::Provenance`) merged `main` after both appraisal PRs and
+auto-merged the three files it shares with them — `appraisal.rs`,
+`doctor.rs`, `tool/mod.rs` — so its only textual conflict was #142's in
+`agent.rs` and its remaining risk is the semantic one an empty conflict
+list does not cover; **#145** (`fix/voice-echo-on-speakers`) touches
+`scripts/voice/`, `VOICE-RESEARCH.md` and one CI job, and nothing any
+other lane touches. **The appraisal lane is merged**:
 #140 (`feat/appraisal-record`, phase A of `docs/APPRAISAL-RESEARCH.md` §3
 and the prediction record) at `15c628d` and #141 (`feat/appraisal-phase-b`,
 phase B) at `49166e3`, both on 2026-09-02 after #139 and #142 — see the
