@@ -184,11 +184,22 @@ impl Approver for SlackApprover {
         self.ask(tool, summarise(tool.name(), input)).await
     }
 
-    /// Past the thread's mode and the run's blanket approvals on purpose: an
-    /// escalation is the interlock asking a person about *this* call. The
-    /// reason rides in the card's summary. An earlier unanswered card still
-    /// blocks — nobody is watching, and that answer does not change.
+    /// Past the modes that would have *passed* the call — `Allow` and the
+    /// run's blanket approvals — on purpose: an escalation is the interlock
+    /// asking a person about *this* call. Not past `ReadOnly`, which is a
+    /// refusal the thread already made: an escalation narrows and never
+    /// loosens, and the PR review of this change found the first version
+    /// widening past it. The reason rides in the card's summary. An earlier
+    /// unanswered card still blocks — nobody is watching, and that answer
+    /// does not change.
     async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        if self.mode() == Mode::ReadOnly && !tool.read_only() {
+            return Decision::Blocked(format!(
+                "`{}` modifies state and this thread is read-only; an escalation cannot widen \
+                 that",
+                tool.name()
+            ));
+        }
         self.ask(tool, format!("{why} {}", summarise(tool.name(), input)))
             .await
     }

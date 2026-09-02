@@ -351,7 +351,10 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // `[outbox] tools` named it was live mail, and nothing said so. Same
     // shape as the two warnings above, and it fires on every start for the
     // same reason. `--no-outbox` is the caller saying so deliberately, and
-    // is silent.
+    // is silent. Tested one level down (`Registry::senders`), not here:
+    // this function builds a live agent from a full config, and nothing in
+    // `setup` is unit-tested at that level yet — a known gap, stated so
+    // nobody reads the registry test as covering the warning.
     if !opts.no_outbox {
         for name in agent.registry().senders() {
             let routed = agent

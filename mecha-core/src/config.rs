@@ -879,19 +879,32 @@ impl Config {
 
     /// Load defaults, then the global file, then the project file, then env.
     pub fn load(project_dir: &Path) -> Result<Self> {
+        Self::load_layers(
+            Self::global_path().as_deref(),
+            Some(&project_dir.join(Self::PROJECT_FILE)),
+        )
+    }
+
+    /// The one loader both public entry points are: defaults, the accepted
+    /// harness overrides, the global file if it exists, the project file if
+    /// given and it exists, the environment, then validation. Public so the
+    /// guarantee "a bad file fails the *load*" can be tested at the level it
+    /// ships rather than one call below it.
+    pub fn load_layers(global: Option<&Path>, project: Option<&Path>) -> Result<Self> {
         let mut cfg = Config::default();
         // Harness overrides sit between defaults and every file layer: an
         // accepted, measured change applies everywhere, and anything the
         // user writes in a config file overwrites it. See `harness.rs`.
         crate::harness::apply_accepted_overrides(&mut cfg);
-        if let Some(path) = Self::global_path() {
+        if let Some(path) = global {
             if path.exists() {
-                cfg.merge_file(&path, LayerTrust::Global)?;
+                cfg.merge_file(path, LayerTrust::Global)?;
             }
         }
-        let project = project_dir.join(Self::PROJECT_FILE);
-        if project.exists() {
-            cfg.merge_file(&project, LayerTrust::Project)?;
+        if let Some(project) = project {
+            if project.exists() {
+                cfg.merge_file(project, LayerTrust::Project)?;
+            }
         }
         cfg.merge_env();
         cfg.validate()?;
@@ -928,18 +941,9 @@ impl Config {
     /// to work in that repository, and not one at all for a
     /// [`crate::trigger`] firing at 03:00 with nobody watching.
     pub fn load_global() -> Result<Self> {
-        let mut cfg = Config::default();
-        // Same override layer as `load`: a trigger run benefits from an
-        // accepted change exactly as an interactive one does.
-        crate::harness::apply_accepted_overrides(&mut cfg);
-        if let Some(path) = Self::global_path() {
-            if path.exists() {
-                cfg.merge_file(&path, LayerTrust::Global)?;
-            }
-        }
-        cfg.merge_env();
-        cfg.validate()?;
-        Ok(cfg)
+        // Same layers as `load` minus the project file: a trigger run
+        // benefits from an accepted override exactly as an interactive one.
+        Self::load_layers(Self::global_path().as_deref(), None)
     }
 
     fn merge_file(&mut self, path: &Path, trust: LayerTrust) -> Result<()> {
@@ -2046,6 +2050,23 @@ mod tests {
             checked >= 30,
             "the walk found only {checked} nested fields — did the struct spelling change?"
         );
+    }
+
+    /// At the level it ships: the *load* fails, not only `validate` when
+    /// someone remembers to call it. Both public loaders are `load_layers`,
+    /// so this is them — the PR review of this change pointed out that the
+    /// test below would stay green with the `validate()` call deleted.
+    #[test]
+    fn a_bad_global_file_fails_the_load_itself() {
+        let dir = std::env::temp_dir().join(format!("mecha-tz-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let global = dir.join("config.toml");
+        std::fs::write(&global, "[agent]\ntimezone = \"Mars/Olympus_Mons\"\n").unwrap();
+        let err = Config::load_layers(Some(&global), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("IANA"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The fix for a guard that fell through: an unparseable zone used to be

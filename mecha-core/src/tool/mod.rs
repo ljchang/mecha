@@ -701,10 +701,14 @@ pub trait Approver: Send + Sync {
     /// beside the call and wait for an answer, bypassing its own shortcuts.
     async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
         let _ = input;
+        // `why` names the control that fired and its remedy — the caller
+        // knows which of two it was (the interlock under `ask`, or the leak
+        // guard) and this default cannot. Its own sentence says only what it
+        // knows: nobody could be asked.
         Decision::Blocked(format!(
-            "{why} `trifecta = \"ask\"` needs an approver that can reach a person, and this \
-             run's approver answers from policy — `{}` was not asked. Run from a surface \
-             with someone watching, or set `trifecta = \"block\"`.",
+            "{why} Asking needs an approver that can reach a person, and this run's approver \
+             answers from policy — `{}` was not asked. Run from a surface with someone \
+             watching, or choose the refusing setting instead of the asking one.",
             tool.name()
         ))
     }

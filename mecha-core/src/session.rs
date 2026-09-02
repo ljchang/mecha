@@ -43,11 +43,13 @@ fn lenient_message(line: &str) -> Option<Message> {
     if content.is_empty() {
         return None;
     }
-    tracing::warn!(
-        dropped,
-        kept = content.len(),
-        "a transcript message carried blocks this build cannot read; kept the rest"
-    );
+    if dropped > 0 {
+        tracing::warn!(
+            dropped,
+            kept = content.len(),
+            "a transcript message carried blocks this build cannot read; kept the rest"
+        );
+    }
     Some(Message { role, content })
 }
 

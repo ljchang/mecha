@@ -237,6 +237,17 @@ worth carrying: **a vision model is two files**, and the second one is
 invisible when missing — nothing errors, `/props` reports what is *loaded*
 rather than what is supported, and the model simply says it cannot see.
 
+**With `fallbacks` configured, "can the model see" is the primary's answer.**
+`Failover::vision()` forwards to the primary (it used to inherit the trait's
+`false`, so configuring any fallback silently turned every image into a
+placeholder). The honest residue: a turn that fails over to a fallback with
+`vision = false` is still rendered with the image blocks the primary
+accepted, because both renderers emit an image the request carries. That
+turn may be rejected, which is the loud failure and the right one — a
+fallback answering a question about a picture it cannot see would be the
+quiet one. Pair a sighted primary with sighted fallbacks, or accept that
+fallback turns on image conversations fail.
+
 ## Security model
 
 **The full trifecta map lives in `docs/TRIFECTA.md`** — the four ways a
