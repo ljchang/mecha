@@ -858,10 +858,29 @@ named by what it can and cannot do.
   says "that" before "cancel".
 
   And the band no text rule can decide is worth stating rather than tuning at:
-  a person repeating our own proposal back over the speaker ("move it to
-  Thursday please") *is*, as text, our sentence. That band belongs to the
-  energy floor, which is why that floor is the load-bearing defence and this is
-  depth behind it.
+  a person repeating our own proposal back ("move it to Thursday") *is*, as
+  text, our sentence. **That band is answered by refusing to answer it** — one
+  floor of eight words, both arms, every overlap state, below which this filter
+  says nothing at all.
+
+  The earlier version split that floor by circumstance and kept silencing
+  turns, because the circumstances do not distinguish what they seemed to.
+  `bot_speaking` at transcribe time means the owner spoke *over* a reply still
+  playing — echo on speakers, a barge-in on headphones, and nothing in the text
+  tells them apart. The 1.2 s tail is not a speakerphone condition either: it
+  starts when the last sample is written out, and a person hears it a jitter
+  buffer later and answers within a second, so "inside the tail" is where a
+  prompt answer to a question lands. Most answers are "audible".
+
+  It is also the correction to a claim this section made twice: the energy
+  floor is **not** a layer behind the text filter. `_transcribe` gates on RMS
+  and returns, then runs the filter on whatever survived — the two are ANDed,
+  so clearing the raised bar does not exempt a transcript, it only earns it the
+  right to be killed by the text test. Anything the filter rejects is rejected
+  finally, which is why it may only speak where a person is unlikely to have
+  said exactly that. The cost, stated: a short echo that clears the raised RMS
+  floor becomes a turn and mecha answers something odd — recoverable, where a
+  wrong suppression is not a degraded turn but no turn at all.
 
   The timing layer's own trap belongs beside them: the segment start is
   **consumed** when read, not left in place. `_bot_audible_until` only ever

@@ -206,10 +206,13 @@ class BotSpeech:
         last reply in a silent room is a person agreeing in the words of the
         question they were asked, which is what conversation sounds like. The
         verbatim arm still applies either way, because the timing layer can be
-        wrong — a missing frame, an unrecorded segment start — but it applies
-        at a *longer* floor when nothing was playing, since there it is a
-        fallback rather than a defence and nothing else is armed behind it.
-        Without any floor it was not cheap at all: at two short words against
+        wrong — a missing frame, an unrecorded segment start — and it applies
+        at the same `MIN_ECHO_WORDS` floor as the fuzzy one, since a fallback
+        only ever needs to catch a whole sentence. There is exactly one floor
+        here and it is checked before both arms; a state-dependent one is what
+        three rounds of tuning removed.
+
+        Without any floor at all it was not cheap: at two short words against
         a joined window it was a bag of every phrase spoken in the last twenty
         seconds, and short confirmations quoting the assistant are the
         commonest legitimate turn there is.
