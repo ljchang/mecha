@@ -495,6 +495,8 @@ opinion without knowing which store it came from.
 | [Web](/docs/features/web) | A muted chip beside the answer carrying the label word, if any, and a two-sided bar — negative to the left of a centre tick, positive to the right — deliberately not the amber the taint chip owns, because "how it went" and "what it touched" must never be confusable; the logo tints as a CSS *outline* on a negative reading, never a fill. The event is sent only when there is something to show, so the page has a plain absence to fall back to. |
 | Slack | One context line in the thread after a run that had anything signed: `appraisal · −0.5`, or `appraisal · anger −0.5` when the label says a word. |
 | [Voice](/docs/features/voice) | A per-answer weight nudge on the local TTS, keyed on the label word. **Unreachable today** — see the note below this table: a live run's label is always neutral, so no nudge is ever latched. When one is, it **lags one turn by construction** — the label is a function of a *finished* run, so a call hears the previous turn's mood. |
+| `mecha tasks set --status done` | Appraises the session that served the task, prints the verdict, and may stage a follow-up. |
+| [`mecha distill`](/docs/features/distillation) | The label and the goal errors ride on an episode's `meta`, beside — not inside — its content. |
 
 **What a live surface can show today is the negative half, and no word.**
 The live readout passes no drafts, and a draft sent unchanged is the one
@@ -506,10 +508,9 @@ nudge above never fires. Both halves are real on the offline readers —
 `mecha sessions appraise` and the closure appraisal read the outbox and can
 run the probe. A channel that signs a positive off the run's own record is
 what changes this; the queue-delta commitment channel is the first.
-| `mecha tasks set --status done` | Appraises the session that served the task, prints the verdict, and may stage a follow-up. |
-| [`mecha distill`](/docs/features/distillation) | The label and the goal errors ride on an episode's `meta`, beside — not inside — its content. |
 
-**A compacted run reads as neutral outright.** Compaction rewrites the message
+**A compacted run's label reads as neutral outright, and its valence is
+partial.** Compaction rewrites the message
 list in place, so the index marking where the run began no longer names its own
 starting point, and there is no way to recover the boundary. Dropping just the
 interventions is not the safe direction it looks like: the derivation reduces
