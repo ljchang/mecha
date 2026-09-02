@@ -31,6 +31,12 @@ impl Approver for TerminalApprover {
     async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
         self.ask(tool, input, Some(why)).await
     }
+
+    /// A rule's `allow` is a yes written down in advance; this approver has
+    /// no mode of its own to consult.
+    async fn permit(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
+        Decision::Allow
+    }
 }
 
 impl TerminalApprover {

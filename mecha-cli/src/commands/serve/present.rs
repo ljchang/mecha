@@ -170,6 +170,17 @@ impl Approver for WebApprover {
         }
         self.ask(tool, input, Some(why.to_string())).await
     }
+
+    /// A rule's `allow` stands in for the card, not for the mode: a
+    /// read-only surface still refuses a write.
+    async fn permit(&self, tool: &dyn Tool, input: &serde_json::Value) -> Decision {
+        let mode = self
+            .mode
+            .lock()
+            .map(|m| *m)
+            .unwrap_or(PermissionMode::ReadOnly);
+        ModeApprover { mode }.permit(tool, input).await
+    }
 }
 
 impl WebApprover {

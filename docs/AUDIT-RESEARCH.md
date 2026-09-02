@@ -423,8 +423,9 @@ where `shell` needs approval or is not registered, laundered through a plan
 field — "confined" and "approved" are different guards. So a check is
 dispatched exactly as a model `shell` call is: interlock, `pre_tool` hook,
 approver (`escalate` where the trifecta says so), sandbox, in that order,
-with the trace `name: "check"`, `input: {command}`. A refused check is
-`denied: true` and `step.rs` reads it as refused, never failed; on a surface
+with the trace `name: "check"` (`step::CHECK_TRACE`), `input: {command}`. A
+refused check is `denied: true` **and** `is_error: true`, exactly as the loop
+writes a denial, or `Outcome::of` reads it as failed rather than refused; on a surface
 with no `shell` tool, a declared check does not run and the step's finding
 says so. The record freezes each item's `check` at the first write that
 declared it (a hash in `Tracked`); a later write that changes it on a

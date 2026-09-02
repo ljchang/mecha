@@ -718,6 +718,23 @@ pub trait Approver: Send + Sync {
             tool.name()
         ))
     }
+
+    /// An approval rule has said *no person needs to be asked* about this
+    /// call (`policy::RuleDecision::Allow`). Answer with whatever your mode
+    /// still forbids, and nothing else.
+    ///
+    /// A rule stands in for the human's yes and for nothing more: a
+    /// read-only run still refuses a write, a Slack thread in read-only mode
+    /// still refuses, because those are policy the run was started under and
+    /// a config rule may narrow it but never widen it. The default is to
+    /// *ask anyway* — an approver that has not thought about rules keeps
+    /// today's behaviour, which is the safe misreading. Interactive approvers
+    /// override it to return `Allow` where they would have prompted;
+    /// `ModeApprover` overrides it to honour `ReadOnly` and pass everything
+    /// else, which is what makes a rules file useful to a headless run.
+    async fn permit(&self, tool: &dyn Tool, input: &Value) -> Decision {
+        self.approve(tool, input).await
+    }
 }
 
 /// Answers from the configured [`PermissionMode`] without asking anyone.
@@ -727,6 +744,20 @@ pub struct ModeApprover {
 
 #[async_trait]
 impl Approver for ModeApprover {
+    /// A rule's `allow` is the yes a headless run has no person to give —
+    /// which is what makes a rules file useful to a trigger. `ReadOnly` is
+    /// policy the run was started under and still wins.
+    async fn permit(&self, tool: &dyn Tool, _input: &Value) -> Decision {
+        match self.mode {
+            PermissionMode::ReadOnly if !tool.read_only() => Decision::Blocked(format!(
+                "`{}` modifies state and this run is read-only; an approval rule cannot widen \
+                 that",
+                tool.name()
+            )),
+            _ => Decision::Allow,
+        }
+    }
+
     async fn approve(&self, tool: &dyn Tool, _input: &Value) -> Decision {
         match self.mode {
             PermissionMode::Allow => Decision::Allow,
