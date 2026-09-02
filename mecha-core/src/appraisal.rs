@@ -1018,8 +1018,9 @@ pub fn of_session(
         // `provenance()`, not the stored field: a record written before
         // `is_harness_voice` existed carries `clean` for a nudge mecha wrote
         // itself (two are on disk), and an owner-edited lesson is a promotion
-        // the stored field does not show. **Clean only — the same question
-        // `learnable()` asks, by the owner's ruling.** An appraisal never
+        // the stored field does not show. **Clean only — stricter than
+        // `learnable()`, which carries a triage-domain exemption this arm
+        // deliberately does not; by the owner's ruling.** An appraisal never
         // rides a prompt, so a wider gate was arguable; but a reflection
         // written from a tainted session is already recorded *clean* by
         // construction, because the reflector was handed the owner's turns

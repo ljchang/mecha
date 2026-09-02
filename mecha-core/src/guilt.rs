@@ -287,20 +287,36 @@ pub fn with_delta(
     Some((level * (1.0 - relief)).clamp(0.0, 1.0))
 }
 
-/// The whole fold from one `Backlog` pair: the level off `before`, relief
-/// from the owner-facing delta between the two, over what `before` held.
-/// The one seam where the numerator and the denominator are derived from
-/// the same reads — `with_delta`'s tests hand it both numbers, and the
-/// mismatch the review found lived exactly here, in the call site.
+/// Everything one `Backlog` pair yields, computed once: the level off
+/// `before`, the delta between the two, and the level scaled by the
+/// owner-facing share of `before` that the delta cleared.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fold {
+    pub level: Option<f32>,
+    pub delta: crate::backlog::BacklogDelta,
+    pub after_relief: Option<f32>,
+}
+
+/// The whole fold from one `Backlog` pair — the one seam where the level,
+/// the delta, and relief's numerator and denominator are all derived from
+/// the same reads. `with_delta`'s tests hand it both numbers, and the
+/// mismatch the review found lived exactly here, in the call site; a later
+/// pass found the call site re-deriving half of it beside this, which is
+/// why this returns all three rather than one.
 pub fn with_backlogs(
     before: &Backlog,
     after: &Backlog,
     peak_context_pressure: Option<f32>,
     now: DateTime<Utc>,
-) -> Option<f32> {
+) -> Fold {
     let level = anticipated_guilt(before, peak_context_pressure, now);
     let delta = Backlog::delta(before, after);
-    with_delta(level, delta.owner_facing_net(), waiting(before))
+    let after_relief = with_delta(level, delta.owner_facing_net(), waiting(before));
+    Fold {
+        level,
+        delta,
+        after_relief,
+    }
 }
 
 /// How many recorded commitments a backlog holds across the three stores
@@ -623,14 +639,16 @@ mod tests {
         let mut harness_only = before.clone();
         harness_only.proposals = Some(depth(0, None));
         harness_only.candidates = Some(depth(0, None));
-        assert_eq!(
-            with_backlogs(&before, &harness_only, Some(0.1), now),
-            Some(level)
-        );
+        let fold = with_backlogs(&before, &harness_only, Some(0.1), now);
+        assert_eq!(fold.level, Some(level));
+        assert_eq!(fold.after_relief, Some(level));
+        assert_eq!(fold.delta.owner_facing_net(), Some(0));
         // One of the owner's three cleared: a third of the level relieved.
         let mut one_draft = before.clone();
         one_draft.outbox = Some(depth(1, Some(week_ago)));
-        let relieved = with_backlogs(&before, &one_draft, Some(0.1), now).unwrap();
+        let relieved = with_backlogs(&before, &one_draft, Some(0.1), now)
+            .after_relief
+            .unwrap();
         assert!(
             (relieved - level * (2.0 / 3.0)).abs() < 1e-5,
             "{relieved} vs {level}"
