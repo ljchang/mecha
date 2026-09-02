@@ -36,7 +36,11 @@ class TheTextFilter(unittest.TestCase):
 
     def test_a_verbatim_echo_is_caught(self):
         self.bot.note("Your first meeting tomorrow is at nine.")
-        self.assertTrue(self.bot.is_probable_echo("your first meeting tomorrow is at nine"))
+        self.assertTrue(
+            self.bot.is_probable_echo(
+                "your first meeting tomorrow is at nine", bot_was_audible=True
+            )
+        )
 
     def test_an_echo_the_transcriber_got_slightly_wrong_is_caught(self):
         """The failure the exact-substring test could not see.
@@ -241,20 +245,53 @@ class TheTextFilter(unittest.TestCase):
             )
 
     def test_a_verbatim_echo_long_enough_to_mean_it_still_counts(self):
-        """The arm still does its job, including with nothing playing — which
-        is the point of keeping it unconditional: the timing layer can be
-        wrong, and this is the fallback for when it is."""
-        self.bot.note("I have moved the seminar to Thursday afternoon.")
+        """The arm still does its job with nothing playing — which is the
+        point of keeping it unconditional: the timing layer can be wrong, and
+        this is the fallback for when it is. What a fallback needs to catch is
+        a whole sentence, not a phrase."""
+        self.bot.note("I have moved the seminar to Thursday afternoon, as you asked.")
         self.assertTrue(
             self.bot.is_probable_echo(
-                "i have moved the seminar to thursday afternoon", bot_was_audible=False
+                "i have moved the seminar to thursday afternoon as you asked",
+                bot_was_audible=False,
             )
         )
 
+    def test_a_plain_instruction_is_not_an_echo_of_the_offer(self):
+        """**The verbatim arm's last short-turn failure**, and the worst of
+        them: it fires with nothing playing.
+
+        "Move it to Thursday" is a contiguous span of the offer that prompted
+        it, and on headphones the timing layer correctly reports no speaker —
+        so the energy floor behind it is the ordinary one, and the defence the
+        module points at for this band is not armed. The turn does not degrade;
+        it does not happen.
+        """
+        self.bot.note("I can move it to Thursday if you want me to.")
+        for said in ["move it to thursday", "i can move it to thursday"]:
+            self.assertFalse(
+                self.bot.is_probable_echo(said, bot_was_audible=False),
+                f"{said!r} was silenced on headphones",
+            )
+
+    def test_the_silent_room_case_does_not_rest_on_its_first_word(self):
+        """`test_agreeing_in_a_silent_room_is_not_an_echo` passed only because
+        of its leading "yes" — drop that and the phrase is a clean substring of
+        the question. The bare form is the one a person actually says."""
+        self.bot.note("Shall I move the seminar to Thursday?")
+        self.assertFalse(
+            self.bot.is_probable_echo("move the seminar to thursday", bot_was_audible=False)
+        )
+
     def test_the_window_closes(self):
+        # Audible, so the verdict turns on the window rather than on a floor.
         self.bot.note("Your first meeting tomorrow is at nine.")
         self.clock.advance(30)
-        self.assertFalse(self.bot.is_probable_echo("your first meeting tomorrow is at nine"))
+        self.assertFalse(
+            self.bot.is_probable_echo(
+                "your first meeting tomorrow is at nine", bot_was_audible=True
+            )
+        )
 
     def test_nothing_said_yet_is_never_an_echo(self):
         self.assertTrue(self.bot.recent() == "")

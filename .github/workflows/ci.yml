@@ -114,6 +114,26 @@ jobs:
       - run: npm run build
         working-directory: web
 
+  # The voice worker's echo filter is Python, so `cargo test` cannot see it and
+  # neither can the `web` job — and a test nobody runs reads exactly like a
+  # passing one, which is the rule three jobs in this file already turn on.
+  #
+  # It lands harder here than most: the whole argument for extracting
+  # `echo_filter.py` as a pure module, with no pipecat import, was that a
+  # heuristic deciding whether a person's turn happens at all could finally be
+  # tested without a GPU box and a WebRTC stack. Nothing kept that argument
+  # true past the branch that made it.
+  #
+  # Stdlib only and no venv, deliberately: the module imports nothing, so this
+  # job needs nothing, and a dependency here would be the first excuse to skip
+  # it on a runner that lacks one.
+  voice:
+    name: voice filter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 scripts/voice/test_echo_filter.py
+
   # The integration tests skip themselves when a sandbox backend is missing, and
   # a silently skipped test reads exactly like a passing one. This job installs
   # the backends and sets MECHA_TEST_REQUIRE_BACKENDS=1, which turns every skip
