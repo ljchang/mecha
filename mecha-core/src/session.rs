@@ -25,6 +25,12 @@ use std::path::{Path, PathBuf};
 /// are counted and logged, and the message survives with what it has. A
 /// message left with no blocks at all, or a role this build does not know,
 /// is still dropped — there is nothing left to keep.
+///
+/// The residue, stated: if a future build adds a block kind that *produces*
+/// a result — a second `tool_use` shape — dropping it leaves the answering
+/// `tool_result` orphaned in the next message, and nothing prunes orphans
+/// at load. Strictly better than dropping the whole message either way,
+/// and the fix when that day comes is a load-time orphan sweep beside this.
 fn lenient_message(line: &str) -> Option<Message> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     if v.get("record").and_then(serde_json::Value::as_str) != Some("message") {

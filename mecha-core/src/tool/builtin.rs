@@ -653,9 +653,13 @@ impl Tool for HttpFetch {
             match chunk {
                 Ok(c) => raw.extend_from_slice(&c),
                 Err(e) => {
-                    return Ok(ToolOutput::err(format!(
-                        "reading the response body failed: {e}"
-                    )))
+                    // A body that broke partway is still what the far end
+                    // sent — a malformed chunk, a bad encoding — and the
+                    // conversation may already hold part of a hostile page.
+                    return Ok(
+                        ToolOutput::err(format!("reading the response body failed: {e}"))
+                            .from_outside(),
+                    );
                 }
             }
             if raw.len() > MAX_OUTPUT_BYTES {

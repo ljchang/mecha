@@ -399,7 +399,7 @@ impl Tracked {
                                     // overwrite an earlier one would make
                                     // which candidate survives an accident of
                                     // iteration order rather than a choice.
-                                    let mut guard = slot.lock().unwrap();
+                                    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
                                     if guard.is_none() {
                                         *guard = Some(escalation);
                                     }
@@ -470,7 +470,7 @@ impl TodoTool {
     /// one's — the exact wrong-units mistake rung 4 made reading headroom off
     /// one run's outcome for a whole episode.
     pub fn set_plan_in(&self, workspace: &Path, plan: Plan) {
-        self.lists.lock().unwrap().insert(
+        self.lists.lock().unwrap_or_else(|e| e.into_inner()).insert(
             workspace.into(),
             Tracked {
                 plan,
@@ -631,7 +631,13 @@ impl TodoTool {
 
     /// What this run's plan serves, if it said.
     pub fn goal_in(&self, workspace: &Path) -> Option<GoalRef> {
-        self.lists.lock().unwrap().get(workspace)?.plan.goal.clone()
+        self.lists
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(workspace)?
+            .plan
+            .goal
+            .clone()
     }
 
     fn render(plan: &Plan) -> String {
@@ -734,7 +740,7 @@ impl Tool for TodoTool {
     /// current answer and a summariser would only be a lossy path to a worse
     /// copy of it.
     fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
-        let lists = self.lists.lock().unwrap();
+        let lists = self.lists.lock().unwrap_or_else(|e| e.into_inner());
         let plan = &lists.get(&ctx.workspace)?.plan;
         // An empty list is genuinely nothing to carry, and an empty section in
         // the prompt reads as "the plan is finished" rather than "there was
@@ -766,7 +772,7 @@ impl Tool for TodoTool {
     /// (`serve::session_workspace`) would otherwise accumulate one entry per
     /// session for the life of the process.
     fn forget_conversation_state(&self) {
-        self.lists.lock().unwrap().clear();
+        self.lists.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -775,7 +781,7 @@ impl Tool for TodoTool {
         // state and nothing else, so it must count as bookkeeping exactly
         // like a successful one — never as work that failed.
         let (own_calls_before, last_real) = {
-            let mut lists = self.lists.lock().unwrap();
+            let mut lists = self.lists.lock().unwrap_or_else(|e| e.into_inner());
             let tracked = lists.entry(ctx.workspace.clone()).or_default();
             let own_calls_before = tracked.observe(ctx.work);
             (own_calls_before, tracked.last_real)
