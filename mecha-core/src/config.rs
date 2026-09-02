@@ -523,9 +523,10 @@ pub struct AgentConfig {
     /// because each was argued from a measurement (boredom costs nothing;
     /// compact_validate's omission-catch rate was measured elsewhere). This
     /// one has no corpus yet — the pre-filter's thresholds are argued, not
-    /// measured, same honesty as `step.rs`'s own constants — so it follows
-    /// `compact_at_tokens`'s posture instead: unset until a person decides to
-    /// spend the model call.
+    /// measured, same honesty as `step.rs`'s own constants — so it stays off
+    /// until a person decides to spend the model call. (Compaction used to
+    /// share that posture; it now derives its threshold from the window,
+    /// because its validator gave it a measurement this has not earned yet.)
     pub step_escalation: bool,
 }
 
