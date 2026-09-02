@@ -2291,18 +2291,25 @@ step landed), `expect_calls` (the model's own forecast) — strict from the
 model (`TodoTool::call` names the item and the field) and lenient from a
 record, on `serves:`'s two policies; they render as indented lines under
 the step so the carried block re-reads the prediction with the plan. **A
-completed step's `check` is frozen**: `Tracked` hashes the first
-declaration, a change while the step is open is a revision, and a change
-after `completed` is a tamper — echoed back as such, counted
-(`TodoTool::tampered_in`), never taken. **The loop runs a check as it would
-run a model `shell` call** — approver, sandbox, interlock, hooks — and
-records the result as a trace named `step::CHECK_TRACE`; `Work::of` keeps
-those out of `calls` (the harness's work is not the model's, and
-`expect_calls` forecasts the model's), counts `checks_declared` /
-`checks_passed` (a refused check in neither), and a passing check is
-`verify_like` by construction. `Finding::CheckFailed` is read before the
-last-attempt readings, because the model's last call can succeed while its
-claim does not. `RunStats` carries both counts as `Option`, folded like
+completed step's `check` is frozen on the write that completes it**:
+`Tracked` keeps the hash of the latest declaration while the step is open,
+and from the completing write that declaration stands — a different check
+on that write or any later one is a tamper, echoed back as such, counted
+(`TodoTool::tampered_in`), never taken. The first cut gated on the
+*previous* status and let the one write that both completes the step and
+swaps its check through, which is exactly the rewrite the freeze exists for.
+**Nothing runs a check yet.** When the loop does — dispatched as a model
+`shell` call would be: approver, sandbox, interlock, hooks — it records the
+result as a trace named `step::CHECK_TRACE`, and the readers are already in
+place: `Work::of` keeps those out of `calls` (the harness's work is not the
+model's, and `expect_calls` forecasts the model's), counts `checks_declared`
+/ `checks_passed` (a refused check in neither), lets a passing check count
+as `verify_like`, and **never lets a check set `last`** — `Tracked::observe`
+refreshes its copy of `last` on the model's own call count, so a check
+landing last beside real work would have read as the step's own failure or
+refusal (found on review). `Finding::CheckFailed` is read from the counters
+before the last-attempt readings, because the model's last call can succeed
+while its claim does not. `RunStats` carries both counts as `Option`, folded like
 `boredom_notices`, and `of_session` signs a failed check `-1.0`, `Own`,
 cite `checks_passed` — the first structural discrepancy between a
 prediction and its outcome. `learning::Trigger::Mismatch` is the wire word

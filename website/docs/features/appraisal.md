@@ -616,15 +616,19 @@ A plan item may carry three optional predictions beside its content:
 `check`, a command whose exit code says whether it is; and `expect_calls`,
 how many tool calls the model thinks it will take. They are echoed under the
 step in every `todo` result and ride the carried block across a compaction,
-so the model meets its own prediction again after either. A declared `check`
-is run by the harness exactly as a model `shell` call would be — through the
-approver, the sandbox and the interlock — and a step whose check did not pass
-comes back as its own finding, read before anything about the model's last
-call, because the last call can succeed while the claim does not. Once a step
-is `completed` its check is frozen: rewriting it afterwards is reported back
-as a change, not taken. A failed check is also a signed error on the run's
-appraisal, the first discrepancy between a prediction and its outcome that
-no keyword list has to guess at.
+so the model meets its own prediction again after either. Once a step is
+`completed` its check is frozen: a different check on that write or any later
+one is reported back as a change, not taken.
+
+**Running the check is not wired yet.** The record, the counters and the
+readings are in place: when the harness runs a declared `check` — it will be
+dispatched exactly as a model `shell` call would be, through the approver, the
+sandbox and the interlock — a step whose check did not pass will come back as
+its own finding, read before anything about the model's last call, because
+the last call can succeed while the claim does not, and a failed check will be
+a signed error on the run's appraisal, the first discrepancy between a
+prediction and its outcome that no keyword list has to guess at. Until that
+lands, no check runs and those readings never fire.
 
 ## Boredom: naming an approach that has stopped teaching the run anything
 

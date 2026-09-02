@@ -82,15 +82,19 @@ pub struct TodoItem {
         deserialize_with = "de_lenient_string"
     )]
     pub expect: Option<String>,
-    /// A command whose exit code says whether the step landed. **Frozen at
-    /// declaration**: [`Tracked`] keeps a hash of the first `check` an item
-    /// declared, and a later write that changes a *completed* step's check
-    /// is reported back as a tamper rather than accepted — the
-    /// `expect.verify` discipline, one tier down. Executed by the loop, not
-    /// by this tool, and dispatched exactly as a model `shell` call would
-    /// be (approver, sandbox, interlock, hooks); its result is a trace named
-    /// `check` that `step::Work::of` folds into `checks_declared` /
-    /// `checks_passed`.
+    /// A command whose exit code says whether the step landed. **Frozen on
+    /// completion**: while the step is open [`Tracked`] keeps the hash of
+    /// the latest `check` it declared, and from the write that marks it
+    /// `completed` that declaration stands — a different check on that
+    /// write or any later one is reported back as a tamper rather than
+    /// accepted, the `expect.verify` discipline one tier down. **Not
+    /// executed yet.** The loop is to run it, dispatched exactly as a model
+    /// `shell` call would be (approver, sandbox, interlock, hooks), and
+    /// record the result as a trace named `step::CHECK_TRACE`, which
+    /// `step::Work::of` already folds into `checks_declared` /
+    /// `checks_passed`; that execution is the audit lane's
+    /// (`AUDIT-RESEARCH.md` §3.11) and until it lands no `check` trace is
+    /// ever written.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -436,22 +440,29 @@ impl Tracked {
         let mut lines = Vec::new();
         for item in &next.items {
             let was = before.get(item.content.as_str()).copied();
-            // The check freezes on completion. Before that, the latest
-            // declaration is the check; after, the first one stands and a
-            // change is reported rather than taken.
+            // The check freezes on the write that claims completion. While
+            // the step is open the latest declaration is the check; from
+            // the moment the item says `completed` the last open declaration
+            // stands, and a different check on that write or any later one
+            // is reported rather than taken. Gated on the item's status
+            // *now*, not on `was` — gating on the previous status let the
+            // one write that both completes the step and swaps its check
+            // through, which is exactly the post-hoc rewrite the freeze
+            // exists for (found on review). A step completed with a check
+            // it never declared while open freezes that first declaration.
             if let Some(check) = &item.check {
                 let hash = check_hash(check);
-                match (self.checks.get(&item.content), was) {
-                    (Some(frozen), Some(Status::Completed)) if *frozen != hash => {
+                match self.checks.get(&item.content) {
+                    Some(frozen) if item.status == Status::Completed && *frozen != hash => {
                         self.tampered += 1;
                         lines.push(format!(
-                            "the check for step \"{}\" was changed after the step was marked \
-                             done; the check it was completed against stands, and the change \
-                             is recorded",
+                            "the check for step \"{}\" was changed on or after the write that \
+                             marked it done; the check it was declared with stands, and the \
+                             change is recorded",
                             crate::step::ellipsize(&item.content, 60)
                         ));
                     }
-                    (_, Some(Status::Completed)) => {}
+                    Some(_) if item.status == Status::Completed => {}
                     _ => {
                         self.checks.insert(item.content.clone(), hash);
                     }
@@ -888,6 +899,23 @@ impl Tool for TodoTool {
                             "status": {
                                 "type": "string",
                                 "enum": ["pending", "in_progress", "completed"]
+                            },
+                            "expect": {
+                                "type": "string",
+                                "description": "Optional. What will be true when this step is done, \
+                                                as one checkable sentence."
+                            },
+                            "check": {
+                                "type": "string",
+                                "description": "Optional. A shell command whose exit code shows \
+                                                whether the step landed. Fixed once the step is \
+                                                completed."
+                            },
+                            "expect_calls": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Optional. How many tool calls you expect this \
+                                                step to take."
                             }
                         },
                         "required": ["content", "status"]
@@ -2586,11 +2614,7 @@ mod tests {
             .call(write("in_progress", "make test"), &ctx)
             .await
             .unwrap();
-        assert!(
-            !out.content.contains("was changed after"),
-            "{}",
-            out.content
-        );
+        assert!(!out.content.contains("was changed"), "{}", out.content);
         // Completed against `make test`.
         tool.call(write("completed", "make test"), &ctx)
             .await
@@ -2600,7 +2624,7 @@ mod tests {
         let out = tool.call(write("completed", "true"), &ctx).await.unwrap();
         assert!(
             out.content
-                .contains("was changed after the step was marked done"),
+                .contains("was changed on or after the write that marked it done"),
             "{}",
             out.content
         );
@@ -2610,11 +2634,59 @@ mod tests {
             .call(write("completed", "make test"), &ctx)
             .await
             .unwrap();
+        assert!(!out.content.contains("was changed"), "{}", out.content);
+        assert_eq!(tool.tampered_in(&ws), 1);
+    }
+
+    /// The one write that both completes the step and swaps its check is
+    /// the post-hoc rewrite the freeze exists for, and the first cut let it
+    /// through by gating on the *previous* status (found on review).
+    #[tokio::test]
+    async fn swapping_the_check_in_the_completing_write_is_a_tamper() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let write = |status: &str, check: &str| json!({"items": [{"content": "wire it", "status": status, "check": check}]});
+        tool.call(write("in_progress", "make test"), &ctx)
+            .await
+            .unwrap();
+        let out = tool.call(write("completed", "true"), &ctx).await.unwrap();
         assert!(
-            !out.content.contains("was changed after"),
+            out.content.contains("was changed on or after the write"),
             "{}",
             out.content
         );
         assert_eq!(tool.tampered_in(&ws), 1);
+        // A step completed with the check it declared while open is clean,
+        // and one that first declares a check on the completing write
+        // freezes that declaration.
+        let write2 = |status: &str, check: Option<&str>| {
+            let mut item = json!({"content": "ship it", "status": status});
+            if let Some(c) = check {
+                item["check"] = json!(c);
+            }
+            json!({"items": [{"content": "wire it", "status": "completed", "check": "make test"}, item]})
+        };
+        tool.call(write2("in_progress", None), &ctx).await.unwrap();
+        let out = tool
+            .call(write2("completed", Some("cargo test")), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            !out.content.contains("\"ship it\" was changed"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+        let out = tool
+            .call(write2("completed", Some("true")), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("\"ship it\" was changed"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 2);
     }
 }
