@@ -610,7 +610,15 @@ pub fn with_schema_defaults(schema: &Value, input: &Value) -> (Value, Vec<String
         if out.contains_key(key) {
             continue;
         }
-        if let Some(default) = spec.get("default") {
+        // `"default": null` is not a default. It is what pydantic emits for
+        // every optional field, so a FastMCP tool with `thread_ts: str | None
+        // = None` declares one — and this function exists to cover exactly
+        // that third-party case. Pinned, it would put `thread_ts: null` in
+        // the outbox card, the web review, and (on `SpokenDraft`'s guarantee
+        // that every argument key is uttered) in the confirmation read aloud
+        // before a send, and it would release as an explicit null rather than
+        // an absent key. "Omitted" is what a null says.
+        if let Some(default) = spec.get("default").filter(|d| !d.is_null()) {
             out.insert(key.clone(), default.clone());
             filled.push(key.clone());
         }
@@ -1076,6 +1084,32 @@ mod cap_tests {
             with_schema_defaults(&schema, &serde_json::json!({"account": "personal"}));
         assert_eq!(named["account"], serde_json::json!("personal"));
         assert_eq!(keys, vec!["reply_all".to_string()]);
+    }
+
+    /// A property written `"default": null` is not a default.
+    ///
+    /// It is what pydantic emits for every optional field, so a FastMCP tool
+    /// with `def reply(to: str, thread_ts: str | None = None)` declares one
+    /// on `thread_ts` — and this function exists to cover exactly that
+    /// third-party case. Pinned, it puts `thread_ts: null` in the outbox
+    /// card, in the web review, and — on `SpokenDraft`'s guarantee that every
+    /// argument key is uttered — in the voice confirmation read aloud before a
+    /// send. It also releases as an explicit null instead of an absent key,
+    /// which most servers treat alike and not all. Nothing a null is meant to
+    /// tell a reviewer is worth any of that; "omitted" is what it says.
+    #[test]
+    fn a_null_default_is_not_a_default() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "thread_ts": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null},
+                "account": {"type": "string", "default": "dartmouth"},
+            },
+        });
+        let (filled, keys) = with_schema_defaults(&schema, &serde_json::json!({"to": "ada"}));
+        assert!(filled.get("thread_ts").is_none(), "{filled}");
+        assert_eq!(keys, vec!["account".to_string()]);
     }
 
     #[test]
