@@ -800,8 +800,9 @@ named by what it can and cannot do.
   match is gone — and TTS is handed a sentence at a time, so an echo running
   over a sentence boundary was contained in no single phrase. It now matches
   the transcript against the joined window by an **ordered** match — a longest
-  common subsequence — and calls it echo only when at least four words match
-  and **nothing is left over**, with exact containment kept as before.
+  common subsequence — and calls it echo only when the transcript is at least
+  eight words long and nothing beyond a small, length-scaled slip allowance is
+  left over, with exact containment kept as before.
 
   **Every fraction tried here silenced a correction, and raising it only moved
   the failure up the scale.** An unweighted bag of words at 0.6 silenced "no,

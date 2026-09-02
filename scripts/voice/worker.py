@@ -126,7 +126,7 @@ MIN_SEGMENT_SECONDS = 0.3
 # clock that feed it.
 import time as _time
 
-from echo_filter import BotSpeech, overlapped
+from echo_filter import BotSpeech, echo_rms, overlapped
 
 
 # The energy floor while our own speaker is playing. Echo that survives the
@@ -154,35 +154,21 @@ _ECHO_RMS_DEFAULT = 0.020
 def _echo_rms_from_env() -> float:
     """The floor, or the default and a complaint.
 
-    Not `float(os.environ[...])` bare: this is a knob the comment above
-    *invites* the owner to set from a log line, and a typo in a systemd unit
-    would otherwise be an import-time `ValueError` — voice down, restart
-    looping, over one character in a tuning constant. Falling back is not the
-    silent kind: the value is refused by name and the effective one is logged,
-    so the setting that did not take says so.
+    The decision is `echo_filter.echo_rms`, which is pure and therefore
+    tested; this half owns the environment and the logger. Falling back is
+    never the silent kind — the refused value is named — because this is a
+    knob the comment above invites the owner to set by hand, and a typo in a
+    unit file must not be voice down in a restart loop.
     """
-    raw = os.environ.get("MECHA_VOICE_ECHO_RMS")
-    if raw is None:
-        return _ECHO_RMS_DEFAULT
-    try:
-        value = float(raw)
-    except ValueError:
-        value = None
-    # Bounded *below by the silent-room floor*, not by zero. Below it the
-    # graded gate runs backwards - the over-the-speaker floor becomes more
-    # permissive than the ordinary one, so our own echo is held to a lower bar
-    # than room noise, and nothing says so because 0.005 is a perfectly good
-    # RMS. That is one keystroke away from the value this comment invites the
-    # owner to type (0.02 -> 0.002), and it is the loosening direction, which
-    # is the one nothing here takes quietly.
-    if value is None or not MIN_SEGMENT_RMS <= value < 1:
+    value, complaint = echo_rms(
+        os.environ.get("MECHA_VOICE_ECHO_RMS"),
+        floor=MIN_SEGMENT_RMS,
+        default=_ECHO_RMS_DEFAULT,
+    )
+    if complaint:
         from loguru import logger
 
-        logger.warning(
-            f"MECHA_VOICE_ECHO_RMS={raw!r} is not an RMS in "
-            f"[{MIN_SEGMENT_RMS}, 1) - using {_ECHO_RMS_DEFAULT}"
-        )
-        return _ECHO_RMS_DEFAULT
+        logger.warning(complaint)
     return value
 
 
