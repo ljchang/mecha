@@ -6,7 +6,10 @@ machinery, the self-improvement stack, the CLI and hygiene, and the
 designed-but-unbuilt map — asked one thing: what is actually wrong, and where
 is the leverage? Every finding below was verified against the code by a second
 reader before it was written down; the review that produced it is graded as an
-artifact, not a report, exactly as CLAUDE.md asks of a PR reviewer.
+artifact, not a report, exactly as CLAUDE.md asks of a PR reviewer. The owner
+read the first draft the same day and ruled on four points — keep guilt and
+gossip, explore an in-run critic, programmatic tool calling and
+micro-compaction — which §3.8, §3.11–3.13 and §5 now reflect.
 
 **How to read it.** §1 is what was fixed on `fix/harness-review` the same
 day, so a later session does not re-derive it. §2 is what was confirmed and
@@ -241,21 +244,27 @@ leaving a one-line pointer.
 **Landed when.** No behaviour change: the suite is identical before and after
 (`cargo test -- --list` diffed), and `agent.rs` is under 1,500 lines.
 
-### 3.8 Trim the self-improvement stack where it is not earning its size — S each
+### 3.8 Give guilt and gossip the consumer and the measurement they are waiting for — S each
 
 **What exists.** `guilt.rs` (475 lines) has one reader, `diagnose::Evidence`'s
-counters brief; `gossip.rs` (2,265 lines) is a mecha-graph feature living in
-mecha-core with read-only graph tools. The gate (`candidate.rs`,
-`runlog.rs`), `doctor.rs` and the learning ledger earn their size and are not
-touched. Appraisal is the owner's lane and is not in scope.
+counters brief; `gossip.rs` (2,265 lines) asks two readers over independent
+graph sources to find the contradiction a template cannot. Both are works in
+progress by the owner's ruling (2026-09-02), so neither is removed; the
+question is what would make each one earn its size.
 
-**Shape.** Decide, per module, with the design doc open (GOAL-SYSTEM §7.4 for
-guilt; the graph docs for gossip): keep with a named consumer, or move
-`gossip` to the graph repo behind its MCP surface. Neither is a bug; both are
-weight in the expensive crate.
+**Shape.** Guilt's improvement is already specified in the owner's own
+`APPRAISAL-RESEARCH.md` §3.5 — replace the sensor's *level* with the run's
+*delta* — and belongs to that lane; the only thing this plan adds is that
+CLAUDE.md's "sensors with no consumer" sentence should name the diagnostician
+as the consumer it has. Gossip's gap is that nothing grades it: the graph
+repo holds gold sets, and a contradiction-finder with no precision number is
+an argument, not an instrument. Give it an eval case — planted contradictions
+in a fixture graph, precision and recall over them — and let that number
+decide whether the two-reader design stays as bespoke code or becomes a
+subagent profile over the graph tools.
 
-**Landed when.** The design doc's status line for each says what was decided,
-and CLAUDE.md's "sensors with no consumer" sentence is true again.
+**Landed when.** `mecha eval` has a gossip case with a gold set; the
+diagnostician is named as guilt's consumer where the docs say there is none.
 
 ### 3.9 Finish the benchmark loop: k=5 and AgentDojo — L, mostly wall clock
 
@@ -284,6 +293,158 @@ return an error result that quotes the raw text and says "arguments were not
 valid JSON" — a targeted hint for one retry. Low priority only because
 `--jinja` grammar keeps the count near zero on this server.
 
+### Explorations
+
+The three items below were each refused by a research document this project
+wrote, and on 2026-09-02 the owner asked to explore them anyway. Read
+carefully, the research does not refuse the *ideas*; it refuses particular
+shapes — a critic as a gate, a model judging its own work, a cache-breaking
+rewrite every turn — and names the shapes that measured positive. Each
+exploration below is built from the positive shapes, run as a harness
+`candidate` with a falsifiable prediction, and graded by pass^k and the
+trace-graded probes, so the gate that already exists decides whether it
+stays. That is the difference between exploring and adopting.
+
+### 3.11 An in-run critic and a planner, in the shapes that measured positive — M, then a ruling
+
+**What the research settled.** Self-critique without external grounding is
+~0 and sometimes negative; a *sound external verifier* in the same loop is
++48 points where LLM self-critique is +15 (Blocksworld, `VERIFICATION`). A
+critic is an input to a human, not a gate (CriticGPT: human+model
+hallucinates less than model alone). Two adversarial advocates beat one
+critic, and a stronger lone critic makes the judge *worse*. Plan-first is
+not better than interleaved for small models (Llama 3B collapses 0.23 →
+0.05 under plan-and-execute); recursive as-needed decomposition is the
+best-supported planning claim; **periodic plan re-injection every ~5 steps
+is the one replicated positive result.** And the AHE non-additivity note:
+mecha already runs four re-check mechanisms (learned rules, carried state,
+summary validation, loop guard), so a fifth must be measured against the
+stack, not alone.
+
+**What exists.** `step_escalation` (off by default, `config.rs`) is already
+an in-run critic in miniature: after a span outlier, a `QuarantinedPass`
+is asked to revise the step, and its verdict folds into the tool-results
+message. It has, in its own words, "no corpus yet". `Tool::carried_state`
+keeps the todo list alive across compaction but re-reads it only at
+compaction. `expect.verify` executes a hashed test in a workspace the run
+cannot edit — the sound-verifier shape, at eval time only. `post_tool` hooks
+are the run-time slot for it. And the appraisal system grades a run *after*
+the fact from records — `intervention`, `edit` and `counter` are signed
+errors against what the owner actually did — which is exactly the ground
+truth a critic's predictions can be scored against. The owner's
+`APPRAISAL-RESEARCH.md` §3.7 already proposes pre-registering an
+expectation and scoring it; §4 refuses a critic that *steers* (early abort on
+a 0.94 AUROC lost up to 26 points on high-success tasks).
+
+**Three arms, cheapest first.**
+
+1. *Plan re-injection.* Re-read `carried_state` into the tool-results
+   message every N tool turns (N≈5), not only at compaction. Zero model
+   calls. The one replicated positive; the todo-list folklore gets its
+   first ablation.
+2. *Execution-grounded post-conditions.* A step may declare a check as a
+   command; the loop runs it in a workspace the model cannot write (the
+   `expect.verify` discipline: hash the check first) and returns the exit
+   code as a tool result. This is the +48 shape. A critic that *runs
+   something* is the only kind the research endorses in-run.
+3. *An adversarial critic as an input to a person, scored by appraisal.*
+   Two `QuarantinedPass` advocates over the run's trace produce a typed
+   verdict — the front door's rule: extractions and pointers, never prose —
+   shown beside the reviewable object (an outbox draft, the web review
+   card), never gating and never steering. Its prediction is recorded as
+   the pre-registered expectation of APPRAISAL §3.7, and the owner's
+   subsequent `edit`/`intervention` errors are the score. If the critic's
+   flagged drafts are the ones the owner edits, it is worth its cost; if
+   not, the appraisal channel says so without anyone arguing.
+
+Turn `step_escalation` on as arm 0 of the same experiment: it exists, it is
+off for lack of a corpus, and this is the corpus.
+
+**Landed when.** `ambiguity`, `long-horizon` and the Terminal-Bench subset
+at k=5 for each arm against control, with `--ab-rules` to price the
+stack; arm 3 additionally reports appraisal's edit rate on flagged versus
+unflagged drafts over a month. Each arm is a candidate; the gate keeps or
+retires it, and the ruling is written into `VERIFICATION-RESEARCH.md` beside
+the sentence it revises.
+
+### 3.12 Programmatic tool calling, on monty — L
+
+**What it is.** Instead of the model issuing one tool call per turn and
+reading every result back into its context, it writes a short program that
+calls tools as functions; the loop runs inside an interpreter, and only what
+the program returns reaches the model. Where the tokens actually are is in
+tool results (`CONTEXT-RESEARCH.md` §4), and each round trip on llama-server
+is a prefill plus a decode, so a ten-call task costs ten prompts and carries
+ten results forever. `HARNESS-RESEARCH.md` §2 measures plumbing of this
+kind as the largest single lever, and `SANDBOX-RESEARCH.md`'s addendum
+calls it "the strongest candidate found for the token-offloading lever".
+
+**What exists.** No `code` tool, no interpreter. The addendum's evaluation
+of `pydantic/monty` — a Python interpreter written in Rust, 4 µs startup,
+no filesystem, network, environment or subprocess by construction, whose
+*only* bridge to the host is functions the embedder registers — resolves
+what used to block this: the dispatch discipline the prior-art doc could
+only state as a rule ("every call the bridge makes must route back through
+the registry") becomes architecture, because there is nothing else to
+reach. It also snapshots and resumes in kilobytes, which lands on the
+outbox: a program that hits a routed send can pause at the gate and resume
+after release.
+
+**The two hazards, and their tests.** Both are named in the addendum and
+both want a test that fails on the naive implementation. *Taint must update
+within the program*: a program that reads a private tool and then calls a
+sink is the same-turn batching hole in a new place, so each host call goes
+through the same gate a model call does — interlock, hook, approver, outbox
+— with the taint as of *that call*, and taint arms on the call, not on what
+the program prints. *Approval does not scale to thirty calls*: extract the
+set of external functions a program can reach before running it (monty
+type-checks and compiles to its own bytecode, so this looks feasible and is
+unproven), approve the capability set once, then enforce per call with
+`escalate` for any sender. Cautions that stand: monty is experimental, has
+no numpy or pandas, and an interpreter escape lands in the agent process —
+so the host functions keep the path jail and the approver, and the tool is
+for orchestration, never a general "run a script".
+
+**Shape.** Depends on §3.7's dispatch split: the gate in `run_tools` becomes
+a `Gate` that both a model-issued call and a program's host call pass
+through, so there is one gate and not a copy. Then a `code` tool with a
+single `call(name, args)` host function.
+
+**Landed when.** The two hazard tests fail on the naive build and pass; a
+task done as ten sequential calls and as one program is measured on
+context bytes, prompts issued and wall clock; the static capability
+extraction is either shown sound on the test corpus or replaced by per-call
+approval with a written reason.
+
+### 3.13 Micro-compaction, measured against the prefix — S to run, then a ruling
+
+**What the research settled, and what has gone stale.** hermes folds the
+oldest exchange into a rolling summary every turn: occupancy stays near 40%
+with no stalls, and it breaks the cache prefix on every turn.
+`PRIOR-ART-RESEARCH.md` §6 refused it for Anthropic on mecha's own cache
+numbers and added: "against a local llama-server, where there is no cache
+discount to lose, it is arguably right." That sentence is now wrong. The
+local server's prefix cache is measured above 95% reuse (`HANDOFF.md`), and
+a cold miss at 170k tokens is ~120 s of prefill — so on this box the cost of
+a per-turn head rewrite is wall clock, the one currency the owner asked to
+improve. Claude Code's analysis (`HARNESS-RESEARCH.md` §3) runs five
+graduated shapers before each call on the principle that no single strategy
+covers every kind of pressure; mecha runs eviction, thinning, collapse and
+one summary, all at one threshold.
+
+**Shape.** An experiment with three arms on the compacted-chain eval cases
+and one long real transcript, k=5: (a) today's threshold compaction; (b)
+cadence pruning gated on the cache TTL (§3.5); (c) a hermes-style rolling
+summary, both every turn and every N turns aligned to the TTL. Measure
+prefill time from the server's timings, cache reads from the recorded
+usage (`CacheLens` and §3.4's counter), occupancy, and pass^k. The
+hypothesis to falsify: (c) buys flat occupancy at a prefill cost that exceeds
+what it saves on this server; if it does not — if the rolling summary is
+fast *and* passes — adopt it as a fourth shaper below the threshold.
+
+**Landed when.** A scorecard per arm in `results/` with the four numbers,
+and the §6 sentence in `PRIOR-ART-RESEARCH.md` revised to what was measured.
+
 ## 4. Sequencing
 
 1. **Now:** merge `fix/harness-review` through the review loop; the §2 rows
@@ -293,25 +454,39 @@ valid JSON" — a targeted hint for one retry. Low priority only because
    the other.
 3. **Then:** 3.3 tool surface and 3.4 observability — 3.4 first, because it
    is the instrument that says whether 3.3 kept the prefix stable.
-4. **Then:** 3.5 context, with 3.9's k=5 runs as the measurement.
+4. **Then:** 3.5 context and 3.13 micro-compaction as one experiment — they
+   share the arms and the measurement, and 3.9's k=5 runs are it.
 5. **Ongoing, one slice per PR:** 3.6 and 3.7. Pure moves, no behaviour
-   change, each verified by a diffed test list.
-6. **When the owner's appraisal lane lands:** 3.8, with the goal-system
-   design doc open.
+   change, each verified by a diffed test list. 3.7's dispatch split is what
+   3.12 builds on.
+6. **In parallel with the above, as candidates:** 3.11 arms 0 and 1 (a config
+   flag and a re-read; no new code of consequence) can start immediately;
+   arm 2 after 3.1; arm 3 after the owner's appraisal lane lands §3.7 of its
+   own plan, because it is the scorer.
+7. **After 3.7:** 3.12, behind the shared gate.
+8. **When the appraisal lane lands:** 3.8's guilt half is that lane's; the
+   gossip eval can go any time.
 
 ## 5. Deliberately not proposed
 
-Each was weighed and refused by a research doc this project already wrote:
+Each was weighed and refused by a research doc this project already wrote,
+and the owner's 2026-09-02 rulings narrowed this list to the shapes that
+stay refused:
 
-- **A planner or in-run LLM critic** — `VERIFICATION-RESEARCH.md` and
-  `HARNESS-RESEARCH.md` §8.4: verification has to be a command's exit code,
-  not a model's opinion of its own work.
-- **Micro-compaction on every turn** — the cached prefix is load-bearing;
-  trimming per turn spends more on recaching than it saves (PRIOR-ART §5).
+- **A critic as a gate or a steer.** A model's verdict on its own work never
+  decides whether a run is done (self-report is the AUROC 0.54–0.65 regime
+  for catching silent failure) and never aborts or redirects a run
+  (APPRAISAL-RESEARCH §4: early abort on a 0.94 AUROC lost up to 26
+  points). §3.11 explores critics as inputs to a person and as executed
+  checks; those two shapes are what the research endorses.
+- **A model reading the transcript and saying how it went.** Position-biased,
+  self-preferring, and the best attribution finds the decisive step 14% of
+  the time. Appraisal grades from records for this reason; a critic's
+  verdict is graded *by* appraisal, not instead of it.
 - **Model-reviewed approvals** — a human clicking "yes" is what an injection
-  engineers; a model clicking it is worse.
-- **Programmatic tool calling** — the largest unexplored token lever per the
-  docs, gated on two unsolved hazards (taint updating inside a program; one
-  approval for thirty calls). Behind 3.1 and 3.2.
+  engineers; a model clicking it is worse, and it launders the decision as
+  policy.
 - **Loosening any interlock for convenience** — the answer to a refusal is
   §3.1's rules, §3.2's shapes, or `ask`, never `trifecta = "allow"`.
+- **Removing guilt, gossip or appraisal.** Works in progress by the owner's
+  ruling; §3.8 gives the first two a measurement instead.
