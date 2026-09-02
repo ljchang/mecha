@@ -9066,7 +9066,7 @@ mod tests {
             }
         }
 
-        struct Writer;
+        struct Writer(Arc<std::sync::Mutex<Vec<Value>>>);
 
         #[async_trait]
         impl Tool for Writer {
@@ -9085,22 +9085,34 @@ mod tests {
             fn read_only(&self) -> bool {
                 false
             }
-            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                self.0.lock().unwrap().push(input);
                 Ok(ToolOutput::ok("sent"))
             }
         }
 
+        // One recorder, both halves, in order: the approver is asked first and
+        // the tool runs second.
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (mut agent, _) = agent_with(send_turns(), PermissionMode::Allow);
-        agent.registry.insert(Arc::new(Writer));
+        agent.registry.insert(Arc::new(Writer(Arc::clone(&seen))));
         agent.set_approver(Arc::new(Recorder(Arc::clone(&seen))));
 
         let mut convo = Conversation::from(vec![Message::user("send it")]);
         agent.run(&mut convo, None).await.unwrap();
 
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 1);
+        assert_eq!(seen.len(), 2);
+        // Shown filled…
         assert_eq!(seen[0]["account"], json!("dartmouth"));
+        // …and run with the bytes the model actually sent. This half is the
+        // design, not an accident of the implementation: there is no time gap
+        // between approval and execution to pin, so filling here would put
+        // `with_schema_defaults` on the execution path of every non-read-only
+        // tool in the registry to buy nothing. Without this assertion the
+        // obvious "cleanup" — passing `shown` to `approved.push` so the two
+        // spellings agree — is silent.
+        assert!(seen[1].get("account").is_none(), "{}", seen[1]);
     }
 
     /// A draft must say who it is from.

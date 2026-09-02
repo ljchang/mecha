@@ -210,7 +210,24 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         })
     };
     let with_default = |rule: &str, default: Option<&str>| -> Value {
-        let Some(d) = default else {
+        // A default is only declared if it names an account that exists.
+        //
+        // `accounts::validate` already refuses a file whose `default` /
+        // `default_mail` / `default_calendar` names no configured account, and
+        // `MailTools::load` fails startup rather than serving a short list, so
+        // in the server this cannot diverge. The guard is here because *this
+        // function* cannot see that: it takes `names` and `file` as two
+        // separate arguments and nothing in its signature makes them agree.
+        //
+        // What it would cost is the failure this whole surface exists to
+        // prevent. `default: "old-work"` beside `enum: ["personal",
+        // "dartmouth"]` gets pinned into the staged arguments, and the
+        // reviewer reads a draft whose sender does not exist. It would also
+        // degrade the error: unresolvable-as-a-default says "default account
+        // `old-work` is not configured (personal, dartmouth)", which names the
+        // fix, while unresolvable-as-an-argument says "unknown account", as
+        // though the model had chosen it.
+        let Some(d) = default.filter(|d| names.iter().any(|n| n == d)) else {
             return plain(rule);
         };
         json!({
@@ -2003,6 +2020,33 @@ mod tests {
         for tool in ["mail_search", "mail_recent", "calendar_list"] {
             let s = spec(&alone, tool);
             assert!(s.get("default").is_none(), "{tool}: {s}");
+        }
+    }
+
+    /// A default naming no configured account declares nothing.
+    ///
+    /// `accounts::validate` rejects such a file at load, so the server cannot
+    /// reach this — but `tool_definitions` takes `names` and `file` as two
+    /// arguments and nothing in its signature makes them agree, and the cost
+    /// if they ever disagreed is precisely the failure this surface exists to
+    /// prevent: `"old-work"` pinned into a staged draft as its sender, shown
+    /// to a reviewer as a real account, and a release that then reports
+    /// "unknown account" as though the model had picked it.
+    #[test]
+    fn a_default_naming_no_configured_account_declares_nothing() {
+        let defs = tool_definitions(
+            &names(&["personal", "dartmouth"]),
+            &conf(Some("old-work"), None, None),
+        );
+        for tool in ["mail_send", "calendar_create_event"] {
+            let spec = &defs.iter().find(|d| d["name"] == tool).unwrap()["inputSchema"]
+                ["properties"]["account"];
+            assert!(spec.get("default").is_none(), "{tool}: {spec}");
+            assert!(
+                !spec["description"].as_str().unwrap().contains("old-work"),
+                "{tool}: {}",
+                spec["description"]
+            );
         }
     }
 
