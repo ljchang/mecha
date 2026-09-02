@@ -630,13 +630,19 @@ impl RunStats {
             checks_declared: Some(
                 o.tool_calls
                     .iter()
-                    .filter(|c| c.name == crate::step::CHECK_TRACE && !c.denied)
+                    .filter(|c| {
+                        c.name == crate::step::CHECK_TRACE
+                            && crate::step::Outcome::of(c) != crate::step::Outcome::Refused
+                    })
                     .count() as u32,
             ),
             checks_passed: Some(
                 o.tool_calls
                     .iter()
-                    .filter(|c| c.name == crate::step::CHECK_TRACE && !c.denied && !c.is_error)
+                    .filter(|c| {
+                        c.name == crate::step::CHECK_TRACE
+                            && crate::step::Outcome::of(c) == crate::step::Outcome::Ok
+                    })
                     .count() as u32,
             ),
             homeostat: o.homeostat.clone(),

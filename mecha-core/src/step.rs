@@ -51,7 +51,11 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    fn of(call: &ToolCallTrace) -> Self {
+    /// `pub(crate)` so `RunStats::of_run` classifies a check trace through
+    /// the same predicate `Work::of` does — two readers spelling `unknown`
+    /// differently is the drift `CHECK_TRACE` exists to prevent, one field
+    /// over (found on review).
+    pub(crate) fn of(call: &ToolCallTrace) -> Self {
         if call.denied {
             // Includes a call withheld by policy: nothing ran, and nobody
             // claimed it did.
