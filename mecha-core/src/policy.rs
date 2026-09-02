@@ -366,6 +366,18 @@ impl ExecPolicy {
             {
                 return Some(self.ruling(tool, RuleDecision::Forbid, &rules, None));
             }
+            // And a *patterned* `forbid` is looked for anyway, over-
+            // approximately: the raw words of the command, split on
+            // whitespace with no quote handling, and the pattern matched at
+            // every position rather than only at a segment head. `rm -rf
+            // $HOME`, `rm -rf *`, `git status; rm -rf {a,b}` all carry the
+            // forbidden words in plain sight; refusing them costs nothing the
+            // opaque prompt was not already costing, and a false forbid is a
+            // refusal, not a hole. The PR review found the pattern-less case
+            // fixed and this one — the PR's own headline example — not.
+            if let Some(seg) = forbidden_words(&rules, command) {
+                return Some(self.ruling(tool, RuleDecision::Forbid, &rules, Some(&seg)));
+            }
             // Otherwise a policy exists for this tool and the command cannot
             // be judged: ask. Not `None` — under `Allow` mode that would run
             // the one shape the splitter refused to vouch for.
@@ -387,16 +399,17 @@ impl ExecPolicy {
                 .filter(|r| r.matches(segment))
                 .map(|r| r.decision)
                 .max();
-            if self.strict_inline_eval && runs_its_arguments(segment) {
-                // Never below Prompt: an allowlisted interpreter is not an
-                // allowlisted command. And never *only* Prompt when the
-                // wrapped command is forbidden: `timeout 5 rm -rf x` used to
-                // lift a `forbid` on `rm` to a mere prompt, which under a
-                // headless `Allow` mode is a yes — the operator's forbidden
-                // command ran, unlogged, on exactly the surface nobody
-                // watches. The wrapper is judged by what it wraps: every
-                // proper suffix of its argv, and every quoted argument that
-                // splits as a command of its own (`sh -c 'rm -rf x'`).
+            if runs_its_arguments(segment) {
+                // The wrapper is judged by what it wraps — every proper
+                // suffix of its argv, and every quoted argument that splits
+                // as a command of its own (`sh -c 'rm -rf x'`) — so
+                // `timeout 5 rm -rf x` finds the `forbid` on `rm` rather than
+                // lifting it to a prompt, which under a headless `Allow` mode
+                // is a yes. Unconditional: the lookup only ever raises the
+                // decision, and gating it on `strict_inline_eval` (as the
+                // first version did) made turning that knob off silently
+                // disable the wrapper rule ARCHITECTURE states without a
+                // condition.
                 let wrapped = wrapped_commands(segment)
                     .into_iter()
                     .flat_map(|inner| {
@@ -407,12 +420,18 @@ impl ExecPolicy {
                             .collect::<Vec<_>>()
                     })
                     .max();
-                decision = Some(
-                    decision
-                        .unwrap_or(RuleDecision::Prompt)
-                        .max(RuleDecision::Prompt)
-                        .max(wrapped.unwrap_or(RuleDecision::Prompt)),
-                );
+                if let Some(w) = wrapped {
+                    decision = Some(decision.map_or(w, |d| d.max(w)));
+                }
+                // Under the strict check, never below Prompt: an allowlisted
+                // interpreter is not an allowlisted command.
+                if self.strict_inline_eval {
+                    decision = Some(
+                        decision
+                            .unwrap_or(RuleDecision::Prompt)
+                            .max(RuleDecision::Prompt),
+                    );
+                }
             }
             match decision {
                 Some(RuleDecision::Forbid) => {
@@ -595,6 +614,25 @@ fn tokenize(command: &str) -> Option<Vec<Tok>> {
         flush(&mut cur, &mut any_quoted, &mut bare_operator);
     }
     Some(out)
+}
+
+/// A patterned `forbid`'s words, found in a command the splitter refused to
+/// take apart. Whitespace-split with no quote handling, matched at every
+/// position, first token of the match reduced by the absolute-path rule.
+/// Over-approximate by design: this runs only where the answer would
+/// otherwise be a prompt, and a false forbid is a refusal, not a hole.
+fn forbidden_words(rules: &[&RuleConfig], command: &str) -> Option<Vec<String>> {
+    let words: Vec<String> = command.split_whitespace().map(str::to_string).collect();
+    for start in 0..words.len() {
+        let tail = &words[start..];
+        if rules
+            .iter()
+            .any(|r| r.decision == RuleDecision::Forbid && !r.pattern.is_empty() && r.matches(tail))
+        {
+            return Some(tail.to_vec());
+        }
+    }
+    None
 }
 
 /// The commands a wrapper segment would run: every proper suffix of its argv
@@ -1028,6 +1066,70 @@ mod tests {
     /// A patterned rule on a tool that sends no `command` is refused at load
     /// for the builtins this crate knows, and asks at call time for a tool it
     /// does not — never silently inert.
+    /// A *patterned* `forbid` is found in an opaque command too, by its words
+    /// — `rm -rf $HOME`, `rm -rf *`, a glob or brace spelling — rather than
+    /// downgraded to the prompt a headless `Allow` mode answers yes to. The
+    /// pattern-less case was fixed a pass earlier and this one, the PR's own
+    /// headline example, was not.
+    #[test]
+    fn an_opaque_command_cannot_dodge_a_patterned_forbid() {
+        let p = policy(vec![
+            rule("shell", &[&["rm"], &["-rf"]], RuleDecision::Forbid),
+            rule("shell", &[&["git"]], RuleDecision::Allow),
+        ]);
+        for opaque in [
+            "rm -rf $HOME",
+            "rm -rf *",
+            "rm -rf {a,b}",
+            "git status; rm -rf $HOME",
+            "cd /tmp && rm -rf $(pwd)",
+            "/bin/rm -rf ~/*",
+        ] {
+            assert_eq!(
+                p.decide("shell", &cmd(opaque)).unwrap().decision,
+                RuleDecision::Forbid,
+                "{opaque}"
+            );
+        }
+        // An opaque command with none of the forbidden words still prompts.
+        assert_eq!(
+            p.decide("shell", &cmd("git status > out"))
+                .unwrap()
+                .decision,
+            RuleDecision::Prompt
+        );
+    }
+
+    /// Turning the inline-eval strictness off does not switch off the wrapper
+    /// lookup: `timeout 5 rm -rf x` is forbidden under either setting,
+    /// because the lookup only ever raises the decision.
+    #[test]
+    fn the_wrapper_lookup_does_not_depend_on_strict_inline_eval() {
+        let loose = ExecPolicy {
+            rules: vec![
+                rule("shell", &[&["rm"], &["-rf"]], RuleDecision::Forbid),
+                rule("shell", &[&["ls"]], RuleDecision::Allow),
+            ],
+            strict_inline_eval: false,
+        };
+        for laundered in ["timeout 5 rm -rf x", "env rm -rf x", "sh -c 'rm -rf x'"] {
+            assert_eq!(
+                loose.decide("shell", &cmd(laundered)).unwrap().decision,
+                RuleDecision::Forbid,
+                "{laundered}"
+            );
+        }
+        // With the strict check off, a wrapper around an allowed command is
+        // taken at its word — that is what the knob means.
+        assert_eq!(
+            loose
+                .decide("shell", &cmd("timeout 5 ls"))
+                .unwrap()
+                .decision,
+            RuleDecision::Allow
+        );
+    }
+
     /// A pattern-less `forbid` applies to every command by construction, so an
     /// opaque one — `rm -rf $HOME`, which the splitter refuses to take apart —
     /// is forbidden, not downgraded to a prompt that a headless `Allow` mode

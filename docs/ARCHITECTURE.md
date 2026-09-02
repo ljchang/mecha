@@ -1498,12 +1498,20 @@ refusal. The specification and the survey behind it are
   flow, an unterminated quote, an operator glued to a word — is one opaque
   invocation that matches no prefix rule, so under a policy it prompts. A
   false "cannot split" costs one prompt; a false "can" costs the feature.
+  `forbid` is the one rule that reaches into an opaque command: a pattern-less
+  one by construction, a patterned one by its words (`forbidden_words` —
+  whitespace-split, matched at every position, deliberately over-approximate),
+  so `rm -rf $HOME` and `git status; rm -rf *` are refused rather than
+  downgraded to the prompt a headless `Allow` mode answers yes to.
 - **An allowlisted interpreter is not an allowlisted command.** `python -c`,
   `node -e`, `sh -c`, `sed -e`, `find -exec`, and the wrappers that run their
   arguments — `xargs`, `env`, `sudo`, `timeout`, `nohup`, `watch` — are judged
   as at least `prompt` whatever the rules say, because a prefix rule on `rm`
   is bypassed by `timeout 5 rm -rf`. `[approval] strict_inline_eval` is on by
-  default and loads from the global file only.
+  default and loads from the global file only — and it gates only the
+  `prompt` floor: the wrapper's argv is judged against the rules whatever the
+  setting, because that lookup only ever raises the decision, and gating it
+  once made turning the knob off silently disable the `timeout 5 rm -rf` rule.
 - **Examples are checked at load.** An `allow` rule must carry `match`
   examples; every `match` must match the rule and every `not_match` must not,
   or `Config::validate` fails the start naming the rule. The principle is the
