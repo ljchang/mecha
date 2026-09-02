@@ -1518,12 +1518,32 @@ refusal. The specification and the survey behind it are
   behaviour before this section existed: `ExecPolicy::decide` returns `None`
   and the approver decides alone.
 
-There is deliberately no `--no-rules`: a `forbid` is the operator's standing
-word, and a flag that lifts it for one run is the silently-degrading-guard
-shape. The approve-then-execute binding the survey asked for holds by
-construction in-process — the `input` the approver saw is the value the tool
-receives — and a test (`the_tool_receives_exactly_the_input_that_was_approved`)
-is what keeps a refactor from making it two values.
+- **A wrapper is judged by what it wraps.** `timeout 5 rm -rf x`, `env rm
+  -rf x`, `sh -c 'rm -rf x'`: the rules are matched against every proper
+  suffix of a wrapper's argv and every quoted argument that splits as a
+  command, so a `forbid` on the inner command is not laundered down to a
+  prompt — which under a headless `Allow` mode is a yes. The wrapper set is
+  necessarily incomplete (`stdbuf`, `setsid`, `flock`, `ssh`, `git -c
+  core.pager=…` are not in it), so `forbid` is a control against mistakes and
+  ordinary injection, not containment against a deliberate adversary at
+  `--yes`; the sandbox is the containment.
+- **A `pattern` is for `shell`.** A patterned rule on a builtin that carries
+  no `command` is refused at load; on an MCP tool the crate cannot know about,
+  it asks at call time with the reason said out loud, never staying silently
+  inert while its author believes it loaded.
+- **`forbid` does not cover a routed tool.** Outbox staging runs before the
+  rules, so a routed call stages and a person decides at release; "refuses
+  without consulting anyone" is true of everything that would have executed.
+
+There is deliberately no `--no-rules` flag: a `forbid` is the operator's
+standing word, and a switch that lifts it for one run is the
+silently-degrading-guard shape. The one thing that turns rules off is
+`mecha eval`, structurally, through `force_reproducible` — a scorecard must not
+vary with this machine's rules file. The approve-then-execute binding the
+survey asked for holds by construction in-process — the `input` the approver
+saw is the value the tool receives — and a test
+(`the_tool_receives_exactly_the_input_that_was_approved`) is what keeps a
+refactor from making it two values.
 
 ## The outbox
 

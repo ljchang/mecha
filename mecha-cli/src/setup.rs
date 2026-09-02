@@ -203,13 +203,16 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // rule set built any other way fails on every start too. Installed on the
     // parent and on every child below, like hooks and for the same reason —
     // a rule only ever narrows, and delegating must not be the way around
-    // one. There is deliberately no `--no-rules`: a `forbid` is the operator's
-    // standing word, and a flag that lifts it for one run is the
-    // silently-degrading-guard shape.
-    let policy = Arc::new(mecha_core::policy::ExecPolicy::from_config(
-        &cfg.rules,
-        cfg.approval.strict_inline_eval,
-    )?);
+    // one. There is deliberately no `--no-rules` *flag*: a `forbid` is the
+    // operator's standing word, and a switch that lifts it for one run is the
+    // silently-degrading-guard shape. `opts.no_rules` is set by one caller,
+    // `mecha eval`'s `force_reproducible`, because a scorecard must not vary
+    // with this machine's rules file.
+    let policy = Arc::new(if opts.no_rules {
+        mecha_core::policy::ExecPolicy::empty()
+    } else {
+        mecha_core::policy::ExecPolicy::from_config(&cfg.rules, cfg.approval.strict_inline_eval)?
+    });
 
     // The outbox route. Opening the store here — not lazily at first stage —
     // makes an unwritable outbox a startup error instead of a mid-run
