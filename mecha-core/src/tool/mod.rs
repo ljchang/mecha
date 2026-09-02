@@ -591,23 +591,31 @@ impl ToolCtx {
 /// A server whose schema lies about its own defaults has already misled the
 /// model; this makes the review card agree with the lie rather than inventing
 /// a second one.
-pub fn with_schema_defaults(schema: &Value, input: &Value) -> Value {
+/// Returns the filled arguments **and the keys it filled**, because a caller
+/// has to be able to tell the two authors apart afterwards. A pinned value is
+/// a constant this harness wrote, not evidence of what the run was doing, and
+/// [`crate::outbox_source`] joins a draft back to its source on exactly this
+/// kind of argument: `calendar_id: "primary"` pinned into every calendar
+/// draft would match every calendar call in the session.
+pub fn with_schema_defaults(schema: &Value, input: &Value) -> (Value, Vec<String>) {
     let (Some(args), Some(props)) = (
         input.as_object(),
         schema.get("properties").and_then(Value::as_object),
     ) else {
-        return input.clone();
+        return (input.clone(), Vec::new());
     };
-    let mut filled = args.clone();
+    let mut out = args.clone();
+    let mut filled = Vec::new();
     for (key, spec) in props {
-        if filled.contains_key(key) {
+        if out.contains_key(key) {
             continue;
         }
         if let Some(default) = spec.get("default") {
-            filled.insert(key.clone(), default.clone());
+            out.insert(key.clone(), default.clone());
+            filled.push(key.clone());
         }
     }
-    Value::Object(filled)
+    (Value::Object(out), filled)
 }
 
 /// Floor under a result's share of the turn budget. A wide batch must not
@@ -1054,13 +1062,20 @@ mod cap_tests {
                 "reply_all": {"type": "boolean", "default": false},
             },
         });
-        let filled = with_schema_defaults(&schema, &serde_json::json!({"to": "ada@example.com"}));
+        let (filled, keys) =
+            with_schema_defaults(&schema, &serde_json::json!({"to": "ada@example.com"}));
         assert_eq!(filled["account"], serde_json::json!("dartmouth"));
         assert_eq!(filled["reply_all"], serde_json::json!(false));
         assert_eq!(filled["to"], serde_json::json!("ada@example.com"));
+        // Which keys, not only what they became: a value this harness wrote is
+        // not evidence of what the run was working from, and something
+        // downstream has to be able to tell the two authors apart.
+        assert_eq!(keys, vec!["account".to_string(), "reply_all".to_string()]);
 
-        let named = with_schema_defaults(&schema, &serde_json::json!({"account": "personal"}));
+        let (named, keys) =
+            with_schema_defaults(&schema, &serde_json::json!({"account": "personal"}));
         assert_eq!(named["account"], serde_json::json!("personal"));
+        assert_eq!(keys, vec!["reply_all".to_string()]);
     }
 
     #[test]
@@ -1076,13 +1091,16 @@ mod cap_tests {
             serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
             serde_json::json!("not a schema"),
         ] {
-            assert_eq!(with_schema_defaults(&schema, &args), args);
+            assert_eq!(
+                with_schema_defaults(&schema, &args),
+                (args.clone(), Vec::new())
+            );
         }
         // Nor is a non-object argument list reshaped into one.
         let raw = serde_json::json!("bare");
         assert_eq!(
             with_schema_defaults(&serde_json::json!({"properties": {}}), &raw),
-            raw
+            (raw.clone(), Vec::new())
         );
     }
 

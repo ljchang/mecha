@@ -71,7 +71,8 @@ impl OutboxKind {
     }
 }
 
-/// Where a staged draft came from: the run, the jail, and the call.
+/// Where a staged draft came from: the run, the jail, the call — and which of
+/// its arguments this harness wrote rather than the model.
 ///
 /// A struct rather than three more parameters, and not only because `stage`
 /// had reached clippy's argument ceiling. `session_id` and `call_id` are both
@@ -96,6 +97,9 @@ pub struct Provenance {
     /// The `tool_use` id of the call that staged this — see
     /// [`OutboxItem::call_id`].
     pub call_id: Option<String>,
+    /// Argument keys the *harness* wrote, not the model — see
+    /// [`OutboxItem::filled_defaults`].
+    pub filled_defaults: Vec<String>,
 }
 
 /// One staged outbound action.
@@ -183,6 +187,25 @@ pub struct OutboxItem {
     /// finds its source today.
     #[serde(default)]
     pub call_id: Option<String>,
+    /// The argument keys the loop pinned from the tool's schema, rather than
+    /// the model naming them.
+    ///
+    /// A value the harness wrote is not evidence of what the run was working
+    /// from, and [`crate::outbox_source`] joins a draft back to its source on
+    /// precisely such arguments: `provider_ids` takes every string argument
+    /// that is neither addressing nor prose, so a pinned
+    /// `calendar_id: "primary"` became a join key on every calendar draft —
+    /// and `Join::Asked` has no entropy floor, because it matches key *and*
+    /// value and "a coincidence has to happen twice". That held while both
+    /// sides were the model's; one side is now a constant, so the second
+    /// coincidence is free, and an unrelated calendar listing gets presented
+    /// as the thing the draft was written from.
+    ///
+    /// Empty for a draft nothing was pinned into, and for every item written
+    /// before this field existed — on the append-only store's rule, where the
+    /// old value is also the true one, since nothing pinned anything then.
+    #[serde(default)]
+    pub filled_defaults: Vec<String>,
 }
 
 impl OutboxItem {
@@ -407,6 +430,7 @@ impl OutboxStore {
             session_id,
             workspace,
             call_id,
+            filled_defaults,
         } = from;
         let item = OutboxItem {
             id: Session::new_id(),
@@ -424,6 +448,7 @@ impl OutboxStore {
             reason: None,
             error: None,
             call_id,
+            filled_defaults,
         };
         self.write_item(&item)?;
         Ok(item)
@@ -934,6 +959,12 @@ fn render(value: &Value) -> String {
 /// ([`crate::outbox_source`]), and it lives here so the one decision about
 /// which argument is which is still made once.
 ///
+/// **Callers must also exclude whatever the harness pinned**
+/// ([`OutboxItem::filled_defaults`]). This function sees arguments, not their
+/// authors, and a value the loop wrote is a constant rather than a fact about
+/// the run — `calendar_id: "primary"` is a string, so it lands here, and it
+/// matches every calendar call in the session.
+///
 /// `account` and the other headers are excluded on purpose, and it is the
 /// exclusion that makes the join worth anything: `{"account": "dartmouth"}`
 /// is shared by every mail call in the session and would match all of them,
@@ -1032,6 +1063,7 @@ mod tests {
                 json!({"url": "https://a"}),
                 Taint::default(),
                 Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,
@@ -1048,6 +1080,7 @@ mod tests {
                     untrusted: true,
                 },
                 Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: Some("sess-1".into()),
                     workspace: None,
                     call_id: None,
@@ -1081,6 +1114,7 @@ mod tests {
                 json!({}),
                 Taint::default(),
                 Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,
@@ -1114,6 +1148,7 @@ mod tests {
                 json!({}),
                 Taint::default(),
                 Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,
@@ -1127,6 +1162,7 @@ mod tests {
                 json!({}),
                 Taint::default(),
                 Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,
@@ -1152,6 +1188,7 @@ mod tests {
                 json!({"url": "https://a"}),
                 Taint::default(),
                 Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,
@@ -1196,6 +1233,7 @@ mod tests {
                     json!({"path": "/tmp/a"}),
                     Taint::default(),
                     Provenance {
+                        filled_defaults: Vec::new(),
                         session_id: None,
                         workspace: None,
                         call_id: None,
@@ -1231,6 +1269,7 @@ mod tests {
                     json!({"body": "Dear Dirk,"}),
                     Taint::default(),
                     Provenance {
+                        filled_defaults: Vec::new(),
                         session_id: None,
                         workspace: None,
                         call_id: None,
@@ -1364,6 +1403,7 @@ mod tests {
                 json!({"bundle": "site", "id": "brief"}),
                 Taint::default(),
                 Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: Some(jail.clone()),
                     call_id: None,
@@ -1391,6 +1431,7 @@ mod tests {
                 json!({}),
                 Taint::default(),
                 Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,
@@ -1426,6 +1467,7 @@ mod tests {
                 json!({}),
                 Taint::default(),
                 Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,
@@ -1459,6 +1501,7 @@ mod tests {
                 json!({"to": "a@x.org"}),
                 Taint::default(),
                 Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,

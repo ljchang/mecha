@@ -359,6 +359,7 @@ mod tests {
 
     fn item(id: &str, kind: OutboxKind, args: serde_json::Value, tainted: bool) -> OutboxItem {
         OutboxItem {
+            filled_defaults: Vec::new(),
             call_id: None,
             id: id.into(),
             status: "pending".into(),

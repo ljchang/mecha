@@ -1123,6 +1123,7 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind, tool: &str) -> OutboxItem {
         OutboxItem {
+            filled_defaults: Vec::new(),
             call_id: None,
             id: id.into(),
             status: status.into(),
@@ -1195,6 +1196,7 @@ mod tests {
                 json!({"to": "a@example.com"}),
                 Default::default(),
                 mecha_core::outbox::Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,
@@ -1229,6 +1231,7 @@ mod tests {
                 json!({"to": "a@example.com"}),
                 Default::default(),
                 mecha_core::outbox::Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,
@@ -1490,6 +1493,7 @@ mod tests {
                 json!({"to": "a@example.com"}),
                 Default::default(),
                 mecha_core::outbox::Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,
@@ -1536,6 +1540,7 @@ mod tests {
                 json!({"bundle": "site"}),
                 Default::default(),
                 mecha_core::outbox::Provenance {
+                    filled_defaults: Vec::new(),
                     session_id: None,
                     workspace: None,
                     call_id: None,

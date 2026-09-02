@@ -177,7 +177,20 @@ pub fn for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<SourceRead> {
 /// getting it wrong is silent, and the symptom is a reviewer reading the
 /// wrong original.
 pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead> {
-    let ids = provider_ids(&item.args);
+    // Keys the *model* named, which is not every key the draft holds: the loop
+    // pins a tool's declared schema defaults into a staged call, and a pinned
+    // value is a constant this harness wrote rather than evidence of what the
+    // run was working from. `calendar_id: "primary"` is the one that lands —
+    // a string, so `provider_ids` takes it, and `Join::Asked` has no entropy
+    // floor, so it matches every earlier calendar call in the session and
+    // offers an unrelated listing as the thing the draft was written from.
+    // That is the wrong-bytes review this module exists to prevent, and
+    // `MIN_RETURNED_ID_CHARS`' own doc names this exact value as the reason a
+    // floor is needed at all.
+    let ids: Vec<(String, String)> = provider_ids(&item.args)
+        .into_iter()
+        .filter(|(key, _)| !item.filled_defaults.contains(key))
+        .collect();
     if ids.is_empty() {
         return Vec::new();
     }
@@ -458,6 +471,7 @@ mod tests {
             reason: None,
             error: None,
             call_id: None,
+            filled_defaults: Vec::new(),
         }
     }
 
@@ -475,6 +489,55 @@ mod tests {
             content: content.into(),
             is_error: false,
         }])
+    }
+
+    /// **A value the harness pinned is not a join key.**
+    ///
+    /// `calendar_create_event` declares `calendar_id: "primary"`, so the loop
+    /// pins it into every calendar draft. It is a string and it is neither
+    /// addressing nor prose, so `provider_ids` takes it — and `Join::Asked`
+    /// has no entropy floor, because matching key *and* value means "a
+    /// coincidence has to happen twice". That held while both sides were the
+    /// model's; one side is a constant now, so the second coincidence is free
+    /// and every earlier calendar call in the session matches.
+    ///
+    /// Before defaults were pinned, a create whose other string arguments are
+    /// all header fields had *empty* `provider_ids` and this function returned
+    /// at the first line. So the failure is new, and it is the one
+    /// `MIN_RETURNED_ID_CHARS`' own doc names.
+    #[test]
+    fn a_pinned_default_is_not_something_the_draft_can_be_joined_on() {
+        let mut item = draft_of(
+            "mail__calendar_create_event",
+            json!({
+                "title": "Reading group",
+                "start_time": "2026-09-09T14:00:00-04:00",
+                // Pinned by the loop. The model never named a calendar.
+                "calendar_id": "primary",
+            }),
+        );
+        item.filled_defaults = vec!["calendar_id".into()];
+
+        let messages = vec![
+            // An unrelated listing that happens to name the same calendar —
+            // which every calendar read in every session does.
+            call(
+                "a",
+                "mail__calendar_list_events",
+                json!({"calendar_id": "primary", "account": "work"}),
+            ),
+            result("a", "Tue 10:00 Faculty meeting\nWed 16:00 Office hours"),
+        ];
+
+        assert!(
+            from_messages(&item, &messages).is_empty(),
+            "an unrelated listing was offered as the source of the draft"
+        );
+
+        // The guard is the *authorship*, not the key: the same argument named
+        // by the model is evidence, and still joins.
+        item.filled_defaults.clear();
+        assert_eq!(from_messages(&item, &messages).len(), 1);
     }
 
     /// **The regression that made `call_id` necessary.**
