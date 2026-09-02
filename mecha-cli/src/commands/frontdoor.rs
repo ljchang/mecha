@@ -432,6 +432,7 @@ async fn triage(
                 model: prepared.model.clone(),
                 workspace: prepared.workspace.clone(),
                 title: Some(format!("triage {} #{}", record.type_id, record.seq)),
+                kind: Some(mecha_core::session::SessionKind::Frontdoor),
             },
         )?;
         if let Some(route) = &prepared.agent.context().outbox {

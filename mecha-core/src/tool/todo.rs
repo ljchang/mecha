@@ -30,9 +30,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
+    #[default]
     Pending,
     InProgress,
     Completed,
@@ -48,10 +49,142 @@ impl Status {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One step, and — optionally — the prediction the planner wrote for it.
+///
+/// **The plan is the prediction** (`docs/APPRAISAL-RESEARCH.md` §3.7,
+/// `docs/AUDIT-RESEARCH.md` §3.11's spec). Three optional fields make a
+/// step something that can be *disappointed*: what it should produce, how
+/// the harness can tell, and how much work it should take. None is
+/// required, because the tool's whole job is being cheap to keep updated;
+/// a plan with none is today's plan.
+///
+/// **Two parsing policies, like `serves:`.** From the model a wrong type is
+/// a `ToolOutput` error naming the item (`TodoTool::call`), because the
+/// model can fix it next call and a silently dropped prediction leaves a
+/// plan claiming less than it said. From a record — a transcript, a carried
+/// block — a wrong type reads as absent ([`de_lenient_string`],
+/// [`de_lenient_u32`]), because the record is append-only and may have
+/// been written by a newer binary, where one unrecognised field must cost
+/// the field and never the plan.
+///
+/// All three are the model's own text, trusted in context the way
+/// `content` already is; none is ever rendered into the system prompt.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TodoItem {
     pub content: String,
     pub status: Status,
+    /// The step's expected outcome, one checkable sentence. Re-read with the
+    /// plan, so the model meets its own prediction again after a compaction
+    /// or a re-injection; scored by the appraisal when the step completes.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient_string"
+    )]
+    pub expect: Option<String>,
+    /// A command whose exit code says whether the step landed. **Frozen on
+    /// completion, for the life of the plan**: while the step is open
+    /// [`Tracked`] keeps the hash of the latest `check` it declared, and
+    /// from the write that marks it `completed` that declaration stands — a
+    /// different check on that write or on any later one, including after
+    /// the step is reopened or dropped and re-added, is reported back as a
+    /// tamper rather than accepted, the `expect.verify` discipline one tier
+    /// down. **Not
+    /// executed yet.** The loop is to run it, dispatched exactly as a model
+    /// `shell` call would be (approver, sandbox, interlock, hooks), and
+    /// record the result as a trace named `step::CHECK_TRACE`, which
+    /// `step::Work::of` already folds into `checks_declared` /
+    /// `checks_passed`; that execution is the audit lane's
+    /// (`AUDIT-RESEARCH.md` §3.11) and until it lands no `check` trace is
+    /// ever written.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient_string"
+    )]
+    pub check: Option<String>,
+    /// How many tool calls the model expects the step to take. The
+    /// residual against the actual span is the cheapest expectation error
+    /// there is. **Nothing reads it yet**: `step::escalation_candidate` is
+    /// where the residual belongs, before the sibling mean, and that change
+    /// is the audit lane's (`AUDIT-RESEARCH.md` §3.11).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient_u32"
+    )]
+    pub expect_calls: Option<u32>,
+}
+
+impl TodoItem {
+    pub fn new(content: impl Into<String>, status: Status) -> Self {
+        TodoItem {
+            content: content.into(),
+            status,
+            ..Default::default()
+        }
+    }
+
+    /// The prediction fields, as the indented lines [`TodoTool::render`]
+    /// writes under an item and [`TodoTool::parse_carried`] reads back.
+    fn prediction_lines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(e) = &self.expect {
+            out.push(format!("    {EXPECT_KEY} {e}"));
+        }
+        if let Some(c) = &self.check {
+            out.push(format!("    {CHECK_KEY} {c}"));
+        }
+        if let Some(n) = self.expect_calls {
+            out.push(format!("    {EXPECT_CALLS_KEY} {n}"));
+        }
+        out
+    }
+}
+
+const EXPECT_KEY: &str = "expect:";
+const CHECK_KEY: &str = "check:";
+const EXPECT_CALLS_KEY: &str = "expect_calls:";
+
+/// A record's optional string, leniently: anything that is not a string is
+/// absent, never an error. See [`TodoItem`]'s two policies.
+/// What no plan field may carry, at either door. A newline would forge
+/// plan lines through `render` → `parse_section`; a truncation marker —
+/// `cap_result`'s or `thin_old_results`'s — would make every echo that
+/// renders the step read as cut, so `parse_whole_echo` refused it, the
+/// resume fell back to the raw input and the freeze read as empty: the
+/// fifth door re-opened with a string instead of a truncation (found on
+/// review). Both doors ask this one question so they cannot drift.
+fn forges_a_line(s: &str) -> bool {
+    s.contains(['\n', '\r'])
+        || s.contains(crate::tool::CAP_MARKER)
+        || s.contains(crate::compact::TRUNCATION_MARKER.trim())
+}
+
+fn de_lenient_string<'de, D>(d: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<Value>::deserialize(d)?;
+    // The record door agrees with the model door ([`forges_a_line`]): a
+    // record carrying a newline or a marker (no reachable writer today)
+    // loses the field, never the plan. Trimmed, as the model door trims:
+    // the two doors are described as symmetric, and `check_hash` already
+    // trims, so a padded record value was the same freeze rendered with
+    // different spacing (found on review).
+    Ok(v.and_then(|v| v.as_str().map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty() && !forges_a_line(s)))
+}
+
+/// A record's optional count, leniently: anything that is not a
+/// non-negative integer that fits is absent.
+fn de_lenient_u32<'de, D>(d: D) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<Value>::deserialize(d)?;
+    Ok(v.and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok()))
 }
 
 /// One conversation's plan: the list, and what the whole of it serves.
@@ -175,6 +308,51 @@ struct Tracked {
     /// revises its plan many times, and this is a rolling sense of "how big
     /// are this plan's steps", not a full history.
     completed: Vec<(String, u32)>,
+    /// Each item's declared `check`, hashed, keyed by content like
+    /// `started`. A step may revise its check while it is still open; from
+    /// the write that marks it `completed` the check is **frozen for the
+    /// life of the plan** — not until the step is reopened, which the first
+    /// cut allowed and which released the freeze silently: reopen, write a
+    /// new check, complete again, and `tampered` stayed at zero for the
+    /// exact rewrite it exists to name (found on review). Dropping the step
+    /// from the plan and re-adding it is the same door, so this map is
+    /// never pruned by the live sweep. A write with a different check on a
+    /// frozen step, whatever its status, is a tamper; the frozen hash
+    /// stays and the write is echoed back as such.
+    ///
+    /// **Accepted residual: a reworded step is a new step.** The key is the
+    /// item's content, as it is for `started`, `flagged` and `completed`,
+    /// because content is the only handle a plan write offers; so
+    /// completing `wire it` against `make test` and then writing `wire it.`
+    /// completed against `true` freezes the second as a fresh step, with no
+    /// tamper echoed (found on review). Closing it needs a key the model
+    /// cannot rewrite — a per-item id, which costs the field the plan tool
+    /// refuses for the reason its docstring gives, or a fold over the whole
+    /// plan's frozen hashes. Named here beside the re-add case so a reader
+    /// who sees re-add closed does not assume rename is.
+    checks: HashMap<String, Freeze>,
+    /// Tampers seen on this plan. Read by [`TodoTool::tampered_in`].
+    tampered: u32,
+}
+
+/// One step's declared check and whether it may still change.
+#[derive(Clone)]
+struct Freeze {
+    hash: u64,
+    frozen: bool,
+    /// The declared command itself, so a tampered write can have the frozen
+    /// check put back into the plan it tried to rewrite. A hash alone could
+    /// only *announce* the change while `self.plan = next` took it — the
+    /// echo, the carried block and, once the executor lands, the command
+    /// actually run all followed the rewrite (found on review).
+    check: String,
+}
+
+fn check_hash(check: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    check.trim().hash(&mut h);
+    h.finish()
 }
 
 /// See [`Tracked::completed`].
@@ -264,7 +442,7 @@ impl Tracked {
     /// progress, a run whose counters restarted, a context nobody stamped.
     fn advance(
         &mut self,
-        next: Plan,
+        mut next: Plan,
         work: Option<crate::step::Work>,
         own_calls_before: u32,
         last_real: Option<crate::step::Outcome>,
@@ -279,6 +457,83 @@ impl Tracked {
             .map(|i| (i.content.as_str(), i.status))
             .collect();
 
+        let mut lines = Vec::new();
+        // The check freezes on the write that claims completion, and stays
+        // frozen for the life of the plan. While the step is open the latest
+        // declaration is the check; on the completing write the last open
+        // declaration stands (a different check on that very write is the
+        // post-hoc swap the freeze exists for, so the gate reads the item's
+        // status *now*, not `was`); and once frozen, a different check on
+        // any later write — reopened, re-added, whatever its status — is
+        // reported **and put back**: the frozen command is substituted into
+        // the plan this write becomes, so the echo, the carried block and
+        // the executor all see the check the step was completed against.
+        // Announcing the change while taking it was the first cut's shape
+        // (found on review). A step completed with a check it never declared
+        // while open freezes that first declaration. Runs ahead of the
+        // status loop because that loop reads `next` immutably.
+        for item in next.items.iter_mut() {
+            let Some(check) = item.check.clone() else {
+                // The third door: a frozen step written again with the
+                // field simply absent. Reopen and re-add-with-a-different-
+                // check were closed and this was not (found on review), and
+                // once something runs checks it is the cheapest evasion —
+                // no trace written, no counter raised, nothing signed. The
+                // same claim unmade after the fact is the same tamper:
+                // restored, counted, echoed.
+                if let Some(f) = self.checks.get(&item.content).filter(|f| f.frozen) {
+                    self.tampered += 1;
+                    lines.push(format!(
+                        "the check for step \"{}\" was dropped after the step was marked \
+                         done; the check it was completed against stands, and the change is \
+                         recorded",
+                        crate::step::ellipsize(&item.content, 60)
+                    ));
+                    item.check = Some(f.check.clone());
+                }
+                continue;
+            };
+            let hash = check_hash(&check);
+            let completing = item.status == Status::Completed;
+            let prior = self.checks.get(&item.content).cloned();
+            match prior {
+                Some(f) if (f.frozen || completing) && f.hash != hash => {
+                    self.tampered += 1;
+                    lines.push(format!(
+                        "the check for step \"{}\" was changed on or after the write that \
+                         marked it done; the check it was completed against stands, and \
+                         the change is recorded",
+                        crate::step::ellipsize(&item.content, 60)
+                    ));
+                    item.check = Some(f.check.clone());
+                    // The completing write is what freezes it, even when
+                    // that write is the tamper.
+                    if completing {
+                        self.checks.insert(
+                            item.content.clone(),
+                            Freeze {
+                                hash: f.hash,
+                                frozen: true,
+                                check: f.check,
+                            },
+                        );
+                    }
+                }
+                Some(f) if f.frozen => {}
+                Some(_) | None => {
+                    // Open, or first seen: the latest declaration is the
+                    // check, and the completing write is what freezes it.
+                    self.checks.insert(
+                        item.content.clone(),
+                        Freeze {
+                            hash,
+                            frozen: completing,
+                            check,
+                        },
+                    );
+                }
+            }
+        }
         // `live` is computed here, before the item loop, rather than only
         // after it (its other use, in the sweep below) — a write that both
         // trims finished steps out of the plan *and* lands a new one in the
@@ -309,7 +564,6 @@ impl Tracked {
             .cloned()
             .collect();
 
-        let mut lines = Vec::new();
         for item in &next.items {
             let was = before.get(item.content.as_str()).copied();
             match item.status {
@@ -399,7 +653,7 @@ impl Tracked {
                                     // overwrite an earlier one would make
                                     // which candidate survives an accident of
                                     // iteration order rather than a choice.
-                                    let mut guard = slot.lock().unwrap();
+                                    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
                                     if guard.is_none() {
                                         *guard = Some(escalation);
                                     }
@@ -461,7 +715,9 @@ impl TodoTool {
     /// Only [`rehydrate`](Self::rehydrate) has any business calling this: a
     /// list set by anything other than the model's own `todo` write, or a
     /// faithful restoration of one, is a second author of state the tool is
-    /// supposed to own.
+    /// supposed to own. And every resume path goes through `rehydrate`,
+    /// not here: this installs a plan with **no freezes**, which is right
+    /// for a plan with no transcript behind it and wrong for one that has.
     ///
     /// A fresh record, not a plan swapped into the old one: the spans this
     /// tool measures are counted from a run's trace, and a plan restored from
@@ -470,10 +726,74 @@ impl TodoTool {
     /// one's — the exact wrong-units mistake rung 4 made reading headroom off
     /// one run's outcome for a whole episode.
     pub fn set_plan_in(&self, workspace: &Path, plan: Plan) {
-        self.lists.lock().unwrap().insert(
+        self.install_in(workspace, plan, HashMap::new());
+    }
+
+    /// [`set_plan_in`](Self::set_plan_in), plus freezes the plan itself
+    /// no longer shows. The marks are dropped (above) but the freezes are
+    /// not: a step the restored plan shows completed against a check is
+    /// frozen against that check in the new process too, or a resume was
+    /// the fourth door — `Tracked::default()` zeroed `checks`, so the next
+    /// write could swap the check as a first declaration with nothing
+    /// counted (found on review). `extra` carries every step the transcript
+    /// froze ([`frozen_checks_from_transcript`]
+    /// (Self::frozen_checks_from_transcript)) — the trimmed ones, and the
+    /// plan's own — and **`extra` wins where both say something**, in the
+    /// freeze map and in the plan itself: the body says why. `tampered`
+    /// starts at zero, as the counter is per process and the transcript's
+    /// own echoes already carry the earlier lines.
+    fn install_in(&self, workspace: &Path, mut plan: Plan, extra: HashMap<String, String>) {
+        // The plan's own completed checks first, then the echo-derived
+        // ones *over* them: when the plan came from a whole echo the two
+        // agree, and when it came from the input fallback (a thinned echo)
+        // the input may carry a tamper's rewrite while an earlier whole
+        // echo carries the frozen command — the first cut let the plan win
+        // and so let the fallback path re-freeze the rewrite (found on
+        // review).
+        let mut checks: HashMap<String, Freeze> = HashMap::new();
+        for i in plan.items.iter().filter(|i| i.status == Status::Completed) {
+            if let Some(c) = &i.check {
+                checks.insert(
+                    i.content.clone(),
+                    Freeze {
+                        hash: check_hash(c),
+                        frozen: true,
+                        check: c.clone(),
+                    },
+                );
+            }
+        }
+        for (content, c) in extra {
+            checks.insert(
+                content,
+                Freeze {
+                    hash: check_hash(&c),
+                    frozen: true,
+                    check: c,
+                },
+            );
+        }
+        // And the plan carries the frozen command too, not only the map:
+        // corrected in the map alone, the input fallback's rewrite stayed
+        // in `tracked.plan`, so until the next write the echo and the
+        // carried block re-read the rewrite to the model — and once checks
+        // run, the plan is what runs (found on the nineteenth review pass).
+        // The same restore `advance` performs on a tamper, at install time,
+        // and status-blind as that one is: a frozen step the input fallback
+        // hands back as `in_progress` kept its rewrite through a filter on
+        // `Completed` (found on the twentieth).
+        for i in plan.items.iter_mut() {
+            if let Some(f) = checks.get(&i.content) {
+                if i.check.as_deref() != Some(f.check.as_str()) {
+                    i.check = Some(f.check.clone());
+                }
+            }
+        }
+        self.lists.lock().unwrap_or_else(|e| e.into_inner()).insert(
             workspace.into(),
             Tracked {
                 plan,
+                checks,
                 ..Tracked::default()
             },
         );
@@ -497,8 +817,94 @@ impl TodoTool {
     pub fn rehydrate(&self, workspace: &Path, messages: &[Message]) -> Option<usize> {
         let plan = Self::plan_from_transcript(messages)?;
         let n = plan.items.len();
-        self.set_plan_in(workspace, plan);
+        // Freezes from every echo the transcript holds, not only the plan
+        // it ends on: a completed step trimmed from the plan before the
+        // resume — the tool's own docstring encourages trimming finished
+        // steps — was absent from the restored plan and so re-added
+        // unfrozen, the drop-then-re-add door with a process boundary in
+        // the middle (found on review).
+        self.install_in(
+            workspace,
+            plan,
+            Self::frozen_checks_from_transcript(messages),
+        );
         Some(n)
+    }
+
+    /// Every step a transcript's `todo` echoes — and its carried block —
+    /// show completed against a check, with the check as the *latest*
+    /// record showed it — which is the frozen one, since `advance` renders
+    /// the echo after putting a tampered check back. Walked oldest-first so
+    /// a later echo overrides an earlier one for the same step text; the
+    /// last plan's items are covered by construction, and the trimmed ones
+    /// are the point.
+    ///
+    /// Both places a plan survives, the same two `plan_from_transcript`
+    /// reads: `compact::rebuild` drops every message between the head and
+    /// the cut, so after a compaction the carried block is the *only*
+    /// record of a step completed before it — and a freeze read from echoes
+    /// alone let a step trimmed after the compaction re-add unfrozen on a
+    /// resume, the trimmed-before-resume door with a compaction in the
+    /// middle (found on the eighteenth review pass). The block sits in the
+    /// head message, so the oldest-first walk reaches it first and every
+    /// later echo overrides it.
+    pub fn frozen_checks_from_transcript(messages: &[Message]) -> HashMap<String, String> {
+        let mut failed: std::collections::HashSet<&str> = Default::default();
+        for b in messages.iter().flat_map(|m| m.content.iter()) {
+            if let Block::ToolResult {
+                tool_use_id,
+                is_error: true,
+                ..
+            } = b
+            {
+                failed.insert(tool_use_id.as_str());
+            }
+        }
+        let mut todo_ids: std::collections::HashSet<&str> = Default::default();
+        for b in messages.iter().flat_map(|m| m.content.iter()) {
+            if let Block::ToolUse { id, name, .. } = b {
+                if name == "todo" && !failed.contains(id.as_str()) {
+                    todo_ids.insert(id.as_str());
+                }
+            }
+        }
+        let mut frozen = HashMap::new();
+        let mut take = |plan: Plan| {
+            for item in plan.items {
+                if item.status == Status::Completed {
+                    if let Some(c) = item.check {
+                        frozen.insert(item.content, c);
+                    }
+                }
+            }
+        };
+        for b in messages.iter().flat_map(|m| m.content.iter()) {
+            match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error: false,
+                } => {
+                    if !todo_ids.contains(tool_use_id.as_str()) {
+                        continue;
+                    }
+                    // A cut echo is skipped, not merged: a `check:` line that
+                    // fell past the cut must not read as "no check", and a
+                    // partial list must not override a whole earlier one.
+                    let Some(plan) = Self::parse_whole_echo(content) else {
+                        continue;
+                    };
+                    take(plan);
+                }
+                Block::Text { text } if text.trim_start().starts_with(CARRIED_HEADER) => {
+                    // The block is written whole by `rebuild` and is a
+                    // `Text`, which neither truncator touches.
+                    take(Self::parse_carried(text));
+                }
+                _ => {}
+            }
+        }
+        frozen
     }
 
     /// The most recent plan a transcript records, from either of the two
@@ -525,18 +931,32 @@ impl TodoTool {
 
     /// The same walk, keeping what the plan serves.
     pub fn plan_from_transcript(messages: &[Message]) -> Option<Plan> {
-        let failed: std::collections::HashSet<&str> = messages
-            .iter()
-            .flat_map(|m| m.content.iter())
-            .filter_map(|b| match b {
-                Block::ToolResult {
-                    tool_use_id,
-                    is_error: true,
-                    ..
-                } => Some(tool_use_id.as_str()),
-                _ => None,
-            })
-            .collect();
+        // Every `todo` result, by id: the error flag, and the echo — the
+        // plan as the tool *kept* it, rendered after `advance`. **The echo
+        // outranks the input.** The model's raw `ToolUse.input` is what it
+        // asked for, and after a tamper that carries the rewritten check
+        // while the echo carries the frozen one; restoring the input on a
+        // resume froze the rewrite as a first declaration, which is the
+        // fifth door and the one that would have been executed (found on
+        // review). The input is the fallback for an echo this binary
+        // cannot parse — a result truncated by a newer renderer, say.
+        let mut failed: std::collections::HashSet<&str> = Default::default();
+        let mut echoes: HashMap<&str, &str> = HashMap::new();
+        for b in messages.iter().flat_map(|m| m.content.iter()) {
+            if let Block::ToolResult {
+                tool_use_id,
+                is_error,
+                content,
+                ..
+            } = b
+            {
+                if *is_error {
+                    failed.insert(tool_use_id.as_str());
+                } else {
+                    echoes.insert(tool_use_id.as_str(), content.as_str());
+                }
+            }
+        }
 
         for msg in messages.iter().rev() {
             for block in msg.content.iter().rev() {
@@ -544,6 +964,21 @@ impl TodoTool {
                     Block::ToolUse { id, name, input }
                         if name == "todo" && !failed.contains(id.as_str()) =>
                     {
+                        if let Some(echo) = echoes.get(id.as_str()) {
+                            // Only a *whole* echo. The way results get cut
+                            // in this repo — `compact::thin_old_results`,
+                            // `tool::cap_result` — leaves a parseable
+                            // prefix, not an unparseable blob: a twelve-step
+                            // plan thinned to 240 chars parses to four
+                            // steps, and taking those as the plan installed
+                            // a third of the work and lost every `check:`
+                            // past the cut (found on review). The echo's own
+                            // `done/total` header says how many steps the
+                            // tool kept, and that is the integrity check.
+                            if let Some(plan) = Self::parse_whole_echo(echo) {
+                                return Some(plan);
+                            }
+                        }
                         if let Some(items) = input.get("items") {
                             if let Ok(items) =
                                 serde_json::from_value::<Vec<TodoItem>>(items.clone())
@@ -585,6 +1020,51 @@ impl TodoTool {
         let section: Vec<&str> = lines
             .take_while(|l| !l.trim_start().starts_with("## "))
             .collect();
+        Self::parse_section(&section)
+    }
+
+    /// A `todo` result's echo — [`render`](Self::render)'s output, which is
+    /// the carried section without its header, followed by the findings
+    /// and the headroom line, neither of which carries a marker. The same
+    /// grammar as the carried block, so the two readers cannot drift.
+    fn parse_rendered(text: &str) -> Plan {
+        let lines: Vec<&str> = text.lines().collect();
+        Self::parse_section(&lines)
+    }
+
+    /// The `{done}/{total} done` line `render` writes above the list, as
+    /// the total. `None` when the echo has no such line — an empty list's
+    /// echo, or one cut before it.
+    fn rendered_total(text: &str) -> Option<usize> {
+        text.lines().find_map(|l| {
+            let l = l.trim();
+            let rest = l.strip_suffix(" done")?;
+            let (_, total) = rest.split_once('/')?;
+            total.parse().ok()
+        })
+    }
+
+    /// [`parse_rendered`](Self::parse_rendered), trusted only when the list
+    /// it yields is as long as the header says the tool kept — a thinned
+    /// or capped echo is a prefix, and a prefix must not stand in for the
+    /// plan or for its freezes.
+    fn parse_whole_echo(text: &str) -> Option<Plan> {
+        // A marker anywhere is a cut somewhere, and a cut that lands at or
+        // after the last item's marker leaves the count intact while
+        // dropping that step's `check:` line — a prefix the header could
+        // not see (found on review). Both truncators write a marker, so the
+        // marker is the honest test and the count is the second one.
+        if text.contains(crate::compact::TRUNCATION_MARKER.trim())
+            || text.contains(crate::tool::CAP_MARKER)
+        {
+            return None;
+        }
+        let plan = Self::parse_rendered(text);
+        let whole = Self::rendered_total(text).is_some_and(|n| n == plan.items.len());
+        (whole && !plan.items.is_empty()).then_some(plan)
+    }
+
+    fn parse_section(section: &[&str]) -> Plan {
         // Anchored to the first non-empty line, because `render` always writes
         // it there. Scanning the whole section would let an item whose
         // *content* contains a line beginning `serves task:…` supply the
@@ -594,24 +1074,42 @@ impl TodoTool {
             .find(|l| !l.trim().is_empty())
             .and_then(|l| l.trim().strip_prefix(SERVES))
             .and_then(GoalRef::parse_lenient);
-        let items = section
-            .iter()
-            .filter_map(|line| {
-                let line = line.trim();
-                let (marker, rest) = line.split_at(line.char_indices().nth(3)?.0);
-                let status = match marker {
-                    "[ ]" => Status::Pending,
-                    "[~]" => Status::InProgress,
-                    "[x]" => Status::Completed,
-                    _ => return None,
-                };
-                let content = rest.trim();
-                (!content.is_empty()).then(|| TodoItem {
-                    content: content.to_string(),
-                    status,
-                })
-            })
-            .collect();
+        let mut items: Vec<TodoItem> = Vec::new();
+        for line in section {
+            let line = line.trim();
+            // A prediction line belongs to the item above it. Checked before
+            // the marker split so a step whose *content* begins with one of
+            // these words is still an item: the marker comes first on an
+            // item line and never on a prediction line.
+            if let Some(last) = items.last_mut() {
+                if let Some(rest) = line.strip_prefix(EXPECT_KEY) {
+                    last.expect = Some(rest.trim().to_string()).filter(|s| !s.is_empty());
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix(CHECK_KEY) {
+                    last.check = Some(rest.trim().to_string()).filter(|s| !s.is_empty());
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix(EXPECT_CALLS_KEY) {
+                    last.expect_calls = rest.trim().parse().ok();
+                    continue;
+                }
+            }
+            let Some(split) = line.char_indices().nth(3).map(|(i, _)| i) else {
+                continue;
+            };
+            let (marker, rest) = line.split_at(split);
+            let status = match marker {
+                "[ ]" => Status::Pending,
+                "[~]" => Status::InProgress,
+                "[x]" => Status::Completed,
+                _ => continue,
+            };
+            let content = rest.trim();
+            if !content.is_empty() {
+                items.push(TodoItem::new(content, status));
+            }
+        }
         Plan { goal, items }
     }
 
@@ -631,7 +1129,13 @@ impl TodoTool {
 
     /// What this run's plan serves, if it said.
     pub fn goal_in(&self, workspace: &Path) -> Option<GoalRef> {
-        self.lists.lock().unwrap().get(workspace)?.plan.goal.clone()
+        self.lists
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(workspace)?
+            .plan
+            .goal
+            .clone()
     }
 
     fn render(plan: &Plan) -> String {
@@ -659,8 +1163,28 @@ impl TodoTool {
         out.push_str(&format!("{done}/{} done\n", plan.items.len()));
         for item in &plan.items {
             out.push_str(&format!("{} {}\n", item.status.marker(), item.content));
+            // Under the item, indented, so the prediction rides the same
+            // echo and the same carried block as the step it belongs to —
+            // a re-read plan is a re-read prediction.
+            for line in item.prediction_lines() {
+                out.push_str(&line);
+                out.push('\n');
+            }
         }
         out
+    }
+
+    /// Tampers recorded on this workspace's plan — a completed step's check
+    /// rewritten after the fact. Not yet folded into `RunStats` (the loop
+    /// would have to ask this tool by name, which it never does); exposed so
+    /// a caller that already holds the tool can read it.
+    pub fn tampered_in(&self, workspace: &Path) -> u32 {
+        self.lists
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(workspace)
+            .map(|t| t.tampered)
+            .unwrap_or(0)
     }
 }
 
@@ -699,6 +1223,23 @@ impl Tool for TodoTool {
                             "status": {
                                 "type": "string",
                                 "enum": ["pending", "in_progress", "completed"]
+                            },
+                            "expect": {
+                                "type": "string",
+                                "description": "Optional. What will be true when this step is done, \
+                                                as one checkable sentence."
+                            },
+                            "check": {
+                                "type": "string",
+                                "description": "Optional. A shell command whose exit code shows \
+                                                whether the step landed. Fixed once the step is \
+                                                completed."
+                            },
+                            "expect_calls": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Optional. How many tool calls you expect this \
+                                                step to take."
                             }
                         },
                         "required": ["content", "status"]
@@ -734,7 +1275,7 @@ impl Tool for TodoTool {
     /// current answer and a summariser would only be a lossy path to a worse
     /// copy of it.
     fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
-        let lists = self.lists.lock().unwrap();
+        let lists = self.lists.lock().unwrap_or_else(|e| e.into_inner());
         let plan = &lists.get(&ctx.workspace)?.plan;
         // An empty list is genuinely nothing to carry, and an empty section in
         // the prompt reads as "the plan is finished" rather than "there was
@@ -766,7 +1307,7 @@ impl Tool for TodoTool {
     /// (`serve::session_workspace`) would otherwise accumulate one entry per
     /// session for the life of the process.
     fn forget_conversation_state(&self) {
-        self.lists.lock().unwrap().clear();
+        self.lists.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -775,7 +1316,7 @@ impl Tool for TodoTool {
         // state and nothing else, so it must count as bookkeeping exactly
         // like a successful one — never as work that failed.
         let (own_calls_before, last_real) = {
-            let mut lists = self.lists.lock().unwrap();
+            let mut lists = self.lists.lock().unwrap_or_else(|e| e.into_inner());
             let tracked = lists.entry(ctx.workspace.clone()).or_default();
             let own_calls_before = tracked.observe(ctx.work);
             (own_calls_before, tracked.last_real)
@@ -792,6 +1333,31 @@ impl Tool for TodoTool {
             let Some(content) = entry.get("content").and_then(Value::as_str) else {
                 return Ok(ToolOutput::err(format!("item {i} has no `content` string")));
             };
+            // Same grammar, same rule as the predictions below: `render`
+            // writes an item on one line and `parse_section` reads line by
+            // line, so a newline in `content` re-parses its tail as further
+            // items — a forged completed step carrying a `check:` the
+            // freeze never saw. The hole predates the predictions in the
+            // carried block; every resume now reads through this grammar
+            // (found on review).
+            if forges_a_line(content) {
+                return Ok(ToolOutput::err(format!(
+                    "item {i}: `content` must be a single line without a harness truncation marker"
+                )));
+            }
+            // Trimmed and non-empty at the door, exactly as `parse_section`
+            // reads a step back: a blank step rendered as `[ ] ` parsed to
+            // nothing, so the echo's item count fell one short of its own
+            // header and `parse_whole_echo` refused every echo in the
+            // transcript — reverting every resume to the input, silently;
+            // and a step padded with whitespace re-keyed its freeze without
+            // the model rewording it (found on review).
+            let content = content.trim();
+            if content.is_empty() {
+                return Ok(ToolOutput::err(format!(
+                    "item {i}: `content` must not be empty"
+                )));
+            }
             let status = match entry.get("status").and_then(Value::as_str) {
                 Some("pending") => Status::Pending,
                 Some("in_progress") => Status::InProgress,
@@ -802,9 +1368,54 @@ impl Tool for TodoTool {
                     )))
                 }
             };
+            // Strict on the way in, like `serves`: the model can fix a wrong
+            // type on the next call, and a silently dropped prediction
+            // leaves a plan claiming less than the model believed it said.
+            // Shape as well as type: `render` writes each prediction as one
+            // indented line and `parse_carried` reads the section line by
+            // line, so a value holding a newline splits across that boundary
+            // and its tail re-parses as plan syntax — a `check` of
+            // `make test\n[x] deploy` came back from a compaction as a
+            // completed step nobody wrote, and an `expect` ending in
+            // `\ncheck: …` came back carrying a check the step never
+            // declared, which is the field slated for execution (found on
+            // review). The model can fix a refused write on the next call.
+            let string_field = |key: &str| -> std::result::Result<Option<String>, String> {
+                match entry.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(Value::String(s)) if s.trim().is_empty() => Ok(None),
+                    Some(Value::String(s)) if forges_a_line(s) => Err(format!(
+                        "item {i}: `{key}` must be a single line without a harness truncation marker"
+                    )),
+                    Some(Value::String(s)) => Ok(Some(s.trim().to_string())),
+                    Some(_) => Err(format!("item {i}: `{key}` must be a string")),
+                }
+            };
+            let expect = match string_field("expect") {
+                Ok(v) => v,
+                Err(e) => return Ok(ToolOutput::err(e)),
+            };
+            let check = match string_field("check") {
+                Ok(v) => v,
+                Err(e) => return Ok(ToolOutput::err(e)),
+            };
+            let expect_calls = match entry.get("expect_calls") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_u64().and_then(|n| u32::try_from(n).ok()) {
+                    Some(n) => Some(n),
+                    None => {
+                        return Ok(ToolOutput::err(format!(
+                            "item {i}: `expect_calls` must be a non-negative integer"
+                        )))
+                    }
+                },
+            };
             items.push(TodoItem {
                 content: content.to_string(),
                 status,
+                expect,
+                check,
+                expect_calls,
             });
         }
 
@@ -852,25 +1463,29 @@ impl Tool for TodoTool {
         };
 
         let plan = Plan { goal, items };
-        let rendered = Self::render(&plan);
         // What the steps that just finished actually did, against the run's
         // own record of what it has done. The harness computes the fact; the
         // plan action it argues for — accept, revise the step, revise the
         // plan, escalate — is the model's next call, because the plan is the
         // model's. §5.5.
-        let findings = self
-            .lists
-            .lock()
-            .unwrap()
-            .entry(ctx.workspace.clone())
-            .or_default()
-            .advance(
+        //
+        // Rendered *after* `advance`, from the plan the tracker kept, not
+        // from the input: `advance` may put a frozen check back into a step
+        // that tried to rewrite it, and an echo rendered from the input
+        // showed the rewrite directly under the line saying the old check
+        // stood (found on review).
+        let (findings, rendered) = {
+            let mut lists = self.lists.lock().unwrap_or_else(|e| e.into_inner());
+            let tracked = lists.entry(ctx.workspace.clone()).or_default();
+            let findings = tracked.advance(
                 plan,
                 ctx.work,
                 own_calls_before,
                 last_real,
                 ctx.step_escalation.as_ref(),
             );
+            (findings, Self::render(&tracked.plan))
+        };
         let findings = match findings.is_empty() {
             true => String::new(),
             false => format!("\n\n{}", findings.join("\n")),
@@ -1273,18 +1888,9 @@ mod tests {
     #[test]
     fn rendering_and_parsing_round_trip() {
         let items = vec![
-            TodoItem {
-                content: "read the config".into(),
-                status: Status::Completed,
-            },
-            TodoItem {
-                content: "fix the port".into(),
-                status: Status::InProgress,
-            },
-            TodoItem {
-                content: "run the tests".into(),
-                status: Status::Pending,
-            },
+            TodoItem::new("read the config", Status::Completed),
+            TodoItem::new("fix the port", Status::InProgress),
+            TodoItem::new("run the tests", Status::Pending),
         ];
         // With a goal, because *what the steps are for* is exactly the half a
         // summariser drops — carrying the list across a compaction and losing
@@ -2269,5 +2875,991 @@ mod tests {
         )
         .await;
         assert!(slot.lock().unwrap().is_none());
+    }
+
+    // --- the prediction record ----------------------------------------------
+
+    #[test]
+    fn a_prediction_rides_the_carried_block_and_round_trips() {
+        let mut step = TodoItem::new("run the tests", Status::InProgress);
+        step.expect = Some("cargo test passes".into());
+        step.check = Some("cargo test -q".into());
+        step.expect_calls = Some(3);
+        let plan = Plan {
+            goal: None,
+            items: vec![
+                TodoItem::new("read the config", Status::Completed),
+                step.clone(),
+            ],
+        };
+        let rendered = TodoTool::render(&plan);
+        assert!(rendered.contains("[~] run the tests\n    expect: cargo test passes\n    check: cargo test -q\n    expect_calls: 3\n"), "{rendered}");
+        let block = format!("{CARRIED_HEADER}\n\n## todo\n{rendered}\n");
+        let back = TodoTool::parse_carried(&block);
+        assert_eq!(
+            back.items, plan.items,
+            "the prediction survives a compaction with the step"
+        );
+    }
+
+    #[test]
+    fn a_step_whose_content_starts_with_a_prediction_word_is_still_a_step() {
+        let plan = Plan {
+            goal: None,
+            items: vec![
+                TodoItem::new("check: the port is free", Status::Pending),
+                TodoItem::new("expect: nothing", Status::Pending),
+            ],
+        };
+        let block = format!("{CARRIED_HEADER}\n\n## todo\n{}\n", TodoTool::render(&plan));
+        assert_eq!(TodoTool::parse_carried(&block).items, plan.items);
+    }
+
+    #[test]
+    fn a_record_with_a_wrong_typed_prediction_keeps_the_plan_and_loses_the_field() {
+        let items: Vec<TodoItem> = serde_json::from_value(json!([
+            {"content": "a", "status": "pending", "expect": 7, "check": ["no"], "expect_calls": "three"},
+            {"content": "b", "status": "completed", "expect_calls": 2}
+        ]))
+        .unwrap();
+        assert_eq!(items[0], TodoItem::new("a", Status::Pending));
+        assert_eq!(items[1].expect_calls, Some(2));
+    }
+
+    #[tokio::test]
+    async fn the_model_is_told_about_a_wrong_typed_prediction_rather_than_losing_it() {
+        let tool = TodoTool::default();
+        let ctx = ctx_in("/tmp");
+        for (bad, msg) in [
+            (
+                json!({"items": [{"content": "a", "status": "pending", "expect": 7}]}),
+                "`expect` must be a string",
+            ),
+            (
+                json!({"items": [{"content": "a", "status": "pending", "check": 7}]}),
+                "`check` must be a string",
+            ),
+            (
+                json!({"items": [{"content": "a", "status": "pending", "expect_calls": -1}]}),
+                "`expect_calls` must be a non-negative integer",
+            ),
+        ] {
+            let out = tool.call(bad, &ctx).await.unwrap();
+            assert!(out.is_error, "{}", out.content);
+            assert!(out.content.contains(msg), "{}", out.content);
+        }
+        // And a good one is echoed under its step.
+        let out = tool
+            .call(
+                json!({"items": [{"content": "a", "status": "in_progress", "expect": "it works", "expect_calls": 2}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content
+                .contains("[~] a\n    expect: it works\n    expect_calls: 2"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn a_completed_steps_check_is_frozen_and_a_change_is_a_tamper() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let write = |status: &str, check: &str| json!({"items": [{"content": "wire it", "status": status, "check": check}]});
+        // Open: the check may be revised.
+        tool.call(write("in_progress", "make check"), &ctx)
+            .await
+            .unwrap();
+        let out = tool
+            .call(write("in_progress", "make test"), &ctx)
+            .await
+            .unwrap();
+        assert!(!out.content.contains("was changed"), "{}", out.content);
+        // Completed against `make test`.
+        tool.call(write("completed", "make test"), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(tool.tampered_in(&ws), 0);
+        // Rewriting the check after the fact is reported, and counted.
+        let out = tool.call(write("completed", "true"), &ctx).await.unwrap();
+        assert!(
+            out.content
+                .contains("was changed on or after the write that marked it done"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+        // Re-stating the frozen check is not a tamper.
+        let out = tool
+            .call(write("completed", "make test"), &ctx)
+            .await
+            .unwrap();
+        assert!(!out.content.contains("was changed"), "{}", out.content);
+        assert_eq!(tool.tampered_in(&ws), 1);
+    }
+
+    /// The one write that both completes the step and swaps its check is
+    /// the post-hoc rewrite the freeze exists for, and the first cut let it
+    /// through by gating on the *previous* status (found on review).
+    #[tokio::test]
+    async fn swapping_the_check_in_the_completing_write_is_a_tamper() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let write = |status: &str, check: &str| json!({"items": [{"content": "wire it", "status": status, "check": check}]});
+        tool.call(write("in_progress", "make test"), &ctx)
+            .await
+            .unwrap();
+        let out = tool.call(write("completed", "true"), &ctx).await.unwrap();
+        assert!(
+            out.content.contains("was changed on or after the write"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+        // A step completed with the check it declared while open is clean,
+        // and one that first declares a check on the completing write
+        // freezes that declaration.
+        let write2 = |status: &str, check: Option<&str>| {
+            let mut item = json!({"content": "ship it", "status": status});
+            if let Some(c) = check {
+                item["check"] = json!(c);
+            }
+            json!({"items": [{"content": "wire it", "status": "completed", "check": "make test"}, item]})
+        };
+        tool.call(write2("in_progress", None), &ctx).await.unwrap();
+        let out = tool
+            .call(write2("completed", Some("cargo test")), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            !out.content.contains("\"ship it\" was changed"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+        let out = tool
+            .call(write2("completed", Some("true")), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("\"ship it\" was changed"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 2);
+    }
+
+    /// Reopening the step must not release the freeze — the first fix let
+    /// `completed → in_progress (new check) → completed` through with
+    /// `tampered` at zero, and dropping the step and re-adding it as
+    /// `pending` is the same door (found on the second review pass).
+    #[tokio::test]
+    async fn reopening_or_re_adding_a_step_does_not_release_its_frozen_check() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let write = |status: &str, check: &str| json!({"items": [{"content": "wire it", "status": status, "check": check}]});
+        tool.call(write("in_progress", "make test"), &ctx)
+            .await
+            .unwrap();
+        tool.call(write("completed", "make test"), &ctx)
+            .await
+            .unwrap();
+        // Reopen with a new check: reported at the reopen, not only at the
+        // second completion.
+        let out = tool.call(write("in_progress", "true"), &ctx).await.unwrap();
+        assert!(out.content.contains("was changed"), "{}", out.content);
+        assert_eq!(tool.tampered_in(&ws), 1);
+        let out = tool.call(write("completed", "true"), &ctx).await.unwrap();
+        assert!(out.content.contains("was changed"), "{}", out.content);
+        assert_eq!(tool.tampered_in(&ws), 2);
+        // Reopening and re-stating the frozen check is fine.
+        let out = tool
+            .call(write("in_progress", "make test"), &ctx)
+            .await
+            .unwrap();
+        assert!(!out.content.contains("was changed"), "{}", out.content);
+        // Drop it from the plan, then re-add as pending with a different check.
+        tool.call(json!({"items": []}), &ctx).await.unwrap();
+        let out = tool.call(write("pending", "echo ok"), &ctx).await.unwrap();
+        assert!(out.content.contains("was changed"), "{}", out.content);
+        assert_eq!(tool.tampered_in(&ws), 3);
+    }
+
+    /// The tamper is not only announced: the plan the tool keeps — and so
+    /// the echo, the carried block and whatever runs the check — carries the
+    /// frozen command, not the rewrite (found on review: the first cut
+    /// counted the change and then took it).
+    #[tokio::test]
+    async fn a_tampered_check_is_put_back_in_the_plan_the_tool_keeps() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let write = |status: &str, check: &str| json!({"items": [{"content": "wire it", "status": status, "check": check}]});
+        tool.call(write("in_progress", "make test"), &ctx)
+            .await
+            .unwrap();
+        tool.call(write("completed", "make test"), &ctx)
+            .await
+            .unwrap();
+        let out = tool.call(write("completed", "true"), &ctx).await.unwrap();
+        assert!(out.content.contains("stands"), "{}", out.content);
+        assert!(
+            out.content.contains("    check: make test\n") && !out.content.contains("check: true"),
+            "the echo shows the frozen check, not the rewrite: {}",
+            out.content
+        );
+        let kept = tool.items_in(&ws);
+        assert_eq!(kept[0].check.as_deref(), Some("make test"));
+        let carried = tool.carried_state(&ctx).unwrap();
+        assert!(
+            carried.body.contains("check: make test"),
+            "{}",
+            carried.body
+        );
+        assert!(!carried.body.contains("check: true"), "{}", carried.body);
+    }
+
+    /// The third door (found on the fifth review pass): a frozen step
+    /// written again with no `check` at all. Restored and counted like a
+    /// changed one.
+    #[tokio::test]
+    async fn omitting_a_frozen_check_is_a_tamper_and_the_check_is_put_back() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        tool.call(
+            json!({"items": [{"content": "wire it", "status": "in_progress", "check": "make test"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        tool.call(
+            json!({"items": [{"content": "wire it", "status": "completed", "check": "make test"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let out = tool
+            .call(
+                json!({"items": [{"content": "wire it", "status": "completed"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content
+                .contains("was dropped after the step was marked done"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("    check: make test\n"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("make test"));
+        // An open step may drop its check freely — nothing is frozen yet.
+        tool.call(
+            json!({"items": [{"content": "ship it", "status": "in_progress", "check": "true"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let out = tool
+            .call(
+                json!({"items": [{"content": "ship it", "status": "in_progress"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !out.content.contains("ship it\" was dropped"),
+            "{}",
+            out.content
+        );
+    }
+
+    /// The fourth door: a resume rebuilds the tracker, and the first cut
+    /// rebuilt it with no freezes (found on the sixth review pass).
+    #[tokio::test]
+    async fn a_resume_keeps_a_completed_steps_check_frozen() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let mut done = TodoItem::new("wire it", Status::Completed);
+        done.check = Some("make test".into());
+        let mut open = TodoItem::new("ship it", Status::InProgress);
+        open.check = Some("true".into());
+        tool.set_plan_in(
+            &ws,
+            Plan {
+                goal: None,
+                items: vec![done, open],
+            },
+        );
+        let out = tool
+            .call(
+                json!({"items": [
+                    {"content": "wire it", "status": "completed", "check": "true"},
+                    {"content": "ship it", "status": "in_progress", "check": "false"}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("\"wire it\" was changed"),
+            "{}",
+            out.content
+        );
+        assert!(
+            !out.content.contains("\"ship it\" was changed"),
+            "an open step's check is not frozen: {}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("make test"));
+    }
+
+    /// A newline in a prediction would forge plan lines in the carried block
+    /// (found on the sixth review pass); it is refused at the door instead.
+    #[tokio::test]
+    async fn a_prediction_holding_a_newline_is_refused_not_split() {
+        let tool = TodoTool::default();
+        let ctx = ctx_in("/tmp");
+        for (field, value) in [
+            ("check", "make test\n[x] deploy to prod"),
+            ("expect", "ok\ncheck: rm -rf ~"),
+            ("check", "a\r\nb"),
+        ] {
+            let out = tool
+                .call(json!({"items": [{"content": "wire it", "status": "in_progress", field: value}]}), &ctx)
+                .await
+                .unwrap();
+            assert!(out.is_error, "{field}: {}", out.content);
+            assert!(
+                out.content.contains("must be a single line"),
+                "{}",
+                out.content
+            );
+        }
+    }
+
+    #[test]
+    fn a_record_with_a_multi_line_prediction_loses_the_field_not_the_plan() {
+        let items: Vec<TodoItem> = serde_json::from_value(json!([
+            {"content": "a", "status": "completed", "check": "make test\n[x] forged", "expect": "ok"}
+        ]))
+        .unwrap();
+        assert_eq!(items[0].check, None);
+        assert_eq!(items[0].expect.as_deref(), Some("ok"));
+    }
+
+    /// The fifth door (found on the ninth review pass): a resume reads the
+    /// plan back from the transcript, and the model's raw input is the
+    /// rewrite while the tool's echo is the frozen check. The echo wins.
+    #[test]
+    fn a_resume_reads_the_tools_echo_not_the_models_rewrite() {
+        use crate::message::{Block, Message, Role};
+        let mut frozen = TodoItem::new("wire it", Status::Completed);
+        frozen.check = Some("make test".into());
+        let echo = TodoTool::render(&Plan {
+            goal: Some(GoalRef::Task("01J8ZK".into())),
+            items: vec![frozen.clone()],
+        }) + "\n\nthe check for step \"wire it\" was changed on or after the write that marked it done; the check it was completed against stands, and the change is recorded";
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "wire it", "status": "completed", "check": "true"}], "serves": "task:01J8ZK"}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: echo,
+                    is_error: false,
+                }],
+            },
+        ];
+        let plan = TodoTool::plan_from_transcript(&messages).unwrap();
+        assert_eq!(plan.items, vec![frozen]);
+        assert_eq!(plan.goal, Some(GoalRef::Task("01J8ZK".into())));
+        // And the fallback: an echo this reader cannot parse hands back
+        // the input rather than nothing.
+        let mut garbled = messages.clone();
+        if let Block::ToolResult { content, .. } = &mut garbled[1].content[0] {
+            *content = "…".into();
+        }
+        assert_eq!(
+            TodoTool::plan_from_transcript(&garbled).unwrap().items[0]
+                .check
+                .as_deref(),
+            Some("true")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_step_holding_a_newline_is_refused_not_split_into_forged_steps() {
+        let tool = TodoTool::default();
+        let ctx = ctx_in("/tmp");
+        let out = tool
+            .call(
+                json!({"items": [{"content": "step one\n[x] deploy to prod\n    check: rm -rf /tmp/x", "status": "in_progress"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("`content` must be a single line"),
+            "{}",
+            out.content
+        );
+    }
+
+    /// Drop-then-re-add with a process boundary in the middle (found on the
+    /// eleventh review pass): a completed step trimmed from the plan before
+    /// a resume must still be frozen after it.
+    #[tokio::test]
+    async fn a_step_trimmed_before_a_resume_stays_frozen_after_it() {
+        use crate::message::{Block, Message, Role};
+        let mut done = TodoItem::new("wire it", Status::Completed);
+        done.check = Some("make test".into());
+        let first_echo = TodoTool::render(&Plan {
+            goal: None,
+            items: vec![done],
+        });
+        let trimmed_echo = TodoTool::render(&Plan {
+            goal: None,
+            items: vec![TodoItem::new("ship it", Status::InProgress)],
+        });
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "wire it", "status": "completed", "check": "make test"}]}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: first_echo,
+                    is_error: false,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t2".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "ship it", "status": "in_progress"}]}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: trimmed_echo,
+                    is_error: false,
+                }],
+            },
+        ];
+        let frozen = TodoTool::frozen_checks_from_transcript(&messages);
+        assert_eq!(frozen.get("wire it").map(String::as_str), Some("make test"));
+
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        assert_eq!(tool.rehydrate(&ws, &messages), Some(1));
+        let out = tool
+            .call(
+                json!({"items": [
+                    {"content": "ship it", "status": "in_progress"},
+                    {"content": "wire it", "status": "completed", "check": "true"}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("\"wire it\" was changed"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(
+            tool.items_in(&ws)
+                .iter()
+                .find(|i| i.content == "wire it")
+                .and_then(|i| i.check.clone())
+                .as_deref(),
+            Some("make test")
+        );
+    }
+
+    /// A thinned echo is a parseable prefix, not an unparseable blob (found
+    /// on the twelfth review pass): the header's total is what says the
+    /// echo is whole. Fails on the old behaviour, which took the prefix.
+    #[test]
+    fn a_thinned_echo_is_a_prefix_and_the_input_stands_in_for_it() {
+        use crate::compact::{thin_old_results, THINNED_RESULT_CHARS};
+        use crate::message::{Block, Message, Role};
+        let items: Vec<TodoItem> = (0..12)
+            .map(|i| {
+                let mut it = TodoItem::new(
+                    format!("step number {i} with enough words to make the echo long"),
+                    if i < 6 {
+                        Status::Completed
+                    } else {
+                        Status::Pending
+                    },
+                );
+                if i < 6 {
+                    it.check = Some(format!("make check-{i}"));
+                }
+                it
+            })
+            .collect();
+        let plan = Plan {
+            goal: None,
+            items: items.clone(),
+        };
+        let echo = TodoTool::render(&plan);
+        assert!(echo.len() > THINNED_RESULT_CHARS);
+        assert_eq!(TodoTool::rendered_total(&echo), Some(12));
+        let input_items: Vec<serde_json::Value> = items
+            .iter()
+            .map(|i| {
+                let mut v = json!({"content": i.content, "status": if i.status == Status::Completed { "completed" } else { "pending" }});
+                if let Some(c) = &i.check {
+                    v["check"] = json!(c);
+                }
+                v
+            })
+            .collect();
+        let mut messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": input_items}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: echo,
+                    is_error: false,
+                }],
+            },
+        ];
+        // Whole: the echo is the plan.
+        assert_eq!(
+            TodoTool::plan_from_transcript(&messages)
+                .unwrap()
+                .items
+                .len(),
+            12
+        );
+        assert_eq!(TodoTool::frozen_checks_from_transcript(&messages).len(), 6);
+        // Thinned: the echo is a prefix, so the input stands in and the
+        // freezes come from nowhere rather than from the prefix.
+        let thinned = thin_old_results(&mut messages, 0, THINNED_RESULT_CHARS);
+        assert_eq!(thinned, 1);
+        let restored = TodoTool::plan_from_transcript(&messages).unwrap();
+        assert_eq!(
+            restored.items.len(),
+            12,
+            "every step, from the input the thinning never touches"
+        );
+        assert_eq!(restored.items[0].check.as_deref(), Some("make check-0"));
+        assert!(
+            TodoTool::frozen_checks_from_transcript(&messages).is_empty(),
+            "a cut echo is skipped, never merged"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_step_is_trimmed_and_never_empty_at_the_door() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-trim-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let out = tool
+            .call(
+                json!({"items": [{"content": "   ", "status": "pending"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("must not be empty"),
+            "{}",
+            out.content
+        );
+        // Whitespace padding does not re-key a frozen step.
+        tool.call(
+            json!({"items": [{"content": "wire it", "status": "completed", "check": "make test"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let out = tool
+            .call(
+                json!({"items": [{"content": "  wire it  ", "status": "completed", "check": "true"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("\"wire it\" was changed"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+    }
+
+    /// The input fallback must not out-freeze an earlier whole echo (found
+    /// on the fourteenth review pass): with the last echo thinned, the plan
+    /// comes from the input, which may carry a tamper's rewrite, while an
+    /// earlier whole echo carries the frozen command.
+    #[test]
+    fn an_echo_derived_freeze_outranks_the_input_fallbacks_check() {
+        use crate::compact::{thin_old_results, THINNED_RESULT_CHARS};
+        use crate::message::{Block, Message, Role};
+        let mut frozen = TodoItem::new("wire it", Status::Completed);
+        frozen.check = Some("make test".into());
+        let first_echo = TodoTool::render(&Plan {
+            goal: None,
+            items: vec![frozen],
+        });
+        // A later, long plan whose echo will be thinned; its input carries
+        // the rewrite `true` for the frozen step.
+        let mut long: Vec<TodoItem> = (0..10)
+            .map(|i| {
+                TodoItem::new(
+                    format!("step number {i} with enough words to be long"),
+                    Status::Pending,
+                )
+            })
+            .collect();
+        let mut rewritten = TodoItem::new("wire it", Status::Completed);
+        rewritten.check = Some("true".into());
+        long.insert(0, rewritten.clone());
+        let long_echo = TodoTool::render(&Plan {
+            goal: None,
+            items: long.clone(),
+        });
+        assert!(long_echo.len() > THINNED_RESULT_CHARS);
+        let input_items: Vec<serde_json::Value> = long
+            .iter()
+            .map(|i| {
+                let mut v = json!({"content": i.content, "status": if i.status == Status::Completed { "completed" } else { "pending" }});
+                if let Some(c) = &i.check {
+                    v["check"] = json!(c);
+                }
+                v
+            })
+            .collect();
+        let mut messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "wire it", "status": "completed", "check": "make test"}]}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: first_echo,
+                    is_error: false,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t2".into(),
+                    name: "todo".into(),
+                    input: json!({"items": input_items}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: long_echo,
+                    is_error: false,
+                }],
+            },
+        ];
+        // Only the long echo is cut; the short first one stays whole, which
+        // is exactly what lets its freeze outrank the input below.
+        assert_eq!(thin_old_results(&mut messages, 0, THINNED_RESULT_CHARS), 1);
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        assert_eq!(
+            tool.rehydrate(&ws, &messages),
+            Some(11),
+            "the plan came from the input fallback"
+        );
+        // The first echo survived whole; its freeze must outrank the
+        // input's rewritten check.
+        let kept = tool.items_in(&ws);
+        let wire = kept.iter().find(|i| i.content == "wire it").unwrap();
+        assert_eq!(
+            wire.check.as_deref(),
+            Some("make test"),
+            "the plan carries the frozen command, not the input's rewrite (nineteenth pass)"
+        );
+        let lists = tool.lists.lock().unwrap();
+        let tracked = lists.get(&ws).unwrap();
+        assert_eq!(
+            tracked.checks.get("wire it").map(|f| f.check.as_str()),
+            Some("make test")
+        );
+    }
+
+    /// A cut that lands after the last item's marker keeps the header's
+    /// count honest and still drops that step's check (found on the
+    /// sixteenth review pass): the marker, not the count, is what refuses
+    /// it.
+    #[test]
+    fn a_cut_after_the_last_marker_is_still_a_prefix() {
+        use crate::compact::TRUNCATION_MARKER;
+        use crate::message::{Block, Message, Role};
+        let items: Vec<TodoItem> = (0..3)
+            .map(|i| {
+                let mut it =
+                    TodoItem::new(format!("wire the adapter number {i}"), Status::Completed);
+                it.check = Some(format!("make check-{i}"));
+                it
+            })
+            .collect();
+        let echo = TodoTool::render(&Plan {
+            goal: None,
+            items: items.clone(),
+        });
+        // Cut exactly before the last step's check line, the way a
+        // character-count thinning can land.
+        let cut_at = echo.rfind("\n    check: make check-2").unwrap() + 1;
+        let cut = format!("{}{}", &echo[..cut_at], TRUNCATION_MARKER);
+        assert_eq!(TodoTool::rendered_total(&cut), Some(3));
+        assert_eq!(
+            TodoTool::parse_rendered(&cut).items.len(),
+            3,
+            "the count alone would pass"
+        );
+        assert!(
+            TodoTool::parse_whole_echo(&cut).is_none(),
+            "the marker refuses it"
+        );
+        // And the cap marker, which the other truncator writes.
+        let capped = format!(
+            "{}\n\n{} showing the first 200 of 400 bytes]",
+            &echo[..cut_at],
+            crate::tool::CAP_MARKER
+        );
+        assert!(TodoTool::parse_whole_echo(&capped).is_none());
+        // Through the transcript: the input stands in, and no freeze is
+        // read off the cut echo.
+        let input_items: Vec<serde_json::Value> = items
+            .iter()
+            .map(|i| json!({"content": i.content, "status": "completed", "check": i.check}))
+            .collect();
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": input_items}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: cut,
+                    is_error: false,
+                }],
+            },
+        ];
+        let plan = TodoTool::plan_from_transcript(&messages).unwrap();
+        assert_eq!(plan.items[2].check.as_deref(), Some("make check-2"));
+        assert!(TodoTool::frozen_checks_from_transcript(&messages).is_empty());
+    }
+
+    /// The record door trims as the model door does (found on the
+    /// seventeenth review pass): the same freeze must render the same.
+    #[test]
+    fn a_record_value_is_trimmed_like_a_model_one() {
+        let item: TodoItem = serde_json::from_value(json!({
+            "content": "wire it", "status": "completed",
+            "check": "  make test  ", "expect": "\tone call\t"
+        }))
+        .unwrap();
+        assert_eq!(item.check.as_deref(), Some("make test"));
+        assert_eq!(item.expect.as_deref(), Some("one call"));
+        let blank: TodoItem = serde_json::from_value(json!({
+            "content": "wire it", "status": "completed", "check": "   "
+        }))
+        .unwrap();
+        assert_eq!(blank.check, None);
+    }
+
+    /// The trimmed-before-resume door with a compaction in the middle
+    /// (found on the eighteenth review pass): `rebuild` drops the echo that
+    /// completed the step, so the carried block in the head message is the
+    /// only record of its check. A freeze read from echoes alone re-added
+    /// it unfrozen.
+    #[tokio::test]
+    async fn a_step_completed_before_a_compaction_and_trimmed_after_it_stays_frozen() {
+        use crate::message::{Block, Message, Role};
+        let mut done = TodoItem::new("wire it", Status::Completed);
+        done.check = Some("make test".into());
+        let carried = format!(
+            "{CARRIED_HEADER}\n\n## todo\n{}\n",
+            TodoTool::render(&Plan {
+                goal: None,
+                items: vec![done]
+            })
+        );
+        let trimmed_echo = TodoTool::render(&Plan {
+            goal: None,
+            items: vec![TodoItem::new("ship it", Status::InProgress)],
+        });
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![Block::Text { text: carried }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t2".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [{"content": "ship it", "status": "in_progress"}]}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: trimmed_echo,
+                    is_error: false,
+                }],
+            },
+        ];
+        let frozen = TodoTool::frozen_checks_from_transcript(&messages);
+        assert_eq!(frozen.get("wire it").map(String::as_str), Some("make test"));
+
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        assert_eq!(tool.rehydrate(&ws, &messages), Some(1));
+        let out = tool
+            .call(
+                json!({"items": [
+                    {"content": "ship it", "status": "in_progress"},
+                    {"content": "wire it", "status": "completed", "check": "true"}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.contains("\"wire it\" was changed"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+    }
+
+    /// A truncation marker in a step's text made every echo of that step
+    /// read as cut, which dropped the resume to the raw input and emptied
+    /// the freeze (found on the twentieth review pass): refused at the
+    /// model door, dropped at the record door.
+    #[tokio::test]
+    async fn a_marker_in_a_plan_field_is_refused_like_a_newline() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-marker-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let cap = format!("wire it {} 1 of 2]", crate::tool::CAP_MARKER);
+        let thin = format!("wire it {}", crate::compact::TRUNCATION_MARKER.trim());
+        for (field, value) in [
+            ("content", cap.as_str()),
+            ("content", thin.as_str()),
+            ("check", cap.as_str()),
+            ("expect", thin.as_str()),
+        ] {
+            let mut item = json!({"content": "wire it", "status": "completed"});
+            item[field] = json!(value);
+            let out = tool.call(json!({"items": [item]}), &ctx).await.unwrap();
+            assert!(out.is_error, "{field}: {}", out.content);
+            assert!(
+                out.content.contains("truncation marker"),
+                "{field}: {}",
+                out.content
+            );
+        }
+        assert!(tool.items_in(&ws).is_empty(), "nothing was installed");
+        let item: TodoItem = serde_json::from_value(json!({
+            "content": "wire it", "status": "completed", "check": cap
+        }))
+        .unwrap();
+        assert_eq!(item.check, None, "the record door drops it");
+        // And the same step through a whole echo still parses as whole,
+        // because no field can carry the marker into it.
+        let mut fine = TodoItem::new("wire it", Status::Completed);
+        fine.check = Some("make test".into());
+        let echo = TodoTool::render(&Plan {
+            goal: None,
+            items: vec![fine],
+        });
+        assert!(TodoTool::parse_whole_echo(&echo).is_some());
+    }
+
+    /// The install-time restore is status-blind (found on the twentieth
+    /// review pass): a frozen step the input fallback hands back as
+    /// `in_progress` takes the frozen command too.
+    #[test]
+    fn install_restores_a_frozen_check_whatever_the_steps_status() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-restore-{}", uuid::Uuid::new_v4()));
+        let mut reopened = TodoItem::new("wire it", Status::InProgress);
+        reopened.check = Some("true".into());
+        let extra: HashMap<String, String> = [("wire it".to_string(), "make test".to_string())]
+            .into_iter()
+            .collect();
+        tool.install_in(
+            &ws,
+            Plan {
+                goal: None,
+                items: vec![reopened],
+            },
+            extra,
+        );
+        let kept = tool.items_in(&ws);
+        assert_eq!(kept[0].status, Status::InProgress);
+        assert_eq!(kept[0].check.as_deref(), Some("make test"));
     }
 }

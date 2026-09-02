@@ -55,15 +55,34 @@
 //!
 //! What is left is narrower than it looks, and saying so is the point. The
 //! **free** readout — [`of_session`] over on-disk records, no model — can
-//! only ever say *neutral* or *anger*: every negative it assembles is either
-//! invisible `Own`/`Owner` with `controllable` unfilled (which reduces to
-//! `Neutral`) or a ceiling nobody here caused (`Anger`), and no counter kind
-//! fires twice in one session, so `Frustration`'s repetition cannot occur.
+//! only ever *label* a session `Neutral`: every negative it assembles is
+//! `Own`/`Owner` with `controllable` unfilled, which is the one branch of
+//! [`label_of`] with no word for it, and no counter kind fires twice in one
+//! session, so `Frustration`'s repetition cannot occur. (`Anger` is the
+//! quarantined appraiser's alone now — a ceiling used to read as `World`
+//! agency, and a limit the owner set is not something nobody here caused.)
 //! The **probe** (§5.3, a paid replay per intervention) is what buys the
 //! rest: `Regret` and `Disappointment` directly, and `Frustration` when two
 //! probed steers on one goal both come back load-bearing. The alternative to
 //! stating this is inventing precedence until every run gets an interesting
 //! word, which manufactures the signal this rung exists to test for.
+//!
+//! ## The label is not the readout
+//!
+//! That the label is `Neutral` on nearly every session was the finding of
+//! rung 7's corpus, and `docs/APPRAISAL-RESEARCH.md` §1 found the reason
+//! narrower than the design's "five dimensions nothing measures": the
+//! label gates on the most expensive dimension it has (`controllable`, a
+//! paid replay) and discards the cheapest — the **sign**, which every error
+//! carries. Twenty-two owner-rejected drafts all read `Neutral`. So the
+//! readout every surface shows is [`Valence`]: the signed magnitudes the
+//! record already holds, positive and negative kept apart (averaging them is
+//! the mixed-polarity mistake `candidate::Metric`'s docstring forbids), with
+//! the label beside it as the second line, derived exactly as before and
+//! firing when its dimensions are filled. Every computational appraisal
+//! model that pass reviewed puts its one gate at relevance and then labels
+//! from two variables; a product over unfilled dimensions collapses, and
+//! [`label_of`] was that product in a different costume.
 //!
 //! ## Mood is not here
 //!
@@ -78,7 +97,7 @@ use crate::goal::GoalRef;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// Which of the five signal paths an error arrived on.
+/// Which of the six signal paths an error arrived on.
 ///
 /// Named rather than merged, on §1's finding: five loops converged on one word
 /// for "what this was decided from" without converging on the concept. The
@@ -102,6 +121,33 @@ pub enum Channel {
     /// [`appraise_with_model`], run offline via
     /// `mecha sessions appraise --appraise`.
     Appraisal,
+    /// A recorded commitment kept, dropped, or cleared — a question the
+    /// owner answered or abandoned, a front-door request closed with
+    /// nothing sent, a run that left the owner's queue shorter than it
+    /// found it. §5.2 named these beside the draft channel and nothing
+    /// built them; `docs/APPRAISAL-RESEARCH.md` §3.5/§3.6. Read only from
+    /// stores mecha itself writes, on §7.4's rule: a sentence in a fetched
+    /// page cannot write a row into any of them.
+    Commitment,
+}
+
+impl Channel {
+    /// Every variant, for a reader that partitions by channel. The
+    /// appraiser's evidence brief used to carry a hand-typed five-entry
+    /// list and `filter(n > 0)` over it, so the sixth channel vanished from
+    /// the brief silently — a session whose only signed errors were
+    /// commitments told the quarantined pass "negative errors: 1, by
+    /// channel: none" (found on review). The exhaustive `match` in the test
+    /// beside `Affect::reachable_today`'s is what makes a seventh a compile
+    /// error rather than a silent omission.
+    pub const ALL: [Channel; 6] = [
+        Channel::Intervention,
+        Channel::Edit,
+        Channel::Counter,
+        Channel::Setpoint,
+        Channel::Appraisal,
+        Channel::Commitment,
+    ];
 }
 
 /// Who caused it.
@@ -182,6 +228,13 @@ pub enum Cite {
     Counter(String),
     /// A homeostatic variable, by name.
     Setpoint(String),
+    /// A reflection in the learning store, by id — a follow-up the reflector
+    /// judged to be a correction (`docs/APPRAISAL-RESEARCH.md` §3.4).
+    Reflexion(String),
+    /// A parked question, by id.
+    Question(String),
+    /// A front-door request, by sequence number.
+    Request(i64),
     /// The whole run, from the quarantined appraiser (§5.1). Not a pointer
     /// into one transcript position, draft or counter — this is the model's
     /// own account of the run, read off numbers only (see
@@ -219,6 +272,20 @@ pub struct Appraisal {
     #[serde(default)]
     pub taint: crate::agent::Taint,
     pub created_at: String,
+    /// Computed with a store one of the arms reads unreadable or short —
+    /// see [`Valence::partial`], which carries it to every surface. On the
+    /// record rather than only on the readout because the closure path
+    /// can never be rerun: a reading assembled with the outbox unparseable
+    /// printed as a full one and gated a follow-up on short evidence, with
+    /// the caveat on a separate stderr line that did not travel with it
+    /// (found on review). Absent on the wire when false. **Not set by a
+    /// caller that passes no stores at all** (`live_readout`, `distill`):
+    /// there the commitment stores were never a channel, so "not
+    /// consulted" is the reading's whole shape, not a gap in it — a
+    /// consumer reading this off a distilled episode gets the run's own
+    /// record, complete on its own terms.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 /// The readout. **Events only** — see the module note on mood.
@@ -282,9 +349,11 @@ impl Affect {
     /// neither was recorded at the time, which is why the split below is
     /// spelled out:
     ///
-    /// - `Neutral` and `Anger` are the **free** readout's whole range — see
-    ///   the module note on why [`of_session`] alone can produce nothing
-    ///   else.
+    /// - `Neutral` is the **free** readout's whole label range — see the
+    ///   module note on why [`of_session`] alone can produce nothing else,
+    ///   and why the surfaces show [`Valence`] instead. `Anger` is
+    ///   reachable through the quarantined appraiser's `other`/`world`
+    ///   agency verdict alone, since a ceiling stopped reading as `World`.
     /// - `Regret`, `Disappointment` and `Frustration` are **probe-gated**:
     ///   the counterfactual pass (§5.3, shipped in the appraisal probe) is
     ///   the only thing that fills `controllable` or turns an intervention
@@ -421,15 +490,20 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
     // `visible`/`controllable` conservative, so a `self`/`owner` verdict
     // reduces to `Neutral` under `label_of` whatever magnitude the model
     // picked — and the magnitude-first reduce above would let that outrank a
-    // smaller, already-informative error (an `Anger` from a ceiling, say)
-    // purely on size. `says_more`'s own stated principle ("a label that names
+    // smaller, already-informative error purely on size. (Which error: one
+    // the appraiser itself signed with a `world`/`other` agency, since the
+    // ceiling reclassified to `Agency::Owner`, those two agencies reach the
+    // record only through the parsed verdict, and no free-readout error
+    // earns a label at all — the point `the_free_readouts_label_is_always_
+    // neutral_and_its_valence_is_not` pins.) `says_more`'s own stated principle ("a label that names
     // nothing must never mask one that names something") already covers this
     // in spirit; the reduce above only ever applied it within an exact tie.
     //
     // **Deliberately scoped to `Channel::Appraisal`, not every channel.** The
-    // identical shape is reachable today from deterministic channels alone
-    // (`ended_on_failed_call` at a fixed `-1.0` can already outrank a `-0.5`
-    // `Anger`), but that is `of_session`'s free readout — the number
+    // identical shape exists among deterministic channels too
+    // (`ended_on_failed_call` at a fixed `-1.0` outranks any `-0.5`), and
+    // today it buries nothing there, because every free-readout error is
+    // `Neutral`; but that is `of_session`'s free readout — the number
     // `GOAL-SYSTEM-DESIGN.md`'s 120-session measurement and `HANDOFF.md`'s
     // "today affect is a constant" are stated against — and a general fix
     // changes it without either document saying so. The appraiser is what
@@ -504,7 +578,7 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
     // **And this may only ever upgrade `reduced`, never bury it.** The first
     // cut returned `Frustration` the moment `repeated` was true, before
     // `label_of`'s reduce ran at all — which outranked agency and exposure
-    // both, the one ordering this module argues hardest for: a ceiling
+    // both, the one ordering this module argues hardest for: an outage
     // nobody here caused (`Agency::World`) plus a draft the owner rewrote
     // (`Agency::Owner`, visible) would report `Frustration` and discard the
     // fact that something went out wrong, exactly what `says_more`'s
@@ -535,6 +609,177 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
     }
 
     reduced
+}
+
+/// The dimensional readout: what the record says before any label is
+/// derived from it. See the module note *The label is not the readout*.
+///
+/// Positive and negative are **kept apart, never netted**. A run that
+/// released one draft unchanged and had one rejected is not a zero; it is
+/// one of each, and a surface shows both. Sums rather than maxima, so a
+/// second rejection reads worse than one — a magnitude-first *reduce* is
+/// right for choosing which single error a label should name, and wrong
+/// for saying how much went right and wrong.
+///
+/// `partial` marks a reading computed from fewer channels than the record
+/// normally carries, from two sources. [`live_readout`] sets it on a
+/// compacted run, where the interventions are unknowable (the message
+/// indices were rewritten in place) and the counters are still facts: a
+/// number with a caveat beats the `Neutral`-outright the label still,
+/// correctly, gives there. And [`Valence::of`] carries [`Appraisal::partial`]
+/// — a store one of the arms reads was unreadable or short. The web chip's
+/// tooltip names neither cause, on purpose: the live path passes no stores,
+/// so today only compaction reaches it there, and a string that said so
+/// would go false the first time a live surface handed the readout a
+/// store (found on review).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Valence {
+    /// Sum of the positive errors' magnitudes.
+    pub positive: f32,
+    /// Sum of the negative errors' magnitudes, as a positive number.
+    pub negative: f32,
+    pub positives: u32,
+    pub negatives: u32,
+    /// Any negative error reached a third party.
+    pub visible: bool,
+    /// Computed with a channel missing — see the type's doc.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
+}
+
+impl Valence {
+    /// Pure, like [`affect_of`], and the only place a valence is decided.
+    pub fn of(appraisal: &Appraisal) -> Valence {
+        let mut v = Valence {
+            partial: appraisal.partial,
+            ..Valence::default()
+        };
+        for e in &appraisal.errors {
+            if e.sign > 0.0 {
+                v.positive += e.sign;
+                v.positives += 1;
+            } else if e.sign < 0.0 {
+                v.negative += -e.sign;
+                v.negatives += 1;
+                v.visible |= e.visible;
+            }
+        }
+        v
+    }
+
+    /// Nothing signed at all — no error either way. The surfaces show
+    /// nothing here, on the TUI badge's own rule that a gauge always showing
+    /// something trains people to stop seeing it.
+    pub fn is_silent(&self) -> bool {
+        self.positives == 0 && self.negatives == 0
+    }
+
+    /// The one-line form for a status strip or a message footer: `+1.0`,
+    /// `−2.0`, or `+1.0 −2.0`; empty when silent; a trailing `…` when
+    /// partial. One decimal, because the magnitudes are the record's own
+    /// `±1.0`/`±0.5` steps and a second decimal would be false precision.
+    pub fn compact(&self) -> String {
+        let mut parts = Vec::new();
+        if self.positives > 0 {
+            parts.push(format!("+{:.1}", self.positive));
+        }
+        if self.negatives > 0 {
+            parts.push(format!("\u{2212}{:.1}", self.negative));
+        }
+        let mut out = parts.join(" ");
+        if self.partial && !out.is_empty() {
+            out.push('\u{2026}');
+        }
+        out
+    }
+}
+
+impl Appraisal {
+    /// Did the run stop before it was done? A negative counter error whose
+    /// pointer is the stop cause (a ceiling, a loop, no output), the silent
+    /// failure (`ended_on_failed_call`), or a declared check that did not
+    /// pass (`checks_passed`). The closure follow-up gate
+    /// reads this beside the label: §5.4's "the owner took it anyway" case
+    /// is a run with *cut-off work*, which is what a follow-up captures — a
+    /// rejected draft or a steer is a negative too, and stages nothing,
+    /// because there is no residue in it to put on the board. A typed
+    /// predicate over a pointer, not a threshold over magnitudes, which is
+    /// the re-derivation `worth_a_follow_up`'s own doc refuses.
+    pub fn cut_short(&self) -> bool {
+        self.errors.iter().any(|e| {
+            e.sign < 0.0
+                && e.channel == Channel::Counter
+                && matches!(&e.cite, Cite::Counter(name) if name == "stop_cause" || name == "ended_on_failed_call" || name == "checks_passed")
+        })
+    }
+}
+
+/// What a surface shows about a finished run: the dimensional reading and
+/// the label beside it. Both are pure functions of the same record and
+/// computed together so no surface can show one derivation's label next to
+/// another's numbers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Readout {
+    pub label: Affect,
+    pub valence: Valence,
+}
+
+impl Readout {
+    pub fn of(appraisal: &Appraisal) -> Readout {
+        Readout {
+            label: appraisal.label,
+            valence: Valence::of(appraisal),
+        }
+    }
+
+    /// Nothing to show: the label says nothing and no error is signed.
+    pub fn is_silent(&self) -> bool {
+        self.label == Affect::Neutral && self.valence.is_silent()
+    }
+}
+
+/// The stores one session's appraisal reads beside its transcript. Every
+/// slice may be empty; a caller that could not read a store passes nothing
+/// and says so on its own surface, on `sessions appraise`'s
+/// `outbox_unreadable` rule. `drafts` is the session's own items,
+/// pre-filtered by the caller as it always was; the other three carry a
+/// session id and are filtered here, so a caller can hand over a whole
+/// store once.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionRecords<'a> {
+    pub drafts: &'a [&'a crate::outbox::OutboxItem],
+    /// The outbox could not be read, so `drafts` is unknown rather than
+    /// empty. Every reader that can tell the two apart must say so here:
+    /// with an empty `drafts` standing in for an unreadable store, the
+    /// request arm found "nothing drafted" for every closed request and
+    /// signed each one `-0.5` — an unreadable store manufacturing errors in
+    /// a different channel, which inverts the rule this surface is built on
+    /// (found on review). The request arm is skipped when this is set.
+    /// Only the outbox carries such a flag, and the asymmetry is
+    /// load-bearing: the question, request and reflection arms only ever
+    /// *add* a sign, so a short read of those stores under-signs, where a
+    /// short read of the outbox inverted the request arm's answer.
+    pub outbox_unreadable: bool,
+    pub questions: &'a [crate::questions::Question],
+    /// `questions` is short: the store could not be read, or a row was
+    /// skipped. The arm still runs on what was read (it only ever adds a
+    /// sign), but the reading is marked partial — a channel switched off
+    /// or thinned must say so on the record, not beside it.
+    pub questions_unreadable: bool,
+    pub requests: &'a [crate::frontdoor::Record],
+    pub frontdoor_unreadable: bool,
+    pub reflexions: &'a [crate::learning::Reflexion],
+    pub learning_unreadable: bool,
+}
+
+impl SessionRecords<'_> {
+    /// Any store an arm reads was not fully read — the reading is partial.
+    pub fn short(&self) -> bool {
+        self.outbox_unreadable
+            || self.questions_unreadable
+            || self.frontdoor_unreadable
+            || self.learning_unreadable
+    }
 }
 
 /// Build one **session's** appraisal from records that already exist.
@@ -584,7 +829,7 @@ pub fn of_session(
     stats: &crate::session::RunStats,
     goals: &[GoalRef],
     interventions: &[crate::learning::Intervention],
-    drafts: &[&crate::outbox::OutboxItem],
+    records: SessionRecords<'_>,
     // Coverage at the end of the session, from `Session::taint_timeline` —
     // `None` when the caller could not establish it, which includes a
     // transcript recorded before checkpoints existed. Deliberately not read
@@ -633,9 +878,15 @@ pub fn of_session(
             controllable: None,
             cite: Cite::Counter("stop_cause".into()),
         }),
-        // A ceiling is a number somebody set, and hitting one is not a thing
-        // this run could have done differently — `World`, the agency for what
-        // has no address here.
+        // A ceiling is a number the owner set, and hitting one is the
+        // owner's limit meeting the run's size — `Owner`, not `World`. It
+        // used to be `World` ("nobody here caused it"), which `label_of`
+        // reads as `Anger`, and that was the only non-neutral label a
+        // surface ever showed: a budget the owner chose, reported as
+        // somebody else's fault. Whether the run could have fit is the
+        // probe's question, exactly as for a steer, so `controllable` stays
+        // unfilled and the label stays `Neutral` while the valence carries
+        // the `-0.5`.
         Some(
             crate::agent::StopCause::MaxTurns
             | crate::agent::StopCause::OutputTokenBudget
@@ -644,7 +895,7 @@ pub fn of_session(
             goal: goal.clone(),
             channel: Channel::Counter,
             sign: -0.5,
-            agency: Agency::World,
+            agency: Agency::Owner,
             visible: false,
             controllable: None,
             cite: Cite::Counter("stop_cause".into()),
@@ -667,6 +918,25 @@ pub fn of_session(
             controllable: None,
             cite: Cite::Counter("ended_on_failed_call".into()),
         });
+    }
+
+    // A declared check that did not pass: the step said what would be true
+    // and the harness found it false. The first structural discrepancy
+    // between a prediction and its outcome (`docs/APPRAISAL-RESEARCH.md`
+    // §3.7), and `Own` without a guess — the model wrote both the claim and
+    // the test. Absent is not zero, as for every `Option` counter here.
+    if let (Some(declared), Some(passed)) = (stats.checks_declared, stats.checks_passed) {
+        if declared > passed {
+            errors.push(GoalError {
+                goal: goal.clone(),
+                channel: Channel::Counter,
+                sign: -1.0,
+                agency: Agency::Own,
+                visible: false,
+                controllable: None,
+                cite: Cite::Counter("checks_passed".into()),
+            });
+        }
     }
 
     // An approach that stopped teaching the run anything (§9.1). Absent is not
@@ -720,7 +990,7 @@ pub fn of_session(
     }
 
     // --- Edit: what the owner did with a draft written in their name ---
-    for item in drafts {
+    for item in records.drafts {
         // `writing_outcome` already decides `sent` vs `sent-and-edited` vs
         // "says nothing about drafting" — including a publish, on
         // `mineable_as_writing`'s reasoning that its arguments are a path
@@ -766,6 +1036,188 @@ pub fn of_session(
         });
     }
 
+    // --- Intervention, judged: a follow-up the reflector read as a correction ---
+    //
+    // `extract_interventions`'s raw `Followup` is skipped above because a
+    // later user turn is usually just the next question. The reflector has
+    // already decided, per session, which follow-ups were the owner
+    // correcting the run, and recorded its verdict with provenance — a
+    // judged verdict with the same standing `apply_probe` gives the
+    // replay's. Admitted on the gate below — clean provenance, the
+    // learning loop's own question — and nothing wider; the rule is stated
+    // once, there, so this header cannot drift from it (an earlier draft
+    // of this sentence described a wider gate the code never kept). A
+    // lesson the owner dropped is withdrawn evidence and reads as nothing.
+    for r in records.reflexions {
+        if r.session_id != session_id
+            || r.trigger != crate::learning::Trigger::Followup.as_str()
+            || r.dropped_at.is_some()
+        {
+            continue;
+        }
+        // `provenance()`, not the stored field: a record written before
+        // `is_harness_voice` existed carries `clean` for a nudge mecha wrote
+        // itself (two are on disk), and an owner-edited lesson is a promotion
+        // the stored field does not show. **Clean only — stricter than
+        // `learnable()`, which carries a triage-domain exemption this arm
+        // deliberately does not; by the owner's ruling.** An appraisal never
+        // rides a prompt, so a wider gate was arguable; but a reflection
+        // written from a tainted session is already recorded *clean* by
+        // construction, because the reflector was handed the owner's turns
+        // alone (`evidence_for_taint`), so a "not derived, and owner-turns
+        // evidence" clause admitted nothing the live path writes and left
+        // provenance's two consumers disagreeing on a rule with no row to
+        // apply to. One function, one answer, measured at 15 of 22 on the
+        // live store under either spelling.
+        if r.provenance() != crate::learning::Origin::Clean {
+            continue;
+        }
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Intervention,
+            sign: -1.0,
+            agency: Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: Cite::Reflexion(r.id.clone()),
+        });
+    }
+
+    // --- Commitment: a question this session put to the owner ---
+    //
+    // Answered, and the session then finished of its own accord: asking
+    // was the right call and the work completed — the positive §5.2 named
+    // beside the draft channel. Abandoned is the owner declining to answer,
+    // a recorded verdict like a rejected draft. Open says nothing yet.
+    for q in records.questions {
+        if q.session_id != session_id {
+            continue;
+        }
+        // `stop_cause` is the folded episode's, which `RunStats::merge` takes
+        // from the *last* run — the right run for "did the resumed work
+        // finish", since the answer arrives as a later run by construction:
+        // `ParkingAsker::ask_in` cancels the run when the park lands, so the
+        // asking run records `Interrupted`, and a question answered but
+        // never resumed signs nothing here until a later run in the session
+        // actually finishes (load-bearing, and named on review).
+        let (sign, agency) = match q.status.as_str() {
+            crate::questions::ANSWERED
+                if stats.stop_cause == Some(crate::agent::StopCause::Completed) =>
+            {
+                (0.5, Agency::Own)
+            }
+            crate::questions::ABANDONED => (-0.5, Agency::Owner),
+            _ => continue,
+        };
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Commitment,
+            sign,
+            agency,
+            visible: false,
+            controllable: None,
+            cite: Cite::Question(q.id.clone()),
+        });
+    }
+
+    // --- Commitment: a front-door request this session triaged ---
+    //
+    // A request that produced a draft is the draft channel's: sent is its
+    // positive, rejected is its `-1.0`, and a closed request whose reply
+    // the owner rejected must not sign a second time for the one action
+    // (found on review — the first cut keyed on *sent* and double-counted
+    // a rejection). What the draft channel cannot see is a request the
+    // owner closed by hand that the triage never answered at all: no draft
+    // staged for it, and the owner's closing it is the verdict. `answered`
+    // and every open state say nothing here.
+    // Unknown drafts: the arm's whole question ("was anything drafted for
+    // it?") cannot be answered, so it asks nothing — stated once, at the
+    // arm's boundary.
+    let requests: &[crate::frontdoor::Record] = if records.outbox_unreadable {
+        &[]
+    } else {
+        records.requests
+    };
+    for req in requests {
+        if req.triage_session.as_deref() != Some(session_id)
+            || req.state != crate::frontdoor::CLOSED
+        {
+            continue;
+        }
+        // Any draft this session staged for the request, whatever became
+        // of it, hands the request to the draft channel.
+        let something_drafted = records.drafts.iter().any(|d| req.outbox.contains(&d.id));
+        if something_drafted {
+            continue;
+        }
+        // Known and accepted: the join depends on the answering draft still
+        // being in the outbox when the owner closes the request. A draft the
+        // sweep removed first would read as nothing sent. Reconcile moves a
+        // request answered by a released draft to `answered`, not `closed`,
+        // so the case is not reachable through the paths that exist today;
+        // if a `closed` request can ever carry a swept, sent draft this arm
+        // over-signs by `-0.5` and should read the sweep's ledger instead.
+        // The same shape one step over: a re-triage overwrites
+        // `triage_session` while `outbox` accumulates, so a request whose
+        // sent draft belongs to an *earlier* triage session joins against
+        // the later session's drafts — equally unreachable today, since the
+        // sent draft routes the request to `answered` first.
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Commitment,
+            sign: -0.5,
+            agency: Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: Cite::Request(req.seq),
+        });
+    }
+
+    // --- Commitment: what this session did to the owner's queue ---
+    //
+    // A run that left fewer things waiting on the owner than it found is a
+    // positive, read from the one number the homeostat records with
+    // variance (`backlog_delta`, non-zero on 18 of 68 runs where the level
+    // sat at a constant). Adding to the queue is not an error: staging
+    // replies is a trigger's job. Absent is not zero — a row without the
+    // sensor says nothing.
+    //
+    // Known and accepted: the delta is a global before/after diff of the
+    // stores, not a join on what *this* session touched, so on a machine
+    // running several sessions at once the owner answering session B's
+    // question mid-run signs session A's `+0.5`. Attributing by id — the
+    // question or draft this session's own trace resolved — is the fix,
+    // and it is what the question and request arms above already do; this
+    // arm stays a level-difference until the outbox and question stores
+    // record which session resolved an item, not only which staged it.
+    // `owner_facing_cleared`, not `net`: the harness's own review queue is
+    // owed to nobody outside, and a run that cleared five candidates has
+    // not shortened what the owner is waiting on (found on review); and
+    // the fall *net of give-ups*, because `waiting` drops on an abandoned
+    // question, a closed-unsent request and a rejected draft exactly as on
+    // an answer or a send, so this arm signed `+0.5` for the act the
+    // question and request arms had just signed `-0.5` — the sign inverted
+    // in the same channel, not only the session misattributed (found on
+    // review). A give-up count the row does not carry reads as zero.
+    if let Some(cleared) = stats
+        .homeostat
+        .as_ref()
+        .and_then(|h| h.backlog_delta.as_ref())
+        .and_then(|d| d.owner_facing_cleared())
+    {
+        if cleared > 0 {
+            errors.push(GoalError {
+                goal: goal.clone(),
+                channel: Channel::Commitment,
+                sign: 0.5,
+                agency: Agency::Own,
+                visible: false,
+                controllable: None,
+                cite: Cite::Setpoint("backlog_delta".into()),
+            });
+        }
+    }
+
     let mut a = Appraisal {
         id: session_id.to_string(),
         session_id: session_id.to_string(),
@@ -776,6 +1228,7 @@ pub fn of_session(
         origin: crate::learning::classify_origin(end_taint),
         taint: stats.taint,
         created_at,
+        partial: records.short(),
     };
     a.label = affect_of(&a);
     a
@@ -812,11 +1265,11 @@ pub fn for_session(
     path: &std::path::Path,
     session_id: &str,
     created_at: String,
-    drafts: &[&crate::outbox::OutboxItem],
+    records: SessionRecords<'_>,
     goal: Option<GoalRef>,
 ) -> Option<SessionAppraisal> {
     let transcript = crate::session::Session::read(path).ok()?;
-    for_transcript(&transcript, session_id, created_at, drafts, goal)
+    for_transcript(&transcript, session_id, created_at, records, goal)
 }
 
 /// The same, for a caller that already read the transcript — `mecha
@@ -830,7 +1283,7 @@ pub fn for_transcript(
     transcript: &crate::session::Transcript,
     session_id: &str,
     created_at: String,
-    drafts: &[&crate::outbox::OutboxItem],
+    records: SessionRecords<'_>,
     goal: Option<GoalRef>,
 ) -> Option<SessionAppraisal> {
     let stats = transcript.episode.as_ref()?;
@@ -851,7 +1304,7 @@ pub fn for_transcript(
         stats,
         &goals,
         &interventions,
-        drafts,
+        records,
         end_taint,
         created_at,
     );
@@ -923,6 +1376,46 @@ pub fn live(
     conversation: &crate::agent::Conversation,
     run_started_at: usize,
 ) -> Affect {
+    live_readout(session_id, outcome, conversation, run_started_at).label
+}
+
+/// [`live`], with the dimensional reading beside the label — what the
+/// surfaces actually show (`docs/APPRAISAL-RESEARCH.md` §3.1).
+///
+/// **One positive is reachable on a live surface, and no label word is.**
+/// This passes no drafts (below), so a draft sent unchanged — the outbox's
+/// positive — never signs here; the one positive a live run can carry is
+/// the queue-delta arm (`Channel::Commitment`, `+0.5`), read off the run's
+/// own homeostat, which every ordinary front-end records: a run that left
+/// fewer things waiting on the owner than it found shows a grey badge, a
+/// right-hand bar, a `+0.5` in the thread. The free readout's *label* is
+/// still `Neutral` on every error it can build (`Own`/`Owner`,
+/// `controllable` unfilled), so the label word never reaches a live chip
+/// or badge and the voice nudge behind `affect_label` never fires. The
+/// draft positive and the labels live on the offline readers — `sessions
+/// appraise`, the closure appraisal — which read the outbox and can run
+/// the probe.
+///
+/// **Accepted, and said here because it is visible:** the delta is a
+/// global before/after diff of the stores, not a join on what this session
+/// touched, so on a machine running several sessions at once the owner
+/// answering session B's question mid-run puts the `+0.5` on session A's
+/// badge with nothing on the surface to explain it (found on review). The
+/// queue arm's own comment names the by-id attribution that closes this;
+/// until the stores record which session resolved an item, a live positive
+/// means "the owner's queue got shorter while this ran", no more.
+///
+/// On a compacted run the label is `Neutral` outright, for the reason
+/// [`live`]'s body gives, and the valence is computed from the counters
+/// alone and marked `partial`: the interventions are unknowable, the
+/// counters are not, and a number with a caveat is more honest than
+/// silence about a run that hit a ceiling.
+pub fn live_readout(
+    session_id: &str,
+    outcome: &crate::agent::RunOutcome,
+    conversation: &crate::agent::Conversation,
+    run_started_at: usize,
+) -> Readout {
     // A mid-run compaction rewrites `conversation.messages` *in place*
     // (docs/ARCHITECTURE.md, "The session record survives compaction too" — the same
     // rewrite `Session::record_run` compares against rather than slicing
@@ -945,14 +1438,16 @@ pub fn live(
     // rather than a partial evidence set that reads worse than the full
     // one. `a_compacted_run_reads_as_neutral_rather_than_a_louder_partial_signal`
     // is the regression: without this guard the same fixture reads `Anger`.
-    if outcome.compactions > 0 {
-        return Affect::Neutral;
-    }
+    let compacted = outcome.compactions > 0;
     let stats = crate::session::RunStats::from(outcome);
-    let interventions: Vec<_> = crate::learning::extract_interventions(&conversation.messages)
-        .into_iter()
-        .filter(|i| i.at >= run_started_at)
-        .collect();
+    let interventions: Vec<_> = if compacted {
+        Vec::new()
+    } else {
+        crate::learning::extract_interventions(&conversation.messages)
+            .into_iter()
+            .filter(|i| i.at >= run_started_at)
+            .collect()
+    };
     let goal = crate::tool::todo::TodoTool::plan_from_transcript(&conversation.messages)
         .and_then(|p| p.goal);
     let goals: Vec<GoalRef> = goal.into_iter().collect();
@@ -961,7 +1456,10 @@ pub fn live(
         &stats,
         &goals,
         &interventions,
-        &[],
+        // No drafts (the doc comment above) and no stores: a live readout
+        // is a function of the run in hand, and a store read on every turn
+        // end is the cost the closure appraisal pays once instead.
+        SessionRecords::default(),
         // The outcome's own taint at run end, not a timeline lookup — there
         // is no torn-transcript or before-checkpoints-existed case to guard
         // against here, because this is the object itself, not a file read
@@ -969,7 +1467,12 @@ pub fn live(
         Some(outcome.taint),
         chrono::Utc::now().to_rfc3339(),
     );
-    a.label
+    let mut valence = Valence::of(&a);
+    valence.partial |= compacted;
+    Readout {
+        label: if compacted { Affect::Neutral } else { a.label },
+        valence,
+    }
 }
 
 /// What a counterfactual probe found about one intervention.
@@ -1080,7 +1583,7 @@ pub struct AppraiserEvidence {
     pub negative_errors: usize,
     pub positive_errors: usize,
     /// Only channels that fired, in a fixed order — never keyed on anything
-    /// wider than the five-variant `Channel` enum.
+    /// wider than the `Channel` enum — every variant of it, via `Channel::ALL`.
     pub channels: Vec<(Channel, usize)>,
     pub current_label: Affect,
     pub goal_named: bool,
@@ -1121,17 +1624,11 @@ impl AppraiserEvidence {
     pub fn of(a: &Appraisal) -> Self {
         let negative_errors = a.errors.iter().filter(|e| e.sign < 0.0).count();
         let positive_errors = a.errors.iter().filter(|e| e.sign > 0.0).count();
-        let channels = [
-            Channel::Intervention,
-            Channel::Edit,
-            Channel::Counter,
-            Channel::Setpoint,
-            Channel::Appraisal,
-        ]
-        .into_iter()
-        .map(|c| (c, a.errors.iter().filter(|e| e.channel == c).count()))
-        .filter(|(_, n)| *n > 0)
-        .collect();
+        let channels = Channel::ALL
+            .into_iter()
+            .map(|c| (c, a.errors.iter().filter(|e| e.channel == c).count()))
+            .filter(|(_, n)| *n > 0)
+            .collect();
         AppraiserEvidence {
             negative_errors,
             positive_errors,
@@ -1431,6 +1928,7 @@ mod tests {
             origin: crate::learning::Origin::Clean,
             taint: crate::agent::Taint::default(),
             created_at: "2026-08-27T00:00:00Z".into(),
+            partial: false,
         }
     }
 
@@ -1526,10 +2024,10 @@ mod tests {
     }
 
     /// Two *different* failures on one goal must not read as one repeated
-    /// one — a ceiling nobody here caused, plus a draft the owner rewrote,
+    /// one — an outage nobody here caused, plus a draft the owner rewrote,
     /// share a goal only because `of_session` stamps the same reference on
     /// every error it builds. Frustration's own definition is "repeated,
-    /// one goal, self-agency" (§6.1); a ceiling is `Agency::World`, so it
+    /// one goal, self-agency" (§6.1); an outage is `Agency::World`, so it
     /// cannot be the repetition, and exposure — the fact `says_more` says a
     /// person most needs out of this — must win instead.
     #[test]
@@ -1712,14 +2210,16 @@ mod tests {
         assert_ne!(a.label, Affect::Embarrassment);
     }
 
-    /// The free readout's whole range, pinned. `of_session` with no probe
-    /// verdict reduces every negative it can assemble to `Neutral` (invisible
-    /// `Own`/`Owner`, `controllable` unfilled) or `Anger` (a ceiling), and no
-    /// counter kind fires twice in one session, so `Frustration`'s
-    /// repetition cannot occur — it is probe-gated, not deterministic, which
-    /// this would catch changing silently in either direction.
+    /// The free readout's whole label range, pinned. `of_session` with no
+    /// probe verdict reduces every negative it can assemble to `Neutral`
+    /// (invisible `Own`/`Owner`, `controllable` unfilled), and no counter
+    /// kind fires twice in one session, so `Frustration`'s repetition cannot
+    /// occur — it is probe-gated, not deterministic, which this would catch
+    /// changing silently in either direction. The *valence* is what varies
+    /// across these fixtures, and the second assertion pins that it does:
+    /// a label that says nothing must not mean a reading that says nothing.
     #[test]
-    fn the_free_readout_can_only_ever_say_neutral_or_anger() {
+    fn the_free_readouts_label_is_always_neutral_and_its_valence_is_not() {
         use crate::agent::StopCause;
         let goal = GoalRef::Task("01J8ZK".into());
         let steer = crate::learning::Intervention {
@@ -1766,16 +2266,24 @@ mod tests {
                 &s,
                 std::slice::from_ref(&goal),
                 std::slice::from_ref(&steer),
-                &[&rewrote, &rejected],
+                SessionRecords {
+                    drafts: &[&rewrote, &rejected],
+                    ..Default::default()
+                },
                 Some(s.taint),
                 "2026-08-28T00:00:00Z".into(),
             );
-            assert!(
-                matches!(a.label, Affect::Neutral | Affect::Anger),
-                "the free readout produced {:?} under {cause:?} — a new \
+            assert_eq!(
+                a.label,
+                Affect::Neutral,
+                "the free readout produced a label under {cause:?} — a new \
                  deterministic label; update the module note and \
-                 reachable_today's split",
-                a.label
+                 reachable_today's split"
+            );
+            let v = Valence::of(&a);
+            assert!(
+                v.negatives >= 2 && !v.is_silent(),
+                "the rejected draft and the failed last call are signed whatever the cause: {v:?}"
             );
         }
     }
@@ -1825,7 +2333,10 @@ mod tests {
             stats,
             &[],
             interventions,
-            drafts,
+            SessionRecords {
+                drafts,
+                ..Default::default()
+            },
             Some(stats.taint),
             "2026-08-27T00:00:00Z".into(),
         )
@@ -1888,11 +2399,20 @@ mod tests {
         assert_eq!(a.label, Affect::Neutral);
     }
 
+    /// A ceiling is the owner's own limit, so it is a signed error the
+    /// valence carries and not a label — it used to read `Anger` through
+    /// `Agency::World`, the one non-neutral word a surface ever showed, and
+    /// "somebody else's fault" is the wrong word for a budget you set.
     #[test]
-    fn a_ceiling_is_nobody_here_s_fault_and_a_loop_is() {
+    fn a_ceiling_is_the_owners_limit_and_a_loop_is_the_runs_own_fault() {
         let mut ceiling = stats();
         ceiling.stop_cause = Some(crate::agent::StopCause::MaxTurns);
-        assert_eq!(built(&ceiling, &[], &[]).label, Affect::Anger);
+        let a = built(&ceiling, &[], &[]);
+        assert_eq!(a.label, Affect::Neutral);
+        assert_eq!(a.errors.len(), 1);
+        assert_eq!(a.errors[0].agency, Agency::Owner);
+        assert_eq!(a.errors[0].sign, -0.5);
+        assert_eq!(Valence::of(&a).compact(), "\u{2212}0.5");
 
         let mut stuck = stats();
         stuck.stop_cause = Some(crate::agent::StopCause::Loop);
@@ -1916,7 +2436,7 @@ mod tests {
             &s,
             &[goal],
             &[],
-            &[],
+            SessionRecords::default(),
             Some(s.taint),
             "2026-08-27T00:00:00Z".into(),
         );
@@ -1962,7 +2482,16 @@ mod tests {
     fn no_established_coverage_classifies_untrusted_rather_than_clean() {
         let s = stats();
         assert_eq!(
-            of_session("s1", &s, &[], &[], &[], None, "t".into()).origin,
+            of_session(
+                "s1",
+                &s,
+                &[],
+                &[],
+                SessionRecords::default(),
+                None,
+                "t".into()
+            )
+            .origin,
             crate::learning::Origin::Untrusted
         );
     }
@@ -2509,17 +3038,93 @@ mod tests {
         assert_eq!(live("s1", &outcome, &convo, 0), Affect::Neutral);
     }
 
-    /// A run the harness cut short (`MaxTurns`) is `Agency::World` —
-    /// "nobody here caused it" — which `label_of` reports as `Anger`. This is
-    /// the one condition already reachable today without any goal at all, so
-    /// it is what a manual TUI/web check should force to see the badge.
+    /// A run the harness cut short (`MaxTurns`) labels `Neutral` — the
+    /// owner's limit, `controllable` unfilled — and reads `−0.5` on the
+    /// valence. This is the one condition reachable without any goal at
+    /// all, so it is what a manual TUI/web check should force to see the
+    /// badge: the badge is the number now, not a word.
     #[test]
-    fn a_run_cut_short_by_a_ceiling_is_not_neutral() {
+    fn a_run_cut_short_by_a_ceiling_is_silent_in_label_and_signed_in_valence() {
         let mut outcome = bare_outcome();
         outcome.stop_cause = crate::agent::StopCause::MaxTurns;
         outcome.exhausted = true;
         let convo = crate::agent::Conversation::default();
-        assert_eq!(live("s1", &outcome, &convo, 0), Affect::Anger);
+        let r = live_readout("s1", &outcome, &convo, 0);
+        assert_eq!(r.label, Affect::Neutral);
+        assert_eq!(r.valence.compact(), "\u{2212}0.5");
+        assert!(!r.valence.partial);
+        assert!(!r.is_silent());
+        assert_eq!(live("s1", &outcome, &convo, 0), Affect::Neutral);
+    }
+
+    #[test]
+    fn a_declared_check_that_failed_is_the_runs_own_signed_error() {
+        let mut s = stats();
+        s.checks_declared = Some(2);
+        s.checks_passed = Some(1);
+        let a = built(&s, &[], &[]);
+        assert_eq!(a.errors.len(), 1);
+        assert_eq!(a.errors[0].agency, Agency::Own);
+        assert_eq!(a.errors[0].cite, Cite::Counter("checks_passed".into()));
+        assert!(a.cut_short(), "a step that did not land is residue");
+        let mut all_passed = stats();
+        all_passed.checks_declared = Some(2);
+        all_passed.checks_passed = Some(2);
+        assert!(built(&all_passed, &[], &[]).errors.is_empty());
+        let mut unknown = stats();
+        unknown.checks_declared = Some(1);
+        unknown.checks_passed = None;
+        assert!(
+            built(&unknown, &[], &[]).errors.is_empty(),
+            "half a record is no record"
+        );
+    }
+
+    #[test]
+    fn cut_short_reads_the_stop_pointer_and_nothing_else() {
+        let mut ceiling = stats();
+        ceiling.stop_cause = Some(crate::agent::StopCause::MaxTurns);
+        assert!(built(&ceiling, &[], &[]).cut_short());
+        let mut silent = stats();
+        silent.ended_on_failed_call = true;
+        assert!(built(&silent, &[], &[]).cut_short());
+        let rejected = draft("o1", "rejected", false);
+        assert!(
+            !built(&stats(), &[&rejected], &[]).cut_short(),
+            "a rejected draft is negative and is not cut-off work"
+        );
+        assert!(!built(&stats(), &[], &[]).cut_short());
+    }
+
+    #[test]
+    fn a_clean_run_is_silent_on_both_lines() {
+        let outcome = bare_outcome();
+        let convo = crate::agent::Conversation::default();
+        assert!(live_readout("s1", &outcome, &convo, 0).is_silent());
+    }
+
+    #[test]
+    fn valence_keeps_positive_and_negative_apart_and_never_nets_them() {
+        let good = err(1.0, Agency::Own);
+        let bad = err(-1.0, Agency::Owner);
+        let worse = GoalError {
+            visible: true,
+            ..err(-0.5, Agency::Own)
+        };
+        let v = Valence::of(&appraisal(vec![good, bad, worse]));
+        assert_eq!((v.positive, v.negative), (1.0, 1.5));
+        assert_eq!((v.positives, v.negatives), (1, 2));
+        assert!(v.visible);
+        assert_eq!(v.compact(), "+1.0 \u{2212}1.5");
+        assert_eq!(Valence::default().compact(), "");
+        let mut partial = v;
+        partial.partial = true;
+        assert!(partial.compact().ends_with('\u{2026}'));
+        // The wire form omits `partial` when false, so an old reader sees
+        // exactly the five fields and a new one reads absence as false.
+        let json = serde_json::to_string(&v).unwrap();
+        assert!(!json.contains("partial"), "{json}");
+        assert_eq!(serde_json::from_str::<Valence>(&json).unwrap(), v);
     }
 
     /// Live and offline agree on the same recorded outcome — `live` is not a
@@ -2538,7 +3143,7 @@ mod tests {
             &stats,
             &[],
             &[],
-            &[],
+            SessionRecords::default(),
             Some(outcome.taint),
             "2026-08-27T00:00:00Z".into(),
         )
@@ -2638,15 +3243,526 @@ mod tests {
         // contrast: the same fixture, only `compactions` differs.
         let mut clean = bare_outcome();
         clean.stop_cause = crate::agent::StopCause::MaxTurns;
-        assert_eq!(live("s1", &clean, &convo, 0), Affect::Neutral);
+        let uncompacted = live_readout("s1", &clean, &convo, 0);
+        assert_eq!(uncompacted.label, Affect::Neutral);
+        assert_eq!(
+            uncompacted.valence.negatives, 2,
+            "the steer and the ceiling are both signed on an uncompacted run"
+        );
 
         // With a compaction recorded, the interventions are unknowable, and
-        // the honest reading of an unknowable evidence set is `Neutral` —
-        // never the ceiling's `Anger` reading through unmasked, which is
-        // what an uncompacted run's own `MaxTurns` would have looked like
-        // and is not evidence this run actually had.
+        // the honest reading of an unknowable evidence set is `Neutral` for
+        // the label — never a reading through unmasked, which is what an
+        // uncompacted run's own `MaxTurns` would have looked like and is
+        // not evidence this run actually had. The valence keeps what *is*
+        // known — the ceiling — and says the reading is partial.
         let mut compacted = clean.clone();
         compacted.compactions = 1;
+        let r = live_readout("s1", &compacted, &convo, 0);
+        assert_eq!(r.label, Affect::Neutral);
+        assert!(r.valence.partial);
+        assert_eq!(
+            r.valence.negatives, 1,
+            "the steer is dropped, the ceiling stays"
+        );
+        assert_eq!(r.valence.compact(), "\u{2212}0.5\u{2026}");
         assert_eq!(live("s1", &compacted, &convo, 0), Affect::Neutral);
+    }
+
+    /// Pins the disclosure on `live_readout`: with no drafts, no probe and
+    /// no homeostat, nothing a live run records can sign positive or earn a
+    /// label. The queue-delta arm is the one live positive, and the next
+    /// test pins that it — and only it — is reachable. When either fails,
+    /// the docs are stale — update them, not this.
+    #[test]
+    fn the_live_readout_is_neutral_only_and_negative_only_without_a_queue_delta() {
+        let mut outcome = bare_outcome();
+        outcome.stop_cause = crate::agent::StopCause::MaxTurns;
+        outcome.ended_on_failed_call = true;
+        outcome.boredom_notices = 2;
+        let convo = crate::agent::Conversation::default();
+        let r = live_readout("s1", &outcome, &convo, 0);
+        assert_eq!(r.label, Affect::Neutral);
+        assert_eq!((r.valence.positives, r.valence.positive), (0, 0.0));
+        assert!(r.valence.negatives >= 2);
+    }
+
+    #[test]
+    fn a_live_run_that_shortened_the_owners_queue_signs_the_one_live_positive() {
+        let mut outcome = bare_outcome();
+        outcome.homeostat = Some(crate::homeostat::Homeostat {
+            backlog_delta: Some(crate::backlog::BacklogDelta {
+                outbox: Some(-1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let convo = crate::agent::Conversation::default();
+        let r = live_readout("s1", &outcome, &convo, 0);
+        assert_eq!(r.label, Affect::Neutral, "still no word on a live surface");
+        assert_eq!((r.valence.positives, r.valence.positive), (1, 0.5));
+        assert!(
+            !r.is_silent(),
+            "the badge, the bar and the thread line all show it"
+        );
+        assert_eq!(r.valence.compact(), "+0.5");
+    }
+
+    // --- phase B channels ----------------------------------------------------
+
+    fn question(id: &str, session: &str, status: &str) -> crate::questions::Question {
+        crate::questions::Question {
+            id: id.into(),
+            status: status.into(),
+            question: "which account?".into(),
+            options: vec![],
+            session_id: session.into(),
+            task_id: None,
+            workspace: None,
+            taint: crate::agent::Taint::default(),
+            asked_at: "2026-08-28T00:00:00Z".into(),
+            answered_at: (status != "open").then(|| "2026-08-28T01:00:00Z".to_string()),
+            answer: (status == "answered").then(|| "personal".to_string()),
+        }
+    }
+
+    fn reflexion(
+        id: &str,
+        session: &str,
+        trigger: &str,
+        origin: &str,
+        evidence: &str,
+    ) -> crate::learning::Reflexion {
+        reflexion_saying(
+            id,
+            session,
+            trigger,
+            origin,
+            evidence,
+            "no, the other account",
+        )
+    }
+
+    fn reflexion_saying(
+        id: &str,
+        session: &str,
+        trigger: &str,
+        origin: &str,
+        evidence: &str,
+        intervention: &str,
+    ) -> crate::learning::Reflexion {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "domain": "behavior", "session_id": session, "trigger": trigger,
+            "context": "…", "intervention": intervention, "reflexion_text": "…",
+            "error_type": null, "confidence": null, "created_at": "2026-08-28T00:00:00Z",
+            "origin": origin, "evidence": evidence
+        }))
+        .unwrap()
+    }
+
+    fn request(seq: i64, session: &str, state: &str, outbox: &[&str]) -> crate::frontdoor::Record {
+        serde_json::from_value(serde_json::json!({
+            "seq": seq, "type_id": "book", "state": state,
+            "created_at": "2026-08-28T00:00:00Z", "drained_at": "2026-08-28T00:00:00Z",
+            "valid": true, "values": {}, "free_text": [],
+            "triage_session": session, "outbox": outbox
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_judged_follow_up_is_an_intervention_only_on_a_clean_reflection() {
+        let clean = reflexion("r1", "s1", "followup", "clean", "full");
+        let user_turns = reflexion("r2", "s1", "followup", "untrusted", "user_turns");
+        let laundered = reflexion("r3", "s1", "followup", "untrusted", "full");
+        let other_session = reflexion("r4", "s2", "followup", "clean", "full");
+        let steer = reflexion("r5", "s1", "steer", "clean", "full");
+        let mut dropped = reflexion("r6", "s1", "followup", "clean", "full");
+        dropped.dropped_at = Some("2026-08-29T00:00:00Z".into());
+        // Two rows that pass the stored field and fail the derived one
+        // (found on review): a pre-`is_harness_voice` record storing `clean`
+        // for a nudge mecha wrote itself, and a live-path harness-voice
+        // follow-up in a tainted session, which `evidence_for` records as
+        // `(derived, user_turns)`.
+        let stored_clean_nudge = reflexion_saying(
+            "r7",
+            "s1",
+            "followup",
+            "clean",
+            "full",
+            crate::agent::EMPTY_TURN_NUDGE,
+        );
+        let derived_user_turns = reflexion("r8", "s1", "followup", "derived", "user_turns");
+        // And the promotion the stored field cannot show: an owner-edited
+        // lesson is the owner's whatever prompted it.
+        let mut edited = reflexion("r9", "s1", "followup", "untrusted", "full");
+        edited.edited_at = Some("2026-08-29T00:00:00Z".into());
+        let reflexions = vec![
+            clean,
+            user_turns,
+            laundered,
+            other_session,
+            steer,
+            dropped,
+            stored_clean_nudge,
+            derived_user_turns,
+            edited,
+        ];
+        let s = stats();
+        let a = of_session(
+            "s1",
+            &s,
+            &[],
+            &[],
+            SessionRecords {
+                reflexions: &reflexions,
+                ..Default::default()
+            },
+            Some(s.taint),
+            "t".into(),
+        );
+        let cites: Vec<_> = a.errors.iter().map(|e| e.cite.clone()).collect();
+        assert_eq!(
+            cites,
+            vec![Cite::Reflexion("r1".into()), Cite::Reflexion("r9".into())],
+            "clean provenance only, the learning loop's rule: a stored-untrusted row is out even with owner-turns evidence (the live path records those as clean, so the row is a hand edit or an older binary's), as are another session's, a steer, a dropped one, a stored-clean nudge and a derived row; an owner-edited lesson counts"
+        );
+        assert!(a
+            .errors
+            .iter()
+            .all(|e| e.channel == Channel::Intervention && e.agency == Agency::Owner));
+    }
+
+    #[test]
+    fn a_question_answered_and_finished_is_positive_and_an_abandoned_one_is_the_owners_verdict() {
+        let questions = vec![
+            question("q1", "s1", "answered"),
+            question("q2", "s1", "abandoned"),
+            question("q3", "s1", "open"),
+            question("q4", "s2", "answered"),
+        ];
+        let mut s = stats();
+        s.stop_cause = Some(crate::agent::StopCause::Completed);
+        let a = of_session(
+            "s1",
+            &s,
+            &[],
+            &[],
+            SessionRecords {
+                questions: &questions,
+                ..Default::default()
+            },
+            Some(s.taint),
+            "t".into(),
+        );
+        let signs: Vec<_> = a.errors.iter().map(|e| (e.cite.clone(), e.sign)).collect();
+        assert_eq!(
+            signs,
+            vec![
+                (Cite::Question("q1".into()), 0.5),
+                (Cite::Question("q2".into()), -0.5)
+            ]
+        );
+        assert_eq!(a.errors[0].agency, Agency::Own);
+        assert_eq!(a.errors[1].agency, Agency::Owner);
+        // An answered question whose resumed run did not finish is not yet a kept commitment.
+        let mut cut = stats();
+        cut.stop_cause = Some(crate::agent::StopCause::MaxTurns);
+        let a = of_session(
+            "s1",
+            &cut,
+            &[],
+            &[],
+            SessionRecords {
+                questions: &questions,
+                ..Default::default()
+            },
+            Some(cut.taint),
+            "t".into(),
+        );
+        assert!(!a
+            .errors
+            .iter()
+            .any(|e| e.cite == Cite::Question("q1".into())));
+    }
+
+    #[test]
+    fn a_request_closed_with_nothing_sent_is_the_owners_verdict_on_the_triage() {
+        let sent = draft("o1", "sent", false);
+        let rejected = draft("o2", "rejected", false);
+        let requests = vec![
+            request(1, "s1", "closed", &["o9"]),
+            request(2, "s1", "closed", &["o1"]),
+            request(3, "s1", "answered", &["o1"]),
+            request(4, "s2", "closed", &[]),
+            // A rejected reply is the draft channel's `-1.0` already; the
+            // request must not sign again for the same refusal.
+            request(5, "s1", "closed", &["o2"]),
+            request(6, "s1", "closed", &[]),
+        ];
+        let s = stats();
+        let a = of_session(
+            "s1",
+            &s,
+            &[],
+            &[],
+            SessionRecords {
+                drafts: &[&sent, &rejected],
+                requests: &requests,
+                ..Default::default()
+            },
+            Some(s.taint),
+            "t".into(),
+        );
+        let request_errors: Vec<_> = a
+            .errors
+            .iter()
+            .filter(|e| matches!(e.cite, Cite::Request(_)))
+            .collect();
+        assert_eq!(
+            request_errors.iter().map(|e| e.cite.clone()).collect::<Vec<_>>(),
+            vec![Cite::Request(1), Cite::Request(6)],
+            "a request nobody drafted for (o9 is not this session's; none at all) signs; one with a sent or rejected reply is the draft channel's"
+        );
+        assert!(request_errors
+            .iter()
+            .all(|e| e.sign == -0.5 && e.channel == Channel::Commitment));
+        let rejected_once = a
+            .errors
+            .iter()
+            .filter(|e| e.cite == Cite::Draft("o2".into()))
+            .count();
+        assert_eq!(
+            rejected_once, 1,
+            "the rejection is signed exactly once, by the draft channel"
+        );
+    }
+
+    #[test]
+    fn a_run_that_shortened_the_owners_queue_is_positive_and_one_that_lengthened_it_is_nothing() {
+        let with_delta = |net: i64| {
+            let mut s = stats();
+            s.homeostat = Some(crate::homeostat::Homeostat {
+                backlog_delta: Some(crate::backlog::BacklogDelta {
+                    outbox: Some(net),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            s
+        };
+        let cleared = built(&with_delta(-2), &[], &[]);
+        assert_eq!(cleared.errors.len(), 1);
+        assert_eq!(cleared.errors[0].sign, 0.5);
+        assert_eq!(
+            cleared.errors[0].cite,
+            Cite::Setpoint("backlog_delta".into())
+        );
+        assert!(
+            built(&with_delta(3), &[], &[]).errors.is_empty(),
+            "staging is a job, not an error"
+        );
+        assert!(built(&with_delta(0), &[], &[]).errors.is_empty());
+        assert!(
+            built(&stats(), &[], &[]).errors.is_empty(),
+            "no sensor, no reading"
+        );
+    }
+
+    /// Finding 2 on the phase B review: `for_transcript` hands `of_session`
+    /// the folded episode, and the first cut of `RunStats::merge` kept the
+    /// first run's `backlog_delta` — so a session that parked a question
+    /// (run 1: +1) and cleared it on resume (run 2: −2) signed nothing.
+    #[test]
+    fn a_resumed_sessions_delta_is_the_sum_of_its_runs_not_the_first_runs() {
+        use crate::backlog::BacklogDelta;
+        let run = |questions: i64| crate::session::RunStats {
+            homeostat: Some(crate::homeostat::Homeostat {
+                backlog_delta: Some(BacklogDelta {
+                    questions: Some(questions),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..stats()
+        };
+        let mut episode = run(1);
+        episode.merge(&run(-2));
+        let a = built(&episode, &[], &[]);
+        assert_eq!(
+            a.errors.iter().map(|e| e.cite.clone()).collect::<Vec<_>>(),
+            vec![Cite::Setpoint("backlog_delta".into())],
+            "the resume's clearing is the session's act"
+        );
+    }
+
+    #[test]
+    fn every_channel_is_in_all_and_reaches_the_appraisers_brief() {
+        // The compiler carries the list: a new variant fails this match, and
+        // the arm the author then writes asserts membership in `ALL`.
+        for c in Channel::ALL {
+            match c {
+                Channel::Intervention
+                | Channel::Edit
+                | Channel::Counter
+                | Channel::Setpoint
+                | Channel::Appraisal
+                | Channel::Commitment => {}
+            }
+        }
+        assert_eq!(Channel::ALL.len(), 6);
+        // A session whose only signed error is a commitment must not hand
+        // the appraiser "negative errors: 1, by channel: none".
+        let mut a = appraisal(vec![err(-0.5, Agency::Owner)]);
+        a.errors[0].channel = Channel::Commitment;
+        a.errors[0].cite = Cite::Question("q1".into());
+        let ev = AppraiserEvidence::of(&a);
+        assert_eq!(ev.negative_errors, 1);
+        assert_eq!(ev.channels, vec![(Channel::Commitment, 1)]);
+        assert!(ev.brief().contains("commitment"), "{}", ev.brief());
+    }
+
+    #[test]
+    fn an_unreadable_outbox_costs_the_request_arm_rather_than_signing_every_request() {
+        let requests = vec![
+            request(1, "s1", "closed", &[]),
+            request(2, "s1", "closed", &["o1"]),
+        ];
+        let s = stats();
+        let a = of_session(
+            "s1",
+            &s,
+            &[],
+            &[],
+            SessionRecords {
+                drafts: &[],
+                outbox_unreadable: true,
+                requests: &requests,
+                ..Default::default()
+            },
+            Some(s.taint),
+            "t".into(),
+        );
+        assert!(a.errors.is_empty(), "{:?}", a.errors);
+    }
+
+    #[test]
+    fn clearing_the_harnesss_own_queue_is_not_shortening_the_owners() {
+        let mut s = stats();
+        s.homeostat = Some(crate::homeostat::Homeostat {
+            backlog_delta: Some(crate::backlog::BacklogDelta {
+                candidates: Some(-5),
+                proposals: Some(-2),
+                outbox: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(built(&s, &[], &[]).errors.is_empty());
+    }
+
+    /// The owner giving up shrinks the queue; the run gets no credit for it
+    /// (found on review): the arm reads clearance net of give-ups, so the
+    /// same act cannot sign `-0.5` in one arm and `+0.5` in this one.
+    #[test]
+    fn a_give_up_inside_the_window_signs_no_commitment_positive() {
+        let goal = GoalRef::Task("t1".into());
+        let with = |questions: i64, given_up: Option<i64>| {
+            let mut s = stats();
+            s.homeostat = Some(crate::homeostat::Homeostat {
+                backlog_delta: Some(crate::backlog::BacklogDelta {
+                    questions: Some(questions),
+                    given_up,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            of_session(
+                "s1",
+                &s,
+                std::slice::from_ref(&goal),
+                &[],
+                SessionRecords::default(),
+                Some(s.taint),
+                "2026-08-28T00:00:00Z".into(),
+            )
+        };
+        let positives = |a: &Appraisal| {
+            a.errors
+                .iter()
+                .filter(|e| e.channel == Channel::Commitment && e.sign > 0.0)
+                .count()
+        };
+        assert_eq!(
+            positives(&with(-1, Some(1))),
+            0,
+            "the fall was an abandonment"
+        );
+        assert_eq!(positives(&with(-1, Some(0))), 1, "the fall was an answer");
+        assert_eq!(
+            positives(&with(-2, Some(1))),
+            1,
+            "one of each: the answer counts"
+        );
+        assert_eq!(
+            positives(&with(-1, None)),
+            1,
+            "a row from before the counter reads as it did"
+        );
+    }
+
+    /// A store an arm reads that could not be read marks the reading
+    /// partial on the record itself (found on review), so the closure
+    /// path's printout and JSON carry the caveat rather than a stderr
+    /// line beside them.
+    #[test]
+    fn a_short_store_marks_the_reading_partial_on_the_record() {
+        let goal = GoalRef::Task("t1".into());
+        let mut s = stats();
+        s.ended_on_failed_call = true;
+        let build = |records: SessionRecords<'_>| {
+            of_session(
+                "s1",
+                &s,
+                std::slice::from_ref(&goal),
+                &[],
+                records,
+                Some(s.taint),
+                "2026-08-28T00:00:00Z".into(),
+            )
+        };
+        let full = build(SessionRecords::default());
+        assert!(!full.partial);
+        assert!(!Valence::of(&full).partial);
+        for records in [
+            SessionRecords {
+                outbox_unreadable: true,
+                ..Default::default()
+            },
+            SessionRecords {
+                questions_unreadable: true,
+                ..Default::default()
+            },
+            SessionRecords {
+                frontdoor_unreadable: true,
+                ..Default::default()
+            },
+            SessionRecords {
+                learning_unreadable: true,
+                ..Default::default()
+            },
+        ] {
+            let a = build(records);
+            assert!(a.partial, "{records:?}");
+            let v = Valence::of(&a);
+            assert!(v.partial);
+            assert!(v.compact().ends_with('\u{2026}'), "{}", v.compact());
+            let json = serde_json::to_string(&a).unwrap();
+            assert!(json.contains("\"partial\":true"), "{json}");
+            let back: Appraisal = serde_json::from_str(&json).unwrap();
+            assert!(back.partial);
+        }
+        let json = serde_json::to_string(&full).unwrap();
+        assert!(!json.contains("partial"), "absent when false: {json}");
     }
 }

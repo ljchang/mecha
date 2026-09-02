@@ -50,6 +50,10 @@ step you were on, and list what you had already covered. Being told a fact is
 not the same as knowing your place in the work, and losing your place is how a
 traversal silently restarts or stops early.
 
+If the transcript contains a summary from an earlier compaction — a block
+starting \"[Earlier turns were compacted\" — fold what it says into yours: this
+summary replaces it, and anything only it recorded is lost.
+
 Leave out pleasantries and narration. Do not address the user. If a fact came
 from content that could have been written by a third party, say so — the
 distinction survives compaction even when the text does not.";
@@ -249,9 +253,11 @@ pub const CARRIED_HEADER: &str =
 /// that reader would go stale the first time this sentence was reworded.
 /// `title::owner_turns` is the reader that needs it.
 ///
-/// Unlike [`CARRIED_HEADER`], these **accumulate**: each summary describes a
-/// different stretch of the conversation, where there is only ever one
-/// current carried state.
+/// Like [`CARRIED_HEADER`], exactly one survives a compaction: `rebuild`
+/// drops the previous summary because the summariser has already read it
+/// (the head is inside every cut) and been told to fold it in. They used to
+/// accumulate, and a long-lived session's head grew by a block per
+/// compaction with nothing ever re-summarising it.
 pub const SUMMARY_HEADER: &str =
     "[Earlier turns were compacted to fit the context window. What happened in them:]";
 
@@ -275,12 +281,20 @@ pub fn rebuild(
     let mut out = Vec::with_capacity(messages.len() - cut + 1);
 
     let mut head = messages[0].clone();
-    // Drop the carried block a previous compaction left. Summaries accumulate
-    // on purpose — each describes a different stretch of the conversation —
-    // but there is only ever one *current* state, and keeping the old copy
-    // would be keeping a wrong one.
+    // Drop what a previous compaction left: the carried block, because there
+    // is only ever one *current* state and the old copy is a wrong one; and
+    // the previous summary, because the summariser has already read it —
+    // `cut_point` starts at 1, so the head and everything in it is in the
+    // stretch being summarised, and the instruction tells the model to fold
+    // an earlier summary into the new one. Summaries used to accumulate
+    // ("each describes a different stretch"), and a long-lived session's
+    // head grew by one block per compaction with nothing ever re-summarising
+    // it — the audit of 2026-09-02 found the floor rising monotonically.
     head.content.retain(|block| match block {
-        Block::Text { text } => !text.trim_start().starts_with(CARRIED_HEADER),
+        Block::Text { text } => {
+            let t = text.trim_start();
+            !t.starts_with(CARRIED_HEADER) && !t.starts_with(SUMMARY_HEADER)
+        }
         _ => true,
     });
     head.content
@@ -1283,10 +1297,51 @@ mod tests {
         );
     }
 
-    /// The bug a second compaction would otherwise introduce: two task lists in
-    /// the prompt, one of them wrong, with nothing to say which.
+    /// The one place the replace-the-summary guarantee can drift apart: the
+    /// summariser is told to fold an earlier summary by quoting how its
+    /// header *begins*, while `rebuild` deletes by matching the constant.
+    /// Reword `SUMMARY_HEADER` and the model stops being told to fold while
+    /// the deletion keeps happening — silently, with no test to say so. This
+    /// is that test.
     #[test]
-    fn a_second_compaction_replaces_the_carried_state_rather_than_stacking_it() {
+    fn the_fold_clause_quotes_the_header_that_rebuild_deletes() {
+        let opener = &SUMMARY_HEADER[..SUMMARY_HEADER.find(" to fit").expect("header shape")];
+        assert!(
+            SUMMARY_INSTRUCTION.contains(opener),
+            "the instruction must quote {opener:?} so the summariser recognises what it is \
+             told to fold"
+        );
+        // The carried header is a **wire format**: `rebuild`, `todo.rs` and
+        // `title.rs` all match it with `starts_with` against `rewrite` records
+        // already on disk, so its text is frozen even where it is now
+        // inaccurate ("summaries", plural, where one survives). Rewording it
+        // orphans every transcript compacted by an older binary — the stale
+        // carried block stays beside the current one, the plan stops being
+        // recovered, and the title reader takes it for the owner's words —
+        // and no test built from the constant can see that. The PR review
+        // caught exactly that rewording; this pins the byte string.
+        assert_eq!(
+            CARRIED_HEADER,
+            "[Live state, carried past the compaction and current as of now — it supersedes \
+             anything about it in the summaries above:]"
+        );
+        // And `SUMMARY_HEADER` is a wire format now too: `rebuild` matches it
+        // with `starts_with` against heads written by older binaries (as
+        // `title.rs` always has), and the fold-clause assertion above derives
+        // its opener from the constant, so it would pass under any rewording
+        // — including the one that resurrects the stacking bug for every old
+        // session. Pinned byte-for-byte for the same reason.
+        assert_eq!(
+            SUMMARY_HEADER,
+            "[Earlier turns were compacted to fit the context window. What happened in them:]"
+        );
+    }
+
+    /// The bug a second compaction would otherwise introduce: two task lists in
+    /// the prompt, one of them wrong, with nothing to say which — and, since
+    /// 2026-09-02, two summaries.
+    #[test]
+    fn a_second_compaction_replaces_the_carried_state_and_the_summary_rather_than_stacking_them() {
         let messages = transcript(6);
         let cut = cut_point(&messages, 6).unwrap();
         let first = rebuild(&messages, cut, "summary one", &[("todo", "[ ] step one")]);
@@ -1307,9 +1362,17 @@ mod tests {
             !head.contains("[ ] step one"),
             "last compaction's list survived beside this one's: {head}"
         );
-        // Summaries *do* accumulate — each describes a different stretch — and
-        // that is the difference being tested.
-        assert!(head.contains("summary one") && head.contains("summary two"));
+        // The summary is replaced too. The summariser read the first one —
+        // the head is inside every cut — and was told to fold it in, so
+        // keeping both grew the head by a block per compaction, forever.
+        assert_eq!(head.matches(SUMMARY_HEADER).count(), 1, "{head}");
+        assert!(head.contains("summary two"), "{head}");
+        assert!(
+            !head.contains("summary one"),
+            "the earlier summary survived beside the one that subsumes it: {head}"
+        );
+        // And the task itself, which was never part of any summary, stays.
+        assert!(head.contains(&messages[0].text()), "{head}");
     }
 
     /// Nothing to carry must produce nothing, not an empty section: a heading

@@ -330,14 +330,20 @@ independent variable, and would be novel rather than replications.
    paid **8 uncached input tokens total** — turn 1 wrote 18,494, turn 2 read
    all of it and wrote only its 2,138-token increment. Same `cache_prompt`
    knob; local providers are unaffected.
-3. **Spill oversized tool output to a file with a path and a line number**,
-   rather than truncating at `MAX_OUTPUT_BYTES = 200_000` (~50k tokens, 1.5×
-   the whole window). Divide the budget across a parallel batch, per Amazon Q.
+3. ~~**Spill oversized tool output to a file with a path and a line number**~~
+   Built 2026-08-05: `ToolCtx::spill_dir` and `tool::cap_result` — the turn's
+   results share one byte budget divided across the batch, the overflow is
+   written whole to the spill directory, and the marker names the `fs_read`
+   call that gets the rest back. (Marked here 2026-09-02, after a session
+   re-proposed it from this unstruck line — the failure `docs/README.md`
+   says an unmarked research doc causes.)
 4. **Deferred tool loading at 31 tools.** Tool definitions are 74.7% of the
    addressable surface, and *fewer visible candidates* is worth 6–16pp even
-   with the right tool present.
-5. **pass^k over the eval set.** Reliability is the metric the research says
-   matters, and every scorecard in `results/` is single-run.
+   with the right tool present. Still open, and the registry has since
+   doubled: `mecha tools --json` reported 63 on 2026-09-02, 41 of them MCP.
+5. ~~**pass^k over the eval set.**~~ Built 2026-08-05 as `mecha eval --runs`;
+   what remains open is *using* it — no scorecard in `results/` outside the
+   compaction arc records `runs: 5` (see `HANDOFF.md`, "Re-baseline at k=5").
 6. ~~**Validate compactions**~~ Built 2026-08-05 (`compact_validate`, default
    on): a deterministic truncation refusal (`max_tokens` on the summariser
    never installs) plus a grounded omission check — a second tool-less call

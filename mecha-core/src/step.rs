@@ -51,7 +51,11 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    fn of(call: &ToolCallTrace) -> Self {
+    /// `pub(crate)` so `RunStats::of_run` classifies a check trace through
+    /// the same predicate `Work::of` does — two readers spelling `unknown`
+    /// differently is the drift `CHECK_TRACE` exists to prevent, one field
+    /// over (found on review).
+    pub(crate) fn of(call: &ToolCallTrace) -> Self {
         if call.denied {
             // Includes a call withheld by policy: nothing ran, and nobody
             // claimed it did.
@@ -110,6 +114,28 @@ pub struct Work {
     /// [`escalation_candidate`]'s `UnverifiedClaim` branch, which reads this
     /// alongside `verify_like` for exactly that reason.
     pub shell_calls: u32,
+    /// Declared post-condition checks the loop ran — a trace named
+    /// [`CHECK_TRACE`] (`todo.rs`'s `TodoItem::check`, to be executed by the
+    /// loop and dispatched as a model `shell` call would be). **Nothing
+    /// writes that trace yet** — the executor is the audit lane's
+    /// (`AUDIT-RESEARCH.md` §3.11) — so both counters read zero on every run
+    /// until it lands; the readers are here so it has somewhere to land. **Not counted in
+    /// `calls`**: the model did not make the call, so a step's span must
+    /// not grow by one for every check the harness ran on its behalf, and a
+    /// forecast in `expect_calls` is a forecast of the model's own work. A
+    /// refused check is in neither counter — it never ran — **and no check
+    /// ever sets `last`**: `last` is the model's most recent attempt, and
+    /// `Tracked::observe` refreshes its own copy of it whenever the model's
+    /// call count moves, so a check landing last in a turn beside real work
+    /// would have been attributed to the step as the model's own failure or
+    /// refusal (found on review). `Finding::CheckFailed` is read from the
+    /// counters, ahead of `last`, so nothing needs the check there.
+    pub checks_declared: u32,
+    /// Of those, the ones whose exit code was zero. `checks_declared -
+    /// checks_passed` is the count of steps the harness *knows* did not
+    /// land, which is the one structural discrepancy no keyword list has
+    /// to guess at — Terminal-Bench's "reasoning–action mismatch" as a fact.
+    pub checks_passed: u32,
     /// How the most recent attempt ended. `None` before the run makes one.
     pub last: Option<Outcome>,
     /// Calls approved in *this* turn whose results are not back yet — the
@@ -154,6 +180,24 @@ pub struct Work {
     pub run: u64,
 }
 
+/// The trace name the loop records a declared check's result under. Named
+/// here, beside the only reader that keys on it, so the writer and the
+/// reader cannot drift apart on a string.
+///
+/// **Unforgeable in the direction that matters.** `ToolCallTrace::name` is
+/// the model's tool-name space — `shell`, an MCP tool, a subagent profile
+/// — and the providers' tool-name grammar is `[A-Za-z0-9_-]`, so a model
+/// emitting this name as a `tool_use` lands as `unknown: true`, which
+/// `Outcome::of` reads as `Failed`: it can manufacture a *failed* check
+/// against itself, never a passing one. (An MCP server with
+/// `prefix_tools = false` could register a dotted name verbatim; that is
+/// the operator's configuration, not the model's reach.) The first spelling was `check`,
+/// which a subagent profile or an unprefixed MCP tool could legitimately be
+/// called; under that name every one of that tool's calls would have left
+/// `calls`, counted as a declared check, and on failure staged a follow-up
+/// task at closure for a tool that declared nothing (found on review).
+pub const CHECK_TRACE: &str = "step.check";
+
 /// A fresh run identity. Monotonic within the process, meaningless outside it.
 pub fn next_run() -> u64 {
     static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -170,6 +214,26 @@ impl Work {
         let mut work = Work::default();
         for call in trace {
             let outcome = Outcome::of(call);
+            if call.name == CHECK_TRACE {
+                // The harness's own call, on the model's declaration. See
+                // `checks_declared`: counted apart from `calls`, and a
+                // passing check is verification by construction.
+                if outcome != Outcome::Refused {
+                    work.checks_declared += 1;
+                }
+                if outcome == Outcome::Ok {
+                    work.checks_passed += 1;
+                    // Both counters, so `shell_calls` stays the population
+                    // `verify_like` draws from once checks run: a check is a
+                    // shell command the harness ran, and counting it as
+                    // verification without counting it as a shell call
+                    // would let the numerator exceed its own denominator
+                    // (found on review).
+                    work.verify_like += 1;
+                    work.shell_calls += 1;
+                }
+                continue;
+            }
             work.calls += 1;
             match outcome {
                 Outcome::Failed => work.failed += 1,
@@ -243,6 +307,8 @@ impl Work {
             refused: self.refused.saturating_sub(start.refused),
             verify_like: self.verify_like.saturating_sub(start.verify_like),
             shell_calls: self.shell_calls.saturating_sub(start.shell_calls),
+            checks_declared: self.checks_declared.saturating_sub(start.checks_declared),
+            checks_passed: self.checks_passed.saturating_sub(start.checks_passed),
             last,
             in_flight: self.in_flight,
             denied: self.denied,
@@ -262,6 +328,11 @@ pub struct Span {
     pub verify_like: u32,
     /// See [`Work::shell_calls`].
     pub shell_calls: u32,
+    /// See [`Work::checks_declared`] and [`Work::checks_passed`]. Read by
+    /// [`appraise`], unlike `verify_like`: a declared check that failed is
+    /// a fact about the step, not evidence for a model to weigh.
+    pub checks_declared: u32,
+    pub checks_passed: u32,
     /// The run's most recent finished attempt — which is the *span's* most
     /// recent one whenever the span holds any, since calls happen in order.
     /// Meaningless when `calls` is zero, and [`appraise`] reads it only after
@@ -291,6 +362,11 @@ pub enum Finding {
     EndedOnFailure,
     /// The last thing tried was refused. The step was blocked, not done.
     EndedOnRefusal,
+    /// A check the step itself declared ran and did not pass. Read before
+    /// the last-attempt readings: the model's own last call may have
+    /// succeeded while its claim did not, which is the whole reason a
+    /// declared check exists.
+    CheckFailed,
 }
 
 /// The deterministic reading. No model, no threshold, no tuned constant.
@@ -304,6 +380,9 @@ pub fn appraise(span: Span) -> Finding {
     // settled, but which step it belongs to is not.
     if span.in_flight > 0 || span.denied > 0 {
         return Finding::Landed;
+    }
+    if span.checks_declared > span.checks_passed {
+        return Finding::CheckFailed;
     }
     if span.calls == 0 {
         return Finding::Null;
@@ -351,6 +430,10 @@ impl Finding {
                 "step \"{step}\" was marked done with its last call refused. \
                  It was blocked rather than finished — the plan should say which."
             ),
+            Finding::CheckFailed => format!(
+                "step \"{step}\" was marked done but the check it declared did not pass. \
+                 Fix what the check found, or say why the check was wrong."
+            ),
         };
         Some(if again {
             // §5.5's bound: one revision per step. A second identical reading
@@ -373,7 +456,7 @@ impl Finding {
 /// On a char boundary, because a step's content is whatever the model typed
 /// and slicing a multi-byte character panics — in the one code path that runs
 /// on every plan revision of every run.
-fn ellipsize(s: &str, max: usize) -> String {
+pub(crate) fn ellipsize(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
@@ -975,6 +1058,8 @@ mod tests {
             refused: 0,
             verify_like,
             shell_calls: calls,
+            checks_declared: 0,
+            checks_passed: 0,
             last: Some(Outcome::Ok),
             in_flight: 0,
             denied: 0,
@@ -1116,6 +1201,8 @@ mod tests {
             refused: 0,
             verify_like: 0,
             shell_calls: 0,
+            checks_declared: 0,
+            checks_passed: 0,
             last: Some(Outcome::Ok),
             in_flight: 0,
             denied: 0,
@@ -1296,4 +1383,87 @@ mod tests {
     // `Agent::escalate_step`, which needs `self.complete` for cancellation
     // and usage accounting — see the module note above `parse_step_verdict`.
     // Its tests live beside `agent.rs`'s own `ScriptedProvider`.
+
+    // --- declared checks -----------------------------------------------------
+
+    fn check(is_error: bool, denied: bool) -> ToolCallTrace {
+        ToolCallTrace {
+            name: CHECK_TRACE.into(),
+            input: json!({"command": "cargo test -q"}),
+            is_error,
+            denied,
+            unknown: false,
+            staged: false,
+        }
+    }
+
+    #[test]
+    fn a_check_is_counted_apart_from_the_models_own_calls() {
+        let work = Work::of(&[ok(), check(false, false), ok(), check(true, false)]);
+        assert_eq!(
+            work.calls, 2,
+            "the harness's checks are not the model's work"
+        );
+        assert_eq!((work.checks_declared, work.checks_passed), (2, 1));
+        assert_eq!(
+            work.verify_like, 1,
+            "a passing check is verification by construction"
+        );
+        assert_eq!(
+            work.shell_calls, 3,
+            "the two model `shell` calls plus the passing check — a shell call too, so the verify ratio's denominator holds"
+        );
+        assert_eq!(
+            work.last,
+            Some(Outcome::Ok),
+            "a failed check is not the model's last attempt — the model's last call succeeded"
+        );
+        let refused = Work::of(&[ok(), check(true, true)]);
+        assert_eq!(
+            (refused.checks_declared, refused.checks_passed),
+            (0, 0),
+            "a refused check never ran"
+        );
+        assert_eq!(
+            refused.last,
+            Some(Outcome::Ok),
+            "a refused check must not read as the step's own refusal"
+        );
+    }
+
+    #[test]
+    fn a_failed_check_is_its_own_finding_and_outranks_a_clean_last_call() {
+        let start = Work::of(&[]);
+        // The model's last call succeeded; the declared check did not.
+        let now = Work::of(&[ok(), check(true, false), ok()]);
+        let span = now.since(start, 0, Some(Outcome::Ok)).unwrap();
+        assert_eq!((span.checks_declared, span.checks_passed), (1, 0));
+        assert_eq!(appraise(span), Finding::CheckFailed);
+        let line = Finding::CheckFailed.line("wire it", false).unwrap();
+        assert!(line.contains("did not pass"), "{line}");
+        // A passing check reads as landed even after an earlier failure.
+        let now = Work::of(&[failed(), check(false, false)]);
+        let span = now.since(start, 0, Some(Outcome::Ok)).unwrap();
+        assert_eq!(appraise(span), Finding::Landed);
+    }
+
+    #[test]
+    fn the_check_trace_name_is_not_a_name_a_model_tool_can_have() {
+        assert!(
+            !CHECK_TRACE
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "{CHECK_TRACE} is inside the providers' tool-name grammar and a tool could collide with it"
+        );
+        let mcp_tool_called_check = ToolCallTrace {
+            name: "check".into(),
+            input: json!({}),
+            is_error: true,
+            denied: false,
+            unknown: false,
+            staged: false,
+        };
+        let work = Work::of(&[mcp_tool_called_check]);
+        assert_eq!((work.calls, work.checks_declared), (1, 0));
+    }
 }

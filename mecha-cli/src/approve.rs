@@ -22,10 +22,36 @@ impl Approver for TerminalApprover {
         if self.always.lock().unwrap().contains(tool.name()) {
             return Decision::Allow;
         }
+        self.ask(tool, input, None).await
+    }
 
+    /// Past the `always` list on purpose: an escalation is the interlock
+    /// asking a person about *this* call, and a standing yes for the tool is
+    /// not that.
+    async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        self.ask(tool, input, Some(why)).await
+    }
+}
+
+impl TerminalApprover {
+    /// `why` is `Some` for an escalation, and two answers change meaning
+    /// there. A bare Enter is consent for an ordinary approval and is *not*
+    /// for the prompt whose whole purpose is that a person decides about
+    /// this send — a reflexive Enter is exactly the input it must not read
+    /// as yes. And `[a]lways` at an escalation would install a standing yes
+    /// on the ordinary path that `escalate` deliberately bypasses, so it is
+    /// not offered and, if typed, allows this call only.
+    async fn ask(&self, tool: &dyn Tool, input: &Value, why: Option<&str>) -> Decision {
         let name = tool.name().to_string();
         let summary = summarize(&name, input);
-        let prompt = format!("\n  {name}  {summary}\n  allow? [y]es / [a]lways / [n]o / [q]uit > ");
+        let escalated = why.is_some();
+        let preface = why.map(|w| format!("  {w}\n")).unwrap_or_default();
+        let choices = if escalated {
+            "[y]es / [n]o / [q]uit"
+        } else {
+            "[y]es / [a]lways / [n]o / [q]uit"
+        };
+        let prompt = format!("\n{preface}  {name}  {summary}\n  allow? {choices} > ");
 
         // Reading stdin blocks; keep it off the async runtime's worker threads.
         let answer = tokio::task::spawn_blocking(move || {
@@ -42,7 +68,12 @@ impl Approver for TerminalApprover {
         .unwrap_or_else(|_| "n".to_string());
 
         match answer.chars().next() {
-            Some('y') | None => Decision::Allow,
+            Some('y') => Decision::Allow,
+            None if escalated => Decision::Blocked(
+                "an escalated call needs an explicit yes, and an empty line is not one".into(),
+            ),
+            None => Decision::Allow,
+            Some('a') if escalated => Decision::Allow,
             Some('a') => {
                 self.always.lock().unwrap().insert(tool.name().to_string());
                 Decision::Allow

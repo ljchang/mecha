@@ -12,6 +12,18 @@ pub enum Args {
         /// How many to show.
         #[arg(long, short = 'n', default_value_t = 20)]
         limit: usize,
+
+        /// Only sessions opened through this surface: run, chat, tui, web,
+        /// voice, task, trigger, frontdoor, mail, slack or test. A transcript
+        /// from before kinds were recorded matches no filter.
+        #[arg(long)]
+        kind: Option<mecha_core::session::SessionKind>,
+
+        /// Read smoke-test sessions (`MECHA_SESSION_KIND=test`) too. Off by
+        /// default: a test run in a corpus readout is contamination, not
+        /// evidence. `--kind test` implies it.
+        #[arg(long)]
+        include_tests: bool,
     },
 
     /// Print a transcript.
@@ -41,6 +53,18 @@ pub enum Args {
         #[arg(long, short = 'n')]
         limit: Option<usize>,
 
+        /// Only sessions opened through this surface: run, chat, tui, web,
+        /// voice, task, trigger, frontdoor, mail, slack or test. A transcript
+        /// from before kinds were recorded matches no filter.
+        #[arg(long)]
+        kind: Option<mecha_core::session::SessionKind>,
+
+        /// Read smoke-test sessions (`MECHA_SESSION_KIND=test`) too. Off by
+        /// default: a test run in a corpus readout is contamination, not
+        /// evidence. `--kind test` implies it.
+        #[arg(long)]
+        include_tests: bool,
+
         /// Emit JSON instead of a table.
         #[arg(long)]
         json: bool,
@@ -59,6 +83,18 @@ pub enum Args {
         /// Stop after this many sessions, newest first.
         #[arg(long, short = 'n')]
         limit: Option<usize>,
+
+        /// Only sessions opened through this surface: run, chat, tui, web,
+        /// voice, task, trigger, frontdoor, mail, slack or test. A transcript
+        /// from before kinds were recorded matches no filter.
+        #[arg(long)]
+        kind: Option<mecha_core::session::SessionKind>,
+
+        /// Read smoke-test sessions (`MECHA_SESSION_KIND=test`) too. Off by
+        /// default: a test run in a corpus readout is contamination, not
+        /// evidence. `--kind test` implies it.
+        #[arg(long)]
+        include_tests: bool,
 
         /// Emit JSON instead of a table.
         #[arg(long)]
@@ -120,12 +156,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let dir = Session::default_dir()?;
 
     match args {
-        Args::Health { days, limit, json } => health(&dir, days, limit, json)?,
+        Args::Health {
+            days,
+            limit,
+            json,
+            kind,
+            include_tests,
+        } => health(&dir, days, limit, json, kind, include_tests)?,
 
         Args::Appraise {
             days,
             limit,
             json,
+            kind,
+            include_tests,
             probe,
             max_probes,
             appraise: run_appraiser,
@@ -137,6 +181,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 days,
                 limit,
                 json,
+                kind,
+                include_tests,
                 probe,
                 max_probes,
                 run_appraiser,
@@ -145,23 +191,86 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             .await?
         }
 
-        Args::List { limit } => {
-            let sessions = Session::list(&dir)?;
+        Args::List {
+            limit,
+            kind,
+            include_tests,
+        } => {
+            // The same admission every corpus reader uses, so `list` and
+            // `health` never disagree about which sessions exist.
+            let scan = mecha_core::runlog::Scan {
+                kind,
+                include_tests,
+                ..Default::default()
+            };
+            let all = Session::list(&dir)?;
+            let unkinded = all.iter().filter(|(meta, _)| meta.kind.is_none()).count();
+            let hidden_tests = all.iter().filter(|(meta, _)| scan.hides_test(meta)).count();
+            let total = all.len();
+            let sessions: Vec<_> = all
+                .into_iter()
+                .filter(|(meta, _)| scan.admits(meta))
+                .collect();
             if sessions.is_empty() {
-                println!("no sessions in {}", dir.display());
+                // "Nothing matched" and "nothing is there" are opposite
+                // findings, and a filter that hides every row must say so —
+                // the kind filter, which no transcript from before kinds
+                // were recorded can ever match, and the default test
+                // exclusion, which is a filter too (found on review: a
+                // store of only smoke tests printed "no sessions").
+                if total == 0 {
+                    println!("no sessions in {}", dir.display());
+                } else {
+                    let what = match kind {
+                        Some(k) => format!("no sessions of kind `{}`", k.as_str()),
+                        None => "no sessions shown".to_string(),
+                    };
+                    // Each clause only when it says something: with a
+                    // `--kind` named, nothing is hidden *for being a test*
+                    // and "0 hidden" read oddly (found on review), and the
+                    // unkinded rows match no filter only when one was named.
+                    let mut why = Vec::new();
+                    if hidden_tests > 0 {
+                        why.push(format!(
+                            "{hidden_tests} smoke-test session(s) hidden (`--include-tests` shows them)"
+                        ));
+                    }
+                    if unkinded > 0 && kind.is_some() {
+                        why.push(format!(
+                            "{unkinded} recorded before kinds existed match no `--kind`"
+                        ));
+                    }
+                    println!(
+                        "{what} in {} — of {total} recorded{}",
+                        dir.display(),
+                        if why.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {}", why.join(", "))
+                        }
+                    );
+                }
                 return Ok(());
             }
             for (meta, _) in sessions.iter().take(limit) {
                 println!(
-                    "{}  {}  {:<24} {}",
+                    "{}  {}  {:<9} {:<24} {}",
                     meta.id,
                     meta.created_at.format("%Y-%m-%d %H:%M"),
+                    meta.kind.map(|k| k.as_str()).unwrap_or("—"),
                     meta.model,
                     meta.title.as_deref().unwrap_or("")
                 );
             }
             if sessions.len() > limit {
                 println!("… {} more", sessions.len() - limit);
+            }
+            // Unconditionally, as `health` and `appraise` do — not only when
+            // the list came back empty (found on review).
+            if hidden_tests > 0 {
+                println!(
+                    "({hidden_tests} smoke-test session(s) hidden; `--include-tests` shows them)"
+                );
             }
         }
 
@@ -401,6 +510,8 @@ async fn appraise(
     days: Option<i64>,
     limit: Option<usize>,
     json: bool,
+    kind: Option<mecha_core::session::SessionKind>,
+    include_tests: bool,
     probe: bool,
     max_probes: usize,
     run_appraiser: bool,
@@ -408,7 +519,17 @@ async fn appraise(
 ) -> Result<()> {
     use mecha_core::appraisal;
 
-    let since = days.map(|d| chrono::Utc::now() - chrono::Duration::days(d));
+    // Admission is `runlog::Scan`'s, shared rather than re-derived, so this
+    // per-session walk and `health`'s per-run one agree about the
+    // population. `max_sessions` is applied below by hand, because the
+    // limit here counts sessions *appraised*, not sessions listed.
+    let scan = mecha_core::runlog::Scan {
+        max_sessions: None,
+        since: days.map(|d| chrono::Utc::now() - chrono::Duration::days(d)),
+        workspace: None,
+        kind,
+        include_tests,
+    };
 
     // Best-effort, like every reader over these stores: a read failure costs
     // the `Edit` channel and nothing else. `outbox_unreadable` is kept
@@ -418,11 +539,51 @@ async fn appraise(
     // *empty* case and not a read failure. Conflating the two prints "the
     // outbox could not be read" on a machine that has nothing to read, which
     // is the dash-versus-zero inversion this whole surface exists to avoid.
+    // `items_counting`, not `items`: a skew-version draft the lenient read
+    // skips is an unread row, and the request arm would answer "nothing
+    // drafted" for a request it answered (found on review). One skipped
+    // file marks the store unreadable for this walk's purposes — the
+    // channel is missing, not empty, and the readout says which.
     let (drafts, outbox_unreadable): (Vec<mecha_core::outbox::OutboxItem>, bool) =
         match mecha_core::outbox::OutboxStore::open_existing_default() {
             None => (Vec::new(), false),
-            Some(store) => match store.items() {
-                Ok(items) => (items, false),
+            Some(store) => match store.items_counting() {
+                Ok((items, 0)) => (items, false),
+                Ok((items, _skipped)) => (items, true),
+                Err(_) => (Vec::new(), true),
+            },
+        };
+
+    // The three commitment stores (`docs/APPRAISAL-RESEARCH.md` §3.4, §3.6),
+    // read once for the whole walk and filtered per session inside
+    // `of_session`. Best-effort like the outbox: a store that cannot be read
+    // costs its channel, and the reading says so below rather than folding
+    // it into an empty one.
+    // Each `*_read` field means every row was read, not only that the
+    // directory opened: the counting readers say how many rows they
+    // skipped, and one skipped row is enough to mark the store not fully
+    // read (found on review, after the outbox got the same treatment).
+    let (questions, questions_unreadable) =
+        match mecha_core::questions::QuestionStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.items_counting() {
+                Ok((items, skipped)) => (items, skipped > 0),
+                Err(_) => (Vec::new(), true),
+            },
+        };
+    let (requests, frontdoor_unreadable) =
+        match mecha_core::frontdoor::Frontdoor::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(fd) => match fd.records_counting() {
+                Ok((items, skipped)) => (items, skipped > 0),
+                Err(_) => (Vec::new(), true),
+            },
+        };
+    let (reflexions, learning_unreadable) =
+        match mecha_core::learning::LearningStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.reflexions_counting() {
+                Ok((items, skipped)) => (items, skipped > 0),
                 Err(_) => (Vec::new(), true),
             },
         };
@@ -449,12 +610,17 @@ async fn appraise(
     // entirely — it appeared in no count at all, which on this surface of
     // all surfaces is the dash-versus-zero inversion.
     let (listed, mut sessions_unreadable) = Session::list_counting(dir)?;
+    let mut tests_hidden = 0usize;
     for (meta, path) in listed {
-        if since.is_some_and(|t| meta.created_at < t) {
-            continue;
-        }
+        // The cap first, then attribution, as `Corpus::scan` orders them.
         if limit.is_some_and(|n| sessions_read >= n) {
             break;
+        }
+        if !scan.admits(&meta) {
+            if scan.hides_test(&meta) {
+                tests_hidden += 1;
+            }
+            continue;
         }
         // Read first, count second: `for_session` folds "the file could not
         // be read" and "no outcome recorded yet" into one `None`, which used
@@ -486,7 +652,16 @@ async fn appraise(
             &transcript,
             &meta.id,
             meta.created_at.to_rfc3339(),
-            &mine,
+            appraisal::SessionRecords {
+                drafts: &mine,
+                outbox_unreadable,
+                questions: &questions,
+                questions_unreadable,
+                requests: &requests,
+                frontdoor_unreadable,
+                reflexions: &reflexions,
+                learning_unreadable,
+            },
             None,
         ) else {
             continue;
@@ -620,10 +795,27 @@ async fn appraise(
     // counter did not survive its merge). Derived here so the next honest
     // read costs a flag, not an archaeology pass.
     let mut named_a_goal = 0usize;
+    // The dimensional readout, summed: how many sessions the record has
+    // anything signed to say about, and how much either way. This is the
+    // number `docs/APPRAISAL-RESEARCH.md` §1 found the label hiding.
+    let mut signed = 0usize;
+    let mut valence = appraisal::Valence::default();
     for a in &appraisals {
         *labels.entry(enum_key(a.label)).or_default() += 1;
         if !a.goals.is_empty() {
             named_a_goal += 1;
+        }
+        let v = appraisal::Valence::of(a);
+        // Partial whether or not anything was signed: a silent reading
+        // over a short store is the one that most needs the mark.
+        valence.partial |= v.partial;
+        if !v.is_silent() {
+            signed += 1;
+            valence.positive += v.positive;
+            valence.negative += v.negative;
+            valence.positives += v.positives;
+            valence.negatives += v.negatives;
+            valence.visible |= v.visible;
         }
         for e in &a.errors {
             *channels.entry(enum_key(e.channel)).or_default() += 1;
@@ -640,11 +832,26 @@ async fn appraise(
                 "appraised": appraisals.len(),
                 "sessions_read": sessions_read,
                 "sessions_unreadable": sessions_unreadable,
+                "tests_hidden": tests_hidden,
                 "named_a_goal": named_a_goal,
                 "labels": labels,
+                "valence": {
+                    "signed_sessions": signed,
+                    "positive": valence.positive,
+                    "negative": valence.negative,
+                    "positives": valence.positives,
+                    "negatives": valence.negatives,
+                    "visible": valence.visible,
+                    // Any session's reading was computed over a short
+                    // store — the four `*_read` flags below say which.
+                    "partial": valence.partial,
+                },
                 "channels": channels,
                 "positive_errors": positive,
                 "outbox_read": !outbox_unreadable,
+                "questions_read": !questions_unreadable,
+                "frontdoor_read": !frontdoor_unreadable,
+                "learning_read": !learning_unreadable,
                 // Absent, not zero, when no probe ran: "nothing was probed"
                 // and "probed and found nothing" are opposite findings, and a
                 // reader that cannot tell them apart is the bug this whole
@@ -686,7 +893,18 @@ async fn appraise(
     // came back empty — the one path where a reader most needs to know the
     // edit channel is missing rather than genuinely empty.
     if outbox_unreadable {
-        println!("  (the outbox could not be read, so the edit channel is missing — not empty)\n");
+        println!(
+            "  (the outbox could not be fully read, so the edit channel is incomplete and the \
+             request arm is off — missing, not empty)\n"
+        );
+    }
+    if questions_unreadable || frontdoor_unreadable || learning_unreadable {
+        println!(
+            "  (a commitment store could not be fully read — questions: {}, front door: {}, learning: {} — so that channel is incomplete, not empty)\n",
+            if questions_unreadable { "unreadable" } else { "ok" },
+            if frontdoor_unreadable { "unreadable" } else { "ok" },
+            if learning_unreadable { "unreadable" } else { "ok" },
+        );
     }
     // Same rule for the session store itself: a corrupt transcript is in no
     // count above, and "skipped" must not read as "the store held less".
@@ -698,10 +916,25 @@ async fn appraise(
              no count above)\n"
         );
     }
+    if tests_hidden > 0 {
+        println!(
+            "  ({tests_hidden} smoke-test session(s) hidden and in no count above; \
+             `--include-tests` shows them)\n"
+        );
+    }
     if appraisals.is_empty() {
         return Ok(());
     }
 
+    println!(
+        "  valence          {signed} of {} signed{}",
+        appraisals.len(),
+        if valence.is_silent() {
+            String::new()
+        } else {
+            format!(" · {} across them", valence.compact())
+        }
+    );
     println!("  label");
     for (label, n) in &labels {
         let pct = *n as f64 / appraisals.len() as f64 * 100.0;
@@ -829,6 +1062,8 @@ fn health(
     days: Option<i64>,
     limit: Option<usize>,
     json: bool,
+    kind: Option<mecha_core::session::SessionKind>,
+    include_tests: bool,
 ) -> Result<()> {
     use mecha_core::runlog::{Corpus, Scan};
 
@@ -841,6 +1076,8 @@ fn health(
             // Every workspace: this is a listing of the store, not a
             // measurement scoped to one job.
             workspace: None,
+            kind,
+            include_tests,
         },
     )?;
 
@@ -863,10 +1100,20 @@ fn health(
     } else {
         String::new()
     };
+    // The same rule for the filter this readout applies by default: a
+    // hidden row is counted where the reader can see the count.
+    let hidden_line = if corpus.hidden_tests > 0 {
+        format!(
+            " · {} smoke-test session(s) hidden (`--include-tests` shows them)",
+            corpus.hidden_tests
+        )
+    } else {
+        String::new()
+    };
 
     if corpus.is_empty() {
         println!(
-            "no recorded run outcomes in {} ({} session(s) read{unreadable_line})",
+            "no recorded run outcomes in {} ({} session(s) read{unreadable_line}{hidden_line})",
             dir.display(),
             corpus.sessions_read
         );
@@ -878,7 +1125,7 @@ fn health(
     }
 
     println!(
-        "{} run(s) across {} session(s){}{unreadable_line}\n",
+        "{} run(s) across {} session(s){}{unreadable_line}{hidden_line}\n",
         corpus.len(),
         corpus.sessions_read,
         days.map(|d| format!(", last {d} day(s)"))
@@ -1024,6 +1271,10 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         // Store-wide, like the scan that produced it — a skipped file has no
         // readable date to window on.
         "sessions_unreadable": corpus.unreadable,
+        // The machine reader is where the dash-versus-zero inversion costs
+        // something: a script grading the store cannot tell "no runs" from
+        // "every run filtered" without this (found on review).
+        "tests_hidden": corpus.hidden_tests,
         "tool_calls": corpus.tool_calls(),
         "tool_errors": corpus.tool_errors(),
         "tool_error_rate": corpus.tool_error_rate(),

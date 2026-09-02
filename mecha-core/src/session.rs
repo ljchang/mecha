@@ -13,6 +13,85 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+/// A `message` record whose blocks a newer build wrote, read as far as this
+/// build can.
+///
+/// `Block` is a closed enum written to an append-only store — a wire format
+/// — and `serde` fails the whole record on a variant it does not know. Read
+/// strictly, a message carrying one new block kind was *dropped from the
+/// resumed conversation*, which can orphan a `tool_result` and 400 every
+/// later request on the session. So a line that failed the strict parse is
+/// retried block by block: the blocks this build knows are kept, the rest
+/// are counted and logged, and the message survives with what it has. A
+/// message left with no blocks at all, or a role this build does not know,
+/// is still dropped — there is nothing left to keep.
+///
+/// The residue, stated: if a future build adds a block kind that *produces*
+/// a result — a second `tool_use` shape — dropping it leaves the answering
+/// `tool_result` orphaned in the next message, and nothing prunes orphans
+/// at load. Strictly better than dropping the whole message either way,
+/// and the fix when that day comes is a load-time orphan sweep beside this.
+fn lenient_record(line: &str) -> Option<Record> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    match v.get("record").and_then(serde_json::Value::as_str)? {
+        "message" => lenient_message(&v).map(Record::Message),
+        // A rewrite carries a whole message list, and is the record where
+        // dropping the line costs a compaction: the resumed conversation would
+        // be the pre-compaction one, oversized, with the summary lost.
+        "rewrite" => {
+            let kept: Vec<Message> = v
+                .get("messages")?
+                .as_array()?
+                .iter()
+                .filter_map(lenient_message)
+                .collect();
+            (!kept.is_empty()).then_some(Record::Rewrite { messages: kept })
+        }
+        _ => None,
+    }
+}
+
+/// One message object — `{"role": …, "content": [...]}` — read as far as
+/// this build can. See [`lenient_record`].
+fn lenient_message(v: &serde_json::Value) -> Option<Message> {
+    let role: crate::message::Role = serde_json::from_value(v.get("role")?.clone()).ok()?;
+    let raw = v.get("content")?.as_array()?;
+    let mut content = Vec::with_capacity(raw.len());
+    let mut dropped = 0usize;
+    for block in raw {
+        match serde_json::from_value::<crate::message::Block>(block.clone()) {
+            Ok(b) => content.push(b),
+            Err(_) => dropped += 1,
+        }
+    }
+    if content.is_empty() {
+        return None;
+    }
+    if dropped > 0 {
+        tracing::warn!(
+            dropped,
+            kept = content.len(),
+            "a transcript message carried blocks this build cannot read; kept the rest"
+        );
+    }
+    Some(Message { role, content })
+}
+
+/// Read a `stop_cause` that may have been written by a newer build.
+///
+/// Same rule as [`lenient_message`]: `StopCause` is a wire format, and a
+/// variant this build does not know degrades to `None` rather than failing
+/// the `Outcome` record — which would erase the run from the corpus on load.
+fn lenient_stop_cause<'de, D>(
+    d: D,
+) -> std::result::Result<Option<crate::agent::StopCause>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 pub enum Record {
@@ -309,7 +388,11 @@ pub struct RunStats {
     /// Why the loop stopped. The single most informative field here: it
     /// separates "the model decided it was done" from every way the harness
     /// cut it short, and none of that is visible in the answer text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_stop_cause"
+    )]
     pub stop_cause: Option<crate::agent::StopCause>,
     #[serde(default)]
     pub exhausted: bool,
@@ -365,6 +448,24 @@ pub struct RunStats {
     /// Of those, how many came back `revise_plan`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_escalations_revised: Option<u32>,
+    /// Declared post-condition checks the loop ran, and how many passed —
+    /// counted off the trace by name (`step::CHECK_TRACE`), a refused check
+    /// in neither. **No trace by that name is written yet** (the executor is
+    /// unbuilt; see `step::CHECK_TRACE`), so a live run records `Some(0)`
+    /// for both until it lands — a real zero from a real count, distinct
+    /// from the `None` of a row written before the field existed. Which
+    /// counter means what, once it does: `tool_calls` is the raw trace
+    /// length and includes checks; `step::Work::calls` is the model's own
+    /// work and excludes them; and a failed check is an `is_error` trace,
+    /// so it also raises `tool_error_rate` and can set
+    /// `ended_on_failed_call` — which `of_session` signs separately from
+    /// `checks_passed`, so one failed check can carry two signed errors. `Option` for the same reason as `boredom_notices`: a row
+    /// from before the record says nothing, and reading it as "no checks"
+    /// would dilute the one structural discrepancy rate the corpus has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks_declared: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks_passed: Option<u32>,
     /// The conditions this run happened under, when the front-end asked for
     /// them. Recorded here rather than derived later because a run
     /// reconstructed against *today's* machine state is measuring the
@@ -409,10 +510,34 @@ impl RunStats {
     /// spellings of this is how a measurement arm and the thing it measures
     /// stop being comparable without anyone noticing.
     ///
-    /// `homeostat` is untouched, as it always was: the conditions belong to
-    /// the run that sampled them, and an episode's several runs happened under
-    /// several. The first one set keeps the field.
+    /// `homeostat`'s *conditions* are untouched, as they always were: load,
+    /// memory, the backlog level and the guilt read off it belong to the run
+    /// that sampled them, and an episode's several runs happened under
+    /// several. The first one set keeps those. **`backlog_delta` is the
+    /// exception and is summed**, because it is an act rather than a
+    /// condition — what the run did to the queue — and keeping the first
+    /// row's silently discarded every later run's, which for a session that
+    /// parks a question is the resume that clears it (found on review: the
+    /// commitment channel was reading run 1's delta as the session's).
+    /// Two consequences to know before reading the two fields together:
+    /// `anticipated_guilt` and `guilt_after_relief` stay the first sampling
+    /// run's — the level it inherited, and that level folded with *that
+    /// run's own* delta — while `backlog_delta` becomes the episode's sum,
+    /// so on a resumed session neither guilt field describes the same act
+    /// as the delta beside it; and a first run with no homeostat at all takes a later
+    /// run's whole snapshot, so "the first run's conditions" means the
+    /// first run that sampled any.
     pub fn merge(&mut self, other: &RunStats) {
+        match (&mut self.homeostat, &other.homeostat) {
+            (Some(mine), Some(theirs)) => {
+                mine.backlog_delta = match (mine.backlog_delta, theirs.backlog_delta) {
+                    (Some(a), Some(b)) => Some(a.plus(&b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            (None, Some(theirs)) => self.homeostat = Some(theirs.clone()),
+            _ => {}
+        }
         self.turns += other.turns;
         self.usage.add(&other.usage);
         self.cost_usd = match (self.cost_usd, other.cost_usd) {
@@ -453,6 +578,14 @@ impl RunStats {
             (a, b) => a.or(b),
         };
         // Same shape as boredom_notices, same reason.
+        self.checks_declared = match (self.checks_declared, other.checks_declared) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+        self.checks_passed = match (self.checks_passed, other.checks_passed) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
         self.step_escalations_attempted = match (
             self.step_escalations_attempted,
             other.step_escalations_attempted,
@@ -518,6 +651,24 @@ impl RunStats {
             boredom_notices: Some(o.boredom_notices),
             step_escalations_attempted: Some(o.step_escalations_attempted),
             step_escalations_revised: Some(o.step_escalations_revised),
+            checks_declared: Some(
+                o.tool_calls
+                    .iter()
+                    .filter(|c| {
+                        c.name == crate::step::CHECK_TRACE
+                            && crate::step::Outcome::of(c) != crate::step::Outcome::Refused
+                    })
+                    .count() as u32,
+            ),
+            checks_passed: Some(
+                o.tool_calls
+                    .iter()
+                    .filter(|c| {
+                        c.name == crate::step::CHECK_TRACE
+                            && crate::step::Outcome::of(c) == crate::step::Outcome::Ok
+                    })
+                    .count() as u32,
+            ),
             homeostat: o.homeostat.clone(),
             taint: o.taint,
         }
@@ -532,6 +683,141 @@ impl From<&crate::agent::RunOutcome> for RunStats {
     }
 }
 
+/// Which front-end opened a session — the surface it was used through, not
+/// what it was about.
+///
+/// **Written by the front-end, never inferred.** Before this field existed
+/// the only way to tell a smoke test from use was the workspace path, and
+/// `docs/APPRAISAL-RESEARCH.md` §1 found 46 of 143 appraised sessions were
+/// development runs from a mecha checkout or a scratch directory: the
+/// instrument built to measure whether the appraisal labels were degenerate
+/// was measuring the harness's own test runs. A corpus reader can now ask
+/// for one surface, and `Test` is excluded from every corpus readout unless
+/// asked for by name.
+///
+/// **A closed enum written to an append-only store is a wire format**: a
+/// kind this binary does not know reads as `None` ([`de_lenient_kind`]),
+/// never as a failed record, and a row from before the field reads as `None`
+/// too — unknown, not any particular surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    /// `mecha run`, one shot.
+    Run,
+    /// `mecha chat`, the readline REPL.
+    Chat,
+    /// `mecha tui`.
+    Tui,
+    /// `mecha serve`'s chat page.
+    Web,
+    /// The voice pipeline over `mecha serve`.
+    Voice,
+    /// A delegated board task (`mecha tasks work`, the web board's *ask*).
+    Task,
+    /// A scheduled prompt (`mecha trigger run`).
+    Trigger,
+    /// A front-door triage run.
+    Frontdoor,
+    /// A mail-driven run (`mecha mail` drafting verbs).
+    Mail,
+    /// A Slack thread.
+    Slack,
+    /// A smoke test or a development run. Set by [`SESSION_KIND_ENV`] over
+    /// whatever the front-end would have written — the one override, and it
+    /// only ever narrows toward this variant.
+    Test,
+}
+
+/// Environment variable that marks every session a process opens as
+/// [`SessionKind::Test`]. Any other value is ignored with a warning: the
+/// override exists so a test harness can label its own runs, not so a
+/// caller can claim a surface it is not.
+pub const SESSION_KIND_ENV: &str = "MECHA_SESSION_KIND";
+
+impl SessionKind {
+    pub const ALL: [SessionKind; 11] = [
+        SessionKind::Run,
+        SessionKind::Chat,
+        SessionKind::Tui,
+        SessionKind::Web,
+        SessionKind::Voice,
+        SessionKind::Task,
+        SessionKind::Trigger,
+        SessionKind::Frontdoor,
+        SessionKind::Mail,
+        SessionKind::Slack,
+        SessionKind::Test,
+    ];
+
+    /// The wire form — `serde`'s own `snake_case`, spelled out for callers
+    /// that need a bare `&str` (a `--kind` flag, a table column).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionKind::Run => "run",
+            SessionKind::Chat => "chat",
+            SessionKind::Tui => "tui",
+            SessionKind::Web => "web",
+            SessionKind::Voice => "voice",
+            SessionKind::Task => "task",
+            SessionKind::Trigger => "trigger",
+            SessionKind::Frontdoor => "frontdoor",
+            SessionKind::Mail => "mail",
+            SessionKind::Slack => "slack",
+            SessionKind::Test => "test",
+        }
+    }
+
+    /// The record half of the two parsing policies `goal::GoalRef` set: an
+    /// unrecognised word is `None`, never an error.
+    pub fn parse_lenient(s: &str) -> Option<Self> {
+        SessionKind::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+
+    /// [`SESSION_KIND_ENV`], read. `Some(Test)` when the variable says so,
+    /// `None` otherwise — the override only ever narrows toward `Test`, so
+    /// there is nothing else it could return.
+    pub fn test_override() -> Option<SessionKind> {
+        match std::env::var(SESSION_KIND_ENV) {
+            Ok(v) if v == SessionKind::Test.as_str() => Some(SessionKind::Test),
+            Ok(v) if !v.is_empty() => {
+                tracing::warn!(
+                    "{SESSION_KIND_ENV}={v:?} ignored: only `test` may override a session's kind"
+                );
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+impl std::str::FromStr for SessionKind {
+    type Err = anyhow::Error;
+
+    /// The model-facing/flag half: a bad word is an error naming the choices.
+    fn from_str(s: &str) -> Result<Self> {
+        SessionKind::parse_lenient(s).ok_or_else(|| {
+            let choices: Vec<&str> = SessionKind::ALL.iter().map(|k| k.as_str()).collect();
+            anyhow::anyhow!("unknown session kind {s:?}; one of {}", choices.join(", "))
+        })
+    }
+}
+
+/// Read a session kind out of a record, leniently — see [`SessionKind`].
+pub fn de_lenient_kind<'de, D>(d: D) -> std::result::Result<Option<SessionKind>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    // `Value`, not `String`: a kind that is a number or an object (a newer
+    // binary's shape, a hand edit) must cost the field and never the
+    // record, and `Option<String>` would fail the whole `meta` row on it
+    // (found on review).
+    Ok(Option::<serde_json::Value>::deserialize(d)?
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .and_then(SessionKind::parse_lenient))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub id: String,
@@ -541,6 +827,15 @@ pub struct SessionMeta {
     pub workspace: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The surface that opened this session. `None` on a row from before the
+    /// field existed, or one written by a newer binary with a kind this one
+    /// cannot name.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient_kind"
+    )]
+    pub kind: Option<SessionKind>,
 }
 
 pub struct Session {
@@ -619,9 +914,13 @@ impl Session {
         Ok(crate::work::mecha_home()?.join("sessions"))
     }
 
-    pub fn create(dir: &Path, meta: SessionMeta) -> Result<Self> {
+    pub fn create(dir: &Path, mut meta: SessionMeta) -> Result<Self> {
         crate::create_private_dir(dir)
             .with_context(|| format!("creating session directory {}", dir.display()))?;
+        // The one override, applied where every front-end's write passes so
+        // none can forget it. `None` stays `None`: an unknown surface under
+        // the override is still a test, which is what the variable asserts.
+        meta.kind = SessionKind::test_override().or(meta.kind);
         let path = dir.join(format!("{}.jsonl", meta.id));
         let session = Session {
             meta: meta.clone(),
@@ -853,7 +1152,7 @@ impl Session {
         // function exists to end.
         let mut taint_checkpoints: Vec<(usize, Taint)> = Vec::new();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            match serde_json::from_str::<Record>(line) {
+            match serde_json::from_str::<Record>(line).or_else(|e| lenient_record(line).ok_or(e)) {
                 Ok(Record::Meta(m)) => meta = Some(m),
                 // Last one wins: a conversation is renamed as it grows, and
                 // the newest name is the one a person would recognise it by.
@@ -1033,7 +1332,7 @@ impl Session {
             }
         };
         for line in transcript.lines().filter(|l| !l.trim().is_empty()) {
-            match serde_json::from_str::<Record>(line) {
+            match serde_json::from_str::<Record>(line).or_else(|e| lenient_record(line).ok_or(e)) {
                 Ok(Record::Message(m)) => admit(m, &mut all),
                 Ok(Record::Rewrite { messages }) => {
                     for m in messages {
@@ -1282,6 +1581,7 @@ mod homeostat_record_tests {
                 outbox: Some(Depth {
                     waiting: 2,
                     oldest: Some("2026-08-20T09:00:00Z".into()),
+                    given_up: 0,
                 }),
                 ..Backlog::default()
             }),
@@ -1328,6 +1628,7 @@ mod tests {
                 model: "first".into(),
                 workspace: std::path::PathBuf::from("/tmp"),
                 title: Some("web: chat-8f3a".into()),
+                kind: None,
             },
         )
         .unwrap();
@@ -1370,6 +1671,7 @@ mod tests {
                 model: "first".into(),
                 workspace: std::path::PathBuf::from("/tmp"),
                 title: Some("task: nominate someone for the Ostrander".into()),
+                kind: None,
             },
         )
         .unwrap();
@@ -1414,6 +1716,7 @@ mod tests {
                 model: "first".into(),
                 workspace: std::path::PathBuf::from("/tmp"),
                 title: None,
+                kind: None,
             },
         )
         .unwrap();
@@ -1471,6 +1774,7 @@ mod tests {
             model: "test-model".into(),
             workspace: PathBuf::from("/tmp"),
             title: None,
+            kind: None,
         }
     }
 
@@ -2383,6 +2687,119 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The same leniency for a `rewrite` record, which carries a whole message
+    /// list and is the record where dropping the line costs a compaction: the
+    /// resumed conversation would be the pre-compaction one, oversized, with
+    /// the summary gone.
+    #[test]
+    fn a_rewrite_from_a_newer_build_is_applied_minus_what_this_one_cannot_read() {
+        use std::io::Write;
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-rewrite")).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&session.path)
+            .unwrap();
+        writeln!(
+            file,
+            r#"{{"record":"message","role":"user","content":[{{"type":"text","text":"before"}}]}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"record":"message","role":"assistant","content":[{{"type":"text","text":"long ago"}}]}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"record":"rewrite","messages":[{{"role":"user","content":[{{"type":"text","text":"compacted head"}},{{"type":"hologram","frames":2}}]}}]}}"#
+        )
+        .unwrap();
+        drop(file);
+
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(
+            t.convo.messages.len(),
+            1,
+            "the rewrite replaced the list: {:?}",
+            t.convo.messages
+        );
+        assert!(t.convo.messages[0].text().contains("compacted head"));
+        assert_eq!(
+            t.convo.messages[0].content.len(),
+            1,
+            "the unknown block is dropped"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A closed enum in an append-only store is a wire format. A newer build
+    /// writing a block kind or a stop cause this one does not know must cost
+    /// the field, never the record: the message was dropped from the resumed
+    /// conversation (orphaning any `tool_result` beside it) and the outcome
+    /// vanished from the corpus.
+    #[test]
+    fn records_from_a_newer_build_degrade_to_what_this_one_can_read() {
+        use std::io::Write;
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-newer")).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&session.path)
+            .unwrap();
+        // An assistant turn carrying a block kind from the future beside one
+        // we know, then the tool result that answers the known block.
+        writeln!(
+            file,
+            r#"{{"record":"message","role":"assistant","content":[{{"type":"hologram","frames":3}},{{"type":"tool_use","id":"t1","name":"echo","input":{{}}}}]}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"record":"message","role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"ok","is_error":false}}]}}"#
+        )
+        .unwrap();
+        // An outcome whose stop cause this build has never heard of.
+        writeln!(
+            file,
+            r#"{{"record":"outcome","turns":2,"stop_cause":"from_the_future","exhausted":false}}"#
+        )
+        .unwrap();
+        // A message made only of unknown blocks has nothing to keep.
+        writeln!(
+            file,
+            r#"{{"record":"message","role":"assistant","content":[{{"type":"hologram","frames":1}}]}}"#
+        )
+        .unwrap();
+        drop(file);
+
+        let t = Session::read(&session.path).unwrap();
+        let messages = &t.convo.messages;
+        assert_eq!(
+            messages.len(),
+            2,
+            "the readable message and its result survive"
+        );
+        assert_eq!(
+            messages[0].content.len(),
+            1,
+            "only the unknown block is dropped: {:?}",
+            messages[0]
+        );
+        assert!(
+            crate::compact::orphaned_tool_results(messages).is_empty(),
+            "keeping the message is what keeps the pairing"
+        );
+        let episode = t.episode.expect("the outcome record survives");
+        assert!(
+            episode.stop_cause.is_none(),
+            "an unknown cause is None, not a lost record"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn a_transcript_with_no_header_is_refused() {
         let dir = tmpdir();
@@ -2416,5 +2833,260 @@ mod tests {
         assert!(Session::find(&dir, "nothing-like-this").is_err());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- session kind -------------------------------------------------------
+
+    fn kind_of(path: &Path) -> Option<SessionKind> {
+        Session::read(path).unwrap().meta.kind
+    }
+
+    #[test]
+    fn a_meta_row_from_before_kinds_existed_reads_as_unknown_not_any_surface() {
+        let row = r#"{"id":"20260101T000000-old","created_at":"2026-01-01T00:00:00Z","provider":"local","model":"m","workspace":"/tmp"}"#;
+        let meta: SessionMeta = serde_json::from_str(row).unwrap();
+        assert_eq!(meta.kind, None);
+    }
+
+    #[test]
+    fn a_kind_from_a_newer_build_degrades_to_unknown_rather_than_failing_the_record() {
+        let row = r#"{"id":"20260101T000000-new","created_at":"2026-01-01T00:00:00Z","provider":"local","model":"m","workspace":"/tmp","kind":"hologram"}"#;
+        let meta: SessionMeta = serde_json::from_str(row).unwrap();
+        assert_eq!(meta.kind, None, "unknown, never an error");
+        // And a kind of the wrong shape entirely — not merely an unknown
+        // word — costs the field, never the record (found on review).
+        for bad in ["7", r#"{"surface":"web"}"#, r#"["web"]"#, "true"] {
+            let row = format!(
+                r#"{{"id":"x","created_at":"2026-01-01T00:00:00Z","provider":"local","model":"m","workspace":"/tmp","kind":{bad}}}"#
+            );
+            let meta: SessionMeta =
+                serde_json::from_str(&row).unwrap_or_else(|e| panic!("{bad}: {e}"));
+            assert_eq!(meta.kind, None);
+        }
+    }
+
+    #[test]
+    fn a_kind_round_trips_on_the_wire_in_snake_case() {
+        for kind in SessionKind::ALL {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+            assert_eq!(serde_json::from_str::<SessionKind>(&json).unwrap(), kind);
+            assert_eq!(SessionKind::parse_lenient(kind.as_str()), Some(kind));
+        }
+        // Compiler-forced, not a length literal: `ALL` is `[SessionKind; 11]`,
+        // so a length assert is a tautology about its own type and a
+        // twelfth variant with an updated `as_str` and a forgotten `ALL`
+        // entry would leave every test green while the binary read its own
+        // rows back as unknown (found on review). A new variant fails this
+        // match, and the arm the author then writes forces the `ALL` entry.
+        fn position(k: SessionKind) -> usize {
+            match k {
+                SessionKind::Run => 0,
+                SessionKind::Chat => 1,
+                SessionKind::Tui => 2,
+                SessionKind::Web => 3,
+                SessionKind::Voice => 4,
+                SessionKind::Task => 5,
+                SessionKind::Trigger => 6,
+                SessionKind::Frontdoor => 7,
+                SessionKind::Mail => 8,
+                SessionKind::Slack => 9,
+                SessionKind::Test => 10,
+            }
+        }
+        assert!(
+            SessionKind::ALL
+                .iter()
+                .enumerate()
+                .all(|(i, k)| position(*k) == i),
+            "every variant, in `ALL`, once, in order"
+        );
+    }
+
+    #[test]
+    fn the_front_ends_kind_is_written_and_read_back() {
+        let dir = tmpdir();
+        let mut meta = meta_with_id("20260101T000000-web");
+        meta.kind = Some(SessionKind::Web);
+        let s = Session::create(&dir, meta).unwrap();
+        assert_eq!(kind_of(&s.path), Some(SessionKind::Web));
+        let none = Session::create(&dir, meta_with_id("20260101T000001-none")).unwrap();
+        assert_eq!(
+            kind_of(&none.path),
+            None,
+            "no front-end kind and no override: unknown"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `Session::create` reads the process environment, and every test in
+    /// this binary shares one — a `set_var` here made `runlog`'s scans see
+    /// `Test` sessions and drop them, in a different module, on the first
+    /// run. So the override is exercised in a child process: this test runs
+    /// the (ignored) probe below through the test binary itself with the
+    /// variable set, and grades the exit status.
+    #[test]
+    fn the_test_override_narrows_to_test_and_never_widens_to_anything_else() {
+        let exe = std::env::current_exe().unwrap();
+        for (value, expect) in [("test", "test"), ("web", "run"), ("", "run")] {
+            let out = std::process::Command::new(&exe)
+                .args([
+                    "kind_override_probe",
+                    "--exact",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(SESSION_KIND_ENV, value)
+                .env("MECHA_KIND_PROBE_EXPECT", expect)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{SESSION_KIND_ENV}={value:?} expecting {expect}:\n{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    /// The child half of the test above. Ignored so it never runs in the
+    /// ordinary sweep, where it would read whatever the environment
+    /// happened to hold.
+    #[test]
+    #[ignore]
+    fn kind_override_probe() {
+        let expect =
+            SessionKind::parse_lenient(&std::env::var("MECHA_KIND_PROBE_EXPECT").unwrap()).unwrap();
+        let dir = tmpdir();
+        let mut meta = meta_with_id("20260101T000000-run");
+        meta.kind = Some(SessionKind::Run);
+        let s = Session::create(&dir, meta).unwrap();
+        assert_eq!(
+            kind_of(&s.path),
+            Some(expect),
+            "the override narrows and never widens"
+        );
+        let none = Session::create(&dir, meta_with_id("20260101T000001-none")).unwrap();
+        let expect_none = (expect == SessionKind::Test).then_some(SessionKind::Test);
+        assert_eq!(
+            kind_of(&none.path),
+            expect_none,
+            "an unknown surface under the override is a test; without it, unknown"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- declared checks -----------------------------------------------------
+
+    #[test]
+    fn checks_are_counted_off_the_trace_by_name_and_fold_like_boredom_notices() {
+        let trace = |name: &str, is_error: bool, denied: bool| crate::agent::ToolCallTrace {
+            name: name.into(),
+            input: serde_json::json!({}),
+            is_error,
+            denied,
+            unknown: false,
+            staged: false,
+        };
+        let o = crate::agent::RunOutcome {
+            context_overflows: 0,
+            boredom_notices: 0,
+            step_escalations_attempted: 0,
+            step_escalations_revised: 0,
+            text: String::new(),
+            stop_reason: crate::message::StopReason::EndTurn,
+            usage: crate::message::Usage::default(),
+            turns: 1,
+            refusal: None,
+            exhausted: false,
+            ended_on_failed_call: false,
+            tool_calls: vec![
+                trace("shell", false, false),
+                trace(crate::step::CHECK_TRACE, false, false),
+                trace(crate::step::CHECK_TRACE, true, false),
+                trace(crate::step::CHECK_TRACE, true, true),
+            ],
+            malformed_tool_args: 0,
+            blocked_sends: 0,
+            taint: crate::agent::Taint::default(),
+            homeostat: None,
+            stop_cause: crate::agent::StopCause::Completed,
+            compactions: 0,
+            usage_complete: true,
+            cost_usd: None,
+        };
+        let stats = RunStats::from(&o);
+        assert_eq!(
+            (stats.checks_declared, stats.checks_passed),
+            (Some(2), Some(1))
+        );
+        assert_eq!(
+            stats.tool_calls, 4,
+            "the raw count still holds every trace entry"
+        );
+
+        let mut folded = stats.clone();
+        folded.merge(&stats);
+        assert_eq!(
+            (folded.checks_declared, folded.checks_passed),
+            (Some(4), Some(2))
+        );
+        let old = RunStats::default();
+        assert_eq!(
+            old.checks_declared, None,
+            "a row from before the record is unknown"
+        );
+        let mut mixed = old.clone();
+        mixed.merge(&stats);
+        assert_eq!(mixed.checks_declared, Some(2));
+        let row: RunStats = serde_json::from_str(r#"{"turns":1,"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}"#).unwrap();
+        assert_eq!(row.checks_passed, None);
+    }
+
+    #[test]
+    fn backlog_delta_sums_across_an_episodes_runs_while_the_conditions_stay_the_first_runs() {
+        use crate::backlog::BacklogDelta;
+        use crate::homeostat::Homeostat;
+        let run = |load: f32, delta: Option<BacklogDelta>| RunStats {
+            homeostat: Some(Homeostat {
+                load_avg_1m: Some(load),
+                backlog_delta: delta,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut folded = run(
+            1.0,
+            Some(BacklogDelta {
+                questions: Some(1),
+                ..Default::default()
+            }),
+        );
+        folded.merge(&run(
+            9.0,
+            Some(BacklogDelta {
+                questions: Some(-2),
+                outbox: Some(-1),
+                ..Default::default()
+            }),
+        ));
+        let h = folded.homeostat.unwrap();
+        assert_eq!(h.load_avg_1m, Some(1.0), "a condition: the first run's");
+        assert_eq!(h.backlog_delta.unwrap().net(), Some(-2), "an act: summed");
+        // A first run without the sensor takes the later run's delta rather
+        // than pinning the field to absent forever.
+        let mut none_first = run(1.0, None);
+        none_first.merge(&run(
+            2.0,
+            Some(BacklogDelta {
+                outbox: Some(-1),
+                ..Default::default()
+            }),
+        ));
+        assert_eq!(
+            none_first.homeostat.unwrap().backlog_delta.unwrap().net(),
+            Some(-1)
+        );
     }
 }

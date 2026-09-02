@@ -215,6 +215,134 @@ pub fn anticipated_guilt(
     Some(combined.clamp(0.0, 1.0))
 }
 
+/// The run's own contribution, folded over the standing level.
+///
+/// **The level was a constant, and the delta is where the variance is.**
+/// Over the first nineteen runs that recorded it, [`anticipated_guilt`] read
+/// between 0.95 and 1.0 on every one — the age and count terms measure the
+/// owner's standing backlog, which a run inherits and does not change, so
+/// the sensor described the store and not the run
+/// (`docs/APPRAISAL-RESEARCH.md` §1.5). `backlog_delta` was non-zero on 18
+/// of 68 runs beside it. So the delta comes first: the level is scaled down
+/// by the **share of what was waiting** that this run cleared — a run that
+/// cleared everything it inherited reads as no guilt, one that cleared three
+/// of forty reads nearly the level it inherited. The first cut divided by
+/// the constant [`COUNT_HALF_AT`] instead, so three cleared pinned the
+/// reading to zero from any backlog, which is the clamp-to-a-constant
+/// `AGE_HALF_AT_HOURS`'s doc reshaped the level to escape (found on review).
+///
+/// **This composes in the loosening direction, on purpose, and here is the
+/// argument.** [`anticipated_guilt`]'s three alarms may not argue each other
+/// down — that is the "may only narrow, never loosen" rule applied to three
+/// *readings of the same run's situation*. Relief is not a fourth reading
+/// of the situation; it is the run's *act* on it. A run that cleared what
+/// the owner was waiting on has discharged the expectation guilt is
+/// predicted against, and `peak_context_pressure` was only ever a proxy
+/// for the room to do that — a run that did it had the room. So relief
+/// scales the whole level, pressure included, and the level it scales is
+/// still an OR: nothing here lowers one alarm by another being low.
+///
+/// **A positive delta leaves the level alone.** The first cut drove the
+/// sensor to maximal on a run that added three items, and that is the
+/// reading `Homeostat::finish` refuses by name — a trigger that staged three
+/// replies overnight scored as maximally guilty for doing exactly its job —
+/// arriving from the other end (found on review). Staging is a run's job,
+/// not neglect; what this run *added* is the next run's inherited level, and
+/// it will be read there. The appraisal's commitment channel takes the same
+/// line: a negative delta signs positive, a positive one signs nothing.
+///
+/// `None` in, `None` out — and a level with no delta is the level, because
+/// a row without the delta sensor says nothing about what the run did.
+/// The result lands in its own field (`Homeostat::guilt_after_relief`),
+/// never over the level: a first cut overwrote `anticipated_guilt`, so
+/// `Corpus::mean_anticipated_guilt` averaged relief-scaled rows beside
+/// level-only ones with nothing marking which — a blended mean that was
+/// neither formula's, on a field whose own doc chose `None` over a
+/// differently-computed number for exactly that reason (found on review).
+///
+/// `net_delta` is the negated
+/// [`crate::backlog::BacklogDelta::owner_facing_cleared`] — the fall net of
+/// what the owner gave up on, since an abandoned question is no relief —
+/// and `waiting_before` is [`waiting`], both over the same three stores the
+/// level reads — never the five-store `net`, whose proposals and candidates
+/// are the harness's own queue. A negative delta against
+/// nothing waiting cannot happen from a consistent pair of reads; it is
+/// treated as full relief rather than as a division by zero.
+pub fn with_delta(
+    level: Option<f32>,
+    net_delta: Option<i64>,
+    waiting_before: usize,
+) -> Option<f32> {
+    let level = level?;
+    let Some(net) = net_delta else {
+        return Some(level);
+    };
+    if net >= 0 {
+        return Some(level);
+    }
+    let cleared = net.unsigned_abs() as f32;
+    let relief = if waiting_before == 0 {
+        1.0
+    } else {
+        (cleared / waiting_before as f32).min(1.0)
+    };
+    Some((level * (1.0 - relief)).clamp(0.0, 1.0))
+}
+
+/// Everything one `Backlog` pair yields, computed once: the level off
+/// `before`, the delta between the two, and the level scaled by the
+/// owner-facing share of `before` that the delta cleared.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fold {
+    pub level: Option<f32>,
+    pub delta: crate::backlog::BacklogDelta,
+    pub after_relief: Option<f32>,
+}
+
+/// The whole fold from one `Backlog` pair — the one seam where the level,
+/// the delta, and relief's numerator and denominator are all derived from
+/// the same reads. The same *reads*, not quite the same store sets: the
+/// numerator counts stores readable at both ends (`Backlog::delta` is
+/// `None` for one unreadable at either), the denominator stores readable
+/// at the start, so a store that vanished mid-run inflates the denominator
+/// and the reading errs toward less relief — the level's own denominator,
+/// and the safe direction (found on review). `with_delta`'s tests hand it both numbers, and the
+/// mismatch the review found lived exactly here, in the call site; a later
+/// pass found the call site re-deriving half of it beside this, which is
+/// why this returns all three rather than one.
+pub fn with_backlogs(
+    before: &Backlog,
+    after: &Backlog,
+    peak_context_pressure: Option<f32>,
+    now: DateTime<Utc>,
+) -> Fold {
+    let level = anticipated_guilt(before, peak_context_pressure, now);
+    let delta = Backlog::delta(before, after);
+    // Cleared, not merely fallen: a queue the owner shortened by giving
+    // up is no relief for the run (found on review, beside the appraisal's
+    // commitment arm which read the same fall as a positive).
+    let after_relief = with_delta(
+        level,
+        delta.owner_facing_cleared().map(|c| -(c as i64)),
+        waiting(before),
+    );
+    Fold {
+        level,
+        delta,
+        after_relief,
+    }
+}
+
+/// How many recorded commitments a backlog holds across the three stores
+/// [`anticipated_guilt`] reads — the denominator relief is a share of.
+pub fn waiting(backlog: &Backlog) -> usize {
+    [&backlog.outbox, &backlog.questions, &backlog.frontdoor]
+        .into_iter()
+        .flatten()
+        .map(|d| d.waiting)
+        .sum()
+}
+
 /// Hours between an RFC3339 stamp and `now`. `None` on a stamp this can't
 /// parse — a record written by a newer or older binary must cost the reading,
 /// not the whole computation (the [`crate::goal::GoalRef`] record-parsing
@@ -234,6 +362,7 @@ mod tests {
         Depth {
             waiting,
             oldest: oldest.map(str::to_string),
+            given_up: 0,
         }
     }
 
@@ -471,5 +600,109 @@ mod tests {
             ..readable_and_empty()
         };
         assert_eq!(anticipated_guilt(&backlog, Some(0.0), now), None);
+    }
+
+    #[test]
+    fn the_delta_comes_first_and_relief_is_a_share_of_what_was_waiting() {
+        // Cleared everything it inherited: no guilt, whatever the level.
+        assert_eq!(with_delta(Some(0.95), Some(-3), 3), Some(0.0));
+        assert_eq!(with_delta(Some(0.95), Some(-30), 30), Some(0.0));
+        // Cleared three of forty: nearly the level it inherited — a count
+        // pinned the reading to zero here before (found on review).
+        let three_of_forty = with_delta(Some(0.8), Some(-3), 40).unwrap();
+        assert!((0.7..0.8).contains(&three_of_forty), "{three_of_forty}");
+        let one_of_two = with_delta(Some(0.9), Some(-1), 2).unwrap();
+        assert!((0.44..0.46).contains(&one_of_two), "{one_of_two}");
+        // A negative delta against nothing waiting is an inconsistent pair
+        // of reads, treated as full relief rather than a division by zero.
+        assert_eq!(with_delta(Some(0.5), Some(-1), 0), Some(0.0));
+        // `Homeostat::finish`'s stated intent, asserted here rather than only
+        // in prose: a trigger that staged three replies is not guilty for it.
+        assert_eq!(with_delta(Some(0.6), Some(3), 5), Some(0.6));
+        assert_eq!(with_delta(Some(0.2), Some(1), 0), Some(0.2));
+        assert_eq!(with_delta(Some(0.4), Some(0), 4), Some(0.4));
+        assert_eq!(
+            with_delta(Some(0.4), None, 4),
+            Some(0.4),
+            "no delta sensor: the level stands"
+        );
+        assert_eq!(
+            with_delta(None, Some(-3), 3),
+            None,
+            "no level: nothing to scale"
+        );
+        assert_eq!(waiting(&Backlog::default()), 0);
+    }
+
+    #[test]
+    fn clearing_the_harnesss_own_queue_relieves_nothing_and_clearing_a_draft_relieves_its_share() {
+        let now = DateTime::parse_from_rfc3339("2026-09-02T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let week_ago = "2026-08-26T12:00:00Z";
+        let before = Backlog {
+            outbox: Some(depth(2, Some(week_ago))),
+            questions: Some(depth(1, Some(week_ago))),
+            frontdoor: Some(depth(0, None)),
+            proposals: Some(depth(3, Some(week_ago))),
+            candidates: Some(depth(3, Some(week_ago))),
+        };
+        let level = anticipated_guilt(&before, Some(0.1), now).unwrap();
+        assert!(level > 0.5, "{level}");
+        // Three candidates and three proposals resolved, the owner's three
+        // commitments untouched: the level stands.
+        let mut harness_only = before.clone();
+        harness_only.proposals = Some(depth(0, None));
+        harness_only.candidates = Some(depth(0, None));
+        let fold = with_backlogs(&before, &harness_only, Some(0.1), now);
+        assert_eq!(fold.level, Some(level));
+        assert_eq!(fold.after_relief, Some(level));
+        assert_eq!(fold.delta.owner_facing_net(), Some(0));
+        // One of the owner's three cleared: a third of the level relieved.
+        let mut one_draft = before.clone();
+        one_draft.outbox = Some(depth(1, Some(week_ago)));
+        let relieved = with_backlogs(&before, &one_draft, Some(0.1), now)
+            .after_relief
+            .unwrap();
+        assert!(
+            (relieved - level * (2.0 / 3.0)).abs() < 1e-5,
+            "{relieved} vs {level}"
+        );
+    }
+
+    /// An abandoned question is not relief (found on review): the fold
+    /// reads clearance, not the fall.
+    #[test]
+    fn a_give_up_brings_no_relief() {
+        let now = Utc::now();
+        let stamp = (now - chrono::Duration::hours(72)).to_rfc3339();
+        let before = Backlog {
+            outbox: Some(depth(0, None)),
+            questions: Some(depth(1, Some(&stamp))),
+            frontdoor: Some(depth(0, None)),
+            ..Default::default()
+        };
+        let mut abandoned = depth(0, None);
+        abandoned.given_up = 1;
+        let after = Backlog {
+            outbox: Some(depth(0, None)),
+            questions: Some(abandoned),
+            frontdoor: Some(depth(0, None)),
+            ..Default::default()
+        };
+        let fold = with_backlogs(&before, &after, Some(0.5), now);
+        assert!(fold.level.unwrap() > 0.0);
+        assert_eq!(fold.delta.owner_facing_net(), Some(-1));
+        assert_eq!(
+            fold.after_relief, fold.level,
+            "the fall was a give-up, not clearance"
+        );
+        // The same fall by an answer clears it.
+        let answered = Backlog {
+            questions: Some(depth(0, None)),
+            ..after.clone()
+        };
+        let fold = with_backlogs(&before, &answered, Some(0.5), now);
+        assert_eq!(fold.after_relief, Some(0.0));
     }
 }

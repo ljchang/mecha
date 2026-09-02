@@ -324,32 +324,53 @@ pub fn clean(keep: usize, only: Option<&str>, dry_run: bool) -> Result<CleanRepo
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// `MECHA_HOME` is process-global, so the tests that set it hold one lock
     /// and restore it. Cheaper than threading a root parameter through an API
-    /// whose whole job is to know where the mecha home is.
+    /// whose whole job is to know where the mecha home is. `pub(crate)` so
+    /// a test in another module that moves the home shares *this* lock
+    /// rather than racing it with one of its own.
     static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    struct HomeGuard {
+    /// The per-store overrides that would point a reader outside the moved
+    /// home, cleared for the guard's lifetime and put back after.
+    const STORE_OVERRIDES: [&str; 2] = ["MECHA_OUTBOX_DIR", "MECHA_QUESTIONS_DIR"];
+
+    pub(crate) struct HomeGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
         previous: Option<String>,
+        overrides: Vec<(&'static str, Option<String>)>,
         dir: PathBuf,
     }
 
     impl HomeGuard {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
             let previous = std::env::var("MECHA_HOME").ok();
+            let overrides = STORE_OVERRIDES
+                .iter()
+                .map(|k| {
+                    let v = std::env::var(k).ok();
+                    std::env::remove_var(k);
+                    (*k, v)
+                })
+                .collect();
             let dir = std::env::temp_dir().join(format!("mecha-work-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
             std::env::set_var("MECHA_HOME", &dir);
             HomeGuard {
                 _lock: lock,
                 previous,
+                overrides,
                 dir,
             }
+        }
+
+        /// The moved home.
+        pub(crate) fn dir(&self) -> &Path {
+            &self.dir
         }
     }
 
@@ -358,6 +379,12 @@ mod tests {
             match &self.previous {
                 Some(v) => std::env::set_var("MECHA_HOME", v),
                 None => std::env::remove_var("MECHA_HOME"),
+            }
+            for (k, v) in &self.overrides {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
             }
             let _ = std::fs::remove_dir_all(&self.dir);
         }

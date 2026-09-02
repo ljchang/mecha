@@ -24,7 +24,7 @@ const API_VERSION: &str = "2023-06-01";
 pub const DEFAULT_MODEL: &str = "claude-opus-5";
 
 pub struct Anthropic {
-    http: reqwest::Client,
+    http: crate::provider::HttpClients,
     api_key: String,
     base_url: String,
     default_model: String,
@@ -46,11 +46,10 @@ impl Anthropic {
             .resolve_api_key()
             .context("no Anthropic credentials found. Set ANTHROPIC_API_KEY, or put api_key_env / api_key in the provider config")?;
         Ok(Self {
-            http: reqwest::Client::builder()
-                // Long turns are normal at high effort; the per-request cap is
-                // generous and streaming keeps the connection alive anyway.
-                .timeout(std::time::Duration::from_secs(900))
-                .build()?,
+            // A stall fails a stream; a long answer does not. A non-streaming
+            // request keeps the whole-exchange cap. Two clients, because the
+            // per-read bound is a client setting — see `provider::HttpClients`.
+            http: crate::provider::HttpClients::build()?,
             api_key,
             base_url: cfg
                 .base_url
@@ -184,6 +183,7 @@ impl Anthropic {
 
     fn request(&self, body: &Value) -> reqwest::RequestBuilder {
         self.http
+            .for_body(body)
             .post(format!(
                 "{}/v1/messages",
                 self.base_url.trim_end_matches('/')
@@ -267,6 +267,7 @@ impl Anthropic {
             }
         }
 
+        acc.closed_cleanly()?;
         acc.finish()
     }
 }
@@ -387,6 +388,33 @@ fn decode_usage(v: Option<&Value>) -> Usage {
     }
 }
 
+/// Overlay a cumulative usage frame onto the running total: each field the
+/// frame carries replaces; a field it omits is left alone. See the
+/// `message_delta` arm for why this is not `Usage::add`.
+fn apply_cumulative_usage(usage: &mut Usage, v: Option<&Value>) {
+    let Some(v) = v else { return };
+    // Monotone: a cumulative counter never goes down, so the larger of the
+    // two is the truth. A compatible gateway that emits `"input_tokens": 0`
+    // in its delta would otherwise zero the prompt total that `pressure`,
+    // the compaction threshold and the cache lens all read — the same blast
+    // radius as the double-count this replaces, in the other direction.
+    let set = |key: &str, slot: &mut u64| {
+        if let Some(n) = v.get(key).and_then(Value::as_u64) {
+            *slot = (*slot).max(n);
+        }
+    };
+    set("input_tokens", &mut usage.input_tokens);
+    set("output_tokens", &mut usage.output_tokens);
+    set(
+        "cache_creation_input_tokens",
+        &mut usage.cache_creation_input_tokens,
+    );
+    set(
+        "cache_read_input_tokens",
+        &mut usage.cache_read_input_tokens,
+    );
+}
+
 fn decode_refusal(v: &Value) -> Option<Refusal> {
     let d = v.get("stop_details")?;
     if d.is_null() {
@@ -438,6 +466,27 @@ struct StreamAccumulator {
     usage: Usage,
     refusal: Option<Refusal>,
     model: String,
+    /// `message_stop` arrived: the server closed the envelope itself.
+    stopped: bool,
+}
+
+impl StreamAccumulator {
+    /// Did the stream end the way a finished message ends?
+    ///
+    /// A finished message carries a `stop_reason` in its `message_delta` and
+    /// closes with `message_stop`. A stream that ends with neither is a
+    /// dropped connection, and `finish()` would have handed back the partial
+    /// text as a plausible whole turn with `StopReason::Other`, into the
+    /// transcript, with nothing to say it was cut.
+    fn closed_cleanly(&self) -> Result<()> {
+        if self.stopped || self.stop_reason.is_some() {
+            return Ok(());
+        }
+        bail!(
+            "the stream ended before message_stop with no stop_reason, so the answer may be \
+             truncated; the connection was probably dropped"
+        )
+    }
 }
 
 enum PartialBlock {
@@ -565,9 +614,21 @@ impl StreamAccumulator {
                         self.refusal = Some(r);
                     }
                 }
-                self.usage.add(&decode_usage(event.get("usage")));
+                // **Cumulative, so it replaces rather than adds.** The
+                // `message_delta` frame carries the message's running
+                // totals — the same `output_tokens` that `message_start`
+                // opened at 1, and on the current API the input and both
+                // cache tiers again. Adding it on top of `message_start`
+                // over-reported every streamed turn by one output token at
+                // best and doubled the prompt at worst, and the prompt total
+                // is what `pressure` predicts from, what the compaction
+                // threshold compares against, and what the cache lens
+                // judges. Only fields the frame actually carries replace;
+                // an absent field keeps what `message_start` said.
+                apply_cumulative_usage(&mut self.usage, event.get("usage"));
                 let _ = sink.send(StreamEvent::Usage(self.usage.clone()));
             }
+            "message_stop" => self.stopped = true,
             "error" => {
                 bail!(
                     "anthropic stream error: {}",
@@ -641,10 +702,129 @@ mod tests {
         client_at("http://localhost:1")
     }
 
+    /// The wire contract: `message_start` opens the usage (input, both cache
+    /// tiers, `output_tokens: 1`) and `message_delta` carries the message's
+    /// *cumulative* totals. Adding the two counted the prompt twice and the
+    /// first output token twice — and the doubled prompt fed `pressure`, the
+    /// compaction threshold and the cache lens.
+    #[test]
+    fn a_streamed_message_delta_replaces_the_usage_instead_of_adding_to_it() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut acc = StreamAccumulator::default();
+        acc.push(
+            &serde_json::json!({
+                "type": "message_start",
+                "message": {
+                    "model": "m",
+                    "usage": {
+                        "input_tokens": 100,
+                        "cache_read_input_tokens": 50,
+                        "cache_creation_input_tokens": 0,
+                        "output_tokens": 1
+                    }
+                }
+            }),
+            &tx,
+        )
+        .unwrap();
+        acc.push(
+            &serde_json::json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {
+                    "input_tokens": 100,
+                    "cache_read_input_tokens": 50,
+                    "cache_creation_input_tokens": 0,
+                    "output_tokens": 12
+                }
+            }),
+            &tx,
+        )
+        .unwrap();
+        assert_eq!(acc.usage.input_tokens, 100);
+        assert_eq!(acc.usage.cache_read_input_tokens, 50);
+        assert_eq!(acc.usage.output_tokens, 12);
+        assert_eq!(acc.usage.total_input(), 150);
+
+        // A gateway that writes zeros into the delta must not zero the input
+        // either: cumulative counters only go up.
+        acc.push(
+            &serde_json::json!({
+                "type": "message_delta",
+                "delta": {},
+                "usage": {"input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 14}
+            }),
+            &tx,
+        )
+        .unwrap();
+        assert_eq!(acc.usage.input_tokens, 100);
+        assert_eq!(acc.usage.cache_read_input_tokens, 50);
+        assert_eq!(acc.usage.output_tokens, 14);
+
+        // An older-shaped delta that carries only `output_tokens` must not
+        // zero the input that `message_start` reported.
+        let mut acc = StreamAccumulator::default();
+        acc.push(
+            &serde_json::json!({
+                "type": "message_start",
+                "message": {"model": "m", "usage": {"input_tokens": 100, "output_tokens": 1}}
+            }),
+            &tx,
+        )
+        .unwrap();
+        acc.push(
+            &serde_json::json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 12}
+            }),
+            &tx,
+        )
+        .unwrap();
+        assert_eq!(acc.usage.input_tokens, 100);
+        assert_eq!(acc.usage.output_tokens, 12);
+    }
+
+    /// A stream that ends without `message_stop` or a `stop_reason` is a
+    /// dropped connection, not a finished answer.
+    #[test]
+    fn a_stream_that_ends_without_message_stop_is_an_error_not_a_turn() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut acc = StreamAccumulator::default();
+        acc.push(
+            &serde_json::json!({"type": "message_start", "message": {"model": "m", "usage": {}}}),
+            &tx,
+        )
+        .unwrap();
+        acc.push(
+            &serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+            &tx,
+        )
+        .unwrap();
+        acc.push(
+            &serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "half an ans"}}),
+            &tx,
+        )
+        .unwrap();
+        assert!(acc.closed_cleanly().is_err());
+
+        // Either closing signal suffices.
+        acc.push(
+            &serde_json::json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 3}}),
+            &tx,
+        )
+        .unwrap();
+        assert!(acc.closed_cleanly().is_ok());
+        let mut acc = StreamAccumulator::default();
+        acc.push(&serde_json::json!({"type": "message_stop"}), &tx)
+            .unwrap();
+        assert!(acc.closed_cleanly().is_ok());
+    }
+
     /// Shared with `retry_tests` below.
     pub(super) fn client_at(base_url: &str) -> Anthropic {
         Anthropic {
-            http: reqwest::Client::new(),
+            http: crate::provider::HttpClients::plain(),
             api_key: "test-key".into(),
             base_url: base_url.into(),
             default_model: DEFAULT_MODEL.into(),

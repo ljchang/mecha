@@ -673,11 +673,20 @@ impl LearningStore {
     }
 
     pub fn reflexions(&self) -> Result<Vec<Reflexion>> {
+        self.reflexions_counting().map(|(r, _)| r)
+    }
+
+    /// [`reflexions`](Self::reflexions), and how many lines it skipped —
+    /// `OutboxStore::items_counting`'s shape, for a reader whose "read"
+    /// claim must cover every row (found on review of the appraisal's
+    /// `learning_read` field).
+    pub fn reflexions_counting(&self) -> Result<(Vec<Reflexion>, usize)> {
         let path = self.root.join("reflections.jsonl");
         if !path.exists() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
         let mut out = Vec::new();
+        let mut skipped = 0usize;
         for line in std::fs::read_to_string(&path)?.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -686,10 +695,13 @@ impl LearningStore {
             // One corrupt line loses one reflection, not the store.
             match serde_json::from_str(line) {
                 Ok(r) => out.push(r),
-                Err(e) => tracing::warn!("skipping corrupt reflection line: {e}"),
+                Err(e) => {
+                    skipped += 1;
+                    tracing::warn!("skipping corrupt reflection line: {e}")
+                }
             }
         }
-        Ok(out)
+        Ok((out, skipped))
     }
 
     /// Sessions already mined, so `mecha reflect` never re-reads one.
@@ -1517,6 +1529,19 @@ pub enum Trigger {
     /// without any UI for them. These have no replayable intervention point,
     /// so the counterfactual probe must skip them.
     Edit,
+    /// The recorded outcome disagreed with the model's own prediction —
+    /// endogenous, the first trigger that needs no person to fire
+    /// (`docs/APPRAISAL-RESEARCH.md` §3.7; `docs/AUDIT-RESEARCH.md` §3.11).
+    /// Three events and no others: a declared `check` failed on a step
+    /// marked completed, an `expect_calls` forecast blown past
+    /// `step::escalation_candidate`'s outlier constants, or a completed
+    /// step's check rewritten after the fact. Bounded one reflection per
+    /// step and three per run. A critic's false alarm is never one of
+    /// these: it says something about the critic, not the agent. **The
+    /// variant is the wire format; nothing fires it yet** — the firing is
+    /// phase C of the appraisal plan, and a reader meeting `"mismatch"` in
+    /// the store before then must not choke on it.
+    Mismatch,
 }
 
 impl Trigger {
@@ -1526,6 +1551,7 @@ impl Trigger {
             Trigger::Denial => "denial",
             Trigger::Followup => "followup",
             Trigger::Edit => "edit",
+            Trigger::Mismatch => "mismatch",
         }
     }
 
@@ -3537,6 +3563,8 @@ mod tests {
             assert_eq!(t.domain(), "behavior");
         }
         assert_eq!(Trigger::Edit.domain(), "writing");
+        assert_eq!(Trigger::Mismatch.domain(), "behavior");
+        assert_eq!(Trigger::Mismatch.as_str(), "mismatch");
     }
 
     /// The writing domain consolidates with the writing frame; every other
@@ -4400,5 +4428,26 @@ mod probation_tests {
         assert!(rule.enabled);
         // And it is omitted when false, so an ordinary rule file gains nothing.
         assert!(!serde_json::to_string(&rule).unwrap().contains("probation"));
+    }
+
+    #[test]
+    fn reflexions_counting_says_how_many_lines_it_skipped() {
+        let dir = std::env::temp_dir().join(format!("learning-count-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = serde_json::json!({
+            "id": "r1", "domain": "behavior", "session_id": "s1", "trigger": "steer",
+            "context": "…", "intervention": "no, the other one", "reflexion_text": "…",
+            "error_type": null, "confidence": null, "created_at": "2026-08-28T00:00:00Z"
+        });
+        std::fs::write(
+            dir.join("reflections.jsonl"),
+            format!("{good}\n{{not json\n"),
+        )
+        .unwrap();
+        let store = LearningStore::open(&dir).unwrap();
+        let (rows, skipped) = store.reflexions_counting().unwrap();
+        assert_eq!((rows.len(), skipped), (1, 1));
+        assert_eq!(store.reflexions().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -687,7 +687,13 @@ async fn appraise_closure(
 /// on any non-neutral `dropped` closure too — e.g. a `MaxTurns` run the
 /// owner gave up on got a "Revisit" task put right back on the board.
 fn worth_a_follow_up(new_status: &str, a: &mecha_core::appraisal::Appraisal) -> bool {
-    new_status == "done" && a.label != mecha_core::appraisal::Affect::Neutral
+    // The label, or the typed residue predicate beside it. A ceiling used
+    // to reach this gate as the label `Anger`; it labels `Neutral` now (the
+    // owner's own limit — `of_session`'s ceiling arm) and reaches the gate
+    // through `cut_short` instead, which is the same closure named by what
+    // it actually is: a run the owner accepted with work cut off. No
+    // threshold over raw magnitudes is derived here.
+    new_status == "done" && (a.label != mecha_core::appraisal::Affect::Neutral || a.cut_short())
 }
 
 /// Is `id` exactly one ordinary path component — never a root, a `..`,
@@ -776,32 +782,125 @@ fn appraise_session(
     // reason this needs to: a read failure here silently undercounts the
     // `Edit` channel's evidence for a decision that, unlike that scan, can
     // never be rerun — the task is already closed by the time this runs.
+    let mut outbox_unreadable = false;
     let drafts: Vec<mecha_core::outbox::OutboxItem> =
         match mecha_core::outbox::OutboxStore::open_existing_default() {
             None => Vec::new(),
-            Some(store) => match store.items() {
-                Ok(items) => items
-                    .into_iter()
-                    .filter(|i| i.session_id.as_deref() == Some(session_id))
-                    .collect(),
+            Some(store) => match store.items_counting() {
+                Ok((items, skipped)) => {
+                    if skipped > 0 {
+                        // A skipped file is an unread draft, and this
+                        // decision is never rerun: say so and keep the
+                        // request arm from reading the gap as "nothing
+                        // drafted" (found on review).
+                        eprintln!(
+                            "mecha: {skipped} outbox item(s) could not be parsed while appraising \
+                             {task_id} — the edit channel is incomplete and the request arm is off"
+                        );
+                        outbox_unreadable = true;
+                    }
+                    items
+                        .into_iter()
+                        .filter(|i| i.session_id.as_deref() == Some(session_id))
+                        .collect()
+                }
                 Err(e) => {
                     eprintln!(
                         "mecha: could not read the outbox while appraising {task_id} — its \
                          drafts are missing from this appraisal and the follow-up decision, if \
                          any, may be based on incomplete evidence: {e:#}"
                     );
+                    outbox_unreadable = true;
                     Vec::new()
                 }
             },
         };
     let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts.iter().collect();
+    // The three commitment stores, on the same best-effort terms as the
+    // outbox above: a store that could not be read costs its channel and
+    // says so, never the appraisal.
+    // Counting readers, so a skipped row is said out loud here the way an
+    // unreadable store is: these arms only ever add a sign, so a skip
+    // under-signs rather than inverting one, but a decision that is never
+    // rerun deserves to know its evidence was short.
+    let skipped_note = |store: &str, skipped: usize| {
+        if skipped > 0 {
+            eprintln!(
+                "mecha: {skipped} {store} row(s) could not be parsed while appraising {task_id} — \
+                 that channel is incomplete"
+            );
+        }
+    };
+    // Each store hands back what it read and whether that was everything:
+    // the flag travels into the record as `partial`, so the printout
+    // below and the record `stage_follow_up` cites carry the caveat with
+    // them rather than only on a stderr line above (found on review).
+    // `worth_a_follow_up` does not read it yet — a short reading gates the
+    // same way a full one does, and says so.
+    let (questions, questions_unreadable) =
+        match mecha_core::questions::QuestionStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.items_counting() {
+                Ok((items, skipped)) => {
+                    skipped_note("question", skipped);
+                    (items, skipped > 0)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "mecha: could not read the question store while appraising {task_id}: {e:#}"
+                    );
+                    (Vec::new(), true)
+                }
+            },
+        };
+    let (requests, frontdoor_unreadable) =
+        match mecha_core::frontdoor::Frontdoor::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(fd) => match fd.records_counting() {
+                Ok((items, skipped)) => {
+                    skipped_note("front-door", skipped);
+                    (items, skipped > 0)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "mecha: could not read the front door while appraising {task_id}: {e:#}"
+                    );
+                    (Vec::new(), true)
+                }
+            },
+        };
+    let (reflexions, learning_unreadable) =
+        match mecha_core::learning::LearningStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.reflexions_counting() {
+                Ok((items, skipped)) => {
+                    skipped_note("reflection", skipped);
+                    (items, skipped > 0)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "mecha: could not read the learning store while appraising {task_id}: {e:#}"
+                    );
+                    (Vec::new(), true)
+                }
+            },
+        };
     let goal = mecha_core::goal::GoalRef::Task(task_id.to_string());
     Ok(Some(mecha_core::appraisal::of_session(
         session_id,
         &stats,
         &[goal],
         &interventions,
-        &mine,
+        mecha_core::appraisal::SessionRecords {
+            drafts: &mine,
+            outbox_unreadable,
+            questions: &questions,
+            questions_unreadable,
+            requests: &requests,
+            frontdoor_unreadable,
+            reflexions: &reflexions,
+            learning_unreadable,
+        },
         end_taint,
         chrono::Utc::now().to_rfc3339(),
     )))
@@ -812,12 +911,21 @@ fn appraise_session(
 /// `GoalError::cite`'s own rule, carried out to what a human reads: a
 /// pointer, never prose.
 fn describe(a: &mecha_core::appraisal::Appraisal) -> String {
-    let positives = a.errors.iter().filter(|e| e.sign > 0.0).count();
-    let negatives = a.errors.iter().filter(|e| e.sign < 0.0).count();
+    let v = mecha_core::appraisal::Valence::of(a);
+    // A silent reading drops `compact()`'s `…`, and silent-and-partial is
+    // exactly where the caveat matters most — every store unreadable
+    // reads as "nothing signed" (found on review).
+    let reading = match (v.is_silent(), v.partial) {
+        (true, true) => "nothing signed, partial reading".to_string(),
+        (true, false) => "nothing signed".to_string(),
+        (false, _) => v.compact(),
+    };
     format!(
-        "{:?} ({positives} positive, {negatives} negative signal{})",
+        "{:?} · {reading} ({} positive, {} negative signal{})",
         a.label,
-        if negatives == 1 { "" } else { "s" }
+        v.positives,
+        v.negatives,
+        if v.negatives == 1 { "" } else { "s" }
     )
 }
 
@@ -1411,6 +1519,7 @@ async fn work(
                     // D10 — the drawer filters on this prefix. A run the owner
                     // cannot find is a run they will start twice.
                     title: Some(format!("task: {name}")),
+                    kind: Some(mecha_core::session::SessionKind::Task),
                 },
             )?,
             mecha_core::agent::Conversation::new(),
@@ -2529,6 +2638,7 @@ mod tests {
             origin: mecha_core::learning::Origin::Clean,
             taint: mecha_core::agent::Taint::default(),
             created_at: "2026-08-27T00:00:00Z".into(),
+            partial: false,
         }
     }
 
@@ -2601,34 +2711,52 @@ mod tests {
         }
     }
 
-    /// The follow-up gate reads the derived label, not the raw signed
-    /// errors — `affect_of` already reduced "does this need a human" down
-    /// to one word, and re-deriving a threshold over raw signs here would be
-    /// a second, less-tested version of exactly that reduction. A `Neutral`
-    /// closure — the overwhelming common case per the rung 7 corpus — must
-    /// never stage a follow-up nobody asked for.
+    /// The follow-up gate reads the derived label and the typed residue
+    /// predicate, never a threshold over raw signs — `affect_of` already
+    /// reduced "does this need a human" down to one word, and re-deriving a
+    /// magnitude threshold here would be a second, less-tested version of
+    /// exactly that reduction. A `Neutral` closure with nothing cut off —
+    /// the overwhelming common case — must never stage a follow-up nobody
+    /// asked for, and neither must one whose only negative is a draft the
+    /// owner rejected: that is a verdict, not residue.
     #[test]
     fn a_neutral_closure_never_stages_a_follow_up() {
         assert!(!worth_a_follow_up(
             "done",
             &appraisal(mecha_core::appraisal::Affect::Neutral)
         ));
+        let mut rejected = appraisal(mecha_core::appraisal::Affect::Neutral);
+        rejected.errors = vec![mecha_core::appraisal::GoalError {
+            goal: None,
+            channel: mecha_core::appraisal::Channel::Edit,
+            sign: -1.0,
+            agency: mecha_core::appraisal::Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: mecha_core::appraisal::Cite::Draft("o1".into()),
+        }];
+        assert!(!worth_a_follow_up("done", &rejected));
     }
 
-    /// The one label the free readout can actually put on a closure, pinned
-    /// by name: a ceiling-cut run the owner accepted as `done` anyway is the
-    /// residue-bearing case, and the follow-up captures the cut-off work,
-    /// not blame for the ceiling — `worth_a_follow_up`'s doc carries the
-    /// argument. If this starts failing because someone narrowed the gate to
-    /// the disappointment-family, note that today that makes the gate dead
-    /// code: no probe runs at closure time, so `Disappointment` never
-    /// reaches it.
+    /// The residue-bearing case, pinned by shape rather than by label: a
+    /// ceiling-cut run the owner accepted as `done` anyway labels `Neutral`
+    /// now (the ceiling is the owner's own limit, not `Anger`) and reaches
+    /// the gate through `Appraisal::cut_short` — the follow-up captures the
+    /// cut-off work, not blame for the ceiling.
     #[test]
     fn a_ceiling_cut_run_accepted_anyway_stages_the_residue() {
-        assert!(worth_a_follow_up(
-            "done",
-            &appraisal(mecha_core::appraisal::Affect::Anger)
-        ));
+        let mut cut = appraisal(mecha_core::appraisal::Affect::Neutral);
+        cut.errors = vec![mecha_core::appraisal::GoalError {
+            goal: None,
+            channel: mecha_core::appraisal::Channel::Counter,
+            sign: -0.5,
+            agency: mecha_core::appraisal::Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: mecha_core::appraisal::Cite::Counter("stop_cause".into()),
+        }];
+        assert!(worth_a_follow_up("done", &cut));
+        assert!(!worth_a_follow_up("dropped", &cut));
     }
 
     #[test]
@@ -2705,7 +2833,23 @@ mod tests {
         ];
         let s = describe(&a);
         assert!(s.contains("Frustration"));
+        assert!(s.contains("+1.0 \u{2212}1.0"), "{s}");
         assert!(s.contains("1 positive"));
         assert!(s.contains("1 negative signal"));
+        assert!(!s.contains("o1") && !s.contains("stop_cause"), "{s}");
+    }
+
+    #[test]
+    fn describe_says_partial_when_silent_and_short() {
+        let mut a = appraisal(mecha_core::appraisal::Affect::Neutral);
+        a.errors.clear();
+        assert!(describe(&a).contains("nothing signed"));
+        assert!(!describe(&a).contains("partial"));
+        a.partial = true;
+        assert!(
+            describe(&a).contains("nothing signed, partial reading"),
+            "{}",
+            describe(&a)
+        );
     }
 }
