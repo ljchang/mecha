@@ -786,11 +786,24 @@ fn appraise_session(
     let drafts: Vec<mecha_core::outbox::OutboxItem> =
         match mecha_core::outbox::OutboxStore::open_existing_default() {
             None => Vec::new(),
-            Some(store) => match store.items() {
-                Ok(items) => items
-                    .into_iter()
-                    .filter(|i| i.session_id.as_deref() == Some(session_id))
-                    .collect(),
+            Some(store) => match store.items_counting() {
+                Ok((items, skipped)) => {
+                    if skipped > 0 {
+                        // A skipped file is an unread draft, and this
+                        // decision is never rerun: say so and keep the
+                        // request arm from reading the gap as "nothing
+                        // drafted" (found on review).
+                        eprintln!(
+                            "mecha: {skipped} outbox item(s) could not be parsed while appraising \
+                             {task_id} — the edit channel is incomplete and the request arm is off"
+                        );
+                        outbox_unreadable = true;
+                    }
+                    items
+                        .into_iter()
+                        .filter(|i| i.session_id.as_deref() == Some(session_id))
+                        .collect()
+                }
                 Err(e) => {
                     eprintln!(
                         "mecha: could not read the outbox while appraising {task_id} — its \

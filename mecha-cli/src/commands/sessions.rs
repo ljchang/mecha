@@ -539,11 +539,17 @@ async fn appraise(
     // *empty* case and not a read failure. Conflating the two prints "the
     // outbox could not be read" on a machine that has nothing to read, which
     // is the dash-versus-zero inversion this whole surface exists to avoid.
+    // `items_counting`, not `items`: a skew-version draft the lenient read
+    // skips is an unread row, and the request arm would answer "nothing
+    // drafted" for a request it answered (found on review). One skipped
+    // file marks the store unreadable for this walk's purposes — the
+    // channel is missing, not empty, and the readout says which.
     let (drafts, outbox_unreadable): (Vec<mecha_core::outbox::OutboxItem>, bool) =
         match mecha_core::outbox::OutboxStore::open_existing_default() {
             None => (Vec::new(), false),
-            Some(store) => match store.items() {
-                Ok(items) => (items, false),
+            Some(store) => match store.items_counting() {
+                Ok((items, 0)) => (items, false),
+                Ok((items, _skipped)) => (items, true),
                 Err(_) => (Vec::new(), true),
             },
         };
@@ -874,7 +880,10 @@ async fn appraise(
     // came back empty — the one path where a reader most needs to know the
     // edit channel is missing rather than genuinely empty.
     if outbox_unreadable {
-        println!("  (the outbox could not be read, so the edit channel is missing — not empty)\n");
+        println!(
+            "  (the outbox could not be fully read, so the edit channel is incomplete and the \
+             request arm is off — missing, not empty)\n"
+        );
     }
     if questions_unreadable || frontdoor_unreadable || learning_unreadable {
         println!(
