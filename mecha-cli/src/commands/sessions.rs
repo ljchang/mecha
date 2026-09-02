@@ -806,6 +806,9 @@ async fn appraise(
             named_a_goal += 1;
         }
         let v = appraisal::Valence::of(a);
+        // Partial whether or not anything was signed: a silent reading
+        // over a short store is the one that most needs the mark.
+        valence.partial |= v.partial;
         if !v.is_silent() {
             signed += 1;
             valence.positive += v.positive;
@@ -839,6 +842,9 @@ async fn appraise(
                     "positives": valence.positives,
                     "negatives": valence.negatives,
                     "visible": valence.visible,
+                    // Any session's reading was computed over a short
+                    // store — the four `*_read` flags below say which.
+                    "partial": valence.partial,
                 },
                 "channels": channels,
                 "positive_errors": positive,
