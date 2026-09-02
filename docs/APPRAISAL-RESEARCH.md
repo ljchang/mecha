@@ -255,8 +255,10 @@ on `OutboxStore` cannot be manufactured by a sentence in a fetched page.
 > to zero from any backlog — found on review). Both numbers come from the
 > three owner-facing stores (`BacklogDelta::owner_facing_net`, `guilt::
 > waiting`), never the five-store `net`, and `guilt::with_backlogs` derives
-> them from one pair of reads. A run that *added* to the queue reads the
-> level it inherited,
+> them from one pair of reads. The fold lands in its own field,
+> `Homeostat::guilt_after_relief`, so the level's corpus mean stays one
+> quantity across old and new rows. A run that *added* to the queue reads
+> the level it inherited,
 > because staging is its job and the first cut's "added three reads as
 > maximal" was exactly the reading `Homeostat::finish` refuses by name
 > (found on review). `Homeostat::finish` computes the delta first and folds
