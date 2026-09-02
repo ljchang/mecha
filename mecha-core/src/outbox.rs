@@ -71,6 +71,33 @@ impl OutboxKind {
     }
 }
 
+/// Where a staged draft came from: the run, the jail, and the call.
+///
+/// A struct rather than three more parameters, and not only because `stage`
+/// had reached clippy's argument ceiling. `session_id` and `call_id` are both
+/// `Option<String>` and both optional, so positionally they are
+/// interchangeable to the compiler and not at all interchangeable to the
+/// store — one names the transcript, the other names a single call inside it,
+/// and a swap would compile, store, and only surface as a draft whose source
+/// pane is wrong.
+///
+/// Every field is optional because every field is genuinely absent for some
+/// legitimate staging: `mecha mail compose` has no run and no call, a tool
+/// built over a fixed directory has no per-run workspace, and an item written
+/// before `call_id` existed has none of the third.
+#[derive(Debug, Clone, Default)]
+pub struct Provenance {
+    /// The session whose transcript holds the staging call.
+    pub session_id: Option<String>,
+    /// The jail the tool would really have executed under. A release happens
+    /// in another process from another directory; a staged path means nothing
+    /// without the root it was written against.
+    pub workspace: Option<PathBuf>,
+    /// The `tool_use` id of the call that staged this — see
+    /// [`OutboxItem::call_id`].
+    pub call_id: Option<String>,
+}
+
 /// One staged outbound action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxItem {
@@ -85,6 +112,17 @@ pub struct OutboxItem {
     pub kind: OutboxKind,
     /// The arguments as the agent drafted them. Never modified — this is the
     /// baseline the learning capture diffs against.
+    ///
+    /// **Equal to `args` at stage time, and that is load-bearing rather than
+    /// incidental.** `edited()` is `args != args_before`, so anything that
+    /// makes them differ before a human has touched the draft reports every
+    /// send as a correction: `writing_outcome()` returns `SentEdited` instead
+    /// of `SentUnchanged`, which flips the appraisal signal from `+1.0 /
+    /// Own` to `-1.0 / Owner`, and `mineable_as_writing()` feeds the
+    /// harness's own bookkeeping to a reflector whose rules ride in every
+    /// future run's cached prefix. So a default the loop pins into a draft
+    /// belongs in *both*, and what locates the staging call in the transcript
+    /// is [`OutboxItem::call_id`], not this.
     pub args_before: Value,
     /// The arguments a release will execute. Starts equal to `args_before`;
     /// `mecha outbox edit` rewrites it.
@@ -128,6 +166,23 @@ pub struct OutboxItem {
     /// `pending` — the draft is still good; the delivery was not.
     #[serde(default)]
     pub error: Option<String>,
+    /// The `tool_use` id of the call that staged this, when a call staged it.
+    ///
+    /// The anchor [`crate::outbox_source`] walks a transcript to find. It used
+    /// to match `(tool, args_before)`, which is identity by content and was
+    /// true only for as long as nothing between the model's call and the
+    /// stored draft touched the arguments — the loop now pins schema defaults
+    /// into a staged call, so a `mail_reply` whose `reply_all` was filled no
+    /// longer equals its own recorded input, the walk runs past the staging
+    /// call, and the draft joins to *itself*.
+    ///
+    /// `None` for a draft no tool call produced (`mecha mail compose`) and for
+    /// every item written before this field existed, which is why the walk
+    /// keeps the old argument match as its fallback: defaulted on load, on the
+    /// append-only store's rule, so a pending draft staged yesterday still
+    /// finds its source today.
+    #[serde(default)]
+    pub call_id: Option<String>,
 }
 
 impl OutboxItem {
@@ -346,9 +401,13 @@ impl OutboxStore {
         kind: OutboxKind,
         args: Value,
         taint: Taint,
-        session_id: Option<String>,
-        workspace: Option<PathBuf>,
+        from: Provenance,
     ) -> Result<OutboxItem> {
+        let Provenance {
+            session_id,
+            workspace,
+            call_id,
+        } = from;
         let item = OutboxItem {
             id: Session::new_id(),
             status: "pending".into(),
@@ -364,6 +423,7 @@ impl OutboxStore {
             resolved_at: None,
             reason: None,
             error: None,
+            call_id,
         };
         self.write_item(&item)?;
         Ok(item)
@@ -971,8 +1031,11 @@ mod tests {
                 OutboxKind::Message,
                 json!({"url": "https://a"}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
         let b = store
@@ -984,8 +1047,11 @@ mod tests {
                     private: true,
                     untrusted: true,
                 },
-                Some("sess-1".into()),
-                None,
+                Provenance {
+                    session_id: Some("sess-1".into()),
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1014,8 +1080,11 @@ mod tests {
                 OutboxKind::Message,
                 json!({}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
         // A stray file, or one written by a schema this binary cannot read —
@@ -1044,8 +1113,11 @@ mod tests {
                 OutboxKind::Message,
                 json!({}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
         store
@@ -1054,8 +1126,11 @@ mod tests {
                 OutboxKind::Message,
                 json!({}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1076,8 +1151,11 @@ mod tests {
                 OutboxKind::Message,
                 json!({"url": "https://a"}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1117,8 +1195,11 @@ mod tests {
                     kind,
                     json!({"path": "/tmp/a"}),
                     Taint::default(),
-                    None,
-                    None,
+                    Provenance {
+                        session_id: None,
+                        workspace: None,
+                        call_id: None,
+                    },
                 )
                 .unwrap();
             item.status = status.into();
@@ -1149,8 +1230,11 @@ mod tests {
                     kind,
                     json!({"body": "Dear Dirk,"}),
                     Taint::default(),
-                    None,
-                    None,
+                    Provenance {
+                        session_id: None,
+                        workspace: None,
+                        call_id: None,
+                    },
                 )
                 .unwrap()
         };
@@ -1279,8 +1363,11 @@ mod tests {
                 OutboxKind::Publish,
                 json!({"bundle": "site", "id": "brief"}),
                 Taint::default(),
-                None,
-                Some(jail.clone()),
+                Provenance {
+                    session_id: None,
+                    workspace: Some(jail.clone()),
+                    call_id: None,
+                },
             )
             .unwrap();
         assert_eq!(item.workspace.as_ref(), Some(&jail));
@@ -1303,8 +1390,11 @@ mod tests {
                 OutboxKind::Message,
                 json!({}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1335,8 +1425,11 @@ mod tests {
                 OutboxKind::Message,
                 json!({}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1365,8 +1458,11 @@ mod tests {
                 OutboxKind::Message,
                 json!({"to": "a@x.org"}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 

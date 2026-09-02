@@ -3334,20 +3334,30 @@ impl Agent {
                     // moves in between.
                     crate::tool::with_schema_defaults(&tool.input_schema(), input),
                     *taint,
-                    route.session_id(),
-                    // The jail this call was drafted under. A release happens
-                    // in another process from another directory, and a staged
-                    // path means nothing without the root it was written
-                    // against. A tool constructed over a fixed directory (a
-                    // server spawned once for many runs) resolves its paths
-                    // against that root, not the per-run workspace — so the
-                    // item records the root the release will really execute
-                    // under, or a relative path drafted against the wide root
-                    // resolves outside the narrow one forever.
-                    Some(
-                        tool.fixed_workspace()
-                            .unwrap_or_else(|| cx.tools.workspace.clone()),
-                    ),
+                    crate::outbox::Provenance {
+                        session_id: route.session_id(),
+                        // The jail this call was drafted under. A release
+                        // happens in another process from another directory,
+                        // and a staged path means nothing without the root it
+                        // was written against. A tool constructed over a fixed
+                        // directory (a server spawned once for many runs)
+                        // resolves its paths against that root, not the
+                        // per-run workspace — so the item records the root the
+                        // release will really execute under, or a relative
+                        // path drafted against the wide root resolves outside
+                        // the narrow one forever.
+                        workspace: Some(
+                            tool.fixed_workspace()
+                                .unwrap_or_else(|| cx.tools.workspace.clone()),
+                        ),
+                        // The anchor `outbox_source` walks the transcript to
+                        // find. Identity, not a guess from the arguments: the
+                        // fill above means the stored draft no longer equals
+                        // the `tool_use` input the session recorded, and a
+                        // content match would run past the staging call and
+                        // join the draft to itself.
+                        call_id: Some(id.clone()),
+                    },
                 ) {
                     Ok(item) => {
                         let content = format!(

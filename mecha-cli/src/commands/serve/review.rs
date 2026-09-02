@@ -1144,6 +1144,7 @@ mod tests {
 
     fn item(id: &str, status: &str, created: &str) -> OutboxItem {
         OutboxItem {
+            call_id: None,
             id: id.into(),
             status: status.into(),
             tool: "mail__mail_reply".into(),

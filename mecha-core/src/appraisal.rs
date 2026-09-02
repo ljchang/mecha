@@ -1801,6 +1801,7 @@ mod tests {
             } else {
                 before.clone()
             },
+            call_id: None,
             args_before: before,
             summary: "a reply".into(),
             session_id: Some("s1".into()),

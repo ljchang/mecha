@@ -746,8 +746,11 @@ mod tests {
                     crate::outbox::OutboxKind::Message,
                     json!({"to": "ada@example.com"}),
                     Default::default(),
-                    Some("sess-1".into()),
-                    None,
+                    crate::outbox::Provenance {
+                        session_id: Some("sess-1".into()),
+                        workspace: None,
+                        call_id: None,
+                    },
                 )
                 .unwrap()
                 .id
