@@ -360,6 +360,27 @@ a 0.94 AUROC lost up to 26 points on high-success tasks).
 Turn `step_escalation` on as arm 0 of the same experiment: it exists, it is
 off for lack of a corpus, and this is the corpus.
 
+**How the arms join the appraisal lane's loop** (brainstormed with that lane
+on 2026-09-02; its side is `APPRAISAL-RESEARCH.md` §3.7, and neither doc is
+a design yet). The loop it proposes is plan → predict → act → detect the
+discrepancy structurally → explain → prior for the next turn → consolidate
+through the existing gate. Arm 1's re-injected plan is also where the
+*prediction* lives: if a step carries an expected outcome and "what could go
+wrong", re-injection re-reads the prediction for free. Arm 2 is the
+structural detector at step level — `step::looks_like_verification` guesses
+at "verify-shaped", a declared and hashed check makes it a fact — and its
+result should be recorded as a `ToolCallTrace` (or beside one), so `step.rs`'s
+span reading sees it without a new seam and `RunStats` can count checks
+declared against checks passed. Arm 3's verdict is that lane's pre-registered
+expectation, with the owner's `edit`/`intervention`/`SentUnchanged` as the
+score. Two seams that lane owns and this plan will cite when built: a fifth
+`learning::Trigger` variant for a prediction–outcome mismatch, and a
+prediction record on `todo.rs`'s `Plan` beside `serves:`, lenient on read.
+The owner's ruling there: the error signal is mostly *prose* — a reflection
+explaining why the prediction was wrong, riding the next turn beside tool
+results and provenance-gated across sessions — and numbers keep three jobs,
+the trigger, the replay priority and the consolidation gate.
+
 **Landed when.** `ambiguity`, `long-horizon` and the Terminal-Bench subset
 at k=5 for each arm against control, with `--ab-rules` to price the
 stack; arm 3 additionally reports appraisal's edit rate on flagged versus
