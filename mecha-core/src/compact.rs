@@ -233,6 +233,10 @@ fn is_safe_cut(messages: &[Message], i: usize) -> bool {
 /// would leave last hour's task list sitting in the prompt above this one's,
 /// and a model reading two contradictory lists is worse off than one reading
 /// neither.
+pub const CARRIED_HEADER: &str =
+    "[Live state, carried past the compaction and current as of now — it supersedes \
+     anything about it in the summaries above:]";
+
 /// Marks the summary block [`rebuild`] appends to the head message.
 ///
 /// A named constant for the same reason [`CARRIED_HEADER`] is one, plus a
@@ -244,12 +248,12 @@ fn is_safe_cut(messages: &[Message], i: usize) -> bool {
 /// owner's own words has to exclude them by name, and a literal copied into
 /// that reader would go stale the first time this sentence was reworded.
 /// `title::owner_turns` is the reader that needs it.
+///
+/// Unlike [`CARRIED_HEADER`], these **accumulate**: each summary describes a
+/// different stretch of the conversation, where there is only ever one
+/// current carried state.
 pub const SUMMARY_HEADER: &str =
     "[Earlier turns were compacted to fit the context window. What happened in them:]";
-
-pub const CARRIED_HEADER: &str =
-    "[Live state, carried past the compaction and current as of now — it supersedes \
-     anything about it in the summaries above:]";
 
 /// Rebuild the transcript around `summary`.
 ///

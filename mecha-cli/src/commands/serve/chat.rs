@@ -1417,7 +1417,17 @@ fn begin_turn(
         // comment has the argument — a title outlives every answer in the
         // conversation and is rendered on every surface, so third-party text
         // must not reach the thing that composes one).
-        let owner_turns = mecha_core::title::owner_turns(&conversation.messages);
+        // The one thing a block filter in core cannot strip, because it is
+        // not a block: a spoken turn is `VOICE_BLOCK` *prefixed onto* the
+        // owner's own words, and since D3 it lands in this same `web:`
+        // conversation. The constant is this crate's, so the stripping is
+        // too — the same helper the session listing already runs for the
+        // same reason.
+        let owner_turns: Vec<String> = mecha_core::title::owner_turns(&conversation.messages)
+            .iter()
+            .map(|t| strip_voice_preamble(t).to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
 
         // Hand the conversation back, then announce the end — a stream left
         // open is indistinguishable from a run still working. A failed
@@ -1783,8 +1793,22 @@ fn first_user_snippet(path: &std::path::Path) -> Option<Listing> {
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
     let mut listing = Listing::default();
+    let mut read = 0usize;
     for line in reader.lines().take(LISTING_SCAN_LINES) {
         let line = line.ok()?;
+        // **Bound the bytes, not just the lines.** A line count is not a cost
+        // here: a `rewrite` record is the entire message list on one line, so
+        // a session that compacted twice contributes two lines each the size
+        // of the whole conversation, and the pre-filter below removes the
+        // *parse*, never the read. Forty transcripts of those is a listing
+        // that stalls the drawer — which now refetches on open, on `titled`,
+        // and when the layout docks. A title record is ~60 bytes and is
+        // written at owner turn 1, so the early rename this listing exists to
+        // show is nowhere near either bound.
+        read += line.len();
+        if read > LISTING_SCAN_BYTES {
+            break;
+        }
         // **Rule the line out on its bytes before parsing it.** This loop
         // used to return at the first user message — line two or three of
         // the file — and a later `title` has to win, so it cannot any more.
@@ -1852,6 +1876,12 @@ struct Listing {
 /// rename past this line lives in the rail without reaching the listing,
 /// where the opening line stands in for it.
 const LISTING_SCAN_LINES: usize = 400;
+
+/// And how many *bytes*, which is the bound that actually holds.
+///
+/// Lines are not a cost model for this file — see the loop. Whichever bound
+/// trips first ends the scan.
+const LISTING_SCAN_BYTES: usize = 256 * 1024;
 
 /// GET /api/history — recorded web and voice sessions from the store,
 /// newest first: what the drawer's "earlier" section lists. A row carries
@@ -2113,6 +2143,24 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
+    /// A spoken turn is the owner's words with the voice preamble *prefixed
+    /// onto them*, in the same conversation as the typed turns (D3) — so it
+    /// is not a block the core filter can drop, and the door that added the
+    /// decoration is the one that has to remove it. Without this the titler
+    /// names a voice conversation after the harness's own instructions to
+    /// itself.
+    #[test]
+    fn a_spoken_turn_reaches_the_titler_as_what_was_said() {
+        let spoken = crate::voice::open_spoken_turn("what did I promise Hollis?", false);
+        assert!(
+            spoken.starts_with(crate::voice::VOICE_BLOCK),
+            "fixture is not decorated"
+        );
+        let stripped = super::strip_voice_preamble(&spoken);
+        assert_eq!(stripped, "what did I promise Hollis?");
+        assert!(!stripped.contains("Voice mode"));
+    }
+
     #[test]
     fn session_keys_that_could_leave_the_producer_dir_are_refused() {
         use super::valid_key;
