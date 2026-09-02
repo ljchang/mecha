@@ -105,8 +105,9 @@ pub struct TodoItem {
     pub check: Option<String>,
     /// How many tool calls the model expects the step to take. The
     /// residual against the actual span is the cheapest expectation error
-    /// there is; `step::escalation_candidate` reads it before the sibling
-    /// mean.
+    /// there is. **Nothing reads it yet**: `step::escalation_candidate` is
+    /// where the residual belongs, before the sibling mean, and that change
+    /// is the audit lane's (`AUDIT-RESEARCH.md` §3.11).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -316,10 +317,16 @@ struct Tracked {
 }
 
 /// One step's declared check and whether it may still change.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Freeze {
     hash: u64,
     frozen: bool,
+    /// The declared command itself, so a tampered write can have the frozen
+    /// check put back into the plan it tried to rewrite. A hash alone could
+    /// only *announce* the change while `self.plan = next` took it — the
+    /// echo, the carried block and, once the executor lands, the command
+    /// actually run all followed the rewrite (found on review).
+    check: String,
 }
 
 fn check_hash(check: &str) -> u64 {
@@ -416,7 +423,7 @@ impl Tracked {
     /// progress, a run whose counters restarted, a context nobody stamped.
     fn advance(
         &mut self,
-        next: Plan,
+        mut next: Plan,
         work: Option<crate::step::Work>,
         own_calls_before: u32,
         last_real: Option<crate::step::Outcome>,
@@ -431,6 +438,66 @@ impl Tracked {
             .map(|i| (i.content.as_str(), i.status))
             .collect();
 
+        let mut lines = Vec::new();
+        // The check freezes on the write that claims completion, and stays
+        // frozen for the life of the plan. While the step is open the latest
+        // declaration is the check; on the completing write the last open
+        // declaration stands (a different check on that very write is the
+        // post-hoc swap the freeze exists for, so the gate reads the item's
+        // status *now*, not `was`); and once frozen, a different check on
+        // any later write — reopened, re-added, whatever its status — is
+        // reported **and put back**: the frozen command is substituted into
+        // the plan this write becomes, so the echo, the carried block and
+        // the executor all see the check the step was completed against.
+        // Announcing the change while taking it was the first cut's shape
+        // (found on review). A step completed with a check it never declared
+        // while open freezes that first declaration. Runs ahead of the
+        // status loop because that loop reads `next` immutably.
+        for item in next.items.iter_mut() {
+            let Some(check) = item.check.clone() else {
+                continue;
+            };
+            let hash = check_hash(&check);
+            let completing = item.status == Status::Completed;
+            let prior = self.checks.get(&item.content).cloned();
+            match prior {
+                Some(f) if (f.frozen || completing) && f.hash != hash => {
+                    self.tampered += 1;
+                    lines.push(format!(
+                        "the check for step \"{}\" was changed on or after the write that \
+                         marked it done; the check it was completed against stands, and \
+                         the change is recorded",
+                        crate::step::ellipsize(&item.content, 60)
+                    ));
+                    item.check = Some(f.check.clone());
+                    // The completing write is what freezes it, even when
+                    // that write is the tamper.
+                    if completing {
+                        self.checks.insert(
+                            item.content.clone(),
+                            Freeze {
+                                hash: f.hash,
+                                frozen: true,
+                                check: f.check,
+                            },
+                        );
+                    }
+                }
+                Some(f) if f.frozen => {}
+                Some(_) | None => {
+                    // Open, or first seen: the latest declaration is the
+                    // check, and the completing write is what freezes it.
+                    self.checks.insert(
+                        item.content.clone(),
+                        Freeze {
+                            hash,
+                            frozen: completing,
+                            check,
+                        },
+                    );
+                }
+            }
+        }
         // `live` is computed here, before the item loop, rather than only
         // after it (its other use, in the sweep below) — a write that both
         // trims finished steps out of the plan *and* lands a new one in the
@@ -461,67 +528,8 @@ impl Tracked {
             .cloned()
             .collect();
 
-        let mut lines = Vec::new();
         for item in &next.items {
             let was = before.get(item.content.as_str()).copied();
-            // The check freezes on the write that claims completion, and
-            // stays frozen for the life of the plan. While the step is open
-            // the latest declaration is the check; on the completing write
-            // the last open declaration stands (a different check on that
-            // very write is the post-hoc swap the freeze exists for, so the
-            // gate reads the item's status *now*, not `was`); and once
-            // frozen, a different check on any later write — reopened,
-            // re-added, whatever its status — is reported rather than taken.
-            // A step completed with a check it never declared while open
-            // freezes that first declaration.
-            if let Some(check) = &item.check {
-                let hash = check_hash(check);
-                let completing = item.status == Status::Completed;
-                let prior = self.checks.get(&item.content).copied();
-                match prior {
-                    Some(f) if (f.frozen || completing) && f.hash != hash => {
-                        self.tampered += 1;
-                        lines.push(format!(
-                            "the check for step \"{}\" was changed on or after the write that \
-                             marked it done; the check it was completed against stands, and \
-                             the change is recorded",
-                            crate::step::ellipsize(&item.content, 60)
-                        ));
-                        // The completing write is what freezes it, even
-                        // when that write is the tamper.
-                        if completing {
-                            self.checks.insert(
-                                item.content.clone(),
-                                Freeze {
-                                    hash: f.hash,
-                                    frozen: true,
-                                },
-                            );
-                        }
-                    }
-                    Some(f) if f.frozen => {}
-                    Some(_) => {
-                        // Open: the latest declaration is the check, and the
-                        // completing write is what freezes it.
-                        self.checks.insert(
-                            item.content.clone(),
-                            Freeze {
-                                hash,
-                                frozen: completing,
-                            },
-                        );
-                    }
-                    None => {
-                        self.checks.insert(
-                            item.content.clone(),
-                            Freeze {
-                                hash,
-                                frozen: completing,
-                            },
-                        );
-                    }
-                }
-            }
             match item.status {
                 // Started, or restarted after a revision — either way the span
                 // begins now. A revised step measured from its *first* start
@@ -1156,25 +1164,29 @@ impl Tool for TodoTool {
         };
 
         let plan = Plan { goal, items };
-        let rendered = Self::render(&plan);
         // What the steps that just finished actually did, against the run's
         // own record of what it has done. The harness computes the fact; the
         // plan action it argues for — accept, revise the step, revise the
         // plan, escalate — is the model's next call, because the plan is the
         // model's. §5.5.
-        let findings = self
-            .lists
-            .lock()
-            .unwrap()
-            .entry(ctx.workspace.clone())
-            .or_default()
-            .advance(
+        //
+        // Rendered *after* `advance`, from the plan the tracker kept, not
+        // from the input: `advance` may put a frozen check back into a step
+        // that tried to rewrite it, and an echo rendered from the input
+        // showed the rewrite directly under the line saying the old check
+        // stood (found on review).
+        let (findings, rendered) = {
+            let mut lists = self.lists.lock().unwrap();
+            let tracked = lists.entry(ctx.workspace.clone()).or_default();
+            let findings = tracked.advance(
                 plan,
                 ctx.work,
                 own_calls_before,
                 last_real,
                 ctx.step_escalation.as_ref(),
             );
+            (findings, Self::render(&tracked.plan))
+        };
         let findings = match findings.is_empty() {
             true => String::new(),
             false => format!("\n\n{}", findings.join("\n")),
@@ -2779,5 +2791,39 @@ mod tests {
         let out = tool.call(write("pending", "echo ok"), &ctx).await.unwrap();
         assert!(out.content.contains("was changed"), "{}", out.content);
         assert_eq!(tool.tampered_in(&ws), 3);
+    }
+
+    /// The tamper is not only announced: the plan the tool keeps — and so
+    /// the echo, the carried block and whatever runs the check — carries the
+    /// frozen command, not the rewrite (found on review: the first cut
+    /// counted the change and then took it).
+    #[tokio::test]
+    async fn a_tampered_check_is_put_back_in_the_plan_the_tool_keeps() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        let write = |status: &str, check: &str| json!({"items": [{"content": "wire it", "status": status, "check": check}]});
+        tool.call(write("in_progress", "make test"), &ctx)
+            .await
+            .unwrap();
+        tool.call(write("completed", "make test"), &ctx)
+            .await
+            .unwrap();
+        let out = tool.call(write("completed", "true"), &ctx).await.unwrap();
+        assert!(out.content.contains("stands"), "{}", out.content);
+        assert!(
+            out.content.contains("    check: make test\n") && !out.content.contains("check: true"),
+            "the echo shows the frozen check, not the rewrite: {}",
+            out.content
+        );
+        let kept = tool.items_in(&ws);
+        assert_eq!(kept[0].check.as_deref(), Some("make test"));
+        let carried = tool.carried_state(&ctx).unwrap();
+        assert!(
+            carried.body.contains("check: make test"),
+            "{}",
+            carried.body
+        );
+        assert!(!carried.body.contains("check: true"), "{}", carried.body);
     }
 }

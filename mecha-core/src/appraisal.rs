@@ -525,7 +525,7 @@ pub fn affect_of(appraisal: &Appraisal) -> Affect {
     // **And this may only ever upgrade `reduced`, never bury it.** The first
     // cut returned `Frustration` the moment `repeated` was true, before
     // `label_of`'s reduce ran at all — which outranked agency and exposure
-    // both, the one ordering this module argues hardest for: a ceiling
+    // both, the one ordering this module argues hardest for: an outage
     // nobody here caused (`Agency::World`) plus a draft the owner rewrote
     // (`Agency::Owner`, visible) would report `Frustration` and discard the
     // fact that something went out wrong, exactly what `says_more`'s
