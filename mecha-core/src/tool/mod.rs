@@ -558,6 +558,58 @@ impl ToolCtx {
     }
 }
 
+/// Fill a call's omitted arguments from the `default`s its own schema
+/// declares.
+///
+/// A reviewer approving a send has to be able to see **who it is from**, and
+/// a resolved-later argument is invisible: `mail_send` with no `account`
+/// reaches the outbox as three keys (`to`, `subject`, `body_markdown`), and
+/// which mailbox it leaves from is decided minutes afterwards, in another
+/// process, by a file the reviewer never sees. `DraftView` already puts
+/// `account` in its headers — the field was simply never there.
+///
+/// It cannot be looked up either, and that is deliberate rather than an
+/// oversight: `mecha-core` has no dependency on `mecha-mail`, so nothing here
+/// knows an account map exists. The schema is the only channel between the
+/// two, and JSON Schema already has the word for this. So the rule is
+/// tool-agnostic, exactly as [`crate::outbox::DraftView`]'s is: any top-level
+/// property that declares a `default` and was omitted is materialised into
+/// the arguments. A tool nobody anticipated gets the same treatment.
+///
+/// **Where this is applied is the whole design.** A *staged* call is filled
+/// for real, because staging crosses a time boundary: the draft sits in a
+/// file and is executed verbatim later, so an unpinned default is a message
+/// whose sender can change between the reading and the sending. An
+/// ordinarily-approved call is filled for the approver's *view* only, and
+/// runs with the bytes the model actually sent — there is no gap there to
+/// pin, and rewriting a call the model is about to make would put this
+/// function on the execution path for every tool in the registry to buy
+/// nothing.
+///
+/// Trusting a server's declared default is trusting what the *model* was
+/// already told: the same string rides in the description it reasons from.
+/// A server whose schema lies about its own defaults has already misled the
+/// model; this makes the review card agree with the lie rather than inventing
+/// a second one.
+pub fn with_schema_defaults(schema: &Value, input: &Value) -> Value {
+    let (Some(args), Some(props)) = (
+        input.as_object(),
+        schema.get("properties").and_then(Value::as_object),
+    ) else {
+        return input.clone();
+    };
+    let mut filled = args.clone();
+    for (key, spec) in props {
+        if filled.contains_key(key) {
+            continue;
+        }
+        if let Some(default) = spec.get("default") {
+            filled.insert(key.clone(), default.clone());
+        }
+    }
+    Value::Object(filled)
+}
+
 /// Floor under a result's share of the turn budget. A wide batch must not
 /// starve every result down to a marker with no content: below this, the
 /// division stops and the total budget is allowed to overrun instead.
@@ -990,6 +1042,48 @@ mod cap_tests {
 
         std::fs::remove_dir_all(&spill).ok();
         std::fs::remove_file(&elsewhere).ok();
+    }
+
+    #[test]
+    fn a_declared_default_is_filled_in_and_an_explicit_value_is_not() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "account": {"type": "string", "default": "dartmouth"},
+                "reply_all": {"type": "boolean", "default": false},
+            },
+        });
+        let filled = with_schema_defaults(&schema, &serde_json::json!({"to": "ada@example.com"}));
+        assert_eq!(filled["account"], serde_json::json!("dartmouth"));
+        assert_eq!(filled["reply_all"], serde_json::json!(false));
+        assert_eq!(filled["to"], serde_json::json!("ada@example.com"));
+
+        let named = with_schema_defaults(&schema, &serde_json::json!({"account": "personal"}));
+        assert_eq!(named["account"], serde_json::json!("personal"));
+    }
+
+    #[test]
+    fn a_schema_with_nothing_to_say_changes_nothing() {
+        // Most tools declare no defaults at all, and a schema that is not an
+        // object at all is what a hand-rolled MCP server can hand back. Both
+        // must leave the call exactly as the model sent it — this function
+        // sits in front of the approver, so a surprise here is a surprise in
+        // what a person is asked to approve.
+        let args = serde_json::json!({"path": "notes.md"});
+        for schema in [
+            serde_json::json!({"type": "object"}),
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            serde_json::json!("not a schema"),
+        ] {
+            assert_eq!(with_schema_defaults(&schema, &args), args);
+        }
+        // Nor is a non-object argument list reshaped into one.
+        let raw = serde_json::json!("bare");
+        assert_eq!(
+            with_schema_defaults(&serde_json::json!({"properties": {}}), &raw),
+            raw
+        );
     }
 
     #[test]
