@@ -1496,7 +1496,13 @@ refusal. The specification and the survey behind it are
   `shell: ls` was covering a later `shell: cargo publish` the operator had
   written a `prompt` rule for, the tool-granularity problem surviving inside
   the mechanism built to end it. `consult` asks past the shortcuts and an
-  "always" answered there allows one call only, the shape `escalate` set.
+  "always" answered there allows one call only, the shape `escalate` set —
+  and like `escalate` it defaults to `Blocked`, so under an approver that
+  answers from policy (`--yes`, `batch`, a trigger) a `prompt` rule refuses
+  rather than silently allowing: a rule that says a person must see the call
+  fails closed where there is none. A rule naming an outbox-routed tool is
+  inert (staging runs first, release reads no rules) and `setup` says so on
+  every start, beside the unregistered-tool warning.
 - **The splitter is conservative on purpose.** A command is judged one
   segment at a time (`&&`, `||`, `|`, `;`), and allowed only if every segment
   is. Anything `split_segments` cannot take apart with certainty —
@@ -1526,6 +1532,8 @@ refusal. The specification and the survey behind it are
   `prompt` floor: the wrapper's argv is judged against the rules whatever the
   setting, because that lookup only ever raises the decision, and gating it
   once made turning the knob off silently disable the `timeout 5 rm -rf` rule.
+  A quoted argument the splitter finds opaque (`bash -ec 'cd /tmp; rm -rf
+  x'`) gets the same forbidden-word search an opaque outer command gets.
 - **Examples are checked at load.** An `allow` rule must carry `match`
   examples; every `match` must match the rule and every `not_match` must not,
   or `Config::validate` fails the start naming the rule. The principle is the

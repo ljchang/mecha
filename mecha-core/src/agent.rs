@@ -381,8 +381,6 @@ impl RunContext {
         self
     }
 
-    /// Make this run interruptible. Cancelling the token stops it at the next
-    /// safe point, keeping whatever it had already produced.
     /// Run in `phase`, hiding whatever it does not permit.
     pub fn with_phase(mut self, phase: Phase) -> Self {
         self.phase = phase;
@@ -10176,6 +10174,50 @@ decision = "prompt"
             *approver.consulted.lock().unwrap(),
             vec!["shell: an approval rule asks that this `shell` call be approved"],
             "the prompt rule consulted, once, with the ruling's reason"
+        );
+    }
+
+    /// A `prompt` rule under an approver that answers from policy — `--yes`,
+    /// `batch`, a trigger — is `Blocked`, not silently allowed: the rule says
+    /// a person must see the call, and there is none. The first version
+    /// routed it through `approve`, which under `Allow` is a yes.
+    #[tokio::test]
+    async fn a_prompt_rule_fails_closed_under_a_headless_allow() {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let (agent, _) = agent_with_tools(
+            vec![
+                shell_call("t0", "cargo publish"),
+                shell_call("t1", "git status"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(RecordingShell(Arc::clone(&ran)))],
+            PermissionMode::Allow,
+        );
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_policy(rules(GIT_RULES));
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        let ran = ran.lock().unwrap();
+        assert_eq!(ran.len(), 1, "only the allowed command ran: {ran:?}");
+        assert_eq!(ran[0]["command"], "git status");
+        let refusal = convo
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                Block::ToolResult { content, .. } if content.contains("Blocked by policy") => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .expect("the prompt-ruled call was refused by policy, not by a person");
+        assert!(
+            refusal.contains("was not put in front of anyone"),
+            "{refusal}"
         );
     }
 
