@@ -285,6 +285,22 @@ pub fn with_delta(
     Some((level * (1.0 - relief)).clamp(0.0, 1.0))
 }
 
+/// The whole fold from one `Backlog` pair: the level off `before`, relief
+/// from the owner-facing delta between the two, over what `before` held.
+/// The one seam where the numerator and the denominator are derived from
+/// the same reads — `with_delta`'s tests hand it both numbers, and the
+/// mismatch the review found lived exactly here, in the call site.
+pub fn with_backlogs(
+    before: &Backlog,
+    after: &Backlog,
+    peak_context_pressure: Option<f32>,
+    now: DateTime<Utc>,
+) -> Option<f32> {
+    let level = anticipated_guilt(before, peak_context_pressure, now);
+    let delta = Backlog::delta(before, after);
+    with_delta(level, delta.owner_facing_net(), waiting(before))
+}
+
 /// How many recorded commitments a backlog holds across the three stores
 /// [`anticipated_guilt`] reads — the denominator relief is a share of.
 pub fn waiting(backlog: &Backlog) -> usize {
@@ -583,5 +599,39 @@ mod tests {
             "no level: nothing to scale"
         );
         assert_eq!(waiting(&Backlog::default()), 0);
+    }
+
+    #[test]
+    fn clearing_the_harnesss_own_queue_relieves_nothing_and_clearing_a_draft_relieves_its_share() {
+        let now = DateTime::parse_from_rfc3339("2026-09-02T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let week_ago = "2026-08-26T12:00:00Z";
+        let before = Backlog {
+            outbox: Some(depth(2, Some(week_ago))),
+            questions: Some(depth(1, Some(week_ago))),
+            frontdoor: Some(depth(0, None)),
+            proposals: Some(depth(3, Some(week_ago))),
+            candidates: Some(depth(3, Some(week_ago))),
+        };
+        let level = anticipated_guilt(&before, Some(0.1), now).unwrap();
+        assert!(level > 0.5, "{level}");
+        // Three candidates and three proposals resolved, the owner's three
+        // commitments untouched: the level stands.
+        let mut harness_only = before.clone();
+        harness_only.proposals = Some(depth(0, None));
+        harness_only.candidates = Some(depth(0, None));
+        assert_eq!(
+            with_backlogs(&before, &harness_only, Some(0.1), now),
+            Some(level)
+        );
+        // One of the owner's three cleared: a third of the level relieved.
+        let mut one_draft = before.clone();
+        one_draft.outbox = Some(depth(1, Some(week_ago)));
+        let relieved = with_backlogs(&before, &one_draft, Some(0.1), now).unwrap();
+        assert!(
+            (relieved - level * (2.0 / 3.0)).abs() < 1e-5,
+            "{relieved} vs {level}"
+        );
     }
 }

@@ -130,25 +130,18 @@ impl Homeostat {
             // score a trigger that staged three replies overnight as
             // maximally guilty for doing exactly its job: those drafts are
             // seconds old and this run's own output, not neglected debt.
-            let level =
-                crate::guilt::anticipated_guilt(before, self.peak_context_pressure, Utc::now());
-            let delta = Backlog::delta(before, &Backlog::read());
+            let after = Backlog::read();
             // The level is what the run inherited; the delta is what it did
             // about it, and only relief moves the reading — the comment above
-            // is still the rule, and `guilt::with_delta` keeps it: a run that
-            // added to the queue reads the level it inherited, not a
-            // maximum for doing its job.
-            // `owner_facing_net`, over the same three stores `waiting`
-            // counts: a numerator over five stores and a denominator over
-            // three let a run that cleared harness candidates read as
-            // relief from drafts the owner was still waiting on (found on
-            // review).
-            self.anticipated_guilt = crate::guilt::with_delta(
-                level,
-                delta.owner_facing_net(),
-                crate::guilt::waiting(before),
-            );
-            self.backlog_delta = Some(delta);
+            // is still the rule, and `guilt::with_backlogs` keeps it: a run
+            // that added to the queue reads the level it inherited, not a
+            // maximum for doing its job, and relief is the owner-facing
+            // share of what was waiting (one seam derives both numbers from
+            // this same pair of reads — found on review, when the numerator
+            // spanned five stores and the denominator three).
+            self.anticipated_guilt =
+                crate::guilt::with_backlogs(before, &after, self.peak_context_pressure, Utc::now());
+            self.backlog_delta = Some(Backlog::delta(before, &after));
         }
         self
     }
