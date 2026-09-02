@@ -413,15 +413,25 @@ channels by the number of times the session was resumed.
 
 On the corpus this was built against, **119 of 120 sessions labelled
 `neutral`**, and the reason is structural rather than a tuning problem. The free
-readout can only ever say *neutral* or *anger*: every negative it assembles is
-either self- or owner-caused with `controllable` unfilled (which reduces to
-neutral) or a ceiling nobody here caused (anger); and no counter kind fires
-twice in one session, so frustration's repetition cannot occur.
+readout's label can only ever be *neutral*: every negative it assembles is
+self- or owner-caused with `controllable` unfilled, which is the one branch of
+the derivation with no word for it; and no counter kind fires twice in one
+session, so frustration's repetition cannot occur.
 
 That is the measurement the rung exists to produce, learned cheaply here rather
 than after something was built on it. The alternative — inventing precedence
 until every run gets an interesting word — manufactures exactly the signal this
 was meant to test for.
+
+**The label is not the readout.** A second look at the same corpus found the
+reason narrower still: the label gates on the most expensive dimension it has
+(a paid replay fills `controllable`) and discards the cheapest — the sign,
+which every error carries. Twenty-two drafts the owner had rejected all read
+`neutral`. So every surface now shows the **valence** first: the positive and
+negative magnitudes summed separately, never netted (`+1.0 −2.0`), with the
+label beside it when the derivation earns one. On the TUI and in a Slack
+thread that is a number; on the web it is a small two-sided bar. Silent runs —
+nothing signed either way — still show nothing.
 
 ## The two paid passes
 
@@ -481,8 +491,9 @@ opinion without knowing which store it came from.
 
 | Surface | What it does |
 |---|---|
-| [TUI](/docs/features/interfaces) | A badge in the status strip after a run, **only** when the label is not neutral — and it survives `--no-session`, because the label is a function of the run, not of whether a transcript was kept. Cleared when the next run starts and by `/clear`. |
-| [Web](/docs/features/web) | A muted affect chip beside the answer — deliberately not the amber the taint chip owns, because "how it went" and "what it touched" must never be confusable — and the logo tints as a CSS *outline*, never a fill. The event is sent only for a non-neutral label, so the page has a plain absence to fall back to rather than a stream of `"neutral"` saying nothing. |
+| [TUI](/docs/features/interfaces) | A badge in the status strip after a run: the valence as a number (`+1.0 −0.5`), the label word before it when there is one, **only** when the run had something signed — and it survives `--no-session`, because the reading is a function of the run, not of whether a transcript was kept. Amber on a negative reading, grey on a positive-only one. Cleared when the next run starts and by `/clear`. A trailing `…` means the run compacted and the interventions could not be scoped, so the number is partial. |
+| [Web](/docs/features/web) | A muted chip beside the answer carrying the label word, if any, and a two-sided bar — negative to the left of a centre tick, positive to the right — deliberately not the amber the taint chip owns, because "how it went" and "what it touched" must never be confusable; the logo tints as a CSS *outline* on a negative reading, never a fill. The event is sent only when there is something to show, so the page has a plain absence to fall back to. |
+| Slack | One context line in the thread after a run that had anything signed: `appraisal · −0.5`, or `appraisal · anger −0.5` when the label says a word. |
 | [Voice](/docs/features/voice) | A per-answer weight nudge on the local TTS. It **lags one turn by construction** — the label is a function of a *finished* run, so a call hears the previous turn's mood. |
 | `mecha tasks set --status done` | Appraises the session that served the task, prints the verdict, and may stage a follow-up. |
 | [`mecha distill`](/docs/features/distillation) | The label and the goal errors ride on an episode's `meta`, beside — not inside — its content. |
@@ -498,30 +509,34 @@ runs, that would make the readout predominantly mean "this run compacted".
 ### Closing a task appraises it
 
 ```text
-mecha's appraisal of task-1a2b3c4d: Anger (0 positive, 1 negative signal)
+mecha's appraisal of task-1a2b3c4d: Neutral · −0.5 (0 positive, 1 negative signal)
 ```
 
-It counts and never quotes — the line is the label and two tallies, because the
-signals themselves are pointers rather than prose. Only the transition *into*
-`done` or `dropped` triggers it, and only once. Two conditions gate the
-follow-up task, both load-bearing:
+It counts and never quotes — the line is the label, the valence and two
+tallies, because the signals themselves are pointers rather than prose. Only
+the transition *into* `done` or `dropped` triggers it, and only once. Two
+conditions gate the follow-up task, both load-bearing:
 
-- **The label, not the raw signs.** Re-deriving a threshold over the signed
-  errors here would be a second, less-tested copy of the reduction the label
-  already is — and it would fire on almost every closure, since a negative
-  signal appears on 119 of 120 sessions. Neutral must never stage a follow-up
-  nobody asked for.
+- **The label or the typed residue predicate, never a threshold over raw
+  signs.** Re-deriving a magnitude threshold here would be a second,
+  less-tested copy of the reduction the label already is, and it would fire on
+  closures that have nothing to put on a board — a rejected draft is a verdict,
+  not residue. What does reach the gate beside the label is `cut_short`: a
+  negative counter whose pointer is the stop cause or the silent failure, which
+  is a run the owner accepted with work cut off.
 - **`done` only, never `dropped`.** The trigger is the owner *accepting* the
   work — a disappointed closure they took anyway. A dropped closure is the owner
   declining it, so proposing a follow-up there would override a decision they
   just made. (This one was found on review: a `MaxTurns` run the owner gave up
   on got a "Revisit" task put straight back on the board.)
 
-Staging `anger` is a decision rather than an accident of "non-neutral". It
-stages *work*, not blame: today the only free path to anger on a closure is a
-ceiling stop, and a ceiling-cut run the owner accepted as done anyway is
-precisely the closure most likely to have residue worth one task — the part the
-ceiling cut off.
+Staging on a cut-short run is a decision rather than an accident of
+"non-neutral". It stages *work*, not blame: a ceiling stop used to reach this
+gate as the label `anger`, and it labels `neutral` now — the ceiling is the
+owner's own limit, not somebody else's fault — but a ceiling-cut run the owner
+accepted as done anyway is precisely the closure most likely to have residue
+worth one task, the part the ceiling cut off, and that is what the predicate
+names.
 
 The follow-up task is composed entirely from typed fields the harness minted —
 the label, which channels fired, and the original task's **id**, never its name.
@@ -593,6 +608,23 @@ comes back to the run is a fully templated nudge, because a model's paraphrase
 of text it just judged is the paraphrase risk arriving through the one channel
 that does reach context. The model decides one binary — carry on, or revise the
 plan — and nothing else.
+
+### A step can say how to check it
+
+A plan item may carry three optional predictions beside its content:
+`expect`, one sentence saying what will be true when the step is done;
+`check`, a command whose exit code says whether it is; and `expect_calls`,
+how many tool calls the model thinks it will take. They are echoed under the
+step in every `todo` result and ride the carried block across a compaction,
+so the model meets its own prediction again after either. A declared `check`
+is run by the harness exactly as a model `shell` call would be — through the
+approver, the sandbox and the interlock — and a step whose check did not pass
+comes back as its own finding, read before anything about the model's last
+call, because the last call can succeed while the claim does not. Once a step
+is `completed` its check is frozen: rewriting it afterwards is reported back
+as a change, not taken. A failed check is also a signed error on the run's
+appraisal, the first discrepancy between a prediction and its outcome that
+no keyword list has to guess at.
 
 ## Boredom: naming an approach that has stopped teaching the run anything
 

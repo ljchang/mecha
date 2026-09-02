@@ -448,6 +448,15 @@ pub struct RunStats {
     /// Of those, how many came back `revise_plan`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_escalations_revised: Option<u32>,
+    /// Declared post-condition checks the loop ran, and how many passed —
+    /// counted off the trace by name (`step::CHECK_TRACE`), a refused check
+    /// in neither. `Option` for the same reason as `boredom_notices`: a row
+    /// from before the record says nothing, and reading it as "no checks"
+    /// would dilute the one structural discrepancy rate the corpus has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks_declared: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks_passed: Option<u32>,
     /// The conditions this run happened under, when the front-end asked for
     /// them. Recorded here rather than derived later because a run
     /// reconstructed against *today's* machine state is measuring the
@@ -536,6 +545,14 @@ impl RunStats {
             (a, b) => a.or(b),
         };
         // Same shape as boredom_notices, same reason.
+        self.checks_declared = match (self.checks_declared, other.checks_declared) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+        self.checks_passed = match (self.checks_passed, other.checks_passed) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
         self.step_escalations_attempted = match (
             self.step_escalations_attempted,
             other.step_escalations_attempted,
@@ -601,6 +618,18 @@ impl RunStats {
             boredom_notices: Some(o.boredom_notices),
             step_escalations_attempted: Some(o.step_escalations_attempted),
             step_escalations_revised: Some(o.step_escalations_revised),
+            checks_declared: Some(
+                o.tool_calls
+                    .iter()
+                    .filter(|c| c.name == crate::step::CHECK_TRACE && !c.denied)
+                    .count() as u32,
+            ),
+            checks_passed: Some(
+                o.tool_calls
+                    .iter()
+                    .filter(|c| c.name == crate::step::CHECK_TRACE && !c.denied && !c.is_error)
+                    .count() as u32,
+            ),
             homeostat: o.homeostat.clone(),
             taint: o.taint,
         }
@@ -615,6 +644,136 @@ impl From<&crate::agent::RunOutcome> for RunStats {
     }
 }
 
+/// Which front-end opened a session — the surface it was used through, not
+/// what it was about.
+///
+/// **Written by the front-end, never inferred.** Before this field existed
+/// the only way to tell a smoke test from use was the workspace path, and
+/// `docs/APPRAISAL-RESEARCH.md` §1 found 46 of 143 appraised sessions were
+/// development runs from a mecha checkout or a scratch directory: the
+/// instrument built to measure whether the appraisal labels were degenerate
+/// was measuring the harness's own test runs. A corpus reader can now ask
+/// for one surface, and `Test` is excluded from every corpus readout unless
+/// asked for by name.
+///
+/// **A closed enum written to an append-only store is a wire format**: a
+/// kind this binary does not know reads as `None` ([`de_lenient_kind`]),
+/// never as a failed record, and a row from before the field reads as `None`
+/// too — unknown, not any particular surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    /// `mecha run`, one shot.
+    Run,
+    /// `mecha chat`, the readline REPL.
+    Chat,
+    /// `mecha tui`.
+    Tui,
+    /// `mecha serve`'s chat page.
+    Web,
+    /// The voice pipeline over `mecha serve`.
+    Voice,
+    /// A delegated board task (`mecha tasks work`, the web board's *ask*).
+    Task,
+    /// A scheduled prompt (`mecha trigger run`).
+    Trigger,
+    /// A front-door triage run.
+    Frontdoor,
+    /// A mail-driven run (`mecha mail` drafting verbs).
+    Mail,
+    /// A Slack thread.
+    Slack,
+    /// A smoke test or a development run. Set by [`SESSION_KIND_ENV`] over
+    /// whatever the front-end would have written — the one override, and it
+    /// only ever narrows toward this variant.
+    Test,
+}
+
+/// Environment variable that marks every session a process opens as
+/// [`SessionKind::Test`]. Any other value is ignored with a warning: the
+/// override exists so a test harness can label its own runs, not so a
+/// caller can claim a surface it is not.
+pub const SESSION_KIND_ENV: &str = "MECHA_SESSION_KIND";
+
+impl SessionKind {
+    pub const ALL: [SessionKind; 11] = [
+        SessionKind::Run,
+        SessionKind::Chat,
+        SessionKind::Tui,
+        SessionKind::Web,
+        SessionKind::Voice,
+        SessionKind::Task,
+        SessionKind::Trigger,
+        SessionKind::Frontdoor,
+        SessionKind::Mail,
+        SessionKind::Slack,
+        SessionKind::Test,
+    ];
+
+    /// The wire form — `serde`'s own `snake_case`, spelled out for callers
+    /// that need a bare `&str` (a `--kind` flag, a table column).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionKind::Run => "run",
+            SessionKind::Chat => "chat",
+            SessionKind::Tui => "tui",
+            SessionKind::Web => "web",
+            SessionKind::Voice => "voice",
+            SessionKind::Task => "task",
+            SessionKind::Trigger => "trigger",
+            SessionKind::Frontdoor => "frontdoor",
+            SessionKind::Mail => "mail",
+            SessionKind::Slack => "slack",
+            SessionKind::Test => "test",
+        }
+    }
+
+    /// The record half of the two parsing policies `goal::GoalRef` set: an
+    /// unrecognised word is `None`, never an error.
+    pub fn parse_lenient(s: &str) -> Option<Self> {
+        SessionKind::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+
+    /// [`SESSION_KIND_ENV`], read. `Some(Test)` when the variable says so,
+    /// `None` otherwise — the override only ever narrows toward `Test`, so
+    /// there is nothing else it could return.
+    pub fn test_override() -> Option<SessionKind> {
+        match std::env::var(SESSION_KIND_ENV) {
+            Ok(v) if v == SessionKind::Test.as_str() => Some(SessionKind::Test),
+            Ok(v) if !v.is_empty() => {
+                tracing::warn!(
+                    "{SESSION_KIND_ENV}={v:?} ignored: only `test` may override a session's kind"
+                );
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+impl std::str::FromStr for SessionKind {
+    type Err = anyhow::Error;
+
+    /// The model-facing/flag half: a bad word is an error naming the choices.
+    fn from_str(s: &str) -> Result<Self> {
+        SessionKind::parse_lenient(s).ok_or_else(|| {
+            let choices: Vec<&str> = SessionKind::ALL.iter().map(|k| k.as_str()).collect();
+            anyhow::anyhow!("unknown session kind {s:?}; one of {}", choices.join(", "))
+        })
+    }
+}
+
+/// Read a session kind out of a record, leniently — see [`SessionKind`].
+pub fn de_lenient_kind<'de, D>(d: D) -> std::result::Result<Option<SessionKind>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    Ok(Option::<String>::deserialize(d)?
+        .as_deref()
+        .and_then(SessionKind::parse_lenient))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMeta {
     pub id: String,
@@ -624,6 +783,15 @@ pub struct SessionMeta {
     pub workspace: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The surface that opened this session. `None` on a row from before the
+    /// field existed, or one written by a newer binary with a kind this one
+    /// cannot name.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient_kind"
+    )]
+    pub kind: Option<SessionKind>,
 }
 
 pub struct Session {
@@ -702,9 +870,13 @@ impl Session {
         Ok(crate::work::mecha_home()?.join("sessions"))
     }
 
-    pub fn create(dir: &Path, meta: SessionMeta) -> Result<Self> {
+    pub fn create(dir: &Path, mut meta: SessionMeta) -> Result<Self> {
         crate::create_private_dir(dir)
             .with_context(|| format!("creating session directory {}", dir.display()))?;
+        // The one override, applied where every front-end's write passes so
+        // none can forget it. `None` stays `None`: an unknown surface under
+        // the override is still a test, which is what the variable asserts.
+        meta.kind = SessionKind::test_override().or(meta.kind);
         let path = dir.join(format!("{}.jsonl", meta.id));
         let session = Session {
             meta: meta.clone(),
@@ -1411,6 +1583,7 @@ mod tests {
                 model: "first".into(),
                 workspace: std::path::PathBuf::from("/tmp"),
                 title: Some("web: chat-8f3a".into()),
+                kind: None,
             },
         )
         .unwrap();
@@ -1453,6 +1626,7 @@ mod tests {
                 model: "first".into(),
                 workspace: std::path::PathBuf::from("/tmp"),
                 title: Some("task: nominate someone for the Ostrander".into()),
+                kind: None,
             },
         )
         .unwrap();
@@ -1497,6 +1671,7 @@ mod tests {
                 model: "first".into(),
                 workspace: std::path::PathBuf::from("/tmp"),
                 title: None,
+                kind: None,
             },
         )
         .unwrap();
@@ -1554,6 +1729,7 @@ mod tests {
             model: "test-model".into(),
             workspace: PathBuf::from("/tmp"),
             title: None,
+            kind: None,
         }
     }
 
@@ -2612,5 +2788,180 @@ mod tests {
         assert!(Session::find(&dir, "nothing-like-this").is_err());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- session kind -------------------------------------------------------
+
+    fn kind_of(path: &Path) -> Option<SessionKind> {
+        Session::read(path).unwrap().meta.kind
+    }
+
+    #[test]
+    fn a_meta_row_from_before_kinds_existed_reads_as_unknown_not_any_surface() {
+        let row = r#"{"id":"20260101T000000-old","created_at":"2026-01-01T00:00:00Z","provider":"local","model":"m","workspace":"/tmp"}"#;
+        let meta: SessionMeta = serde_json::from_str(row).unwrap();
+        assert_eq!(meta.kind, None);
+    }
+
+    #[test]
+    fn a_kind_from_a_newer_build_degrades_to_unknown_rather_than_failing_the_record() {
+        let row = r#"{"id":"20260101T000000-new","created_at":"2026-01-01T00:00:00Z","provider":"local","model":"m","workspace":"/tmp","kind":"hologram"}"#;
+        let meta: SessionMeta = serde_json::from_str(row).unwrap();
+        assert_eq!(meta.kind, None, "unknown, never an error");
+    }
+
+    #[test]
+    fn a_kind_round_trips_on_the_wire_in_snake_case() {
+        for kind in SessionKind::ALL {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+            assert_eq!(serde_json::from_str::<SessionKind>(&json).unwrap(), kind);
+            assert_eq!(SessionKind::parse_lenient(kind.as_str()), Some(kind));
+        }
+        assert!(
+            SessionKind::ALL.len() == 11,
+            "a new variant must be added to `ALL`, or `parse_lenient` cannot read it"
+        );
+    }
+
+    #[test]
+    fn the_front_ends_kind_is_written_and_read_back() {
+        let dir = tmpdir();
+        let mut meta = meta_with_id("20260101T000000-web");
+        meta.kind = Some(SessionKind::Web);
+        let s = Session::create(&dir, meta).unwrap();
+        assert_eq!(kind_of(&s.path), Some(SessionKind::Web));
+        let none = Session::create(&dir, meta_with_id("20260101T000001-none")).unwrap();
+        assert_eq!(
+            kind_of(&none.path),
+            None,
+            "no front-end kind and no override: unknown"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `Session::create` reads the process environment, and every test in
+    /// this binary shares one — a `set_var` here made `runlog`'s scans see
+    /// `Test` sessions and drop them, in a different module, on the first
+    /// run. So the override is exercised in a child process: this test runs
+    /// the (ignored) probe below through the test binary itself with the
+    /// variable set, and grades the exit status.
+    #[test]
+    fn the_test_override_narrows_to_test_and_never_widens_to_anything_else() {
+        let exe = std::env::current_exe().unwrap();
+        for (value, expect) in [("test", "test"), ("web", "run"), ("", "run")] {
+            let out = std::process::Command::new(&exe)
+                .args([
+                    "kind_override_probe",
+                    "--exact",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(SESSION_KIND_ENV, value)
+                .env("MECHA_KIND_PROBE_EXPECT", expect)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{SESSION_KIND_ENV}={value:?} expecting {expect}:\n{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    /// The child half of the test above. Ignored so it never runs in the
+    /// ordinary sweep, where it would read whatever the environment
+    /// happened to hold.
+    #[test]
+    #[ignore]
+    fn kind_override_probe() {
+        let expect =
+            SessionKind::parse_lenient(&std::env::var("MECHA_KIND_PROBE_EXPECT").unwrap()).unwrap();
+        let dir = tmpdir();
+        let mut meta = meta_with_id("20260101T000000-run");
+        meta.kind = Some(SessionKind::Run);
+        let s = Session::create(&dir, meta).unwrap();
+        assert_eq!(
+            kind_of(&s.path),
+            Some(expect),
+            "the override narrows and never widens"
+        );
+        let none = Session::create(&dir, meta_with_id("20260101T000001-none")).unwrap();
+        let expect_none = (expect == SessionKind::Test).then_some(SessionKind::Test);
+        assert_eq!(
+            kind_of(&none.path),
+            expect_none,
+            "an unknown surface under the override is a test; without it, unknown"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- declared checks -----------------------------------------------------
+
+    #[test]
+    fn checks_are_counted_off_the_trace_by_name_and_fold_like_boredom_notices() {
+        let trace = |name: &str, is_error: bool, denied: bool| crate::agent::ToolCallTrace {
+            name: name.into(),
+            input: serde_json::json!({}),
+            is_error,
+            denied,
+            unknown: false,
+            staged: false,
+        };
+        let o = crate::agent::RunOutcome {
+            context_overflows: 0,
+            boredom_notices: 0,
+            step_escalations_attempted: 0,
+            step_escalations_revised: 0,
+            text: String::new(),
+            stop_reason: crate::message::StopReason::EndTurn,
+            usage: crate::message::Usage::default(),
+            turns: 1,
+            refusal: None,
+            exhausted: false,
+            ended_on_failed_call: false,
+            tool_calls: vec![
+                trace("shell", false, false),
+                trace(crate::step::CHECK_TRACE, false, false),
+                trace(crate::step::CHECK_TRACE, true, false),
+                trace(crate::step::CHECK_TRACE, true, true),
+            ],
+            malformed_tool_args: 0,
+            blocked_sends: 0,
+            taint: crate::agent::Taint::default(),
+            homeostat: None,
+            stop_cause: crate::agent::StopCause::Completed,
+            compactions: 0,
+            usage_complete: true,
+            cost_usd: None,
+        };
+        let stats = RunStats::from(&o);
+        assert_eq!(
+            (stats.checks_declared, stats.checks_passed),
+            (Some(2), Some(1))
+        );
+        assert_eq!(
+            stats.tool_calls, 4,
+            "the raw count still holds every trace entry"
+        );
+
+        let mut folded = stats.clone();
+        folded.merge(&stats);
+        assert_eq!(
+            (folded.checks_declared, folded.checks_passed),
+            (Some(4), Some(2))
+        );
+        let old = RunStats::default();
+        assert_eq!(
+            old.checks_declared, None,
+            "a row from before the record is unknown"
+        );
+        let mut mixed = old.clone();
+        mixed.merge(&stats);
+        assert_eq!(mixed.checks_declared, Some(2));
+        let row: RunStats = serde_json::from_str(r#"{"turns":1,"usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}"#).unwrap();
+        assert_eq!(row.checks_passed, None);
     }
 }

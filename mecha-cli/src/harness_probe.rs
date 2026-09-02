@@ -476,6 +476,7 @@ mod tests {
                     model: "m".into(),
                     workspace: std::path::PathBuf::from(workspace),
                     title: None,
+                    kind: None,
                 },
             )
             .unwrap();
@@ -526,6 +527,7 @@ mod tests {
             model: "m".into(),
             workspace: std::path::PathBuf::from("/tmp"),
             title: None,
+            kind: None,
         };
         // One tool call, so the "no recorded tool calls" skip does not fire.
         let turns = |s: &Session| {

@@ -35,6 +35,16 @@
   // nothing); `sawAffectThisRun` is what tells `done` whether to fall back
   // to that silence for a run that produced no event.
   let affect = $state(null);
+  // The dimensional half of the same readout: `{positive, negative,
+  // positives, negatives, visible, partial?}`, or null when the run had
+  // nothing signed. Drawn as a two-sided bar by the owner's ruling for this
+  // surface (APPRAISAL-RESEARCH §3.1); the TUI shows the same numbers as
+  // text.
+  let valence = $state(null);
+  // Bar geometry: each side is its magnitude over this cap, clamped. The
+  // record's steps are ±0.5/±1.0 per error, so three is "several".
+  const VALENCE_CAP = 3;
+  const barWidth = (m) => `${Math.min(m / VALENCE_CAP, 1) * 100}%`;
   let sawAffectThisRun = false;
   let usage = $state(null);
   let model = $state('');
@@ -198,7 +208,10 @@
           pushEntry({ kind: 'notice', text: ev.text });
           break;
         case 'affect':
-          affect = ev.label;
+          // `neutral` is a label saying nothing; the event is sent for its
+          // valence in that case, and the chip shows the numbers alone.
+          affect = ev.label && ev.label !== 'neutral' ? ev.label : null;
+          valence = ev.valence && (ev.valence.positives || ev.valence.negatives) ? ev.valence : null;
           sawAffectThisRun = true;
           break;
         case 'titled':
@@ -254,7 +267,10 @@
           // from elsewhere, which emits neither: that tab's tint from an
           // earlier run never cleared. Resetting here covers every
           // observer, not just the one that sent the turn.
-          if (!sawAffectThisRun) affect = null;
+          if (!sawAffectThisRun) {
+            affect = null;
+            valence = null;
+          }
           sawAffectThisRun = false;
           if (!ev.ok && ev.error) pushEntry({ kind: 'notice', text: ev.error });
           entries = entries.map((e) =>
@@ -338,6 +354,7 @@
     // field, and the new key's own SSE subscription emits `Affect` only
     // once a run there finishes.
     affect = null;
+    valence = null;
     sawAffectThisRun = false;
   }
 
@@ -729,11 +746,27 @@
            contract as the TUI badge: the wire word, shown only when a run
            earned one (null — neutral — is the overwhelming common case and
            shows nothing), cleared by the next clean run. -->
-      {#if affect}
+      {#if affect || valence}
         <span
           class="chip affect"
-          title="how the last run went, by mecha's own appraisal of its record — clears on the next clean run"
-        >{affect}</span>
+          title={`how the last run went, by mecha's own appraisal of its record — clears on the next clean run${valence ? ` · ${valence.positives} positive, ${valence.negatives} negative signal(s)${valence.partial ? ', partial: the run compacted' : ''}` : ''}`}
+        >
+          {#if affect}{affect}{/if}
+          {#if valence}
+            <!-- A two-sided bar, negative to the left of a centre tick and
+                 positive to the right, so a run that went both ways shows
+                 both rather than netting them — the same rule `Valence`
+                 keeps in the record. Outline and hairline only: brand.md's
+                 "hazard amber never fills an area" applies to the negative
+                 side, which is drawn as a line. -->
+            <span class="valence" aria-label={`negative ${valence.negative.toFixed(1)}, positive ${valence.positive.toFixed(1)}`}>
+              <span class="neg" style:width={barWidth(valence.negative)}></span>
+              <span class="tick"></span>
+              <span class="pos" style:width={barWidth(valence.positive)}></span>
+            </span>
+            {#if valence.partial}<span class="partial">…</span>{/if}
+          {/if}
+        </span>
       {/if}
       {#if taint?.untrusted || taint?.private}
         <span
@@ -1124,7 +1157,7 @@
         <button
           class="logo"
           class:tappable={vState.name === 'idle'}
-          class:notable={affect}
+          class:notable={affect || (valence && valence.negatives > 0)}
           disabled={vState.name !== 'idle'}
           onclick={reconnectVoice}
           aria-label={vState.name === 'idle' ? 'reconnect the call' : `mecha ${vState.label}`}
@@ -1248,6 +1281,33 @@
     color: var(--text-muted);
     border: 1px solid var(--text-muted);
     background: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .chip.affect .valence {
+    display: inline-grid;
+    grid-template-columns: 24px 1px 24px;
+    align-items: center;
+    height: 8px;
+  }
+  .chip.affect .valence .neg {
+    justify-self: end;
+    height: 2px;
+    background: var(--hazard);
+  }
+  .chip.affect .valence .pos {
+    justify-self: start;
+    height: 2px;
+    background: var(--text-muted);
+  }
+  .chip.affect .valence .tick {
+    width: 1px;
+    height: 8px;
+    background: var(--text-muted);
+  }
+  .chip.affect .partial {
+    color: var(--text-muted);
   }
   .menubtn {
     background: none;

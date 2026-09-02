@@ -40,6 +40,7 @@ something shipped.
 
 | Document | The question it went and answered |
 |---|---|
+| [`APPRAISAL-RESEARCH.md`](APPRAISAL-RESEARCH.md) | Why the appraisal label is still degenerate a week after it shipped, what the live corpus actually holds, and what appraisal theory and the harness literature say to change first |
 | [`AUDIT-RESEARCH.md`](AUDIT-RESEARCH.md) | Where the harness was weakest on 2026-09-02, what was fixed that day, and what to build next — ranked |
 | [`BENCHMARK-RESEARCH.md`](BENCHMARK-RESEARCH.md) | How to measure this harness against public agent benchmarks, and what separates harness from model |
 | [`CANVAS-RESEARCH.md`](CANVAS-RESEARCH.md) | Can mecha reach Canvas LMS — and what Dartmouth's token policy makes impossible |

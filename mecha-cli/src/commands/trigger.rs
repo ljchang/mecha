@@ -956,6 +956,7 @@ async fn run_agent(
             model: prepared.model.clone(),
             workspace: prepared.workspace.clone(),
             title: Some(format!("trigger: {}", t.name)),
+            kind: Some(mecha_core::session::SessionKind::Trigger),
         },
     )?;
     record.session_id = Some(session.meta.id.clone());
