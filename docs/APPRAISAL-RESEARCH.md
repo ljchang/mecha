@@ -231,8 +231,9 @@ rule. Twenty-two such rows exist today against thirteen raw interventions.
 > `reflections.jsonl` through `SessionRecords::reflexions` and signs a
 > follow-up-triggered reflection for the session as an `Intervention`
 > error, `Owner`, `controllable` unfilled, cite `Cite::Reflexion(id)` —
-> only where `Reflexion::provenance()` is clean, the same question the
-> learning loop's `learnable()` asks (the owner's ruling, 2026-09-02: a
+> only where `Reflexion::provenance()` is clean — stricter than the
+> learning loop's `learnable()`, which carries a triage-domain exemption
+> this deliberately does not (the owner's ruling, 2026-09-02: a
 > wider owner-turns clause admitted nothing the live path writes, since a
 > tainted session's reflection is recorded clean by construction), never
 > a dropped one, and never a steer or denial (the raw channel already has
@@ -537,3 +538,9 @@ and several 2026 papers read as abstracts.
   reads one. Build it when a consumer needs a trend; do not persist it.
 - **Review-queue salience in pkg** still needs the other repository to read
   `meta.affect`, and with §3.1 it should read valence instead.
+- **Charter sensors.** Ruled in on 2026-09-02 and designed at
+  `GOAL-SYSTEM-DESIGN.md` §11.1 with seven containments; unbuilt. It is the
+  producer for `GoalError.goal` on an ordinary run, and the by-id
+  attribution that closes the queue-delta arm's accepted residual — a
+  global before/after diff credits a run for what the owner cleared by
+  hand mid-run, as `live_readout` discloses.
