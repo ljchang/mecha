@@ -135,9 +135,12 @@ from echo_filter import BotSpeech, overlapped
 # (~0.024 RMS) - a person raising their voice over a reply clears it, a
 # speaker across the room does not.
 #
-# Tunable from the environment because the right value is a property of *this
-# room and this laptop*, not of the code. The measurement to set it from is in
-# the worker's own journal, which logs the RMS of every gated segment:
+# Tunable because the right value is a property of *this room and this
+# laptop*, not of the code — and it is set in `mecha-voice-worker.service`,
+# which carries a commented slot for it, never in a shell: systemd inherits no
+# login environment, so an `export` reaches this process not at all. The
+# measurement to set it from is in the worker's own journal, which logs the
+# RMS of every gated segment:
 #
 #     journalctl -u mecha-voice-worker -f | grep "parakeet segment gated:"
 #
@@ -230,6 +233,9 @@ class SegmentGatedSTT(BaseWhisperSTTService):
         # to the TTS, which writes what it speaks into it.
         self.echo_window = _new_echo_window()
         self._segment_started_at = None
+        # Said once per connection, not once per segment: the condition is a
+        # property of the pipeline, so repeating it every turn would bury it.
+        self._warned_no_segment_start = False
         self._bot_speaking = False
         # Never `0.0`: `time.monotonic()` is uptime on Linux, so a zero here
         # is "the bot stopped speaking at boot", which on a freshly started
@@ -266,6 +272,32 @@ class SegmentGatedSTT(BaseWhisperSTTService):
         borrowing the last one's.
         """
         start, self._segment_started_at = self._segment_started_at, None
+        if start is None and not self._warned_no_segment_start:
+            from loguru import logger
+
+            self._warned_no_segment_start = True
+            # Not a debug line, because this is the whole graded defence going
+            # quiet. `overlapped` collapses to `bot_speaking` alone without a
+            # start, and Parakeet is offline — a segment is transcribed *after*
+            # it ends, so for the case this filter exists for (the mic caught
+            # the tail of a reply that has since finished) `bot_speaking` is
+            # already False. The raised floor and the whole fuzzy text arm
+            # would stop applying, and `over_speaker=False` would read as a
+            # healthy verdict on every line.
+            #
+            # It should be unreachable: `VADUserStartedSpeakingFrame` is
+            # broadcast, so it is pushed upstream as well as downstream
+            # (`frame_processor.broadcast_frame`), and `SegmentedSTTService`
+            # needs the pair to segment at all — `run_stt` is called from
+            # `_handle_user_stopped_speaking` and nowhere else. A pipecat
+            # change that delivered the stop and not the start would leave
+            # transcription limping rather than dead, which is exactly the
+            # shape that goes unnoticed.
+            logger.warning(
+                "no VAD segment start recorded — the echo filter's timing "
+                "layer is not receiving VADUserStartedSpeakingFrame, so the "
+                "graded RMS floor and the fuzzy text arm are both inert"
+            )
         return start
 
     def heard_the_speaker(self, segment_started_at: float | None) -> bool:
