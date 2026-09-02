@@ -3479,19 +3479,25 @@ impl Agent {
             // approver's own mode still applies. An escalation is never
             // softened by a rule: the interlock chose to put a person in
             // front of this call, and a config line is not that person.
-            let ruling = if escalation.is_none() {
-                cx.policy.decide(name, input)
-            } else {
-                None
-            };
+            //
+            // Consulted *always*, escalation or not. The first version skipped
+            // the rules under an escalation so that `allow` could not soften
+            // one — and discarded `forbid` with it, the one ruling stricter
+            // than asking a person. With `ask` and an armed conversation, a
+            // `forbid` on the sender was never read and a human yes ran it:
+            // the operator's standing word was weakest in exactly the state
+            // the interlock considers most dangerous. `Allow < Prompt < Forbid`
+            // has to hold at that boundary too, so `forbid` is checked first
+            // and only `allow`/`prompt` yield to the escalation.
             use crate::policy::RuleDecision;
+            let ruling = cx.policy.decide(name, input);
             let decision = match (&escalation, ruling.as_ref().map(|r| r.decision)) {
-                (Some(why), _) => Some(cx.approver.escalate(tool.as_ref(), input, why).await),
-                (None, Some(RuleDecision::Forbid)) => {
+                (_, Some(RuleDecision::Forbid)) => {
                     let reason = ruling.map(|r| r.reason).unwrap_or_default();
                     tracing::info!(tool = %name, "forbidden by an approval rule");
                     Some(Decision::Blocked(reason))
                 }
+                (Some(why), _) => Some(cx.approver.escalate(tool.as_ref(), input, why).await),
                 (None, Some(RuleDecision::Prompt)) => {
                     Some(cx.approver.approve(tool.as_ref(), input).await)
                 }
@@ -10185,6 +10191,55 @@ match = ["anything"]
         let mut convo = Conversation::from(vec![Message::user("go")]);
         agent.run(&mut convo, None).await.unwrap();
         assert!(*approver.0.lock().unwrap(), "the escalation was asked");
+    }
+
+    /// `Allow < Prompt < Forbid` holds at the escalation boundary: with `ask`
+    /// and an armed conversation, a `forbid` on the sender refuses with
+    /// nobody asked, where the first version skipped the rules entirely and
+    /// let a human yes run the one command the operator had forbidden.
+    #[tokio::test]
+    async fn a_forbid_rule_holds_under_an_escalation() {
+        struct NeverEscalated;
+        #[async_trait]
+        impl Approver for NeverEscalated {
+            async fn approve(&self, tool: &dyn Tool, _input: &Value) -> Decision {
+                panic!("approve consulted for `{}`", tool.name());
+            }
+            async fn escalate(&self, tool: &dyn Tool, _input: &Value, _why: &str) -> Decision {
+                panic!("a forbidden `{}` reached a person", tool.name());
+            }
+        }
+        // `trifecta_agent`'s `send` panics if it runs, so passing is the
+        // refusal holding.
+        let mut agent = trifecta_agent(TrifectaPolicy::Ask);
+        agent.set_approver(Arc::new(NeverEscalated));
+        agent.set_policy(rules(
+            r#"
+[[rule]]
+tool = "send"
+decision = "forbid"
+justification = "this box never sends from an armed conversation"
+"#,
+        ));
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        let refusal = convo
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                Block::ToolResult { content, .. } if content.contains("forbidden") => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .expect("the forbid lands as a tool result");
+        assert!(refusal.starts_with("Blocked by policy:"), "{refusal}");
+        assert!(refusal.contains("never sends from an armed"), "{refusal}");
+        assert_eq!(
+            outcome.blocked_sends, 1,
+            "a forbidden send under an escalation is a send the harness refused"
+        );
     }
 
     /// The input the approver saw is the input the tool receives — the
