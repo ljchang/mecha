@@ -12,8 +12,13 @@ transcript with a summary and keeps the ends: the task at the top, so the agent
 still knows what it was asked, and the most recent turns verbatim, because that
 is where the work is.
 
-It is **off by default**. Compaction is lossy, and paraphrasing someone's
-conversation because it got long is their decision to make.
+It is **on wherever the provider declares a context window**: the threshold
+derives from that window (two thirds of it) unless `compact_at_tokens` sets one
+directly, and only a provider with no declared window runs uncompacted.
+Compaction is lossy, which is why it is validated and recorded rather than
+left off — for a while this page said "off by default" while the code derived a
+threshold, and a page that contradicts the code is the drift the docs exist to
+prevent.
 
 ```toml
 [agent]
