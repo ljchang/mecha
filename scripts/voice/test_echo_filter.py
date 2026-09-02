@@ -149,20 +149,44 @@ class TheTextFilter(unittest.TestCase):
             self.bot.is_probable_echo("book the small room for tuesday", bot_was_audible=True)
         )
 
-    def test_one_slip_is_forgiven_only_where_it_is_plausibly_noise(self):
-        """The single allowance, and its length condition.
+    def test_a_long_follow_up_against_a_long_reply_is_not_an_echo(self):
+        """**The band the one-word allowance re-opened**, and the reason the
+        match has to be *tight* as well as complete.
 
-        Recognition across a room mangles a word now and then, so a long
-        utterance that is otherwise entirely ours is still ours. A short one
-        is not given the same benefit, because at six words a single unmatched
-        word is not noise — it is what the person called to say.
+        The window is not one offer — it is every phrase spoken in the last
+        twenty seconds joined together. A follow-up on the same topic can pick
+        a whole sentence's worth of words out of twenty-five without repeating
+        any phrase of it: this one matches eight of its nine words in order,
+        leaving one over, which the allowance forgives at this length. What it
+        does not have is contiguity, and an echo is a contiguous stretch of
+        what we said.
         """
-        self.bot.note("Your first meeting tomorrow is at nine.")
-        self.assertTrue(
-            self.bot.is_probable_echo(
-                "your first meeting tomorrow is at nine thirty", bot_was_audible=True
-            )
+        self.bot.note(
+            "I can add that to your calendar, and I can also add a note to the "
+            "entry if you want, so that one is easy."
         )
+        self.assertFalse(
+            self.bot.is_probable_echo("can you also add a note to that one", bot_was_audible=True)
+        )
+
+    def test_the_allowance_does_not_grow_with_the_window(self):
+        """The property behind the case above, stated so it cannot regress by
+        someone raising a constant: lengthening the reply must not make a
+        given turn easier to silence."""
+        short_reply = "Shall I add a note to the entry?"
+        long_reply = (
+            "I can add that to your calendar, and I can also add a note to the "
+            "entry if you want, so that one is easy, and I can do the same for "
+            "the others if it would help you keep track of them."
+        )
+        said = "can you also add a note to that one"
+        for reply in (short_reply, long_reply):
+            bot = BotSpeech(clock=FakeClock())
+            bot.note(reply)
+            self.assertFalse(
+                bot.is_probable_echo(said, bot_was_audible=True),
+                f"silenced against a {len(reply.split())}-word reply",
+            )
 
     def test_an_echo_with_a_word_dropped_in_the_middle_is_still_caught(self):
         """Why the match is ordered rather than contiguous: recognition of a
