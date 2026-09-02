@@ -630,7 +630,13 @@ account-scoped, and every row a read returns carries the account, so the
 model always has it); **creates use the default or ask** (`mecha-mail
 default <name>`; with several accounts and none, the error says to *ask the
 user* — worded that way because "use your best judgment" measurably makes
-models invent). A failed account never sinks a fan-out: its error is
+models invent). **A create declares its default in the schema's `default` key,
+and only a create declares one at all.** The key is what lets the outbox pin
+the account into a draft so the reviewer can see who a message is from (see
+*The outbox*); confining it to creates is the same rule the prose already
+followed and had broken — a read fans out and an item op errors, so "The
+default account is `dartmouth`" on `mail_search` described behaviour that does
+not exist, next to a sentence saying the opposite. A failed account never sinks a fan-out: its error is
 reported beside the other accounts' results, and the call errors only when
 every account failed.
 
@@ -1428,6 +1434,23 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
   correction, the `"Blocked by a hook:"` rule in its positive form), and its
   rate is `None` over an empty denominator, never zero: "nothing was edited"
   and "nothing has gone out" are opposite findings.
+- **A draft pins the defaults its own schema declares.** `mail_send` with no
+  `account` used to reach the outbox as three keys — `to`, `subject`,
+  `body_markdown` — and which mailbox it would leave from was decided minutes
+  later, in another process, by a file the reviewer never sees. Every review
+  surface showed a send with no sender. The harness cannot look the answer up
+  either, and that is deliberate rather than an oversight: `mecha-core` has no
+  dependency on `mecha-mail`, so the schema is the only channel between them.
+  So `tool::with_schema_defaults` materialises any top-level property that
+  declares a JSON-Schema `default` and was omitted, and staging writes the
+  filled arguments — tool-agnostic, on `DraftView`'s reasoning, so a tool
+  nobody anticipated gets it too. **Pinned, not merely displayed**, because
+  staging crosses a *time* boundary: a draft is executed verbatim whenever the
+  user gets round to it, so an unpinned default is a message whose sender can
+  change between the reading and the sending. The approver is handed the same
+  filled view for the same reason and *does not* run it — there is no gap
+  there to pin, and rewriting a call the model is about to make would put this
+  on the execution path of every tool in the registry to buy nothing.
 - **Subagents inherit the parent's route** (like hooks), or delegating is the
   way to send unstaged. `mecha eval` forces `--no-outbox`, like MCP and hooks,
   for the same reproducibility reason.

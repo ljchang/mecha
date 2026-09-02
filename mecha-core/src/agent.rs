@@ -3322,7 +3322,17 @@ impl Agent {
                 match route.store.stage(
                     name,
                     route.kind_of(name),
-                    input.clone(),
+                    // Pinned, not passed through. A draft is executed
+                    // verbatim whenever the user gets round to releasing it,
+                    // so an argument the *server* would resolve at that
+                    // moment is one the reviewer cannot see and the harness
+                    // cannot promise: `mail_send` with no `account` is a
+                    // letter with no return address until minutes after it
+                    // was approved. `with_schema_defaults` materialises what
+                    // the schema itself declares, so the draft says which
+                    // mailbox it leaves from and still says it if the default
+                    // moves in between.
+                    crate::tool::with_schema_defaults(&tool.input_schema(), input),
                     *taint,
                     route.session_id(),
                     // The jail this call was drafted under. A release happens
@@ -3408,7 +3418,14 @@ impl Agent {
             }
 
             if !tool.read_only() || force_approval {
-                let decision = cx.approver.approve(tool.as_ref(), input).await;
+                // The approver sees the call *as it will execute*, defaults
+                // and all — a card that omits a schema-defaulted argument is
+                // asking for a decision about a call it is not showing. The
+                // filled value is not what runs: there is no time gap here to
+                // pin (unlike a staged draft), and the server resolving its
+                // own declared default a millisecond later is the same call.
+                let shown = crate::tool::with_schema_defaults(&tool.input_schema(), input);
+                let decision = cx.approver.approve(tool.as_ref(), &shown).await;
                 // The prefix is chosen by *who* refused, never by the approver:
                 // an approver that could pick its own label could label machine
                 // policy as a user correction and teach a rule from silence.
@@ -8767,7 +8784,17 @@ mod tests {
             "Send data somewhere."
         }
         fn input_schema(&self) -> Value {
-            json!({"type": "object"})
+            // A defaulted argument, the shape `mail_send`'s `account` has:
+            // the server resolves it when the call finally executes, which
+            // for a staged draft is long after the person approved it.
+            json!({
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string"},
+                    "body": {"type": "string"},
+                    "account": {"type": "string", "default": "dartmouth"},
+                },
+            })
         }
         fn read_only(&self) -> bool {
             true
@@ -9004,6 +9031,121 @@ mod tests {
         assert_eq!(items[0].tool, "send_data");
         assert_eq!(items[0].session_id.as_deref(), Some("sess-42"));
         assert!(!outcome.taint.private && !outcome.taint.untrusted);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The approval card is the other surface that shows a call before it
+    /// happens, and it has the same duty: what the approver is shown must be
+    /// the call as it will execute, defaults included.
+    #[tokio::test]
+    async fn the_approver_is_shown_the_defaults_the_schema_declares() {
+        struct Recorder(Arc<std::sync::Mutex<Vec<Value>>>);
+
+        #[async_trait]
+        impl Approver for Recorder {
+            async fn approve(&self, _tool: &dyn Tool, input: &Value) -> Decision {
+                self.0.lock().unwrap().push(input.clone());
+                Decision::Allow
+            }
+        }
+
+        struct Writer;
+
+        #[async_trait]
+        impl Tool for Writer {
+            fn name(&self) -> &str {
+                "send_data"
+            }
+            fn description(&self) -> &str {
+                "Send data somewhere."
+            }
+            fn input_schema(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "properties": {"account": {"type": "string", "default": "dartmouth"}},
+                })
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("sent"))
+            }
+        }
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(Writer));
+        agent.set_approver(Arc::new(Recorder(Arc::clone(&seen))));
+
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["account"], json!("dartmouth"));
+    }
+
+    /// A draft must say who it is from.
+    ///
+    /// The model omitted `account`, exactly as it does when the schema tells
+    /// it there is a default — so before this the draft reached the outbox as
+    /// `to`/`body` alone and every review surface showed a send with no
+    /// sender, while the mailbox it left from was chosen minutes later by a
+    /// file no reviewer sees.
+    #[tokio::test]
+    async fn a_staged_draft_pins_the_defaults_its_schema_declares() {
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, root) = outbox_route("defaults");
+        agent.set_outbox(Arc::clone(&route));
+
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let items = route.store.items().unwrap();
+        assert_eq!(items[0].args["account"], json!("dartmouth"));
+        // What the model did send is untouched — filling is not editing.
+        assert_eq!(items[0].args["to"], json!("x@example.com"));
+        // And the shaped view a reviewer actually reads now carries it.
+        let view = crate::outbox::DraftView::of(&items[0].args);
+        assert!(
+            view.headers
+                .iter()
+                .any(|(k, v)| k == "account" && v == "dartmouth"),
+            "{:?}",
+            view.headers
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An argument the model named is never overwritten by a default — the
+    /// point is to show what will happen, not to decide it.
+    #[tokio::test]
+    async fn an_explicit_argument_survives_the_fill() {
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "send_data".into(),
+                    input: json!({"to": "x@example.com", "account": "personal"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("drafted")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with(turns, PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, root) = outbox_route("explicit");
+        agent.set_outbox(Arc::clone(&route));
+
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let items = route.store.items().unwrap();
+        assert_eq!(items[0].args["account"], json!("personal"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

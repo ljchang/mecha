@@ -186,18 +186,41 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
     // schema saying "the default account is `personal`" on `mail_send` while
     // sends resolve to `dartmouth` is worse than saying nothing: the model
     // omits `account` believing it knows where the message goes.
+    //
+    // Which is why only a **create** carries one at all. `resolve` consults
+    // a default in `Mode::Create` and nowhere else — a read fans out over
+    // every account and an item op errors until one is named — so a default
+    // note on `mail_search` or `mail_get_thread` describes behaviour that
+    // does not exist, and contradicts the sentence beside it ("Omit to
+    // search every account").
+    //
+    // The `default` **key**, not just the prose, and that is the load-bearing
+    // half: a caller cannot resolve this — `mecha-core` has no dependency on
+    // this crate, by design, so the account map is only ever visible through
+    // the schema. The harness materialises a declared default into the call's
+    // arguments before staging it, which is how the outbox and the approval
+    // card come to show the account a send would leave from
+    // (`mecha_core::tool::with_schema_defaults`). Declare it only where
+    // omitting the argument really does resolve to it.
+    let plain = |rule: &str| -> Value {
+        json!({
+            "type": "string",
+            "enum": names,
+            "description": rule,
+        })
+    };
     let with_default = |rule: &str, default: Option<&str>| -> Value {
-        let default_note = match default {
-            Some(d) => format!(" The default account is `{d}`."),
-            None => String::new(),
+        let Some(d) = default else {
+            return plain(rule);
         };
         json!({
             "type": "string",
             "enum": names,
-            "description": format!("{rule}{default_note}"),
+            "description": format!("{rule} The default account is `{d}`."),
+            "default": d,
         })
     };
-    let account = |rule: &str| with_default(rule, file.default.as_deref());
+    let account = |rule: &str| plain(rule);
     let mail_account = |rule: &str| with_default(rule, file.mail_default());
     let calendar_account = |rule: &str| with_default(rule, file.calendar_default());
 
@@ -1836,6 +1859,62 @@ mod tests {
             "{}",
             note("calendar_create_event")
         );
+    }
+
+    /// The default belongs in the schema's `default` key, not only in its
+    /// prose — and only on the tools that actually consult one.
+    ///
+    /// Two failures, one fix. A reviewer approving a staged send could not see
+    /// which mailbox it would leave from, because the account was resolved
+    /// here long after the draft was written and no caller can look it up
+    /// (`mecha-core` does not depend on this crate). And a *read* or an *item*
+    /// op carried the note "The default account is `dartmouth`" while
+    /// `resolve` consults a default in `Mode::Create` alone — a promise the
+    /// code does not keep, next to a sentence saying the opposite.
+    #[test]
+    fn only_a_create_declares_a_default_and_it_declares_it_machine_readably() {
+        let defs = tool_definitions(
+            &names(&["personal", "dartmouth"]),
+            &conf(None, Some("dartmouth"), Some("personal")),
+        );
+        let account = |tool: &str| -> Value {
+            defs.iter().find(|d| d["name"] == tool).unwrap()["inputSchema"]["properties"]["account"]
+                .clone()
+        };
+        assert_eq!(account("mail_send")["default"], json!("dartmouth"));
+        assert_eq!(
+            account("calendar_create_event")["default"],
+            json!("personal")
+        );
+
+        for tool in [
+            "mail_search",
+            "mail_recent",
+            "mail_get_thread",
+            "mail_reply",
+            "mail_triage",
+        ] {
+            let spec = account(tool);
+            assert!(spec.get("default").is_none(), "{tool}: {spec}");
+            assert!(
+                !spec["description"].as_str().unwrap().contains("default"),
+                "{tool}: {}",
+                spec["description"]
+            );
+        }
+    }
+
+    /// With no default configured there is nothing to declare, and inventing
+    /// one would be the worst outcome of all: the model omits `account`
+    /// believing it knows where the message goes, and the send resolves
+    /// somewhere else — or errors, having told the reviewer otherwise.
+    #[test]
+    fn a_create_with_no_default_declares_none() {
+        let defs = tool_definitions(&names(&["personal", "dartmouth"]), &conf(None, None, None));
+        let send = defs.iter().find(|d| d["name"] == "mail_send").unwrap();
+        let spec = &send["inputSchema"]["properties"]["account"];
+        assert!(spec.get("default").is_none(), "{spec}");
+        assert!(!spec["description"].as_str().unwrap().contains("default"));
     }
 
     /// The booking sweep resolves where its events land once, up front —
