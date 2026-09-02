@@ -893,7 +893,29 @@ impl Config {
             cfg.merge_file(&project, LayerTrust::Project)?;
         }
         cfg.merge_env();
+        cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// Refuse at load what would otherwise degrade silently at run time.
+    ///
+    /// `[agent] timezone` must be an IANA name — an offset is wrong twice a
+    /// year, and the machine runs UTC while the model has no clock.
+    /// `AgentConfig::timezone()` used to log a warning and fall back to the
+    /// machine's zone, so a typo meant every scheduled run happened in the
+    /// wrong zone with the only notice on a stderr nobody reads at 03:00. A
+    /// name that does not parse is now a load error naming the fix.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(name) = self.agent.timezone.as_deref() {
+            if name.parse::<chrono_tz::Tz>().is_err() {
+                anyhow::bail!(
+                    "[agent] timezone `{name}` is not an IANA zone name. Use one like \
+                     `America/New_York` or `Europe/London` — never an offset, which is wrong \
+                     twice a year"
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Defaults plus `~/.mecha/config.toml` plus env — no project layer.
@@ -915,6 +937,7 @@ impl Config {
             }
         }
         cfg.merge_env();
+        cfg.validate()?;
         Ok(cfg)
     }
 
@@ -1952,5 +1975,94 @@ mod tests {
                  so the setting is silently ignored"
             );
         }
+    }
+
+    /// Does `apply` read a field by this name off some receiver — `x.port`,
+    /// `a.timezone` — as a whole identifier, not as a prefix of a longer one?
+    fn apply_reads_field(apply: &str, field: &str) -> bool {
+        let needle = format!(".{field}");
+        apply.match_indices(&needle).any(|(i, _)| {
+            apply[i + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+        })
+    }
+
+    #[test]
+    fn every_field_a_nested_layer_can_read_is_a_field_apply_reads() {
+        // The hole the test above declares in its own comment: it walks
+        // `ConfigLayer` only, so a field on `HarnessLayer`, `WebLayer`,
+        // `SlackLayer`… that parses and is never copied stayed green — the
+        // `[harness] source_dir` incident, one level down, with a guard
+        // reading as though it covered it. This walks every other `*Layer`
+        // struct and asks that `apply` read each `Option<…>` field by name.
+        //
+        // By name, not by receiver: a field applied under one struct would
+        // vouch for a same-named field on another. None collides today; if
+        // one ever does, the fix is naming both here, and the cost of that
+        // is a comment.
+        let src = include_str!("config.rs");
+        let apply = src
+            .split_once("fn apply(self, cfg: &mut Config)")
+            .expect("apply moved")
+            .1;
+        let apply = &apply[..apply.find("\n    }\n").expect("unterminated apply")];
+
+        let mut checked = 0;
+        for (pos, _) in src.match_indices("Layer {") {
+            // The declaration is the tail of the line the match sits on.
+            let decl = src[..pos].rsplit('\n').next().unwrap_or("").trim();
+            let Some(name) = decl
+                .strip_prefix("pub struct ")
+                .or_else(|| decl.strip_prefix("struct "))
+            else {
+                continue;
+            };
+            if name == "Config" {
+                continue; // `ConfigLayer` is the test above's.
+            }
+            let body = &src[pos..];
+            let body = &body[..body.find("\n}").expect("unterminated layer struct")];
+            for line in body.lines() {
+                let line = line.trim();
+                let Some((field, rest)) = line.split_once(':') else {
+                    continue;
+                };
+                if !rest.trim_start().starts_with("Option<") {
+                    continue;
+                }
+                let field = field.trim().trim_start_matches("pub ");
+                assert!(
+                    apply_reads_field(apply, field),
+                    "`{name}Layer::{field}` parses from a file and `apply` never reads it, so \
+                     the setting is silently ignored"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 30,
+            "the walk found only {checked} nested fields — did the struct spelling change?"
+        );
+    }
+
+    /// The fix for a guard that fell through: an unparseable zone used to be
+    /// a warning and the machine's zone, which for a 03:00 trigger is the
+    /// wrong zone with nobody reading stderr.
+    #[test]
+    fn an_unknown_timezone_is_a_load_error_not_a_warning() {
+        let mut cfg = Config::default();
+        cfg.agent.timezone = Some("Mars/Olympus_Mons".into());
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("IANA") && err.contains("Mars/Olympus_Mons"),
+            "{err}"
+        );
+
+        cfg.agent.timezone = Some("America/New_York".into());
+        cfg.validate().unwrap();
+        cfg.agent.timezone = None;
+        cfg.validate().unwrap();
     }
 }
