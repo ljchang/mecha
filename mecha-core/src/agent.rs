@@ -3319,6 +3319,8 @@ impl Agent {
             // approval, later and out of band.
             if routed {
                 let route = cx.outbox.as_ref().expect("routed implies a route");
+                let (staged_args, filled_defaults) =
+                    crate::tool::with_schema_defaults(&tool.input_schema(), input);
                 match route.store.stage(
                     name,
                     route.kind_of(name),
@@ -3332,7 +3334,7 @@ impl Agent {
                     // the schema itself declares, so the draft says which
                     // mailbox it leaves from and still says it if the default
                     // moves in between.
-                    crate::tool::with_schema_defaults(&tool.input_schema(), input),
+                    staged_args,
                     *taint,
                     crate::outbox::Provenance {
                         session_id: route.session_id(),
@@ -3357,6 +3359,10 @@ impl Agent {
                         // content match would run past the staging call and
                         // join the draft to itself.
                         call_id: Some(id.clone()),
+                        // Which arguments were the harness's, so the source
+                        // join can tell them from the model's. A pinned
+                        // constant is not a fact about what this run read.
+                        filled_defaults,
                     },
                 ) {
                     Ok(item) => {
@@ -3434,7 +3440,7 @@ impl Agent {
                 // filled value is not what runs: there is no time gap here to
                 // pin (unlike a staged draft), and the server resolving its
                 // own declared default a millisecond later is the same call.
-                let shown = crate::tool::with_schema_defaults(&tool.input_schema(), input);
+                let (shown, _) = crate::tool::with_schema_defaults(&tool.input_schema(), input);
                 let decision = cx.approver.approve(tool.as_ref(), &shown).await;
                 // The prefix is chosen by *who* refused, never by the approver:
                 // an approver that could pick its own label could label machine

@@ -2528,6 +2528,7 @@ mod tests {
 
     fn draft(id: &str, tainted: bool, summary: &str) -> mecha_core::outbox::OutboxItem {
         mecha_core::outbox::OutboxItem {
+            filled_defaults: Vec::new(),
             call_id: None,
             id: id.into(),
             status: "pending".into(),
