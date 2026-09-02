@@ -170,16 +170,20 @@ impl Corpus {
         let (listed, skipped) = Session::list_counting(dir)?;
         out.unreadable = skipped;
         for (meta, path) in listed {
+            // The cap first: a test row past it was not hidden *for being a
+            // test* any more than one outside the window was, and counting
+            // it put a store-sized caveat beside a capped population (found
+            // on review, the same inversion on the other bound).
+            if scan.max_sessions.is_some_and(|n| out.sessions_read >= n) {
+                break;
+            }
             if !scan.admits(&meta) {
                 // Attributed only once the other filters have had their
-                // say: `hides_test` implies `!admits`, so this is exact.
+                // say: `hides_test` is exact about the window and the kind.
                 if scan.hides_test(&meta) {
                     out.hidden_tests += 1;
                 }
                 continue;
-            }
-            if scan.max_sessions.is_some_and(|n| out.sessions_read >= n) {
-                break;
             }
             // Attributed rather than taken from the header: a mid-session
             // model switch writes a `Config`, and crediting those runs to the
@@ -1206,6 +1210,28 @@ mod tests {
             cut.hidden_tests, 0,
             "the window excluded it before the kind filter could; counting it would put a caveat beside a population it was never in"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_test_row_past_the_cap_was_not_hidden_for_being_a_test_either() {
+        let dir = tmpdir();
+        // Newest first in the listing: the web row is admitted and fills a
+        // cap of one; the two test rows behind it were never in the
+        // population.
+        session_kinded(&dir, "20260801T000002-web", Some(SessionKind::Web));
+        session_kinded(&dir, "20260801T000001-test", Some(SessionKind::Test));
+        session_kinded(&dir, "20260801T000000-test2", Some(SessionKind::Test));
+        let capped = Corpus::scan(
+            &dir,
+            &Scan {
+                max_sessions: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(capped.sessions_read, 1);
+        assert_eq!(capped.hidden_tests, 0, "{capped:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

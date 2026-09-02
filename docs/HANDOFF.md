@@ -2214,7 +2214,10 @@ repeated here.
   `mecha eval`, never a prompt). The corpus numbers in the rest of this
   section (119 of 120, 120 of 459) are the rung 7 measurement and are
   superseded by the valence read above for any decision about what to
-  build next.
+  build next. **Deploy note:** `WireEvent::Affect` is now sent for a
+  `neutral` label with a signed valence, and a page served from a stale
+  `web/dist` sets the chip to `ev.label` unconditionally — it will read a
+  literal `neutral` until the bundle is rebuilt (update skill surface 1b).
 
 - **Rung 7's measurement came back, and it decides what to build next.**
   `mecha sessions appraise` over the live store: 459 sessions read, **120

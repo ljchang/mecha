@@ -455,6 +455,23 @@ impl Tracked {
         // status loop because that loop reads `next` immutably.
         for item in next.items.iter_mut() {
             let Some(check) = item.check.clone() else {
+                // The third door: a frozen step written again with the
+                // field simply absent. Reopen and re-add-with-a-different-
+                // check were closed and this was not (found on review), and
+                // once something runs checks it is the cheapest evasion —
+                // no trace written, no counter raised, nothing signed. The
+                // same claim unmade after the fact is the same tamper:
+                // restored, counted, echoed.
+                if let Some(f) = self.checks.get(&item.content).filter(|f| f.frozen) {
+                    self.tampered += 1;
+                    lines.push(format!(
+                        "the check for step \"{}\" was dropped after the step was marked \
+                         done; the check it was completed against stands, and the change is \
+                         recorded",
+                        crate::step::ellipsize(&item.content, 60)
+                    ));
+                    item.check = Some(f.check.clone());
+                }
                 continue;
             };
             let hash = check_hash(&check);
@@ -2825,5 +2842,66 @@ mod tests {
             carried.body
         );
         assert!(!carried.body.contains("check: true"), "{}", carried.body);
+    }
+
+    /// The third door (found on the fifth review pass): a frozen step
+    /// written again with no `check` at all. Restored and counted like a
+    /// changed one.
+    #[tokio::test]
+    async fn omitting_a_frozen_check_is_a_tamper_and_the_check_is_put_back() {
+        let tool = TodoTool::default();
+        let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
+        let ctx = ctx_in(&ws.to_string_lossy());
+        tool.call(
+            json!({"items": [{"content": "wire it", "status": "in_progress", "check": "make test"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        tool.call(
+            json!({"items": [{"content": "wire it", "status": "completed", "check": "make test"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let out = tool
+            .call(
+                json!({"items": [{"content": "wire it", "status": "completed"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content
+                .contains("was dropped after the step was marked done"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("    check: make test\n"),
+            "{}",
+            out.content
+        );
+        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("make test"));
+        // An open step may drop its check freely — nothing is frozen yet.
+        tool.call(
+            json!({"items": [{"content": "ship it", "status": "in_progress", "check": "true"}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let out = tool
+            .call(
+                json!({"items": [{"content": "ship it", "status": "in_progress"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !out.content.contains("ship it\" was dropped"),
+            "{}",
+            out.content
+        );
     }
 }

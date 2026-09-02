@@ -634,8 +634,9 @@ impl Valence {
 
 impl Appraisal {
     /// Did the run stop before it was done? A negative counter error whose
-    /// pointer is the stop cause (a ceiling, a loop, no output) or the
-    /// silent failure (`ended_on_failed_call`). The closure follow-up gate
+    /// pointer is the stop cause (a ceiling, a loop, no output), the silent
+    /// failure (`ended_on_failed_call`), or a declared check that did not
+    /// pass (`checks_passed`). The closure follow-up gate
     /// reads this beside the label: §5.4's "the owner took it anyway" case
     /// is a run with *cut-off work*, which is what a follow-up captures — a
     /// rejected draft or a steer is a negative too, and stages nothing,
