@@ -1055,7 +1055,11 @@ pub fn of_session(
         }
         // `stop_cause` is the folded episode's, which `RunStats::merge` takes
         // from the *last* run — the right run for "did the resumed work
-        // finish", since the answer arrives as a later run by construction.
+        // finish", since the answer arrives as a later run by construction:
+        // `ParkingAsker::ask_in` cancels the run when the park lands, so the
+        // asking run records `Interrupted`, and a question answered but
+        // never resumed signs nothing here until a later run in the session
+        // actually finishes (load-bearing, and named on review).
         let (sign, agency) = match q.status.as_str() {
             crate::questions::ANSWERED
                 if stats.stop_cause == Some(crate::agent::StopCause::Completed) =>

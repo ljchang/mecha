@@ -299,7 +299,12 @@ pub struct Fold {
 
 /// The whole fold from one `Backlog` pair — the one seam where the level,
 /// the delta, and relief's numerator and denominator are all derived from
-/// the same reads. `with_delta`'s tests hand it both numbers, and the
+/// the same reads. The same *reads*, not quite the same store sets: the
+/// numerator counts stores readable at both ends (`Backlog::delta` is
+/// `None` for one unreadable at either), the denominator stores readable
+/// at the start, so a store that vanished mid-run inflates the denominator
+/// and the reading errs toward less relief — the level's own denominator,
+/// and the safe direction (found on review). `with_delta`'s tests hand it both numbers, and the
 /// mismatch the review found lived exactly here, in the call site; a later
 /// pass found the call site re-deriving half of it beside this, which is
 /// why this returns all three rather than one.
