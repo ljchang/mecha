@@ -22,10 +22,24 @@ impl Approver for TerminalApprover {
         if self.always.lock().unwrap().contains(tool.name()) {
             return Decision::Allow;
         }
+        self.ask(tool, input, None).await
+    }
 
+    /// Past the `always` list on purpose: an escalation is the interlock
+    /// asking a person about *this* call, and a standing yes for the tool is
+    /// not that.
+    async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        self.ask(tool, input, Some(why)).await
+    }
+}
+
+impl TerminalApprover {
+    async fn ask(&self, tool: &dyn Tool, input: &Value, why: Option<&str>) -> Decision {
         let name = tool.name().to_string();
         let summary = summarize(&name, input);
-        let prompt = format!("\n  {name}  {summary}\n  allow? [y]es / [a]lways / [n]o / [q]uit > ");
+        let preface = why.map(|w| format!("  {w}\n")).unwrap_or_default();
+        let prompt =
+            format!("\n{preface}  {name}  {summary}\n  allow? [y]es / [a]lways / [n]o / [q]uit > ");
 
         // Reading stdin blocks; keep it off the async runtime's worker threads.
         let answer = tokio::task::spawn_blocking(move || {

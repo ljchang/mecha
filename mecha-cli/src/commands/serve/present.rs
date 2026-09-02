@@ -150,7 +150,25 @@ impl Approver for WebApprover {
         if tool.read_only() {
             return Decision::Allow;
         }
+        self.ask(tool, input, None).await
+    }
 
+    /// Past the permission mode and the read-only shortcut on purpose: an
+    /// escalation is the interlock asking a person about *this* call, and a
+    /// mode that would have passed it is exactly what is being overridden.
+    /// The reason rides on the card as its question.
+    async fn escalate(&self, tool: &dyn Tool, input: &serde_json::Value, why: &str) -> Decision {
+        self.ask(tool, input, Some(why.to_string())).await
+    }
+}
+
+impl WebApprover {
+    async fn ask(
+        &self,
+        tool: &dyn Tool,
+        input: &serde_json::Value,
+        question: Option<String>,
+    ) -> Decision {
         let (qid, rx) = self.questions.open();
         let card = WireEvent::Question {
             qid,
@@ -162,7 +180,7 @@ impl Approver for WebApprover {
             // anyway — which is the failure this card exists to prevent,
             // not a cosmetic complaint about JSON.
             draft: super::chat::WireDraft::of(input),
-            question: None,
+            question,
             options: Vec::new(),
             timeout_secs: self.timeout.as_secs(),
         };

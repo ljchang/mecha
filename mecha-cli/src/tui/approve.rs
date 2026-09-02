@@ -57,11 +57,25 @@ impl Approver for TuiApprover {
         if self.always.lock().is_ok_and(|a| a.contains(tool.name())) {
             return Decision::Allow;
         }
+        self.ask(tool, crate::approve::summarize(tool.name(), input))
+            .await
+    }
 
+    /// Past the `always` list on purpose: an escalation is the interlock
+    /// asking a person about *this* call, and a standing yes for the tool is
+    /// not that. The reason rides in the summary the modal shows.
+    async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        let summary = format!("{why} {}", crate::approve::summarize(tool.name(), input));
+        self.ask(tool, summary).await
+    }
+}
+
+impl TuiApprover {
+    async fn ask(&self, tool: &dyn Tool, summary: String) -> Decision {
         let (reply, answer) = oneshot::channel();
         let request = Request {
             tool: tool.name().to_string(),
-            summary: crate::approve::summarize(tool.name(), input),
+            summary,
             reply,
         };
 

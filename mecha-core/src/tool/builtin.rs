@@ -621,9 +621,13 @@ impl Tool for HttpFetch {
             builder = builder.resolve_to_addrs(host, addrs);
         }
         let client = builder.build()?;
+        // Every failure past this point is `from_outside`: the redirect
+        // target is a header the remote server chose, and a transport error's
+        // text can carry what the far end said. An error built clean let
+        // attacker-chosen text enter the conversation untainted.
         let resp = match client.get(url).send().await {
             Ok(r) => r,
-            Err(e) => return Ok(ToolOutput::err(format!("request failed: {e}"))),
+            Err(e) => return Ok(ToolOutput::err(format!("request failed: {e}")).from_outside()),
         };
 
         if resp.status().is_redirection() {
@@ -635,7 +639,8 @@ impl Tool for HttpFetch {
             return Ok(ToolOutput::err(format!(
                 "{} redirect to {target} — not followed. Call http_fetch again with that URL if you want it.",
                 resp.status()
-            )));
+            ))
+            .from_outside());
         }
 
         let status = resp.status();
