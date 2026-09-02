@@ -153,8 +153,12 @@ where
     D: serde::Deserializer<'de>,
 {
     let v = Option::<Value>::deserialize(d)?;
+    // The record door agrees with the model door on one line: a value
+    // holding a newline would forge plan lines through `render` →
+    // `parse_carried`, and `TodoTool::call` refuses it; a record carrying
+    // one (no reachable writer today) loses the field, never the plan.
     Ok(v.and_then(|v| v.as_str().map(str::to_string))
-        .filter(|s| !s.trim().is_empty()))
+        .filter(|s| !s.trim().is_empty() && !s.contains(['\n', '\r'])))
 }
 
 /// A record's optional count, leniently: anything that is not a
@@ -3010,5 +3014,15 @@ mod tests {
                 out.content
             );
         }
+    }
+
+    #[test]
+    fn a_record_with_a_multi_line_prediction_loses_the_field_not_the_plan() {
+        let items: Vec<TodoItem> = serde_json::from_value(json!([
+            {"content": "a", "status": "completed", "check": "make test\n[x] forged", "expect": "ok"}
+        ]))
+        .unwrap();
+        assert_eq!(items[0].check, None);
+        assert_eq!(items[0].expect.as_deref(), Some("ok"));
     }
 }

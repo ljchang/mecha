@@ -1093,6 +1093,22 @@ pub fn live(
 /// [`live`], with the dimensional reading beside the label — what the
 /// surfaces actually show (`docs/APPRAISAL-RESEARCH.md` §3.1).
 ///
+/// **Negative-only, and neutral-only, on every live surface today — said
+/// here because the surfaces' own docs describe a two-sided bar.** This
+/// passes no drafts (below), and a draft sent unchanged is the one signed
+/// positive `of_session` can assemble from a run's own record, so
+/// `Valence::positive` is always zero here: the TUI badge is always amber,
+/// the web bar draws only its negative half, and the Slack line only ever
+/// reads `−N.N`. And the free readout's *label* is `Neutral` on every
+/// error it can build (`Own`/`Owner`, `controllable` unfilled), so the
+/// label word never reaches a live chip or badge and the voice nudge
+/// behind `affect_label` never fires. The positive half and the labels
+/// live on the offline readers — `sessions appraise`, the closure
+/// appraisal — which read the outbox and can run the probe. A channel
+/// that signs a positive off the run's own record is what changes this,
+/// and phase B's queue-delta arm (`Channel::Commitment`, read from the
+/// run's own homeostat) is the first (found on review).
+///
 /// On a compacted run the label is `Neutral` outright, for the reason
 /// [`live`]'s body gives, and the valence is computed from the counters
 /// alone and marked `partial`: the interventions are unknowable, the
@@ -2940,5 +2956,22 @@ mod tests {
         );
         assert_eq!(r.valence.compact(), "\u{2212}0.5\u{2026}");
         assert_eq!(live("s1", &compacted, &convo, 0), Affect::Neutral);
+    }
+
+    /// Pins the disclosure on `live_readout`: with no drafts and no probe,
+    /// nothing a live run records can sign positive or earn a label. When
+    /// this fails, the docs that say "negative-only" are stale — update
+    /// them, not this.
+    #[test]
+    fn the_live_readout_is_negative_only_and_neutral_only_today() {
+        let mut outcome = bare_outcome();
+        outcome.stop_cause = crate::agent::StopCause::MaxTurns;
+        outcome.ended_on_failed_call = true;
+        outcome.boredom_notices = 2;
+        let convo = crate::agent::Conversation::default();
+        let r = live_readout("s1", &outcome, &convo, 0);
+        assert_eq!(r.label, Affect::Neutral);
+        assert_eq!((r.valence.positives, r.valence.positive), (0, 0.0));
+        assert!(r.valence.negatives >= 2);
     }
 }

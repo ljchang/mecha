@@ -494,7 +494,18 @@ opinion without knowing which store it came from.
 | [TUI](/docs/features/interfaces) | A badge in the status strip after a run: the valence as a number (`+1.0 −0.5`), the label word before it when there is one, **only** when the run had something signed — and it survives `--no-session`, because the reading is a function of the run, not of whether a transcript was kept. Amber on a negative reading, grey on a positive-only one. Cleared when the next run starts and by `/clear`. A trailing `…` means the run compacted and the interventions could not be scoped, so the number is partial. |
 | [Web](/docs/features/web) | A muted chip beside the answer carrying the label word, if any, and a two-sided bar — negative to the left of a centre tick, positive to the right — deliberately not the amber the taint chip owns, because "how it went" and "what it touched" must never be confusable; the logo tints as a CSS *outline* on a negative reading, never a fill. The event is sent only when there is something to show, so the page has a plain absence to fall back to. |
 | Slack | One context line in the thread after a run that had anything signed: `appraisal · −0.5`, or `appraisal · anger −0.5` when the label says a word. |
-| [Voice](/docs/features/voice) | A per-answer weight nudge on the local TTS. It **lags one turn by construction** — the label is a function of a *finished* run, so a call hears the previous turn's mood. |
+| [Voice](/docs/features/voice) | A per-answer weight nudge on the local TTS, keyed on the label word. **Unreachable today** — see the note below this table: a live run's label is always neutral, so no nudge is ever latched. When one is, it **lags one turn by construction** — the label is a function of a *finished* run, so a call hears the previous turn's mood. |
+
+**What a live surface can show today is the negative half, and no word.**
+The live readout passes no drafts, and a draft sent unchanged is the one
+positive the record can sign from a run alone — so the TUI badge is always
+amber, the web bar draws only its left half, and the Slack line only ever
+reads `−N.N`. The free readout's *label* is neutral on every error a live
+run can build, so the label word never reaches a chip or badge and the voice
+nudge above never fires. Both halves are real on the offline readers —
+`mecha sessions appraise` and the closure appraisal read the outbox and can
+run the probe. A channel that signs a positive off the run's own record is
+what changes this; the queue-delta commitment channel is the first.
 | `mecha tasks set --status done` | Appraises the session that served the task, prints the verdict, and may stage a follow-up. |
 | [`mecha distill`](/docs/features/distillation) | The label and the goal errors ride on an episode's `meta`, beside — not inside — its content. |
 
