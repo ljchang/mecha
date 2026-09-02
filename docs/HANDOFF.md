@@ -74,7 +74,9 @@ send-laundering, the cumulative usage frame, `Approver::escalate`,
 `[[rule]]`/`[approval]` config), touching `run_tools`, `agent.rs`,
 `config.rs`, `subagent.rs` and `tool/mod.rs` — the last of which #140 also
 rewrote (`cap_result`'s marker, `CAP_MARKER`), so #143's rebase behind the
-appraisal merges is textual on that one file and semantic nowhere else.
+appraisal merges is textual on that one code file and semantic nowhere
+else; both also touch `CLAUDE.md` and `docs/ARCHITECTURE.md`, in
+different sections.
 The third session's **#144** (`fix/draft-shows-its-account`: `OutboxItem`
 gains `call_id` and `filled_defaults`, `OutboxStore::stage` takes an
 `outbox::Provenance`) merged `main` after both appraisal PRs and
