@@ -92,6 +92,23 @@ MIN_ECHO_MATCHED_WORDS = 4
 MAX_UNMATCHED_WORDS = 1
 LONG_ENOUGH_FOR_ONE_SLIP = 8
 
+# How much of `blob` the match may be spread across, over and above the words
+# it matched. An echo is a *contiguous stretch* of what we said; one skipped
+# word is the same recognition slip `MAX_UNMATCHED_WORDS` allows, seen from
+# the other side.
+#
+# Without this the one-word allowance above re-opened, at eight words and up,
+# the very failure the rest of this module removed — because the window is not
+# the one offer the reasoning above imagines, it is every phrase spoken in the
+# last twenty seconds joined together. "Can you also add a note to that one",
+# over a reply that had said "I can add that to your calendar, and I can also
+# add a note to the entry if you want, so that one is easy", matches eight of
+# its nine words in order. Not one phrase of it: eight words gathered from
+# across twenty-five. It is a follow-up sharing the reply's topic vocabulary,
+# and the longer the reply the easier it gets — the same length-dependence
+# that made the bag of words wrong.
+MAX_MATCH_SPREAD = 1
+
 
 def normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]", " ", text.lower())
@@ -101,22 +118,42 @@ def _words(text: str) -> list[str]:
     return normalize(text).split()
 
 
-def _matched_in_order(words: list[str], blob: list[str]) -> int:
-    """How many of `words` appear in `blob`, in the same order.
+def _aligned(words: list[str], blob: list[str]) -> tuple[int, int]:
+    """How many of `words` appear in `blob` in the same order, and **how far
+    across `blob` the match is spread**.
 
-    A longest common subsequence. Order is the whole point: it is what
+    A longest common subsequence, plus the span it occupies. Order is what
     separates our own sentence coming back with a word misheard in the middle
-    from a person reusing two of our words to disagree with us.
+    from a person reusing two of our words to disagree with us. The span is
+    what separates it from a person reusing *eight*: the window is every
+    phrase spoken in the last twenty seconds joined together, so a topical
+    follow-up can pick a whole sentence's worth of words out of it without
+    ever repeating a phrase. An echo is a contiguous stretch of what we said;
+    a follow-up is words gathered from all over it.
+
+    Where two alignments match the same number of words, the tighter one wins
+    — a match is only evidence of echo at the place it is densest.
     """
     if not words or not blob:
-        return 0
-    prev = [0] * (len(blob) + 1)
+        return 0, 0
+    # (count, first index, last index); scored on count, then on tightness.
+    def score(cell):
+        count, first, last = cell
+        return (count, -(last - first) if count else 0)
+
+    prev = [(0, 0, 0)] * (len(blob) + 1)
     for w in words:
-        cur = [0]
+        cur = [(0, 0, 0)]
         for j, b in enumerate(blob):
-            cur.append(prev[j] + 1 if w == b else max(cur[j], prev[j + 1]))
+            if w == b:
+                count, first, last = prev[j]
+                hit = (count + 1, first if count else j, j)
+            else:
+                hit = (0, 0, 0)
+            cur.append(max(hit, cur[j], prev[j + 1], key=score))
         prev = cur
-    return prev[-1]
+    count, first, last = prev[-1]
+    return count, (last - first + 1) if count else 0
 
 
 class BotSpeech:
@@ -195,8 +232,15 @@ class BotSpeech:
         if not bot_was_audible:
             return False
 
-        matched = _matched_in_order(words, blob.split())
+        matched, spread = _aligned(words, blob.split())
         if matched < MIN_ECHO_MATCHED_WORDS:
+            return False
+        # Nothing of ours left out of the match, and nothing of theirs left
+        # over. The two guards answer different questions and neither implies
+        # the other: a follow-up can leave nothing over and still be gathered
+        # from across the whole window, and a correction can be perfectly
+        # contiguous and still say one thing we never did.
+        if spread > matched + MAX_MATCH_SPREAD:
             return False
         unmatched = len(words) - matched
         allowed = MAX_UNMATCHED_WORDS if len(words) >= LONG_ENOUGH_FOR_ONE_SLIP else 0

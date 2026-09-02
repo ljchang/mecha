@@ -246,20 +246,42 @@ class SegmentGatedSTT(BaseWhisperSTTService):
             self._bot_speaking = False
             self._bot_audible_until = _time.monotonic()
 
-    def heard_the_speaker(self) -> bool:
+    def take_segment_start(self) -> float | None:
+        """The start of the segment being transcribed, **consumed**.
+
+        Read-and-clear, so a start belongs to exactly one segment. Left in
+        place it was inherited, and inheriting it is not a stale reading — it
+        latches. `_bot_audible_until` only ever increases, so once the stored
+        start is older than the most recent `BotStoppedSpeakingFrame`,
+        `overlapped` answers True for every segment for the rest of the call:
+        the graded floor and the fuzzy text arm both stay armed, and the log
+        line reads `over_speaker=True segment_start=<a plausible float>`,
+        which is indistinguishable from a correct verdict.
+        `VADUserStartedSpeakingFrame` arriving for turn one and then stopping
+        is all it takes — a reordered processor, a partial rename, or audio
+        flushed without a paired onset — and it silences turns.
+
+        Clearing it collapses that case onto the diagnostic that already
+        exists: a segment with no start of its own reports `None` instead of
+        borrowing the last one's.
+        """
+        start, self._segment_started_at = self._segment_started_at, None
+        return start
+
+    def heard_the_speaker(self, segment_started_at: float | None) -> bool:
         """Did our own reply overlap the segment about to be transcribed?
 
-        `_segment_started_at` is logged beside the answer, not just the
-        answer. `over_speaker=False` reads identically whether the timing
-        layer decided "no overlap" or whether the start was never recorded
-        because `VADUserStartedSpeakingFrame` stopped reaching this processor
-        — a pipecat upgrade renaming that frame would collapse `overlapped`
-        to `bot_speaking` alone, the graded floor would quietly stop applying
-        to everything but a live barge-in, and every log line would still read
-        healthy. `segment_start=None` is what makes that visible.
+        The start is logged beside the answer, not just the answer.
+        `over_speaker=False` reads identically whether the timing layer
+        decided "no overlap" or whether no start was recorded at all — a
+        pipecat upgrade renaming `VADUserStartedSpeakingFrame` would collapse
+        `overlapped` to `bot_speaking` alone, the graded floor would quietly
+        stop applying to everything but a live barge-in, and every log line
+        would still read healthy. `segment_start=None` is what makes that
+        visible, and `take_segment_start` is what makes it reachable.
         """
         return overlapped(
-            segment_started_at=self._segment_started_at,
+            segment_started_at=segment_started_at,
             bot_speaking=self._bot_speaking,
             bot_audible_until=self._bot_audible_until,
         )
@@ -301,7 +323,8 @@ class ParakeetSTT(SegmentGatedSTT):
         # Whether our own speaker was playing changes what this segment has to
         # clear, and it is asked once here so the floor and the text filter
         # cannot disagree about it.
-        echoey = self.heard_the_speaker()
+        segment_started_at = self.take_segment_start()
+        echoey = self.heard_the_speaker(segment_started_at)
         floor = ECHO_SEGMENT_RMS if echoey else MIN_SEGMENT_RMS
         if duration < MIN_SEGMENT_SECONDS or rms < floor:
             # The RMS is printed on the gated path too, and deliberately: it
@@ -310,7 +333,7 @@ class ParakeetSTT(SegmentGatedSTT):
             logger.debug(
                 f"parakeet segment gated: duration={duration:.2f}s rms={rms:.4f} "
                 f"floor={floor:.4f} over_speaker={echoey} "
-                f"segment_start={self._segment_started_at}"
+                f"segment_start={segment_started_at}"
             )
             return Transcription(text="")
         r = await self._client.audio.transcriptions.create(
@@ -319,7 +342,7 @@ class ParakeetSTT(SegmentGatedSTT):
         text = (r.text or "").strip()
         logger.debug(
             f"parakeet: duration={duration:.2f}s rms={rms:.4f} "
-            f"over_speaker={echoey} segment_start={self._segment_started_at} "
+            f"over_speaker={echoey} segment_start={segment_started_at} "
             f"text={text[:100]!r}"
         )
         if self.echo_window.is_probable_echo(text, bot_was_audible=echoey):
