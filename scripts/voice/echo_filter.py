@@ -45,25 +45,24 @@ ECHO_WINDOW_SECONDS = 20.0
 # question is treated as suspect.
 BOT_TAIL_SECONDS = 1.2
 
-# How much of a transcript must be our own words, *in our own order*, before
-# it is called an echo — as a count and as a fraction, and it has to be both.
+# How many of a transcript's words must be our own, *in our own order*, before
+# it is called an echo. A count, never a fraction — see `MAX_UNMATCHED_WORDS`
+# for why every fraction that was tried silenced a correction.
 #
-# The count is what protects a barge-in. An unweighted bag of words does not:
-# `vocab` would be every word in a 20-second window, function words included,
-# so a long reply makes almost any short sentence clear a ratio bar. "No,
-# cancel it" over "…or would you rather I cancel it?" scored 0.667 against a
-# 0.6 bar and was silenced — a three-word confirmation is the commonest
-# legitimate barge-in there is, and because turn-start is transcription-based
-# a gated transcript is not a degraded turn but no turn at all.
+# The count is what protects a barge-in, and an unweighted bag of words did
+# not: the vocabulary of a 20-second window is every word in it, function
+# words included, so a long reply makes almost any short sentence clear a
+# ratio bar. "No, cancel it" over "…or would you rather I cancel it?" scored
+# 0.667 against a 0.6 bar and was silenced — a three-word confirmation is the
+# commonest legitimate barge-in there is, and because turn-start is
+# transcription-based a gated transcript is not a degraded turn but no turn
+# at all.
 #
 # Ordered matching (a longest common subsequence, not a substring) is what
 # keeps the count honest in the other direction: real echo arrives with words
 # dropped in the middle, so contiguity is too strict, while order still costs
 # a coincidental match almost everything. "Actually cancel that" cannot match
 # a window that says "that" before "cancel".
-#
-# The floor is a count and not a fraction; see `MAX_UNMATCHED_WORDS` for why
-# every fraction that was tried silenced a correction.
 MIN_ECHO_MATCHED_WORDS = 4
 
 # How many words a transcript may contain that we did not say, and the length
