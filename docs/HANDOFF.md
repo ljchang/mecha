@@ -1220,8 +1220,29 @@ of main, and `git log -1 -- web/` returns that same commit — so the served
 bundle already matches what main builds. `deployed-local` still points there
 and is worth deleting now that main is deployed.
 
+**`mecha --version` no longer distinguishes anything on this box.** It reports
+0.1.17 and the workspace says 0.1.17, but HEAD is **13 commits past the
+`v0.1.17` tag**, so every build since carries the same string. Probe for a
+literal instead: `strings ~/.cargo/bin/mecha | grep -c` on
+`You name conversations` (the titler, `mecha_core::title`),
+`left the recording; no reason recorded` (arm-attributed divergence), or
+`never needed, NOT` (the diagnostician brief). All three are present as of
+this date. A peer independently reached the same conclusion from the other
+direction — rebuilding `web/dist` from main and getting a byte-identical
+`index-klt_h5v8.js` — which is why the dist was not rsynced.
+
+**The desktop web layout and conversation auto-naming are deployed but
+UNTESTED IN ANGER.** The bundle was built, served and verified by hash, and
+the PR merged, but nobody exercised the left-rail layout at 900px, the
+session drawer at 1180px, or a rename. Recorded as deployed-and-unexercised
+rather than verified, on its author's own flag — the distinction matters
+because "deployed" reads as "working" in a handoff and this one has no
+evidence behind it yet.
+
 Tests this date: **1132** core, 688 + 133 + 75 + 20 + 9 + 6 + 1 across the
-other suites, 0 failed. Eval 36 cases, 15 tags, unchanged.
+other suites, 0 failed. Eval 36 cases, 15 tags, unchanged. `deployed-local`
+was deleted by its owner once main was on every surface — its absence again
+means "main is deployed".
 
 ## What the measurements say
 
