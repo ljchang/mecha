@@ -450,7 +450,10 @@ pub struct RunStats {
     pub step_escalations_revised: Option<u32>,
     /// Declared post-condition checks the loop ran, and how many passed —
     /// counted off the trace by name (`step::CHECK_TRACE`), a refused check
-    /// in neither. `Option` for the same reason as `boredom_notices`: a row
+    /// in neither. **No trace by that name is written yet** (the executor is
+    /// unbuilt; see `step::CHECK_TRACE`), so a live run records `Some(0)`
+    /// for both until it lands — a real zero from a real count, distinct
+    /// from the `None` of a row written before the field existed. `Option` for the same reason as `boredom_notices`: a row
     /// from before the record says nothing, and reading it as "no checks"
     /// would dilute the one structural discrepancy rate the corpus has.
     #[serde(default, skip_serializing_if = "Option::is_none")]

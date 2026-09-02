@@ -83,9 +83,12 @@ pub fn corpus_slice(
             since,
             workspace: workspace.clone(),
             // A diagnosis over smoke tests would send a change at code that
-            // was only ever exercised by a test; the surface filter is not
-            // exposed here because a candidate is measured against the
-            // whole population it will run in.
+            // was only ever exercised by a test. The same admission is
+            // applied to the measurement half's episode draw
+            // (`harness_probe`'s `Scan::admits`), so both halves of one
+            // night see one population; the surface filter is not exposed
+            // on either, because a candidate is measured against every
+            // surface it will run in.
             kind: None,
             include_tests: false,
         },

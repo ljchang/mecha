@@ -2202,6 +2202,13 @@ enum ActionCard {
 
 /// F12's one delivery rule: `(update the dispatch message, post a fresh
 /// reply)`. The dispatch message is updated whenever it exists; a fresh reply
+/// is owed when the dispatch never landed — the outcome must land somewhere —
+/// or when the action was slow, because a card edit fires no notification.
+/// Never both fresh posts, which was the double-post.
+fn outcome_delivery(dispatch_landed: bool, slow: bool) -> (bool, bool) {
+    (dispatch_landed, !dispatch_landed || slow)
+}
+
 /// The appraisal footer for a finished run: `appraisal · −0.5`, or
 /// `appraisal · anger −0.5` when the label says a word. Numbers and a closed
 /// enum's wire word only — nothing here was written by a model.
@@ -2217,13 +2224,6 @@ fn appraisal_line(readout: &mecha_core::appraisal::Readout) -> String {
         line.push_str(&n);
     }
     line
-}
-
-/// is owed when the dispatch never landed — the outcome must land somewhere —
-/// or when the action was slow, because a card edit fires no notification.
-/// Never both fresh posts, which was the double-post.
-fn outcome_delivery(dispatch_landed: bool, slow: bool) -> (bool, bool) {
-    (dispatch_landed, !dispatch_landed || slow)
 }
 
 /// F13: whether a finished send needs the draft's card posted afterwards — a
