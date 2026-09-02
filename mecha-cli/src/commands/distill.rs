@@ -194,11 +194,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             .iter()
             .filter(|i| i.session_id.as_deref() == Some(meta.id.as_str()))
             .collect();
+        // Drafts only: an episode's tag is the session's own record, and
+        // the three commitment stores are the closure and corpus readouts'
+        // to read (`sessions appraise`, `tasks set`), not a per-episode
+        // cost here. `Channel::Commitment` can still sign one error from
+        // here — the queue-delta arm reads the run's own homeostat, not a
+        // store — which is the one commitment fact the record carries.
         let appraisal = mecha_core::appraisal::for_transcript(
             &transcript,
             &meta.id,
             meta.created_at.to_rfc3339(),
-            &mine,
+            mecha_core::appraisal::SessionRecords {
+                drafts: &mine,
+                ..Default::default()
+            },
             None,
         )
         .map(|built| built.appraisal);

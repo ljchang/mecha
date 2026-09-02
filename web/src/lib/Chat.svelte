@@ -751,7 +751,7 @@
       {#if affect || valence}
         <span
           class="chip affect"
-          title={`how the last run went, by mecha's own appraisal of its record — clears on the next clean run${valence ? ` · ${valence.positives} positive, ${valence.negatives} negative signal(s)${valence.partial ? ', partial: the run compacted' : ''}` : ''}`}
+          title={`how the last run went, by mecha's own appraisal of its record — clears on the next clean run${valence ? ` · ${valence.positives} positive, ${valence.negatives} negative signal(s)${valence.partial ? ', partial: some evidence was unavailable' : ''}` : ''}`}
         >
           {#if affect}{affect}{/if}
           {#if valence}

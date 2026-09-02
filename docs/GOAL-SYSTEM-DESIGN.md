@@ -1051,6 +1051,127 @@ charter is `Prose` class and cannot be cheaply A/B tested:
   well-formed version points the other way: *"tell the owner the truth early,
   especially when it disappoints."*
 
+### 11.1 Sensored lines — ruled 2026-09-02, designed here, unbuilt
+
+The owner ruled that a charter line may carry a **sensor**: an observable
+the harness reads from its own stores, with a setpoint the owner wrote. It
+is the piece rung 10's note above says is missing — the thing that makes an
+ordinary run reference a charter line at all — and it is where `Pride` and a
+line-specific guilt come from. It is designed in this section rather than
+built, because the parser, the web editor's serialiser and the template test
+all move together, and because seven containments have to land with it or
+it is a Goodhart lever with a nicer name.
+
+**The shape.** An optional `[line.sensor]` table under a `[[line]]`:
+
+```toml
+[[line]]
+id = "answer-what-waits-on-me"
+text = "Keep what waits on me short: a draft you stage should not sit
+        unreviewed for days, and a question you ask should not go unanswered."
+[line.sensor]
+kind = "outbox_age"        # a closed set — see below
+setpoint = "24h"           # what the line means by "short"
+```
+
+`kind` is a **closed enum the owner picks from**, never an expression, a
+command or a path, so the file stays a wire format `Charter::load` can refuse
+exactly as it refuses an unknown key today. The kinds are the observables a
+store already holds with an id per item, because attribution below needs the
+id: `outbox_waiting` and `outbox_age` (the outbox), `question_latency` (the
+question store), `request_closure` (the front door), `board_overdue` (the
+board's `due_at`), `intervention_rate` and `cost` (the run corpus). Each kind
+fixes its setpoint's unit; a kind the binary does not know is a load error,
+which is the fail-closed direction the charter already has. `GoalRef::Charter`
+is unchanged: a sensored line is still a charter line, pointed at by id, and
+`GoalRef::Setpoint` stays the homeostat's — a charter sensor has an owner and
+a sentence, a homeostat setpoint has neither.
+
+**The author rule is the same rule.** A sensor is typed by a person, at any
+surface; the template shows one commented out and nothing else; no model
+composes, suggests or tunes one. Everything the module doc says about the
+line applies to the table under it.
+
+**What it produces.**
+
+- *A producer for the charter reference on ordinary runs.* A run whose own
+  trace touched an item a sensored line watches — released the draft,
+  answered the question, closed the request — is attributed to that line
+  after the fact, with no `serves:` and no plan. This is the fix for
+  `GoalError.goal` being `None` in every appraised session.
+- *A signed error per line*: the direction the watched observable moved
+  against the setpoint, `Agency::Own` when the run's trace touched the item
+  and `Agency::Owner` when the owner did. A positive, own-agency error
+  against a charter line is exactly the `Pride` row of §6's table, which
+  nothing could reach before.
+- *Guilt in a computable, line-specific form.* "Harmed another" becomes "a
+  recorded commitment aged past *this* line's setpoint", and
+  `anticipated_guilt` becomes one reading per sensored line instead of the
+  single saturated number §3.5 of the appraisal research found. §7.4's rule
+  holds unchanged: the commitment is read from the store, and a sentence in
+  a fetched page still cannot create one.
+- *A consumer for rank.* Line order is rank and nothing reads it today; a
+  signed error against the top line replays before one against the fifth
+  (§8's priority function gets its first tiebreak from the record).
+- *The owner's thresholds.* The doctor's stuck-draft and stale-request
+  nags use fixed harness constants; where a line names a setpoint, the
+  doctor reports against the owner's number, and the reflection's prose
+  gains a concrete "why": which line moved.
+
+**The seven containments.** Each is a rule with a mechanism; a build that
+drops one is not this design.
+
+1. **Sensors never feed a `candidate::Metric`.** A line with a number is a
+   metric, and harness rumination auto-accepts config changes measured
+   against metrics. Sensors feed appraisal and replay priority only; the
+   sign of a draft still comes from what the owner did with it, never from
+   throughput. The enum stays closed at the type: no `Metric` variant reads
+   a charter.
+2. **The reading never reaches the prompt.** The line's *text* already rides
+   in the cached prefix; the sensor's value is harness-only. §16's own
+   finding is that every exposed number invites the model to reason about
+   it, and drift is toward whatever the context makes salient.
+3. **Guilt may only narrow.** A mis-set or manipulated sensor degrades to
+   over-caution — visible and annoying — never to an action. §7.2's rule
+   that a sentence cannot write a store row is what makes this hold.
+4. **The streetlight is named, not hidden.** Only a line with a store
+   behind it can carry a sensor; "tell me the truth early" cannot. An
+   unsensored line still counts through the task tier and the closure
+   appraisal, and the docs say plainly it is not the lesser kind — the
+   failure to guard against is the charter drifting toward what is
+   measurable and the labels reflecting only that subset.
+5. **Misconfiguration must not reproduce the constant.** A setpoint of one
+   hour where the owner meant one day saturates guilt, which is the exact
+   failure the sensor replaces. Two cheap guards: the charter editor shows
+   each sensor's current reading beside its line, and the doctor reports a
+   sensor saturated across N consecutive runs as a finding.
+6. **Attribute by id, never by delta.** The queue-delta arm phase B shipped
+   is a before/after diff of the stores, and it credits a run for the owner
+   clearing the outbox by hand mid-run (disclosed on `live_readout`). A
+   sensor attributes by the id the run's own trace touched — the draft
+   released, the question answered — which is also what makes containment
+   3's "own agency" honest.
+7. **The schema change is a startup refusal on the other machine.** The
+   parser denies unknown keys, so an older binary refuses a charter with a
+   sensor at load, on purpose. Worth knowing before editing the file from
+   the web on one box and running on another; the fix is the `update`
+   skill, not a lenient parser.
+
+**Cost.** No model call: every reading is a pure function of the stores and
+the charter, so it replays over the whole corpus, which is the property the
+no-store rule (§15) protects. The charter's character budget is unchanged;
+the sensor table is not rendered into the prompt (containment 2), so it costs
+nothing per turn.
+
+**Phasing.** Parser, serialiser and template test first, as one change with
+no reader; then the attribution join in `appraisal::of_session`; then the
+per-line guilt and the doctor's owner thresholds; the replay tiebreak last,
+because it is the only consumer that changes what gets replayed. Which kinds
+ship first is open — `outbox_age` and `question_latency` have both a store
+and an id and are the two the owner's own charter would use — and whether an
+unsensored line ever gets a producer of its own is the honest gap the
+streetlight containment leaves.
+
 ---
 
 ## 12. Reproducibility: eval and replay must pin the state
@@ -1380,6 +1501,7 @@ Each rung is independently useful and independently measurable.
     does not touch chat, the TUI, or a trigger. A charter line existing does
     not make an appraisal reference one; that is a separate, unbuilt piece,
     named here rather than assumed done because the charter shipped.
+    §11.1 is that piece, designed 2026-09-02 and still unbuilt.
 11. **Curiosity** (§9.2). Last: it needs the competence time series the
     earlier rungs produce, and it is the only rung that spends on its own.
 

@@ -782,32 +782,125 @@ fn appraise_session(
     // reason this needs to: a read failure here silently undercounts the
     // `Edit` channel's evidence for a decision that, unlike that scan, can
     // never be rerun — the task is already closed by the time this runs.
+    let mut outbox_unreadable = false;
     let drafts: Vec<mecha_core::outbox::OutboxItem> =
         match mecha_core::outbox::OutboxStore::open_existing_default() {
             None => Vec::new(),
-            Some(store) => match store.items() {
-                Ok(items) => items
-                    .into_iter()
-                    .filter(|i| i.session_id.as_deref() == Some(session_id))
-                    .collect(),
+            Some(store) => match store.items_counting() {
+                Ok((items, skipped)) => {
+                    if skipped > 0 {
+                        // A skipped file is an unread draft, and this
+                        // decision is never rerun: say so and keep the
+                        // request arm from reading the gap as "nothing
+                        // drafted" (found on review).
+                        eprintln!(
+                            "mecha: {skipped} outbox item(s) could not be parsed while appraising \
+                             {task_id} — the edit channel is incomplete and the request arm is off"
+                        );
+                        outbox_unreadable = true;
+                    }
+                    items
+                        .into_iter()
+                        .filter(|i| i.session_id.as_deref() == Some(session_id))
+                        .collect()
+                }
                 Err(e) => {
                     eprintln!(
                         "mecha: could not read the outbox while appraising {task_id} — its \
                          drafts are missing from this appraisal and the follow-up decision, if \
                          any, may be based on incomplete evidence: {e:#}"
                     );
+                    outbox_unreadable = true;
                     Vec::new()
                 }
             },
         };
     let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts.iter().collect();
+    // The three commitment stores, on the same best-effort terms as the
+    // outbox above: a store that could not be read costs its channel and
+    // says so, never the appraisal.
+    // Counting readers, so a skipped row is said out loud here the way an
+    // unreadable store is: these arms only ever add a sign, so a skip
+    // under-signs rather than inverting one, but a decision that is never
+    // rerun deserves to know its evidence was short.
+    let skipped_note = |store: &str, skipped: usize| {
+        if skipped > 0 {
+            eprintln!(
+                "mecha: {skipped} {store} row(s) could not be parsed while appraising {task_id} — \
+                 that channel is incomplete"
+            );
+        }
+    };
+    // Each store hands back what it read and whether that was everything:
+    // the flag travels into the record as `partial`, so the printout
+    // below and the record `stage_follow_up` cites carry the caveat with
+    // them rather than only on a stderr line above (found on review).
+    // `worth_a_follow_up` does not read it yet — a short reading gates the
+    // same way a full one does, and says so.
+    let (questions, questions_unreadable) =
+        match mecha_core::questions::QuestionStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.items_counting() {
+                Ok((items, skipped)) => {
+                    skipped_note("question", skipped);
+                    (items, skipped > 0)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "mecha: could not read the question store while appraising {task_id}: {e:#}"
+                    );
+                    (Vec::new(), true)
+                }
+            },
+        };
+    let (requests, frontdoor_unreadable) =
+        match mecha_core::frontdoor::Frontdoor::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(fd) => match fd.records_counting() {
+                Ok((items, skipped)) => {
+                    skipped_note("front-door", skipped);
+                    (items, skipped > 0)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "mecha: could not read the front door while appraising {task_id}: {e:#}"
+                    );
+                    (Vec::new(), true)
+                }
+            },
+        };
+    let (reflexions, learning_unreadable) =
+        match mecha_core::learning::LearningStore::open_existing_default() {
+            None => (Vec::new(), false),
+            Some(store) => match store.reflexions_counting() {
+                Ok((items, skipped)) => {
+                    skipped_note("reflection", skipped);
+                    (items, skipped > 0)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "mecha: could not read the learning store while appraising {task_id}: {e:#}"
+                    );
+                    (Vec::new(), true)
+                }
+            },
+        };
     let goal = mecha_core::goal::GoalRef::Task(task_id.to_string());
     Ok(Some(mecha_core::appraisal::of_session(
         session_id,
         &stats,
         &[goal],
         &interventions,
-        &mine,
+        mecha_core::appraisal::SessionRecords {
+            drafts: &mine,
+            outbox_unreadable,
+            questions: &questions,
+            questions_unreadable,
+            requests: &requests,
+            frontdoor_unreadable,
+            reflexions: &reflexions,
+            learning_unreadable,
+        },
         end_taint,
         chrono::Utc::now().to_rfc3339(),
     )))
@@ -819,10 +912,13 @@ fn appraise_session(
 /// pointer, never prose.
 fn describe(a: &mecha_core::appraisal::Appraisal) -> String {
     let v = mecha_core::appraisal::Valence::of(a);
-    let reading = if v.is_silent() {
-        "nothing signed".to_string()
-    } else {
-        v.compact()
+    // A silent reading drops `compact()`'s `…`, and silent-and-partial is
+    // exactly where the caveat matters most — every store unreadable
+    // reads as "nothing signed" (found on review).
+    let reading = match (v.is_silent(), v.partial) {
+        (true, true) => "nothing signed, partial reading".to_string(),
+        (true, false) => "nothing signed".to_string(),
+        (false, _) => v.compact(),
     };
     format!(
         "{:?} · {reading} ({} positive, {} negative signal{})",
@@ -2542,6 +2638,7 @@ mod tests {
             origin: mecha_core::learning::Origin::Clean,
             taint: mecha_core::agent::Taint::default(),
             created_at: "2026-08-27T00:00:00Z".into(),
+            partial: false,
         }
     }
 
@@ -2740,5 +2837,19 @@ mod tests {
         assert!(s.contains("1 positive"));
         assert!(s.contains("1 negative signal"));
         assert!(!s.contains("o1") && !s.contains("stop_cause"), "{s}");
+    }
+
+    #[test]
+    fn describe_says_partial_when_silent_and_short() {
+        let mut a = appraisal(mecha_core::appraisal::Affect::Neutral);
+        a.errors.clear();
+        assert!(describe(&a).contains("nothing signed"));
+        assert!(!describe(&a).contains("partial"));
+        a.partial = true;
+        assert!(
+            describe(&a).contains("nothing signed, partial reading"),
+            "{}",
+            describe(&a)
+        );
     }
 }

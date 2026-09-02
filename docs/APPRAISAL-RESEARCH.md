@@ -227,6 +227,18 @@ standing `apply_probe` gives the replay's verdict — and it is the owner's
 own next turn that was judged, which is injection-safe under the provenance
 rule. Twenty-two such rows exist today against thirteen raw interventions.
 
+> **Built 2026-09-02** (`feat/appraisal-phase-b`): `of_session` reads
+> `reflections.jsonl` through `SessionRecords::reflexions` and signs a
+> follow-up-triggered reflection for the session as an `Intervention`
+> error, `Owner`, `controllable` unfilled, cite `Cite::Reflexion(id)` —
+> only where `Reflexion::provenance()` is clean — stricter than the
+> learning loop's `learnable()`, which carries a triage-domain exemption
+> this deliberately does not (the owner's ruling, 2026-09-02: a
+> wider owner-turns clause admitted nothing the live path writes, since a
+> tainted session's reflection is recorded clean by construction), never
+> a dropped one, and never a steer or denial (the raw channel already has
+> those).
+
 ### 3.5 Replace the guilt sensor's level with the run's delta
 
 `anticipated_guilt` should be computed from `backlog_delta` (what this run
@@ -235,6 +247,35 @@ other way round — and the delta is signed, so a run that cleared a question
 or released a draft is the first *positive* commitment channel, read from a
 store only the harness writes. §7.4's safety argument is unchanged: a delta
 on `OutboxStore` cannot be manufactured by a sentence in a fetched page.
+
+> **Built 2026-09-02**: `guilt::with_delta(level, net_delta, waiting_before)`
+> — the level is scaled down by the *share* of what was waiting that this
+> run cleared: a run that cleared everything it inherited reads as no guilt,
+> one that cleared three of forty reads nearly the level it inherited (the
+> first cut divided by the constant `COUNT_HALF_AT` and pinned three cleared
+> to zero from any backlog — found on review). Both numbers come from the
+> three owner-facing stores (`BacklogDelta::owner_facing_net`, `guilt::
+> waiting`), never the five-store `net`, and `guilt::with_backlogs` derives
+> them from one pair of reads. Both read *clearance*, not the fall:
+> `Depth::given_up` counts the rejected drafts, abandoned questions and
+> closed-unsent requests, and `BacklogDelta::owner_facing_cleared` takes
+> the rise in those off the fall before either the relief or the
+> commitment arm's positive is credited — a queue the owner shortened by
+> giving up had signed `+0.5` in the same channel the question and request
+> arms signed `-0.5` for the same act (found on review). The fold lands in its own field,
+> `Homeostat::guilt_after_relief`, so the level's corpus mean stays one
+> quantity across old and new rows. A run that *added* to the queue reads
+> the level it inherited,
+> because staging is its job and the first cut's "added three reads as
+> maximal" was exactly the reading `Homeostat::finish` refuses by name
+> (found on review). `Homeostat::finish` computes the delta first and folds
+> the level through it, and `RunStats::merge` sums `backlog_delta` across a
+> session's runs where it kept the first run's before — a session that
+> parks a question is resumed by construction, and the resume is where the
+> clearing happens. And the delta is a channel:
+> a session whose `backlog_delta` net is negative signs `+0.5`, `Own`,
+> `Channel::Commitment`, cite `Setpoint("backlog_delta")`; adding to the
+> queue signs nothing, because staging is a trigger's job.
 
 ### 3.6 Build the two positive channels §5.2 named and nobody built
 
@@ -248,6 +289,21 @@ are owner-authored by construction. The third — a trigger's artifact acted on
 morning trigger has run 14 times into that silence. That one needs a surface
 change (a read receipt on the briefing page or the Slack post) before it can
 be a channel, and is named here rather than proposed.
+
+> **Built 2026-09-02**, as `Channel::Commitment`: a question this session
+> parked and the owner answered, with the session then finishing of its own
+> accord, signs `+0.5`/`Own` (`Cite::Question`); an abandoned one signs
+> `-0.5`/`Owner`. A front-door request this session triaged that the owner
+> closed with none of its drafts sent signs `-0.5`/`Owner`
+> (`Cite::Request(seq)`); one answered by a sent draft is already the draft
+> channel's positive and is not counted twice. `sessions appraise` and the
+> closure appraisal read all three stores best-effort and say which could
+> not be read; `distill` and the live readout read drafts only. The trigger
+> read receipt is still unbuilt. Re-read over the live store with phases A
+> and B together, after review: **27 of 144 sessions signed, `+16.5 −34.5`
+> across them** (intervention 26, edit 22, commitment 4, counter 2), label
+> `neutral` on all 144 — the judged follow-ups doubled the intervention
+> channel.
 
 ### 3.7 Pre-register an expectation, and score it
 
@@ -488,3 +544,9 @@ and several 2026 papers read as abstracts.
   reads one. Build it when a consumer needs a trend; do not persist it.
 - **Review-queue salience in pkg** still needs the other repository to read
   `meta.affect`, and with §3.1 it should read valence instead.
+- **Charter sensors.** Ruled in on 2026-09-02 and designed at
+  `GOAL-SYSTEM-DESIGN.md` §11.1 with seven containments; unbuilt. It is the
+  producer for `GoalError.goal` on an ordinary run, and the by-id
+  attribution that closes the queue-delta arm's accepted residual — a
+  global before/after diff credits a run for what the owner cleared by
+  hand mid-run, as `live_readout` discloses.
