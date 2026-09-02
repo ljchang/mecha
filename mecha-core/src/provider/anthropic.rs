@@ -393,9 +393,14 @@ fn decode_usage(v: Option<&Value>) -> Usage {
 /// `message_delta` arm for why this is not `Usage::add`.
 fn apply_cumulative_usage(usage: &mut Usage, v: Option<&Value>) {
     let Some(v) = v else { return };
+    // Monotone: a cumulative counter never goes down, so the larger of the
+    // two is the truth. A compatible gateway that emits `"input_tokens": 0`
+    // in its delta would otherwise zero the prompt total that `pressure`,
+    // the compaction threshold and the cache lens all read — the same blast
+    // radius as the double-count this replaces, in the other direction.
     let set = |key: &str, slot: &mut u64| {
         if let Some(n) = v.get(key).and_then(Value::as_u64) {
-            *slot = n;
+            *slot = (*slot).max(n);
         }
     };
     set("input_tokens", &mut usage.input_tokens);
@@ -740,6 +745,21 @@ mod tests {
         assert_eq!(acc.usage.cache_read_input_tokens, 50);
         assert_eq!(acc.usage.output_tokens, 12);
         assert_eq!(acc.usage.total_input(), 150);
+
+        // A gateway that writes zeros into the delta must not zero the input
+        // either: cumulative counters only go up.
+        acc.push(
+            &serde_json::json!({
+                "type": "message_delta",
+                "delta": {},
+                "usage": {"input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 14}
+            }),
+            &tx,
+        )
+        .unwrap();
+        assert_eq!(acc.usage.input_tokens, 100);
+        assert_eq!(acc.usage.cache_read_input_tokens, 50);
+        assert_eq!(acc.usage.output_tokens, 14);
 
         // An older-shaped delta that carries only `output_tokens` must not
         // zero the input that `message_start` reported.
