@@ -1873,6 +1873,18 @@ The design decisions, each of which is a bug if undone:
 - **Every scan is bounded** (`Scan { max_sessions, since }`), because reading
   the whole store to answer one question is how a reader becomes one nobody
   runs. Doctor's constraint — one pass, no network, no model — is the bar.
+- **A session has a kind, written by the front-end and never inferred**
+  (`SessionKind` on `SessionMeta`: run, chat, tui, web, voice, task,
+  trigger, frontdoor, mail, slack, test). `Test` is excluded
+  from every corpus readout by default, `--kind test` implies inclusion, a
+  row with no kind matches no `--kind` filter, and the hidden rows are
+  *counted* at every reader (`Corpus::hidden_tests`, and the same number on
+  `health`, `appraise`, `list` and the doctor) — a filter that drops rows
+  silently is the dash-versus-zero inversion one bullet up. Smoke tests set
+  `MECHA_SESSION_KIND=test`, and the override may only narrow: it can turn
+  a chat into a test, never a test into anything else. The incident: 46 of
+  143 appraised sessions were development runs before the mark existed, and
+  the instrument measured its own tests.
 - **A rate over a zero denominator is `None`, never zero.** "Nothing went
   wrong" and "nothing happened" are different answers, and printing them the
   same way is how a component that stopped working reads as healthy — the
