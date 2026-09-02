@@ -201,16 +201,24 @@ export function createVoiceSession(opts = {}) {
      loss; a disabled echo canceller is the bug this whole change is about,
      so the trade is not close. */
   const LEVEL_POLL_MS = 100;
+  let levelBusy = false;
   function startMeter() {
     if (levelTimer) return;
     levelTimer = setInterval(async () => {
-      if (!pc) return;
+      // `getStats` is a promise, and setInterval does not wait for one: on a
+      // loaded phone a slow read would otherwise stack ticks behind it and
+      // deliver them in a burst, which is a ring that stutters rather than
+      // breathes. A skipped tick is the right answer - the next one is 100ms
+      // away and carries a fresher number than the one being skipped.
+      if (levelBusy || !pc) return;
+      levelBusy = true;
       let level = null;
       try {
         (await pc.getStats()).forEach(r => {
           if (r.type === "media-source" && r.kind === "audio" && typeof r.audioLevel === "number") level = r.audioLevel;
         });
       } catch { /* a closing connection; the next tick is the recovery */ }
+      finally { levelBusy = false; }
       // A display curve, not a measurement: audioLevel is linear amplitude,
       // where ordinary speech sits low enough that a linear ring barely
       // moves. The square root spends the ring's travel where the voice is.
