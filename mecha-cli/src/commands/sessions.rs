@@ -545,15 +545,15 @@ async fn appraise(
     let (listed, mut sessions_unreadable) = Session::list_counting(dir)?;
     let mut tests_hidden = 0usize;
     for (meta, path) in listed {
+        // The cap first, then attribution, as `Corpus::scan` orders them.
+        if limit.is_some_and(|n| sessions_read >= n) {
+            break;
+        }
         if !scan.admits(&meta) {
-            // Attributed after the other filters, as `Corpus::scan` does.
             if scan.hides_test(&meta) {
                 tests_hidden += 1;
             }
             continue;
-        }
-        if limit.is_some_and(|n| sessions_read >= n) {
-            break;
         }
         // Read first, count second: `for_session` folds "the file could not
         // be read" and "no outcome recorded yet" into one `None`, which used
