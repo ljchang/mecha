@@ -1107,11 +1107,20 @@ mod tests {
     // --- session kind -------------------------------------------------------
 
     fn session_kinded(dir: &Path, id: &str, kind: Option<SessionKind>) {
+        session_kinded_at(dir, id, kind, "2026-08-01T00:00:00Z")
+    }
+
+    /// With a stamp of its own. `Session::list_counting` sorts newest
+    /// first *by `created_at`*, so three fixtures sharing one stamp are a
+    /// total tie and walk in whatever order `read_dir` returns — which is
+    /// how the cap test passed on one machine and failed on another
+    /// (found on review).
+    fn session_kinded_at(dir: &Path, id: &str, kind: Option<SessionKind>, stamp: &str) {
         let s = Session::create(
             dir,
             SessionMeta {
                 id: id.to_string(),
-                created_at: DateTime::parse_from_rfc3339("2026-08-01T00:00:00Z")
+                created_at: DateTime::parse_from_rfc3339(stamp)
                     .unwrap()
                     .with_timezone(&Utc),
                 provider: "local".into(),
@@ -1216,12 +1225,27 @@ mod tests {
     #[test]
     fn a_test_row_past_the_cap_was_not_hidden_for_being_a_test_either() {
         let dir = tmpdir();
-        // Newest first in the listing: the web row is admitted and fills a
-        // cap of one; the two test rows behind it were never in the
-        // population.
-        session_kinded(&dir, "20260801T000002-web", Some(SessionKind::Web));
-        session_kinded(&dir, "20260801T000001-test", Some(SessionKind::Test));
-        session_kinded(&dir, "20260801T000000-test2", Some(SessionKind::Test));
+        // Newest first in the listing — by stamp, not by id or by directory
+        // order: the web row is admitted and fills a cap of one; the two
+        // test rows behind it were never in the population.
+        session_kinded_at(
+            &dir,
+            "20260801T000002-web",
+            Some(SessionKind::Web),
+            "2026-08-01T00:00:02Z",
+        );
+        session_kinded_at(
+            &dir,
+            "20260801T000001-test",
+            Some(SessionKind::Test),
+            "2026-08-01T00:00:01Z",
+        );
+        session_kinded_at(
+            &dir,
+            "20260801T000000-test2",
+            Some(SessionKind::Test),
+            "2026-08-01T00:00:00Z",
+        );
         let capped = Corpus::scan(
             &dir,
             &Scan {
