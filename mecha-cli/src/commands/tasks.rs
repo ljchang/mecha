@@ -782,6 +782,7 @@ fn appraise_session(
     // reason this needs to: a read failure here silently undercounts the
     // `Edit` channel's evidence for a decision that, unlike that scan, can
     // never be rerun — the task is already closed by the time this runs.
+    let mut outbox_unreadable = false;
     let drafts: Vec<mecha_core::outbox::OutboxItem> =
         match mecha_core::outbox::OutboxStore::open_existing_default() {
             None => Vec::new(),
@@ -796,6 +797,7 @@ fn appraise_session(
                          drafts are missing from this appraisal and the follow-up decision, if \
                          any, may be based on incomplete evidence: {e:#}"
                     );
+                    outbox_unreadable = true;
                     Vec::new()
                 }
             },
@@ -833,6 +835,7 @@ fn appraise_session(
         &interventions,
         mecha_core::appraisal::SessionRecords {
             drafts: &mine,
+            outbox_unreadable,
             questions: &questions,
             requests: &requests,
             reflexions: &reflexions,

@@ -725,6 +725,14 @@ impl Readout {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SessionRecords<'a> {
     pub drafts: &'a [&'a crate::outbox::OutboxItem],
+    /// The outbox could not be read, so `drafts` is unknown rather than
+    /// empty. Every reader that can tell the two apart must say so here:
+    /// with an empty `drafts` standing in for an unreadable store, the
+    /// request arm found "nothing drafted" for every closed request and
+    /// signed each one `-0.5` — an unreadable store manufacturing errors in
+    /// a different channel, which inverts the rule this surface is built on
+    /// (found on review). The request arm is skipped when this is set.
+    pub outbox_unreadable: bool,
     pub questions: &'a [crate::questions::Question],
     pub requests: &'a [crate::frontdoor::Record],
     pub reflexions: &'a [crate::learning::Reflexion],
@@ -1073,6 +1081,11 @@ pub fn of_session(
     // staged for it, and the owner's closing it is the verdict. `answered`
     // and every open state say nothing here.
     for req in records.requests {
+        if records.outbox_unreadable {
+            // Unknown drafts: the arm's whole question ("was anything
+            // drafted for it?") cannot be answered, so it asks nothing.
+            break;
+        }
         if req.triage_session.as_deref() != Some(session_id)
             || req.state != crate::frontdoor::CLOSED
         {
@@ -1115,11 +1128,14 @@ pub fn of_session(
     // sat at a constant). Adding to the queue is not an error: staging
     // replies is a trigger's job. Absent is not zero — a row without the
     // sensor says nothing.
+    // `owner_facing_net`, not `net`: the harness's own review queue is owed
+    // to nobody outside, and a run that cleared five candidates has not
+    // shortened what the owner is waiting on (found on review).
     if let Some(net) = stats
         .homeostat
         .as_ref()
         .and_then(|h| h.backlog_delta.as_ref())
-        .and_then(|d| d.net())
+        .and_then(|d| d.owner_facing_net())
     {
         if net < 0 {
             errors.push(GoalError {
@@ -3502,5 +3518,44 @@ mod tests {
         assert_eq!(ev.negative_errors, 1);
         assert_eq!(ev.channels, vec![(Channel::Commitment, 1)]);
         assert!(ev.brief().contains("commitment"), "{}", ev.brief());
+    }
+
+    #[test]
+    fn an_unreadable_outbox_costs_the_request_arm_rather_than_signing_every_request() {
+        let requests = vec![
+            request(1, "s1", "closed", &[]),
+            request(2, "s1", "closed", &["o1"]),
+        ];
+        let s = stats();
+        let a = of_session(
+            "s1",
+            &s,
+            &[],
+            &[],
+            SessionRecords {
+                drafts: &[],
+                outbox_unreadable: true,
+                requests: &requests,
+                ..Default::default()
+            },
+            Some(s.taint),
+            "t".into(),
+        );
+        assert!(a.errors.is_empty(), "{:?}", a.errors);
+    }
+
+    #[test]
+    fn clearing_the_harnesss_own_queue_is_not_shortening_the_owners() {
+        let mut s = stats();
+        s.homeostat = Some(crate::homeostat::Homeostat {
+            backlog_delta: Some(crate::backlog::BacklogDelta {
+                candidates: Some(-5),
+                proposals: Some(-2),
+                outbox: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(built(&s, &[], &[]).errors.is_empty());
     }
 }

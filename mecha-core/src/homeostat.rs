@@ -138,8 +138,16 @@ impl Homeostat {
             // is still the rule, and `guilt::with_delta` keeps it: a run that
             // added to the queue reads the level it inherited, not a
             // maximum for doing its job.
-            self.anticipated_guilt =
-                crate::guilt::with_delta(level, delta.net(), crate::guilt::waiting(before));
+            // `owner_facing_net`, over the same three stores `waiting`
+            // counts: a numerator over five stores and a denominator over
+            // three let a run that cleared harness candidates read as
+            // relief from drafts the owner was still waiting on (found on
+            // review).
+            self.anticipated_guilt = crate::guilt::with_delta(
+                level,
+                delta.owner_facing_net(),
+                crate::guilt::waiting(before),
+            );
             self.backlog_delta = Some(delta);
         }
         self

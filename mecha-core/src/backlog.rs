@@ -246,6 +246,22 @@ impl BacklogDelta {
         }
     }
 
+    /// Net change across the three stores somebody *outside* is waiting on
+    /// — the outbox, the questions, the front door — which are exactly the
+    /// stores `guilt::anticipated_guilt` reads. `proposals` and `candidates`
+    /// are the harness's own review queue, owed to nobody outside it: a
+    /// rumination run that accepted five candidates while five drafts sat
+    /// unsent read as full relief through [`net`](Self::net), and the
+    /// appraisal signed it as having shortened the owner's queue (found on
+    /// review). `None` when none of the three could be read at both ends.
+    pub fn owner_facing_net(&self) -> Option<i64> {
+        let seen: Vec<i64> = [self.outbox, self.questions, self.frontdoor]
+            .into_iter()
+            .flatten()
+            .collect();
+        (!seen.is_empty()).then(|| seen.iter().sum())
+    }
+
     /// Net change across the stores that could be read at both ends.
     ///
     /// `None` when none could — not zero, which would read as "this run
@@ -361,6 +377,28 @@ mod tests {
             .net(),
             Some(0),
             "a real zero is a different answer and stays one"
+        );
+    }
+
+    #[test]
+    fn the_owner_facing_net_ignores_the_harnesss_own_queues() {
+        let d = BacklogDelta {
+            outbox: Some(-1),
+            questions: Some(0),
+            frontdoor: None,
+            proposals: Some(-3),
+            candidates: Some(-5),
+        };
+        assert_eq!(d.net(), Some(-9));
+        assert_eq!(d.owner_facing_net(), Some(-1));
+        let only_harness = BacklogDelta {
+            candidates: Some(-5),
+            ..Default::default()
+        };
+        assert_eq!(
+            only_harness.owner_facing_net(),
+            None,
+            "nothing owner-facing was read"
         );
     }
 }
