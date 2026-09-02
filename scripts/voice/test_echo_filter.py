@@ -51,6 +51,9 @@ class TheTextFilter(unittest.TestCase):
             in " ".join(["your first meeting tomorrow is at nine"]),
             "precondition: this is not a substring match",
         )
+        # Eight words, one of them ours-with-a-slip — see
+        # `test_one_slip_is_forgiven_only_where_it_is_plausibly_noise` for why
+        # the same shape at six words is left alone.
         self.assertTrue(
             self.bot.is_probable_echo(
                 "your first meeting tomorrow is at nine thirty", bot_was_audible=True
@@ -106,6 +109,59 @@ class TheTextFilter(unittest.TestCase):
         )
         self.assertFalse(
             self.bot.is_probable_echo("can you do it now", bot_was_audible=True)
+        )
+
+    def test_a_correction_that_reuses_the_offer_is_not_an_echo(self):
+        """**The band a count floor alone does not cover.**
+
+        A four-word floor stops "no cancel it"; it does not stop the same
+        shape two words further up. "Can you move it to Friday" over "I can
+        move it to Thursday" shares four words *in order* — and order is no
+        help here, because a counter-instruction naturally reuses the word
+        order of the offer it is correcting. It cleared a count of four and a
+        0.6 ratio, and it is not an echo, it is the correction.
+        """
+        self.bot.note("I can move it to Thursday if you want me to.")
+        for said in [
+            "can you move it to friday",
+            "actually can you move it to friday instead",
+            "no not thursday can you do it on friday",
+        ]:
+            self.assertFalse(
+                self.bot.is_probable_echo(said, bot_was_audible=True),
+                f"{said!r} was silenced as an echo",
+            )
+
+    def test_one_new_word_in_a_short_turn_keeps_it(self):
+        """The property the rule is built on, rather than a number: an echo is
+        *our* sentence coming back, so anything the reply did not say is
+        evidence that a person is saying it.
+
+        "book the small room for tuesday" is five of our six words in order,
+        and the sixth is the entire point of the sentence. Every fraction
+        tried here silenced it.
+        """
+        self.bot.note("Shall I book the room for Tuesday?")
+        self.assertTrue(
+            self.bot.is_probable_echo("shall i book the room for tuesday", bot_was_audible=True)
+        )
+        self.assertFalse(
+            self.bot.is_probable_echo("book the small room for tuesday", bot_was_audible=True)
+        )
+
+    def test_one_slip_is_forgiven_only_where_it_is_plausibly_noise(self):
+        """The single allowance, and its length condition.
+
+        Recognition across a room mangles a word now and then, so a long
+        utterance that is otherwise entirely ours is still ours. A short one
+        is not given the same benefit, because at six words a single unmatched
+        word is not noise — it is what the person called to say.
+        """
+        self.bot.note("Your first meeting tomorrow is at nine.")
+        self.assertTrue(
+            self.bot.is_probable_echo(
+                "your first meeting tomorrow is at nine thirty", bot_was_audible=True
+            )
         )
 
     def test_an_echo_with_a_word_dropped_in_the_middle_is_still_caught(self):

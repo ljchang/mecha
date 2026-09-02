@@ -61,8 +61,36 @@ BOT_TAIL_SECONDS = 1.2
 # dropped in the middle, so contiguity is too strict, while order still costs
 # a coincidental match almost everything. "Actually cancel that" cannot match
 # a window that says "that" before "cancel".
+#
+# The floor is a count and not a fraction; see `MAX_UNMATCHED_WORDS` for why
+# every fraction that was tried silenced a correction.
 MIN_ECHO_MATCHED_WORDS = 4
-ECHO_COVERAGE = 0.6
+
+# How many words a transcript may contain that we did not say, and the length
+# at which it may contain one at all.
+#
+# A *ratio* was the wrong instrument, and raising it only moved the failure up
+# the scale: at 0.6, "no cancel it" was silenced; at four-words-and-0.6, "can
+# you move it to Friday" was; at 0.8, "book the small room for Tuesday" is —
+# each of them a correction, and each sharing most of its words with the offer
+# it corrects, because that is what correcting an offer sounds like. Order is
+# no defence either: a counter-instruction reuses the offer's word order.
+#
+# So the test is not "how much of this was ours" but "**is any of it not
+# ours**". An echo is our own sentence coming back; a person saying something
+# is saying something we did not say, and one new word is the whole signal —
+# "small", "Friday". The allowance exists only because recognition across a
+# room mangles a word now and then, and it is granted only where one word is
+# plausibly noise rather than content: in a long utterance. At six words a
+# single insertion is the point of the sentence.
+#
+# What no bar over text can separate, and it is worth stating rather than
+# tuning at: a person repeating our own proposal back over the speaker ("move
+# it to Thursday please") is, as text, our sentence. That band belongs to the
+# energy floor in `worker.py`, which is why that floor is the load-bearing
+# defence and this is depth behind it.
+MAX_UNMATCHED_WORDS = 1
+LONG_ENOUGH_FOR_ONE_SLIP = 8
 
 
 def normalize(text: str) -> str:
@@ -168,7 +196,11 @@ class BotSpeech:
             return False
 
         matched = _matched_in_order(words, blob.split())
-        return matched >= MIN_ECHO_MATCHED_WORDS and matched / len(words) >= ECHO_COVERAGE
+        if matched < MIN_ECHO_MATCHED_WORDS:
+            return False
+        unmatched = len(words) - matched
+        allowed = MAX_UNMATCHED_WORDS if len(words) >= LONG_ENOUGH_FOR_ONE_SLIP else 0
+        return unmatched <= allowed
 
 
 def overlapped(
