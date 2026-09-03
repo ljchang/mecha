@@ -3558,13 +3558,15 @@ meant to gate; quote characters, then a glued `;`, then a backtick hiding
 previous commit. The follow-up (#148, the owner's two rulings of 2026-09-03:
 an opaque command matching no rule falls through to the approver rather than
 cliffing every glob in every trigger into `Blocked`; an `allow`/`prompt` on
-a live-routed tool is refused at `setup`) ran its own loop and found that
-the fall-through had quietly been doing the inline-eval floor's job for
-opaque commands, that a redirect target glued to a separator swallowed the
-next command, that `2>&1` had to be stripped before the separator split,
-that the routed-tool load error was false under `--no-outbox` (where the
-rule is the one gate left), and that a project file in the directory could
-launder the operator's own contradiction. **The lesson is the audit's, twice
+a live-routed tool is refused at `setup`) is **open** as this is written,
+and its own loop has so far found that the fall-through had quietly been
+doing the inline-eval floor's job for opaque commands, that a redirect
+target glued to a separator swallowed the next command, that `2>&1` had to
+be stripped before the separator split, that the routed-tool load error was
+false under `--no-outbox` (where the rule is the one gate left), and that a
+project file in the directory could launder the operator's own
+contradiction — the merge, when it comes, is HANDOFF's to record. **The
+lesson is the audit's, twice
 over: a policy engine's bugs are all in the gap between the string the
 operator wrote and the string the shell will run, and when a guard happens
 to cover a case incidentally, make the coverage explicit before removing
