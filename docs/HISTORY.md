@@ -6004,7 +6004,9 @@ would have stranded the tree — and let the human read be the only gate on a
 tree a peer could dirty meanwhile. **A runnable block in a handoff is what
 gets copied, so its guards must halt the chain, its destructive step must
 sit behind a human read *and* a re-run of the mechanical check, and it must
-land on the ref it checked in one hop.** The switch itself closed the right
+land on the ref it checked in one hop, and the proof must be about the ref
+that moves — the sixth pass found the fast-forward proved for `HEAD` while
+`switch -C` reset `main`.** The switch itself closed the right
 way: the deploying session could not run git against the shared tree and
 relayed the owner's instruction to the session working there, which declined
 it — a peer's report of the owner's word is the shape a permission gate
