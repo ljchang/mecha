@@ -77,8 +77,11 @@ last — the arc is in `HISTORY.md` under 2026-09-02/03. Its follow-up,
 **#148** (`feat/approval-policy-followups`: an opaque command matching no
 rule falls through to the approver; an `allow`/`prompt` on a live-routed
 tool is refused at `setup`, `forbid` spared), is open on `main` and in its
-own review loop; the two rulings behind it are the owner's (2026-09-03) and
-`docs/ARCHITECTURE.md` §Approval rules states both. Nothing was reinstalled
+own review loop; the two rulings behind it are the owner's (2026-09-03).
+Until #148 merges, `docs/ARCHITECTURE.md` §Approval rules on `main` still
+states the behaviour each ruling replaces — an opaque command under a policy
+*prompts*, a routed-tool rule is inert with a warning — and #148's copy of
+that section is the one that states the rulings. Nothing was reinstalled
 or restarted for either: the installed binary predates them.
 The third session's **#144** (`fix/draft-shows-its-account`: `OutboxItem`
 gains `call_id` and `filled_defaults`, `OutboxStore::stage` takes an
