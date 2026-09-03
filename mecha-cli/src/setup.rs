@@ -353,9 +353,16 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // model, not the machine, and has already switched the rules off.
     if let Some(route) = &outbox {
         if !opts.no_rules {
+            // `--tool` narrowing is the caller saying so, as for the
+            // unregistered-tool warning above — and a hard failure on a run
+            // that deliberately excludes the tool is a stronger reason to
+            // stand aside than a warning was, not a weaker one.
             if let Some((i, rule)) = cfg
                 .rules_superseded_by_staging()
                 .into_iter()
+                .filter(|(_, r)| {
+                    excluded_by_allowlist(std::slice::from_ref(&r.tool), &opts.tools).is_empty()
+                })
                 .find(|(_, r)| route.routes(&r.tool))
             {
                 anyhow::bail!(

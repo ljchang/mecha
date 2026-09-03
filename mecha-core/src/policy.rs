@@ -315,8 +315,9 @@ impl ExecPolicy {
             for ex in &rule.examples {
                 match segments_of(ex) {
                     None => anyhow::bail!(
-                        "{name}: `match` example {ex:?} cannot be split safely, so it would \
-                         match no rule; pick a plain example"
+                        "{name}: `match` example {ex:?} cannot be split safely, so an `allow` \
+                         would never match it and a `forbid` or `prompt` only by its words; \
+                         pick a plain example"
                     ),
                     Some(segs) => {
                         if let Some(seg) = segs.iter().find(|s| !rule.matches(s)) {
@@ -484,7 +485,7 @@ impl ExecPolicy {
                         // module cannot read — `$PY -c 'x'`, `py* -c 'x'` —
                         // and unknown is never clean. Heads only, so `ls
                         // *.txt` is untouched (PR #148's review).
-                        || seg[0].contains(['$', '`', '*', '?', '['])
+                        || seg[0].contains(['$', '*', '?', '['])
                         // A here-string feeds the head a program from the
                         // command line, which is `-c` by another spelling.
                         || seg.iter().any(|w| w == "<<<")
@@ -773,7 +774,12 @@ fn opaque_segments(command: &str) -> Vec<Vec<String>> {
     ];
     // Redirections go first, over the whole command: `2>&1` holds a `&` that
     // the separator split below would otherwise cut, leaving `1` as a head.
-    let stripped = strip_redirects(command);
+    // `$IFS` is whitespace spelled out, and it is replaced before the split
+    // because the brace form `${IFS}` would otherwise be torn by the `{`/`}`
+    // separators into `$` and `IFS` (`rm${IFS}-rf${IFS}$HOME`).
+    let stripped = strip_redirects(command)
+        .replace("${IFS}", " ")
+        .replace("$IFS", " ");
     stripped
         .split([';', '|', '&', '(', ')', '{', '}', '`', '\n'])
         .map(|piece| {
@@ -786,7 +792,13 @@ fn opaque_segments(command: &str) -> Vec<Vec<String>> {
                         .filter(|c| !matches!(c, '\'' | '"' | '\\'))
                         .collect::<String>()
                 })
-                .filter(|w| !w.is_empty())
+                // An expansion glued to a word is its own word — `-rf$HOME`
+                // is `-rf` and `$HOME` — and `$IFS` is whitespace spelled
+                // out, so `rm$IFS-rf$IFS$HOME` is `rm -rf $HOME`. Without
+                // this the glued spelling walked past `narrowing_words`
+                // (PR #148's review) and the fall-through ran it.
+                .flat_map(split_expansions)
+                .filter(|w| !w.is_empty() && w != "$IFS" && w != "${IFS}")
                 .skip_while(|w| {
                     NOT_A_COMMAND.contains(&w.as_str())
                         || (!w.starts_with('-')
@@ -799,6 +811,22 @@ fn opaque_segments(command: &str) -> Vec<Vec<String>> {
         })
         .filter(|seg| !seg.is_empty())
         .collect()
+}
+
+/// A word cut at every interior `$`, the leading one kept attached: `-rf$IFS$HOME`
+/// is `-rf`, `$IFS`, `$HOME`; `$PY` stays `$PY`, so the floor's "a head the
+/// shell will expand" test still sees it.
+fn split_expansions(word: String) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for (i, c) in word.chars().enumerate() {
+        if c == '$' && i > 0 && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+        current.push(c);
+    }
+    out.push(current);
+    out
 }
 
 /// A command with every redirection removed — the operator *and* its
@@ -1181,6 +1209,12 @@ mod tests {
     /// without one, which is what the first fall-through did (PR #148's
     /// review). Only at segment heads, so a wrapper's name in an argument
     /// is not a wrapper; and `forbid` still outranks it.
+    ///
+    /// Which rows discriminate against what: before the fall-through every
+    /// opaque command was `Prompt`, so the `Prompt` rows would have passed
+    /// then too — they guard against the floorless fall-through, the
+    /// regression actually at risk. The two `None` rows are the ones that
+    /// fail on the pre-ruling code.
     #[test]
     fn the_inline_eval_floor_survives_an_opaque_command() {
         let p = policy(vec![
@@ -1607,6 +1641,11 @@ mod tests {
             "bash <<< 'rm -rf $HOME'",
             "bash -s <<< 'rm -rf $HOME'",
             "cat <<< 'rm -rf $HOME' | sh",
+            // An expansion glued to a pattern word, and `$IFS` as the space.
+            "rm -rf$IFS$HOME",
+            "rm$IFS-rf$IFS$HOME",
+            "rm${IFS}-rf${IFS}$HOME",
+            "rm -rf\"$HOME\"",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(opaque)).unwrap().decision,
