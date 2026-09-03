@@ -87,6 +87,23 @@ impl Pending {
     /// On the type rather than at the call site because the call site is a
     /// `match` arm in another module, and this is exactly the kind of
     /// bookkeeping that gets it right once and drifts.
+    /// The same draft, asked again in different words — a re-read.
+    ///
+    /// `asked` is *replaced*, unlike [`Pending::after_reask`]: a real answer
+    /// arrived, so the offer that produced it has finished playing and the
+    /// re-read supersedes it. And `reasks` resets, which it did not at
+    /// first: this is the only transition that re-asks the same draft while
+    /// carrying the old echo budget, so an echo, then a genuine "read it
+    /// out", then a genuine "send it" spent the last of it and answered
+    /// "I keep hearing myself" — by then untrue. Found on review.
+    pub fn after_reread(&self, said: &str) -> Pending {
+        Pending {
+            queue: self.queue.clone(),
+            asked: said.to_string(),
+            reasks: 0,
+        }
+    }
+
     pub fn after_reask(&self, said: &str) -> Pending {
         Pending {
             queue: self.queue.clone(),
@@ -383,10 +400,22 @@ pub fn react(
                 next_question(next)
             ))
         } else {
-            // Deliberately not "was that a yes?": a leading re-ask invites
-            // the one-word answer the gate cannot see.
+            // Two constraints, and they pull against each other.
+            //
+            // It must not name an accept phrase: a one-word answer is
+            // invisible to the span rule, so a re-ask containing `"yes"` —
+            // or `"sure"`, which is also in `SEND_PHRASES` — hands back the
+            // bypass it just closed. `no_single_word_of_the_reask_is_an_answer`
+            // checks that against the real lists rather than trusting this
+            // comment.
+            //
+            // And it must not ask for a *repeat*, which the first wording
+            // did: complying with "could you say it again?" means saying
+            // "send it" again, which is the same span, which spends the
+            // budget and defers. Asking for a decision leaves the listener
+            // the one-word answer that works. Found on review.
             Reaction::NotConvinced(
-                "Sorry — that may have been my own echo. Could you say it again?".into(),
+                "Sorry — that may have been my own echo. Is that what you want?".into(),
             )
         }
     };
@@ -495,7 +524,16 @@ pub fn report_release(outcome: Result<String, String>, next: Option<&OutboxItem>
         // reasons — an expired token, a provider refusing — and "sorry,
         // something went wrong" is the sentence that makes a person retry
         // forever.
-        Err(why) => format!("It did not send: {why} It is still in your outbox."),
+        // **`next_question` here too, and that was a real hole.**
+        // `answer_completion` pops the head whatever the outcome, so without
+        // it a failed release with a second draft queued left the
+        // confirmation armed on a draft that had never been offered — and
+        // the next "yes" released it unasked. No echo needed to reach it.
+        // Found on review of the echo gate; it predates that gate.
+        Err(why) => format!(
+            "It did not send: {why} It is still in your outbox.{}",
+            next_question(next)
+        ),
     }
 }
 
@@ -1061,5 +1099,79 @@ mod the_gate_must_not_eat_real_answers {
         );
         assert_eq!(after.reasks, pending.reasks + 1);
         assert_eq!(after.queue, pending.queue, "the head must not move");
+    }
+}
+
+/// Three ways a listener could still be surprised, all found on review.
+#[cfg(test)]
+mod the_escape_hatches_must_stay_open {
+    use super::echo_at_the_confirmation_door::*;
+    use super::*;
+    use crate::review_policy::SpokenAnswer;
+
+    /// The rule the re-ask's wording rests on, checked against the real
+    /// phrase lists instead of against a comment.
+    ///
+    /// A one-word answer is invisible to the span rule by design, so any
+    /// single word of the re-ask that parses as an answer is a bypass the
+    /// harness spoke aloud itself.
+    #[test]
+    fn no_single_word_of_the_reask_is_an_answer() {
+        let (_, pending) = offered();
+        let item = draft();
+        let Reaction::NotConvinced(said) = react("Send it.", &pending, Some(&item), None) else {
+            panic!("the dangerous branch is no longer gated");
+        };
+        for word in said.split_whitespace() {
+            assert_eq!(
+                parse_answer(word),
+                SpokenAnswer::NotAnAnswer,
+                "the re-ask says {word:?} on its own, which is a one-word answer \
+                 the span rule cannot see: {said:?}"
+            );
+        }
+    }
+
+    /// A genuine answer between two echoes must not spend the echo budget.
+    #[test]
+    fn a_real_answer_clears_the_streak() {
+        let (offer, pending) = long_offer();
+        // Echo, caught: the budget is now spent.
+        let after = pending.after_reask("Sorry — that may have been my own echo.");
+        assert_eq!(after.reasks, MAX_REASKS);
+        // A genuine "read it out" between the echo and the answer. Driven
+        // through the transition the arm calls, not re-derived here, because
+        // the whole bug was that the arm carried the count forward.
+        let resumed = after.after_reread("Here it is, in full. Thursday works.");
+        assert_eq!(
+            resumed.reasks, 0,
+            "a real answer left the budget spent, so the next echo defers on a stale count"
+        );
+        assert!(
+            !resumed.asked.contains(&offer),
+            "the re-read must supersede the offer, not accumulate it"
+        );
+        assert_eq!(resumed.queue, pending.queue, "the head must not move");
+    }
+
+    /// A failed release popped the head but never offered the next draft, so
+    /// the confirmation stayed armed on something nobody had been asked
+    /// about. Pre-existing, and reachable without any echo at all.
+    #[test]
+    fn a_failed_release_still_asks_about_the_next_draft() {
+        let second = draft();
+        let report = report_release(Err("the token expired.".into()), Some(&second));
+        assert!(report.contains("still in your outbox"), "{report}");
+        assert!(
+            report.contains("Reading group") || report.contains("send it"),
+            "the next draft is never offered, so the next yes releases it unasked: {report}"
+        );
+        // And the successful branch has always done this — the two must not
+        // disagree, which is how the hole opened.
+        let ok = report_release(Ok("sent".into()), Some(&second));
+        assert!(
+            ok.contains("Reading group") || ok.contains("send it"),
+            "{ok}"
+        );
     }
 }

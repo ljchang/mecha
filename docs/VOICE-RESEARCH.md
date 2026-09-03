@@ -1120,6 +1120,41 @@ Three parts, each pinned by a test that fails without it:
   re-ask is spoken too, so an unbounded "say that again" is a loop with a send
   at the end of it. Deferring terminates where the draft already is.
 
+Three things review found in the gate itself, and one older hole beside it.
+
+The first version gated **every** outcome, ahead of `parse_answer`, which was
+wrong in the dangerous direction: the offer recites the whole menu, so
+`"read it out"` and `"leave it"` are spans of it as much as `"send it"` is.
+That refused the verb the offer had just taught, on precisely the drafts too
+long to have been read aloud — and then asked *"was that a yes?"*, to which a
+bare `"yes"` is one word, immune, and releases a draft the listener asked to
+*hear*. Closing one bypass had opened another. `Later` and `ReadItOut` cause
+neither failure the gate exists for, so they are honoured however they parse;
+the gate covers `Send` and the non-answer case, the destructive one and the
+silent one.
+
+The re-ask's wording turns out to be load-bearing twice over. It must not name
+an accept phrase, because a one-word answer is invisible to the span rule by
+design — and `"sure"` is in `SEND_PHRASES`, so *"are you sure?"* would hand the
+bypass straight back. And it must not ask for a **repeat**, which the first
+wording did: complying means saying `"send it"` again, the same span, spending
+the budget and deferring. It asks for a decision instead, and
+`no_single_word_of_the_reask_is_an_answer` checks the first constraint against
+the real phrase lists rather than against a comment.
+
+The two `Pending` transitions are opposites and both are on the type, because
+each was got wrong once in a `match` arm in another module.
+`after_reask` *extends* `asked` and increments — the offer is still playing, so
+the next segment of the same playback must still be compared against it, and a
+long offer reads the whole draft aloud. `after_reread` *replaces* and resets —
+a real answer arrived, so the offer has finished and the streak is over.
+
+And one that predates all of it: `report_release`'s `Err` branch was the only
+reply omitting `next_question`, while `answer_completion` pops the head whatever
+the outcome. So a failed release with a second draft queued left the
+confirmation armed on a draft nobody had been offered, and the next `"yes"`
+released it unasked — no echo required.
+
 And the offer no longer *ends* by reciting the parser's accept list. That
 wording — *"Say yes to send it, or later to leave it in your outbox."* — put
 the most echo-prone words in the utterance exactly where echo is likeliest, and

@@ -1253,8 +1253,9 @@ async fn answer_completion(
             // answering it. `asked` moves to what we are about to say,
             // here and in every arm below — one rule, in one place, because
             // a stale `asked` is a span check against words nobody heard.
-            let mut rest = pending.clone();
-            rest.asked = said.clone();
+            // `after_reread` owns both halves — the replacement and the
+            // reset — beside `after_reask`, which owns the opposite of each.
+            let rest = pending.after_reread(&said);
             shared.confirmations.set(confirm_key, rest).await;
             Some(finish_with(stream, shared, id, want_stream, &said).await)
         }
