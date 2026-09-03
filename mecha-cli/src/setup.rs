@@ -461,7 +461,9 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         agent.set_mailbox(Arc::clone(mb));
     }
 
-    let levers_off = levers_off(opts, &cfg);
+    // `compact_requested` is already filtered by the window, the `[tools]`
+    // lists and the flag — presence is the enablement, decided once above.
+    let levers_off = levers_off(opts, &cfg, tools.compact_requested.is_some());
     Ok(Prepared {
         agent,
         provider_name,
@@ -484,11 +486,17 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
 /// rules store leaves `LearnedRules` on, because the lever was not thrown,
 /// and the record's job is to say which. The three switches that also live
 /// in `[agent]` config read the config *and* the flag, so the answer is the
-/// same before and after `prepare_tools` folds the flag in. Paired with
-/// [`switch_off`], and tested against it: forcing a lever off through one
-/// must read as off through the other, or `mecha eval`'s record would name
-/// a different bare arm from the one it ran.
-pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
+/// same before and after `prepare_tools` folds the flag in. `CompactTool`
+/// is the one lever whose off position is not a flag alone: the tool is
+/// registered only when the resolved provider has a `context_window` and
+/// no `[tools]` list or `--tool` allowlist excludes it, so the caller hands
+/// in whether it *was* registered (`compact_requested.is_some()` at the
+/// registration site; `registry.get("compact")` afterwards) — a run that
+/// structurally could not have the tool must not record it as on (found on
+/// review). Paired with [`switch_off`], and tested against it: forcing a
+/// lever off through one must read as off through the other, or
+/// `mecha eval`'s bare arm and the record's would name different sets.
+pub fn levers_off(opts: &GlobalOpts, cfg: &Config, compact_tool_registered: bool) -> Vec<Lever> {
     Lever::ALL
         .into_iter()
         .filter(|lever| match lever {
@@ -500,7 +508,7 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
             Lever::Messages => opts.no_messages,
             Lever::Skills => opts.no_skills,
             Lever::Charter => opts.no_charter,
-            Lever::CompactTool => opts.no_compact_tool,
+            Lever::CompactTool => opts.no_compact_tool || !compact_tool_registered,
             Lever::StepEscalation => opts.no_step_escalation || !cfg.agent.step_escalation,
             Lever::ApprovalRules => opts.no_rules,
             Lever::Boredom => opts.no_boredom || !cfg.agent.boredom,

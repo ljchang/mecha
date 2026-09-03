@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a transcript that predates the field, and on one naming a lever this
   build does not know, because a lever dropped from the list would read as
   on. `mecha eval`'s bare arm is now `Lever::bare` expressed through the
-  same switches, and a test reads the forced set back through the record.
+  same switches, and a test reads the forced set back through the function
+  the record is written from.
   Two new global flags complete the set: `--no-boredom` and
   `--no-compact-validate`, opt-outs for the two `[agent]` switches that
   ship on.
@@ -149,7 +150,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the model's context on one, a second model call per compaction on the
   other — and no scorecard recorded which. A scorecard taken before this
   change ran with whatever this machine's config said; one taken after runs
-  bare, and its session says so.
+  bare. (Eval writes no session, so the record that names the bare arm is
+  any *other* front-end's, from the same definition.)
 
 - **Starting a web conversation asks nothing.** The "new" button moved out
   of the session drawer into the chat header, where it is one tap from

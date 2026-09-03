@@ -131,8 +131,11 @@ pub enum Lever {
     Skills,
     /// The charter block is absent.
     Charter,
-    /// The `compact` tool is not registered — it is the front of the cached
-    /// prefix, and its presence depends on this machine's context window.
+    /// The `compact` tool is not registered — by the flag, or because it
+    /// could not be: it needs the provider's `context_window` and a
+    /// `[tools]` list that admits it. Recorded off in either case, since the
+    /// tool is the front of the cached prefix and a run without it is the
+    /// same run whichever reason kept it out.
     CompactTool,
     /// A completed step is not escalated to the quarantined revise pass.
     StepEscalation,
