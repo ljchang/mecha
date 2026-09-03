@@ -208,6 +208,35 @@ pub(crate) fn echoes_the_last_reply(utterance: &str, last_reply: &str) -> bool {
 
 #[cfg(test)]
 mod echo_span_tests {
+    /// Both doors narrow, which the unit cases below cannot say.
+    ///
+    /// They measure `echoes_the_last_reply`; the guarantee is that each path
+    /// to a spoken run *calls* it, and the first version of this branch wired
+    /// only the hosted one. Driving either for real means standing up a
+    /// facade or a whole session state, so this reads the source — the same
+    /// `include_str!` idiom `serve/review.rs` uses on the Svelte components,
+    /// with the same limit: it pins that the call is written, not that it
+    /// runs.
+    #[test]
+    fn the_facade_slot_narrows_before_it_grants() {
+        let src = include_str!("mod.rs");
+        // The *guard*, not merely the call. An earlier version asserted that
+        // `echoes_the_last_reply` appeared somewhere above the grant, which a
+        // change computing `echoed` and then ignoring it would have passed.
+        let grant = src
+            .find("\n    if shared.mount.approve_all")
+            .map(|i| &src[i..i + 60])
+            .expect("the slot still grants the standing yes here");
+        assert!(
+            grant.contains("&& !echoed"),
+            "the facade's own slot grants `--voice-yes` ungated: {grant:?}"
+        );
+        assert!(
+            src.contains("echoes_the_last_reply(&text,"),
+            "and `echoed` is no longer computed from the span rule"
+        );
+    }
+
     use super::echoes_the_last_reply;
 
     const OFFER: &str = "I can cancel it, delete it, or do it now — which would you like?";
@@ -1338,7 +1367,39 @@ async fn completion(
     // nothing below uses `?` until it has.
     let mut cx = (**shared.agent.context()).clone();
     cx.cancel = Some(cancel.clone());
-    if shared.mount.approve_all {
+    // The facade's own slot is the *second* door a spoken turn can take, and
+    // it needs the same narrowing the hosted one got.
+    //
+    // `completion` above only reaches `host.speak` when the caller named a
+    // chat session and the host recognised it; a call with no
+    // `X-Chat-Session`, or one naming a key no front-end holds, falls through
+    // to here — deliberately, because a dead call is a worse answer than an
+    // unshared one. But `--voice-yes` follows it down, so without this a
+    // verbatim "delete it" reaches `mail_triage` with nobody asked on exactly
+    // the path that skipped the gate. Wiring one of two doors is not a gate.
+    let echoed = shared.mount.approve_all
+        && slot
+            .convo
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == mecha_core::message::Role::Assistant)
+            .is_some_and(|m| echoes_the_last_reply(&text, &m.text()));
+    if echoed {
+        tracing::info!("spoken turn repeats the last reply verbatim — approvals stay on");
+    }
+    // What this cannot narrow, said plainly rather than left to be found: a
+    // facade started with `--yes` already carries `ModeApprover { Allow }` on
+    // the agent's own context, so `approve_all` is false, this check does
+    // nothing, and the permissive approver is simply inherited. Detecting
+    // that through the `Approver` trait is not possible, and the only fix
+    // available on that surface is to refuse the turn outright — there is no
+    // page mode to fall back to, which is the difference from the hosted
+    // door. Not taken, because `mecha-voice-serve` is inactive and disabled
+    // here (the mounted facade replaced it), so the change would be untested
+    // against any running thing. It is a real residual and it belongs in
+    // VOICE-RESEARCH beside the other three.
+    if shared.mount.approve_all && !echoed {
         cx.approver = Arc::new(mecha_core::tool::ModeApprover {
             mode: mecha_core::config::PermissionMode::Allow,
         });
