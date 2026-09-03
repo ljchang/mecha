@@ -288,6 +288,56 @@ mod echo_span_tests {
         );
     }
 
+    /// **Composing a question and arming it are two steps, and they were one.**
+    ///
+    /// `offer_for_turn` armed `shared.confirmations` whether or not the offer
+    /// was ever spoken, while the speaking sits behind `!disconnected`. A
+    /// hang-up mid-stream cancels the run, which still returns `Ok`, so a
+    /// draft staged before the cancel became the head of an armed `Pending`
+    /// under a `confirm_key` that survives the reconnect — and the next bare
+    /// "yes" released it. One word, immune to the span gate by design.
+    ///
+    /// The return type carries most of the guarantee now (an `Offer` the
+    /// caller must arm deliberately). What it cannot carry is "never arm
+    /// without having spoken", which is what these two read for. Needles
+    /// anchor on a real newline plus indentation, so the copies in this test
+    /// — escape sequences in the file, not newline bytes — cannot match.
+    #[test]
+    fn a_question_is_armed_only_once_it_has_been_asked() {
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn offer_for_turn(")
+            .expect("the offer is still composed here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`offer_for_turn` still has a closing brace at column zero")];
+        assert!(
+            !body.contains("confirmations"),
+            "`offer_for_turn` arms the question again, so a turn nobody heard \
+             leaves a live yes behind: {body:?}"
+        );
+
+        // And no call site arms without having just delivered something.
+        let lines: Vec<&str> = src.lines().collect();
+        let mut armed = 0;
+        for (n, line) in lines.iter().enumerate() {
+            if !line.trim_start().starts_with("arm_confirmation(") {
+                continue;
+            }
+            armed += 1;
+            let before = lines[n.saturating_sub(4)..n].join("\n");
+            assert!(
+                before.contains("say(stream") || before.contains("written.is_ok()"),
+                "line {} arms a confirmation without having spoken it:\n{before}",
+                n + 1
+            );
+        }
+        assert!(
+            armed >= 2,
+            "the arming call sites have gone; both doors must still arm somewhere"
+        );
+    }
+
     use super::echoes_the_last_reply;
 
     const OFFER: &str = "I can cancel it, delete it, or do it now — which would you like?";
@@ -1004,18 +1054,9 @@ async fn pump(
         while rx.recv().await.is_some() {}
         return false;
     }
-    let mut disconnected = false;
-    let head_bytes = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
-    if stream.write_all(head_bytes.as_bytes()).await.is_err() {
+    let mut disconnected = !open_sse(stream, id, model).await;
+    if disconnected {
         cancel.cancel();
-        disconnected = true;
-    }
-    if !disconnected {
-        let first = sse_chunk(id, model, json!({"role": "assistant"}), None);
-        if write_chunk(stream, first.as_bytes()).await.is_err() {
-            cancel.cancel();
-            disconnected = true;
-        }
     }
     let mut keepalive = tokio::time::interval(Duration::from_secs(5));
     keepalive.reset();
@@ -1126,13 +1167,14 @@ async fn hosted_completion(
     // confirming, and asking about drafts on top of an error is a question
     // over the top of the thing that needs saying.
     let offer = match &answer {
-        Ok(a) => offer_for_turn(shared, confirm_key, baseline, &a.text).await,
+        Ok(a) => offer_for_turn(shared, baseline, &a.text).await,
         Err(_) => None,
     };
     if want_stream {
         if !disconnected {
             if let Some(offer) = &offer {
-                say(stream, shared, id, &format!(" {offer}")).await;
+                say(stream, shared, id, &format!(" {}", offer.speech)).await;
+                arm_confirmation(shared, confirm_key, offer).await;
             }
             finish_stream(
                 stream,
@@ -1147,10 +1189,10 @@ async fn hosted_completion(
     match answer {
         Ok(a) => {
             let content = match &offer {
-                Some(offer) => format!("{} {offer}", a.text),
+                Some(offer) => format!("{} {}", a.text, offer.speech),
                 None => a.text,
             };
-            write_json(
+            let written = write_json(
                 stream,
                 200,
                 &json!({
@@ -1169,7 +1211,15 @@ async fn hosted_completion(
                     },
                 }),
             )
-            .await
+            .await;
+            // Same rule as the streaming branch: the question is armed only
+            // if it was actually delivered.
+            if written.is_ok() {
+                if let Some(offer) = &offer {
+                    arm_confirmation(shared, confirm_key, offer).await;
+                }
+            }
+            written
         }
         Err(e) => write_json(stream, 500, &json!({"error": e})).await,
     }
@@ -1199,25 +1249,69 @@ fn pending_outbox_ids(root: &std::path::Path) -> Option<std::collections::HashSe
 /// the other's copy simply finds the item already resolved.
 async fn offer_for_turn(
     shared: &Arc<Shared>,
-    confirm_key: &str,
     baseline: &Option<std::collections::HashSet<String>>,
     reply: &str,
-) -> Option<String> {
+) -> Option<confirm::Offer> {
     let baseline = baseline.as_ref()?;
     let staged = crate::review_policy::staged_since(
         OutboxStore::open(&shared.outbox_root).ok()?.items().ok()?,
         baseline,
     );
-    let offer = confirm::compose_offer(&staged, reply)?;
-    shared.confirmations.set(confirm_key, offer.pending).await;
-    Some(offer.speech)
+    confirm::compose_offer(&staged, reply)
+}
+
+/// Arm the question — **only once the offer has actually gone out.**
+///
+/// These were one step, and that was the defect: `offer_for_turn` armed
+/// `shared.confirmations` unconditionally while the offer is spoken only
+/// `if !disconnected`. A hang-up mid-stream cancels the run, which still
+/// returns `Ok`, so a draft staged before the cancel became the head of an
+/// armed `Pending` under a `confirm_key` that survives the reconnect — and
+/// the next bare "yes" released a draft nobody had been asked about. One
+/// word, immune to the span gate by design, so nothing downstream could
+/// catch it. The door immediately behind the one this branch closes; found
+/// on review.
+///
+/// So: composing is free, arming is a promise that a question was asked.
+async fn arm_confirmation(shared: &Arc<Shared>, confirm_key: &str, offer: &confirm::Offer) {
+    shared
+        .confirmations
+        .set(confirm_key, offer.pending.clone())
+        .await;
+}
+
+/// The response head plus the opening `role` chunk, for an SSE reply.
+///
+/// **Extracted because one caller did not have it.** The head was written
+/// only inside `pump`, which runs a model — so `answer_completion`, which
+/// deliberately runs none, wrote a chunked body with no status line. Every
+/// harness-authored reply on the streaming path went out that way: "Sent.",
+/// "Left in your outbox.", and the echo gate's own re-ask. The bounded
+/// re-ask still keeps the draft, so the direction was safe, but the listener
+/// was never actually asked again. Found on review, and never noticed live
+/// because the journal shows the offer has not yet played in a real call.
+///
+/// Returns false if the socket is already gone.
+async fn open_sse(stream: &mut TcpStream, id: &str, model: &str) -> bool {
+    const HEAD: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
+    if stream.write_all(HEAD.as_bytes()).await.is_err() {
+        return false;
+    }
+    let first = sse_chunk(id, model, json!({"role": "assistant"}), None);
+    write_chunk(stream, first.as_bytes()).await.is_ok()
 }
 
 /// Say something the harness composed, on whichever channel this request
 /// wanted. One utterance, one place, so the streaming and blocking paths
 /// cannot word the same fact differently.
 async fn say(stream: &mut TcpStream, shared: &Arc<Shared>, id: &str, text: &str) {
-    let chunk = sse_chunk(id, &shared.model, json!({"content": text}), None);
+    say_on(stream, id, &shared.model, text).await;
+}
+
+/// The same, without a `Shared` — so the wire format can be tested against a
+/// socket rather than asserted about.
+async fn say_on(stream: &mut TcpStream, id: &str, model: &str, text: &str) {
+    let chunk = sse_chunk(id, model, json!({"content": text}), None);
     let _ = write_chunk(stream, chunk.as_bytes()).await;
 }
 
@@ -1236,6 +1330,13 @@ async fn answer_completion(
     pending: &confirm::Pending,
     text: &str,
 ) -> Option<Result<()>> {
+    // Nothing below runs a model, so `pump` — the only other place that
+    // knows what a response head is — never runs either. Opened here, before
+    // the first `say`, or every word of this reply is a body with no status
+    // line in front of it.
+    if want_stream && !open_sse(stream, id, &shared.model).await {
+        return Some(Ok(()));
+    }
     // The draft as it is *now*, not as it was when the question was asked:
     // it may have been sent from the page, edited there, or swept in between.
     let head = pending
@@ -1260,8 +1361,10 @@ async fn answer_completion(
             Some(finish_with(stream, shared, id, want_stream, &said).await)
         }
         confirm::Reaction::NotConvinced(said) => {
-            // The head stays and the count goes up; `after_reask` owns both,
-            // and owns the reason `asked` extends rather than replaces here.
+            // The head stays and the count goes up; `after_reask` owns both.
+            // It slides the window exactly as `after_saying` does — the two
+            // differ only in the counter, and an earlier design that made
+            // them opposites is what this replaced.
             let rest = pending.after_reask(&said);
             tracing::info!(
                 reasks = rest.reasks,
@@ -1664,14 +1767,15 @@ async fn completion(
     // Same rule as the hosted path: the drafts this turn staged are offered
     // after the answer, and only when there was one.
     let offer = match &outcome {
-        Ok(o) => offer_for_turn(shared, &confirm_key, &outbox_baseline, &o.text).await,
+        Ok(o) => offer_for_turn(shared, &outbox_baseline, &o.text).await,
         Err(_) => None,
     };
 
     if want_stream {
         if !disconnected {
             if let Some(offer) = &offer {
-                say(stream, shared, &id, &format!(" {offer}")).await;
+                say(stream, shared, &id, &format!(" {}", offer.speech)).await;
+                arm_confirmation(shared, &confirm_key, offer).await;
             }
             let failed = outcome.as_ref().err().map(|e| format!("{e:#}"));
             finish_stream(stream, &id, &shared.model, failed.as_deref()).await;
@@ -1680,10 +1784,10 @@ async fn completion(
         match &outcome {
             Ok(o) => {
                 let content = match &offer {
-                    Some(offer) => format!("{} {offer}", o.text),
+                    Some(offer) => format!("{} {}", o.text, offer.speech),
                     None => o.text.clone(),
                 };
-                let _ = write_json(
+                let written = write_json(
                     stream,
                     200,
                     &json!({
@@ -1703,6 +1807,11 @@ async fn completion(
                     }),
                 )
                 .await;
+                if written.is_ok() {
+                    if let Some(offer) = &offer {
+                        arm_confirmation(shared, &confirm_key, offer).await;
+                    }
+                }
             }
             Err(e) => {
                 let _ = write_json(stream, 500, &json!({"error": e.to_string()})).await;
@@ -2032,5 +2141,85 @@ mod tests {
         let v: Value = serde_json::from_str(chunk.trim_start_matches("data: ").trim()).unwrap();
         assert_eq!(v["choices"][0]["delta"]["content"], "hi");
         assert!(v["choices"][0]["finish_reason"].is_null());
+    }
+}
+
+/// The bytes on the wire, over a real socket.
+///
+/// Every other test in this file stops at a `Reaction` or reads the source.
+/// This one exists because the defect it guards was invisible to both: the
+/// reply was correct, the arm was correct, and the response had no status
+/// line in front of it — so the listener heard nothing at all. Only the
+/// bytes could have said so.
+#[cfg(test)]
+mod the_reply_reaches_the_wire {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    /// The socket test above proves `open_sse` writes a head; it cannot
+    /// prove the caller that needed one calls it — deleting that line leaves
+    /// it green, which is the old behaviour exactly. Driving
+    /// `answer_completion` for real means standing up a `Shared`, so this
+    /// reads the source, bounded to the function, with the same limit the
+    /// other source-reading tests here state: it pins that the call is
+    /// written, not that it runs.
+    #[test]
+    fn answer_completion_opens_the_stream_before_it_says_anything() {
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn answer_completion(")
+            .expect("the harness-authored replies still live here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`answer_completion` still has a closing brace at column zero")];
+        let opened = body
+            .find("open_sse(")
+            .expect("no response head is opened, so every reply is a body with no status line");
+        for spoken in ["say(stream", "finish_with("] {
+            if let Some(said) = body.find(spoken) {
+                assert!(
+                    opened < said,
+                    "{spoken} runs before the response head is written"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_harness_authored_reply_opens_a_real_response() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let opened = open_sse(&mut sock, "cmpl-test", "a-model").await;
+            assert!(opened, "the socket was live and the head did not go out");
+            say_on(&mut sock, "cmpl-test", "a-model", "Sent.").await;
+            finish_stream(&mut sock, "cmpl-test", "a-model", None).await;
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut got = Vec::new();
+        client.read_to_end(&mut got).await.unwrap();
+        server.await.unwrap();
+        let got = String::from_utf8_lossy(&got);
+
+        assert!(
+            got.starts_with("HTTP/1.1 200 OK\r\n"),
+            "no status line, so the client sees a malformed response and the \
+             listener is never asked: {:?}",
+            &got[..got.len().min(120)]
+        );
+        assert!(
+            got.contains("text/event-stream"),
+            "the head is not an SSE head: {got:?}"
+        );
+        assert!(
+            got.contains("Sent."),
+            "the reply itself never arrived: {got:?}"
+        );
+        assert!(
+            got.contains("[DONE]"),
+            "the stream was never closed: {got:?}"
+        );
     }
 }

@@ -1144,6 +1144,30 @@ rule — a rule that caught it would silence every real confirmation. Only
 something that is not about the words can separate them, which is what
 arriving-while-the-offer-is-still-playing would be.
 
+Two doors behind this one, both found on review of the gate and both older
+than it.
+
+**A question was armed whether or not it was ever asked.** `offer_for_turn`
+set `shared.confirmations` unconditionally, while the offer is spoken only
+`if !disconnected`. A hang-up mid-stream cancels the run, which still returns
+`Ok`, so a draft staged before the cancel became the head of an armed
+`Pending` under a `confirm_key` that survives the reconnect — and the next
+bare "yes" released it. One word, immune to the span gate by design, so
+nothing downstream could catch it. Composing an offer is free now; arming it
+is a separate step and a promise that the question actually went out.
+
+**And the reply never reached the wire.** The SSE response head was written
+only inside `pump`, which runs a model — so `answer_completion`, which
+deliberately runs none, wrote a chunked body with no status line. "Sent.",
+"Left in your outbox." and the echo gate's own re-ask all went out that way.
+The direction was safe (the bounded re-ask keeps the draft), but the listener
+was never actually asked again. It had gone unnoticed because the path has
+never run: `journalctl --user -u mecha-voice-worker | grep "Say yes to send
+it"` returns nothing over thirty days, so no offer has yet played in a real
+call. The whole confirmation flow is deployed and unexercised, which is worth
+knowing before trusting any of it — and it is what the first voice call after
+the next deploy should exercise deliberately.
+
 Three things review found in the gate itself, and one older hole beside it.
 
 The first version gated **every** outcome, ahead of `parse_answer`, which was

@@ -613,8 +613,11 @@ mod tests {
 
         // And the re-read, which is the worse place to get it wrong: it
         // exists to say what is in the store *now*, which is the edit.
+        // `..Default::default()` for the echo window: this test is about
+        // what the re-read *says*, and an empty window gates nothing.
         let pending = Pending {
             queue: VecDeque::from(vec!["i1".to_string()]),
+            ..Default::default()
         };
         match react("read it out", &pending, Some(&it), None) {
             Reaction::Reread(said) => {
