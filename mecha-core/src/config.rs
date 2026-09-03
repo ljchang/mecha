@@ -952,6 +952,27 @@ impl Config {
         // start, not on the run that needed it. See `policy::ExecPolicy`.
         crate::policy::ExecPolicy::from_config(&self.rules, self.approval.strict_inline_eval)
             .context("[[rule]] in config")?;
+        // A rule on an outbox-routed tool judges nothing: staging runs before
+        // the rules are read, and release reads none. That is the same
+        // "loads clean, judges nothing" shape as a patterned rule on a
+        // commandless builtin, which already fails the start — this one was
+        // a warning on every start until 2026-09-03, on stderr, which a
+        // trigger and a Slack run never show anyone. The owner ruled for the
+        // load error: `[outbox] tools` is global config the operator holds,
+        // so the contradiction is in one file and the fix is one line.
+        for (i, rule) in self.rules.iter().enumerate() {
+            let routed = self.outbox.tools.iter().chain(&self.outbox.publish_tools);
+            if routed.into_iter().any(|t| t == &rule.tool) {
+                anyhow::bail!(
+                    "[[rule]] #{} names `{}`, which `[outbox] tools` routes to staging. A staged \
+                     call is reviewed by a person at release and is never judged by rules, so \
+                     this rule would judge nothing. Remove the rule, or take the tool out of \
+                     `[outbox] tools` if you want it refused or allowed outright",
+                    i + 1,
+                    rule.tool
+                );
+            }
+        }
         if let Some(name) = self.agent.timezone.as_deref() {
             if name.parse::<chrono_tz::Tz>().is_err() {
                 anyhow::bail!(
@@ -2229,6 +2250,45 @@ match = ["git push origin main"]
             err.contains("[[rule]]") && err.contains("not_match"),
             "{err}"
         );
+    }
+
+    /// A rule on an outbox-routed tool judges nothing — staging runs first
+    /// and release reads no rules — and fails the start rather than warning
+    /// on a stderr no trigger shows anyone.
+    #[test]
+    fn a_rule_on_an_outbox_routed_tool_is_a_load_error() {
+        let mut cfg = Config::default();
+        cfg.outbox.tools = vec!["send_email".into()];
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "send_email".into(),
+            pattern: Vec::new(),
+            decision: crate::policy::RuleDecision::Forbid,
+            examples: Vec::new(),
+            not_match: Vec::new(),
+            justification: Some("never from this box".into()),
+        });
+        let err = format!("{:#}", cfg.validate().unwrap_err());
+        assert!(
+            err.contains("send_email") && err.contains("routes to staging"),
+            "{err}"
+        );
+        // A publish route is a route too.
+        let mut cfg = Config::default();
+        cfg.outbox.publish_tools = vec!["publish_page".into()];
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "publish_page".into(),
+            decision: crate::policy::RuleDecision::Prompt,
+            ..Default::default()
+        });
+        assert!(cfg.validate().is_err());
+        // Unrouted, the same rule loads.
+        let mut cfg = Config::default();
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "send_email".into(),
+            decision: crate::policy::RuleDecision::Forbid,
+            ..Default::default()
+        });
+        cfg.validate().unwrap();
     }
 
     /// The fix for a guard that fell through: an unparseable zone used to be

@@ -341,15 +341,9 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                  spelling, or this rule judges nothing"
             );
         }
-        // The other "loads clean, judges nothing" case: a routed tool is
-        // staged before the rules are read, and released without them.
-        if outbox.as_ref().is_some_and(|o| o.routes(name)) {
-            eprintln!(
-                "mecha: [[rule]] names `{name}`, which `[outbox] tools` routes to staging — a \
-                 staged call is reviewed by a person at release, not judged by rules, so this \
-                 rule judges nothing"
-            );
-        }
+        // The other "loads clean, judges nothing" case — a rule on an
+        // outbox-routed tool — is a load error in `Config::validate`, so it
+        // never reaches here.
     }
     if let Some(outbox) = outbox {
         // A typo in `[outbox] tools` means the *real* tool executes unrouted,

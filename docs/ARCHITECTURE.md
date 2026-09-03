@@ -1508,20 +1508,28 @@ refusal. The specification and the survey behind it are
   and like `escalate` it defaults to `Blocked`, so under an approver that
   answers from policy (`--yes`, `batch`, a trigger) a `prompt` rule refuses
   rather than silently allowing: a rule that says a person must see the call
-  fails closed where there is none. A rule naming an outbox-routed tool is
-  inert (staging runs first, release reads no rules) and `setup` says so on
-  every start, beside the unregistered-tool warning.
+  fails closed where there is none. A rule naming an outbox-routed tool
+  would be inert (staging runs first, release reads no rules) and is a load
+  error in `Config::validate`, the same treatment as a patterned rule on a
+  commandless builtin; it was a start-time warning until the owner ruled on
+  2026-09-03 that a warning on the stderr no trigger shows is the
+  silently-degrading guard wearing a label.
 - **The splitter is conservative on purpose.** A command is judged one
   segment at a time (`&&`, `||`, `|`, `;`), and allowed only if every segment
   is. Anything `split_segments` cannot take apart with certainty —
   substitution, redirection, globs, braces, backslashes, comments, control
   flow, an unterminated quote, an operator glued to a word — is one opaque
-  invocation that matches no prefix rule, so under a policy it prompts — and
-  where no person can be asked (`--yes`, a trigger, `batch`) a prompt is a
-  refusal, so one `allow` rule on `shell` makes every later `ls *.txt` in a
-  trigger `Blocked` where it ran before. Narrowing, and deliberate: the
-  alternative is an opaque command answered by a mode. A false "cannot split"
-  costs one prompt, or that command; a false "can" costs the feature.
+  invocation: its words are searched for every `forbid`, a pattern-less rule
+  applies to it by construction, and otherwise it matches no rule and the
+  approver decides as it would with none — the same answer an unmatched
+  *splittable* command gets. The first version returned `Prompt` there so
+  `Allow` mode could not run a shape the splitter would not vouch for; once
+  `forbidden_words` searched the opaque command for every `forbid`, what the
+  prompt still bought was a cliff — with `consult` failing closed, one
+  `forbid` on `rm -rf` made every `ls *.txt` in every trigger `Blocked` where
+  it had run the day before — and the owner ruled for the fall-through on
+  2026-09-03. A false "cannot split" costs an `allow` that would have applied;
+  a false "can" costs the feature.
   `forbid` is the one rule that reaches into an opaque command: a pattern-less
   one by construction, a patterned one by its words (`forbidden_words` —
   split on whitespace and the shell's separators with quote characters
@@ -1590,9 +1598,12 @@ refusal. The specification and the survey behind it are
   no `command` is refused at load; on an MCP tool the crate cannot know about,
   it asks at call time with the reason said out loud, never staying silently
   inert while its author believes it loaded.
-- **`forbid` does not cover a routed tool.** Outbox staging runs before the
-  rules, so a routed call stages and a person decides at release; "refuses
-  without consulting anyone" is true of everything that would have executed.
+- **A rule on a routed tool is a load error.** Outbox staging runs before the
+  rules and release reads none, so a routed call stages and a person decides
+  at release; a `[[rule]]` naming a tool in `[outbox] tools` or
+  `publish_tools` would judge nothing and `Config::validate` refuses it,
+  naming the rule and the two remedies. "Refuses without consulting anyone"
+  is true of everything that would have executed.
 
 There is deliberately no `--no-rules` flag: a `forbid` is the operator's
 standing word, and a switch that lifts it for one run is the
