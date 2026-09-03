@@ -69,14 +69,17 @@ review's nine fixes — the jail's dangling-symlink follow, the subagent
 send-laundering, the cumulative usage frame, `Approver::escalate`,
 `last_assistant_text`, `&None` events on in-run side calls, lenient
 `stop_cause` reads — and `docs/AUDIT-RESEARCH.md`; its follow-ups landed as
-#142 at `9a5ca23`; that lane has moved on to `feat/approval-policy`
-(**PR #143**, open, rebased onto main: `policy.rs`, `Approver::permit`,
-`[[rule]]`/`[approval]` config), touching `run_tools`, `agent.rs`,
-`config.rs`, `subagent.rs` and `tool/mod.rs` — the last of which #140 also
-rewrote (`cap_result`'s marker, `CAP_MARKER`), so #143's rebase behind the
-appraisal merges is textual on that one code file and semantic nowhere
-else; both also touch `CLAUDE.md` and `docs/ARCHITECTURE.md`, in
-different sections.
+#142 at `9a5ca23`; that lane's `feat/approval-policy` (**PR #143**:
+`policy.rs`, `Approver::consult`/`permit`, `[[rule]]`/`[approval]` config)
+**merged at `1d21d6b` on 2026-09-03** after nine review passes on the
+rebased tree, every one of which found something real and smaller than the
+last — the arc is in `HISTORY.md` under 2026-09-02/03. Its follow-up,
+**#148** (`feat/approval-policy-followups`: an opaque command matching no
+rule falls through to the approver; an `allow`/`prompt` on a live-routed
+tool is refused at `setup`, `forbid` spared), is open on `main` and in its
+own review loop; the two rulings behind it are the owner's (2026-09-03) and
+`docs/ARCHITECTURE.md` §Approval rules states both. Nothing was reinstalled
+or restarted for either: the installed binary predates them.
 The third session's **#144** (`fix/draft-shows-its-account`: `OutboxItem`
 gains `call_id` and `filled_defaults`, `OutboxStore::stage` takes an
 `outbox::Provenance`) merged `main` after both appraisal PRs and
@@ -94,11 +97,11 @@ other lane touches. **The appraisal lane is merged**:
 #140 (`feat/appraisal-record`, phase A of `docs/APPRAISAL-RESEARCH.md` §3
 and the prediction record) at `15c628d` and #141 (`feat/appraisal-phase-b`,
 phase B) at `49166e3`, both on 2026-09-02 after #139 and #142 — see the
-goal-system section below for what each holds. Two follow-ups are open
-on `main` from that lane: **#147** (`fix/backlog-read-creates-nothing`:
-`backlog.rs`, `harness.rs`, `work.rs`'s test guard, `mecha-cli`'s
-`testenv.rs`), out of #141's post-merge review pass, and **#146**, this
-docs change. Still open from that lane, in order: the
+goal-system section below for what each holds. Its two follow-ups have
+landed: **#147** (`fix/backlog-read-creates-nothing`: `backlog.rs`,
+`harness.rs`, `work.rs`'s test guard, `mecha-cli`'s `testenv.rs`), out of
+#141's post-merge review pass, at `ac51c93`, and **#146**, the docs change,
+at `4cbb196`. Still open from that lane, in order: the
 `StopCause::Interrupted` split (Parked vs Cancelled; the `ask_user` park
 in `questions.rs` is the one park site, stopping through
 `ToolCtx::cancel`) and cancel-then-re-prompt as a steer, both now
