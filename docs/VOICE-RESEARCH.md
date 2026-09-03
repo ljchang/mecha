@@ -776,9 +776,11 @@ named by what it can and cannot do.
   bug.
 - **The energy floor is now graded on whether our own speaker was playing.**
   0.010 in a silent room as before, `MECHA_VOICE_ECHO_RMS` (default 0.020)
-  while the bot is audible. It sits above room noise (~0.009) and below the
-  owner's measured speech (~0.024), so a person raising their voice over a
-  reply still interrupts and a speaker across the room does not — this section's
+  while the bot is audible. The reasoning at the time was that it sits above
+  room noise (~0.009) and below the owner's speech (~0.024) — **both figures
+  superseded**; see the 2026-09-03 classification below, which measures the
+  population this floor actually judges and finds echo sitting inside the
+  speech distribution rather than beneath it — this section's
   own warning applies, that 0.010 was tuned on a different microphone, so the
   gated path now **logs the RMS it gated at** and the env var exists to be set
   from that rather than from a guess — `journalctl -u mecha-voice-worker -f |
@@ -959,81 +961,100 @@ repeat, a false turn costs an interruption mid-sentence and a reply to nothing
 answer is exactly who this must not silence. D4 is untouched: barge-in remains
 "finish the phrase and it stops". The structural fix is still §6 item 10.
 
-**The echo floor is measured now, and the measurement came from the incident
-itself, 2026-09-03.** `ECHO_SEGMENT_RMS` shipped as a guessed 0.020,
-commented out of the unit. The 2026-09-01 21:35 call — the one that prompted
-this whole arc — is in the worker's journal with an RMS on every segment, so
-the number is now read rather than chosen:
+**The echo floor was measured, and the measurement says not to set it,
+2026-09-03.** `ECHO_SEGMENT_RMS` shipped as a guessed 0.020. The journal
+carries an RMS per segment *and* the bot's own `_bot_started_speaking` /
+`_bot_stopped_speaking` edges, so every segment of the preceding fortnight can
+be classified by whether our speaker was playing — which is the only
+population this floor ever judges, and the reason the first attempt at this
+number was wrong:
 
-| | RMS | |
+| RMS | | |
 |---|---|---|
-| echo | 0.0257 | "The Starlink Mini costs one hundred ninety nine dollars." |
-| echo | 0.0418 | "It's prose." |
-| speech | 0.0392 | "Um options for" — the quietest real turn observed |
-| speech | 0.0396–0.1384 | every other turn across the window |
+| 0.0124 | `''` | silence |
+| 0.0141 | "The training." | a real turn |
+| 0.0201 | "What's on my schedule for today?" | a real turn |
+| **0.0257** | "The Starlink Mini costs one hundred ninety nine dollars." | **echo** |
+| 0.0311 | "Yeah." | a real turn |
+| 0.0457–0.0774 | | real turns |
 
-The bot had said "The Starlink Mini costs $199." thirteen seconds before the
-first, and "Its pros are that it is tiny…" before the second, both confirmed
-against `Generating TTS` lines in the same journal. So the two echoes and the
-quietest real turn are all within a factor of two of each other, and
-**0.0418 of echo sits above 0.0392 of speech: no threshold separates them.**
-`Environment=MECHA_VOICE_ECHO_RMS=0.030` is set in the unit — above the
-quieter echo, 23% below the quietest turn — which catches the first and
-cannot catch the second. That is the honest ceiling for this layer, and the
-reason it is one of three.
+**The echo sits inside the speech distribution, between two real barge-ins.**
+No threshold separates them. 0.030 buys that one echo and costs the 0.0201 and
+0.0141 turns, and turn-start is transcription-based, so a gated turn is not a
+degraded turn but no turn at all.
 
-**Two things the incident showed that the text filter cannot do**, recorded
-because both look like bugs and only one is:
+The first pass at this measured the same journal *unclassified*, got "echo
+0.0257 and 0.0418, speech 0.0392 and up", and concluded 0.030 with a 23%
+margin. Both numbers were real; the population was wrong. Speech over the
+speaker is systematically the harder case, and it is the only case this gate
+sees.
+
+**And the sample is of the wrong machine.** All of it predates 2026-09-03
+11:09, when the worker first ran with the mic-meter repair — until then a
+WebAudio tap had the browser's echo canceller disarmed, which is what 0.0257
+of residual echo is a measurement of. A floor derived from it would be tuned
+to a fault that no longer exists; read that way, the absence of a usable gap
+is the expected result. So the slot stays commented, the default applies, and
+the number wants re-deriving from a call made after that restart. The
+~0.024-speech figure in §7 and its copy in `worker.py` are superseded by the
+table above.
+
+**Two things the incident showed the text filter cannot do**, recorded because
+both look like bugs and only one is:
 
 - **TTS expands what the filter compares against.** `note_bot_speech` records
-  the text *submitted* to TTS ("costs $199"), and the microphone hears the
-  text *spoken* ("costs one hundred ninety nine dollars"). Five of nine words
-  in that echo exist in no form in the window, so the filter scored it 4
-  matched of 9 and correctly declined to call it echo. Closing it means
-  reimplementing the TTS front-end's number, currency and abbreviation
-  expansion, and the measurement says it would buy nothing here — at 0.0257
-  the energy floor gates that segment before a transcriber ever sees it. It
-  would matter only for a *long* echo, *above* 0.030, *containing* numbers.
-  Not built; named so the next person does not mistake the filter's silence
-  for a defect.
+  the text *submitted* ("costs $199"); the microphone hears the text *spoken*
+  ("costs one hundred ninety nine dollars"). Five of nine words exist in no
+  form in the window, so the filter scored it 4 matched of 9 and correctly
+  declined. Closing it means reimplementing a TTS front-end's number, currency
+  and abbreviation expansion. **It is not the worker's alone** — the
+  approval-side span gate below compares against `Message::text()`, also the
+  submitted text, so all three layers share one uncovered case: a long echo
+  containing anything a front-end expands.
 - **A two-word echo is under every word floor by design.** "It's prose." is
   the whole of the second one. `MIN_ECHO_WORDS` exists because at that length
-  an echo and the plainest possible answer are the same string, and the
-  branch's own history is six rounds of that being relearned. It belongs to
-  the energy floor, which at 0.0418 does not catch it either. This band is
-  simply uncovered, and saying so is better than a number that pretends
-  otherwise.
+  an echo and the plainest possible answer are the same string, and on this
+  evidence the energy floor cannot hold that band either.
 
-**`--voice-yes` no longer survives hearing ourselves, 2026-09-03.** The open
-question from the echo arc, closed on the approval rather than on the audio.
+**`--voice-yes` no longer survives hearing ourselves, 2026-09-03.** A spoken
+turn runs with the approver off (`TurnOpts::approve_all`), so an echo that
+reaches the model as a turn reaches a `destructive` tool with nobody asked —
+`mail_triage` is gated by the approver alone and is deliberately not
+outbox-routed.
 
-A spoken turn runs with the approver off (`TurnOpts::approve_all`, from the
-unit's `--voice-yes`), so an echo that reaches the model as a turn reaches a
-`destructive` tool with nobody asked — `mail_triage` is gated by the approver
-alone and is deliberately not outbox-routed. The worker's filters cannot close
-that band: at two or three words an echo and the plainest possible answer are
-the same string, which is a fact about short English rather than a threshold
-that wants tuning, and the 21:35 journal has it — "It's prose." is two words,
-under every word floor, and above the energy one.
-
-So `begin_turn` asks one question of a spoken turn before choosing its
+`begin_turn` now asks one question of a spoken turn before choosing its
 approver: **is this, word for word, a contiguous piece of the reply we just
 gave?** If it is, the turn still happens — it is simply approved the way a
-typed one would be, which is the mode the page is already in. It only ever
-narrows: a typed turn is untouched, and a spoken turn that is not a span of
-the last reply keeps whatever the flag gave it.
+typed one would be, which is the mode the page is already in. The narrowing is
+`narrow_for_echo`, a pure function of the four things it depends on, so the
+guarantee is testable rather than only asserted in prose.
 
 A contiguous span rather than an overlap, for the reason six rounds of the
 worker's filter established: a person correcting an offer reuses most of its
 words, so anything looser silences the corrections this exists to leave alone.
-"Move it to Friday" is not a span of "I can move it to Thursday" and keeps its
-standing yes. Any length, since a long verbatim repeat is *more* obviously our
-own voice, not less.
+"Move it to Friday" is not a span of "I can move it to Thursday". Any length,
+since a long verbatim repeat is *more* obviously our own voice. It only ever
+narrows: typed turns untouched, non-span spoken turns unchanged.
 
-This is the third layer and the only one that is not a guess: the energy floor
-is measured but cannot separate 0.0418 of echo from 0.0392 of speech, the text
-filter declines to speak below eight words, and this one needs no threshold at
-all — it asks whether the words are ours, which is a question with an answer.
+This is the third layer, and the one that needs no threshold: it asks whether
+the words are ours rather than how loud they were. That is a narrower claim
+than it looks, and the limit belongs here rather than in a footnote — it asks
+whether they are ours **as we wrote them**. It compares against
+`Message::text()`, the submitted text, so it inherits the blind spot recorded
+above: anything a front-end expands comes back as words the reply does not
+contain, and the gate answers "not ours" confidently, in the unsafe direction.
+The echo that started all this would keep `--voice-yes` here for the same
+reason it scored 4-of-9 there.
+
+What it covers, it covers exactly: a short verbatim instruction — "delete it",
+"cancel it" — has nothing to expand, so the comparison is sound precisely
+where an echo is a destructive call with nobody asked.
+
+Two smaller limits, both failing safe. After a barge-in the newest assistant
+message is the cancelled partial, so an echo of the previous, fully-spoken
+reply is not a span of it. And `Message::text()` joins blocks with no
+separator, so a reply of text → tool_use → text fuses the boundary words and a
+span crossing it is missed.
 
 **Both standbys were removed, 2026-08-25 — a spare nothing fails over to
 is not a spare.** Voxtral (`:8082`) had held the STT seat until the swap
