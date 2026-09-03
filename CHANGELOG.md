@@ -55,6 +55,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session list for as long as the session exists, which is a longer-lived
   display than any single answer.
 
+- **Appraisal reports the sign it was hiding** (`appraisal::Valence`,
+  `Readout`, `live_readout`; PR #140). The label alone gated on a
+  dimension only a paid replay fills, so 142 of 143 appraised sessions read
+  `neutral`, twenty-two owner-rejected drafts among them. Every surface now
+  shows the dimensional readout beside the label — positive and negative
+  sums kept apart, never netted: a number on the TUI badge and in a Slack
+  thread line, a two-sided bar on the web chip — and `sessions appraise`
+  sums it across the corpus. With it: **a kind on every session**
+  (`SessionKind` on the meta record, written by each front-end;
+  `MECHA_SESSION_KIND=test` marks smoke runs and may only narrow), and
+  every corpus readout excludes test sessions by default and counts what
+  it hid, because 46 of 143 appraised sessions were the harness's own
+  development runs; a ceiling reads as the owner's own limit rather than
+  the world's, with `Appraisal::cut_short` keeping the closure follow-up
+  honest; and **the plan is the prediction** — a `todo` step may carry
+  `expect`, `check` and `expect_calls`, the check is frozen the moment its
+  step completes and restored on any later rewrite (surviving trims,
+  resumes, thinned echoes and compaction, each closed on review with a
+  test), a failed check is a signed error, and `Trigger::Mismatch` is the
+  wire word for the reflection that will fire on one. The `check` is
+  recorded and never executed here.
+
+- **Appraisal reads the commitment stores** (`appraisal::SessionRecords`,
+  `Channel::Commitment`; PR #141). A question answered and the session
+  finishing, a question abandoned, a front-door request closed with
+  nothing sent, and a run that left fewer things waiting on the owner than
+  it found — net of anything the owner gave up on (`Depth::given_up`), so
+  a rejected draft or an abandoned question shortens the queue without
+  crediting the run — each sign an error against the record, from ids and
+  states only, never prose. A judged follow-up reflection counts as an
+  intervention on clean provenance alone, stricter than the learning
+  loop's own gate. The guilt sensor's relief lives in its own field
+  (`Homeostat::guilt_after_relief`) so the corpus mean over the level
+  stays one quantity, and a reading computed over a store that could not
+  be fully read is marked `partial` on the record itself, where the
+  closure path's printout and JSON carry it. The queue-delta positive is
+  the one positive a live surface can show; it is a global diff of the
+  stores, disclosed as such. Charter sensors — owner-written observables
+  on a charter line — are designed at `GOAL-SYSTEM-DESIGN.md` §11.1 under
+  seven containments and not built.
+
 ### Fixed
 
 - **Six-lane harness review** (PRs #139 and #142): a dangling symlink no
@@ -72,6 +113,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is an error, not a turn; one compaction summary survives instead of
   stacking; and the HTTP client splits into a streaming and a non-streaming
   one so a stall bound no longer caps a long non-streaming exchange.
+
+- **A backlog read creates nothing** (PR #147, closing what #141 opened).
+  `Backlog::read` runs at both ends of every run, and two of its five store
+  readers still opened through constructors that create — one runs
+  `git init` — so a machine that had never ruminated gained a learning
+  store twice per run, and a failed creation read as an unknown depth
+  rather than an empty one. All five readers open only what exists, and
+  the test moves the mecha home and asserts it is empty afterwards.
 
 ### Changed
 
