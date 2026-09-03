@@ -341,9 +341,39 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                  spelling, or this rule judges nothing"
             );
         }
-        // The other "loads clean, judges nothing" case — a rule on an
-        // outbox-routed tool — is a load error in `Config::validate`, so it
-        // never reaches here.
+    }
+    // The other "loads clean, judges nothing" case: an `allow` or `prompt`
+    // on a tool the outbox routes. Staging runs before the rules are read
+    // and release reads none, so while the route is live the rule judges
+    // nothing — and a person reviews the staged call anyway. Refused here,
+    // not in `Config::validate`, because whether the route is live is this
+    // flag's to say: under `--no-outbox` the same rule is the one gate left,
+    // and a `forbid` is a second lock on either surface, so it is never
+    // refused (PR #148's review). Not under `--no-rules`: `eval` grades the
+    // model, not the machine, and has already switched the rules off.
+    if let Some(route) = &outbox {
+        if !opts.no_rules {
+            if let Some((i, rule)) = cfg
+                .rules_superseded_by_staging()
+                .into_iter()
+                .find(|(_, r)| route.routes(&r.tool))
+            {
+                anyhow::bail!(
+                    "[[rule]] #{} is a `{}` on `{}`, which `[outbox] tools` routes to staging. \
+                     While the route is on, a staged call is reviewed by a person at release \
+                     and never judged by rules, so this rule judges nothing. Write it as \
+                     `forbid` (a second lock, and the gate `--no-outbox` runs against), remove \
+                     it, or take the tool out of `[outbox] tools`",
+                    i + 1,
+                    match rule.decision {
+                        mecha_core::policy::RuleDecision::Allow => "allow",
+                        mecha_core::policy::RuleDecision::Prompt => "prompt",
+                        mecha_core::policy::RuleDecision::Forbid => "forbid",
+                    },
+                    rule.tool
+                );
+            }
+        }
     }
     if let Some(outbox) = outbox {
         // A typo in `[outbox] tools` means the *real* tool executes unrouted,

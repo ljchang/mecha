@@ -315,7 +315,7 @@ impl ExecPolicy {
                 match segments_of(ex) {
                     None => anyhow::bail!(
                         "{name}: `match` example {ex:?} cannot be split safely, so it would \
-                         always prompt; pick a plain example"
+                         match no rule; pick a plain example"
                     ),
                     Some(segs) => {
                         if let Some(seg) = segs.iter().find(|s| !rule.matches(s)) {
@@ -477,9 +477,14 @@ impl ExecPolicy {
             // and only at segment heads, so `ls *.txt | grep make` is not a
             // wrapper because a wrapper's name appears in it.
             if self.strict_inline_eval
-                && opaque_segments(command)
-                    .iter()
-                    .any(|seg| runs_its_arguments(seg))
+                && opaque_segments(command).iter().any(|seg| {
+                    runs_its_arguments(seg)
+                        // A head the shell will expand is a program this
+                        // module cannot read — `$PY -c 'x'`, `py* -c 'x'` —
+                        // and unknown is never clean. Heads only, so `ls
+                        // *.txt` is untouched (PR #148's review).
+                        || seg[0].contains(['$', '`', '*', '?', '['])
+                })
             {
                 return Some(Ruling {
                     decision: RuleDecision::Prompt,
@@ -1193,6 +1198,12 @@ mod tests {
             "diff <(python3 -c 'x') y",
             "ls > $(python3 -c 'x')",
             "ls > out;python3 -c 'x'",
+            // A head the shell will expand is a program this module cannot
+            // read, and unknown is never clean.
+            "$PY -c 'import os'",
+            "$SHELL -c 'ls | wc'",
+            "py* -c 'import os'",
+            "${PY} -c 'x' > out",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(evals)).unwrap().decision,
