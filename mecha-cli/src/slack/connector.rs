@@ -181,6 +181,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
     let provider = prepared.provider_name.clone();
     let model = prepared.model.clone();
     let prepared_config = prepared.config.clone();
+    let levers_off = prepared.levers_off.clone();
     let agent = Arc::new(prepared.agent);
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel(64);
@@ -217,6 +218,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         provider,
         model,
         config: prepared_config,
+        levers_off,
         approval_tx,
         completion_tx,
     };
@@ -393,6 +395,8 @@ struct State {
     provider: String,
     model: String,
     config: mecha_core::config::Config,
+    /// For `RunConfig::levers_off`, carried from `Prepared`.
+    levers_off: Vec<mecha_core::harness::Lever>,
     approval_tx: mpsc::Sender<approve::Request>,
     completion_tx: mpsc::Sender<Completion>,
 }
@@ -1189,6 +1193,7 @@ impl State {
             &self.agent,
             &self.config,
             &self.provider,
+            &self.levers_off,
         )));
         if let Ok(Some(mut r)) = self.threads.get(&record.key) {
             r.session_id = Some(session.meta.id.clone());

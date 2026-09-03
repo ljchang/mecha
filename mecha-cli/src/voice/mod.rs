@@ -207,6 +207,9 @@ struct Shared {
     provider_name: String,
     model: String,
     config: mecha_core::config::Config,
+    /// For `RunConfig::levers_off`; the switches are not readable off the
+    /// shared agent, so the front-end that built it hands them over.
+    levers_off: Vec<mecha_core::harness::Lever>,
     token: Option<String>,
     /// The open "send it?" question per conversation. Lives beside the slots
     /// rather than inside one, because a hosted call (D3) has no slot here
@@ -266,6 +269,7 @@ impl Facade {
         provider_name: String,
         model: String,
         config: mecha_core::config::Config,
+        levers_off: Vec<mecha_core::harness::Lever>,
         outbox_root: PathBuf,
         token: Option<String>,
         mount: Mount,
@@ -280,6 +284,7 @@ impl Facade {
                 provider_name,
                 model,
                 config,
+                levers_off,
                 token,
                 confirmations: confirm::Confirmations::default(),
                 affects: Mutex::new(HashMap::new()),
@@ -371,6 +376,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         prepared.provider_name.clone(),
         prepared.model.clone(),
         prepared.config,
+        prepared.levers_off,
         outbox_root,
         args.token.clone(),
         // Standalone: the voice block already rides this agent's system
@@ -734,6 +740,7 @@ async fn take_slot(
                             &shared.agent,
                             &shared.config,
                             &shared.provider_name,
+                            &shared.levers_off,
                         )))?;
                         Ok(session)
                     });

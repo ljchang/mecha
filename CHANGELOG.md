@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The lever set** (`mecha_core::harness::Lever`, `RunConfig::levers_off`;
+  `docs/EXPERIMENT-DESIGN.md` §15). The closed on/off half of the override
+  set: thirteen subsystems a run can carry structurally absent — MCP,
+  learned rules, hooks, the outbox, fallback, messages, skills, the charter,
+  the `compact` tool, step escalation, approval rules, boredom and compact
+  validation — each a switch that already exists, now named once and
+  recorded on every session's `config` record in a stable order. `None` on
+  a transcript that predates the field, and on one naming a lever this
+  build does not know, because a lever dropped from the list would read as
+  on. `mecha eval`'s bare arm is now `Lever::bare` expressed through the
+  same switches, and a test reads the forced set back through the record.
+  Two new global flags complete the set: `--no-boredom` and
+  `--no-compact-validate`, opt-outs for the two `[agent]` switches that
+  ship on.
+- **`scripts/appraisal-validity.py`** — step 0 of the appraisal experiments:
+  joins the readout and the counters to Harbor's per-trial verdict over the
+  kept Terminal-Bench sessions and reports discrimination per channel; the
+  finding is `docs/APPRAISAL-RESEARCH.md` §1.7.
+
 - **Per-command approval rules** (`[[rule]]` and `[approval]` in config,
   `mecha_core::policy`; PRs #143 and #148). Approval used to be
   tool-granularity — a run either approved every `shell` command or asked
@@ -123,6 +142,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the test moves the mecha home and asserts it is empty afterwards.
 
 ### Changed
+
+- **`mecha eval` now forces boredom and compact validation off**, with the
+  rest of the lever set. Both are `[agent]` switches that ship on, so two
+  machines with different config graded different runs — a boredom notice
+  in the model's context on one, a second model call per compaction on the
+  other — and no scorecard recorded which. A scorecard taken before this
+  change ran with whatever this machine's config said; one taken after runs
+  bare, and its session says so.
 
 - **Starting a web conversation asks nothing.** The "new" button moved out
   of the session drawer into the chat header, where it is one tap from

@@ -89,6 +89,126 @@ impl OverrideKey {
     }
 }
 
+/// The subsystems an arm may switch **off** — the on/off half of the closed
+/// set, beside [`OverrideKey`]'s value-carrying half.
+///
+/// An ablation here is a subsystem that is *structurally absent* from a run:
+/// chosen by a switch, recorded on `RunConfig::levers_off`, never a sentence
+/// in a prompt (`docs/EXPERIMENT-DESIGN.md` §15, D14). The set is closed for
+/// the same reason `OverrideKey` is — an arm that can vary something the
+/// record does not name is a confound that nothing can read back — and it
+/// is defined once, here, so `mecha eval`'s bare arm and an experiment's
+/// cannot disagree about what "bare" means: eval forces every lever off
+/// except the two it allows as opt-ins, through [`Lever::bare`].
+///
+/// **A variant here is a switch that exists**, not a wish. A lever with no
+/// off position would make the record say "absent" of something that ran,
+/// which is the one lie a confound record must not tell; the dispositions
+/// §15 lists without a switch today (predictive compaction, carried state,
+/// the appraiser's pass) join the set when their switch does.
+///
+/// Serialised by name — the same names [`Lever::as_str`] answers — because
+/// the record is an append-only wire format: a reader that meets a name it
+/// does not know reads the *whole* recorded set as unknown rather than a
+/// shorter one, since a lever silently dropped from `levers_off` reads as
+/// "on". That is `session::lenient_levers`' job, tested beside `RunConfig`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lever {
+    /// Configured MCP servers are not connected.
+    Mcp,
+    /// The learned-rules block is absent from the cached prefix.
+    LearnedRules,
+    /// Configured `[[hook]]` commands do not run.
+    Hooks,
+    /// `[outbox] tools` execute unstaged — nothing is routed to the outbox.
+    Outbox,
+    /// A provider failure is not retried against a fallback.
+    Fallback,
+    /// No mailbox: inter-agent messages are neither delivered nor sent.
+    Messages,
+    /// The level-1 skill block is absent.
+    Skills,
+    /// The charter block is absent.
+    Charter,
+    /// The `compact` tool is not registered — it is the front of the cached
+    /// prefix, and its presence depends on this machine's context window.
+    CompactTool,
+    /// A completed step is not escalated to the quarantined revise pass.
+    StepEscalation,
+    /// This machine's approval rules file is not loaded.
+    ApprovalRules,
+    /// The in-run boredom notice is not issued.
+    Boredom,
+    /// A compaction summary is not checked for omissions.
+    CompactValidate,
+}
+
+impl Lever {
+    /// Every lever, in a stable order — the order `levers_off` is recorded
+    /// in, so two records with the same set compare byte-for-byte. The
+    /// exhaustive `match` in `as_str` is what makes a fourteenth a compile
+    /// error here rather than a lever the record can never name.
+    pub const ALL: [Lever; 13] = [
+        Lever::Mcp,
+        Lever::LearnedRules,
+        Lever::Hooks,
+        Lever::Outbox,
+        Lever::Fallback,
+        Lever::Messages,
+        Lever::Skills,
+        Lever::Charter,
+        Lever::CompactTool,
+        Lever::StepEscalation,
+        Lever::ApprovalRules,
+        Lever::Boredom,
+        Lever::CompactValidate,
+    ];
+
+    pub fn parse(name: &str) -> Option<Lever> {
+        Self::ALL.into_iter().find(|l| l.as_str() == name)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Lever::Mcp => "mcp",
+            Lever::LearnedRules => "learned_rules",
+            Lever::Hooks => "hooks",
+            Lever::Outbox => "outbox",
+            Lever::Fallback => "fallback",
+            Lever::Messages => "messages",
+            Lever::Skills => "skills",
+            Lever::Charter => "charter",
+            Lever::CompactTool => "compact_tool",
+            Lever::StepEscalation => "step_escalation",
+            Lever::ApprovalRules => "approval_rules",
+            Lever::Boredom => "boredom",
+            Lever::CompactValidate => "compact_validate",
+        }
+    }
+
+    /// The levers, for an error message that names the whole set.
+    pub fn names() -> String {
+        Self::ALL
+            .iter()
+            .map(|l| l.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The bare arm: every lever off except `allow`, in [`Lever::ALL`]'s
+    /// order. This is what `mecha eval` runs (`--mcp` and `--ab-rules` are
+    /// its two opt-ins) and what an experiment's `bare` preset means, from
+    /// one definition — a second spelling is how the measurement arm and
+    /// the acceptance arm silently stop being comparable.
+    pub fn bare(allow: &[Lever]) -> Vec<Lever> {
+        Self::ALL
+            .into_iter()
+            .filter(|l| !allow.contains(l))
+            .collect()
+    }
+}
+
 /// A `KEY=VALUE` change, parsed and value-validated. The value is kept as the
 /// canonical string it parsed from, so one shape serialises to the overrides
 /// file and re-parses on load through the same validation.
@@ -737,6 +857,68 @@ pub fn apply_overrides_file(cfg: &mut Config, path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The serialised name and the parsed name are the same string for every
+    /// lever — the record is written through serde and read back through
+    /// `parse` by the lenient loader, and a lever spelt two ways would be
+    /// recorded off and read as on.
+    #[test]
+    fn every_lever_round_trips_by_the_same_name() {
+        for lever in Lever::ALL {
+            let wire = serde_json::to_string(&lever).unwrap();
+            assert_eq!(wire, format!("\"{}\"", lever.as_str()), "{lever:?}");
+            assert_eq!(Lever::parse(lever.as_str()), Some(lever));
+            assert_eq!(serde_json::from_str::<Lever>(&wire).unwrap(), lever);
+        }
+        assert_eq!(
+            Lever::parse("appraisal"),
+            None,
+            "the readout is not a lever (§15)"
+        );
+        assert_eq!(Lever::parse("MCP"), None, "names are exact");
+    }
+
+    /// `ALL` is the closed set: exhaustive over the enum, no duplicates, and
+    /// the set the bare arm is built from.
+    #[test]
+    fn the_lever_set_is_closed_and_the_bare_arm_is_all_of_it() {
+        // Exhaustive: a new variant fails to compile here until it is listed.
+        for lever in Lever::ALL {
+            match lever {
+                Lever::Mcp
+                | Lever::LearnedRules
+                | Lever::Hooks
+                | Lever::Outbox
+                | Lever::Fallback
+                | Lever::Messages
+                | Lever::Skills
+                | Lever::Charter
+                | Lever::CompactTool
+                | Lever::StepEscalation
+                | Lever::ApprovalRules
+                | Lever::Boredom
+                | Lever::CompactValidate => {}
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        assert!(Lever::ALL.iter().all(|l| seen.insert(*l)), "no duplicates");
+        assert_eq!(Lever::bare(&[]), Lever::ALL.to_vec());
+        let with_opt_ins = Lever::bare(&[Lever::Mcp, Lever::LearnedRules]);
+        assert_eq!(with_opt_ins.len(), Lever::ALL.len() - 2);
+        assert!(!with_opt_ins.contains(&Lever::Mcp));
+        assert!(!with_opt_ins.contains(&Lever::LearnedRules));
+        assert!(
+            with_opt_ins.contains(&Lever::Boredom),
+            "an opt-in opts into nothing else"
+        );
+        // The two halves of the closed set do not overlap by name.
+        for lever in Lever::ALL {
+            assert!(
+                OverrideKey::parse(lever.as_str()).is_none(),
+                "{lever:?} is a knob too"
+            );
+        }
+    }
 
     fn temp_dir() -> std::path::PathBuf {
         let dir = std::env::temp_dir()

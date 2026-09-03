@@ -164,6 +164,20 @@ pub struct GlobalOpts {
     #[arg(skip)]
     pub no_rules: bool,
 
+    /// Don't issue the in-run boredom notice, even if `[agent] boredom` is
+    /// set — an opt-out for the one config switch that ships on. Forced by
+    /// `mecha eval`: the notice is a sentence in the model's context that
+    /// this machine's config decides, and a scorecard must not depend on it.
+    #[arg(long, global = true)]
+    pub no_boredom: bool,
+
+    /// Don't check a compaction summary for omissions, even if
+    /// `[agent] compact_validate` is set. Forced by `mecha eval` for the
+    /// same reason as `--no-boredom`: the check is a second model call that
+    /// this machine's config turns on.
+    #[arg(long, global = true)]
+    pub no_compact_validate: bool,
+
     /// Don't route any tools through the outbox — configured [outbox] tools
     /// execute directly under the usual gates instead of being staged.
     #[arg(long, global = true)]

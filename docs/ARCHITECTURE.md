@@ -2325,6 +2325,20 @@ The decisions that carry it, each a bug if undone:
   knobs `eval --ab-config` accepts, and eval's `apply_override` now delegates
   to `harness::parse_change` — a second spelling of the set is how the
   measurement arm and the acceptance arm silently stop being comparable.
+  `harness::Lever` is the on/off half beside it (`EXPERIMENT-DESIGN.md` §15):
+  the thirteen subsystems a run can carry structurally absent, each a switch
+  that exists today, recorded on `RunConfig::levers_off` in `Lever::ALL`'s
+  order. `mecha eval`'s `force_reproducible` is `Lever::bare` thrown through
+  `setup::switch_off`, and `setup::levers_off` reads the same switches back
+  for the record, so what eval forced and what the session says it forced
+  are one set — a test reads each through the other. The record's loader
+  degrades the *whole* list to `None` on an unknown name, never to a shorter
+  list, because a lever dropped from `levers_off` reads as on; `None` is the
+  same answer a transcript from before the field gives, and neither is
+  "all on". A lever with no off position is not in the set: the record must
+  never say "absent" of something that ran, so the dispositions §15 lists
+  without a switch (predictive compaction, carried state, the appraiser's
+  pass) join when their switch does.
 - **A divergent episode is dropped, not scored.** Replay answers from the
   recording; once an arm structurally departs, its remaining stats describe a
   run against tool results nobody asked for. Dropping fails safe: thin
