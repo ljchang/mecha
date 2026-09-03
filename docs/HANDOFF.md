@@ -61,8 +61,10 @@ the merges in it had landed with no changelog entry (#119, #121, #123,
 is v0.1.18.
 
 **Three lanes were off `main` on the evening of 2026-09-02: the audit
-lane, still live; the appraisal lane, landed that day as two PRs in the
-agreed order and holding two small follow-ups; and a third session's pair
+lane, whose approval-rules PR landed the next morning UTC and whose
+follow-up is still live; the appraisal lane, landed that day as two PRs in
+the agreed order with its two small follow-ups landed that same night; and
+a third session's pair
 (#144, #145), open and not either lane's to sequence.** `fix/harness-review`
 (**PR #139**, the audit lane, merged at `089952f`) carried the six-lane
 review's nine fixes — the jail's dangling-symlink follow, the subagent

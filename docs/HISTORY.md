@@ -3539,8 +3539,8 @@ a `prompt` goes to `Approver::consult`, which asks past a standing
 `[a]lways` and fails closed where no person can be asked. Every patterned
 rule needs a `match` example checked at load, `allow` loads from the global
 file only, and `mecha eval` forces the whole policy off. Nine review passes
-on the rebased tree then found, one each, the ways a rule's words and a
-command's words come apart: a quoted token hiding a bare `;`; `timeout 5 rm
+on the rebased tree then found, pass after pass, the ways a rule's words and
+a command's words come apart: a quoted token hiding a bare `;`; `timeout 5 rm
 -rf` laundering a `forbid` through a wrapper; a glued `-ec` flag evading the
 inline-eval check; `./git status` matching an `allow` on `git` by basename,
 then the fix re-opened by `/abs/path/to/workspace/git` (a cloned repository
@@ -3555,22 +3555,12 @@ to a prompt by an opaque command (`rm -rf $HOME`); `strict_inline_eval =
 false` switching off the wrapper lookup along with the prompt floor it was
 meant to gate; quote characters, then a glued `;`, then a backtick hiding
 `rm` from the opaque-command search. Each fix is a test that fails on the
-previous commit. The follow-up (#148, the owner's two rulings of 2026-09-03:
-an opaque command matching no rule falls through to the approver rather than
-cliffing every glob in every trigger into `Blocked`; an `allow`/`prompt` on
-a live-routed tool is refused at `setup`) is **open** as this is written,
-and its own loop has so far found that the fall-through had quietly been
-doing the inline-eval floor's job for opaque commands, that a redirect
-target glued to a separator swallowed the next command, that `2>&1` had to
-be stripped before the separator split, that the routed-tool load error was
-false under `--no-outbox` (where the rule is the one gate left), and that a
-project file in the directory could launder the operator's own
-contradiction — the merge, when it comes, is HANDOFF's to record. **The
-lesson is the audit's, twice
-over: a policy engine's bugs are all in the gap between the string the
-operator wrote and the string the shell will run, and when a guard happens
-to cover a case incidentally, make the coverage explicit before removing
-the guard, or the coverage goes with it.**
+previous commit. The two rulings the owner made from the clean pass's
+minors are the follow-up's to record when it lands (HANDOFF names it).
+**The lesson is the audit's: a policy engine's bugs are all in the gap
+between the string the operator wrote and the string the shell will run,
+and the conservative direction — refuse, or prompt — is the only one whose
+false positives cost a prompt rather than the feature.**
 
 ## The measurement record
 
