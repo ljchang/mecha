@@ -128,6 +128,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the session drawer into the chat header, where it is one tap from
   anywhere, and no longer prompts for a lowercase-and-dashes name.
 
+- **The served web app revalidates by `ETag` as well as by date** (tower-http
+  0.6 → 0.7). `ServeDir` now stamps every file it serves with a strong `ETag`
+  from its size and mtime, honours `If-None-Match` and `If-Match` per RFC
+  9110, and answers a conditional request with a `304 Not Modified` that
+  carries both validators (`ETag`, `Last-Modified`) where 0.6 sent a bare
+  status line. For the `no-cache` entry document that is the difference
+  between a browser that can refresh the entry it just confirmed and one that
+  cannot; the hashed assets stay `immutable` and never ask. `ServeDir::new`
+  is unchanged, and the release's breaking changes all sit in middleware this
+  crate does not use.
+
 ## [0.1.17] - 2026-08-31
 
 ### Changed
