@@ -1152,6 +1152,18 @@ mod tests {
             "no-cache",
             "a 304 that drops the header undoes the fix on the next lookup"
         );
+        // Under tower-http 0.7 a `304` names what it confirmed whichever
+        // precondition header asked — by date here, by tag in the test below
+        // — so the browser can refresh both validators on the entry it holds
+        // (RFC 9110 §15.4.5). Under 0.6 this `304` was bare.
+        assert!(
+            again.headers().get("etag").is_some(),
+            "a 304 to If-Modified-Since carries the ETag validator"
+        );
+        assert!(
+            again.headers().get("last-modified").is_some(),
+            "a 304 to If-Modified-Since carries the Last-Modified validator"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
