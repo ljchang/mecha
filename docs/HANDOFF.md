@@ -1575,14 +1575,13 @@ worker restart (#153's echo floor, which needs `over_speaker=` on the
 `tower-http` bump — was closed by the owner at 15:24 UTC, two minutes after
 #155 superseded it (the first draft of this entry listed it open; the
 review caught it against the API).
-The shared checkout `~/Github/mecha` is on `main` at `4a888ad` and clean —
-**still two merges behind `b50eb24`** (#152, which edited the `update`
-skill itself, and #155): this deploy built from a worktree at `main`
-because the deploying session cannot run git against the shared tree, so
-the fast-forward is still owed before anyone builds *from that checkout*
-or reads the skill from it: block 1 of the recipe above, then
-`git -C ~/Github/mecha merge --ff-only origin/main` (no `switch`, it is
-already on `main`). Single-writer docs are held by nobody.
+The shared checkout `~/Github/mecha` is on `main` at **`b50eb24`**, clean
+— re-read from its `.git` at ~18:15 after mecha-26 corrected this entry's
+first draft, which had carried the morning's `4a888ad` reading forward
+without re-reading it (someone had fast-forwarded it at ~17:47). The deploy
+built from a worktree at `main` anyway, because the deploying session
+cannot run git against the shared tree; the bytes are the same.
+Single-writer docs are held by nobody.
 
 ## What the measurements say
 
@@ -1627,14 +1626,16 @@ one person's mailbox rather than a public fact.
 
 ## What to do next
 
-- **Fast-forward the shared checkout** `~/Github/mecha` (on `main` at
-  `4a888ad`, two merges behind): block 1 of the 2026-09-03 recipe, then
-  `merge --ff-only origin/main`. #155's binary is installed and running
-  (18:04), so nothing is stale on the box; the checkout is stale, and the
-  next session that builds from it or reads the `update` skill from it gets
-  two merges ago. The deploying session could not do it (worktree
-  isolation). Then, once #153 and #158 merge, restart `mecha-voice-worker`
-  for their measurements.
+- **When #153 and #158 merge, restart `mecha-voice-worker` — and check the
+  shared checkout first, every time.** The unit's `WorkingDirectory` is
+  `~/Github/mecha` and its `ExecStart` runs `scripts/voice/worker.py` from
+  there, not from an installed artifact, so "restart the worker" and "the
+  checkout is on the merged `main` at that moment" are two facts and only
+  one of them is in the unit file (mecha-26's framing). This repo already
+  paid for it once, on 2026-09-03 morning. Block 1 of the recipe above is
+  the check; the checkout is on `main` at `b50eb24` and clean as of ~18:15,
+  so today nothing is owed — the item is the habit, not a repair. #153's
+  echo-floor and #158's tail measurements both wait on that restart.
 - **Three residues from #152's last review pass**, all in the shared-checkout
   recipe's presentation (HANDOFF §Machine state, dated, 2026-09-03), none
   behavioural: the tolerated dirty path `docs/README.md` is hard-coded in six
