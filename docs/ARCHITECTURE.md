@@ -1519,7 +1519,10 @@ refusal. The specification and the survey behind it are
   *project* layer can reach the contradiction from either side, and each
   time it is the project's half that goes, with a warning, never the
   operator's: a project `[[rule]]` on a routed tool is dropped after `apply`
-  over the merged state (a project may un-route as well as route), and a
+  over the merged state (a project may un-route as well as route) and over
+  that file's rules only — `apply` appends, so the index where the file's
+  rules begin is the provenance, and without it any project file in the
+  directory silently disarmed the operator's own contradiction — and a
   project `[outbox] tools` entry naming a tool the global config has a rule
   for is cut before `apply` — routing it would have made the operator's
   `forbid` a staged draft a person can release, the one reconciliation that

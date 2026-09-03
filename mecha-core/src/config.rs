@@ -1142,6 +1142,15 @@ impl Config {
                 }
             }
         }
+        // `apply` appends rules, so everything at an index below this is the
+        // layers before — the operator's — and everything at or above it is
+        // this file's. The retain below needs that line: without it a global
+        // contradiction (a global rule on a globally routed tool) was
+        // silently disarmed by the presence of *any* project file, because
+        // the operator's rule was dropped here before `validate` could refuse
+        // it, with a warning naming the project file as the rule's source
+        // (PR #148's review).
+        let inherited = self.rules.len();
         layer.apply(self);
         // A rule on an outbox-routed tool judges nothing, and `validate`
         // refuses that for the global layer, where the contradiction is in
@@ -1150,13 +1159,18 @@ impl Config {
         // own overstep is dropped here instead: a project rule on a tool the
         // merged config routes. (The other side — a project *routing* a tool
         // the global config has a rule for — was cut from the route list
-        // above, before `apply`, so the rules that reach this point and are
-        // routed are the project's.) Over the merged state, after `apply`,
-        // because a project may un-route as well as route.
+        // above, before `apply`.) Over the merged state, after `apply`,
+        // because a project may un-route as well as route; over this file's
+        // rules only, so the operator's reach `validate` untouched.
         if trust == LayerTrust::Project {
             let routed = &self.outbox.tools;
             let before = self.rules.len();
-            self.rules.retain(|r| !routed.contains(&r.tool));
+            let mut index = 0;
+            self.rules.retain(|r| {
+                let keep = index < inherited || !routed.contains(&r.tool);
+                index += 1;
+                keep
+            });
             if self.rules.len() != before {
                 tracing::warn!(
                     "{} rule(s) in {} name a tool that `[outbox] tools` routes to staging and \
@@ -2406,6 +2420,27 @@ match = ["rm -rf build"]
             cfg.outbox.tools,
             vec!["send_email".to_string()],
             "the project's route for the ruled tool was ignored; its other route kept"
+        );
+
+        // And a project file in the directory — any project file — does not
+        // disarm the *global* load error: the operator's own contradiction
+        // (a global rule on a globally routed tool) still fails the start,
+        // because the post-`apply` drop reaches only the rules the project
+        // file added.
+        let unrelated = dir.join("unrelated.toml");
+        std::fs::write(&unrelated, "[agent]\nmax_turns = 3\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.outbox.tools = vec!["send_email".into()];
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "send_email".into(),
+            decision: crate::policy::RuleDecision::Forbid,
+            ..Default::default()
+        });
+        cfg.merge_file(&unrelated, LayerTrust::Project).unwrap();
+        let err = format!("{:#}", cfg.validate().unwrap_err());
+        assert!(
+            err.contains("send_email") && err.contains("routes to staging"),
+            "a project file must not launder the operator's contradiction: {err}"
         );
     }
 

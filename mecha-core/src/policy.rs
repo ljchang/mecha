@@ -28,11 +28,12 @@
 //! the rules, and the command is allowed only if *every* segment is. Anything
 //! this module cannot split with certainty — substitution, redirection,
 //! globs, control flow, an unterminated quote, a glued operator — is one
-//! opaque invocation: its words are searched for every `forbid`, a
-//! pattern-less `forbid` or `prompt` applies to it by construction, the
-//! inline-eval floor below applies to it under `strict_inline_eval`, and
-//! otherwise it matches nothing and the approver decides as it would with no
-//! rules. A false "cannot split" costs an `allow` that would have applied; a
+//! opaque invocation: its words are searched for every patterned `forbid`
+//! and `prompt` (never an `allow` — an opaque command is never allowed by
+//! its words), a pattern-less `forbid` or `prompt` applies to it by
+//! construction, the inline-eval floor below applies to it under
+//! `strict_inline_eval`, and otherwise it matches nothing and the approver
+//! decides as it would with no rules. A false "cannot split" costs an `allow` that would have applied; a
 //! false "can" costs the whole point of the feature.
 //!
 //! **An allowlisted interpreter is not an allowlisted command.** `python -c`,
@@ -439,19 +440,18 @@ impl ExecPolicy {
             {
                 return Some(self.ruling(tool, RuleDecision::Forbid, &rules, None));
             }
-            // And a *patterned* `forbid` is looked for anyway, over-
-            // approximately: the raw words of the command, split on
-            // whitespace with no quote handling, and the pattern matched at
-            // every position rather than only at a segment head. `rm -rf
-            // $HOME`, `rm -rf *`, `git status; rm -rf {a,b}` all carry the
-            // forbidden words in plain sight; refusing them costs nothing the
-            // opaque prompt was not already costing, and a false forbid is a
-            // refusal, not a hole. The PR review found the pattern-less case
-            // fixed and this one — the PR's own headline example — not.
-            // And a patterned `prompt` the same way, one pass later: `git
-            // push origin main > /dev/null` carries the words a `prompt` on
-            // `["git", "push"]` names, and under `--yes` it executed where
-            // the un-redirected spelling was consulted (PR #148's review).
+            // A *patterned* `forbid` or `prompt` is looked for by its words,
+            // over-approximately: the command cut into best-effort segments
+            // (`opaque_segments` — separators, redirections removed whole,
+            // quotes and backslashes dropped, leading keywords and
+            // assignments skipped) and the pattern matched at every position
+            // rather than only at a segment head. `rm -rf $HOME`, `rm -rf *`,
+            // `git status; rm -rf {a,b}` carry the forbidden words in plain
+            // sight, and `git push origin main > /dev/null` the words a
+            // `prompt` on `["git", "push"]` names; a false forbid or prompt
+            // costs a prompt, not a hole. The PR reviews found the
+            // pattern-less case fixed and the patterned `forbid` not, then
+            // the patterned `prompt` not, one pass each.
             let by_words = narrowing_words(&rules, command);
             if let Some((RuleDecision::Forbid, seg)) = &by_words {
                 return Some(self.ruling(tool, RuleDecision::Forbid, &rules, Some(seg)));
@@ -473,7 +473,7 @@ impl ExecPolicy {
             // runs its arguments. Without this, `python3 -c 'import os' >
             // /tmp/x` fell through where `python3 -c 'import os'` was
             // consulted — a redirect made an interpreter *less* restricted
-            // (PR #148's review). Over-approximate like `forbidden_words`,
+            // (PR #148's review). Over-approximate like `narrowing_words`,
             // and only at segment heads, so `ls *.txt | grep make` is not a
             // wrapper because a wrapper's name appears in it.
             if self.strict_inline_eval
@@ -806,9 +806,16 @@ fn strip_redirects(piece: &str) -> String {
             i += 1;
             continue;
         }
-        // The file descriptor glued in front (`2>`), and the `&` of `&>`.
-        while out.ends_with(|c: char| c.is_ascii_digit()) {
-            out.pop();
+        // The file descriptor glued in front (`2>`) — only when the digits
+        // are a whole word, so `python3>out` keeps its `3` — and the `&` of
+        // `&>`.
+        let digits = out.chars().rev().take_while(|c| c.is_ascii_digit()).count();
+        let whole_word = out[..out.len() - digits]
+            .chars()
+            .next_back()
+            .is_none_or(char::is_whitespace);
+        if digits > 0 && whole_word {
+            out.truncate(out.len() - digits);
         }
         if out.ends_with('&') {
             out.pop();
@@ -1157,6 +1164,8 @@ mod tests {
             "2>&1 python3 -c 'x'",
             "&> log sudo ls *",
             "2>/dev/null xargs rm",
+            // A digit-suffixed program glued to a redirect keeps its digit.
+            "python3>out -c 'x'",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(evals)).unwrap().decision,
