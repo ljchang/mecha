@@ -1241,6 +1241,41 @@ mod tests {
             "no-cache",
             "our own header still rides on the tag-validated 304"
         );
+
+        // The other half of the guarantee, and the one that protects against
+        // the 2026-08-29 incident: a *stale* tag must get the new document,
+        // not a 304 with false confidence. The tag is `"<secs>.<nanos>-<size>"`,
+        // so a rewrite of a different length changes it whatever the clock
+        // granularity — no sleep, no flake. (`test_router_with_assets` writes
+        // the fixture, so the rewrite comes after it.)
+        let router = test_router_with_assets(&dir);
+        std::fs::write(
+            dir.join("index.html"),
+            "<!doctype html><script src=/assets/index-def456.js></script><!-- changed -->",
+        )
+        .unwrap();
+        let changed = router
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("If-None-Match", etag.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            changed.status(),
+            StatusCode::OK,
+            "a stale tag must fetch the changed document, not confirm the old one"
+        );
+        let new_tag = changed
+            .headers()
+            .get("etag")
+            .expect("the changed document is tagged too")
+            .clone();
+        assert_ne!(new_tag, etag, "a changed document carries a different tag");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
