@@ -168,7 +168,21 @@ pub fn compose_offer(items: &[OutboxItem]) -> Option<Offer> {
 /// hear, named and offered when it is not.
 fn ask_about(item: &OutboxItem) -> String {
     let view = DraftView::of(&item.args);
-    let spoken = view.spoken(&item.filled_defaults);
+    // What the harness pinned *and the reviewer has not since changed*.
+    //
+    // `filled_defaults` records the fill at staging time and `update_args`
+    // rewrites `args` without touching it, so after `mecha outbox edit` moves
+    // a pinned field the list still names it — and the readback would call a
+    // value the *person* chose a default, on the surface where they hear it
+    // once and cannot look back. Headers are safe either way, since those keep
+    // their own lines; this only bites the collapsed bucket.
+    let pinned: Vec<String> = item
+        .filled_defaults
+        .iter()
+        .filter(|k| item.args.get(k.as_str()) == item.args_before.get(k.as_str()))
+        .cloned()
+        .collect();
+    let spoken = view.spoken(&pinned);
     let mut out = String::new();
     if spoken.chars() <= SPOKEN_UNPROMPTED_CHARS {
         // "Here it is, in full" rather than a second "I've drafted…": the
@@ -358,6 +372,50 @@ mod tests {
     use mecha_core::agent::Taint;
     use mecha_core::outbox::OutboxKind;
     use serde_json::json;
+
+    /// A value the reviewer changed is no longer called a default.
+    ///
+    /// `filled_defaults` is written once, at staging; `update_args` rewrites
+    /// `args` and leaves it alone. So an edited pinned field is still named
+    /// there, and the readback would tell a listener the harness chose a
+    /// value they chose themselves — on the surface where they hear it once.
+    #[test]
+    fn an_edited_pin_is_spoken_as_the_reviewers_own() {
+        use mecha_core::outbox::DraftView;
+
+        let mut it = item(
+            "i1",
+            OutboxKind::Message,
+            serde_json::json!({"title": "Reading group", "calendar_id": "primary"}),
+            false,
+        );
+        it.args_before = it.args.clone();
+        it.filled_defaults = vec!["calendar_id".into()];
+
+        // As staged: the harness chose it, so it collapses into the clause.
+        let unedited: Vec<String> = it
+            .filled_defaults
+            .iter()
+            .filter(|k| it.args.get(k.as_str()) == it.args_before.get(k.as_str()))
+            .cloned()
+            .collect();
+        assert_eq!(unedited, vec!["calendar_id".to_string()]);
+        let spoken = DraftView::of(&it.args).spoken(&unedited).text();
+        assert!(spoken.contains("Defaults: "), "{spoken}");
+
+        // After an edit the person chose it, and it gets its own sentence.
+        it.args["calendar_id"] = serde_json::json!("team-shared");
+        let after: Vec<String> = it
+            .filled_defaults
+            .iter()
+            .filter(|k| it.args.get(k.as_str()) == it.args_before.get(k.as_str()))
+            .cloned()
+            .collect();
+        assert!(after.is_empty(), "an edited pin is still called a default");
+        let spoken = DraftView::of(&it.args).spoken(&after).text();
+        assert!(spoken.contains("Calendar id: team-shared."), "{spoken}");
+        assert!(!spoken.contains("Defaults: "), "{spoken}");
+    }
 
     fn item(id: &str, kind: OutboxKind, args: serde_json::Value, tainted: bool) -> OutboxItem {
         OutboxItem {
