@@ -326,9 +326,13 @@ mod echo_span_tests {
             }
             armed += 1;
             let before = lines[n.saturating_sub(4)..n].join("\n");
+            // The *gate*, not merely a nearby `say`. Arming after a `say`
+            // whose result was discarded is the same bug one step narrower:
+            // a hang-up during the last delta leaves a live yes behind.
             assert!(
-                before.contains("say(stream") || before.contains("written.is_ok()"),
-                "line {} arms a confirmation without having spoken it:\n{before}",
+                before.contains("if say(stream") || before.contains("if written.is_ok()"),
+                "line {} arms a confirmation without checking that it reached \
+                 the wire:\n{before}",
                 n + 1
             );
         }
@@ -1173,8 +1177,9 @@ async fn hosted_completion(
     if want_stream {
         if !disconnected {
             if let Some(offer) = &offer {
-                say(stream, shared, id, &format!(" {}", offer.speech)).await;
-                arm_confirmation(shared, confirm_key, offer).await;
+                if say(stream, shared, id, &format!(" {}", offer.speech)).await {
+                    arm_confirmation(shared, confirm_key, offer).await;
+                }
             }
             finish_stream(
                 stream,
@@ -1304,15 +1309,20 @@ async fn open_sse(stream: &mut TcpStream, id: &str, model: &str) -> bool {
 /// Say something the harness composed, on whichever channel this request
 /// wanted. One utterance, one place, so the streaming and blocking paths
 /// cannot word the same fact differently.
-async fn say(stream: &mut TcpStream, shared: &Arc<Shared>, id: &str, text: &str) {
-    say_on(stream, id, &shared.model, text).await;
+async fn say(stream: &mut TcpStream, shared: &Arc<Shared>, id: &str, text: &str) -> bool {
+    say_on(stream, id, &shared.model, text).await
 }
 
 /// The same, without a `Shared` — so the wire format can be tested against a
 /// socket rather than asserted about.
-async fn say_on(stream: &mut TcpStream, id: &str, model: &str, text: &str) {
+/// Returns whether the words reached the socket. **`arm_confirmation` gates
+/// on this**, not on the `disconnected` flag computed before the turn ran: a
+/// hang-up during the last delta leaves that flag stale, and arming on it is
+/// the same shape as the bug the compose/arm split was extracted to fix, one
+/// step narrower.
+async fn say_on(stream: &mut TcpStream, id: &str, model: &str, text: &str) -> bool {
     let chunk = sse_chunk(id, model, json!({"content": text}), None);
-    let _ = write_chunk(stream, chunk.as_bytes()).await;
+    write_chunk(stream, chunk.as_bytes()).await.is_ok()
 }
 
 /// Answer a spoken yes/later/read-it-out, without running a model turn.
@@ -1330,13 +1340,6 @@ async fn answer_completion(
     pending: &confirm::Pending,
     text: &str,
 ) -> Option<Result<()>> {
-    // Nothing below runs a model, so `pump` — the only other place that
-    // knows what a response head is — never runs either. Opened here, before
-    // the first `say`, or every word of this reply is a body with no status
-    // line in front of it.
-    if want_stream && !open_sse(stream, id, &shared.model).await {
-        return Some(Ok(()));
-    }
     // The draft as it is *now*, not as it was when the question was asked:
     // it may have been sent from the page, edited there, or swept in between.
     let head = pending
@@ -1349,7 +1352,27 @@ async fn answer_completion(
         .queue
         .get(1)
         .and_then(|id| confirm::item_now(&shared.outbox_root, id));
-    match confirm::react(text, pending, head.as_ref(), next.as_ref()) {
+    // **Decided before anything is written.** `react` is pure, and the
+    // ordering is load-bearing: on `PassToModel` this function answers
+    // nothing and `completion` carries on to the model, where `pump` writes
+    // its own response head. A head opened up here first would leave `pump`
+    // writing a second one *unframed* into an already-open chunked body —
+    // so every spoken correction during an open offer would arrive corrupt.
+    // The first version of this fix did exactly that, which is the same
+    // class of defect the `open_sse` extraction was closing.
+    let reaction = confirm::react(text, pending, head.as_ref(), next.as_ref());
+    if matches!(reaction, confirm::Reaction::PassToModel) {
+        return None;
+    }
+    // Past here this function owns the response. Nothing below runs a model,
+    // so `pump` never runs either, and without this every word goes out as a
+    // body with no status line in front of it.
+    if want_stream && !open_sse(stream, id, &shared.model).await {
+        return Some(Ok(()));
+    }
+    match reaction {
+        // Returned above; the arm is here so a new variant cannot be added
+        // without deciding which side of the response head it falls on.
         confirm::Reaction::PassToModel => None,
         confirm::Reaction::Reread(said) => {
             // The head is still the open question: hearing it again is not
@@ -1387,7 +1410,10 @@ async fn answer_completion(
             // rebuilds a tool surface and can take seconds, and silence after
             // "yes" reads as the call having dropped.
             if want_stream {
-                say(stream, shared, id, &acknowledge).await;
+                // Discarded on purpose: the listener said yes, and a socket
+                // that dropped between the word and the work is not a reason
+                // to leave the draft unsent.
+                let _ = say(stream, shared, id, &acknowledge).await;
             }
             let outcome = confirm::release(&item).await;
             let report = confirm::report_release(outcome, next.as_ref());
@@ -1774,8 +1800,9 @@ async fn completion(
     if want_stream {
         if !disconnected {
             if let Some(offer) = &offer {
-                say(stream, shared, &id, &format!(" {}", offer.speech)).await;
-                arm_confirmation(shared, &confirm_key, offer).await;
+                if say(stream, shared, &id, &format!(" {}", offer.speech)).await {
+                    arm_confirmation(shared, &confirm_key, offer).await;
+                }
             }
             let failed = outcome.as_ref().err().map(|e| format!("{e:#}"));
             finish_stream(stream, &id, &shared.model, failed.as_deref()).await;
@@ -2183,6 +2210,20 @@ mod the_reply_reaches_the_wire {
                 );
             }
         }
+        // And the other side of it, which the first version got wrong: on
+        // `PassToModel` this function answers nothing and `completion` goes
+        // on to the model, where `pump` writes its own head. Opening one
+        // before that decision leaves `pump` writing a second head unframed
+        // into an already-open chunked body, so every spoken correction
+        // during an open offer arrives corrupt.
+        let bailed = body
+            .find("Reaction::PassToModel) {")
+            .expect("the fall-through to the model is no longer decided up front");
+        assert!(
+            bailed < opened,
+            "the response head is opened before the reaction is known, so a \
+             correction gets two heads and a corrupt body"
+        );
     }
 
     #[tokio::test]
