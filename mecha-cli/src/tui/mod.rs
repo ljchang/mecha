@@ -844,6 +844,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             &prepared.agent,
             &prepared.config,
             &prepared.provider_name,
+            &prepared.levers_off,
         )))?;
         // Staged outbox items point back at the session that drafted them.
         if let Some(route) = &prepared.agent.context().outbox {
@@ -3112,7 +3113,11 @@ fn record_config(session: Option<&Session>, live: &Live, mode: PermissionMode) -
             .as_deref()
             .unwrap_or(std::path::Path::new(".")),
     )?;
-    let mut record = RunConfig::of(&live.agent, &cfg, &live.provider);
+    // From the *current* opts, for the same reason they live on `Live`: a
+    // `/mcp off` mid-session is a lever thrown, and the record after it must
+    // say so.
+    let levers_off = crate::setup::levers_off(&live.opts, &cfg);
+    let mut record = RunConfig::of(&live.agent, &cfg, &live.provider, &levers_off);
     // The file cannot know about a `/mode` switch, and a replay that read the
     // file's mode would be reproducing permissions this session never ran under.
     record.permission_mode = mode;

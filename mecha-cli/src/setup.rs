@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use mecha_core::agent::Agent;
 use mecha_core::config::SearchBackendConfig;
 use mecha_core::config::{Config, PermissionMode};
+use mecha_core::harness::Lever;
 use mecha_core::mcp::{self, McpClient};
 use mecha_core::search::{Exa, SearchBackend, SearchChain, Searxng, Tavily, WebSearch};
 use mecha_core::subagent::{Subagent, SubagentProfile};
@@ -40,6 +41,10 @@ pub struct Prepared {
     pub mailbox: Option<Arc<mecha_core::mailbox::MailboxRoute>>,
     /// Held for the lifetime of the run: dropping a client kills its server.
     pub _mcp: Vec<Arc<McpClient>>,
+    /// Which levers this run carries off, for `RunConfig::levers_off` —
+    /// computed here, once, from the switches the agent was built with, so
+    /// every front-end records the same answer for the same flags.
+    pub levers_off: Vec<Lever>,
 }
 
 /// Everything except the model connection. Split out so `mecha tools` can list
@@ -456,18 +461,73 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         agent.set_mailbox(Arc::clone(mb));
     }
 
+    let levers_off = levers_off(opts, &cfg);
     Ok(Prepared {
         agent,
         provider_name,
         model,
         workspace: tools.workspace,
         config: cfg,
+        levers_off,
         sandbox: tools.sandbox,
         todo: tools.todo,
         skill: tools.skill,
         mailbox: tools.mailbox,
         _mcp: tools._mcp,
     })
+}
+
+/// Which levers ([`Lever`]) a run built from `opts` over `cfg` carries
+/// **off** — the value `RunConfig::levers_off` records.
+///
+/// A pure function of the *switches*, never of what a store held: an empty
+/// rules store leaves `LearnedRules` on, because the lever was not thrown,
+/// and the record's job is to say which. The three switches that also live
+/// in `[agent]` config read the config *and* the flag, so the answer is the
+/// same before and after `prepare_tools` folds the flag in. Paired with
+/// [`switch_off`], and tested against it: forcing a lever off through one
+/// must read as off through the other, or `mecha eval`'s record would name
+/// a different bare arm from the one it ran.
+pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
+    Lever::ALL
+        .into_iter()
+        .filter(|lever| match lever {
+            Lever::Mcp => opts.no_mcp,
+            Lever::LearnedRules => opts.no_learned_rules,
+            Lever::Hooks => opts.no_hooks,
+            Lever::Outbox => opts.no_outbox,
+            Lever::Fallback => opts.no_fallback,
+            Lever::Messages => opts.no_messages,
+            Lever::Skills => opts.no_skills,
+            Lever::Charter => opts.no_charter,
+            Lever::CompactTool => opts.no_compact_tool,
+            Lever::StepEscalation => opts.no_step_escalation || !cfg.agent.step_escalation,
+            Lever::ApprovalRules => opts.no_rules,
+            Lever::Boredom => opts.no_boredom || !cfg.agent.boredom,
+            Lever::CompactValidate => opts.no_compact_validate || !cfg.agent.compact_validate,
+        })
+        .collect()
+}
+
+/// Throw one lever's switch on `opts`. The only place a [`Lever`] is mapped
+/// to its flag in the *off* direction, so `mecha eval`'s bare arm and an
+/// experiment's are built by the same hand.
+pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
+    match lever {
+        Lever::Mcp => opts.no_mcp = true,
+        Lever::LearnedRules => opts.no_learned_rules = true,
+        Lever::Hooks => opts.no_hooks = true,
+        Lever::Outbox => opts.no_outbox = true,
+        Lever::Fallback => opts.no_fallback = true,
+        Lever::Messages => opts.no_messages = true,
+        Lever::Skills => opts.no_skills = true,
+        Lever::Charter => opts.no_charter = true,
+        Lever::CompactTool => opts.no_compact_tool = true,
+        Lever::StepEscalation => opts.no_step_escalation = true,
+        Lever::ApprovalRules => opts.no_rules = true,
+        Lever::Boredom => opts.no_boredom = true,
+        Lever::CompactValidate => opts.no_compact_validate = true,
+    }
 }
 
 /// Which of `wanted` an active `--tool` allowlist leaves out.
@@ -569,6 +629,10 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     }
     cfg.agent.step_escalation =
         step_escalation_enabled(cfg.agent.step_escalation, opts.no_step_escalation);
+    // The same shape for the two switches that ship on: the flag can only
+    // narrow, so a config that already says off stays off.
+    cfg.agent.boredom = cfg.agent.boredom && !opts.no_boredom;
+    cfg.agent.compact_validate = cfg.agent.compact_validate && !opts.no_compact_validate;
     if opts.no_thinking {
         cfg.agent.thinking = false;
         // Disabling thinking above `high` effort is rejected by the API. The

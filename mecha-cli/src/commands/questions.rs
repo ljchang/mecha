@@ -318,6 +318,7 @@ async fn answer_and_resume(
         &prepared.agent,
         &prepared.config,
         &prepared.provider_name,
+        &prepared.levers_off,
     )))?;
 
     let staged_before = staged_ids(&q.session_id);

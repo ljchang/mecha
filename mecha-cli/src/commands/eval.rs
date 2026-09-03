@@ -19,6 +19,7 @@ use anyhow::{Context, Result};
 use mecha_core::agent::{Budget, RunContext};
 use mecha_core::config::PermissionMode;
 use mecha_core::eval::{grade, stage_workspace, EvalCase, GradedCase, Judge, Scorecard};
+use mecha_core::harness::Lever;
 use mecha_core::tool::ask::AskUserTool;
 use mecha_core::tool::ModeApprover;
 use std::collections::HashMap;
@@ -1182,22 +1183,27 @@ async fn ab_config(
 /// list is complete cannot notice that one member of it was supposed to be a
 /// variable. A lever that lives *inside* the list cannot be lost while
 /// consolidating the list, so it lives here.
+///
+/// Since the lever set exists it is expressed over it: the bare arm is
+/// [`Lever::bare`] with the two opt-ins allowed, thrown through
+/// `setup::switch_off`, so this list and `RunConfig::levers_off` cannot name
+/// different sets — the test `the_record_names_exactly_what_eval_forced`
+/// reads one through the other. Two things stay spelled here. `--mcp` opts
+/// *in* by leaving the user's own `--no-mcp` alone rather than clearing it;
+/// and learned rules are set in both directions, because `run_arm` builds
+/// the treatment arm from the same `opts` it built the baseline from.
 fn force_reproducible(opts: &mut GlobalOpts, allow_mcp: bool, allow_learned_rules: bool) {
-    if !allow_mcp {
-        opts.no_mcp = true;
+    let mut allow = Vec::new();
+    if allow_mcp {
+        allow.push(Lever::Mcp);
+    }
+    if allow_learned_rules {
+        allow.push(Lever::LearnedRules);
+    }
+    for lever in Lever::bare(&allow) {
+        crate::setup::switch_off(opts, lever);
     }
     opts.no_learned_rules = !allow_learned_rules;
-    opts.no_hooks = true;
-    opts.no_outbox = true;
-    opts.no_fallback = true;
-    opts.no_messages = true;
-    opts.no_skills = true;
-    opts.no_charter = true;
-    opts.no_compact_tool = true;
-    opts.no_step_escalation = true;
-    // Approval rules come from this machine's config and change what a
-    // case's `shell` call does; a scorecard must not depend on them.
-    opts.no_rules = true;
 }
 
 #[cfg(test)]
@@ -1234,6 +1240,11 @@ mod tests {
             // Same shape: a `forbid` in this box's rules file would score a
             // case's `shell` call as `Blocked by policy:` here and not there.
             ("approval rules", opts.no_rules),
+            // The two `[agent]` switches that ship *on*, missed until the
+            // lever set named them: a notice in the model's context and a
+            // second model call, each decided by this machine's config.
+            ("boredom", opts.no_boredom),
+            ("compact validation", opts.no_compact_validate),
         ] {
             assert!(
                 on,
@@ -1280,6 +1291,50 @@ mod tests {
         assert!(treatment.no_messages);
         assert!(treatment.no_compact_tool);
         assert!(treatment.no_step_escalation);
+        assert!(treatment.no_boredom);
+        assert!(treatment.no_compact_validate);
+    }
+
+    /// What eval forces and what the session records must be one set, read
+    /// through each other: `force_reproducible` throws switches, and
+    /// `setup::levers_off` reads them back for `RunConfig::levers_off`. If
+    /// the two disagreed, an experiment pairing its own bare arm against an
+    /// eval scorecard would be comparing runs whose records name different
+    /// absences — D14's whole reason for one definition.
+    #[test]
+    fn the_record_names_exactly_what_eval_forced() {
+        let cfg = mecha_core::config::Config::default();
+        let mut bare = GlobalOpts::default();
+        force_reproducible(&mut bare, false, false);
+        assert_eq!(
+            crate::setup::levers_off(&bare, &cfg),
+            Lever::bare(&[]),
+            "the bare arm records every lever off"
+        );
+
+        let mut with_mcp = GlobalOpts::default();
+        force_reproducible(&mut with_mcp, true, false);
+        assert_eq!(
+            crate::setup::levers_off(&with_mcp, &cfg),
+            Lever::bare(&[Lever::Mcp])
+        );
+
+        let mut with_rules = GlobalOpts::default();
+        force_reproducible(&mut with_rules, false, true);
+        assert_eq!(
+            crate::setup::levers_off(&with_rules, &cfg),
+            Lever::bare(&[Lever::LearnedRules])
+        );
+
+        // And the other direction: a switch thrown by hand reads as off.
+        for lever in Lever::ALL {
+            let mut one = GlobalOpts::default();
+            crate::setup::switch_off(&mut one, lever);
+            assert!(
+                crate::setup::levers_off(&one, &cfg).contains(&lever),
+                "{lever:?} thrown through switch_off must read as off"
+            );
+        }
     }
 
     /// A scratch directory that cleans up after itself, so a failing test
