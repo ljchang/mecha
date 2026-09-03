@@ -1651,8 +1651,10 @@ refusal. The specification and the survey behind it are
   refuses it, naming the rule and three remedies (write it as `forbid`,
   remove it, un-route the tool). A `forbid` stays; it is *unreached* while
   the route is on — the call becomes a draft a person can release, not a
-  refusal — which `setup` logs at info rather than printing every start,
-  since it is the config the refusal recommends; under `--no-outbox` every
+  refusal — which `setup` reports as a `tracing::warn!` (visible at the
+  default filter, filterable, the channel the project-layer drops use)
+  rather than an `eprintln!` every start, since it is the config the refusal
+  recommends; under `--no-outbox` every
   rule is live and nothing is refused; a project layer's `prompt` is set
   aside for the run with a warning instead. `setup::live_rules` is the pure
   half, and a table of tests covers each thing a review pass found wrong

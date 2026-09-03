@@ -258,12 +258,13 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                 }
             );
         }
-        // A note, not a nag: this is the config the refusal above recommends
-        // writing, so it must not print on every start the way a typo
-        // warning does (the `--tool` reasoning). It is in the log where
-        // `MECHA_LOG` shows it, and ARCHITECTURE says what the rule does.
+        // On `tracing::warn!`, the channel the sibling project-layer drops in
+        // `merge_file` use: visible at the default `warn` filter (an `info`
+        // was below it, so the config the refusal recommends had an invisible
+        // caveat — PR #150's review) and filterable, where an `eprintln!`
+        // every start was the nag the `--tool` reasoning argues against.
         for i in &live.unreached_forbids {
-            tracing::info!(
+            tracing::warn!(
                 rule = i + 1,
                 tool = %cfg.rules[*i].tool,
                 "a `forbid` on a routed tool is not reached while the route is on — the call \
@@ -1754,9 +1755,9 @@ pub(crate) struct LiveRules {
     /// Indices of `forbid` rules on a live-routed tool: kept, because they are
     /// the gate `--no-outbox` runs against, but not reached while the route
     /// is on — an operator who wrote one expecting "never sends" gets a
-    /// releasable draft. Logged at info, not printed: it is the config the
-    /// refusal recommends, and a line that fires every start is one that
-    /// gets ignored.
+    /// releasable draft. A `tracing::warn!`, not an `eprintln!`: visible at
+    /// the default filter and on the channel the other project-layer drops
+    /// use, but filterable — it is the config the refusal recommends.
     pub unreached_forbids: Vec<usize>,
 }
 
@@ -1886,5 +1887,40 @@ mod live_rules_tests {
         let live = live_rules(&with_operator, routed, |t| t == "send_email").unwrap();
         assert_eq!(live.rules.len(), 4);
         assert!(live.set_aside.is_empty() && live.unreached_forbids.is_empty());
+    }
+
+    /// Against a real `OutboxRoute`, not a stub: `publish_tools` is a kind,
+    /// not a route, so a `prompt` on a publish-only tool is live and only the
+    /// routed tool's `allow` is refused. This is the assertion that moved
+    /// here when the core helper was removed.
+    #[test]
+    fn a_real_route_stages_tools_and_not_publish_kinds() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("mecha-route-{}-{stamp}", std::process::id()));
+        let store = mecha_core::outbox::OutboxStore::open(&dir).unwrap();
+        let route = mecha_core::outbox::OutboxRoute::new(
+            store,
+            vec!["send_email".to_string()],
+            vec!["publish_page".to_string()],
+        );
+        let rules = vec![
+            rule("publish_page", RuleDecision::Prompt, false),
+            rule("send_email", RuleDecision::Allow, false),
+        ];
+        let err = live_rules(&rules, |t| route.routes(t), nothing)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("#2") && err.contains("send_email"), "{err}");
+        let only_publish = vec![rule("publish_page", RuleDecision::Prompt, false)];
+        let live = live_rules(&only_publish, |t| route.routes(t), nothing).unwrap();
+        assert_eq!(
+            live.rules.len(),
+            1,
+            "a publish-only tool executes unstaged, so its rule is live"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

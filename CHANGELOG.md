@@ -29,7 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `prompt` by its words (redirects, here-strings, `$IFS` and braced
   expansions accounted for) and otherwise falls through to the approver as
   an unmatched command does; an `allow`/`prompt` on a tool the live outbox
-  route stages is refused at startup, since staging runs before the rules.
+  route stages is refused at startup, since staging runs before the rules
+  (a project layer's is set aside for the run with a warning instead).
 
 - **The web app has a desktop layout** (`REMOTE-SURFACE-DESIGN.md` D10). It
   was nine phone screens faithfully built, so a 1500px window rendered a

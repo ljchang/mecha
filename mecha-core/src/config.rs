@@ -2305,11 +2305,12 @@ match = ["git push origin main"]
         );
     }
 
-    /// What `setup::live_rules` will act on where the route is live — the
-    /// `allow`/`prompt` rules on a tool `[outbox] tools` routes — spelled
-    /// once here for the tests, so the one production spelling stays in
-    /// `mecha-cli`'s `setup::live_rules` (a core helper that nothing in
-    /// production called was the previous shape).
+    /// The merged state these tests are about: the `allow`/`prompt` rules on
+    /// a tool `[outbox] tools` routes, with each rule's provenance. A test
+    /// mirror of the predicate `setup::live_rules` applies with the live
+    /// route in hand (that function has its own table in `mecha-cli`); the
+    /// one production spelling lives there, and the core helper that nothing
+    /// in production called is gone.
     fn superseded_by_staging(cfg: &Config) -> Vec<(usize, bool)> {
         cfg.rules
             .iter()
