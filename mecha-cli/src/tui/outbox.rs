@@ -660,6 +660,8 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind) -> OutboxItem {
         OutboxItem {
+            filled_defaults: Vec::new(),
+            call_id: None,
             id: id.into(),
             status: status.into(),
             tool: "mail__mail_send".into(),

@@ -735,8 +735,9 @@ fn compose(
         mecha_core::outbox::OutboxKind::Message,
         args,
         mecha_core::agent::Taint::default(),
-        None,
-        None,
+        // Nothing to record: a person typed this, so there is no run, no jail
+        // and no staging call for `outbox_source` to walk back through.
+        mecha_core::outbox::Provenance::default(),
     )?;
     println!(
         "staged {} — review and send with `mecha outbox` (or the phone's Outbox)",

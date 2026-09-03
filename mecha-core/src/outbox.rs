@@ -71,6 +71,37 @@ impl OutboxKind {
     }
 }
 
+/// Where a staged draft came from: the run, the jail, the call — and which of
+/// its arguments this harness wrote rather than the model.
+///
+/// A struct rather than three more parameters, and not only because `stage`
+/// had reached clippy's argument ceiling. `session_id` and `call_id` are both
+/// `Option<String>` and both optional, so positionally they are
+/// interchangeable to the compiler and not at all interchangeable to the
+/// store — one names the transcript, the other names a single call inside it,
+/// and a swap would compile, store, and only surface as a draft whose source
+/// pane is wrong.
+///
+/// Every field is optional because every field is genuinely absent for some
+/// legitimate staging: `mecha mail compose` has no run and no call, a tool
+/// built over a fixed directory has no per-run workspace, and an item written
+/// before `call_id` existed has none of the third.
+#[derive(Debug, Clone, Default)]
+pub struct Provenance {
+    /// The session whose transcript holds the staging call.
+    pub session_id: Option<String>,
+    /// The jail the tool would really have executed under. A release happens
+    /// in another process from another directory; a staged path means nothing
+    /// without the root it was written against.
+    pub workspace: Option<PathBuf>,
+    /// The `tool_use` id of the call that staged this — see
+    /// [`OutboxItem::call_id`].
+    pub call_id: Option<String>,
+    /// Argument keys the *harness* wrote, not the model — see
+    /// [`OutboxItem::filled_defaults`].
+    pub filled_defaults: Vec<String>,
+}
+
 /// One staged outbound action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxItem {
@@ -85,6 +116,17 @@ pub struct OutboxItem {
     pub kind: OutboxKind,
     /// The arguments as the agent drafted them. Never modified — this is the
     /// baseline the learning capture diffs against.
+    ///
+    /// **Equal to `args` at stage time, and that is load-bearing rather than
+    /// incidental.** `edited()` is `args != args_before`, so anything that
+    /// makes them differ before a human has touched the draft reports every
+    /// send as a correction: `writing_outcome()` returns `SentEdited` instead
+    /// of `SentUnchanged`, which flips the appraisal signal from `+1.0 /
+    /// Own` to `-1.0 / Owner`, and `mineable_as_writing()` feeds the
+    /// harness's own bookkeeping to a reflector whose rules ride in every
+    /// future run's cached prefix. So a default the loop pins into a draft
+    /// belongs in *both*, and what locates the staging call in the transcript
+    /// is [`OutboxItem::call_id`], not this.
     pub args_before: Value,
     /// The arguments a release will execute. Starts equal to `args_before`;
     /// `mecha outbox edit` rewrites it.
@@ -128,6 +170,42 @@ pub struct OutboxItem {
     /// `pending` — the draft is still good; the delivery was not.
     #[serde(default)]
     pub error: Option<String>,
+    /// The `tool_use` id of the call that staged this, when a call staged it.
+    ///
+    /// The anchor [`crate::outbox_source`] walks a transcript to find. It used
+    /// to match `(tool, args_before)`, which is identity by content and was
+    /// true only for as long as nothing between the model's call and the
+    /// stored draft touched the arguments — the loop now pins schema defaults
+    /// into a staged call, so a `mail_reply` whose `reply_all` was filled no
+    /// longer equals its own recorded input, the walk runs past the staging
+    /// call, and the draft joins to *itself*.
+    ///
+    /// `None` for a draft no tool call produced (`mecha mail compose`) and for
+    /// every item written before this field existed, which is why the walk
+    /// keeps the old argument match as its fallback: defaulted on load, on the
+    /// append-only store's rule, so a pending draft staged yesterday still
+    /// finds its source today.
+    #[serde(default)]
+    pub call_id: Option<String>,
+    /// The argument keys the loop pinned from the tool's schema, rather than
+    /// the model naming them.
+    ///
+    /// A value the harness wrote is not evidence of what the run was working
+    /// from, and [`crate::outbox_source`] joins a draft back to its source on
+    /// precisely such arguments: `provider_ids` takes every string argument
+    /// that is neither addressing nor prose, so a pinned
+    /// `calendar_id: "primary"` became a join key on every calendar draft —
+    /// and `Join::Asked` has no entropy floor, because it matches key *and*
+    /// value and "a coincidence has to happen twice". That held while both
+    /// sides were the model's; one side is now a constant, so the second
+    /// coincidence is free, and an unrelated calendar listing gets presented
+    /// as the thing the draft was written from.
+    ///
+    /// Empty for a draft nothing was pinned into, and for every item written
+    /// before this field existed — on the append-only store's rule, where the
+    /// old value is also the true one, since nothing pinned anything then.
+    #[serde(default)]
+    pub filled_defaults: Vec<String>,
 }
 
 impl OutboxItem {
@@ -346,9 +424,14 @@ impl OutboxStore {
         kind: OutboxKind,
         args: Value,
         taint: Taint,
-        session_id: Option<String>,
-        workspace: Option<PathBuf>,
+        from: Provenance,
     ) -> Result<OutboxItem> {
+        let Provenance {
+            session_id,
+            workspace,
+            call_id,
+            filled_defaults,
+        } = from;
         let item = OutboxItem {
             id: Session::new_id(),
             status: "pending".into(),
@@ -364,6 +447,8 @@ impl OutboxStore {
             resolved_at: None,
             reason: None,
             error: None,
+            call_id,
+            filled_defaults,
         };
         self.write_item(&item)?;
         Ok(item)
@@ -888,6 +973,12 @@ fn render(value: &Value) -> String {
 /// ([`crate::outbox_source`]), and it lives here so the one decision about
 /// which argument is which is still made once.
 ///
+/// **Callers must also exclude whatever the harness pinned**
+/// ([`OutboxItem::filled_defaults`]). This function sees arguments, not their
+/// authors, and a value the loop wrote is a constant rather than a fact about
+/// the run — `calendar_id: "primary"` is a string, so it lands here, and it
+/// matches every calendar call in the session.
+///
 /// `account` and the other headers are excluded on purpose, and it is the
 /// exclusion that makes the join worth anything: `{"account": "dartmouth"}`
 /// is shared by every mail call in the session and would match all of them,
@@ -985,8 +1076,12 @@ mod tests {
                 OutboxKind::Message,
                 json!({"url": "https://a"}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
         let b = store
@@ -998,8 +1093,12 @@ mod tests {
                     private: true,
                     untrusted: true,
                 },
-                Some("sess-1".into()),
-                None,
+                Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: Some("sess-1".into()),
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1028,8 +1127,12 @@ mod tests {
                 OutboxKind::Message,
                 json!({}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
         // A stray file, or one written by a schema this binary cannot read —
@@ -1058,8 +1161,12 @@ mod tests {
                 OutboxKind::Message,
                 json!({}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
         store
@@ -1068,8 +1175,12 @@ mod tests {
                 OutboxKind::Message,
                 json!({}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1090,8 +1201,12 @@ mod tests {
                 OutboxKind::Message,
                 json!({"url": "https://a"}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1131,8 +1246,12 @@ mod tests {
                     kind,
                     json!({"path": "/tmp/a"}),
                     Taint::default(),
-                    None,
-                    None,
+                    Provenance {
+                        filled_defaults: Vec::new(),
+                        session_id: None,
+                        workspace: None,
+                        call_id: None,
+                    },
                 )
                 .unwrap();
             item.status = status.into();
@@ -1163,8 +1282,12 @@ mod tests {
                     kind,
                     json!({"body": "Dear Dirk,"}),
                     Taint::default(),
-                    None,
-                    None,
+                    Provenance {
+                        filled_defaults: Vec::new(),
+                        session_id: None,
+                        workspace: None,
+                        call_id: None,
+                    },
                 )
                 .unwrap()
         };
@@ -1254,6 +1377,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A record written before this branch's fields existed is **read**, not
+    /// counted as unreadable.
+    ///
+    /// The tie between two changes that landed together: `items_counting`
+    /// (#141) reports how many files the lenient read could not parse, and
+    /// this branch adds two fields to the very struct it parses. Defaulted,
+    /// they cost nothing; *un*defaulted, every draft already on disk would
+    /// fail `serde_json::from_str`, every one would land in `skipped`, and a
+    /// counter built to surface a corrupt store would report the whole store
+    /// corrupt the moment the binary was upgraded.
+    #[test]
+    fn a_legacy_record_is_read_rather_than_counted_as_unreadable() {
+        let root = std::env::temp_dir().join(format!(
+            "outbox-legacy-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = OutboxStore::open(&root).unwrap();
+        // Exactly the shape written before `call_id` and `filled_defaults`.
+        std::fs::write(
+            root.join("20260101-000000-abc.json"),
+            serde_json::to_string(&json!({
+                "id": "20260101-000000-abc",
+                "status": "pending",
+                "tool": "mail__mail_send",
+                "args_before": {"to": "ada@example.com"},
+                "args": {"to": "ada@example.com"},
+                "summary": "mail__mail_send",
+                "created_at": "2026-01-01T00:00:00Z",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let (items, skipped) = store.items_counting().unwrap();
+        assert_eq!(skipped, 0, "a legacy draft read as unparseable");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].call_id, None);
+        assert!(items[0].filled_defaults.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Items written before the field existed must load as what they in fact
     /// were, or an upgrade would reclassify every staged email as unknown.
     #[test]
@@ -1293,8 +1460,12 @@ mod tests {
                 OutboxKind::Publish,
                 json!({"bundle": "site", "id": "brief"}),
                 Taint::default(),
-                None,
-                Some(jail.clone()),
+                Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: Some(jail.clone()),
+                    call_id: None,
+                },
             )
             .unwrap();
         assert_eq!(item.workspace.as_ref(), Some(&jail));
@@ -1317,8 +1488,12 @@ mod tests {
                 OutboxKind::Message,
                 json!({}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1349,8 +1524,12 @@ mod tests {
                 OutboxKind::Message,
                 json!({}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1379,8 +1558,12 @@ mod tests {
                 OutboxKind::Message,
                 json!({"to": "a@x.org"}),
                 Taint::default(),
-                None,
-                None,
+                Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 

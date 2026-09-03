@@ -2300,6 +2300,7 @@ mod tests {
     fn draft(id: &str, status: &str, edited: bool) -> crate::outbox::OutboxItem {
         let before = serde_json::json!({"body_markdown": "Dear Dirk,"});
         crate::outbox::OutboxItem {
+            filled_defaults: Vec::new(),
             id: id.into(),
             status: status.into(),
             tool: "mail_send".into(),
@@ -2309,6 +2310,7 @@ mod tests {
             } else {
                 before.clone()
             },
+            call_id: None,
             args_before: before,
             summary: "a reply".into(),
             session_id: Some("s1".into()),

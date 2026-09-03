@@ -1688,6 +1688,8 @@ mod tests {
         use mecha_core::agent::Taint;
         use mecha_core::outbox::OutboxKind;
         OutboxItem {
+            filled_defaults: Vec::new(),
+            call_id: None,
             id: "abc-123".into(),
             status: status.into(),
             tool: "mail__send".into(),
