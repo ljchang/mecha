@@ -3521,25 +3521,29 @@ impl Agent {
             // `escalate` and `consult` are the two that most need it, since
             // each exists precisely to make a person look.
             //
-            // `Forbid` is not among them — it refuses with nobody asked, so
-            // there is nothing to show — and `decide` below is deliberately
-            // given the **raw** input. A rule is policy over what the model
-            // asked for, and feeding it harness-pinned values would change
-            // what #143's rules match on; that is a decision for whoever owns
-            // that feature, noted rather than taken here.
+            // `decide` reads the filled call too, and that is deliberate:
+            // a rule is policy over the call **as it will execute**, so the
+            // machine judge and the human one read the same bytes. Leaving
+            // them split would have been a reasoning trap rather than a live
+            // hole — a `forbid` keyed on a defaulted argument would not have
+            // fired on the value the harness pins, while the pinned value sat
+            // plainly in the arguments a reader can see. (#143's author ruled
+            // on this; the practical exposure was near zero, since `shell`'s
+            // only judged argument is `command` and nothing declares a default
+            // for it today.)
             //
-            // Filled only when somebody will actually be asked, so the
-            // read-only calls that consult nobody do not pay for it.
+            // Still not on every call's path. A read-only tool with no rule
+            // over it and no escalation reaches no judge at all, and
+            // `rules_for` is the cheap way to ask whether one exists.
             use crate::policy::RuleDecision;
-            let ruling = cx.policy.decide(name, input);
-            let rule = ruling.as_ref().map(|r| r.decision);
-            let asked = !matches!(rule, Some(RuleDecision::Forbid))
-                && (escalation.is_some()
-                    || matches!(rule, Some(RuleDecision::Prompt))
-                    || !tool.read_only());
+            let judged = escalation.is_some()
+                || !tool.read_only()
+                || cx.policy.rules_for(name).next().is_some();
             let filled =
-                asked.then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input).0);
+                judged.then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input).0);
             let shown = filled.as_ref().unwrap_or(input);
+            let ruling = cx.policy.decide(name, shown);
+            let rule = ruling.as_ref().map(|r| r.decision);
             let decision = match (&escalation, rule) {
                 (_, Some(RuleDecision::Forbid)) => {
                     let reason = ruling.map(|r| r.reason).unwrap_or_default();
@@ -10436,6 +10440,107 @@ match = ["cargo publish"]
             vec!["shell: an approval rule asks that this `shell` call be approved"],
             "the prompt rule consulted, once, with the ruling's reason"
         );
+    }
+
+    /// A rule judges the call **as it will execute**, pinned defaults and all.
+    ///
+    /// The machine judge and the human one read the same bytes, which is the
+    /// same rule the four doors rest on. Split, it would have been a
+    /// reasoning trap rather than a live hole: a `forbid` keyed on a
+    /// defaulted argument would not fire on the value the harness pins, while
+    /// that value sat plainly in the arguments any reader can see.
+    ///
+    /// The stand-in defaults `command`, which is what `shell` is judged on.
+    /// Nothing in the tree declares such a default today — which is exactly
+    /// why it wants a test rather than a note.
+    #[tokio::test]
+    async fn a_forbid_rule_fires_on_a_pinned_default() {
+        struct Defaulting(Arc<Mutex<bool>>);
+        #[async_trait]
+        impl Tool for Defaulting {
+            fn name(&self) -> &str {
+                "shell"
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn input_schema(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "default": "rm -rf build"},
+                    },
+                })
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                *self.0.lock().unwrap() = true;
+                Ok(ToolOutput::ok("ran"))
+            }
+        }
+
+        let ran = Arc::new(Mutex::new(false));
+        let (agent, _) = agent_with_tools(
+            vec![
+                // The model names no command at all; the harness pins one.
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "shell".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(Defaulting(Arc::clone(&ran)))],
+            PermissionMode::Allow,
+        );
+        // Panics at *every* door. `NeverAsked` alone is not enough here: with
+        // the raw input the rule cannot read a `command`, so it returns
+        // `Prompt` rather than `Forbid` and the call goes to `consult` — whose
+        // default answer is `Blocked`, which stops the tool for the wrong
+        // reason and makes a "did it run" assertion pass either way.
+        struct NeverAnyDoor;
+        #[async_trait]
+        impl Approver for NeverAnyDoor {
+            async fn approve(&self, t: &dyn Tool, _i: &Value) -> Decision {
+                panic!("approve consulted about `{}`", t.name());
+            }
+            async fn consult(&self, t: &dyn Tool, _i: &Value, why: &str) -> Decision {
+                panic!("consult about `{}`: {why}", t.name());
+            }
+            async fn permit(&self, t: &dyn Tool, _i: &Value) -> Decision {
+                panic!("permit about `{}`", t.name());
+            }
+            async fn escalate(&self, t: &dyn Tool, _i: &Value, why: &str) -> Decision {
+                panic!("escalate about `{}`: {why}", t.name());
+            }
+        }
+
+        let cx = RunContext {
+            approver: Arc::new(NeverAnyDoor) as Arc<dyn Approver>,
+            ..agent.context().as_ref().clone()
+        }
+        .with_policy(rules(GIT_RULES));
+
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert!(!*ran.lock().unwrap(), "a forbidden command ran");
+        // And refused for the *right* reason: the rule's own justification,
+        // not the "carries no `command` to match" prompt the raw input earns.
+        let refusal = match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => content.clone(),
+            other => panic!("expected a tool result, got {other:?}"),
+        };
+        assert!(
+            refusal.contains("recursive-force"),
+            "refused by the forbid rule, not by a prompt nobody could answer: {refusal}"
+        );
+        assert!(outcome.tool_calls[0].denied);
     }
 
     /// The rule doors show the filled call too.
