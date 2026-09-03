@@ -258,13 +258,17 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                 }
             );
         }
+        // On `tracing::warn!`, the channel the sibling project-layer drops in
+        // `merge_file` use: visible at the default `warn` filter (an `info`
+        // was below it, so the config the refusal recommends had an invisible
+        // caveat — PR #150's review) and filterable, where an `eprintln!`
+        // every start was the nag the `--tool` reasoning argues against.
         for i in &live.unreached_forbids {
-            eprintln!(
-                "mecha: [[rule]] #{} is a `forbid` on `{}`, which `[outbox] tools` routes to \
-                 staging — while the route is on it is not reached: the call becomes a draft a \
-                 person can release, not a refusal. It is the gate `--no-outbox` runs against.",
-                i + 1,
-                cfg.rules[*i].tool
+            tracing::warn!(
+                rule = i + 1,
+                tool = %cfg.rules[*i].tool,
+                "a `forbid` on a routed tool is not reached while the route is on — the call \
+                 becomes a draft a person can release; it is the gate `--no-outbox` runs against"
             );
         }
         mecha_core::policy::ExecPolicy::from_config(&live.rules, cfg.approval.strict_inline_eval)?
@@ -380,15 +384,6 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             );
         }
     }
-    // The other "loads clean, judges nothing" case: an `allow` or `prompt`
-    // on a tool the outbox routes. Staging runs before the rules are read
-    // and release reads none, so while the route is live the rule judges
-    // nothing — and a person reviews the staged call anyway. Refused here,
-    // not in `Config::validate`, because whether the route is live is this
-    // flag's to say: under `--no-outbox` the same rule is the one gate left,
-    // and a `forbid` is a second lock on either surface, so it is never
-    // refused (PR #148's review). Not under `--no-rules`: `eval` grades the
-    // model, not the machine, and has already switched the rules off.
     if let Some(outbox) = outbox {
         // A typo in `[outbox] tools` means the *real* tool executes unrouted,
         // silently — the degrading-sandbox shape. It cannot be a hard error
@@ -1760,7 +1755,9 @@ pub(crate) struct LiveRules {
     /// Indices of `forbid` rules on a live-routed tool: kept, because they are
     /// the gate `--no-outbox` runs against, but not reached while the route
     /// is on — an operator who wrote one expecting "never sends" gets a
-    /// releasable draft, and deserves to hear so.
+    /// releasable draft. A `tracing::warn!`, not an `eprintln!`: visible at
+    /// the default filter and on the channel the other project-layer drops
+    /// use, but filterable — it is the config the refusal recommends.
     pub unreached_forbids: Vec<usize>,
 }
 
@@ -1890,5 +1887,40 @@ mod live_rules_tests {
         let live = live_rules(&with_operator, routed, |t| t == "send_email").unwrap();
         assert_eq!(live.rules.len(), 4);
         assert!(live.set_aside.is_empty() && live.unreached_forbids.is_empty());
+    }
+
+    /// Against a real `OutboxRoute`, not a stub: `publish_tools` is a kind,
+    /// not a route, so a `prompt` on a publish-only tool is live and only the
+    /// routed tool's `allow` is refused. This is the assertion that moved
+    /// here when the core helper was removed.
+    #[test]
+    fn a_real_route_stages_tools_and_not_publish_kinds() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("mecha-route-{}-{stamp}", std::process::id()));
+        let store = mecha_core::outbox::OutboxStore::open(&dir).unwrap();
+        let route = mecha_core::outbox::OutboxRoute::new(
+            store,
+            vec!["send_email".to_string()],
+            vec!["publish_page".to_string()],
+        );
+        let rules = vec![
+            rule("publish_page", RuleDecision::Prompt, false),
+            rule("send_email", RuleDecision::Allow, false),
+        ];
+        let err = live_rules(&rules, |t| route.routes(t), nothing)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("#2") && err.contains("send_email"), "{err}");
+        let only_publish = vec![rule("publish_page", RuleDecision::Prompt, false)];
+        let live = live_rules(&only_publish, |t| route.routes(t), nothing).unwrap();
+        assert_eq!(
+            live.rules.len(),
+            1,
+            "a publish-only tool executes unstaged, so its rule is live"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

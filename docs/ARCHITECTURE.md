@@ -1549,10 +1549,11 @@ refusal. The specification and the survey behind it are
   invocation: its words are searched for every patterned `forbid` and
   `prompt` (`narrowing_words` — never for an `allow`, which an opaque
   command cannot earn), a pattern-less `forbid` or `prompt` applies to it by
-  construction, a head the shell will expand (`$PY -c`, `py* -c`) is a
-  program the module cannot read and prompts, the inline-eval floor
+  construction, the inline-eval floor
   applies to it under `strict_inline_eval` (its best-effort segment heads are
-  asked whether they run their arguments — a redirect must not make `python3
+  asked whether they run their arguments, and a head the shell will expand —
+  `$PY -c`, `py* -c` — is a program the module cannot read and prompts under
+  the same knob; a redirect must not make `python3
   -c` *less* restricted than it is without one, which the first fall-through
   did), and otherwise it matches no rule and the approver decides as it would
   with none — the same answer an unmatched *splittable* command gets. Named
@@ -1648,10 +1649,12 @@ refusal. The specification and the survey behind it are
   routed call stages and a person decides at release; a global `allow` or
   `prompt` naming a tool in `[outbox] tools` would judge nothing and `setup`
   refuses it, naming the rule and three remedies (write it as `forbid`,
-  remove it, un-route the tool). A `forbid` stays and `setup` says on every
-  start that it is *unreached* while the route is on — the call becomes a
-  draft a person can release, not a refusal — because an operator who wrote
-  it expecting "never sends" deserves the signal; under `--no-outbox` every
+  remove it, un-route the tool). A `forbid` stays; it is *unreached* while
+  the route is on — the call becomes a draft a person can release, not a
+  refusal — which `setup` reports as a `tracing::warn!` (visible at the
+  default filter, filterable, the channel the project-layer drops use)
+  rather than an `eprintln!` every start, since it is the config the refusal
+  recommends; under `--no-outbox` every
   rule is live and nothing is refused; a project layer's `prompt` is set
   aside for the run with a warning instead. `setup::live_rules` is the pure
   half, and a table of tests covers each thing a review pass found wrong
