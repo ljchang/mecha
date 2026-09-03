@@ -258,13 +258,16 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                 }
             );
         }
+        // A note, not a nag: this is the config the refusal above recommends
+        // writing, so it must not print on every start the way a typo
+        // warning does (the `--tool` reasoning). It is in the log where
+        // `MECHA_LOG` shows it, and ARCHITECTURE says what the rule does.
         for i in &live.unreached_forbids {
-            eprintln!(
-                "mecha: [[rule]] #{} is a `forbid` on `{}`, which `[outbox] tools` routes to \
-                 staging — while the route is on it is not reached: the call becomes a draft a \
-                 person can release, not a refusal. It is the gate `--no-outbox` runs against.",
-                i + 1,
-                cfg.rules[*i].tool
+            tracing::info!(
+                rule = i + 1,
+                tool = %cfg.rules[*i].tool,
+                "a `forbid` on a routed tool is not reached while the route is on — the call \
+                 becomes a draft a person can release; it is the gate `--no-outbox` runs against"
             );
         }
         mecha_core::policy::ExecPolicy::from_config(&live.rules, cfg.approval.strict_inline_eval)?
@@ -380,15 +383,6 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             );
         }
     }
-    // The other "loads clean, judges nothing" case: an `allow` or `prompt`
-    // on a tool the outbox routes. Staging runs before the rules are read
-    // and release reads none, so while the route is live the rule judges
-    // nothing — and a person reviews the staged call anyway. Refused here,
-    // not in `Config::validate`, because whether the route is live is this
-    // flag's to say: under `--no-outbox` the same rule is the one gate left,
-    // and a `forbid` is a second lock on either surface, so it is never
-    // refused (PR #148's review). Not under `--no-rules`: `eval` grades the
-    // model, not the machine, and has already switched the rules off.
     if let Some(outbox) = outbox {
         // A typo in `[outbox] tools` means the *real* tool executes unrouted,
         // silently — the degrading-sandbox shape. It cannot be a hard error
@@ -1760,7 +1754,9 @@ pub(crate) struct LiveRules {
     /// Indices of `forbid` rules on a live-routed tool: kept, because they are
     /// the gate `--no-outbox` runs against, but not reached while the route
     /// is on — an operator who wrote one expecting "never sends" gets a
-    /// releasable draft, and deserves to hear so.
+    /// releasable draft. Logged at info, not printed: it is the config the
+    /// refusal recommends, and a line that fires every start is one that
+    /// gets ignored.
     pub unreached_forbids: Vec<usize>,
 }
 
