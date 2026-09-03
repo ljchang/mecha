@@ -1113,6 +1113,130 @@ struct TurnOpts {
     approve_all: bool,
 }
 
+/// `--voice-yes` does not survive hearing ourselves.
+///
+/// A spoken turn runs with the approver off, so an echo that reaches the model
+/// as a turn reaches a `destructive` tool with nobody asked — `mail_triage` is
+/// gated by the approver alone and is deliberately not outbox-routed. The
+/// voice worker's filters cannot close that band: at two or three words an
+/// echo and the plainest possible answer are the same string, which is a fact
+/// about short English rather than a threshold that wants tuning.
+///
+/// So the last question is asked here, on the approval rather than the audio:
+/// is this utterance, word for word, a contiguous piece of the reply we just
+/// gave? If it is, the turn still happens — it is simply approved the way a
+/// typed one would be, which is the mode the page is already in.
+///
+/// **A pure function because the guarantee is the narrowing, not the span
+/// rule.** Testing `echoes_the_last_reply` in isolation measures whether the
+/// comparison is right and says nothing about whether it is *wired*; the four
+/// lines that used to sit inline could be deleted with every test still green.
+///
+/// It only ever narrows, and that is asserted rather than described: a typed
+/// turn with the same words keeps its `approve_all`, because the page's mode
+/// is a decision a person made about typing.
+fn narrow_for_echo(opts: TurnOpts, last_reply: Option<&str>, text: &str) -> TurnOpts {
+    if !opts.spoken || !opts.approve_all {
+        return opts;
+    }
+    let echoed = last_reply.is_some_and(|r| crate::voice::echoes_the_last_reply(text, r));
+    if echoed {
+        tracing::info!("spoken turn repeats the last reply verbatim — approvals stay on");
+    }
+    TurnOpts {
+        approve_all: !echoed,
+        ..opts
+    }
+}
+
+#[cfg(test)]
+mod narrowing_tests {
+    use super::{narrow_for_echo, TurnOpts};
+
+    const OFFER: &str = "I can cancel it, delete it, or do it now — which would you like?";
+
+    fn spoken_yes() -> TurnOpts {
+        TurnOpts {
+            spoken: true,
+            approve_all: true,
+        }
+    }
+
+    #[test]
+    fn a_spoken_echo_loses_the_standing_yes() {
+        // The guarantee, and the one nothing measured before: this is what
+        // stops "delete it" reaching a destructive tool with nobody asked.
+        let out = narrow_for_echo(spoken_yes(), Some(OFFER), "delete it");
+        assert!(!out.approve_all);
+        assert!(out.spoken, "the turn still happens, it is only approved");
+    }
+
+    #[test]
+    fn a_spoken_answer_of_its_own_keeps_it() {
+        let out = narrow_for_echo(spoken_yes(), Some(OFFER), "move it to friday");
+        assert!(out.approve_all);
+    }
+
+    #[test]
+    fn a_typed_turn_is_untouched_even_word_for_word() {
+        // "Only ever narrows" — the page's mode is a decision a person made
+        // about typing, and hearing ourselves says nothing about it.
+        let typed = TurnOpts {
+            spoken: false,
+            approve_all: true,
+        };
+        assert!(narrow_for_echo(typed, Some(OFFER), "delete it").approve_all);
+    }
+
+    #[test]
+    fn without_the_flag_there_is_nothing_to_narrow() {
+        let off = TurnOpts {
+            spoken: true,
+            approve_all: false,
+        };
+        assert!(!narrow_for_echo(off, Some(OFFER), "delete it").approve_all);
+    }
+
+    /// And the narrowing is actually *reached*, which the cases above cannot
+    /// say.
+    ///
+    /// They measure `narrow_for_echo`; deleting its call from `begin_turn`
+    /// leaves every one of them green, and the guarantee is the call. Driving
+    /// `begin_turn` for real means standing up the whole session state, which
+    /// is why this reads the source instead — the same `include_str!` idiom
+    /// `serve/review.rs` uses on the Svelte components, and with the same
+    /// limit: it pins that the call is written, not that it runs. A rename
+    /// breaks it loudly, which is the point.
+    #[test]
+    fn begin_turn_actually_narrows() {
+        let src = include_str!("chat.rs");
+        let body = src
+            // With the leading newline, so this matches the definition at
+            // column zero and not the literal three lines up — the first
+            // version split on the bare name, found *itself* first, and read
+            // its own module, where the name it is looking for appears in
+            // every case above.
+            .split("\nfn begin_turn(")
+            .nth(1)
+            .expect("begin_turn is still called that");
+        // To the function's own closing brace at column zero — `\nfn ` does
+        // not terminate it, because the next item is `async fn`, and the
+        // greedier slice ran on into this very module, where the name appears
+        // in every case above. The first version of this test passed with the
+        // call deleted for exactly that reason.
+        let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        assert!(
+            body.contains("narrow_for_echo("),
+            "begin_turn no longer narrows a spoken turn that repeats the reply"
+        );
+    }
+
+    #[test]
+    fn a_first_turn_has_no_reply_to_echo() {
+        assert!(narrow_for_echo(spoken_yes(), None, "delete it").approve_all);
+    }
+}
+
 /// Why a turn could not start.
 enum TurnError {
     /// The conversation is not there to take — a finished run still landing.
@@ -1148,34 +1272,15 @@ fn begin_turn(
         .get_mut(key)
         .ok_or_else(|| TurnError::Failed("no such session".into()))?;
 
-    // `--voice-yes` does not survive hearing ourselves.
-    //
-    // A spoken turn runs with the approver off, so an echo that reaches the
-    // model as a turn reaches a `destructive` tool with nobody asked —
-    // `mail_triage` is gated by the approver alone and is deliberately not
-    // outbox-routed. The worker's filters cannot close that: at two or three
-    // words an echo and the plainest possible answer are the same string.
-    // So the last check is here, on the *approval* rather than on the audio,
-    // and it asks one question — is this, word for word, a piece of what we
-    // just said? If it is, the turn still happens; it is simply approved the
-    // way a typed one would be, which is the mode the page is already in.
-    //
-    // Only ever narrows. A typed turn is untouched, and a spoken turn that is
-    // not a span of the last reply keeps whatever `--voice-yes` gave it.
-    let echoed = opts.spoken
-        && opts.approve_all
-        && ws
-            .conversation
+    let opts = narrow_for_echo(
+        opts,
+        ws.conversation
             .as_ref()
             .and_then(|c| c.messages.iter().rev().find(|m| m.role == Role::Assistant))
-            .is_some_and(|m| crate::voice::echoes_the_last_reply(text, &m.text()));
-    if echoed {
-        tracing::info!("spoken turn repeats the last reply verbatim — approvals stay on");
-    }
-    let opts = TurnOpts {
-        approve_all: opts.approve_all && !echoed,
-        ..opts
-    };
+            .map(|m| m.text())
+            .as_deref(),
+        text,
+    );
 
     let text = if opts.spoken {
         crate::voice::open_spoken_turn(text, ws.last_turn_spoken)
