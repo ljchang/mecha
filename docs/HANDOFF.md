@@ -1259,6 +1259,10 @@ for `index-0ZAqQKph.js`. No binary changed for #118 and no unit was restarted
 for it: `mecha serve` reads assets per request through `ServeDir`, so an asset
 deploy needs no restart and a *binary* change still does.
 
+### Machine state, dated
+
+Deploy and environment entries, newest last. They had been accreting under
+`### Provider credentials` above, which is not what they are.
 
 **2026-09-02 (~10:30, after the repo move and a full update)** — the graph
 stopped being two repositories. `~/Github/mecha-graph` is now the working
@@ -1420,12 +1424,17 @@ discard in block 2 is destructive and is not conditional, which is why a
 person reads the diff between the blocks.
 
 ```
-# Block 2 — only after a person has read block 1's diff.
-git -C ~/Github/mecha checkout -- docs/README.md \
-&& git -C ~/Github/mecha switch main && git -C ~/Github/mecha pull --ff-only \
+# Block 2 — only after a person has read block 1's diff. `merge --ff-only
+# origin/main`, not `pull`: a pull re-fetches and can land a commit block 1
+# never checked. The journal window opens at the restart, not two minutes
+# before it, or the old process's Uvicorn line passes the check.
+since=$(date -u '+%Y-%m-%d %H:%M:%S') \
+&& git -C ~/Github/mecha checkout -- docs/README.md \
+&& git -C ~/Github/mecha switch main \
+&& git -C ~/Github/mecha merge --ff-only origin/main \
 && systemctl --user restart mecha-voice-worker.service \
 && sleep 10 \
-&& journalctl --user -u mecha-voice-worker.service --since "2 minutes ago" | grep Uvicorn
+&& journalctl --user -u mecha-voice-worker.service --since "$since" | grep Uvicorn
 ```
 
 The launch-script check comes **first**, against the commit the pull will
@@ -1434,7 +1443,9 @@ changed script is already the server's next launch command — the first
 version of this block checked afterwards, which the banner above says is
 the ordering that fails; the second version's checks informed rather than
 stopped, and its discard was unconditional in a checkout many sessions
-share (PR #152's review, two passes). **Run, and
+share; the third pulled, which re-fetches past the ref the checks had seen
+(PR #152's review, three passes). The lessons are in `HISTORY.md` under
+Environment. **Run, and
 closed, at ~11:08 UTC the same morning** — by mecha-26's session on its own
 user's word there, not on the relayed instruction, which that session
 declined as it should: a peer's report of the owner's word is the shape a
