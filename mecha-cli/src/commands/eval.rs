@@ -1186,9 +1186,13 @@ async fn ab_config(
 ///
 /// Since the lever set exists it is expressed over it: the bare arm is
 /// [`Lever::bare`] with the two opt-ins allowed, thrown through
-/// `setup::switch_off`, so this list and `RunConfig::levers_off` cannot name
-/// different sets — the test `the_record_names_exactly_what_eval_forced`
-/// reads one through the other. Two things stay spelled here. `--mcp` opts
+/// `setup::switch_off`, so this list and `setup::levers_off` — the function
+/// every front-end that writes a session record reads its
+/// `RunConfig::levers_off` from — cannot name different sets; the test
+/// `the_record_names_exactly_what_eval_forced` reads one through the other.
+/// (Eval itself writes no session: it drives `run_in` directly, so what it
+/// forced is on no record. The guarantee is that any run which *is*
+/// recorded names the same absences.) Two things stay spelled here. `--mcp` opts
 /// *in* by leaving the user's own `--no-mcp` alone rather than clearing it;
 /// and learned rules are set in both directions, because `run_arm` builds
 /// the treatment arm from the same `opts` it built the baseline from.
@@ -1295,11 +1299,13 @@ mod tests {
         assert!(treatment.no_compact_validate);
     }
 
-    /// What eval forces and what the session records must be one set, read
-    /// through each other: `force_reproducible` throws switches, and
-    /// `setup::levers_off` reads them back for `RunConfig::levers_off`. If
-    /// the two disagreed, an experiment pairing its own bare arm against an
-    /// eval scorecard would be comparing runs whose records name different
+    /// What eval forces and what a session record would say of the same
+    /// switches must be one set, read through each other:
+    /// `force_reproducible` throws switches, and `setup::levers_off` — the
+    /// function behind `RunConfig::levers_off` — reads them back. Eval
+    /// writes no session, so this is the only place the two meet; if they
+    /// disagreed, an experiment pairing its own recorded bare arm against
+    /// an eval scorecard would be comparing runs that name different
     /// absences — D14's whole reason for one definition.
     #[test]
     fn the_record_names_exactly_what_eval_forced() {
@@ -1307,7 +1313,7 @@ mod tests {
         let mut bare = GlobalOpts::default();
         force_reproducible(&mut bare, false, false);
         assert_eq!(
-            crate::setup::levers_off(&bare, &cfg),
+            crate::setup::levers_off(&bare, &cfg, true),
             Lever::bare(&[]),
             "the bare arm records every lever off"
         );
@@ -1315,14 +1321,14 @@ mod tests {
         let mut with_mcp = GlobalOpts::default();
         force_reproducible(&mut with_mcp, true, false);
         assert_eq!(
-            crate::setup::levers_off(&with_mcp, &cfg),
+            crate::setup::levers_off(&with_mcp, &cfg, true),
             Lever::bare(&[Lever::Mcp])
         );
 
         let mut with_rules = GlobalOpts::default();
         force_reproducible(&mut with_rules, false, true);
         assert_eq!(
-            crate::setup::levers_off(&with_rules, &cfg),
+            crate::setup::levers_off(&with_rules, &cfg, true),
             Lever::bare(&[Lever::LearnedRules])
         );
 
@@ -1331,10 +1337,20 @@ mod tests {
             let mut one = GlobalOpts::default();
             crate::setup::switch_off(&mut one, lever);
             assert!(
-                crate::setup::levers_off(&one, &cfg).contains(&lever),
+                crate::setup::levers_off(&one, &cfg, true).contains(&lever),
                 "{lever:?} thrown through switch_off must read as off"
             );
         }
+
+        // And the one lever with a non-flag off position: a run whose
+        // provider has no context window never registers `compact`, and
+        // must not record the lever as on (found on review).
+        let untouched = GlobalOpts::default();
+        assert!(
+            crate::setup::levers_off(&untouched, &cfg, false).contains(&Lever::CompactTool),
+            "a compact tool that could not be registered records as off"
+        );
+        assert!(!crate::setup::levers_off(&untouched, &cfg, true).contains(&Lever::CompactTool));
     }
 
     /// A scratch directory that cleans up after itself, so a failing test

@@ -417,8 +417,9 @@ trip over from *outside* the subsystem:
   attached image arms `private_data` — a screenshot is captured, not composed.
 - **`mecha eval` forces off every lever in `harness::Lever`** — MCP, hooks,
   skills, learned rules, the outbox, fallback, and the rest of the closed
-  on/off set — and the session records which (`RunConfig::levers_off`); a
-  scorecard grades the model it names, not the machine.
+  on/off set, from the same definition the session record uses
+  (`RunConfig::levers_off`); a scorecard grades the model it names, not the
+  machine.
 - **Compaction**: the cut must land on an assistant message (an orphaned
   `tool_result` is a 400), taint and carried tool state survive it, and the
   session file records a `rewrite` when history is edited.
