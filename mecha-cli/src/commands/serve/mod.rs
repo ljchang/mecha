@@ -1152,6 +1152,130 @@ mod tests {
             "no-cache",
             "a 304 that drops the header undoes the fix on the next lookup"
         );
+        // Under tower-http 0.7 a `304` names what it confirmed whichever
+        // precondition header asked — by date here, by tag in the test below
+        // — so the browser can refresh both validators on the entry it holds
+        // (RFC 9110 §15.4.5). Under 0.6 this `304` was bare.
+        assert!(
+            again.headers().get("etag").is_some(),
+            "a 304 to If-Modified-Since carries the ETag validator"
+        );
+        assert!(
+            again.headers().get("last-modified").is_some(),
+            "a 304 to If-Modified-Since carries the Last-Modified validator"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The entry document revalidates by `ETag` as well as by date, and the
+    /// `304` names what it confirmed.
+    ///
+    /// This is what tower-http 0.7 added to `ServeDir` (strong `ETag`s from
+    /// size and mtime, `If-None-Match` per RFC 9110 §13.1.2) and what the
+    /// `no-cache` half of `cache_headers` now rides on: a browser holding the
+    /// document sends the tag back, and a `304` that carries no validators
+    /// would leave it unable to update the entry it just confirmed (RFC 9110
+    /// §15.4.5). Under 0.6 the response had no `ETag` at all and the `304`
+    /// was bare — this test fails there at the first `expect`.
+    #[tokio::test]
+    async fn a_revalidation_by_etag_answers_304_with_both_validators() {
+        let dir = std::env::temp_dir().join(format!("mecha-cache-etag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let router = test_router_with_assets(&dir);
+
+        let first = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first
+            .headers()
+            .get("etag")
+            .expect("ServeDir tags what it serves")
+            .clone();
+        assert!(
+            !etag.as_bytes().starts_with(b"W/"),
+            "a weak tag would not satisfy If-Match or a byte-range resume"
+        );
+        let last_modified = first
+            .headers()
+            .get("last-modified")
+            .expect("ServeDir dates what it serves")
+            .clone();
+
+        let again = router
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("If-None-Match", etag.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            again.status(),
+            StatusCode::NOT_MODIFIED,
+            "a matching tag must cost no bytes"
+        );
+        assert_eq!(
+            again.headers().get("etag"),
+            Some(&etag),
+            "the 304 must name the tag it confirmed"
+        );
+        assert_eq!(
+            again.headers().get("last-modified"),
+            Some(&last_modified),
+            "the 304 must carry the date it confirmed"
+        );
+        assert_eq!(
+            again.headers().get("cache-control").unwrap(),
+            "no-cache",
+            "our own header still rides on the tag-validated 304"
+        );
+
+        // The other half of the guarantee, and the one that protects against
+        // the 2026-08-29 incident: a *stale* tag must get the new document,
+        // not a 304 with false confidence. The tag is `"<secs>.<nanos>-<size>"`,
+        // so a rewrite of a different length changes it whatever the clock
+        // granularity — no sleep, no flake. (`test_router_with_assets` writes
+        // the fixture, so the rewrite comes after it.)
+        let router = test_router_with_assets(&dir);
+        std::fs::write(
+            dir.join("index.html"),
+            "<!doctype html><script src=/assets/index-def456.js></script><!-- changed -->",
+        )
+        .unwrap();
+        let changed = router
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("If-None-Match", etag.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            changed.status(),
+            StatusCode::OK,
+            "a stale tag must fetch the changed document, not confirm the old one"
+        );
+        let new_tag = changed
+            .headers()
+            .get("etag")
+            .expect("the changed document is tagged too")
+            .clone();
+        assert_ne!(new_tag, etag, "a changed document carries a different tag");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
