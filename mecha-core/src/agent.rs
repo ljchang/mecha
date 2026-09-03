@@ -3362,15 +3362,21 @@ impl Agent {
             // every tool in the registry to buy nothing.
             let staged =
                 routed.then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input));
-            let judged = staged.as_ref().map_or(input, |(args, _)| args);
+            // `judged_input`, not `judged`: further down, `judged` is a bool
+            // meaning *whether this call reaches a judge at all*. Two
+            // opposite senses of one word in one function is a thing a
+            // later reader resolves wrongly.
+            let judged_input = staged.as_ref().map_or(input, |(args, _)| args);
 
             // Hooks decide before the human is asked: a mechanical denial is
             // cheaper than an interruption, and a hook cannot be talked into
             // clicking yes. The interlock above still ran first — a hook can
             // narrow policy, never loosen security.
             if cx.hooks.watches_tools() {
-                if let crate::hooks::HookVerdict::Deny(reason) =
-                    cx.hooks.pre_tool(name, judged, &cx.tools.workspace).await
+                if let crate::hooks::HookVerdict::Deny(reason) = cx
+                    .hooks
+                    .pre_tool(name, judged_input, &cx.tools.workspace)
+                    .await
                 {
                     emit(
                         events,
