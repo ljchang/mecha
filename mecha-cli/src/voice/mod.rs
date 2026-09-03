@@ -193,10 +193,22 @@ fn spoken_words(text: &str) -> Vec<String> {
 /// meant to leave alone. "Move it to Friday" against "I can move it to
 /// Thursday" is not a span of it and keeps its standing yes.
 ///
-/// Any length, deliberately. A long verbatim repeat is *more* obviously our
-/// own voice, not less, and the cost of being wrong is small in the direction
-/// this errs: the turn still happens, it is simply approved the way a typed
-/// one would be.
+/// Any length, deliberately: a long verbatim repeat is *more* obviously our
+/// own voice, not less. That is the upper bound. The lower bound used to
+/// rest on a claim this branch went on to disprove — "the cost of being
+/// wrong is small, the turn still happens, it is simply approved the way a
+/// typed one would be". It is not. A narrowed turn falls back to
+/// `WebApprover` over a `ws.mode` that starts at `ReadOnly` and only moves
+/// when someone clicks, and `WebApprover` short-circuits to `ModeApprover`
+/// for every mode that is not `Ask` — so a false positive costs the turn
+/// every non-read-only tool, on both doors.
+///
+/// What holds the lower bound up instead is that a span *is* strong
+/// evidence: `MIN` words of exact contiguous English, in order, matching
+/// what we just said. The gate is cheap to be wrong about only because
+/// being wrong is rare, not because the consequence is mild — and that is
+/// the argument for replacing it with the timing signal rather than
+/// loosening it.
 pub(crate) fn echoes_the_last_reply(utterance: &str, last_reply: &str) -> bool {
     let heard = spoken_words(utterance);
     let said = spoken_words(last_reply);
@@ -1495,9 +1507,12 @@ async fn completion(
     // the agent's own context, so `approve_all` is false, this check does
     // nothing, and the permissive approver is simply inherited. Detecting
     // that through the `Approver` trait is not possible, and the only fix
-    // available on that surface is to refuse the turn outright — there is no
-    // page mode to fall back to, which is the difference from the hosted
-    // door. Not taken, because `mecha-voice-serve` is inactive and disabled
+    // available on that surface is to refuse the turn outright — this door
+    // has no mode that can be moved at all, where the hosted one at least
+    // *can* be put into `Ask` from the page. (An earlier version of this
+    // sentence called that "the difference from the hosted door" and meant
+    // something stronger; see the correction thirty lines up.) Not taken,
+    // because `mecha-voice-serve` is inactive and disabled
     // here (the mounted facade replaced it), so the change would be untested
     // against any running thing. It is a real residual and it belongs in
     // VOICE-RESEARCH beside the other three.
