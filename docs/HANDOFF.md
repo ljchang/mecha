@@ -1414,11 +1414,13 @@ runs on a day with nothing to discard):
 # STOPS the chain rather than printing and moving on. Two is-ancestor lines:
 # one for HEAD (the tree that moves) and one for refs/heads/main (the ref
 # block 2 force-resets) — each must be behind origin/main, or the one-hop
-# `switch -C` would discard something.
+# `switch -C` would discard something. And no linked worktree may have main
+# checked out, or `switch -C` refuses — after block 2's discard has run.
 R=~/Github/mecha
 git -C $R fetch origin \
 && git -C $R merge-base --is-ancestor HEAD origin/main \
 && git -C $R merge-base --is-ancestor refs/heads/main origin/main \
+&& ! git -C $R worktree list --porcelain | grep -qx 'branch refs/heads/main' \
 && git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
 && p=$(git -C $R status --porcelain) \
 && { test -z "$p" || test "$p" = " M docs/README.md"; } \
@@ -1429,8 +1431,8 @@ git -C $R fetch origin \
 If block 1 stops before the echo: the launch script differs between `HEAD`
 and `origin/main` (do not switch — read the banner), or the working copy
 holds something other than that one file (find its owner first). The discard
-in block 2 is destructive and is not conditional, which is why a person
-reads the diff between the blocks.
+in block 2 is destructive; it runs only when there is something to discard,
+and a person reads the diff between the blocks before it does.
 
 ```
 # Block 2 — only after a person has read block 1's diff. It re-asserts
@@ -1448,6 +1450,7 @@ p=$(git -C $R status --porcelain) \
 && { test -z "$p" || test "$p" = " M docs/README.md"; } \
 && git -C $R merge-base --is-ancestor HEAD origin/main \
 && git -C $R merge-base --is-ancestor refs/heads/main origin/main \
+&& ! git -C $R worktree list --porcelain | grep -qx 'branch refs/heads/main' \
 && git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
 && { test -z "$p" || git -C $R checkout -- docs/README.md; } \
 && git -C $R switch -C main origin/main \
@@ -1470,8 +1473,10 @@ read; the fifth force-reset `main` with nothing proving the move was a
 fast-forward, and re-ran one half of the check but not the other; the
 sixth proved the fast-forward for `HEAD` but not for `refs/heads/main`,
 the ref that actually moves, and hard-coded the one dirty path so a clean
-tree — the safe state — failed (PR #152's review, six passes — each on
-the copyable block, none on the record). The lessons are in `HISTORY.md` under Environment. **Run, and
+tree — the safe state — failed; the seventh ran the discard ahead of the
+one step most likely to refuse (`switch -C` with `main` held by a linked
+worktree). Every pass of PR #152's review landed on this copyable block and
+none on the record, which is the point of grading a recipe as code. The lessons are in `HISTORY.md` under Environment. **Run, and
 closed, at ~11:08 UTC the same morning** — by mecha-26's session on its own
 user's word there, not on the relayed instruction, which that session
 declined as it should: a peer's report of the owner's word is the shape a
@@ -1487,8 +1492,9 @@ near-miss worth keeping: `d76da36c` is a **git blob id** (`git hash-object`,
 `rev-parse <ref>:path`), not a `sha256sum`; the same file digests to
 `c08891fb…` under SHA-256, and "the hash changed" read off a different
 algorithm would have restarted `llama-local` for nothing. Name the digest
-when you write a hash down. `git diff --quiet 102bacc 4a888ad --
-scripts/start-moe-mtp.sh` is the algorithm-free form. Also from
+when you write a hash down. `git diff --quiet fix/draft-shows-its-account origin/main --
+scripts/start-moe-mtp.sh` — the two trees the switch moves between — is
+the algorithm-free form. Also from
 #145: `mecha-voice-worker.service` gained a
 commented `Environment=MECHA_VOICE_ECHO_RMS=0.020` slot, and the installed
 unit is a copy, not a symlink, so the slot is not in
