@@ -629,3 +629,65 @@ Two things to build once, that all of the above need:
   actively out of reach on this hardware.
 - **Aider's polyglot leaderboard**, which fixes its own harness across models —
   possibly a second cheap control alongside mini-swe-agent, unexamined.
+
+---
+
+## Addendum 2026-09-03: Terminal-Bench 2.1, 3.0 and 4.0, and which one to run
+
+Checked because the 2026-08-05 pass above cites "2.0/2.1" and the
+comparability argument rests on one leaderboard entry. Sources: the
+tbench.ai news posts for 2.1, 3.0 and 4.0; the Harbor Hub dataset pages;
+the snorkel.ai leaderboard mirrors (the tbench.ai leaderboard is
+client-rendered and unreadable by fetch); and both task sets downloaded
+and read locally (`harbor datasets download`, `task.toml` per task).
+
+| version | date | tasks | what it is | leaderboard |
+|---|---|---|---|---|
+| 2.0 | 2025-11-07 | 89 | the set every number above was measured on | 142 entries, **archived**; the little-coder + Qwen3.6-35B-A3B 24.6% entry lives here |
+| 2.1 | 2026-05-06 | 89, same names | 2.0 with 28 tasks fixed (image drift, resource mismatches, misspecification); agent–model pairs gain +0.9 to +12.1 pp, so 2.0 and 2.1 scores are not interchangeable | 17 entries, top 83.8%; no Qwen, no local-model agent |
+| 3.0 | 2026-07-30 | 74 | an entirely new "frontier" set: GPUs up to one H100, multi-container topologies, seven domains | 12 entries, top 42.7%; only open-weight is GLM-5.3 |
+| 4.0 | 2026-08-28 | 66 | 3.0 minus 8 (saturated, refusals, public solutions, quality), 20 revised, resources calibrated, flat 8 h agent timeout; `terminal-bench/terminal-bench@4.0.0` | 13 entries, top 57.9%; GLM-5.3 at 41.8% the only open-weight; Sonnet 5 at 12.4%; **no Qwen, no small model** |
+
+**What the 4.0 task set actually asks for**, read from its 66 `task.toml`s:
+3 GPU tasks, 11 docker-compose environments, 1 task declaring
+`mcp_servers`, internet **off** on all 66 (on for all 89 of 2.1), memory
+median 4 GB and max 32 GB, up to 16 CPUs, storage up to 1 TB, and 8 hours
+per task — a 528-hour ceiling per k=1 pass against 42 hours for 2.1. **Zero
+task overlap** with 2.x; our 75-task subset survives into 2.1 exactly and
+into 4.0 not at all. The metadata schema changed too: no `difficulty`,
+new category names.
+
+**Ruling proposed.** *2.1 is the working set; 4.0 is a ceiling slice, not
+a pool.* The owner's framing (2026-09-03): the purpose is research and
+papers, not submission, so the leaderboard is a sanity anchor and the
+reasons that decide are headroom, a frozen set, and power — a small model
+near floor on 4.0 makes every ablation read as no difference, 2.1 stops
+moving, and on the x86 box all 89 tasks at k=5 give 445 paired trials per
+arm.
+
+- **Run experiments on 2.1.** Same subset, fixed tasks (fewer spurious
+  failures to argue with), a 42-hour ceiling, and the only version family
+  with a small-local-model comparator — even if that comparator is on the
+  archived 2.0 board. Re-baseline once, because the 28 fixes move scores.
+- **Do not make 4.0 the experiment pool.** It is calibrated to
+  discriminate *frontier* models; Sonnet 5 scores 12%; a Qwen3.6-35B run
+  would be a lone point near zero with nothing on the board to compare a
+  harness against, at ten times the wall clock. That is the premise of
+  §"The answer to (3) first" inverted.
+- **Take a 4.0 slice as a ceiling set.** Tasks the local model is expected
+  to fail are exactly what the appraisal validity dataset needs
+  (`EXPERIMENT-DESIGN.md` §17: failures invisible to the counters) and
+  what the communication programme's oracle-rescue probes need — *if
+  perfect communication cannot rescue the small model here, communication
+  is not the limiting resource.* Pick the non-GPU, non-compose tasks first;
+  the three GPU tasks contend with the llama-servers for the same cards.
+- **Author our own tasks to 4.0's conventions**, since the format evolves
+  with the newest version: internet off by default, `mcp_servers`
+  declared in `task.toml`, compose environments allowed.
+
+Not verified: whether the 2.1 leaderboard still accepts submissions;
+whether 4.0's task ids are `terminal-bench/<name>` for `-i`/`-x` (the
+adapter's dataset-qualified names must be re-checked before a run);
+whether Harbor's local docker backend runs the compose tasks as Modal
+does. The downloaded task sets are in this session's scratchpad, not the
+repo.
