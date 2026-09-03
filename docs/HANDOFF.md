@@ -1421,12 +1421,15 @@ runs on a day with nothing to discard):
 R=~/Github/mecha
 git -C $R fetch origin \
 && git -C $R merge-base --is-ancestor HEAD origin/main \
-&& git -C $R merge-base --is-ancestor refs/heads/main origin/main \
+&& { ! git -C $R show-ref --verify --quiet refs/heads/main \
+     || git -C $R merge-base --is-ancestor refs/heads/main origin/main; } \
 && wt=$(git -C $R for-each-ref --format='%(worktreepath)' refs/heads/main) \
 && { test -z "$wt" || test "$wt" = "$(realpath $R)"; } \
 && git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
+&& git -C $R diff --quiet HEAD origin/main -- scripts/voice/parakeet_server.py \
 && p=$(git -C $R status --porcelain) \
 && { test -z "$p" || test "$p" = " M docs/README.md"; } \
+&& { test -z "$p" || h=$(git -C $R hash-object docs/README.md); } \
 && { test -z "$p" || git -C $R diff -- docs/README.md; } \
 && echo "checks passed — if a diff printed above, READ it: only the one APPRAISAL row? then block 2"
 ```
@@ -1434,8 +1437,13 @@ git -C $R fetch origin \
 If block 1 stops before the echo: the move is not a fast-forward for one of
 the two refs, or a *linked* worktree has `main` checked out (`switch -C`
 would refuse — find that session), or the launch script differs between
-`HEAD` and `origin/main` (do not switch — read the banner), or the working
-copy holds something other than that one file (find its owner first). The discard
+`HEAD` and `origin/main` (do not switch — read the banner), or
+`scripts/voice/parakeet_server.py` differs (the move is still fine, but
+`mecha-parakeet` runs that file from this tree too and must be restarted
+after the switch — a model load, so it is deliberately not in block 2), or
+the working copy holds something other than that one file (find its owner
+first). Run both blocks in the same shell: block 2 reads `p` and `h` from
+block 1. The discard
 in block 2 is destructive; it runs only when there is something to discard,
 and a person reads the diff between the blocks before it does.
 
@@ -1448,7 +1456,9 @@ and a person reads the diff between the blocks before it does.
 # the tree there), and opens the journal window at the restart itself.
 # Block 1's checks are re-run here — a peer fetching in the shared checkout
 # during the read moves origin/main under it — the discard runs only when
-# there is something to discard, and the journal window names its zone,
+# there is something to discard AND its bytes are the ones block 1 showed
+# (the blob id `h` carried across; a peer editing the same file during the
+# read would otherwise lose bytes nobody read), and the journal window names its zone,
 # since journalctl reads --since in local time and this block travels; the
 # follow is self-timing (60 s cap) rather than a fixed sleep guessing how
 # long the worker takes to come up.
@@ -1456,10 +1466,13 @@ R=~/Github/mecha
 p=$(git -C $R status --porcelain) \
 && { test -z "$p" || test "$p" = " M docs/README.md"; } \
 && git -C $R merge-base --is-ancestor HEAD origin/main \
-&& git -C $R merge-base --is-ancestor refs/heads/main origin/main \
+&& { ! git -C $R show-ref --verify --quiet refs/heads/main \
+     || git -C $R merge-base --is-ancestor refs/heads/main origin/main; } \
 && wt=$(git -C $R for-each-ref --format='%(worktreepath)' refs/heads/main) \
 && { test -z "$wt" || test "$wt" = "$(realpath $R)"; } \
 && git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
+&& git -C $R diff --quiet HEAD origin/main -- scripts/voice/parakeet_server.py \
+&& { test -z "$p" || test "$(git -C $R hash-object docs/README.md)" = "$h"; } \
 && { test -z "$p" || git -C $R checkout -- docs/README.md; } \
 && git -C $R switch -C main origin/main \
 && since=$(date -u '+%Y-%m-%d %H:%M:%S') \
@@ -1483,7 +1496,9 @@ sixth proved the fast-forward for `HEAD` but not for `refs/heads/main`,
 the ref that actually moves, and hard-coded the one dirty path so a clean
 tree — the safe state — failed; the seventh ran the discard ahead of the
 one step most likely to refuse (`switch -C` with `main` held by a linked
-worktree). Every pass of PR #152's review landed on this copyable block and
+worktree); the eighth guarded one launch script and not the other
+(`parakeet_server.py` runs from the same tree) and compared the dirty
+file's *status* rather than its bytes across the human read. Every pass of PR #152's review landed on this copyable block and
 none on the record, which is the point of grading a recipe as code. The lessons are in `HISTORY.md` under Environment. **Run, and
 closed, at ~11:08 UTC the same morning** — by mecha-26's session on its own
 user's word there, not on the relayed instruction, which that session

@@ -197,9 +197,9 @@ git -C ~/Github/mecha status --porcelain          # expect: empty
   start the restart list, not when the worker is the last unit left.
 - **The switch has a runnable recipe in `docs/HANDOFF.md`** (§Machine
   state, dated, 2026-09-03), reviewed pass after pass until it graded as code: prove the fast-forward
-  for *both* `HEAD` and `refs/heads/main`, prove `scripts/start-moe-mtp.sh`
-  unchanged across the move (that file is `llama-local`'s literal
-  `ExecStart`), read any dirty file before discarding it, land on
+  for *both* `HEAD` and `refs/heads/main`, prove `scripts/start-moe-mtp.sh` and `scripts/voice/parakeet_server.py`
+  unchanged across the move (the first is `llama-local`'s literal
+  `ExecStart`, the second is what `mecha-parakeet` runs from this tree), read any dirty file before discarding it, land on
   `origin/main` in one hop, and only then restart the worker. Copy that
   block; do not improvise a `switch main && pull`, which is the version
   that failed silently on a dirty file and would have passed through a
