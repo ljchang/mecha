@@ -1156,6 +1156,16 @@ bare "yes" released it. One word, immune to the span gate by design, so
 nothing downstream could catch it. Composing an offer is free now; arming it
 is a separate step and a promise that the question actually went out.
 
+**And the fix for that had its own ordering bug**, worth keeping because it is
+the same shape one layer up. The response head was opened at the top of
+`answer_completion`, before `react` had decided anything — but on
+`PassToModel` that function answers nothing and the caller goes on to the
+model, where `pump` writes its *own* head. A head opened first left `pump`
+writing a second one unframed into an already-open chunked body, so every
+spoken correction during an open offer would have arrived corrupt. `react` is
+pure; deciding before writing costs nothing. The rule that falls out of it:
+**a function that may decline to answer must not open the response.**
+
 **And the reply never reached the wire.** The SSE response head was written
 only inside `pump`, which runs a model — so `answer_completion`, which
 deliberately runs none, wrote a chunked body with no status line. "Sent.",

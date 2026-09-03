@@ -422,21 +422,25 @@ pub fn react(
     // question and keeps it open. They are honoured however they parse.
     let ours = ours_coming_back(utterance, pending);
     let reask = |pending: &Pending| {
+        // The draft can leave the store between the question and the answer,
+        // and then there is nothing to ask again *about*. Both branches
+        // check it now; only the exhausted one did, which meant the ordinary
+        // re-ask said "is that what you want?" about a draft that no longer
+        // existed. No wrong action followed either way — but a spoken
+        // surface's output is the whole of what it does.
+        if head.is_none() {
+            return Reaction::Say(format!(
+                "That draft is not in the outbox any more.{}",
+                next_question(next)
+            ));
+        }
         if pending.reasks >= MAX_REASKS {
-            // `head` matters even here. The draft can leave the store between
-            // the question and the answer, and "I have left it in your
-            // outbox" is then false. No wrong action follows either way —
-            // but what a spoken surface says is the whole of what it does.
-            Reaction::Say(match head {
-                Some(_) => format!(
-                    "I keep hearing myself, so I have left it in your outbox.{}",
-                    next_question(next)
-                ),
-                None => format!(
-                    "I keep hearing myself, and that draft is not in the outbox any more.{}",
-                    next_question(next)
-                ),
-            })
+            // `head` is known present here — the guard above returned on
+            // `None` — so this can say plainly where the draft is.
+            Reaction::Say(format!(
+                "I keep hearing myself, so I have left it in your outbox.{}",
+                next_question(next)
+            ))
         } else {
             // Two constraints, and they pull against each other.
             //
@@ -1197,13 +1201,17 @@ mod the_escape_hatches_must_stay_open {
     fn a_deferral_does_not_claim_a_vanished_draft_is_waiting() {
         let (_, pending) = offered();
         let spent = pending.after_reask("Sorry — that may have been my own echo.");
-        let Reaction::Say(said) = react("Send it.", &spent, None, None) else {
-            panic!("an exhausted budget must defer");
-        };
-        assert!(
-            said.contains("not in the outbox any more"),
-            "the draft is gone and we said it was waiting: {said:?}"
-        );
+        // Gone before the answer arrived: neither branch may claim it is
+        // waiting, and the unexhausted one must not ask again about nothing.
+        for pending in [&pending, &spent] {
+            let Reaction::Say(said) = react("Send it.", pending, None, None) else {
+                panic!("an echo about a vanished draft must say so, not re-ask it");
+            };
+            assert!(
+                said.contains("not in the outbox any more"),
+                "the draft is gone and we did not say so: {said:?}"
+            );
+        }
         // And the ordinary case still reads the ordinary way.
         let item = draft();
         let Reaction::Say(still_there) = react("Send it.", &spent, Some(&item), None) else {
