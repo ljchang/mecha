@@ -960,9 +960,12 @@ impl Config {
         // trigger and a Slack run never show anyone. The owner ruled for the
         // load error: `[outbox] tools` is global config the operator holds,
         // so the contradiction is in one file and the fix is one line.
+        // `tools` only: `publish_tools` is a *kind*, not a route — a name in
+        // it that is not also in `tools` executes unstaged (`setup` warns
+        // about exactly that state), so a rule on it judges and must load.
+        // Mirrors `OutboxRoute::routes`.
         for (i, rule) in self.rules.iter().enumerate() {
-            let routed = self.outbox.tools.iter().chain(&self.outbox.publish_tools);
-            if routed.into_iter().any(|t| t == &rule.tool) {
+            if self.outbox.tools.iter().any(|t| t == &rule.tool) {
                 anyhow::bail!(
                     "[[rule]] #{} names `{}`, which `[outbox] tools` routes to staging. A staged \
                      call is reviewed by a person at release and is never judged by rules, so \
@@ -1059,6 +1062,24 @@ impl Config {
                         "{} `allow` rule(s) in {} are ignored — a project layer may add \
                          `prompt` and `forbid` rules only; `allow` loads from the global \
                          config",
+                        before - rules.len(),
+                        path.display()
+                    );
+                }
+                // A project rule on a tool the *global* config routes to the
+                // outbox would judge nothing, and `validate` refuses that —
+                // for a global rule, where the contradiction is in one file
+                // the operator holds. A cloned repository must not be able to
+                // make every `mecha` command in its directory fail to load,
+                // so here it is dropped with a warning like every other
+                // project-layer overstep (PR #148's review).
+                let before = rules.len();
+                rules.retain(|r| !self.outbox.tools.contains(&r.tool));
+                if rules.len() != before {
+                    tracing::warn!(
+                        "{} rule(s) in {} name a tool `[outbox] tools` routes to staging and \
+                         are ignored — a staged call is reviewed at release, not judged by \
+                         rules",
                         before - rules.len(),
                         path.display()
                     );
@@ -2272,7 +2293,8 @@ match = ["git push origin main"]
             err.contains("send_email") && err.contains("routes to staging"),
             "{err}"
         );
-        // A publish route is a route too.
+        // `publish_tools` is a kind, not a route: a name there that is not
+        // also in `tools` executes unstaged, so a rule on it judges and loads.
         let mut cfg = Config::default();
         cfg.outbox.publish_tools = vec!["publish_page".into()];
         cfg.rules.push(crate::policy::RuleConfig {
@@ -2280,7 +2302,7 @@ match = ["git push origin main"]
             decision: crate::policy::RuleDecision::Prompt,
             ..Default::default()
         });
-        assert!(cfg.validate().is_err());
+        cfg.validate().unwrap();
         // Unrouted, the same rule loads.
         let mut cfg = Config::default();
         cfg.rules.push(crate::policy::RuleConfig {
@@ -2289,6 +2311,41 @@ match = ["git push origin main"]
             ..Default::default()
         });
         cfg.validate().unwrap();
+    }
+
+    /// A *project* rule on a globally routed tool is dropped with a warning,
+    /// not a load error: a cloned repository must not be able to make every
+    /// `mecha` command in its directory fail to start.
+    #[test]
+    fn a_project_rule_on_a_routed_tool_is_dropped_not_fatal() {
+        let dir = std::env::temp_dir().join(format!("mecha-routed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("mecha.toml");
+        std::fs::write(
+            &project,
+            r#"
+[[rule]]
+tool = "send_email"
+decision = "forbid"
+
+[[rule]]
+tool = "shell"
+pattern = ["rm", "-rf"]
+decision = "forbid"
+match = ["rm -rf build"]
+"#,
+        )
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.outbox.tools = vec!["send_email".into()];
+        cfg.merge_file(&project, LayerTrust::Project).unwrap();
+        cfg.validate().unwrap();
+        let tools: Vec<_> = cfg.rules.iter().map(|r| r.tool.as_str()).collect();
+        assert_eq!(
+            tools,
+            vec!["shell"],
+            "the routed-tool rule was dropped, the other kept"
+        );
     }
 
     /// The fix for a guard that fell through: an unparseable zone used to be

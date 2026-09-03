@@ -1513,16 +1513,23 @@ refusal. The specification and the survey behind it are
   error in `Config::validate`, the same treatment as a patterned rule on a
   commandless builtin; it was a start-time warning until the owner ruled on
   2026-09-03 that a warning on the stderr no trigger shows is the
-  silently-degrading guard wearing a label.
+  silently-degrading guard wearing a label. Two edges, both from PR #148's
+  review: `publish_tools` is a kind and not a route (a name there absent from
+  `tools` executes unstaged, so a rule on it judges and loads), and a
+  *project* layer's rule on a routed tool is dropped with a warning rather
+  than failing every `mecha` command in a cloned repository's directory.
 - **The splitter is conservative on purpose.** A command is judged one
   segment at a time (`&&`, `||`, `|`, `;`), and allowed only if every segment
   is. Anything `split_segments` cannot take apart with certainty —
   substitution, redirection, globs, braces, backslashes, comments, control
   flow, an unterminated quote, an operator glued to a word — is one opaque
-  invocation: its words are searched for every `forbid`, a pattern-less rule
-  applies to it by construction, and otherwise it matches no rule and the
-  approver decides as it would with none — the same answer an unmatched
-  *splittable* command gets. The first version returned `Prompt` there so
+  invocation: its words are searched for every `forbid`, a pattern-less
+  `forbid` or `prompt` applies to it by construction, the inline-eval floor
+  applies to it under `strict_inline_eval` (its best-effort segment heads are
+  asked whether they run their arguments — a redirect must not make `python3
+  -c` *less* restricted than it is without one, which the first fall-through
+  did), and otherwise it matches no rule and the approver decides as it would
+  with none — the same answer an unmatched *splittable* command gets. The first version returned `Prompt` there so
   `Allow` mode could not run a shape the splitter would not vouch for; once
   `forbidden_words` searched the opaque command for every `forbid`, what the
   prompt still bought was a cliff — with `consult` failing closed, one
@@ -1600,9 +1607,9 @@ refusal. The specification and the survey behind it are
   inert while its author believes it loaded.
 - **A rule on a routed tool is a load error.** Outbox staging runs before the
   rules and release reads none, so a routed call stages and a person decides
-  at release; a `[[rule]]` naming a tool in `[outbox] tools` or
-  `publish_tools` would judge nothing and `Config::validate` refuses it,
-  naming the rule and the two remedies. "Refuses without consulting anyone"
+  at release; a global `[[rule]]` naming a tool in `[outbox] tools` would
+  judge nothing and `Config::validate` refuses it, naming the rule and the
+  two remedies (a project layer's is dropped with a warning instead). "Refuses without consulting anyone"
   is true of everything that would have executed.
 
 There is deliberately no `--no-rules` flag: a `forbid` is the operator's

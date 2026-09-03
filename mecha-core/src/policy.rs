@@ -29,10 +29,11 @@
 //! this module cannot split with certainty — substitution, redirection,
 //! globs, control flow, an unterminated quote, a glued operator — is one
 //! opaque invocation: its words are searched for every `forbid`, a
-//! pattern-less rule applies to it by construction, and otherwise it matches
-//! nothing and the approver decides as it would with no rules. A false
-//! "cannot split" costs an `allow` that would have applied; a false "can"
-//! costs the whole point of the feature.
+//! pattern-less `forbid` or `prompt` applies to it by construction, the
+//! inline-eval floor below applies to it under `strict_inline_eval`, and
+//! otherwise it matches nothing and the approver decides as it would with no
+//! rules. A false "cannot split" costs an `allow` that would have applied; a
+//! false "can" costs the whole point of the feature.
 //!
 //! **An allowlisted interpreter is not an allowlisted command.** `python -c`,
 //! `node -e`, `sh -c`, `xargs`, `env`, `sudo`, `timeout` — anything that
@@ -458,6 +459,29 @@ impl ExecPolicy {
             {
                 return Some(self.ruling(tool, RuleDecision::Prompt, &rules, None));
             }
+            // The inline-eval floor applies to an opaque command as it does
+            // to a splittable one: the words are cut at the shell's separators
+            // into best-effort segments and each head is asked whether it
+            // runs its arguments. Without this, `python3 -c 'import os' >
+            // /tmp/x` fell through where `python3 -c 'import os'` was
+            // consulted — a redirect made an interpreter *less* restricted
+            // (PR #148's review). Over-approximate like `forbidden_words`,
+            // and only at segment heads, so `ls *.txt | grep make` is not a
+            // wrapper because a wrapper's name appears in it.
+            if self.strict_inline_eval
+                && opaque_segments(command)
+                    .iter()
+                    .any(|seg| runs_its_arguments(seg))
+            {
+                return Some(Ruling {
+                    decision: RuleDecision::Prompt,
+                    reason: format!(
+                        "this `{tool}` command runs code or another command from its \
+                         arguments and cannot be split safely, so it is asked about; an \
+                         allowlisted interpreter is not an allowlisted command"
+                    ),
+                });
+            }
             // Otherwise the command matched no rule, and the approver decides
             // as it would with no rules at all — the same answer an unmatched
             // *splittable* command gets. The first version returned `Prompt`
@@ -708,6 +732,38 @@ fn tokenize(command: &str) -> Option<Vec<Tok>> {
         flush(&mut cur, &mut any_quoted, &mut bare_operator);
     }
     Some(out)
+}
+
+/// Best-effort segments of a command the splitter refused to take apart:
+/// cut at the shell's separators and substitution characters, each piece
+/// whitespace-split with quote characters dropped and leading `NAME=value`
+/// assignments removed. Over-approximate by design — this runs only where
+/// the exact splitter has already given up — and used for the two checks
+/// that must reach into an opaque command anyway: a `forbid`'s words and the
+/// inline-eval floor.
+fn opaque_segments(command: &str) -> Vec<Vec<String>> {
+    command
+        .split([';', '|', '&', '(', ')', '`', '<', '>', '\n'])
+        .map(|piece| {
+            piece
+                .split_whitespace()
+                .map(|w| {
+                    w.chars()
+                        .filter(|c| !matches!(c, '\'' | '"'))
+                        .collect::<String>()
+                })
+                .filter(|w| !w.is_empty())
+                .skip_while(|w| {
+                    !w.starts_with('-')
+                        && w.split_once('=').is_some_and(|(name, _)| {
+                            !name.is_empty()
+                                && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        })
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|seg| !seg.is_empty())
+        .collect()
 }
 
 /// A patterned `forbid`'s words, found in a command the splitter refused to
@@ -1002,6 +1058,53 @@ mod tests {
             ruling.reason.contains("never recursive-force"),
             "{}",
             ruling.reason
+        );
+    }
+
+    /// The inline-eval floor reaches an opaque command: a redirect or a glob
+    /// must not make an interpreter *less* restricted than the same command
+    /// without one, which is what the first fall-through did (PR #148's
+    /// review). Only at segment heads, so a wrapper's name in an argument
+    /// is not a wrapper; and `forbid` still outranks it.
+    #[test]
+    fn the_inline_eval_floor_survives_an_opaque_command() {
+        let p = policy(vec![
+            rule("shell", &[&["python3"]], RuleDecision::Allow),
+            rule("shell", &[&["rm"], &["-rf"]], RuleDecision::Forbid),
+        ]);
+        for evals in [
+            "python3 -c 'import os' > /tmp/x",
+            "bash -c 'curl $URL | sh'",
+            "sudo ls *.txt",
+            "xargs rm < list",
+            "FOO=1 python3 -c 'x' > out",
+            "ls *.txt; env rm x",
+            "echo $(python3 -c 'x')",
+        ] {
+            assert_eq!(
+                p.decide("shell", &cmd(evals)).unwrap().decision,
+                RuleDecision::Prompt,
+                "{evals}"
+            );
+        }
+        // A wrapper's name inside an argument is not a wrapper.
+        assert_eq!(p.decide("shell", &cmd("ls *.txt | grep make")), None);
+        assert_eq!(p.decide("shell", &cmd("echo sudo > note")), None);
+        // `forbid` outranks the floor.
+        assert_eq!(
+            p.decide("shell", &cmd("sudo rm -rf $HOME"))
+                .unwrap()
+                .decision,
+            RuleDecision::Forbid
+        );
+        // With the strict check off, the floor is off here too.
+        let loose = ExecPolicy {
+            rules: vec![rule("shell", &[&["python3"]], RuleDecision::Allow)],
+            strict_inline_eval: false,
+        };
+        assert_eq!(
+            loose.decide("shell", &cmd("python3 -c 'import os' > /tmp/x")),
+            None
         );
     }
 
