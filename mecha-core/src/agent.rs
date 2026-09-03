@@ -3555,25 +3555,20 @@ impl Agent {
             // only judged argument is `command` and nothing declares a default
             // for it today.)
             //
+            // **The `pre_tool` hook above reads the same call, when routed.**
+            // It judges the pinned arguments for a staged call — computed
+            // once above the hook and handed to the store below it — and the
+            // raw ones otherwise, because for a call that executes
+            // immediately the raw input *is* what runs. That was a gap until
+            // this branch closed it: `release` runs no hooks, so the hook is
+            // the last mechanical gate a routed call passes, and a hook
+            // written to deny sends from one mailbox could not see the
+            // account the draft would send from.
+            //
             // Still not on every call's path. A read-only tool with no rule
             // over it and no escalation reaches no judge at all, and
             // `rules_for` is the cheap way to ask whether one exists.
             //
-            // **One judge is deliberately not on this list: the `pre_tool`
-            // hook above, which reads the model's own bytes.** For an
-            // ordinarily-executed call that is not an inconsistency but the
-            // correct answer — raw is what runs, so raw is what a hook should
-            // judge. For a *staged* call it is a real gap: the fill below is
-            // pinned, so a release executes `staged_args`, and a hook written
-            // to deny sends from one mailbox never sees the `account` the
-            // draft will actually send from. It cannot loosen anything — a
-            // hook only ever denies, so less information means fewer denials —
-            // which is why it is recorded rather than fixed here: hooks are a
-            // subsystem this change does not otherwise touch, and the fix has
-            // a shape (hoist the fill above the hook when `routed`, hand the
-            // hook and `stage` the one value, leave the non-routed arm raw)
-            // that deserves its own pass. `docs/AUDIT-RESEARCH.md` §2 carries
-            // it.
             use crate::policy::RuleDecision;
             let judged = escalation.is_some()
                 || !tool.read_only()
