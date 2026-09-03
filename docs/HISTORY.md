@@ -3562,6 +3562,25 @@ between the string the operator wrote and the string the shell will run,
 and the conservative direction — refuse, or prompt — is the only one whose
 false positives cost a prompt rather than the feature.**
 
+**2026-09-03 — the served page revalidates by `ETag`.** `tower-http` 0.6.11
+→ 0.7.1 for `mecha-cli` (#155, `b50eb24`), superseding dependabot's #129,
+which had been green since 2026-08-31 without anyone reading what 0.7
+changed against the one use site. `mecha serve`'s `ServeDir` now stamps a
+strong `ETag` from size and mtime, evaluates `If-None-Match` ahead of
+`If-Modified-Since` per RFC 9110, and a `304` carries both validators where
+0.6 answered a bare one — for the `no-cache` entry document that is the
+difference between a browser that can refresh the entry it just confirmed
+and one holding an empty `304`. `ServeDir::new` is unchanged (the release's
+`feat!` is a defaulted backend type parameter), the release's other breaking
+changes are in middleware the workspace does not enable, and `Cargo.lock`
+keeps a 0.6.11 copy because `reqwest` still pins it. Two independent reads
+agreed point for point — Codex over the upstream source diff, the PR
+workflow over the tree — and the tests pin both halves: a matching tag from
+either precondition header gets a `304` with both validators, and a stale
+tag gets `200` with a new tag, which is the half that protects against the
+2026-08-29 "the feature had gone" incident. Not deployed at merge; the
+`update` skill's step-1b probe tells the two binaries apart.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
