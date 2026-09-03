@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a transcript that predates the field, and on one naming a lever this
   build does not know, because a lever dropped from the list would read as
   on. `mecha eval`'s bare arm is now `Lever::bare` expressed through the
-  same switches, and a test reads the forced set back through the function
-  the record is written from.
+  same switches (plus the approval rules, which `bare` itself never lifts —
+  eval throws that lever by name), and a test reads the forced set back
+  through the function the record is written from.
   Two new global flags complete the set: `--no-boredom` and
   `--no-compact-validate`, opt-outs for the two `[agent]` switches that
   ship on.

@@ -436,6 +436,10 @@ def main():
         ("readout", "any signed error", lambda r: int(r["readout"]["signed"])),
         ("readout", "label ≠ neutral", lambda r: int(r["readout"]["labels"].get("neutral", 0) == 0)),
         ("counter", "stop_cause early (not completed; None excluded)", lambda r: None if r["reconstructed"].get("stop_cause") is None else int(r["reconstructed"]["stop_cause"] in STOP_CAUSES_EARLY)),
+        # The matched baseline for the `Interrupted` split (§3.3): the same
+        # predictor with `interrupted` left out, so the pair above/below is
+        # the split's own effect and not every unsigned cause folded in.
+        ("counter", "stop_cause early, interrupted excluded (the readout's own rule)", lambda r: None if r["reconstructed"].get("stop_cause") is None else int(r["reconstructed"]["stop_cause"] in STOP_CAUSES_EARLY - {"interrupted"})),
         ("counter", "exhausted (max_turns)", lambda r: int(r["reconstructed"]["exhausted"])),
         ("counter", "ended_on_failed_call", lambda r: int(r["reconstructed"]["ended_on_failed_call"])),
         ("counter", "tool_errors", rc("tool_errors")),

@@ -523,7 +523,9 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config, compact_tool_registered: bool
 
 /// Throw one lever's switch on `opts`. The only place a [`Lever`] is mapped
 /// to its flag in the *off* direction, so `mecha eval`'s bare arm and an
-/// experiment's are built by the same hand.
+/// experiment's are built by the same hand. The `ApprovalRules` arm is the
+/// second door onto `no_rules` (its doc names both); `Lever::bare` never
+/// hands that lever in, so reaching it takes a caller naming it.
 pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
     match lever {
         Lever::Mcp => opts.no_mcp = true,

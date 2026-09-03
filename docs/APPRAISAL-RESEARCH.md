@@ -143,6 +143,7 @@ own:
 | `Valence::negative` | 169 | 0.57 | 0.52–0.62 | 0.20 signed | 0.07 signed |
 | label ≠ `neutral` | 169 | 0.50 | — | 0.00 | 0.00 |
 | `Valence::negative`, `completed` runs only | 126 | 0.50 | 0.48–0.53 | 0.02 | 0.01 |
+| stop cause early, `interrupted` excluded (the readout's own rule) | 168 | 0.57 | 0.52–0.62 | 0.19 | 0.05 |
 | stop cause early, `interrupted` included | 168 | 0.65 | 0.59–0.71 | 0.39 | 0.08 |
 | stop cause `interrupted` alone (Harbor's timeout) | 169 | 0.58 | 0.54–0.63 | 0.19 | 0.03 |
 | `exhausted` (`max_turns`) | 169 | 0.55 | 0.51–0.59 | 0.14 | 0.04 |
@@ -168,9 +169,12 @@ and this is the set to measure its marginal yield on, before any lifetime.
 **1.7.2 `Interrupted` is the cheapest gain, and §3.3 is now measured.**
 Harbor's wall-clock kill records as `interrupted`, and `of_session` skips
 it on doctor's rule that an interrupt is an attentive owner. Here 18 of the
-20 interrupted runs failed. Reading a timeout as the ceiling it is lifts
-the stop-cause channel from 0.57 to 0.65 — the largest single move
-available to the readout, from a split the review already asked for.
+20 interrupted runs failed. The pair is matched: the stop-cause predictor
+under the readout's own rule (every early cause it signs today, `interrupted`
+left out) sits at 0.57, and the same predictor with `interrupted` read as the
+ceiling it is sits at 0.65 — so the eight points are the split's own effect,
+not every unsigned cause folded in. The largest single move available to
+the readout, from a split the review already asked for.
 
 **1.7.3 A tool-error count is not a failure signal, and its sign is
 reversed.** Passing runs made *more* errored calls (median 3 against 1)
