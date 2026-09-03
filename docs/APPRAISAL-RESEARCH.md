@@ -211,11 +211,16 @@ about fifteen seconds each, none failed): it returned "the numbers support
 nothing further" on **169 of 169**, including all 75 failures the readout is
 silent on, so its signed error discriminates at exactly 0.50 and adds nothing
 to `Valence::negative`. This is §3.10's own prediction confirmed at scale:
-`AppraiserEvidence` is built from the computed `Appraisal`, and the 169
-sessions present it with six distinct evidence shapes (a negative count, a
-stop cause, `neutral`, no goal, no homeostat), so a pass and a fail that
-`completed` cleanly are byte-identical to it. A model reasoning over
-counts cannot separate what the counts do not. The ruling §3.10 asked for
+`AppraiserEvidence` is seven fields built from the computed `Appraisal` —
+the negative and positive error counts, the per-channel counts, the label,
+whether a goal was named, and the homeostat's context pressure and load —
+and never the stop cause or the transcript. Over these 169 sessions those
+seven fields take exactly **two** distinct values: 145 briefs of "no errors,
+`neutral`, no goal, no homeostat" and 24 of "one negative error on the
+counter channel", otherwise identical. A pass and a fail that `completed`
+cleanly are byte-identical to it, and so are a `max_turns` failure and the
+three `max_turns` passes. A model reasoning over counts cannot separate what
+the counts do not. The ruling §3.10 asked for
 follows: retire the pass as it stands, or give it the one structured input
 that differs between a clean pass and a clean fail — the plan's step list
 with statuses, or the run's final answer against its task — on step
