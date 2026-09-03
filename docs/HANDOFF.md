@@ -223,6 +223,17 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
+**Not re-measured at session close (2026-09-03 ~17:40 UTC, `main` at
+`b50eb24`).** The audit lane closed while a peer's 169-call appraisal run
+held llama-server, and this box's rule is no build during inference, so
+the count below stands as measured at `49166e3` — six merges of tests ago
+(#143's `policy` suite, #148, #150 and #155 all added tests) — and CI's
+test jobs were green on `b50eb24`, which is the fact that was verifiable
+without a build. Three open PRs (#153, #154, #158) add tests too; mecha-26
+reports `mecha-cli` alone goes 707 → 715 across them. When a count matters,
+`diff` `cargo test -- --list` between the two commits rather than
+subtracting totals.
+
 On **`main` at `49166e3`** (#139, #140, #141 and #142 all in), measured
 2026-09-02 (~20:30 UTC): **2,160 tests**, no failures — **691** in
 `mecha-cli` (1 ignored), **20** in `first_run`, **1,224** in `mecha-core`
@@ -1537,6 +1548,25 @@ any repo and not touched**: `~/.mecha/config.toml` carries no `[[rule]]`
 yet, so the new subsystem is installed and dormant until the owner writes
 one.
 
+**2026-09-03 (~17:40 UTC, the audit lane's session close)** — one more
+merge since the deploy entry above, and it is **not deployed**: **#155**
+(`deps/tower-http-0.7`, at `b50eb24`) moves `mecha-cli`'s `tower-http`
+0.6.11 → 0.7.1, so `mecha serve`'s `ServeDir` stamps a strong `ETag` and a
+`304` carries `ETag` + `Last-Modified`; the running `mecha-serve` (installed
+10:50, restarted 10:51) answers bare `304`s until the next `update`, and the
+skill's step-1b probe now reads a bare `304` with no `ETag` as exactly that.
+Nothing else on the box changed after the 11:09 voice-worker restart. The
+next `update` run is worth doing soon rather than eventually, because it
+unblocks two open measurements as well (mecha-26's report): #153's
+echo-floor re-measurement needs a voice worker that logs `over_speaker=` on
+the `parakeet:` line, which the running one predates, and #158's deferred
+tail measurement needs the same restart. Open PRs at close: #153, #154, #158
+(mecha-26), #156, #157 (mecha-2d), and #129 — dependabot's version of the
+`tower-http` bump, superseded by #155 and left open for the owner to close.
+The shared checkout `~/Github/mecha` is on `main` at `4a888ad`, clean, so
+the recipe above is not needed for the next restart; run block 1 anyway,
+it is cheap and it is the check. Single-writer docs are held by nobody.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -1579,6 +1609,25 @@ one person's mailbox rather than a public fact.
 ---
 
 ## What to do next
+
+- **Run `update` once the inference window is clear** (mecha-2d's 169-call
+  appraisal run, expected to end ~18:00 UTC 2026-09-03): #155's binary is
+  merged and not installed, and the same restart unblocks #153's and #158's
+  measurements. The skill's voice-worker step now checks the shared
+  checkout's branch first; the step-1b probe (a `304` with no `ETag`) is how
+  to tell the old `mecha-serve` from the new one.
+- **Three residues from #152's last review pass**, all in the shared-checkout
+  recipe's presentation (HANDOFF §Machine state, dated, 2026-09-03), none
+  behavioural: the tolerated dirty path `docs/README.md` is hard-coded in six
+  places where one `ALLOW=` at the top of block 1 would do; the recipe's
+  version history is narrated in both that entry and `HISTORY.md`
+  §Environment — HISTORY's is the copy to keep, the HANDOFF one should
+  shrink to the block and the end state; and the `update` skill's "the one
+  unit here that goes stale on a change that never touched Rust" now
+  undercounts (`mecha-frontdoor` and `mecha-ruminate` run scripts from the
+  tree too, but are `.timer`-fired and exec fresh, which is why the recipe
+  need not guard them — say so).
+- **Close #129** (dependabot's `tower-http` bump), superseded by #155.
 
 - **Two macOS residues from #113's CI arm, parked deliberately** (that
   lane's own flag, so they are not lost): `homeostat.rs` reads
