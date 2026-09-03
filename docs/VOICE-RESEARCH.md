@@ -1109,13 +1109,22 @@ acted on, so a listener who says "send it" is asked once more and answers
 
 Three parts, each pinned by a test that fails without it:
 
-- `Pending` carries a **two-slot window** of what the speaker recently played.
+- `Pending` carries a **two-slot window** of what the speaker recently played,
+  seeded with the model's own reply. The reply and the offer are one stretch
+  out of the speaker — `completion` says the answer and then `say(" {offer}")`
+  with no pause — so the reply echoes exactly as the offer does, and the accept
+  phrases it can carry are ones the offer never does: "go ahead", "do that",
+  "confirm", "approve", "book it". Each was an unasked release until the reply
+  was seeded in.
   Nothing else could: the offer goes out through `say` and joins no
   conversation, so the anchor the other two doors use does not contain the
   question. Two slots rather than one because the offer is still playing when
   its first echo is caught, and a long offer reads the whole draft aloud — so
   the *next* segment of that same playback must still be recognised. Not a log
-  either: a listener can ask for a re-read as often as they like.
+  either: a listener can ask for a re-read as often as they like. Both
+  transitions slide it and differ only in the counter, which is the second
+  version — the first made them opposites, one extending and one replacing,
+  and each was wrong in the direction the other was right.
 - The gate sits **ahead of `parse_answer`**, not inside the `Send` arm. A span
   that does not parse was worse than one that does: `PassToModel` *drops* the
   question, leaving a staged draft nobody is ever asked about again and handing
