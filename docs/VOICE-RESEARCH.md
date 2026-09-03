@@ -1050,11 +1050,29 @@ What it covers, it covers exactly: a short verbatim instruction — "delete it",
 "cancel it" — has nothing to expand, so the comparison is sound precisely
 where an echo is a destructive call with nobody asked.
 
-Two smaller limits, both failing safe. After a barge-in the newest assistant
-message is the cancelled partial, so an echo of the previous, fully-spoken
-reply is not a span of it. And `Message::text()` joins blocks with no
+**A spoken turn has two doors, and both narrow.** The first version wired only
+the hosted one. `completion` reaches `VoiceHost::speak` only when the caller
+named a chat session *and* the host recognised it — a call with no
+`X-Chat-Session`, or naming a key no front-end holds, falls through to the
+facade's own slot on purpose, because a dead call is a worse answer than an
+unshared one. `--voice-yes` follows it down, so until this the gate was absent
+on exactly the path that skipped the gate. Both are pinned by a source-reading
+test, since driving either means standing up a facade or a whole session
+state; the second of those tests was itself wrong first, asserting the span
+call appeared above the grant rather than that the grant was *guarded* by it.
+
+Three limits, all now stated rather than found. After a barge-in the newest
+assistant message is the cancelled partial, so an echo of the previous,
+fully-spoken reply is not a span of it. `Message::text()` joins blocks with no
 separator, so a reply of text → tool_use → text fuses the boundary words and a
-span crossing it is missed.
+span crossing it is missed. And a facade started with `--yes` rather than
+`--voice-yes` already carries `ModeApprover { Allow }` on the agent's own
+context, so `approve_all` is false, the narrowing does nothing, and the
+permissive approver is inherited — undetectable through the `Approver` trait,
+and fixable on that surface only by refusing the turn outright, since unlike
+the hosted door there is no page mode to fall back to. Not taken:
+`mecha-voice-serve` is inactive and disabled here, so the change would be
+untested against any running thing.
 
 **Both standbys were removed, 2026-08-25 — a spare nothing fails over to
 is not a spare.** Voxtral (`:8082`) had held the STT seat until the swap
