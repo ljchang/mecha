@@ -1533,7 +1533,11 @@ refusal. The specification and the survey behind it are
   project `[outbox] tools` entry naming a tool the global config has a rule
   for is cut before `apply` — routing it would have made the operator's
   `forbid` a staged draft a person can release, the one reconciliation that
-  would have removed the operator's word rather than the project's. Neither
+  would have removed the operator's word rather than the project's — unless
+  the entry re-declares a route the global config already has, which changes
+  nothing and stays: cutting it emptied the project's list, `apply` assigned
+  that wholesale, and the operator's own route vanished with the `setup`
+  refusal behind it. Neither
   fails a `mecha` command in a cloned repository's directory.
 - **The splitter is conservative on purpose.** A command is judged one
   segment at a time (`&&`, `||`, `|`, `;`), and allowed only if every segment
@@ -1549,7 +1553,8 @@ refusal. The specification and the survey behind it are
   asked whether they run their arguments — a redirect must not make `python3
   -c` *less* restricted than it is without one, which the first fall-through
   did), and otherwise it matches no rule and the approver decides as it would
-  with none — the same answer an unmatched *splittable* command gets. The first version returned `Prompt` there so
+  with none — the same answer an unmatched *splittable* command gets. The
+  first version returned `Prompt` there so
   `Allow` mode could not run a shape the splitter would not vouch for; once
   `forbidden_words` searched the opaque command for every `forbid`, what the
   prompt still bought was a cliff — with `consult` failing closed, one
@@ -1560,9 +1565,10 @@ refusal. The specification and the survey behind it are
   `forbid` and `prompt` are the rules that reach into an opaque command: a
   pattern-less one by construction, a patterned one by its words
   (`narrowing_words` over `opaque_segments` — cut at the shell's separators
-  with redirections removed operator-and-target, quote characters and
-  backslashes dropped, leading keywords and assignments skipped, matched at
-  every position, deliberately over-approximate), so `rm -rf $HOME`, `"rm"
+  with redirections removed operator-and-target, a here-string's `<<<` kept
+  as a word so its payload stays visible (`bash <<< 'rm -rf $HOME'` runs it),
+  quote characters and backslashes dropped, leading keywords and assignments
+  skipped, matched at every position, deliberately over-approximate), so `rm -rf $HOME`, `"rm"
   -rf $HOME`, `git status; rm -rf *`, the glued `git status;rm -rf *` and
   `git push origin main > /dev/null` under a `prompt` on `git push` are
   refused or asked about rather than downgraded to what a headless `Allow`

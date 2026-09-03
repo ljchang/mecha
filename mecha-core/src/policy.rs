@@ -33,8 +33,9 @@
 //! its words), a pattern-less `forbid` or `prompt` applies to it by
 //! construction, the inline-eval floor below applies to it under
 //! `strict_inline_eval`, and otherwise it matches nothing and the approver
-//! decides as it would with no rules. A false "cannot split" costs an `allow` that would have applied; a
-//! false "can" costs the whole point of the feature.
+//! decides as it would with no rules. A false "cannot split" costs an
+//! `allow` that would have applied; a false "can" costs the whole point of
+//! the feature.
 //!
 //! **An allowlisted interpreter is not an allowlisted command.** `python -c`,
 //! `node -e`, `sh -c`, `xargs`, `env`, `sudo`, `timeout` — anything that
@@ -484,6 +485,9 @@ impl ExecPolicy {
                         // and unknown is never clean. Heads only, so `ls
                         // *.txt` is untouched (PR #148's review).
                         || seg[0].contains(['$', '`', '*', '?', '['])
+                        // A here-string feeds the head a program from the
+                        // command line, which is `-c` by another spelling.
+                        || seg.iter().any(|w| w == "<<<")
                 })
             {
                 return Some(Ruling {
@@ -760,7 +764,9 @@ fn opaque_segments(command: &str) -> Vec<Vec<String>> {
     // delimiters, control flow, negation, `time`. Dropped from a piece's
     // head so `{ python3 -c x; }` and `do python3 -c x` show `python3` as
     // the head — PR #148's review found a brace or a `do` making an
-    // interpreter less restricted, exactly as the redirect had.
+    // interpreter less restricted, exactly as the redirect had. The cost,
+    // stated: a rule whose *first* pattern word is one of these (`time` is
+    // a real binary at `/usr/bin/time`) is invisible on an opaque command.
     const NOT_A_COMMAND: &[&str] = &[
         "{", "}", "!", "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done",
         "case", "esac", "in", "select", "time", "coproc", "function",
@@ -827,8 +833,20 @@ fn strip_redirects(piece: &str) -> String {
         if out.ends_with('&') {
             out.pop();
         }
+        let run_start = i;
         while i < cs.len() && (cs[i] == '<' || cs[i] == '>') {
             i += 1;
+        }
+        // A here-string's operand is not a file name but a payload the shell
+        // hands the program on stdin: `bash <<< 'rm -rf $HOME'` *runs* `rm
+        // -rf $HOME`. Eating it as a target hid the words from
+        // `narrowing_words` and the floor alike (PR #148's review). The
+        // operator is kept as a word of its own, so the payload stays in the
+        // segment for the word search and the floor can see that the head
+        // was fed a program.
+        if i - run_start == 3 && cs[run_start] == '<' {
+            out.push_str(" <<< ");
+            continue;
         }
         // A target ends at whitespace *or* at any character the separator
         // split below would cut on: `> out;rm -rf $HOME` glues the next
@@ -1204,6 +1222,9 @@ mod tests {
             "$SHELL -c 'ls | wc'",
             "py* -c 'import os'",
             "${PY} -c 'x' > out",
+            // A here-string is `-c` by another spelling.
+            "bash <<< 'ls'",
+            "python3 <<< 'import os'",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(evals)).unwrap().decision,
@@ -1582,6 +1603,10 @@ mod tests {
             "git status > out;rm -rf $HOME",
             "echo a > b&&rm -rf $HOME",
             "cat >& out; rm -rf $HOME",
+            // A here-string's operand is a payload the head runs, not a file.
+            "bash <<< 'rm -rf $HOME'",
+            "bash -s <<< 'rm -rf $HOME'",
+            "cat <<< 'rm -rf $HOME' | sh",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(opaque)).unwrap().decision,

@@ -1083,7 +1083,16 @@ impl Config {
             // project's route entry is the overstep, so it is what goes.
             if let Some(tools) = layer.outbox.as_mut().and_then(|o| o.tools.as_mut()) {
                 let before = tools.len();
-                tools.retain(|t| !self.rules.iter().any(|r| &r.tool == t));
+                // Only an entry that would *add* a route goes. One that
+                // re-declares a route the global config already has changes
+                // nothing and stays — dropping it emptied the project's list,
+                // which `apply` then assigned wholesale, wiping the operator's
+                // own route and with it the `setup` refusal of the global
+                // `allow` behind it (PR #148's review). The wholesale assign
+                // is the AUDIT-RESEARCH §2 row; this keeps the new code from
+                // aiming it at exactly the tools the operator ruled on.
+                let already = self.outbox.tools.clone();
+                tools.retain(|t| already.contains(t) || !self.rules.iter().any(|r| &r.tool == t));
                 if tools.len() != before {
                     tracing::warn!(
                         "{} `[outbox] tools` entr{} in {} name a tool the global config has a \
@@ -2447,6 +2456,33 @@ match = ["rm -rf build"]
             cfg.outbox.tools,
             vec!["send_email".to_string()],
             "the project's route for the ruled tool was ignored; its other route kept"
+        );
+
+        // A project that merely re-declares a route the global config already
+        // has changes nothing and must not be read as routing away a rule:
+        // dropping the entry emptied the list, `apply` assigned it wholesale,
+        // and the operator's own route — and the `setup` refusal of the
+        // `allow` behind it — vanished.
+        let redeclared = dir.join("redeclared.toml");
+        std::fs::write(&redeclared, "[outbox]\ntools = [\"send_email\"]\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.outbox.tools = vec!["send_email".into()];
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "send_email".into(),
+            decision: crate::policy::RuleDecision::Allow,
+            examples: vec!["anything".into()],
+            ..Default::default()
+        });
+        cfg.merge_file(&redeclared, LayerTrust::Project).unwrap();
+        assert_eq!(
+            cfg.outbox.tools,
+            vec!["send_email".to_string()],
+            "a re-declared route stays routed"
+        );
+        assert_eq!(
+            cfg.rules_superseded_by_staging().len(),
+            1,
+            "and the global allow behind it is still the one setup refuses"
         );
 
         // And a project file in the directory — any project file — does not
