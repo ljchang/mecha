@@ -1414,13 +1414,16 @@ runs on a day with nothing to discard):
 # STOPS the chain rather than printing and moving on. Two is-ancestor lines:
 # one for HEAD (the tree that moves) and one for refs/heads/main (the ref
 # block 2 force-resets) — each must be behind origin/main, or the one-hop
-# `switch -C` would discard something. And no linked worktree may have main
-# checked out, or `switch -C` refuses — after block 2's discard has run.
+# `switch -C` would discard something. And no *linked* worktree may have
+# main checked out, or `switch -C` refuses — after block 2's discard has
+# run; the shared checkout holding main itself is the steady state and
+# passes.
 R=~/Github/mecha
 git -C $R fetch origin \
 && git -C $R merge-base --is-ancestor HEAD origin/main \
 && git -C $R merge-base --is-ancestor refs/heads/main origin/main \
-&& ! git -C $R worktree list --porcelain | grep -qx 'branch refs/heads/main' \
+&& wt=$(git -C $R for-each-ref --format='%(worktreepath)' refs/heads/main) \
+&& { test -z "$wt" || test "$wt" = "$(realpath $R)"; } \
 && git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
 && p=$(git -C $R status --porcelain) \
 && { test -z "$p" || test "$p" = " M docs/README.md"; } \
@@ -1428,9 +1431,11 @@ git -C $R fetch origin \
 && echo "checks passed — if a diff printed above, READ it: only the one APPRAISAL row? then block 2"
 ```
 
-If block 1 stops before the echo: the launch script differs between `HEAD`
-and `origin/main` (do not switch — read the banner), or the working copy
-holds something other than that one file (find its owner first). The discard
+If block 1 stops before the echo: the move is not a fast-forward for one of
+the two refs, or a *linked* worktree has `main` checked out (`switch -C`
+would refuse — find that session), or the launch script differs between
+`HEAD` and `origin/main` (do not switch — read the banner), or the working
+copy holds something other than that one file (find its owner first). The discard
 in block 2 is destructive; it runs only when there is something to discard,
 and a person reads the diff between the blocks before it does.
 
@@ -1444,20 +1449,23 @@ and a person reads the diff between the blocks before it does.
 # Block 1's checks are re-run here — a peer fetching in the shared checkout
 # during the read moves origin/main under it — the discard runs only when
 # there is something to discard, and the journal window names its zone,
-# since journalctl reads --since in local time and this block travels.
+# since journalctl reads --since in local time and this block travels; the
+# follow is self-timing (60 s cap) rather than a fixed sleep guessing how
+# long the worker takes to come up.
 R=~/Github/mecha
 p=$(git -C $R status --porcelain) \
 && { test -z "$p" || test "$p" = " M docs/README.md"; } \
 && git -C $R merge-base --is-ancestor HEAD origin/main \
 && git -C $R merge-base --is-ancestor refs/heads/main origin/main \
-&& ! git -C $R worktree list --porcelain | grep -qx 'branch refs/heads/main' \
+&& wt=$(git -C $R for-each-ref --format='%(worktreepath)' refs/heads/main) \
+&& { test -z "$wt" || test "$wt" = "$(realpath $R)"; } \
 && git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
 && { test -z "$p" || git -C $R checkout -- docs/README.md; } \
 && git -C $R switch -C main origin/main \
 && since=$(date -u '+%Y-%m-%d %H:%M:%S') \
 && systemctl --user restart mecha-voice-worker.service \
-&& sleep 10 \
-&& journalctl --user -u mecha-voice-worker.service --since "$since UTC" | grep Uvicorn
+&& timeout 60 journalctl --user -u mecha-voice-worker.service --since "$since UTC" -f \
+   | grep -m1 Uvicorn
 ```
 
 The launch-script check comes **first**, against the commit the pull will

@@ -184,7 +184,7 @@ that was being deployed (#145) would not have been live. Three things
 follow, each learned that morning:
 
 ```bash
-cat ~/Github/mecha/.git/HEAD                      # expect: ref: refs/heads/main
+git -C ~/Github/mecha symbolic-ref --short HEAD   # expect: main
 git -C ~/Github/mecha status --porcelain          # expect: empty
 ```
 
