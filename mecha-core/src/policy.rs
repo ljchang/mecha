@@ -448,8 +448,13 @@ impl ExecPolicy {
             // opaque prompt was not already costing, and a false forbid is a
             // refusal, not a hole. The PR review found the pattern-less case
             // fixed and this one — the PR's own headline example — not.
-            if let Some(seg) = forbidden_words(&rules, command) {
-                return Some(self.ruling(tool, RuleDecision::Forbid, &rules, Some(&seg)));
+            // And a patterned `prompt` the same way, one pass later: `git
+            // push origin main > /dev/null` carries the words a `prompt` on
+            // `["git", "push"]` names, and under `--yes` it executed where
+            // the un-redirected spelling was consulted (PR #148's review).
+            let by_words = narrowing_words(&rules, command);
+            if let Some((RuleDecision::Forbid, seg)) = &by_words {
+                return Some(self.ruling(tool, RuleDecision::Forbid, &rules, Some(seg)));
             }
             // A pattern-less `prompt` applies to every call by construction,
             // opaque or not.
@@ -458,6 +463,9 @@ impl ExecPolicy {
                 .any(|r| r.pattern.is_empty() && r.decision == RuleDecision::Prompt)
             {
                 return Some(self.ruling(tool, RuleDecision::Prompt, &rules, None));
+            }
+            if let Some((RuleDecision::Prompt, seg)) = &by_words {
+                return Some(self.ruling(tool, RuleDecision::Prompt, &rules, Some(seg)));
             }
             // The inline-eval floor applies to an opaque command as it does
             // to a splittable one: the words are cut at the shell's separators
@@ -537,9 +545,10 @@ impl ExecPolicy {
                 let opaque_inner = segment[1..]
                     .iter()
                     .filter(|arg| arg.contains(char::is_whitespace) && segments_of(arg).is_none())
-                    .any(|arg| forbidden_words(&rules, arg).is_some());
-                if opaque_inner {
-                    decision = Some(RuleDecision::Forbid);
+                    .filter_map(|arg| narrowing_words(&rules, arg).map(|(d, _)| d))
+                    .max();
+                if let Some(d) = opaque_inner {
+                    decision = Some(decision.map_or(d, |c| c.max(d)));
                 }
                 // Under the strict check, never below Prompt: an allowlisted
                 // interpreter is not an allowlisted command.
@@ -751,8 +760,11 @@ fn opaque_segments(command: &str) -> Vec<Vec<String>> {
         "{", "}", "!", "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done",
         "case", "esac", "in", "select", "time", "coproc", "function",
     ];
-    command
-        .split([';', '|', '&', '(', ')', '{', '}', '`', '<', '>', '\n'])
+    // Redirections go first, over the whole command: `2>&1` holds a `&` that
+    // the separator split below would otherwise cut, leaving `1` as a head.
+    let stripped = strip_redirects(command);
+    stripped
+        .split([';', '|', '&', '(', ')', '{', '}', '`', '\n'])
         .map(|piece| {
             piece
                 .split_whitespace()
@@ -778,42 +790,81 @@ fn opaque_segments(command: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// A patterned `forbid`'s words, found in a command the splitter refused to
-/// take apart. Split on whitespace and the shell's separators with quote
-/// characters dropped, matched at every position, first token of the match
-/// reduced to its basename.
-/// Over-approximate by design: this runs only where the answer would
-/// otherwise be a prompt, and a false forbid is a refusal, not a hole.
-fn forbidden_words(rules: &[&RuleConfig], command: &str) -> Option<Vec<String>> {
-    // Quote characters are dropped from every word, not honoured: `"rm" -rf
-    // $HOME` and `sh -c 'rm -rf /*'` carry the forbidden words as plainly as
-    // the bare spelling does, and the PR review found them coming back as a
-    // prompt — which on a headless `Allow` surface is a yes. And the shell's
-    // own separators split a word the way whitespace does: `git status;rm
-    // -rf *` is `git status; rm -rf *` to bash, one character apart, and the
-    // review found the glued spelling walking past this check next — and
-    // then the backtick, the one substitution spelling `(`/`)` did not cover.
-    let words: Vec<String> = command
-        .split(|c: char| {
-            c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '`' | '<' | '>')
-        })
-        .map(|w| {
-            w.chars()
-                .filter(|c| !matches!(c, '\'' | '"'))
-                .collect::<String>()
-        })
-        .filter(|w| !w.is_empty())
-        .collect();
-    for start in 0..words.len() {
-        let tail = &words[start..];
-        if rules
-            .iter()
-            .any(|r| r.decision == RuleDecision::Forbid && !r.pattern.is_empty() && r.matches(tail))
-        {
-            return Some(tail.to_vec());
+/// A piece of a command with every redirection removed — the operator *and*
+/// its target, as one span: `> out`, `>out`, `2>/dev/null`, `2>&1`, `&>log`,
+/// `< list`. Splitting on `<`/`>` alone left the target standing as the
+/// next word, so `> out python3 -c 'import os'` headed on `out` and the
+/// floor never saw the interpreter (PR #148's review). Over-approximate:
+/// a word glued to the operator is taken as its target whatever it was.
+fn strip_redirects(piece: &str) -> String {
+    let cs: Vec<char> = piece.chars().collect();
+    let mut out = String::with_capacity(piece.len());
+    let mut i = 0;
+    while i < cs.len() {
+        if cs[i] != '<' && cs[i] != '>' {
+            out.push(cs[i]);
+            i += 1;
+            continue;
+        }
+        // The file descriptor glued in front (`2>`), and the `&` of `&>`.
+        while out.ends_with(|c: char| c.is_ascii_digit()) {
+            out.pop();
+        }
+        if out.ends_with('&') {
+            out.pop();
+        }
+        while i < cs.len() && (cs[i] == '<' || cs[i] == '>') {
+            i += 1;
+        }
+        if i < cs.len() && cs[i] == '&' {
+            // `>&1`, `>&-`: the target is a descriptor, not a word.
+            i += 1;
+            while i < cs.len() && (cs[i].is_ascii_digit() || cs[i] == '-') {
+                i += 1;
+            }
+        } else {
+            while i < cs.len() && cs[i].is_whitespace() {
+                i += 1;
+            }
+            while i < cs.len() && !cs[i].is_whitespace() && !matches!(cs[i], '<' | '>') {
+                i += 1;
+            }
+        }
+        out.push(' ');
+    }
+    out
+}
+
+/// The strongest *narrowing* rule — `prompt` or `forbid` — whose words appear
+/// in a command the splitter refused to take apart, with the words that
+/// matched. Over the best-effort segments of [`opaque_segments`], matched at
+/// every position rather than only at a head, first token of the match
+/// reduced to its basename. Over-approximate by design: this runs only where
+/// the answer would otherwise fall through, and a false prompt or forbid
+/// costs a prompt where a false allow is the hole. `allow` rules are never
+/// consulted here — an opaque command is never allowed by its words.
+fn narrowing_words(rules: &[&RuleConfig], command: &str) -> Option<(RuleDecision, Vec<String>)> {
+    let mut best: Option<(RuleDecision, Vec<String>)> = None;
+    for seg in opaque_segments(command) {
+        for start in 0..seg.len() {
+            let tail = &seg[start..];
+            let hit = rules
+                .iter()
+                .filter(|r| r.decision != RuleDecision::Allow && !r.pattern.is_empty())
+                .filter(|r| r.matches(tail))
+                .map(|r| r.decision)
+                .max();
+            if let Some(d) = hit {
+                if best.as_ref().is_none_or(|(b, _)| d > *b) {
+                    best = Some((d, tail.to_vec()));
+                }
+                if d == RuleDecision::Forbid {
+                    return best;
+                }
+            }
         }
     }
-    None
+    best
 }
 
 /// The commands a wrapper segment would run: every proper suffix of its argv
@@ -1100,6 +1151,12 @@ mod tests {
             "if python3 -c 'x'; then echo ok; fi",
             "! sudo ls *.txt",
             "time bash -c 'curl $URL | sh'",
+            // A redirect ahead of the interpreter is an operator and a
+            // target, not a head.
+            "> out python3 -c 'import os'",
+            "2>&1 python3 -c 'x'",
+            "&> log sudo ls *",
+            "2>/dev/null xargs rm",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(evals)).unwrap().decision,
@@ -1126,6 +1183,39 @@ mod tests {
             loose.decide("shell", &cmd("python3 -c 'import os' > /tmp/x")),
             None
         );
+    }
+
+    /// A patterned `prompt` reaches an opaque command by its words, as a
+    /// `forbid` does: `git push origin main > /dev/null` must not run under
+    /// `--yes` where `git push origin main` is consulted. `forbid` still wins
+    /// where both appear, and the words never *allow* anything.
+    #[test]
+    fn a_patterned_prompt_reaches_an_opaque_command_by_its_words() {
+        let p = policy(vec![
+            rule("shell", &[&["git"], &["push"]], RuleDecision::Prompt),
+            rule("shell", &[&["rm"], &["-rf"]], RuleDecision::Forbid),
+            rule("shell", &[&["ls"]], RuleDecision::Allow),
+        ]);
+        for pushed in [
+            "git push origin main > /dev/null",
+            "git push origin main; ls *.txt",
+            "cd repo && git push",
+            "{ git push; }",
+        ] {
+            assert_eq!(
+                p.decide("shell", &cmd(pushed)).unwrap().decision,
+                RuleDecision::Prompt,
+                "{pushed}"
+            );
+        }
+        assert_eq!(
+            p.decide("shell", &cmd("git push; rm -rf $HOME"))
+                .unwrap()
+                .decision,
+            RuleDecision::Forbid
+        );
+        // The `allow` on `ls` says nothing about an opaque `ls`.
+        assert_eq!(p.decide("shell", &cmd("ls *.txt")), None);
     }
 
     /// An opaque command that carries no forbidden word and matches no

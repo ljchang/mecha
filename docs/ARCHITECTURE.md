@@ -1516,20 +1516,25 @@ refusal. The specification and the survey behind it are
   silently-degrading guard wearing a label. Two edges, both from PR #148's
   review: `publish_tools` is a kind and not a route (a name there absent from
   `tools` executes unstaged, so a rule on it judges and loads), and a
-  *project* layer can reach the contradiction from either side — its own
-  rule on a globally routed tool, or its own `[outbox] tools` routing a tool
-  the global config has a rule for (`apply` takes a project's route list on
-  purpose) — so `merge_file` reconciles over the merged state after `apply`
-  and drops the now-inert rules with a warning, whichever layer wrote which
-  half, rather than failing every `mecha` command in a cloned repository's
-  directory.
+  *project* layer can reach the contradiction from either side, and each
+  time it is the project's half that goes, with a warning, never the
+  operator's: a project `[[rule]]` on a routed tool is dropped after `apply`
+  over the merged state (a project may un-route as well as route), and a
+  project `[outbox] tools` entry naming a tool the global config has a rule
+  for is cut before `apply` — routing it would have made the operator's
+  `forbid` a staged draft a person can release, the one reconciliation that
+  would have removed the operator's word rather than the project's. Neither
+  fails a `mecha` command in a cloned repository's directory. The check is on
+  the config file, so `--no-outbox` does not lift the global load error.
 - **The splitter is conservative on purpose.** A command is judged one
   segment at a time (`&&`, `||`, `|`, `;`), and allowed only if every segment
   is. Anything `split_segments` cannot take apart with certainty —
   substitution, redirection, globs, braces, backslashes, comments, control
   flow, an unterminated quote, an operator glued to a word — is one opaque
-  invocation: its words are searched for every `forbid`, a pattern-less
-  `forbid` or `prompt` applies to it by construction, the inline-eval floor
+  invocation: its words are searched for every patterned `forbid` and
+  `prompt` (`narrowing_words` — never for an `allow`, which an opaque
+  command cannot earn), a pattern-less `forbid` or `prompt` applies to it by
+  construction, the inline-eval floor
   applies to it under `strict_inline_eval` (its best-effort segment heads are
   asked whether they run their arguments — a redirect must not make `python3
   -c` *less* restricted than it is without one, which the first fall-through
@@ -1542,13 +1547,16 @@ refusal. The specification and the survey behind it are
   it had run the day before — and the owner ruled for the fall-through on
   2026-09-03. A false "cannot split" costs an `allow` that would have applied;
   a false "can" costs the feature.
-  `forbid` is the one rule that reaches into an opaque command: a pattern-less
-  one by construction, a patterned one by its words (`forbidden_words` —
-  split on whitespace and the shell's separators with quote characters
-  dropped, matched at every position, deliberately over-approximate), so
-  `rm -rf $HOME`, `"rm" -rf $HOME`, `git status; rm -rf *` and the glued
-  `git status;rm -rf *` are refused rather than downgraded to the prompt a
-  headless `Allow` mode answers yes to. **A program path names its program
+  `forbid` and `prompt` are the rules that reach into an opaque command: a
+  pattern-less one by construction, a patterned one by its words
+  (`narrowing_words` over `opaque_segments` — cut at the shell's separators
+  with redirections removed operator-and-target, quote characters and
+  backslashes dropped, leading keywords and assignments skipped, matched at
+  every position, deliberately over-approximate), so `rm -rf $HOME`, `"rm"
+  -rf $HOME`, `git status; rm -rf *`, the glued `git status;rm -rf *` and
+  `git push origin main > /dev/null` under a `prompt` on `git push` are
+  refused or asked about rather than downgraded to what a headless `Allow`
+  mode answers yes to. **A program path names its program
   only where the model cannot write.** `allow` reduces `/usr/bin/git` to
   `git` and nothing outside `SYSTEM_BIN_DIRS` (`/bin`, `/sbin`, `/usr/bin`,
   `/usr/sbin`): `./git` may be a file the model wrote, and

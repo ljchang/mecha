@@ -970,7 +970,8 @@ impl Config {
                     "[[rule]] #{} names `{}`, which `[outbox] tools` routes to staging. A staged \
                      call is reviewed by a person at release and is never judged by rules, so \
                      this rule would judge nothing. Remove the rule, or take the tool out of \
-                     `[outbox] tools` if you want it refused or allowed outright",
+                     `[outbox] tools` if you want it refused or allowed outright (this is a \
+                     check on the config file, so `--no-outbox` does not lift it)",
                     i + 1,
                     rule.tool
                 );
@@ -1073,6 +1074,31 @@ impl Config {
                     path.display()
                 );
             }
+            // A project may route tools to the outbox, but not a tool the
+            // global config has a rule for: routing it would make the
+            // operator's `forbid` inert (staging runs before the rules), and
+            // dropping the *global* half of the contradiction would be the
+            // one project-layer reconciliation that removes the operator's
+            // word rather than the project's (PR #148's review). The
+            // project's route entry is the overstep, so it is what goes.
+            if let Some(tools) = layer.outbox.as_mut().and_then(|o| o.tools.as_mut()) {
+                let before = tools.len();
+                tools.retain(|t| !self.rules.iter().any(|r| &r.tool == t));
+                if tools.len() != before {
+                    tracing::warn!(
+                        "{} `[outbox] tools` entr{} in {} name a tool the global config has a \
+                         `[[rule]]` for and are ignored — a project layer may not route away \
+                         a rule the operator wrote",
+                        before - tools.len(),
+                        if before - tools.len() == 1 {
+                            "y"
+                        } else {
+                            "ies"
+                        },
+                        path.display()
+                    );
+                }
+            }
         }
         // `[skills]` from a project layer may only ever *narrow*, and that is
         // enforced here rather than asked for. `dir` is dropped outright — a
@@ -1120,25 +1146,21 @@ impl Config {
         // A rule on an outbox-routed tool judges nothing, and `validate`
         // refuses that for the global layer, where the contradiction is in
         // one file the operator holds. A project layer must not be able to
-        // make every `mecha` command in its directory fail to start — and it
-        // can reach the contradiction from either side: a project `forbid`
-        // on a globally routed tool, or a project `[outbox] tools` routing a
-        // tool the global config has a rule for (`apply` assigns the route
-        // list from any layer, on purpose, so a project can un-route too).
-        // So the reconciliation runs here, over the *merged* state, after
-        // `apply`, whichever layer wrote either half: the now-inert rules are
-        // dropped with a warning, like every other project-layer overstep.
-        // PR #148's review found the first version checking before `apply`,
-        // against the global route list, and only the project's rules.
+        // make every `mecha` command in its directory fail to start, so its
+        // own overstep is dropped here instead: a project rule on a tool the
+        // merged config routes. (The other side — a project *routing* a tool
+        // the global config has a rule for — was cut from the route list
+        // above, before `apply`, so the rules that reach this point and are
+        // routed are the project's.) Over the merged state, after `apply`,
+        // because a project may un-route as well as route.
         if trust == LayerTrust::Project {
             let routed = &self.outbox.tools;
             let before = self.rules.len();
             self.rules.retain(|r| !routed.contains(&r.tool));
             if self.rules.len() != before {
                 tracing::warn!(
-                    "{} rule(s) name a tool that `[outbox] tools` routes to staging once {} is \
-                     merged, and are ignored — a staged call is reviewed at release, not judged \
-                     by rules",
+                    "{} rule(s) in {} name a tool that `[outbox] tools` routes to staging and \
+                     are ignored — a staged call is reviewed at release, not judged by rules",
                     before - self.rules.len(),
                     path.display()
                 );
@@ -2357,11 +2379,11 @@ match = ["rm -rf build"]
         );
 
         // The contradiction reached from the other side: a project that
-        // *routes* a tool the global config has a rule for. `apply` takes a
-        // project's route list on purpose, so the global rule is what turns
-        // inert — dropped with a warning, and the load succeeds.
+        // *routes* a tool the global config has a rule for. The project's
+        // route entry is the overstep and is what goes — the operator's
+        // `forbid` stands, the other route entry survives, the load succeeds.
         let routing = dir.join("routing.toml");
-        std::fs::write(&routing, "[outbox]\ntools = [\"shell\"]\n").unwrap();
+        std::fs::write(&routing, "[outbox]\ntools = [\"shell\", \"send_email\"]\n").unwrap();
         let mut cfg = Config::default();
         cfg.rules.push(crate::policy::RuleConfig {
             tool: "shell".into(),
@@ -2375,9 +2397,15 @@ match = ["rm -rf build"]
         });
         cfg.merge_file(&routing, LayerTrust::Project).unwrap();
         cfg.validate().unwrap();
-        assert!(
-            cfg.rules.is_empty(),
-            "the global rule the project routed away was dropped"
+        assert_eq!(
+            cfg.rules.len(),
+            1,
+            "the operator's forbid on `shell` stands"
+        );
+        assert_eq!(
+            cfg.outbox.tools,
+            vec!["send_email".to_string()],
+            "the project's route for the ruled tool was ignored; its other route kept"
         );
     }
 
