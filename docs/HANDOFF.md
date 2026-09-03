@@ -1349,7 +1349,9 @@ was deleted by its owner once main was on every surface — its absence again
 means "main is deployed".
 
 **2026-09-03 (~10:50 UTC, the approval-rules arc deployed)** — the owner
-asked for an update once the thirteen merges beyond v0.1.17 were in, and
+asked for an update once the thirteen PR merges beyond v0.1.17 were in
+(`git log --first-parent --merges v0.1.17..4a888ad`; `rev-list --count
+--merges` says 18, counting merges inside feature branches too), and
 this is what each of the `update` skill's surfaces was found to be and
 left as. **Installed binaries**: `mecha` and `mecha-mail` reinstalled from
 `main` at `4a888ad` (a detached worktree, not the shared checkout — see
@@ -1382,18 +1384,48 @@ shared checkout `~/Github/mecha`, which is on
 **`fix/draft-shows-its-account`**, not `main` (`.git/HEAD`; mecha-26's
 report, confirmed), so a restart would relaunch the pre-#145 `worker.py`
 — #145's echo filter is *not* live until that checkout is on `main`. The
-switch is safe for `llama-local`: `scripts/start-moe-mtp.sh` hashes
-`d76da36c` on both refs, which is the check this section asks for. The
 deploying session could not run git against the shared tree (worktree
-isolation) and asked the owner to run `git -C ~/Github/mecha switch main &&
-git -C ~/Github/mecha pull --ff-only`, then restart the worker and take its
-Uvicorn line. Also from #145: `mecha-voice-worker.service` gained a
+isolation), so the switch is the owner's, and **the probe is recorded here
+rather than its result**, because the two halves of this section's check
+are "the launch script hashes the same on both refs" *and* "the working
+copy is clean", and only the first could be run from outside. As found on
+2026-09-03 ~11:00: `scripts/start-moe-mtp.sh` hashed `d76da36c` on
+`fix/draft-shows-its-account` and on `origin/main` at `4a888ad`; local
+`main` was at `102bacc`, twelve merges behind, so `switch main` alone lands
+on a stale ref and the `pull --ff-only` does the real work — and moves the
+checkout to whatever `origin/main` is *at execution time*, so re-run the
+hash check against that commit, not against `4a888ad`. The working copy was
+**not** clean: `git status --porcelain` showed one file, ` M docs/README.md`
+— an added `APPRAISAL-RESEARCH.md` row in the research index that `main`
+already carries (landed in `1724b2c`, #140), so it is a stale duplicate of
+merged work, present before mecha-26's session began and nobody's live
+edit; it is what made the owner's first `switch` refuse silently. So, at
+execution time, in this order:
+
+```
+git -C ~/Github/mecha status --porcelain            # expect only " M docs/README.md"
+git -C ~/Github/mecha diff -- docs/README.md        # expect only the APPRAISAL-RESEARCH row
+git -C ~/Github/mecha checkout -- docs/README.md    # drop the duplicate (main has it)
+git -C ~/Github/mecha switch main && git -C ~/Github/mecha pull --ff-only
+git -C ~/Github/mecha rev-parse HEAD:scripts/start-moe-mtp.sh   # expect d76da36c…
+systemctl --user restart mecha-voice-worker.service
+journalctl --user -u mecha-voice-worker.service --since "2 minutes ago" | grep Uvicorn
+```
+
+If `status` shows anything else, stop and find its owner first. Also from
+#145: `mecha-voice-worker.service` gained a
 commented `Environment=MECHA_VOICE_ECHO_RMS=0.020` slot, and the installed
 unit is a copy, not a symlink, so the slot is not in
 `~/.config/systemd/user/` until someone copies the file — harmless (the
 default applies) but invisible to whoever next looks for it.
 `mecha-parakeet` left alone (its script did not change). **Benchmark musl**
-was **stale at Sep 2 10:30** (0.1.17 by string, pre-arc by content) and was rebuilt from `main` by `bench/build-portable.sh` in the worktree, then the static binary copied to the shared checkout's `target-musl/release/mecha` — the path `bench/run.sh` executes — and verified there: `statically linked`, and `strings` carries `routes to staging`. A scorecard run before that would have measured old code and labelled it current. **Factory**: client 0.2.8 = newest tag `v0.2.8`; droplet
+was **stale at Sep 2 10:30** (0.1.17 by string, pre-arc by content) and was
+rebuilt from `main` by `bench/build-portable.sh` in the worktree, then the
+static binary copied to the shared checkout's `target-musl/release/mecha` —
+the path `bench/run.sh` executes — and verified there: `statically linked`,
+and `strings` carries `routes to staging`. A scorecard run before that would
+have measured old code and labelled it current. **Factory**: client 0.2.8 =
+newest tag `v0.2.8`; droplet
 read-only `factory 0.2.8`, `active`, untouched. **Sandbox image**: cargo
 1.97.1 matches host, no rebuild. **Stale-process sweep**: clean — nothing
 executes a deleted `~/.cargo/bin` binary. **Not in any repo and not
