@@ -1396,7 +1396,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let store = OutboxStore::open(&root).unwrap();
-        // Exactly the shape written before  and .
+        // Exactly the shape written before `call_id` and `filled_defaults`.
         std::fs::write(
             root.join("20260101-000000-abc.json"),
             serde_json::to_string(&json!({
