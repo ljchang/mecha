@@ -485,8 +485,10 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
 /// A pure function of the *switches*, never of what a store held: an empty
 /// rules store leaves `LearnedRules` on, because the lever was not thrown,
 /// and the record's job is to say which. The three switches that also live
-/// in `[agent]` config read the config *and* the flag, so the answer is the
-/// same before and after `prepare_tools` folds the flag in. `CompactTool`
+/// in `[agent]` config are decided by [`fold_agent_switches`] over a copy
+/// of `cfg.agent` — the same function `prepare_tools` runs on the real
+/// one — so the record is the fold's output and cannot disagree with it,
+/// and the answer is the same before and after the fold. `CompactTool`
 /// is the one lever whose off position is not a flag alone: the tool is
 /// registered only when the resolved provider has a `context_window` and
 /// no `[tools]` list or `--tool` allowlist excludes it, so the caller hands
@@ -497,6 +499,8 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
 /// lever off through one must read as off through the other, or
 /// `mecha eval`'s bare arm and the record's would name different sets.
 pub fn levers_off(opts: &GlobalOpts, cfg: &Config, compact_tool_registered: bool) -> Vec<Lever> {
+    let mut agent = cfg.agent.clone();
+    fold_agent_switches(&mut agent, opts);
     Lever::ALL
         .into_iter()
         .filter(|lever| match lever {
@@ -509,10 +513,10 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config, compact_tool_registered: bool
             Lever::Skills => opts.no_skills,
             Lever::Charter => opts.no_charter,
             Lever::CompactTool => opts.no_compact_tool || !compact_tool_registered,
-            Lever::StepEscalation => opts.no_step_escalation || !cfg.agent.step_escalation,
+            Lever::StepEscalation => !agent.step_escalation,
             Lever::ApprovalRules => opts.no_rules,
-            Lever::Boredom => opts.no_boredom || !cfg.agent.boredom,
-            Lever::CompactValidate => opts.no_compact_validate || !cfg.agent.compact_validate,
+            Lever::Boredom => !agent.boredom,
+            Lever::CompactValidate => !agent.compact_validate,
         })
         .collect()
 }
@@ -601,6 +605,24 @@ fn step_escalation_enabled(cfg_value: bool, no_step_escalation: bool) -> bool {
     cfg_value && !no_step_escalation
 }
 
+/// The three `[agent]` switches a `--no-*` flag may narrow and never widen,
+/// folded in one place. **Both readers go through here**: `prepare_tools`
+/// folds the config the agent is built from, and [`levers_off`] folds a
+/// copy to decide what `RunConfig::levers_off` records — so the record is
+/// the effect's own output rather than a second reading of the flag. On
+/// review the record read `opts.no_boredom || !cfg.agent.boredom`, an OR
+/// that was true whether or not the fold below had run: delete the fold
+/// and the record still said `boredom` was off while the agent kept
+/// issuing notices — "absent" of something that ran, the one lie a
+/// confound record must not tell — and no test noticed, because both
+/// tests read only `GlobalOpts`. The truth table over this function is
+/// what fails on that now.
+fn fold_agent_switches(agent: &mut mecha_core::config::AgentConfig, opts: &GlobalOpts) {
+    agent.step_escalation = step_escalation_enabled(agent.step_escalation, opts.no_step_escalation);
+    agent.boredom = agent.boredom && !opts.no_boredom;
+    agent.compact_validate = agent.compact_validate && !opts.no_compact_validate;
+}
+
 /// The `ToolCtx` shape `compact_requested` already established: presence is
 /// the enablement. See [`step_escalation_enabled`] for why this is its own
 /// function rather than an inline `.then(...)` at the call site.
@@ -635,12 +657,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     if opts.compact_at.is_some() {
         cfg.agent.compact_at_tokens = opts.compact_at;
     }
-    cfg.agent.step_escalation =
-        step_escalation_enabled(cfg.agent.step_escalation, opts.no_step_escalation);
-    // The same shape for the two switches that ship on: the flag can only
-    // narrow, so a config that already says off stays off.
-    cfg.agent.boredom = cfg.agent.boredom && !opts.no_boredom;
-    cfg.agent.compact_validate = cfg.agent.compact_validate && !opts.no_compact_validate;
+    fold_agent_switches(&mut cfg.agent, opts);
     if opts.no_thinking {
         cfg.agent.thinking = false;
         // Disabling thinking above `high` effort is rejected by the API. The
@@ -1616,8 +1633,65 @@ mod surface_only_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_subagent, excluded_by_allowlist, step_escalation_enabled, step_escalation_slot,
+        build_subagent, excluded_by_allowlist, fold_agent_switches, levers_off,
+        step_escalation_enabled, step_escalation_slot,
     };
+    use crate::GlobalOpts;
+    use mecha_core::config::Config;
+    use mecha_core::harness::Lever;
+
+    /// The review finding this pins: `--no-boredom` and
+    /// `--no-compact-validate` are made real by one fold that nothing else
+    /// exercised, while the record read the flag on its own — so the fold
+    /// could be deleted and the record would still say "absent" of a notice
+    /// the agent went on issuing. Every combination of config value and
+    /// flag, for all three switches, through the one fold; and the lever
+    /// the record would write, read off the same fold, so effect and record
+    /// are asserted equal rather than each against the flag.
+    #[test]
+    fn the_three_agent_switches_fold_once_and_the_record_reads_the_fold() {
+        for cfg_value in [false, true] {
+            for no_flag in [false, true] {
+                let mut cfg = Config::default();
+                cfg.agent.step_escalation = cfg_value;
+                cfg.agent.boredom = cfg_value;
+                cfg.agent.compact_validate = cfg_value;
+                let opts = GlobalOpts {
+                    no_step_escalation: no_flag,
+                    no_boredom: no_flag,
+                    no_compact_validate: no_flag,
+                    ..GlobalOpts::default()
+                };
+
+                let mut folded = cfg.agent.clone();
+                fold_agent_switches(&mut folded, &opts);
+                let expect = cfg_value && !no_flag;
+                assert_eq!(
+                    folded.step_escalation, expect,
+                    "cfg={cfg_value} flag={no_flag}"
+                );
+                assert_eq!(folded.boredom, expect, "cfg={cfg_value} flag={no_flag}");
+                assert_eq!(
+                    folded.compact_validate, expect,
+                    "cfg={cfg_value} flag={no_flag}"
+                );
+
+                // The record: off exactly when the fold says off.
+                let off = levers_off(&opts, &cfg, true);
+                for lever in [
+                    Lever::StepEscalation,
+                    Lever::Boredom,
+                    Lever::CompactValidate,
+                ] {
+                    assert_eq!(
+                        off.contains(&lever),
+                        !expect,
+                        "{lever:?} recorded off must equal the fold's off: cfg={cfg_value} flag={no_flag}"
+                    );
+                }
+            }
+        }
+    }
 
     /// The review finding this pins: `cfg.agent.step_escalation` is read
     /// nowhere but `build`'s `ToolCtx` construction, so nothing else would
