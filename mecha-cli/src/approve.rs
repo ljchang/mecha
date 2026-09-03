@@ -31,22 +31,37 @@ impl Approver for TerminalApprover {
     async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
         self.ask(tool, input, Some(why)).await
     }
+
+    /// Past the `always` list for the same reason: a `prompt` rule is the
+    /// operator asking that a person see *this* call, and one `[a]lways` to
+    /// `shell: ls` covering a later `shell: cargo publish` is the
+    /// tool-granularity problem the rules exist to end.
+    async fn consult(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        self.ask(tool, input, Some(why)).await
+    }
+
+    /// A rule's `allow` is a yes written down in advance; this approver has
+    /// no mode of its own to consult.
+    async fn permit(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
+        Decision::Allow
+    }
 }
 
 impl TerminalApprover {
-    /// `why` is `Some` for an escalation, and two answers change meaning
-    /// there. A bare Enter is consent for an ordinary approval and is *not*
-    /// for the prompt whose whole purpose is that a person decides about
-    /// this send — a reflexive Enter is exactly the input it must not read
-    /// as yes. And `[a]lways` at an escalation would install a standing yes
-    /// on the ordinary path that `escalate` deliberately bypasses, so it is
-    /// not offered and, if typed, allows this call only.
+    /// `why` is `Some` for a forced prompt — an escalation, or a `prompt`
+    /// rule — and two answers change meaning there. A bare Enter is consent
+    /// for an ordinary approval and is *not* for the prompt whose whole
+    /// purpose is that a person decides about this call — a reflexive Enter
+    /// is exactly the input it must not read as yes. And `[a]lways` there
+    /// would install a standing yes on the ordinary path that `escalate` and
+    /// `consult` deliberately bypass, so it is not offered and, if typed,
+    /// allows this call only.
     async fn ask(&self, tool: &dyn Tool, input: &Value, why: Option<&str>) -> Decision {
         let name = tool.name().to_string();
         let summary = summarize(&name, input);
-        let escalated = why.is_some();
+        let forced = why.is_some();
         let preface = why.map(|w| format!("  {w}\n")).unwrap_or_default();
-        let choices = if escalated {
+        let choices = if forced {
             "[y]es / [n]o / [q]uit"
         } else {
             "[y]es / [a]lways / [n]o / [q]uit"
@@ -69,11 +84,13 @@ impl TerminalApprover {
 
         match answer.chars().next() {
             Some('y') => Decision::Allow,
-            None if escalated => Decision::Blocked(
-                "an escalated call needs an explicit yes, and an empty line is not one".into(),
+            None if forced => Decision::Blocked(
+                "a call a person was asked to see needs an explicit yes, and an empty line is \
+                 not one"
+                    .into(),
             ),
             None => Decision::Allow,
-            Some('a') if escalated => Decision::Allow,
+            Some('a') if forced => Decision::Allow,
             Some('a') => {
                 self.always.lock().unwrap().insert(tool.name().to_string());
                 Decision::Allow

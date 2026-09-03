@@ -1195,6 +1195,9 @@ fn force_reproducible(opts: &mut GlobalOpts, allow_mcp: bool, allow_learned_rule
     opts.no_charter = true;
     opts.no_compact_tool = true;
     opts.no_step_escalation = true;
+    // Approval rules come from this machine's config and change what a
+    // case's `shell` call does; a scorecard must not depend on them.
+    opts.no_rules = true;
 }
 
 #[cfg(test)]
@@ -1228,6 +1231,9 @@ mod tests {
             // Off by default, but a machine's own config.toml could still
             // turn it on — a scorecard must not depend on that either.
             ("step escalation", opts.no_step_escalation),
+            // Same shape: a `forbid` in this box's rules file would score a
+            // case's `shell` call as `Blocked by policy:` here and not there.
+            ("approval rules", opts.no_rules),
         ] {
             assert!(
                 on,
