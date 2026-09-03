@@ -168,7 +168,7 @@ pub fn compose_offer(items: &[OutboxItem]) -> Option<Offer> {
 /// hear, named and offered when it is not.
 fn ask_about(item: &OutboxItem) -> String {
     let view = DraftView::of(&item.args);
-    let spoken = view.spoken();
+    let spoken = view.spoken(&item.filled_defaults);
     let mut out = String::new();
     if spoken.chars() <= SPOKEN_UNPROMPTED_CHARS {
         // "Here it is, in full" rather than a second "I've drafted…": the
@@ -262,7 +262,9 @@ pub fn react(
         SpokenAnswer::ReadItOut => match head {
             Some(item) => Reaction::Reread(format!(
                 "{} Say yes to send it, or later to leave it.",
-                DraftView::of(&item.args).spoken().text()
+                DraftView::of(&item.args)
+                    .spoken(&item.filled_defaults)
+                    .text()
             )),
             // The draft is gone from the store between the question and the
             // answer — sent from the page, or swept. Saying so beats reading
