@@ -150,7 +150,10 @@ When a header probe echoes a value back (`If-Modified-Since` from a
 `Last-Modified` you just grepped), strip carriage returns first —
 `| tr -d '\r'` — or the CR rides into the outgoing header and the server
 answers 400, which reads exactly like a server bug and is your curl. Two
-sessions hit it independently within an hour on 2026-08-29.
+sessions hit it independently within an hour on 2026-08-29. Since tower-http
+0.7 the same probe can send `If-None-Match` with the `ETag` the 200 carried
+(same CR trap), and a `304` from either header echoes both validators back —
+a bare `304` with no `ETag` means the binary answering predates the bump.
 
 ### 2. The long-running services
 
