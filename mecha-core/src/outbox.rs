@@ -209,6 +209,25 @@ pub struct OutboxItem {
 }
 
 impl OutboxItem {
+    /// The pins the reviewer has **not** since changed.
+    ///
+    /// `filled_defaults` is written once, at staging; `update_args` rewrites
+    /// `args` and leaves it alone. So after `mecha outbox edit` moves a
+    /// pinned field the list still names it, and a surface that trusts the
+    /// raw list credits the harness with the person's own edit.
+    ///
+    /// On the item rather than at the call sites because there are already
+    /// two, and they disagreed: the spoken offer filtered and the spoken
+    /// re-read did not, which is the worse way round — the re-read exists
+    /// precisely to say what is in the store *now*.
+    pub fn unedited_defaults(&self) -> Vec<String> {
+        self.filled_defaults
+            .iter()
+            .filter(|k| self.args.get(k.as_str()) == self.args_before.get(k.as_str()))
+            .cloned()
+            .collect()
+    }
+
     pub fn edited(&self) -> bool {
         self.args != self.args_before
     }

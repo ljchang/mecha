@@ -168,21 +168,11 @@ pub fn compose_offer(items: &[OutboxItem]) -> Option<Offer> {
 /// hear, named and offered when it is not.
 fn ask_about(item: &OutboxItem) -> String {
     let view = DraftView::of(&item.args);
-    // What the harness pinned *and the reviewer has not since changed*.
-    //
-    // `filled_defaults` records the fill at staging time and `update_args`
-    // rewrites `args` without touching it, so after `mecha outbox edit` moves
-    // a pinned field the list still names it — and the readback would call a
-    // value the *person* chose a default, on the surface where they hear it
-    // once and cannot look back. Headers are safe either way, since those keep
-    // their own lines; this only bites the collapsed bucket.
-    let pinned: Vec<String> = item
-        .filled_defaults
-        .iter()
-        .filter(|k| item.args.get(k.as_str()) == item.args_before.get(k.as_str()))
-        .cloned()
-        .collect();
-    let spoken = view.spoken(&pinned);
+    // The pins the reviewer has not since changed — see
+    // `OutboxItem::unedited_defaults`. Calling a value the *person* chose a
+    // default is worst here and on the re-read below, the two surfaces where
+    // they hear it once and cannot look back.
+    let spoken = view.spoken(&item.unedited_defaults());
     let mut out = String::new();
     if spoken.chars() <= SPOKEN_UNPROMPTED_CHARS {
         // "Here it is, in full" rather than a second "I've drafted…": the
@@ -277,7 +267,7 @@ pub fn react(
             Some(item) => Reaction::Reread(format!(
                 "{} Say yes to send it, or later to leave it.",
                 DraftView::of(&item.args)
-                    .spoken(&item.filled_defaults)
+                    .spoken(&item.unedited_defaults())
                     .text()
             )),
             // The draft is gone from the store between the question and the
@@ -373,16 +363,16 @@ mod tests {
     use mecha_core::outbox::OutboxKind;
     use serde_json::json;
 
-    /// A value the reviewer changed is no longer called a default.
+    /// A value the reviewer changed is no longer called a default — on both
+    /// of the surfaces that speak it.
     ///
-    /// `filled_defaults` is written once, at staging; `update_args` rewrites
-    /// `args` and leaves it alone. So an edited pinned field is still named
-    /// there, and the readback would tell a listener the harness chose a
-    /// value they chose themselves — on the surface where they hear it once.
+    /// Through `ask_about` and `react`, not through a filter re-implemented
+    /// here. The first version of this test copied the derivation into its own
+    /// body and asserted against `DraftView` directly, so no production line
+    /// was on the path and deleting the filter left it green — the exact
+    /// regression it was written to guard.
     #[test]
     fn an_edited_pin_is_spoken_as_the_reviewers_own() {
-        use mecha_core::outbox::DraftView;
-
         let mut it = item(
             "i1",
             OutboxKind::Message,
@@ -393,28 +383,27 @@ mod tests {
         it.filled_defaults = vec!["calendar_id".into()];
 
         // As staged: the harness chose it, so it collapses into the clause.
-        let unedited: Vec<String> = it
-            .filled_defaults
-            .iter()
-            .filter(|k| it.args.get(k.as_str()) == it.args_before.get(k.as_str()))
-            .cloned()
-            .collect();
-        assert_eq!(unedited, vec!["calendar_id".to_string()]);
-        let spoken = DraftView::of(&it.args).spoken(&unedited).text();
-        assert!(spoken.contains("Defaults: "), "{spoken}");
+        let said = ask_about(&it);
+        assert!(said.contains("Defaults: "), "{said}");
 
         // After an edit the person chose it, and it gets its own sentence.
         it.args["calendar_id"] = serde_json::json!("team-shared");
-        let after: Vec<String> = it
-            .filled_defaults
-            .iter()
-            .filter(|k| it.args.get(k.as_str()) == it.args_before.get(k.as_str()))
-            .cloned()
-            .collect();
-        assert!(after.is_empty(), "an edited pin is still called a default");
-        let spoken = DraftView::of(&it.args).spoken(&after).text();
-        assert!(spoken.contains("Calendar id: team-shared."), "{spoken}");
-        assert!(!spoken.contains("Defaults: "), "{spoken}");
+        let said = ask_about(&it);
+        assert!(said.contains("Calendar id: team-shared."), "{said}");
+        assert!(!said.contains("Defaults: "), "{said}");
+
+        // And the re-read, which is the worse place to get it wrong: it
+        // exists to say what is in the store *now*, which is the edit.
+        let pending = Pending {
+            queue: VecDeque::from(vec!["i1".to_string()]),
+        };
+        match react("read it out", &pending, Some(&it), None) {
+            Reaction::Reread(said) => {
+                assert!(said.contains("Calendar id: team-shared."), "{said}");
+                assert!(!said.contains("Defaults: "), "{said}");
+            }
+            other => panic!("expected the draft read back, got {other:?}"),
+        }
     }
 
     fn item(id: &str, kind: OutboxKind, args: serde_json::Value, tainted: bool) -> OutboxItem {
