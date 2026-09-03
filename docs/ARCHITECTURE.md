@@ -1516,8 +1516,13 @@ refusal. The specification and the survey behind it are
   silently-degrading guard wearing a label. Two edges, both from PR #148's
   review: `publish_tools` is a kind and not a route (a name there absent from
   `tools` executes unstaged, so a rule on it judges and loads), and a
-  *project* layer's rule on a routed tool is dropped with a warning rather
-  than failing every `mecha` command in a cloned repository's directory.
+  *project* layer can reach the contradiction from either side — its own
+  rule on a globally routed tool, or its own `[outbox] tools` routing a tool
+  the global config has a rule for (`apply` takes a project's route list on
+  purpose) — so `merge_file` reconciles over the merged state after `apply`
+  and drops the now-inert rules with a warning, whichever layer wrote which
+  half, rather than failing every `mecha` command in a cloned repository's
+  directory.
 - **The splitter is conservative on purpose.** A command is judged one
   segment at a time (`&&`, `||`, `|`, `;`), and allowed only if every segment
   is. Anything `split_segments` cannot take apart with certainty —
