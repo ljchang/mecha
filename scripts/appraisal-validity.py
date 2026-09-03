@@ -282,8 +282,19 @@ def run_appraise(mecha, home, session_dir, appraise=False):
         sys.exit(f"no JSON from {mecha} sessions appraise over {session_dir}:\n{p.stdout}\n{p.stderr}")
     out = json.loads(p.stdout[start:])
     if appraise:
-        lines = [l for l in p.stderr.splitlines() if l.startswith("\u00b7 ")]
-        out["reasoning"] = lines[-1].split(": ", 1)[-1] if lines else None
+        # The `· <session>: ` prefix is shared with the harness's own failure
+        # line ("appraiser call failed: …"), so a failed pass keeps `None`
+        # here rather than filing our error text as the model's words. The
+        # reasoning runs from its prefix line to the end of stderr, since a
+        # reply that spans lines carries the prefix only on the first.
+        out["reasoning"] = None
+        if out["appraiser"]["failed"] == 0:
+            text = p.stderr
+            i = text.rfind("\u00b7 ")
+            if i >= 0:
+                tail = text[i:].split(": ", 1)
+                if len(tail) == 2 and "appraiser call failed: " not in tail[1]:
+                    out["reasoning"] = tail[1].strip()
     return out
 
 
