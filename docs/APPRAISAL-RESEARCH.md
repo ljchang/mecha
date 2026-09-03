@@ -204,7 +204,8 @@ loop counts at run time (`malformed_tool_args`, `tool_denied`,
 `blocked_sends`, the homeostat, the boredom and escalation counters) are
 left at their defaults and named so, never estimated. Four trials have no
 `result.json`, ten no session file, three a session but no verdict; all are
-excluded, none folded into a class. Every run was `--yes`, one prompt, no
+excluded, none folded into a class. No trial had more than one session file;
+had one, the script takes the first by name and says how many times it did. Every run was `--yes`, one prompt, no
 owner, so the intervention, edit and commitment channels were structurally
 empty — this measures the counter channel and nothing else, which is also
 why §16's principal exists.

@@ -2337,10 +2337,12 @@ The decisions that carry it, each a bug if undone:
   for the record, so eval's bare arm and any recorded run's absences come
   from one definition — a test reads each through the other (eval itself
   writes no session, so the meeting point is the function, not a record).
-  `CompactTool` is the one lever whose off position is not a flag alone —
-  the tool needs the provider's `context_window` and a `[tools]` list that
-  admits it — so the caller hands in whether it was registered, and a run
-  that could not have had the tool records it off. The record's loader
+  **The record is the switch, never the effect**, for all thirteen alike:
+  an empty rules store or a provider with no `context_window` leaves its
+  lever on, and the realised surface is `tools` and `system_prompt` on the
+  same record — an experiment pairs arms on the switch set and checks the
+  surface from those fields (one variant briefly recorded its effect, and
+  the field then meant two things; found on review). The record's loader
   degrades the *whole* list to `None` on an unknown name, never to a shorter
   list, because a lever dropped from `levers_off` reads as on; `None` is the
   same answer a transcript from before the field gives, and neither is

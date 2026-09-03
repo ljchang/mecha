@@ -1329,7 +1329,7 @@ mod tests {
         let mut bare = GlobalOpts::default();
         force_reproducible(&mut bare, false, false);
         assert_eq!(
-            crate::setup::levers_off(&bare, &cfg, true),
+            crate::setup::levers_off(&bare, &cfg),
             bare_plus_rules(&[]),
             "the bare arm records every lever off, the rules included"
         );
@@ -1338,14 +1338,14 @@ mod tests {
         let mut with_mcp = GlobalOpts::default();
         force_reproducible(&mut with_mcp, true, false);
         assert_eq!(
-            crate::setup::levers_off(&with_mcp, &cfg, true),
+            crate::setup::levers_off(&with_mcp, &cfg),
             bare_plus_rules(&[Lever::Mcp])
         );
 
         let mut with_rules = GlobalOpts::default();
         force_reproducible(&mut with_rules, false, true);
         assert_eq!(
-            crate::setup::levers_off(&with_rules, &cfg, true),
+            crate::setup::levers_off(&with_rules, &cfg),
             bare_plus_rules(&[Lever::LearnedRules])
         );
 
@@ -1354,20 +1354,20 @@ mod tests {
             let mut one = GlobalOpts::default();
             crate::setup::switch_off(&mut one, lever);
             assert!(
-                crate::setup::levers_off(&one, &cfg, true).contains(&lever),
+                crate::setup::levers_off(&one, &cfg).contains(&lever),
                 "{lever:?} thrown through switch_off must read as off"
             );
         }
 
-        // And the one lever with a non-flag off position: a run whose
-        // provider has no context window never registers `compact`, and
-        // must not record the lever as on (found on review).
+        // And untouched opts record nothing off but what the config's own
+        // defaults leave off — the record is the switch, never the effect,
+        // so a provider without a context window changes `tools`, not this.
         let untouched = GlobalOpts::default();
-        assert!(
-            crate::setup::levers_off(&untouched, &cfg, false).contains(&Lever::CompactTool),
-            "a compact tool that could not be registered records as off"
+        assert_eq!(
+            crate::setup::levers_off(&untouched, &cfg),
+            vec![Lever::StepEscalation],
+            "step escalation is the one switch that ships off"
         );
-        assert!(!crate::setup::levers_off(&untouched, &cfg, true).contains(&Lever::CompactTool));
     }
 
     /// A scratch directory that cleans up after itself, so a failing test

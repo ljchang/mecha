@@ -461,9 +461,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         agent.set_mailbox(Arc::clone(mb));
     }
 
-    // `compact_requested` is already filtered by the window, the `[tools]`
-    // lists and the flag — presence is the enablement, decided once above.
-    let levers_off = levers_off(opts, &cfg, tools.compact_requested.is_some());
+    let levers_off = levers_off(opts, &cfg);
     Ok(Prepared {
         agent,
         provider_name,
@@ -482,23 +480,22 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
 /// Which levers ([`Lever`]) a run built from `opts` over `cfg` carries
 /// **off** — the value `RunConfig::levers_off` records.
 ///
-/// A pure function of the *switches*, never of what a store held: an empty
-/// rules store leaves `LearnedRules` on, because the lever was not thrown,
-/// and the record's job is to say which. The three switches that also live
-/// in `[agent]` config are decided by [`fold_agent_switches`] over a copy
-/// of `cfg.agent` — the same function `prepare_tools` runs on the real
-/// one — so the record is the fold's output and cannot disagree with it,
-/// and the answer is the same before and after the fold. `CompactTool`
-/// is the one lever whose off position is not a flag alone: the tool is
-/// registered only when the resolved provider has a `context_window` and
-/// no `[tools]` list or `--tool` allowlist excludes it, so the caller hands
-/// in whether it *was* registered (`compact_requested.is_some()` at the
-/// registration site; `registry.get("compact")` afterwards) — a run that
-/// structurally could not have the tool must not record it as on (found on
-/// review). Paired with [`switch_off`], and tested against it: forcing a
+/// A pure function of the *switches*, never of what a store held or what
+/// the built agent ended up with: an empty rules store leaves `LearnedRules`
+/// on, because the lever was not thrown, and a provider with no
+/// `context_window` leaves `CompactTool` on for the same reason — the
+/// realised surface is `RunConfig::tools` and `system_prompt`'s to say, on
+/// the same record, and `Lever`'s docs say which field answers which
+/// question. (One variant briefly recorded its effect instead, and the field
+/// then meant two things a reader could not tell apart; found on review.)
+/// The three switches that also live in `[agent]` config are decided by
+/// [`fold_agent_switches`] over a copy of `cfg.agent` — the same function
+/// `prepare_tools` runs on the real one — so the record is the fold's output
+/// and cannot disagree with it, and the answer is the same before and after
+/// the fold. Paired with [`switch_off`], and tested against it: forcing a
 /// lever off through one must read as off through the other, or
 /// `mecha eval`'s bare arm and the record's would name different sets.
-pub fn levers_off(opts: &GlobalOpts, cfg: &Config, compact_tool_registered: bool) -> Vec<Lever> {
+pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
     let mut agent = cfg.agent.clone();
     fold_agent_switches(&mut agent, opts);
     Lever::ALL
@@ -512,7 +509,7 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config, compact_tool_registered: bool
             Lever::Messages => opts.no_messages,
             Lever::Skills => opts.no_skills,
             Lever::Charter => opts.no_charter,
-            Lever::CompactTool => opts.no_compact_tool || !compact_tool_registered,
+            Lever::CompactTool => opts.no_compact_tool,
             Lever::StepEscalation => !agent.step_escalation,
             Lever::ApprovalRules => opts.no_rules,
             Lever::Boredom => !agent.boredom,
@@ -1679,7 +1676,7 @@ mod tests {
                 );
 
                 // The record: off exactly when the fold says off.
-                let off = levers_off(&opts, &cfg, true);
+                let off = levers_off(&opts, &cfg);
                 for lever in [
                     Lever::StepEscalation,
                     Lever::Boredom,
