@@ -163,6 +163,114 @@ pub(crate) fn open_spoken_turn(text: &str, previous_turn_was_spoken: bool) -> St
     }
 }
 
+/// Words as an echo comparison sees them: lowercase, punctuation gone.
+fn spoken_words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Is this utterance, word for word, a piece of what we just said?
+///
+/// **The last thing standing between a speakerphone and an unapproved
+/// destructive call.** A spoken turn runs with the approver off under
+/// `--voice-yes`, and `mail_triage` is `destructive`, gated by the approver
+/// alone and deliberately not outbox-routed. So mecha offering "I can cancel
+/// it, delete it, or do it now" and hearing "delete it" back is that call
+/// with nobody asked — and the voice worker's own filters cannot help here,
+/// because at two or three words an echo and the plainest possible answer are
+/// the same string. That is not a threshold that wants tuning; it is a fact
+/// about short English, and it is why this gate is on the *approval* rather
+/// than on the audio.
+///
+/// A **contiguous span** and not a bag of words, for the reason six rounds of
+/// the worker's text filter established: a person correcting an offer reuses
+/// most of its words, so anything looser silences the corrections this is
+/// meant to leave alone. "Move it to Friday" against "I can move it to
+/// Thursday" is not a span of it and keeps its standing yes.
+///
+/// Any length, deliberately. A long verbatim repeat is *more* obviously our
+/// own voice, not less, and the cost of being wrong is small in the direction
+/// this errs: the turn still happens, it is simply approved the way a typed
+/// one would be.
+pub(crate) fn echoes_the_last_reply(utterance: &str, last_reply: &str) -> bool {
+    let heard = spoken_words(utterance);
+    let said = spoken_words(last_reply);
+    if heard.is_empty() || said.len() < heard.len() {
+        return false;
+    }
+    said.windows(heard.len()).any(|w| w == heard.as_slice())
+}
+
+#[cfg(test)]
+mod echo_span_tests {
+    use super::echoes_the_last_reply;
+
+    const OFFER: &str = "I can cancel it, delete it, or do it now — which would you like?";
+
+    #[test]
+    fn a_span_of_the_offer_is_our_own_voice() {
+        // Each is a contiguous piece of the sentence that proposed it, and
+        // each is a `destructive` instruction if it reaches the model as a
+        // turn with the approver off.
+        for heard in [
+            "delete it",
+            "cancel it",
+            "do it now",
+            "cancel it, delete it",
+        ] {
+            assert!(
+                echoes_the_last_reply(heard, OFFER),
+                "{heard:?} was not recognised as our own words"
+            );
+        }
+    }
+
+    #[test]
+    fn punctuation_and_case_do_not_hide_it() {
+        assert!(echoes_the_last_reply("Delete it.", OFFER));
+        assert!(echoes_the_last_reply("  DELETE  IT  ", OFFER));
+    }
+
+    #[test]
+    fn a_correction_keeps_its_standing_yes() {
+        // The failure this must not have. A person correcting an offer reuses
+        // most of its words, which is exactly why the test is a contiguous
+        // span rather than an overlap — six rounds of the worker's text
+        // filter established that the loose version silences these.
+        let offer = "I can move it to Thursday if you want me to.";
+        for heard in [
+            "move it to friday",
+            "no, not thursday",
+            "can you move it to friday instead",
+            "actually cancel that",
+        ] {
+            assert!(
+                !echoes_the_last_reply(heard, offer),
+                "{heard:?} lost its approval mode"
+            );
+        }
+    }
+
+    #[test]
+    fn an_answer_longer_than_the_reply_is_not_a_span_of_it() {
+        assert!(!echoes_the_last_reply(
+            "delete it and then tell me what is left",
+            OFFER
+        ));
+    }
+
+    #[test]
+    fn nothing_said_and_nothing_heard_are_both_false() {
+        assert!(!echoes_the_last_reply("", OFFER));
+        assert!(!echoes_the_last_reply("delete it", ""));
+    }
+}
+
 /// One voice session between runs: its conversation and its transcript.
 struct Slot {
     convo: Conversation,

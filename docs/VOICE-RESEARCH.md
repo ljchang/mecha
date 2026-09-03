@@ -959,6 +959,82 @@ repeat, a false turn costs an interruption mid-sentence and a reply to nothing
 answer is exactly who this must not silence. D4 is untouched: barge-in remains
 "finish the phrase and it stops". The structural fix is still §6 item 10.
 
+**The echo floor is measured now, and the measurement came from the incident
+itself, 2026-09-03.** `ECHO_SEGMENT_RMS` shipped as a guessed 0.020,
+commented out of the unit. The 2026-09-01 21:35 call — the one that prompted
+this whole arc — is in the worker's journal with an RMS on every segment, so
+the number is now read rather than chosen:
+
+| | RMS | |
+|---|---|---|
+| echo | 0.0257 | "The Starlink Mini costs one hundred ninety nine dollars." |
+| echo | 0.0418 | "It's prose." |
+| speech | 0.0392 | "Um options for" — the quietest real turn observed |
+| speech | 0.0396–0.1384 | every other turn across the window |
+
+The bot had said "The Starlink Mini costs $199." thirteen seconds before the
+first, and "Its pros are that it is tiny…" before the second, both confirmed
+against `Generating TTS` lines in the same journal. So the two echoes and the
+quietest real turn are all within a factor of two of each other, and
+**0.0418 of echo sits above 0.0392 of speech: no threshold separates them.**
+`Environment=MECHA_VOICE_ECHO_RMS=0.030` is set in the unit — above the
+quieter echo, 23% below the quietest turn — which catches the first and
+cannot catch the second. That is the honest ceiling for this layer, and the
+reason it is one of three.
+
+**Two things the incident showed that the text filter cannot do**, recorded
+because both look like bugs and only one is:
+
+- **TTS expands what the filter compares against.** `note_bot_speech` records
+  the text *submitted* to TTS ("costs $199"), and the microphone hears the
+  text *spoken* ("costs one hundred ninety nine dollars"). Five of nine words
+  in that echo exist in no form in the window, so the filter scored it 4
+  matched of 9 and correctly declined to call it echo. Closing it means
+  reimplementing the TTS front-end's number, currency and abbreviation
+  expansion, and the measurement says it would buy nothing here — at 0.0257
+  the energy floor gates that segment before a transcriber ever sees it. It
+  would matter only for a *long* echo, *above* 0.030, *containing* numbers.
+  Not built; named so the next person does not mistake the filter's silence
+  for a defect.
+- **A two-word echo is under every word floor by design.** "It's prose." is
+  the whole of the second one. `MIN_ECHO_WORDS` exists because at that length
+  an echo and the plainest possible answer are the same string, and the
+  branch's own history is six rounds of that being relearned. It belongs to
+  the energy floor, which at 0.0418 does not catch it either. This band is
+  simply uncovered, and saying so is better than a number that pretends
+  otherwise.
+
+**`--voice-yes` no longer survives hearing ourselves, 2026-09-03.** The open
+question from the echo arc, closed on the approval rather than on the audio.
+
+A spoken turn runs with the approver off (`TurnOpts::approve_all`, from the
+unit's `--voice-yes`), so an echo that reaches the model as a turn reaches a
+`destructive` tool with nobody asked — `mail_triage` is gated by the approver
+alone and is deliberately not outbox-routed. The worker's filters cannot close
+that band: at two or three words an echo and the plainest possible answer are
+the same string, which is a fact about short English rather than a threshold
+that wants tuning, and the 21:35 journal has it — "It's prose." is two words,
+under every word floor, and above the energy one.
+
+So `begin_turn` asks one question of a spoken turn before choosing its
+approver: **is this, word for word, a contiguous piece of the reply we just
+gave?** If it is, the turn still happens — it is simply approved the way a
+typed one would be, which is the mode the page is already in. It only ever
+narrows: a typed turn is untouched, and a spoken turn that is not a span of
+the last reply keeps whatever the flag gave it.
+
+A contiguous span rather than an overlap, for the reason six rounds of the
+worker's filter established: a person correcting an offer reuses most of its
+words, so anything looser silences the corrections this exists to leave alone.
+"Move it to Friday" is not a span of "I can move it to Thursday" and keeps its
+standing yes. Any length, since a long verbatim repeat is *more* obviously our
+own voice, not less.
+
+This is the third layer and the only one that is not a guess: the energy floor
+is measured but cannot separate 0.0418 of echo from 0.0392 of speech, the text
+filter declines to speak below eight words, and this one needs no threshold at
+all — it asks whether the words are ours, which is a question with an answer.
+
 **Both standbys were removed, 2026-08-25 — a spare nothing fails over to
 is not a spare.** Voxtral (`:8082`) had held the STT seat until the swap
 that morning and then sat idle for the rest of the day: **0 requests**,

@@ -27,9 +27,24 @@ WorkingDirectory=/home/ljchang/Github/mecha
 #
 #   journalctl -u mecha-voice-worker -f | grep "parakeet segment gated:"
 #
-# Left commented so the default (0.020) applies until somebody has measured;
-# the slot is here so it is visible that there is one.
-#Environment=MECHA_VOICE_ECHO_RMS=0.020
+# Measured, 2026-09-03, from this room and this microphone — the journal of
+# the 2026-09-01 21:35 call, which is the one that prompted the whole echo
+# arc. `journalctl -u mecha-voice-worker | grep "parakeet: duration"`:
+#
+#   echo    0.0257  "The Starlink Mini costs one hundred ninety nine dollars."
+#                   (the bot had said "The Starlink Mini costs $199." 13s earlier)
+#   echo    0.0418  "It's prose."  (the bot's "Its pros are that it is tiny…")
+#   speech  0.0392  "Um options for"        <- the quietest real turn observed
+#   speech  0.0396 … 0.1384                 across every call in the window
+#
+# So 0.030: above the louder of the two echoes' quieter sibling, and below the
+# quietest real turn by a 23% margin. It is not a clean separation — 0.0418 of
+# echo sits above 0.0392 of speech, and no threshold can split those — which is
+# why this is one layer of three rather than the answer. Raising it to catch
+# 0.0418 would cost the 0.0392 turn, and a dropped turn is the expensive
+# failure: turn-start is transcription-based, so a wrong gate is not a degraded
+# turn but no turn at all.
+Environment=MECHA_VOICE_ECHO_RMS=0.030
 ExecStart=/home/ljchang/models/voice-worker-venv/bin/python scripts/voice/worker.py --host 127.0.0.1 --port 7860 --allowed-origins https://YOUR-HOST.YOUR-TAILNET.ts.net https://YOUR-HOST.YOUR-TAILNET.ts.net:8443
 Restart=on-failure
 RestartSec=5

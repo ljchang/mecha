@@ -1148,6 +1148,35 @@ fn begin_turn(
         .get_mut(key)
         .ok_or_else(|| TurnError::Failed("no such session".into()))?;
 
+    // `--voice-yes` does not survive hearing ourselves.
+    //
+    // A spoken turn runs with the approver off, so an echo that reaches the
+    // model as a turn reaches a `destructive` tool with nobody asked —
+    // `mail_triage` is gated by the approver alone and is deliberately not
+    // outbox-routed. The worker's filters cannot close that: at two or three
+    // words an echo and the plainest possible answer are the same string.
+    // So the last check is here, on the *approval* rather than on the audio,
+    // and it asks one question — is this, word for word, a piece of what we
+    // just said? If it is, the turn still happens; it is simply approved the
+    // way a typed one would be, which is the mode the page is already in.
+    //
+    // Only ever narrows. A typed turn is untouched, and a spoken turn that is
+    // not a span of the last reply keeps whatever `--voice-yes` gave it.
+    let echoed = opts.spoken
+        && opts.approve_all
+        && ws
+            .conversation
+            .as_ref()
+            .and_then(|c| c.messages.iter().rev().find(|m| m.role == Role::Assistant))
+            .is_some_and(|m| crate::voice::echoes_the_last_reply(text, &m.text()));
+    if echoed {
+        tracing::info!("spoken turn repeats the last reply verbatim — approvals stay on");
+    }
+    let opts = TurnOpts {
+        approve_all: opts.approve_all && !echoed,
+        ..opts
+    };
+
     let text = if opts.spoken {
         crate::voice::open_spoken_turn(text, ws.last_turn_spoken)
     } else {
