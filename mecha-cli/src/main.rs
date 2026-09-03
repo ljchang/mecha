@@ -155,6 +155,15 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_step_escalation: bool,
 
+    /// Load no `[[rule]]` approval rules. **Not a flag**: a `forbid` is the
+    /// operator's standing word, and a switch that lifts it for one run is
+    /// the silently-degrading-guard shape. Set only by `mecha eval`'s
+    /// `force_reproducible`, because a scorecard must not vary with this
+    /// machine's rules file — a `forbid` in `config.toml` would turn a case's
+    /// `shell` call into `Blocked by policy:` here and not elsewhere.
+    #[arg(skip)]
+    pub no_rules: bool,
+
     /// Don't route any tools through the outbox — configured [outbox] tools
     /// execute directly under the usual gates instead of being staged.
     #[arg(long, global = true)]

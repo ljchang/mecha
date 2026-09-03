@@ -718,6 +718,54 @@ pub trait Approver: Send + Sync {
             tool.name()
         ))
     }
+
+    /// An approval rule has said *a person must see this call*
+    /// (`policy::RuleDecision::Prompt`), and `why` is the ruling's sentence.
+    ///
+    /// Separate from `approve` for the same reason `escalate` is: `approve`
+    /// is allowed to answer from a standing yes — an `[a]lways` on the tool,
+    /// a Slack thread's "approve for run" — and a `prompt` rule exists to
+    /// put *this* call in front of someone whatever the tool's standing is.
+    /// The PR review found the first version routing `prompt` through
+    /// `approve`, so one `[a]lways` to `shell: ls` silently covered a later
+    /// `shell: cargo publish` the operator had written a `prompt` rule for —
+    /// the tool-granularity problem surviving inside the mechanism built to
+    /// fix it. Interactive approvers override this to ask past their
+    /// shortcuts and to allow one call only if the person answers "always".
+    ///
+    /// The default is `Blocked`, the shape `escalate` set: a rule that says
+    /// a person must see this call fails closed where there is none. The
+    /// first version defaulted to `approve`, so under `ModeApprover { Allow }`
+    /// (`--yes`, `batch`, a trigger) a `prompt` rule allowed the call
+    /// silently while blocking it under `Ask` — the ordering the rules are
+    /// built on, inverted on exactly the surface nobody watches (the PR
+    /// review's finding). `Blocked`, not `Deny`: no human spoke.
+    async fn consult(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        let _ = input;
+        Decision::Blocked(format!(
+            "{why} — and this run's approver answers from policy, so `{}` was not put in \
+             front of anyone. Run from a surface with someone watching, or write the rule \
+             as `allow` or `forbid` if no person needs to decide.",
+            tool.name()
+        ))
+    }
+
+    /// An approval rule has said *no person needs to be asked* about this
+    /// call (`policy::RuleDecision::Allow`). Answer with whatever your mode
+    /// still forbids, and nothing else.
+    ///
+    /// A rule stands in for the human's yes and for nothing more: a
+    /// read-only run still refuses a write, a Slack thread in read-only mode
+    /// still refuses, because those are policy the run was started under and
+    /// a config rule may narrow it but never widen it. The default is to
+    /// *ask anyway* — an approver that has not thought about rules keeps
+    /// today's behaviour, which is the safe misreading. Interactive approvers
+    /// override it to return `Allow` where they would have prompted;
+    /// `ModeApprover` overrides it to honour `ReadOnly` and pass everything
+    /// else, which is what makes a rules file useful to a headless run.
+    async fn permit(&self, tool: &dyn Tool, input: &Value) -> Decision {
+        self.approve(tool, input).await
+    }
 }
 
 /// Answers from the configured [`PermissionMode`] without asking anyone.
@@ -727,6 +775,20 @@ pub struct ModeApprover {
 
 #[async_trait]
 impl Approver for ModeApprover {
+    /// A rule's `allow` is the yes a headless run has no person to give —
+    /// which is what makes a rules file useful to a trigger. `ReadOnly` is
+    /// policy the run was started under and still wins.
+    async fn permit(&self, tool: &dyn Tool, _input: &Value) -> Decision {
+        match self.mode {
+            PermissionMode::ReadOnly if !tool.read_only() => Decision::Blocked(format!(
+                "`{}` modifies state and this run is read-only; an approval rule cannot widen \
+                 that",
+                tool.name()
+            )),
+            _ => Decision::Allow,
+        }
+    }
+
     async fn approve(&self, tool: &dyn Tool, _input: &Value) -> Decision {
         match self.mode {
             PermissionMode::Allow => Decision::Allow,

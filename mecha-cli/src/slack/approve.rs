@@ -207,10 +207,44 @@ impl Approver for SlackApprover {
         )
         .await
     }
+
+    /// Past the run's blanket approvals for the same reason as `escalate`: a
+    /// `prompt` rule is the operator asking that a person see *this* call,
+    /// and "approve for run" on `shell` is not that. Not past `ReadOnly`.
+    async fn consult(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        if self.mode() == Mode::ReadOnly && !tool.read_only() {
+            return Decision::Blocked(format!(
+                "`{}` modifies state and this thread is read-only; an approval rule cannot \
+                 widen that",
+                tool.name()
+            ));
+        }
+        self.ask(
+            tool,
+            format!("{why} {}", summarise(tool.name(), input)),
+            true,
+        )
+        .await
+    }
+
+    /// A rule's `allow` stands in for the card, not for the thread's mode: a
+    /// read-only thread still refuses a write.
+    async fn permit(&self, tool: &dyn Tool, _input: &Value) -> Decision {
+        match self.mode() {
+            Mode::ReadOnly if !tool.read_only() => Decision::Blocked(format!(
+                "`{}` modifies state and this thread is read-only; an approval rule cannot \
+                 widen that",
+                tool.name()
+            )),
+            _ => Decision::Allow,
+        }
+    }
 }
 
 impl SlackApprover {
-    async fn ask(&self, tool: &dyn Tool, summary: String, escalated: bool) -> Decision {
+    /// `forced` for an escalation or a `prompt` rule: "approve for run" then
+    /// allows this call only.
+    async fn ask(&self, tool: &dyn Tool, summary: String, forced: bool) -> Decision {
         // After the mode and blanket checks, so a mid-run switch to `Allow` —
         // a button press, which is proof someone is watching after all —
         // still works. But never another card and another wait.
@@ -242,11 +276,11 @@ impl SlackApprover {
 
         match tokio::time::timeout(self.timeout, answer).await {
             Ok(Ok(Answer::Approve)) => Decision::Allow,
-            // "Approve for run" at an escalation would install a standing yes
-            // on the ordinary path that `escalate` deliberately bypasses — the
-            // rule the terminal and TUI approvers already keep. It allows this
-            // call only.
-            Ok(Ok(Answer::ApproveForRun)) if escalated => Decision::Allow,
+            // "Approve for run" at a forced prompt would install a standing yes
+            // on the ordinary path that `escalate` and `consult` deliberately
+            // bypass — the rule the terminal and TUI approvers also keep. It
+            // allows this call only.
+            Ok(Ok(Answer::ApproveForRun)) if forced => Decision::Allow,
             Ok(Ok(Answer::ApproveForRun)) => {
                 if let Ok(mut b) = self.blanket.lock() {
                     b.insert(tool.name().to_string());
@@ -551,6 +585,49 @@ mod tests {
             Some("shell"),
             "a blanket on one tool must not cover another"
         );
+    }
+
+    /// A blanket "approve for run" on `shell` does not answer a `prompt`
+    /// rule on a later `shell` call: `consult` sends a card past the blanket,
+    /// and "approve for run" on that card installs nothing.
+    #[tokio::test]
+    async fn a_prompt_rule_is_asked_past_the_blanket() {
+        let (a, mut rx) = approver(Mode::Ask, Duration::from_secs(5));
+        let task = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            while let Some(req) = rx.recv().await {
+                seen.push(req.summary.clone());
+                req.reply.send(Answer::ApproveForRun).ok();
+            }
+            seen
+        });
+        let shell = Fake {
+            name: "shell",
+            read_only: false,
+        };
+        assert!(matches!(
+            a.approve(&shell, &json!({"command": "ls"})).await,
+            Decision::Allow
+        ));
+        assert!(matches!(
+            a.approve(&shell, &json!({"command": "ls -la"})).await,
+            Decision::Allow
+        ));
+        for _ in 0..2 {
+            assert!(matches!(
+                a.consult(&shell, &json!({"command": "cargo publish"}), "a rule asks")
+                    .await,
+                Decision::Allow
+            ));
+        }
+        drop(a);
+        let seen = task.await.unwrap();
+        assert_eq!(
+            seen.len(),
+            3,
+            "one ordinary card, then both consults: {seen:?}"
+        );
+        assert!(seen[1].starts_with("a rule asks"), "{:?}", seen[1]);
     }
 
     #[test]

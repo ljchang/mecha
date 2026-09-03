@@ -353,6 +353,10 @@ impl Tool for Subagent {
             // on the parent must install them on each child too (setup does),
             // or delegating becomes the way around a pre_tool policy.
             hooks: Arc::clone(&self.agent.context().hooks),
+            // Approval rules, for the same reason as hooks: setup installs
+            // the rule set on each child, and a rule only ever narrows, so a
+            // child cannot be the way to run what a rule forbids the parent.
+            policy: Arc::clone(&self.agent.context().policy),
             // Steering is addressed to the parent. The child was given a
             // self-contained task and has no conversation to redirect.
             queued_input: None,
