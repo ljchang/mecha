@@ -790,12 +790,14 @@ fn opaque_segments(command: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// A piece of a command with every redirection removed — the operator *and*
-/// its target, as one span: `> out`, `>out`, `2>/dev/null`, `2>&1`, `&>log`,
+/// A command with every redirection removed — the operator *and* its
+/// target, as one span: `> out`, `>out`, `2>/dev/null`, `2>&1`, `&>log`,
 /// `< list`. Splitting on `<`/`>` alone left the target standing as the
 /// next word, so `> out python3 -c 'import os'` headed on `out` and the
-/// floor never saw the interpreter (PR #148's review). Over-approximate:
-/// a word glued to the operator is taken as its target whatever it was.
+/// floor never saw the interpreter (PR #148's review). A target ends at
+/// whitespace or at a separator, so the command glued to it or substituted
+/// into it stays visible to the split that follows. Over-approximate: a
+/// word glued to the operator is taken as its target whatever it was.
 fn strip_redirects(piece: &str) -> String {
     let cs: Vec<char> = piece.chars().collect();
     let mut out = String::with_capacity(piece.len());
@@ -823,17 +825,37 @@ fn strip_redirects(piece: &str) -> String {
         while i < cs.len() && (cs[i] == '<' || cs[i] == '>') {
             i += 1;
         }
-        if i < cs.len() && cs[i] == '&' {
+        // A target ends at whitespace *or* at any character the separator
+        // split below would cut on: `> out;rm -rf $HOME` glues the next
+        // command to the target, and `> $(rm -rf $HOME)`, `<(rm -rf $HOME)`,
+        // `>(…)` make the target a substitution whose inner command must
+        // stay visible. Scanning to whitespace alone swallowed all of them,
+        // and five spellings `forbidden_words` had caught went to `None`
+        // (PR #148's review).
+        let ends_target = |c: char| {
+            c.is_whitespace()
+                || matches!(c, ';' | '|' | '&' | '(' | ')' | '{' | '}' | '`' | '<' | '>')
+        };
+        if i < cs.len()
+            && cs[i] == '&'
+            && cs
+                .get(i + 1)
+                .is_some_and(|c| c.is_ascii_digit() || *c == '-')
+        {
             // `>&1`, `>&-`: the target is a descriptor, not a word.
             i += 1;
             while i < cs.len() && (cs[i].is_ascii_digit() || cs[i] == '-') {
                 i += 1;
             }
         } else {
+            if i < cs.len() && cs[i] == '&' {
+                // `>& word`, the other spelling of `&> word`.
+                i += 1;
+            }
             while i < cs.len() && cs[i].is_whitespace() {
                 i += 1;
             }
-            while i < cs.len() && !cs[i].is_whitespace() && !matches!(cs[i], '<' | '>') {
+            while i < cs.len() && !ends_target(cs[i]) {
                 i += 1;
             }
         }
@@ -1166,6 +1188,11 @@ mod tests {
             "2>/dev/null xargs rm",
             // A digit-suffixed program glued to a redirect keeps its digit.
             "python3>out -c 'x'",
+            // A substituted or separator-glued target does not swallow the
+            // interpreter behind it.
+            "diff <(python3 -c 'x') y",
+            "ls > $(python3 -c 'x')",
+            "ls > out;python3 -c 'x'",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(evals)).unwrap().decision,
@@ -1536,6 +1563,14 @@ mod tests {
             "git status; rm -rf $HOME",
             "cd /tmp && rm -rf $(pwd)",
             "/bin/rm -rf ~/*",
+            // A redirect target glued to a separator, or that *is* a
+            // substitution, must not swallow the command behind it.
+            "git status > $(rm -rf $HOME)",
+            "diff <(rm -rf $HOME) b",
+            "tee >(rm -rf $HOME)",
+            "git status > out;rm -rf $HOME",
+            "echo a > b&&rm -rf $HOME",
+            "cat >& out; rm -rf $HOME",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(opaque)).unwrap().decision,
