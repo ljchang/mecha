@@ -1424,14 +1424,16 @@ discard in block 2 is destructive and is not conditional, which is why a
 person reads the diff between the blocks.
 
 ```
-# Block 2 — only after a person has read block 1's diff. `merge --ff-only
-# origin/main`, not `pull`: a pull re-fetches and can land a commit block 1
-# never checked. The journal window opens at the restart, not two minutes
-# before it, or the old process's Uvicorn line passes the check.
-since=$(date -u '+%Y-%m-%d %H:%M:%S') \
+# Block 2 — only after a person has read block 1's diff. It re-asserts
+# block 1's mechanical precondition first (a peer can dirty a shared
+# checkout during the read), lands on the checked ref in one hop
+# (`switch -C main origin/main` — never `switch main` then merge, which
+# passes through stale local `main` and, if the ff-merge refuses, strands
+# the tree there), and opens the journal window at the restart itself.
+test "$(git -C ~/Github/mecha status --porcelain)" = " M docs/README.md" \
 && git -C ~/Github/mecha checkout -- docs/README.md \
-&& git -C ~/Github/mecha switch main \
-&& git -C ~/Github/mecha merge --ff-only origin/main \
+&& git -C ~/Github/mecha switch -C main origin/main \
+&& since=$(date -u '+%Y-%m-%d %H:%M:%S') \
 && systemctl --user restart mecha-voice-worker.service \
 && sleep 10 \
 && journalctl --user -u mecha-voice-worker.service --since "$since" | grep Uvicorn
@@ -1443,9 +1445,11 @@ changed script is already the server's next launch command — the first
 version of this block checked afterwards, which the banner above says is
 the ordering that fails; the second version's checks informed rather than
 stopped, and its discard was unconditional in a checkout many sessions
-share; the third pulled, which re-fetches past the ref the checks had seen
-(PR #152's review, three passes). The lessons are in `HISTORY.md` under
-Environment. **Run, and
+share; the third pulled, which re-fetches past the ref the checks had seen;
+the fourth switched onto stale local `main` before merging, a ref nothing
+had checked, and did not re-assert the clean-tree check after the human
+read (PR #152's review, four passes). The lessons are in `HISTORY.md`
+under Environment. **Run, and
 closed, at ~11:08 UTC the same morning** — by mecha-26's session on its own
 user's word there, not on the relayed instruction, which that session
 declined as it should: a peer's report of the owner's word is the shape a
