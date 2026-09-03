@@ -262,7 +262,7 @@ def reconstruct(trial):
 # ─── Layers 1 and 3: the real reader ─────────────────────────────────────────
 
 
-def run_appraise(mecha, home, session_dir, appraise=False):
+def run_appraise(mecha, home, session_dir, appraise=False, session_id=None):
     """The free readout, or with `appraise` the paid pass too (one appraisal,
     since the store holds one session). Returns the CLI's JSON plus, for the
     paid pass, the appraiser's own reasoning line off stderr as `reasoning`
@@ -287,14 +287,15 @@ def run_appraise(mecha, home, session_dir, appraise=False):
         # here rather than filing our error text as the model's words. The
         # reasoning runs from its prefix line to the end of stderr, since a
         # reply that spans lines carries the prefix only on the first.
+        # Anchored on this session's own prefix and the *first* match: with
+        # one appraisal per store there is exactly one such line, and any
+        # later `· ` is inside the model's reply (a bulleted line).
         out["reasoning"] = None
         if out["appraiser"]["failed"] == 0:
-            text = p.stderr
-            i = text.rfind("\u00b7 ")
+            prefix = f"\u00b7 {session_id}: "
+            i = p.stderr.find(prefix)
             if i >= 0:
-                tail = text[i:].split(": ", 1)
-                if len(tail) == 2 and "appraiser call failed: " not in tail[1]:
-                    out["reasoning"] = tail[1].strip()
+                out["reasoning"] = p.stderr[i + len(prefix):].strip() or None
     return out
 
 
@@ -315,9 +316,15 @@ def served_model(base_url):
 
     try:
         with urllib.request.urlopen(f"{base_url}/props", timeout=5) as r:
-            return json.load(r).get("model_alias")
+            alias = json.load(r).get("model_alias")
     except Exception as e:  # noqa: BLE001 — any failure is "not reachable"
         sys.exit(f"--appraise needs a reachable local server at {base_url}: {e}")
+    # `model_alias` is optional on the wire; a run recorded against `None`
+    # would be the assert-what-is-served failure this function exists to
+    # prevent, arriving quietly (found on review).
+    if not alias:
+        sys.exit(f"{base_url}/props names no model_alias; --appraise will not guess one")
+    return alias
 
 
 # ─── Discrimination ──────────────────────────────────────────────────────────
@@ -460,16 +467,27 @@ def main():
         v = readout["valence"]
         appraiser = None
         if args.appraise:
-            paid = run_appraise(args.mecha, home, one, appraise=True)
+            paid = run_appraise(args.mecha, home, one, appraise=True, session_id=t.session.stem)
             tally = paid["appraiser"]
-            sign = -1 if tally["found_negative"] else (1 if tally["found_positive"] else 0)
+            # The pass must have been driven, once: "the model looked and
+            # found nothing" and "no appraisal ran" are opposite findings,
+            # and a `sign` derived by elimination would fold them (found on
+            # review). So the answer comes from the counter that means it.
+            if tally["driven"] != 1 or tally["over_budget"]:
+                sys.exit(f"{t.name}: expected one driven appraisal, got {tally}")
+            sign = (
+                -1 if tally["found_negative"]
+                else 1 if tally["found_positive"]
+                else 0 if tally["found_nothing"]
+                else None
+            )
             appraiser = {
                 "driven": tally["driven"],
                 "failed": tally["failed"],
                 # The appraiser's own signed error, oriented like the rest:
                 # higher = worse. `None` when the pass failed (a malformed
                 # reply twice), which is "not answered", never "nothing".
-                "sign": None if tally["failed"] else -sign,
+                "sign": None if tally["failed"] or sign is None else -sign,
                 "negative_with_appraiser": paid["valence"]["negative"],
                 "reasoning": paid.get("reasoning"),
             }
