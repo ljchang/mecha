@@ -223,9 +223,12 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
-**Not re-measured at session close (2026-09-03 ~17:40 UTC, `main` at
-`b50eb24`).** The audit lane closed while a peer's 169-call appraisal run
-held llama-server, and this box's rule is no build during inference, so
+**Not re-measured at session close (2026-09-03, `main` at `b50eb24`).**
+When the close pass began (~17:40 UTC) a peer's 169-call appraisal run held
+llama-server and this box's rule is no build during inference; when the run
+released it (17:56) the deploy's `cargo install` ran (18:04) but `cargo
+test --workspace` did not — the owner was closing the session, and the
+verifiable fact without the run was CI's green test jobs on `b50eb24`. So
 the count below stands as measured at `49166e3` — eleven merges ago
 (`git log --first-parent --merges --reverse 49166e3..b50eb24`: #146, #147,
 #143, #149, #148, #150, #151, #145, #144, #152, #155), of which #143's
@@ -233,9 +236,7 @@ the count below stands as measured at `49166e3` — eleven merges ago
 test jobs were green on `b50eb24`, which is the fact that was verifiable
 without a build. Four of the five open PRs add tests too (#158, #153,
 #157, #154; #156 is docs); mecha-26 reports `mecha-cli` alone goes 707 →
-715 across its three. When a count matters,
-`diff` `cargo test -- --list` between the two commits rather than
-subtracting totals.
+715 across its three.
 
 On **`main` at `49166e3`** (#139, #140, #141 and #142 all in), measured
 2026-09-02 (~20:30 UTC): **2,160 tests**, no failures — **691** in
@@ -1551,13 +1552,15 @@ any repo and not touched**: `~/.mecha/config.toml` carries no `[[rule]]`
 yet, so the new subsystem is installed and dormant until the owner writes
 one.
 
-**2026-09-03 (~18:05 UTC, the audit lane's session close)** — one more
+**2026-09-03 (~18:20 UTC, the audit lane's session close)** — one more
 merge since the deploy entry above, **#155** (`deps/tower-http-0.7`, at
 `b50eb24`; what it changes is `HISTORY.md`'s 2026-09-03 entry), and it
 **is deployed**: as soon as mecha-2d's 169-call appraisal run released
 llama-server (17:56), `mecha` was reinstalled at 18:04 from a worktree
-whose code diffs empty against `b50eb24` (`strings` carries the skill's
-`identifies a pre-bump` probe text), and `mecha-slack`, `mecha-triggers`,
+whose code diffs empty against `b50eb24` (the first draft cited a `strings`
+literal here that does not exist in the binary; the evidence that the
+installed binary is post-bump is the HTTP probe below), and `mecha-slack`,
+`mecha-triggers`,
 `mecha-drain` and `mecha-serve` restarted at 18:04:29 with their startup
 lines (slack "Connected to cosanlab as mecha. 1 owner(s), 16 thread(s)",
 triggers "1 trigger(s), 1 enabled", serve's two doors, drain's start).
