@@ -1460,8 +1460,14 @@ async fn completion(
     // `last_reply.is_none()` is what makes this *one* turn rather than the
     // rest of the call, and the distinction is not cosmetic: dropping the
     // standing yes here leaves the shared agent's own approver, which is
-    // `Ask`, which non-interactively is `Blocked` for every tool — there is
-    // no page to ask, which is the asymmetry with the hosted door. So the
+    // `Ask`, which non-interactively is `Blocked` for every tool. An earlier
+    // version of this comment called that the asymmetry with the hosted
+    // door; it is not, and the difference is smaller than it looks. Narrowing
+    // the hosted door leaves `WebApprover` over `ws.mode`, which starts at
+    // `ReadOnly` and only moves when someone clicks — and `WebApprover`
+    // short-circuits to `ModeApprover` for every mode that is not `Ask`, so
+    // at the default it is `Blocked` too. What the page buys is that it
+    // *can* be moved to `Ask`; this door has no such move at all. So the
     // cost of being cautious is a whole turn with no tools, and it is only
     // worth paying while the premise holds. It stops holding immediately:
     // this turn's own reply lands in `slot.convo`, so from the next one on
