@@ -168,7 +168,11 @@ pub fn compose_offer(items: &[OutboxItem]) -> Option<Offer> {
 /// hear, named and offered when it is not.
 fn ask_about(item: &OutboxItem) -> String {
     let view = DraftView::of(&item.args);
-    let spoken = view.spoken();
+    // The pins the reviewer has not since changed — see
+    // `OutboxItem::unedited_defaults`. Calling a value the *person* chose a
+    // default is worst here and on the re-read below, the two surfaces where
+    // they hear it once and cannot look back.
+    let spoken = view.spoken(&item.unedited_defaults());
     let mut out = String::new();
     if spoken.chars() <= SPOKEN_UNPROMPTED_CHARS {
         // "Here it is, in full" rather than a second "I've drafted…": the
@@ -262,7 +266,9 @@ pub fn react(
         SpokenAnswer::ReadItOut => match head {
             Some(item) => Reaction::Reread(format!(
                 "{} Say yes to send it, or later to leave it.",
-                DraftView::of(&item.args).spoken().text()
+                DraftView::of(&item.args)
+                    .spoken(&item.unedited_defaults())
+                    .text()
             )),
             // The draft is gone from the store between the question and the
             // answer — sent from the page, or swept. Saying so beats reading
@@ -356,6 +362,49 @@ mod tests {
     use mecha_core::agent::Taint;
     use mecha_core::outbox::OutboxKind;
     use serde_json::json;
+
+    /// A value the reviewer changed is no longer called a default — on both
+    /// of the surfaces that speak it.
+    ///
+    /// Through `ask_about` and `react`, not through a filter re-implemented
+    /// here. The first version of this test copied the derivation into its own
+    /// body and asserted against `DraftView` directly, so no production line
+    /// was on the path and deleting the filter left it green — the exact
+    /// regression it was written to guard.
+    #[test]
+    fn an_edited_pin_is_spoken_as_the_reviewers_own() {
+        let mut it = item(
+            "i1",
+            OutboxKind::Message,
+            serde_json::json!({"title": "Reading group", "calendar_id": "primary"}),
+            false,
+        );
+        it.args_before = it.args.clone();
+        it.filled_defaults = vec!["calendar_id".into()];
+
+        // As staged: the harness chose it, so it collapses into the clause.
+        let said = ask_about(&it);
+        assert!(said.contains("Defaults: "), "{said}");
+
+        // After an edit the person chose it, and it gets its own sentence.
+        it.args["calendar_id"] = serde_json::json!("team-shared");
+        let said = ask_about(&it);
+        assert!(said.contains("Calendar id: team-shared."), "{said}");
+        assert!(!said.contains("Defaults: "), "{said}");
+
+        // And the re-read, which is the worse place to get it wrong: it
+        // exists to say what is in the store *now*, which is the edit.
+        let pending = Pending {
+            queue: VecDeque::from(vec!["i1".to_string()]),
+        };
+        match react("read it out", &pending, Some(&it), None) {
+            Reaction::Reread(said) => {
+                assert!(said.contains("Calendar id: team-shared."), "{said}");
+                assert!(!said.contains("Defaults: "), "{said}");
+            }
+            other => panic!("expected the draft read back, got {other:?}"),
+        }
+    }
 
     fn item(id: &str, kind: OutboxKind, args: serde_json::Value, tainted: bool) -> OutboxItem {
         OutboxItem {
