@@ -1562,8 +1562,10 @@ unblocks two open measurements as well (mecha-26's report): #153's
 echo-floor re-measurement needs a voice worker that logs `over_speaker=` on
 the `parakeet:` line, which the running one predates, and #158's deferred
 tail measurement needs the same restart. Open PRs at close: #153, #154, #158
-(mecha-26), #156, #157 (mecha-2d), and #129 — dependabot's version of the
-`tower-http` bump, superseded by #155 and left open for the owner to close.
+(mecha-26), #156, #157 (mecha-2d). #129 — dependabot's version of the
+`tower-http` bump — was closed by the owner at 15:24 UTC, two minutes after
+#155 superseded it (the first draft of this entry listed it open; the
+review caught it against the API).
 The shared checkout `~/Github/mecha` is on `main` at `4a888ad` and clean —
 **one merge behind `b50eb24`**, so the next `update` still has to
 fast-forward it before building from it: block 1 of the recipe above, then
@@ -1631,7 +1633,6 @@ one person's mailbox rather than a public fact.
   undercounts (`mecha-frontdoor` and `mecha-ruminate` run scripts from the
   tree too, but are `.timer`-fired and exec fresh, which is why the recipe
   need not guard them — say so).
-- **Close #129** (dependabot's `tower-http` bump), superseded by #155.
 
 - **Two macOS residues from #113's CI arm, parked deliberately** (that
   lane's own flag, so they are not lost): `homeostat.rs` reads
