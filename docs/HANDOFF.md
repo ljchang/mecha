@@ -226,8 +226,10 @@ cargo test --workspace && cargo clippy --all-targets --all-features
 **Not re-measured at session close (2026-09-03 ~17:40 UTC, `main` at
 `b50eb24`).** The audit lane closed while a peer's 169-call appraisal run
 held llama-server, and this box's rule is no build during inference, so
-the count below stands as measured at `49166e3` — six merges of tests ago
-(#143's `policy` suite, #148, #150 and #155 all added tests) — and CI's
+the count below stands as measured at `49166e3` — eleven merges ago
+(`git log --first-parent --merges 49166e3..b50eb24`: #146, #147, #143,
+#149, #148, #150, #151, #145, #144, #152, #155), of which #143's `policy`
+suite, #144, #148, #150 and #155 added cargo tests — and CI's
 test jobs were green on `b50eb24`, which is the fact that was verifiable
 without a build. Three open PRs (#153, #154, #158) add tests too; mecha-26
 reports `mecha-cli` alone goes 707 → 715 across them. When a count matters,
@@ -1550,11 +1552,10 @@ one.
 
 **2026-09-03 (~17:40 UTC, the audit lane's session close)** — one more
 merge since the deploy entry above, and it is **not deployed**: **#155**
-(`deps/tower-http-0.7`, at `b50eb24`) moves `mecha-cli`'s `tower-http`
-0.6.11 → 0.7.1, so `mecha serve`'s `ServeDir` stamps a strong `ETag` and a
-`304` carries `ETag` + `Last-Modified`; the running `mecha-serve` (installed
-10:50, restarted 10:51) answers bare `304`s until the next `update`, and the
-skill's step-1b probe now reads a bare `304` with no `ETag` as exactly that.
+(`deps/tower-http-0.7`, at `b50eb24`; what it changes is `HISTORY.md`'s
+2026-09-03 entry). The running `mecha-serve` (installed 10:50, restarted
+10:51) answers bare `304`s until the next `update`, and the skill's step-1b
+probe reads a bare `304` with no `ETag` as exactly that.
 Nothing else on the box changed after the 11:09 voice-worker restart. The
 next `update` run is worth doing soon rather than eventually, because it
 unblocks two open measurements as well (mecha-26's report): #153's
@@ -1563,9 +1564,12 @@ the `parakeet:` line, which the running one predates, and #158's deferred
 tail measurement needs the same restart. Open PRs at close: #153, #154, #158
 (mecha-26), #156, #157 (mecha-2d), and #129 — dependabot's version of the
 `tower-http` bump, superseded by #155 and left open for the owner to close.
-The shared checkout `~/Github/mecha` is on `main` at `4a888ad`, clean, so
-the recipe above is not needed for the next restart; run block 1 anyway,
-it is cheap and it is the check. Single-writer docs are held by nobody.
+The shared checkout `~/Github/mecha` is on `main` at `4a888ad` and clean —
+**one merge behind `b50eb24`**, so the next `update` still has to
+fast-forward it before building from it: block 1 of the recipe above, then
+`git -C ~/Github/mecha merge --ff-only origin/main` (no `switch`, it is
+already on `main`), then the restart list. Single-writer docs are held by
+nobody.
 
 ## What the measurements say
 
