@@ -574,6 +574,74 @@ impl ToolCtx {
     }
 }
 
+/// Fill a call's omitted arguments from the `default`s its own schema
+/// declares.
+///
+/// A reviewer approving a send has to be able to see **who it is from**, and
+/// a resolved-later argument is invisible: `mail_send` with no `account`
+/// reaches the outbox as three keys (`to`, `subject`, `body_markdown`), and
+/// which mailbox it leaves from is decided minutes afterwards, in another
+/// process, by a file the reviewer never sees. `DraftView` already puts
+/// `account` in its headers — the field was simply never there.
+///
+/// It cannot be looked up either, and that is deliberate rather than an
+/// oversight: `mecha-core` has no dependency on `mecha-mail`, so nothing here
+/// knows an account map exists. The schema is the only channel between the
+/// two, and JSON Schema already has the word for this. So the rule is
+/// tool-agnostic, exactly as [`crate::outbox::DraftView`]'s is: any top-level
+/// property that declares a `default` and was omitted is materialised into
+/// the arguments. A tool nobody anticipated gets the same treatment.
+///
+/// **Where this is applied is the whole design.** A *staged* call is filled
+/// for real, because staging crosses a time boundary: the draft sits in a
+/// file and is executed verbatim later, so an unpinned default is a message
+/// whose sender can change between the reading and the sending. An
+/// ordinarily-approved call is filled for the approver's *view* only, and
+/// runs with the bytes the model actually sent — there is no gap there to
+/// pin, and rewriting a call the model is about to make would put this
+/// function on the execution path for every tool in the registry to buy
+/// nothing.
+///
+/// Trusting a server's declared default is trusting what the *model* was
+/// already told: the same string rides in the description it reasons from.
+/// A server whose schema lies about its own defaults has already misled the
+/// model; this makes the review card agree with the lie rather than inventing
+/// a second one.
+/// Returns the filled arguments **and the keys it filled**, because a caller
+/// has to be able to tell the two authors apart afterwards. A pinned value is
+/// a constant this harness wrote, not evidence of what the run was doing, and
+/// [`crate::outbox_source`] joins a draft back to its source on exactly this
+/// kind of argument: `calendar_id: "primary"` pinned into every calendar
+/// draft would match every calendar call in the session.
+pub fn with_schema_defaults(schema: &Value, input: &Value) -> (Value, Vec<String>) {
+    let (Some(args), Some(props)) = (
+        input.as_object(),
+        schema.get("properties").and_then(Value::as_object),
+    ) else {
+        return (input.clone(), Vec::new());
+    };
+    let mut out = args.clone();
+    let mut filled = Vec::new();
+    for (key, spec) in props {
+        if out.contains_key(key) {
+            continue;
+        }
+        // `"default": null` is not a default. It is what pydantic emits for
+        // every optional field, so a FastMCP tool with `thread_ts: str | None
+        // = None` declares one — and this function exists to cover exactly
+        // that third-party case. Pinned, it would put `thread_ts: null` in
+        // the outbox card, the web review, and (on `SpokenDraft`'s guarantee
+        // that every argument key is uttered) in the confirmation read aloud
+        // before a send, and it would release as an explicit null rather than
+        // an absent key. "Omitted" is what a null says.
+        if let Some(default) = spec.get("default").filter(|d| !d.is_null()) {
+            out.insert(key.clone(), default.clone());
+            filled.push(key.clone());
+        }
+    }
+    (Value::Object(out), filled)
+}
+
 /// Floor under a result's share of the turn budget. A wide batch must not
 /// starve every result down to a marker with no content: below this, the
 /// division stops and the total budget is allowed to overrun instead.
@@ -1125,6 +1193,84 @@ mod cap_tests {
 
         std::fs::remove_dir_all(&spill).ok();
         std::fs::remove_file(&elsewhere).ok();
+    }
+
+    #[test]
+    fn a_declared_default_is_filled_in_and_an_explicit_value_is_not() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "account": {"type": "string", "default": "dartmouth"},
+                "reply_all": {"type": "boolean", "default": false},
+            },
+        });
+        let (filled, keys) =
+            with_schema_defaults(&schema, &serde_json::json!({"to": "ada@example.com"}));
+        assert_eq!(filled["account"], serde_json::json!("dartmouth"));
+        assert_eq!(filled["reply_all"], serde_json::json!(false));
+        assert_eq!(filled["to"], serde_json::json!("ada@example.com"));
+        // Which keys, not only what they became: a value this harness wrote is
+        // not evidence of what the run was working from, and something
+        // downstream has to be able to tell the two authors apart.
+        assert_eq!(keys, vec!["account".to_string(), "reply_all".to_string()]);
+
+        let (named, keys) =
+            with_schema_defaults(&schema, &serde_json::json!({"account": "personal"}));
+        assert_eq!(named["account"], serde_json::json!("personal"));
+        assert_eq!(keys, vec!["reply_all".to_string()]);
+    }
+
+    /// A property written `"default": null` is not a default.
+    ///
+    /// It is what pydantic emits for every optional field, so a FastMCP tool
+    /// with `def reply(to: str, thread_ts: str | None = None)` declares one
+    /// on `thread_ts` — and this function exists to cover exactly that
+    /// third-party case. Pinned, it puts `thread_ts: null` in the outbox
+    /// card, in the web review, and — on `SpokenDraft`'s guarantee that every
+    /// argument key is uttered — in the voice confirmation read aloud before a
+    /// send. It also releases as an explicit null instead of an absent key,
+    /// which most servers treat alike and not all. Nothing a null is meant to
+    /// tell a reviewer is worth any of that; "omitted" is what it says.
+    #[test]
+    fn a_null_default_is_not_a_default() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "thread_ts": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null},
+                "account": {"type": "string", "default": "dartmouth"},
+            },
+        });
+        let (filled, keys) = with_schema_defaults(&schema, &serde_json::json!({"to": "ada"}));
+        assert!(filled.get("thread_ts").is_none(), "{filled}");
+        assert_eq!(keys, vec!["account".to_string()]);
+    }
+
+    #[test]
+    fn a_schema_with_nothing_to_say_changes_nothing() {
+        // Most tools declare no defaults at all, and a schema that is not an
+        // object at all is what a hand-rolled MCP server can hand back. Both
+        // must leave the call exactly as the model sent it — this function
+        // sits in front of the approver, so a surprise here is a surprise in
+        // what a person is asked to approve.
+        let args = serde_json::json!({"path": "notes.md"});
+        for schema in [
+            serde_json::json!({"type": "object"}),
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            serde_json::json!("not a schema"),
+        ] {
+            assert_eq!(
+                with_schema_defaults(&schema, &args),
+                (args.clone(), Vec::new())
+            );
+        }
+        // Nor is a non-object argument list reshaped into one.
+        let raw = serde_json::json!("bare");
+        assert_eq!(
+            with_schema_defaults(&serde_json::json!({"properties": {}}), &raw),
+            (raw.clone(), Vec::new())
+        );
     }
 
     #[test]

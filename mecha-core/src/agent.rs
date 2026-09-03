@@ -3381,25 +3381,51 @@ impl Agent {
             // approval, later and out of band.
             if routed {
                 let route = cx.outbox.as_ref().expect("routed implies a route");
+                let (staged_args, filled_defaults) =
+                    crate::tool::with_schema_defaults(&tool.input_schema(), input);
                 match route.store.stage(
                     name,
                     route.kind_of(name),
-                    input.clone(),
+                    // Pinned, not passed through. A draft is executed
+                    // verbatim whenever the user gets round to releasing it,
+                    // so an argument the *server* would resolve at that
+                    // moment is one the reviewer cannot see and the harness
+                    // cannot promise: `mail_send` with no `account` is a
+                    // letter with no return address until minutes after it
+                    // was approved. `with_schema_defaults` materialises what
+                    // the schema itself declares, so the draft says which
+                    // mailbox it leaves from and still says it if the default
+                    // moves in between.
+                    staged_args,
                     *taint,
-                    route.session_id(),
-                    // The jail this call was drafted under. A release happens
-                    // in another process from another directory, and a staged
-                    // path means nothing without the root it was written
-                    // against. A tool constructed over a fixed directory (a
-                    // server spawned once for many runs) resolves its paths
-                    // against that root, not the per-run workspace — so the
-                    // item records the root the release will really execute
-                    // under, or a relative path drafted against the wide root
-                    // resolves outside the narrow one forever.
-                    Some(
-                        tool.fixed_workspace()
-                            .unwrap_or_else(|| cx.tools.workspace.clone()),
-                    ),
+                    crate::outbox::Provenance {
+                        session_id: route.session_id(),
+                        // The jail this call was drafted under. A release
+                        // happens in another process from another directory,
+                        // and a staged path means nothing without the root it
+                        // was written against. A tool constructed over a fixed
+                        // directory (a server spawned once for many runs)
+                        // resolves its paths against that root, not the
+                        // per-run workspace — so the item records the root the
+                        // release will really execute under, or a relative
+                        // path drafted against the wide root resolves outside
+                        // the narrow one forever.
+                        workspace: Some(
+                            tool.fixed_workspace()
+                                .unwrap_or_else(|| cx.tools.workspace.clone()),
+                        ),
+                        // The anchor `outbox_source` walks the transcript to
+                        // find. Identity, not a guess from the arguments: the
+                        // fill above means the stored draft no longer equals
+                        // the `tool_use` input the session recorded, and a
+                        // content match would run past the staging call and
+                        // join the draft to itself.
+                        call_id: Some(id.clone()),
+                        // Which arguments were the harness's, so the source
+                        // join can tell them from the model's. A pinned
+                        // constant is not a fact about what this run read.
+                        filled_defaults,
+                    },
                 ) {
                     Ok(item) => {
                         let content = format!(
@@ -3487,27 +3513,90 @@ impl Agent {
             // the interlock considers most dangerous. `Allow < Prompt < Forbid`
             // has to hold at that boundary too, so `forbid` is checked first
             // and only `allow`/`prompt` yield to the escalation.
+            // Whoever is asked sees the call *as it will execute*, defaults
+            // and all — a card that omits a schema-defaulted argument is
+            // asking for a decision about a call it is not showing. That is
+            // now **four** doors, not one: `escalate`, `consult`, `permit`
+            // and `approve` each put a call in front of somebody, and
+            // `escalate` and `consult` are the two that most need it, since
+            // each exists precisely to make a person look.
+            //
+            // `decide` reads the filled call too, and that is deliberate:
+            // a rule is policy over the call **as it will execute**, so the
+            // machine judge and the human one read the same bytes. Leaving
+            // them split would have been a reasoning trap rather than a live
+            // hole — a `forbid` keyed on a defaulted argument would not have
+            // fired on the value the harness pins, while the pinned value sat
+            // plainly in the arguments a reader can see. (#143's author ruled
+            // on this; the practical exposure was near zero, since `shell`'s
+            // only judged argument is `command` and nothing declares a default
+            // for it today.)
+            //
+            // Still not on every call's path. A read-only tool with no rule
+            // over it and no escalation reaches no judge at all, and
+            // `rules_for` is the cheap way to ask whether one exists.
+            //
+            // **One judge is deliberately not on this list: the `pre_tool`
+            // hook above, which reads the model's own bytes.** For an
+            // ordinarily-executed call that is not an inconsistency but the
+            // correct answer — raw is what runs, so raw is what a hook should
+            // judge. For a *staged* call it is a real gap: the fill below is
+            // pinned, so a release executes `staged_args`, and a hook written
+            // to deny sends from one mailbox never sees the `account` the
+            // draft will actually send from. It cannot loosen anything — a
+            // hook only ever denies, so less information means fewer denials —
+            // which is why it is recorded rather than fixed here: hooks are a
+            // subsystem this change does not otherwise touch, and the fix has
+            // a shape (hoist the fill above the hook when `routed`, hand the
+            // hook and `stage` the one value, leave the non-routed arm raw)
+            // that deserves its own pass. `docs/AUDIT-RESEARCH.md` §2 carries
+            // it.
             use crate::policy::RuleDecision;
-            let ruling = cx.policy.decide(name, input);
-            let decision = match (&escalation, ruling.as_ref().map(|r| r.decision)) {
+            let judged = escalation.is_some()
+                || !tool.read_only()
+                || cx.policy.rules_for(name).next().is_some();
+            let filled =
+                judged.then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input).0);
+            let shown = filled.as_ref().unwrap_or(input);
+            // Judged on both, and **never below what the raw call earns**. A
+            // declared default may *raise* a ruling — a `forbid` keyed on a
+            // pinned argument has to fire — and must never lower one.
+            //
+            // The direction matters because the schema is the judged party's
+            // own declaration. `decide` reads only `command`; a patterned rule
+            // with none in the raw call returns `Prompt`, and a filled one can
+            // reach `Allow`, which routes to `permit`, which a headless
+            // approver answers yes to. A third-party MCP server could then
+            // relax the operator's standing word by declaring a default — and
+            // the call still executes the bytes the *model* sent, so the
+            // judged call and the executed one need not even agree. `Allow <
+            // Prompt < Forbid` has to hold at this boundary, which is the same
+            // rule that says a hook may narrow policy and never loosen it.
+            let ruling = match (cx.policy.decide(name, input), cx.policy.decide(name, shown)) {
+                (Some(raw), Some(filled)) if filled.decision > raw.decision => Some(filled),
+                (Some(raw), _) => Some(raw),
+                (None, filled) => filled,
+            };
+            let rule = ruling.as_ref().map(|r| r.decision);
+            let decision = match (&escalation, rule) {
                 (_, Some(RuleDecision::Forbid)) => {
                     let reason = ruling.map(|r| r.reason).unwrap_or_default();
                     tracing::info!(tool = %name, "forbidden by an approval rule");
                     Some(Decision::Blocked(reason))
                 }
-                (Some(why), _) => Some(cx.approver.escalate(tool.as_ref(), input, why).await),
+                (Some(why), _) => Some(cx.approver.escalate(tool.as_ref(), shown, why).await),
                 (None, Some(RuleDecision::Prompt)) => {
                     // `consult`, not `approve`: a standing yes on the tool is
                     // exactly what a `prompt` rule must not be answered by.
                     let why = ruling.map(|r| r.reason).unwrap_or_default();
-                    Some(cx.approver.consult(tool.as_ref(), input, &why).await)
+                    Some(cx.approver.consult(tool.as_ref(), shown, &why).await)
                 }
                 (None, Some(RuleDecision::Allow)) if !tool.read_only() => {
-                    Some(cx.approver.permit(tool.as_ref(), input).await)
+                    Some(cx.approver.permit(tool.as_ref(), shown).await)
                 }
                 (None, Some(RuleDecision::Allow)) => None,
                 (None, None) if !tool.read_only() => {
-                    Some(cx.approver.approve(tool.as_ref(), input).await)
+                    Some(cx.approver.approve(tool.as_ref(), shown).await)
                 }
                 (None, None) => None,
             };
@@ -5159,6 +5248,66 @@ mod tests {
             why.contains("private data") && why.contains("third-party"),
             "the person is told why: {why}"
         );
+    }
+
+    /// The **escalation** door shows the call as it will execute too.
+    ///
+    /// `escalate`'s whole content is a person being shown the call beside the
+    /// reason the harness would not decide alone, so it is if anything the
+    /// door that most needs a schema-defaulted argument on it. The two doors
+    /// were one call before `ask` existed; nothing but this test keeps them
+    /// agreeing now that they are two.
+    #[tokio::test]
+    async fn an_escalation_is_shown_the_defaults_the_schema_declares() {
+        struct Escalating(Arc<Mutex<Vec<Value>>>);
+        #[async_trait]
+        impl Approver for Escalating {
+            async fn approve(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
+                panic!("an escalation must not be routed through approve");
+            }
+            async fn escalate(&self, _tool: &dyn Tool, input: &Value, _why: &str) -> Decision {
+                self.0.lock().unwrap().push(input.clone());
+                Decision::Deny("not this time".into())
+            }
+        }
+
+        struct Defaulted;
+        #[async_trait]
+        impl Tool for Defaulted {
+            fn name(&self) -> &str {
+                "send"
+            }
+            fn description(&self) -> &str {
+                "Sends data."
+            }
+            fn input_schema(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "properties": {"account": {"type": "string", "default": "dartmouth"}},
+                })
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn capabilities(&self) -> crate::tool::Capabilities {
+                crate::tool::Capabilities::default().sends()
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                panic!("denied, so it must not run");
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut agent = trifecta_agent(TrifectaPolicy::Ask);
+        agent.registry.insert(Arc::new(Defaulted));
+        agent.set_approver(Arc::new(Escalating(Arc::clone(&seen))) as Arc<dyn Approver>);
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "the escalation happened");
+        assert_eq!(seen[0]["account"], json!("dartmouth"));
     }
 
     #[tokio::test]
@@ -9061,7 +9210,17 @@ mod tests {
             "Send data somewhere."
         }
         fn input_schema(&self) -> Value {
-            json!({"type": "object"})
+            // A defaulted argument, the shape `mail_send`'s `account` has:
+            // the server resolves it when the call finally executes, which
+            // for a staged draft is long after the person approved it.
+            json!({
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string"},
+                    "body": {"type": "string"},
+                    "account": {"type": "string", "default": "dartmouth"},
+                },
+            })
         }
         fn read_only(&self) -> bool {
             true
@@ -9298,6 +9457,144 @@ mod tests {
         assert_eq!(items[0].tool, "send_data");
         assert_eq!(items[0].session_id.as_deref(), Some("sess-42"));
         assert!(!outcome.taint.private && !outcome.taint.untrusted);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The approval card is the other surface that shows a call before it
+    /// happens, and it has the same duty: what the approver is shown must be
+    /// the call as it will execute, defaults included.
+    #[tokio::test]
+    async fn the_approver_is_shown_the_defaults_the_schema_declares() {
+        struct Recorder(Arc<std::sync::Mutex<Vec<Value>>>);
+
+        #[async_trait]
+        impl Approver for Recorder {
+            async fn approve(&self, _tool: &dyn Tool, input: &Value) -> Decision {
+                self.0.lock().unwrap().push(input.clone());
+                Decision::Allow
+            }
+        }
+
+        struct Writer(Arc<std::sync::Mutex<Vec<Value>>>);
+
+        #[async_trait]
+        impl Tool for Writer {
+            fn name(&self) -> &str {
+                "send_data"
+            }
+            fn description(&self) -> &str {
+                "Send data somewhere."
+            }
+            fn input_schema(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "properties": {"account": {"type": "string", "default": "dartmouth"}},
+                })
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                self.0.lock().unwrap().push(input);
+                Ok(ToolOutput::ok("sent"))
+            }
+        }
+
+        // One recorder, both halves, in order: the approver is asked first and
+        // the tool runs second.
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(Writer(Arc::clone(&seen))));
+        agent.set_approver(Arc::new(Recorder(Arc::clone(&seen))));
+
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        // Shown filled…
+        assert_eq!(seen[0]["account"], json!("dartmouth"));
+        // …and run with the bytes the model actually sent. This half is the
+        // design, not an accident of the implementation: there is no time gap
+        // between approval and execution to pin, so filling here would put
+        // `with_schema_defaults` on the execution path of every non-read-only
+        // tool in the registry to buy nothing. Without this assertion the
+        // obvious "cleanup" — passing `shown` to `approved.push` so the two
+        // spellings agree — is silent.
+        assert!(seen[1].get("account").is_none(), "{}", seen[1]);
+    }
+
+    /// A draft must say who it is from.
+    ///
+    /// The model omitted `account`, exactly as it does when the schema tells
+    /// it there is a default — so before this the draft reached the outbox as
+    /// `to`/`body` alone and every review surface showed a send with no
+    /// sender, while the mailbox it left from was chosen minutes later by a
+    /// file no reviewer sees.
+    #[tokio::test]
+    async fn a_staged_draft_pins_the_defaults_its_schema_declares() {
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, root) = outbox_route("defaults");
+        agent.set_outbox(Arc::clone(&route));
+
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let items = route.store.items().unwrap();
+        assert_eq!(items[0].args["account"], json!("dartmouth"));
+        // What the model did send is untouched — filling is not editing.
+        assert_eq!(items[0].args["to"], json!("x@example.com"));
+        // The provenance the loop recorded, and not only the arguments.
+        // These two fields are the whole mechanism behind both
+        // `outbox_source` repairs, and neither is observable from `args`:
+        // `call_id` is what the walk anchors on instead of guessing identity
+        // from content, and `filled_defaults` is what keeps a pinned constant
+        // out of the join. Without this assertion both could be dropped here
+        // with every test still green, and both failures would come back
+        // silently — a draft joined to itself, and an unrelated calendar
+        // listing offered as the thing being acted on.
+        assert_eq!(items[0].call_id.as_deref(), Some("t1"));
+        assert_eq!(items[0].filled_defaults, vec!["account".to_string()]);
+        // And the shaped view a reviewer actually reads now carries it.
+        let view = crate::outbox::DraftView::of(&items[0].args);
+        assert!(
+            view.headers
+                .iter()
+                .any(|(k, v)| k == "account" && v == "dartmouth"),
+            "{:?}",
+            view.headers
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An argument the model named is never overwritten by a default — the
+    /// point is to show what will happen, not to decide it.
+    #[tokio::test]
+    async fn an_explicit_argument_survives_the_fill() {
+        let turns = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "send_data".into(),
+                    input: json!({"to": "x@example.com", "account": "personal"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("drafted")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with(turns, PermissionMode::ReadOnly);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, root) = outbox_route("explicit");
+        agent.set_outbox(Arc::clone(&route));
+
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        let items = route.store.items().unwrap();
+        assert_eq!(items[0].args["account"], json!("personal"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -10177,6 +10474,295 @@ match = ["cargo publish"]
             vec!["shell: an approval rule asks that this `shell` call be approved"],
             "the prompt rule consulted, once, with the ruling's reason"
         );
+    }
+
+    /// A declared default may **raise** a ruling and never lower one.
+    ///
+    /// The pair to `a_forbid_rule_fires_on_a_pinned_default`, and the
+    /// direction that is not safe. `decide` reads only `command`; a patterned
+    /// rule with none in the raw call returns `Prompt`, and the same rules on
+    /// a filled call can reach `Allow` — which routes to `permit`, which a
+    /// headless approver answers yes to. Without the floor, a third-party MCP
+    /// server relaxes the operator's standing word by declaring a default, and
+    /// the call still executes the bytes the *model* sent, so the judged call
+    /// and the executed one need not even agree.
+    #[tokio::test]
+    async fn a_pinned_default_cannot_lower_a_ruling() {
+        struct Defaulting;
+        #[async_trait]
+        impl Tool for Defaulting {
+            fn name(&self) -> &str {
+                "shell"
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn input_schema(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "properties": {"command": {"type": "string", "default": "ls -la"}},
+                })
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("ran"))
+            }
+        }
+
+        let approver = Arc::new(Recording {
+            asked: Mutex::new(Vec::new()),
+            consulted: Mutex::new(Vec::new()),
+            permitted: Mutex::new(Vec::new()),
+        });
+        let (agent, _) = agent_with_tools(
+            vec![
+                // No `command` at all: the raw call cannot be matched, so the
+                // rule can only say "ask". The schema would satisfy it.
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "shell".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(Defaulting)],
+            PermissionMode::Allow,
+        );
+        let cx = RunContext {
+            approver: Arc::clone(&approver) as Arc<dyn Approver>,
+            ..agent.context().as_ref().clone()
+        }
+        .with_policy(rules(
+            r#"
+[[rule]]
+tool = "shell"
+pattern = ["ls"]
+decision = "allow"
+match = ["ls -la"]
+"#,
+        ));
+
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert!(
+            approver.permitted.lock().unwrap().is_empty(),
+            "a declared default lowered the ruling to `allow` and skipped the person"
+        );
+        assert_eq!(
+            approver.consulted.lock().unwrap().len(),
+            1,
+            "the raw call's `prompt` is the floor, so the person is still asked"
+        );
+    }
+
+    /// A rule judges the call **as it will execute**, pinned defaults and all.
+    ///
+    /// The machine judge and the human one read the same bytes, which is the
+    /// same rule the four doors rest on. Split, it would have been a
+    /// reasoning trap rather than a live hole: a `forbid` keyed on a
+    /// defaulted argument would not fire on the value the harness pins, while
+    /// that value sat plainly in the arguments any reader can see.
+    ///
+    /// The stand-in defaults `command`, which is what `shell` is judged on.
+    /// Nothing in the tree declares such a default today — which is exactly
+    /// why it wants a test rather than a note.
+    #[tokio::test]
+    async fn a_forbid_rule_fires_on_a_pinned_default() {
+        struct Defaulting(Arc<Mutex<bool>>);
+        #[async_trait]
+        impl Tool for Defaulting {
+            fn name(&self) -> &str {
+                "shell"
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn input_schema(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "default": "rm -rf build"},
+                    },
+                })
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                *self.0.lock().unwrap() = true;
+                Ok(ToolOutput::ok("ran"))
+            }
+        }
+
+        let ran = Arc::new(Mutex::new(false));
+        let (agent, _) = agent_with_tools(
+            vec![
+                // The model names no command at all; the harness pins one.
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "shell".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(Defaulting(Arc::clone(&ran)))],
+            PermissionMode::Allow,
+        );
+        // Panics at *every* door. `NeverAsked` alone is not enough here: with
+        // the raw input the rule cannot read a `command`, so it returns
+        // `Prompt` rather than `Forbid` and the call goes to `consult` — whose
+        // default answer is `Blocked`, which stops the tool for the wrong
+        // reason and makes a "did it run" assertion pass either way.
+        struct NeverAnyDoor;
+        #[async_trait]
+        impl Approver for NeverAnyDoor {
+            async fn approve(&self, t: &dyn Tool, _i: &Value) -> Decision {
+                panic!("approve consulted about `{}`", t.name());
+            }
+            async fn consult(&self, t: &dyn Tool, _i: &Value, why: &str) -> Decision {
+                panic!("consult about `{}`: {why}", t.name());
+            }
+            async fn permit(&self, t: &dyn Tool, _i: &Value) -> Decision {
+                panic!("permit about `{}`", t.name());
+            }
+            async fn escalate(&self, t: &dyn Tool, _i: &Value, why: &str) -> Decision {
+                panic!("escalate about `{}`: {why}", t.name());
+            }
+        }
+
+        let cx = RunContext {
+            approver: Arc::new(NeverAnyDoor) as Arc<dyn Approver>,
+            ..agent.context().as_ref().clone()
+        }
+        .with_policy(rules(GIT_RULES));
+
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert!(!*ran.lock().unwrap(), "a forbidden command ran");
+        // And refused for the *right* reason: the rule's own justification,
+        // not the "carries no `command` to match" prompt the raw input earns.
+        let refusal = match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => content.clone(),
+            other => panic!("expected a tool result, got {other:?}"),
+        };
+        assert!(
+            refusal.contains("recursive-force"),
+            "refused by the forbid rule, not by a prompt nobody could answer: {refusal}"
+        );
+        assert!(outcome.tool_calls[0].denied);
+    }
+
+    /// The rule doors show the filled call too.
+    ///
+    /// `#143` turned one approver call into four, and each of `escalate`,
+    /// `consult`, `permit` and `approve` puts a call in front of somebody.
+    /// `consult` and `permit` are the two this branch could not have known
+    /// about; without a case on them, a later edit could quietly hand either
+    /// the raw arguments and show a person a send with no sender on it.
+    #[tokio::test]
+    async fn the_rule_doors_are_shown_the_defaults_the_schema_declares() {
+        struct Defaulted(&'static str);
+        #[async_trait]
+        impl Tool for Defaulted {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn input_schema(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "properties": {"account": {"type": "string", "default": "dartmouth"}},
+                })
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("done"))
+            }
+        }
+
+        struct SeenBy {
+            consulted: Mutex<Vec<Value>>,
+            permitted: Mutex<Vec<Value>>,
+        }
+        #[async_trait]
+        impl Approver for SeenBy {
+            async fn approve(&self, _t: &dyn Tool, _i: &Value) -> Decision {
+                Decision::Allow
+            }
+            async fn consult(&self, _t: &dyn Tool, input: &Value, _why: &str) -> Decision {
+                self.consulted.lock().unwrap().push(input.clone());
+                Decision::Allow
+            }
+            async fn permit(&self, _t: &dyn Tool, input: &Value) -> Decision {
+                self.permitted.lock().unwrap().push(input.clone());
+                Decision::Allow
+            }
+        }
+
+        let approver = Arc::new(SeenBy {
+            consulted: Mutex::new(Vec::new()),
+            permitted: Mutex::new(Vec::new()),
+        });
+        let call = |id: &str, tool: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: tool.into(),
+                    input: json!({"to": "ada@example.com"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, _) = agent_with_tools(
+            vec![
+                call("t0", "asked"),
+                call("t1", "waved"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(Defaulted("asked")), Arc::new(Defaulted("waved"))],
+            PermissionMode::Allow,
+        );
+        let cx = RunContext {
+            approver: Arc::clone(&approver) as Arc<dyn Approver>,
+            ..agent.context().as_ref().clone()
+        }
+        .with_policy(rules(
+            r#"
+[[rule]]
+tool = "asked"
+decision = "prompt"
+
+[[rule]]
+tool = "waved"
+decision = "allow"
+match = ["waved"]
+"#,
+        ));
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        let consulted = approver.consulted.lock().unwrap();
+        let permitted = approver.permitted.lock().unwrap();
+        assert_eq!(consulted.len(), 1, "the prompt rule consulted once");
+        assert_eq!(permitted.len(), 1, "the allow rule permitted once");
+        assert_eq!(consulted[0]["account"], json!("dartmouth"));
+        assert_eq!(permitted[0]["account"], json!("dartmouth"));
+        // And the model's own argument is untouched by the fill.
+        assert_eq!(consulted[0]["to"], json!("ada@example.com"));
     }
 
     /// A `prompt` rule under an approver that answers from policy — `--yes`,

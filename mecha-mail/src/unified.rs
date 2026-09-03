@@ -186,20 +186,93 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
     // schema saying "the default account is `personal`" on `mail_send` while
     // sends resolve to `dartmouth` is worse than saying nothing: the model
     // omits `account` believing it knows where the message goes.
+    //
+    // Which is why a default is declared only where omitting `account` really
+    // does resolve to one, and the **resolution mode** decides rather than the
+    // verb: see `item_account` below for the mode-by-mode rule. A `Mode::Read`
+    // fans out over every account, so a default note on `mail_search`
+    // describes behaviour that does not exist and contradicts the sentence
+    // beside it ("Omit to search every account").
+    //
+    // The `default` **key**, not just the prose, and that is the load-bearing
+    // half: a caller cannot resolve this — `mecha-core` has no dependency on
+    // this crate, by design, so the account map is only ever visible through
+    // the schema. The harness materialises a declared default into the call's
+    // arguments before staging it, which is how the outbox and the approval
+    // card come to show the account a send would leave from
+    // (`mecha_core::tool::with_schema_defaults`). Declare it only where
+    // omitting the argument really does resolve to it.
+    let plain = |rule: &str| -> Value {
+        json!({
+            "type": "string",
+            "enum": names,
+            "description": rule,
+        })
+    };
     let with_default = |rule: &str, default: Option<&str>| -> Value {
-        let default_note = match default {
-            Some(d) => format!(" The default account is `{d}`."),
-            None => String::new(),
+        // A default is only declared if it names an account that exists.
+        //
+        // `accounts::validate` already refuses a file whose `default` /
+        // `default_mail` / `default_calendar` names no configured account, and
+        // `MailTools::load` fails startup rather than serving a short list, so
+        // in the server this cannot diverge. The guard is here because *this
+        // function* cannot see that: it takes `names` and `file` as two
+        // separate arguments and nothing in its signature makes them agree.
+        //
+        // What it would cost is the failure this whole surface exists to
+        // prevent. `default: "old-work"` beside `enum: ["personal",
+        // "dartmouth"]` gets pinned into the staged arguments, and the
+        // reviewer reads a draft whose sender does not exist. It would also
+        // degrade the error: unresolvable-as-a-default says "default account
+        // `old-work` is not configured (personal, dartmouth)", which names the
+        // fix, while unresolvable-as-an-argument says "unknown account", as
+        // though the model had chosen it.
+        let Some(d) = default.filter(|d| names.iter().any(|n| n == d)) else {
+            return plain(rule);
         };
         json!({
             "type": "string",
             "enum": names,
-            "description": format!("{rule}{default_note}"),
+            "description": format!("{rule} The default account is `{d}`."),
+            "default": d,
         })
     };
-    let account = |rule: &str| with_default(rule, file.default.as_deref());
-    let mail_account = |rule: &str| with_default(rule, file.mail_default());
-    let calendar_account = |rule: &str| with_default(rule, file.calendar_default());
+    // One account is its own default, configured or not. `resolve` answers
+    // `names.len() == 1` *before* it reaches the `Mode::Create` arm, so with a
+    // single mailbox the account a create will use is known whether or not
+    // anybody ran `mecha-mail default` — and a draft from the only mailbox
+    // there is should still say which one it is. The whole point is that a
+    // reviewer never has to know how many accounts exist to read a draft.
+    let only_account = match names {
+        [only] => Some(only.clone()),
+        _ => None,
+    };
+    let mail_default = only_account
+        .clone()
+        .or_else(|| file.mail_default().map(String::from));
+    let calendar_default = only_account
+        .clone()
+        .or_else(|| file.calendar_default().map(String::from));
+    let account = |rule: &str| plain(rule);
+    // An **item** op declares a default exactly when there is only one account
+    // it could mean, and never otherwise: `Mode::Item` consults no default at
+    // all, it errors until one is named — so `only_account` alone, with no
+    // fall-back to the file's.
+    //
+    // The line is the resolution *mode*, not the verb. A `Mode::Read` keeps
+    // `plain`, because omitting `account` there really does mean every
+    // account, and a default would misstate the rule even where having one
+    // account makes the two coincide. `mail_get_thread` reads, but it resolves
+    // as an item.
+    //
+    // It matters because `mail_reply` is the other send that stages: with
+    // several accounts the model must name one and the draft carries it, but
+    // with a single account it may omit it, and the staged reply reached the
+    // reviewer with no sender — the unsigned letter again, on the install
+    // least likely to have configured anything.
+    let item_account = |rule: &str| with_default(rule, only_account.as_deref());
+    let mail_account = |rule: &str| with_default(rule, mail_default.as_deref());
+    let calendar_account = |rule: &str| with_default(rule, calendar_default.as_deref());
 
     json!([
         {
@@ -235,7 +308,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
                 "type": "object",
                 "properties": {
                     "thread_id": {"type": "string"},
-                    "account": account("The account the thread_id came from; required when several accounts are configured.")
+                    "account": item_account("The account the thread_id came from; required when several accounts are configured.")
                 },
                 "required": ["thread_id"]
             },
@@ -266,7 +339,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
                 "properties": {
                     "thread_id": {"type": "string"},
                     "body_markdown": {"type": "string"},
-                    "account": account("The account the thread lives in; required when several accounts are configured."),
+                    "account": item_account("The account the thread lives in; required when several accounts are configured."),
                     "message_id": {"type": "string", "description": "Reply to this specific message instead of the newest one."},
                     "reply_all": {"type": "boolean", "default": false}
                 },
@@ -285,7 +358,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
                         "type": "string",
                         "enum": ["archive", "read", "unread", "spam", "trash"]
                     },
-                    "account": account("The account the thread lives in; required when several accounts are configured.")
+                    "account": item_account("The account the thread lives in; required when several accounts are configured.")
                 },
                 "required": ["thread_id", "action"]
             },
@@ -360,7 +433,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
                 "type": "object",
                 "properties": {
                     "event_id": {"type": "string"},
-                    "account": account("The account the event lives in; required when several accounts are configured."),
+                    "account": item_account("The account the event lives in; required when several accounts are configured."),
                     "calendar_id": {"type": "string", "default": "primary"},
                     "title": {"type": "string"},
                     "start_time": {"type": "string"},
@@ -382,7 +455,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
                 "type": "object",
                 "properties": {
                     "event_id": {"type": "string"},
-                    "account": account("The account the event lives in; required when several accounts are configured."),
+                    "account": item_account("The account the event lives in; required when several accounts are configured."),
                     "calendar_id": {"type": "string", "default": "primary"}
                 },
                 "required": ["event_id"]
@@ -1836,6 +1909,168 @@ mod tests {
             "{}",
             note("calendar_create_event")
         );
+    }
+
+    /// The default belongs in the schema's `default` key, not only in its
+    /// prose — and only on the tools that actually consult one.
+    ///
+    /// Two failures, one fix. A reviewer approving a staged send could not see
+    /// which mailbox it would leave from, because the account was resolved
+    /// here long after the draft was written and no caller can look it up
+    /// (`mecha-core` does not depend on this crate). And a *read* or an *item*
+    /// op carried the note "The default account is `dartmouth`" while
+    /// `resolve` consults a default in `Mode::Create` alone — a promise the
+    /// code does not keep, next to a sentence saying the opposite.
+    ///
+    /// **With several accounts** is in the name because it is the condition
+    /// the assertions rest on. An item op declares the single account when
+    /// there is only one — `resolve` answers that case before it reaches any
+    /// default — which is
+    /// [`item_ops_declare_the_single_account_and_never_a_configured_one`]. A
+    /// name saying "only a create, ever" would be this file's own stale-rule
+    /// failure, one layer down from the schema it is testing.
+    #[test]
+    fn with_several_accounts_only_a_create_declares_a_default() {
+        let defs = tool_definitions(
+            &names(&["personal", "dartmouth"]),
+            &conf(None, Some("dartmouth"), Some("personal")),
+        );
+        let account = |tool: &str| -> Value {
+            defs.iter().find(|d| d["name"] == tool).unwrap()["inputSchema"]["properties"]["account"]
+                .clone()
+        };
+        assert_eq!(account("mail_send")["default"], json!("dartmouth"));
+        assert_eq!(
+            account("calendar_create_event")["default"],
+            json!("personal")
+        );
+
+        for tool in [
+            "mail_search",
+            "mail_recent",
+            "mail_get_thread",
+            "mail_reply",
+            "mail_triage",
+        ] {
+            let spec = account(tool);
+            assert!(spec.get("default").is_none(), "{tool}: {spec}");
+            assert!(
+                !spec["description"].as_str().unwrap().contains("default"),
+                "{tool}: {}",
+                spec["description"]
+            );
+        }
+    }
+
+    /// The single-account install still says who a draft is from.
+    ///
+    /// `resolve` answers `names.len() == 1` before it consults a default at
+    /// all, so the account is known even with nothing configured — and a
+    /// draft that omits it for want of a config line is the same unsigned
+    /// letter, on the install least likely to have run `mecha-mail default`.
+    #[test]
+    fn one_account_is_its_own_default_without_being_configured() {
+        let defs = tool_definitions(&names(&["personal"]), &conf(None, None, None));
+        for tool in ["mail_send", "calendar_create_event"] {
+            let spec = &defs.iter().find(|d| d["name"] == tool).unwrap()["inputSchema"]
+                ["properties"]["account"];
+            assert_eq!(spec["default"], json!("personal"), "{tool}: {spec}");
+        }
+        // A read still claims none: omitting `account` there means *every*
+        // account, and with one configured the two coincide only by
+        // arithmetic. (An item op does claim it here — that is
+        // `item_ops_declare_the_single_account_and_never_a_configured_one`.)
+        let search = &defs.iter().find(|d| d["name"] == "mail_search").unwrap()["inputSchema"]
+            ["properties"]["account"];
+        assert!(search.get("default").is_none(), "{search}");
+    }
+
+    /// An item op declares a default exactly when there is one account it
+    /// could mean — and `mail_reply` is why it matters.
+    ///
+    /// It is the other send that stages. With several accounts `Mode::Item`
+    /// errors until the model names one, so the draft carries it; with a
+    /// single account `resolve` short-circuits, the model omits it, and the
+    /// staged reply reached the reviewer with no sender. The same unsigned
+    /// letter as `mail_send`'s, one tool over.
+    #[test]
+    fn item_ops_declare_the_single_account_and_never_a_configured_one() {
+        let spec = |defs: &Vec<Value>, tool: &str| -> Value {
+            defs.iter().find(|d| d["name"] == tool).unwrap()["inputSchema"]["properties"]["account"]
+                .clone()
+        };
+        const ITEM_OPS: [&str; 5] = [
+            "mail_reply",
+            "mail_triage",
+            "mail_get_thread",
+            "calendar_update_event",
+            "calendar_delete_event",
+        ];
+
+        let alone = tool_definitions(&names(&["personal"]), &conf(None, None, None));
+        for tool in ITEM_OPS {
+            assert_eq!(spec(&alone, tool)["default"], json!("personal"), "{tool}");
+        }
+
+        // With several accounts an item op consults no default at all — it
+        // errors until one is named — so declaring the file's would be a
+        // promise `resolve` does not keep, which is this function's whole
+        // subject. Note the file below *has* defaults; they are a create's.
+        let several = tool_definitions(
+            &names(&["personal", "dartmouth"]),
+            &conf(Some("personal"), Some("dartmouth"), None),
+        );
+        for tool in ITEM_OPS {
+            let s = spec(&several, tool);
+            assert!(s.get("default").is_none(), "{tool}: {s}");
+        }
+
+        // A read stays plain even with one account: omitting `account` there
+        // means *every* account, and the two only coincide by arithmetic.
+        for tool in ["mail_search", "mail_recent", "calendar_list"] {
+            let s = spec(&alone, tool);
+            assert!(s.get("default").is_none(), "{tool}: {s}");
+        }
+    }
+
+    /// A default naming no configured account declares nothing.
+    ///
+    /// `accounts::validate` rejects such a file at load, so the server cannot
+    /// reach this — but `tool_definitions` takes `names` and `file` as two
+    /// arguments and nothing in its signature makes them agree, and the cost
+    /// if they ever disagreed is precisely the failure this surface exists to
+    /// prevent: `"old-work"` pinned into a staged draft as its sender, shown
+    /// to a reviewer as a real account, and a release that then reports
+    /// "unknown account" as though the model had picked it.
+    #[test]
+    fn a_default_naming_no_configured_account_declares_nothing() {
+        let defs = tool_definitions(
+            &names(&["personal", "dartmouth"]),
+            &conf(Some("old-work"), None, None),
+        );
+        for tool in ["mail_send", "calendar_create_event"] {
+            let spec = &defs.iter().find(|d| d["name"] == tool).unwrap()["inputSchema"]
+                ["properties"]["account"];
+            assert!(spec.get("default").is_none(), "{tool}: {spec}");
+            assert!(
+                !spec["description"].as_str().unwrap().contains("old-work"),
+                "{tool}: {}",
+                spec["description"]
+            );
+        }
+    }
+
+    /// With no default configured there is nothing to declare, and inventing
+    /// one would be the worst outcome of all: the model omits `account`
+    /// believing it knows where the message goes, and the send resolves
+    /// somewhere else — or errors, having told the reviewer otherwise.
+    #[test]
+    fn a_create_with_no_default_declares_none() {
+        let defs = tool_definitions(&names(&["personal", "dartmouth"]), &conf(None, None, None));
+        let send = defs.iter().find(|d| d["name"] == "mail_send").unwrap();
+        let spec = &send["inputSchema"]["properties"]["account"];
+        assert!(spec.get("default").is_none(), "{spec}");
+        assert!(!spec["description"].as_str().unwrap().contains("default"));
     }
 
     /// The booking sweep resolves where its events land once, up front —

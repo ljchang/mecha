@@ -31,10 +31,13 @@
 //!   a document a draft quotes joins on the same rule the day it is added.
 //!
 //! - **Only calls the draft could have been written from count.** The walk
-//!   stops at the staging call itself, found by exact `(name, args_before)`
-//!   match — otherwise the staged `mail_reply` joins to itself on its own
-//!   `thread_id` and the reviewer is shown "Drafted, not sent…" as the message
-//!   being answered.
+//!   stops at the staging call itself, found by its recorded `tool_use` id —
+//!   otherwise the staged `mail_reply` joins to itself on its own `thread_id`
+//!   and the reviewer is shown "Drafted, not sent…" as the message being
+//!   answered. It was an exact `(name, args_before)` match until the loop
+//!   began pinning schema defaults into a staged draft, at which point the
+//!   arguments stopped being the bytes the transcript holds; the content match
+//!   survives as the fallback for items staged before the id was recorded.
 //!
 //! - **It is third-party text and is shown as third-party text.** These bytes
 //!   armed the conversation's `untrusted` leg, and the item's taint snapshot
@@ -174,7 +177,20 @@ pub fn for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<SourceRead> {
 /// getting it wrong is silent, and the symptom is a reviewer reading the
 /// wrong original.
 pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead> {
-    let ids = provider_ids(&item.args);
+    // Keys the *model* named, which is not every key the draft holds: the loop
+    // pins a tool's declared schema defaults into a staged call, and a pinned
+    // value is a constant this harness wrote rather than evidence of what the
+    // run was working from. `calendar_id: "primary"` is the one that lands —
+    // a string, so `provider_ids` takes it, and `Join::Asked` has no entropy
+    // floor, so it matches every earlier calendar call in the session and
+    // offers an unrelated listing as the thing the draft was written from.
+    // That is the wrong-bytes review this module exists to prevent, and
+    // `MIN_RETURNED_ID_CHARS`' own doc names this exact value as the reason a
+    // floor is needed at all.
+    let ids: Vec<(String, String)> = provider_ids(&item.args)
+        .into_iter()
+        .filter(|(key, _)| !item.filled_defaults.contains(key))
+        .collect();
     if ids.is_empty() {
         return Vec::new();
     }
@@ -227,7 +243,22 @@ pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead>
         // The staging call. Everything after it is what the run did *with* the
         // draft, not what it drafted from, and the call itself joins to its own
         // arguments — so this is where the walk ends.
-        if name == &item.tool && input == &item.args_before {
+        //
+        // By id when the item has one, because identity by *content* was only
+        // ever true while nothing between the model's call and the stored
+        // draft touched the arguments. The loop now pins a call's declared
+        // schema defaults into the draft it stages, so a `mail_reply` whose
+        // `reply_all` was filled does not equal its own recorded input — the
+        // walk ran past the staging call and the draft joined to itself on its
+        // own `thread_id`, which is this break's entire purpose.
+        //
+        // The content match stays as the fallback, for a draft staged before
+        // `call_id` existed and for one no tool call produced.
+        let is_staging_call = match &item.call_id {
+            Some(call_id) => id == call_id,
+            None => name == &item.tool && input == &item.args_before,
+        };
+        if is_staging_call {
             break;
         }
         let Some(content) = results.get(id.as_str()) else {
@@ -413,12 +444,16 @@ mod tests {
 
     /// As [`draft`], for a draft staged by some other tool.
     ///
-    /// The tool name is not decoration here: the walk ends at the staging call
-    /// by matching `(name, args_before)`, so a fixture whose staging call is
-    /// named differently from `item.tool` silently disables that break — and
-    /// the draft then joins to *itself*, handing the reviewer "Drafted, not
-    /// sent" as the thing it is acting on. Found by writing exactly that
-    /// fixture by accident.
+    /// The tool name is not decoration here: the walk ends at the staging call,
+    /// so a fixture whose staging call it cannot recognise silently disables
+    /// that break — and the draft then joins to *itself*, handing the reviewer
+    /// "Drafted, not sent" as the thing it is acting on. Found by writing
+    /// exactly that fixture by accident.
+    ///
+    /// These fixtures deliberately leave `call_id` at `None` and exercise the
+    /// **fallback** content match, because that is the arm every draft staged
+    /// before the field existed still takes. The id arm has its own test, and
+    /// so does the drift between the two that made the id necessary.
     fn draft_of(tool: &str, args: Value) -> OutboxItem {
         OutboxItem {
             id: "i1".into(),
@@ -435,6 +470,8 @@ mod tests {
             resolved_at: None,
             reason: None,
             error: None,
+            call_id: None,
+            filled_defaults: Vec::new(),
         }
     }
 
@@ -452,6 +489,108 @@ mod tests {
             content: content.into(),
             is_error: false,
         }])
+    }
+
+    /// **A value the harness pinned is not a join key.**
+    ///
+    /// `calendar_create_event` declares `calendar_id: "primary"`, so the loop
+    /// pins it into every calendar draft. It is a string and it is neither
+    /// addressing nor prose, so `provider_ids` takes it — and `Join::Asked`
+    /// has no entropy floor, because matching key *and* value means "a
+    /// coincidence has to happen twice". That held while both sides were the
+    /// model's; one side is a constant now, so the second coincidence is free
+    /// and every earlier calendar call in the session matches.
+    ///
+    /// Before defaults were pinned, a create whose other string arguments are
+    /// all header fields had *empty* `provider_ids` and this function returned
+    /// at the first line. So the failure is new, and it is the one
+    /// `MIN_RETURNED_ID_CHARS`' own doc names.
+    #[test]
+    fn a_pinned_default_is_not_something_the_draft_can_be_joined_on() {
+        let mut item = draft_of(
+            "mail__calendar_create_event",
+            json!({
+                "title": "Reading group",
+                "start_time": "2026-09-09T14:00:00-04:00",
+                // Pinned by the loop. The model never named a calendar.
+                "calendar_id": "primary",
+            }),
+        );
+        item.filled_defaults = vec!["calendar_id".into()];
+
+        let messages = vec![
+            // An unrelated listing that happens to name the same calendar —
+            // which every calendar read in every session does.
+            call(
+                "a",
+                "mail__calendar_list_events",
+                json!({"calendar_id": "primary", "account": "work"}),
+            ),
+            result("a", "Tue 10:00 Faculty meeting\nWed 16:00 Office hours"),
+        ];
+
+        assert!(
+            from_messages(&item, &messages).is_empty(),
+            "an unrelated listing was offered as the source of the draft"
+        );
+
+        // The guard is the *authorship*, not the key: the same argument named
+        // by the model is evidence, and still joins.
+        item.filled_defaults.clear();
+        assert_eq!(from_messages(&item, &messages).len(), 1);
+    }
+
+    /// **The regression that made `call_id` necessary.**
+    ///
+    /// The loop pins a call's declared schema defaults into the draft it
+    /// stages, so the stored `args_before` is the model's input *plus* the
+    /// fills — `mail_reply` declares `reply_all: false`, which a model omits
+    /// on essentially every reply. The transcript still holds the unfilled
+    /// input, nothing rewrites it, so the content match this walk used to end
+    /// on could not match: it ran past the staging call, and the draft joined
+    /// to *itself* on its own `thread_id`, handing the reviewer "Drafted, not
+    /// sent…" as the message being answered.
+    ///
+    /// Every other fixture here builds its staging call *from* `args_before`,
+    /// which is precisely the drift that makes them blind to this. This one
+    /// sets them apart by exactly one filled default.
+    #[test]
+    fn a_staging_call_is_found_by_id_when_a_filled_default_moved_its_arguments() {
+        let sent = json!({"thread_id": "T1", "body_markdown": "Dear Alan,"});
+        let mut item = draft(json!({
+            "thread_id": "T1",
+            "body_markdown": "Dear Alan,",
+            // What the loop pinned. Absent from the transcript below.
+            "reply_all": false,
+        }));
+        item.call_id = Some("b".into());
+        assert_ne!(
+            item.args_before, sent,
+            "precondition: the arguments drifted"
+        );
+
+        let messages = vec![
+            call(
+                "a",
+                "mail__mail_get_thread",
+                json!({"thread_id": "T1", "account": "work"}),
+            ),
+            result("a", "From: Alan\n\nDear Dr. Chang,"),
+            call("b", "mail__mail_reply", sent),
+            result("b", "Drafted, not sent: staged as `i1`."),
+        ];
+        let reads = from_messages(&item, &messages);
+
+        // The read, and only the read. Without the id anchor the staging call
+        // is a candidate, `found.reverse()` puts it first, and `reads[0]` is
+        // the draft's own "Drafted, not sent" result.
+        assert_eq!(reads.len(), 1, "{reads:?}");
+        assert_eq!(reads[0].tool, "mail__mail_get_thread");
+        assert!(
+            !reads[0].text.contains("Drafted, not sent"),
+            "the draft joined to itself: {:?}",
+            reads[0].text
+        );
     }
 
     #[test]

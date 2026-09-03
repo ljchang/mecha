@@ -666,9 +666,23 @@ account-scoped, and every row a read returns carries the account, so the
 model always has it); **creates use the default or ask** (`mecha-mail
 default <name>`; with several accounts and none, the error says to *ask the
 user* — worded that way because "use your best judgment" measurably makes
-models invent). A failed account never sinks a fan-out: its error is
-reported beside the other accounts' results, and the call errors only when
-every account failed.
+models invent). **The schema declares a `default` key exactly where omitting
+`account` really does resolve to one, and the resolution mode decides — not
+the verb.** The key is what lets the outbox pin the account into a draft so
+the reviewer can see who a message is from (see *The outbox*), so declaring
+one anywhere else is a promise `resolve` does not keep: a `Mode::Read` fans
+out, and "The default account is `dartmouth`" on `mail_search` described
+behaviour that does not exist, one clause after a sentence saying the
+opposite. So a **create** declares the configured default (`mail_default` /
+`calendar_default`, per surface). An **item op** declares nothing when several
+accounts are configured, because it consults no default and errors until one
+is named — but declares the single account when there is only one, since
+`resolve` answers the single-name case before it reaches any default at all,
+and a reviewer should not have to know how many accounts exist to read a
+draft. `mail_get_thread` reads, and resolves as an item, so it follows the
+item rule. A **read** declares nothing either way. A failed account never
+sinks a fan-out: its error is reported beside the other accounts' results,
+and the call errors only when every account failed.
 
 Two unification wrinkles worth remembering: `mail_reply` takes a
 `thread_id` and replies to the newest message (or `message_id`), which Graph
@@ -1705,12 +1719,54 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
   correction, the `"Blocked by a hook:"` rule in its positive form), and its
   rate is `None` over an empty denominator, never zero: "nothing was edited"
   and "nothing has gone out" are opposite findings.
+- **A draft pins the defaults its own schema declares.** `mail_send` with no
+  `account` used to reach the outbox as three keys — `to`, `subject`,
+  `body_markdown` — and which mailbox it would leave from was decided minutes
+  later, in another process, by a file the reviewer never sees. Every review
+  surface showed a send with no sender. The harness cannot look the answer up
+  either, and that is deliberate rather than an oversight: `mecha-core` has no
+  dependency on `mecha-mail`, so the schema is the only channel between them.
+  So `tool::with_schema_defaults` materialises any top-level property that
+  declares a JSON-Schema `default` and was omitted, and staging writes the
+  filled arguments — tool-agnostic, on `DraftView`'s reasoning, so a tool
+  nobody anticipated gets it too. `args_before` is filled with it, and must
+  be: `edited()` is `args != args_before`, so a draft that differs from its
+  own baseline before a human has touched it reports every send as a
+  correction — `SentEdited` instead of `SentUnchanged`, which flips the
+  appraisal signal from `+1.0 / Own` to `-1.0 / Owner` and feeds the
+  harness's own bookkeeping to the writing miner, whose rules ride in every
+  future run's cached prefix. That is what moved `outbox_source`'s anchor
+  onto the recorded `call_id` (below). The item also records **which keys
+  were pinned**, because a value the harness wrote is not evidence of what
+  the run was doing: `provider_ids` takes every string argument that is
+  neither addressing nor prose, so a pinned `calendar_id: "primary"` became a
+  join key on every calendar draft — and `Join::Asked` has no entropy floor,
+  since it matches key *and* value on the reasoning that a coincidence has to
+  happen twice, which held only while both sides were the model's.
+  **Pinned, not merely displayed**, because
+  staging crosses a *time* boundary: a draft is executed verbatim whenever the
+  user gets round to it, so an unpinned default is a message whose sender can
+  change between the reading and the sending. The approver is handed the same
+  filled view for the same reason and *does not* run it — there is no gap
+  there to pin, and rewriting a call the model is about to make would put this
+  on the execution path of every tool in the registry to buy nothing.
 - **Subagents inherit the parent's route** (like hooks), or delegating is the
   way to send unstaged. `mecha eval` forces `--no-outbox`, like MCP and hooks,
   for the same reproducibility reason.
 - **A routed name that matches no registered tool warns on every start** — a
   typo means the real tool executes unrouted, which is the silently-degrading
   sandbox shape again.
+- **The staging call is found by its `tool_use` id, not by its arguments.**
+  `outbox_source` walks the transcript back from the draft and must stop at
+  the call that staged it, or the draft joins to *itself* on its own
+  `thread_id` and the reviewer is shown "Drafted, not sent…" as the message
+  being answered. That anchor was an exact `(tool, args_before)` match, which
+  is identity by content and held only while nothing between the model's call
+  and the stored draft touched the arguments — pinning defaults ended that,
+  and `mail_reply`'s `reply_all` alone would have broken it on essentially
+  every reply. The item records `call_id`; the content match survives as the
+  fallback for drafts staged before the field existed, defaulted on load like
+  every other record here.
 - **An item records the jail its tool would really have executed under**, and
   the release rebuilds its tool surface rooted there. A staged call is a
   *deferred* tool call, and a tool call means nothing apart from its

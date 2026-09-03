@@ -1123,6 +1123,8 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind, tool: &str) -> OutboxItem {
         OutboxItem {
+            filled_defaults: Vec::new(),
+            call_id: None,
             id: id.into(),
             status: status.into(),
             tool: tool.into(),
@@ -1193,8 +1195,12 @@ mod tests {
                 OutboxKind::Message,
                 json!({"to": "a@example.com"}),
                 Default::default(),
-                None,
-                None,
+                mecha_core::outbox::Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1224,8 +1230,12 @@ mod tests {
                 OutboxKind::Message,
                 json!({"to": "a@example.com"}),
                 Default::default(),
-                None,
-                None,
+                mecha_core::outbox::Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
         store
@@ -1482,8 +1492,12 @@ mod tests {
                 OutboxKind::Message,
                 json!({"to": "a@example.com"}),
                 Default::default(),
-                None,
-                None,
+                mecha_core::outbox::Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
@@ -1525,8 +1539,12 @@ mod tests {
                 OutboxKind::Publish,
                 json!({"bundle": "site"}),
                 Default::default(),
-                None,
-                None,
+                mecha_core::outbox::Provenance {
+                    filled_defaults: Vec::new(),
+                    session_id: None,
+                    workspace: None,
+                    call_id: None,
+                },
             )
             .unwrap();
 
