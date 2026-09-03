@@ -1090,10 +1090,16 @@ computed in the worker and the confirmation is parsed in the facade, so the
 signal does not currently reach the decision. That is the shape of the fix and
 it wants its own change.
 
-A smaller sibling: when `completion` falls through to the facade slot after a
-hosted turn (an `X-Chat-Session` the host does not recognise), `slot.convo` is
-a different conversation from the one that produced the reply being echoed, so
-`echoed` is false and the standing yes is granted.
+The fall-through arm is closed, and what it cost to see is worth keeping. When
+`completion` falls through to the facade slot (an `X-Chat-Session` the host
+does not recognise), `slot.convo` is a different conversation from the one that
+produced the reply being echoed, so the span check reads an unrelated last
+message. It returned `false` — and a gate whose input does not exist returns
+exactly what a clean turn returns. So the door was written for two callers,
+wired for one, and read as covering both. The arm now raises a flag the gate
+ORs in: a turn answering in a conversation it never named drops the standing
+yes on the grounds that the check could not run, which is the *unknown is never
+clean* rule landing somewhere new.
 
 Three limits, all now stated rather than found. After a barge-in the newest
 assistant message is the cancelled partial, so an echo of the previous,

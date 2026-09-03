@@ -225,7 +225,12 @@ mod echo_span_tests {
         // change computing `echoed` and then ignoring it would have passed.
         let grant = src
             .find("\n    if shared.mount.approve_all")
-            .map(|i| &src[i..i + 60])
+            // Line-bounded, not byte-bounded: `&src[i..i + 60]` would
+            // panic on a char boundary the day a comment above the grant
+            // gains an em-dash within 60 bytes of it, turning a clear
+            // assertion failure into an unrelated one. `i` is the newline,
+            // so `i + 1` is always a boundary.
+            .map(|i| src[i + 1..].lines().next().unwrap_or_default())
             .expect("the slot still grants the standing yes here");
         assert!(
             grant.contains("&& !echoed"),
@@ -234,6 +239,43 @@ mod echo_span_tests {
         assert!(
             src.contains("echoes_the_last_reply(&text,"),
             "and `echoed` is no longer computed from the span rule"
+        );
+    }
+
+    /// The *other* caller the door above was written for.
+    ///
+    /// `Hosted::Unknown` falls through to the facade's own slot, whose
+    /// conversation is not the one that produced the reply being echoed —
+    /// so the span check reads an unrelated last message, cannot fire, and
+    /// the first version of this branch granted `--voice-yes` there. Found
+    /// on review.
+    ///
+    /// Every needle here starts with a real newline plus indentation, which
+    /// the copies inside this test cannot match: in the file they are escape
+    /// sequences (a backslash and an `n`), not newline bytes. Without that
+    /// the test module — which sits *above* the code it reads — matches
+    /// itself, which is exactly how an earlier source-reading test here
+    /// passed with the wiring deleted.
+    #[test]
+    fn the_fall_through_drops_the_standing_yes_too() {
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\n    let echoed =")
+            .expect("the facade door still computes `echoed`");
+        let echoed = &src[i + 1..][..src[i + 1..].find(';').expect("a statement")];
+        assert!(
+            echoed.contains("answered_in_another_conversation"),
+            "a turn answered in a conversation it never named keeps the standing yes: {echoed:?}"
+        );
+        // And that the flag is raised, not merely read: a binding left
+        // permanently false would satisfy the assertion above.
+        let j = src
+            .find("\n                Hosted::Unknown => {")
+            .expect("the fall-through arm is still here");
+        let arm = &src[j..][..src[j..].find("\n                }").expect("an arm body")];
+        assert!(
+            arm.contains("answered_in_another_conversation = true"),
+            "the fall-through no longer raises the flag the gate reads"
         );
     }
 
@@ -1308,6 +1350,9 @@ async fn completion(
     // exactly what every call did before D3 and a dead call is a worse
     // answer than an unshared one. What the fall-through costs is visible
     // where it matters: the page's transcript simply does not move.
+    // Set by the `Hosted::Unknown` arm below and read at the facade door:
+    // this turn is answering in a conversation that is not the one it named.
+    let mut answered_in_another_conversation = false;
     if let (Some(chat_key), Some(host)) = (&head.chat, &shared.mount.host) {
         if !chat_key.is_empty() {
             match host.speak(chat_key, &text, shared.mount.approve_all).await {
@@ -1345,6 +1390,7 @@ async fn completion(
                     // stale: an earlier hosted turn's label must not be
                     // spoken over an answer it has nothing to do with.
                     shared.affects.lock().await.remove(&confirm_key);
+                    answered_in_another_conversation = true;
                 }
             }
         }
@@ -1377,16 +1423,37 @@ async fn completion(
     // unshared one. But `--voice-yes` follows it down, so without this a
     // verbatim "delete it" reaches `mail_triage` with nobody asked on exactly
     // the path that skipped the gate. Wiring one of two doors is not a gate.
-    let echoed = shared.mount.approve_all
-        && slot
-            .convo
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == mecha_core::message::Role::Assistant)
-            .is_some_and(|m| echoes_the_last_reply(&text, &m.text()));
+    let repeats_the_last_reply = slot
+        .convo
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == mecha_core::message::Role::Assistant)
+        .is_some_and(|m| echoes_the_last_reply(&text, &m.text()));
+
+    // Found on review: the comment above claims this door covers both
+    // callers, and it did not. On the `Hosted::Unknown` fall-through the
+    // slot's conversation is *not* the one that produced the reply being
+    // echoed, so the span check just above reads an unrelated last message
+    // and cannot fire — the standing yes was granted on a comparison that
+    // could not run. Having nothing to compare against is not the same
+    // finding as a clean turn, and this is the arm where the caller has
+    // already been told (a `warn!`) that it is not getting the conversation
+    // it asked for.
+    let echoed =
+        shared.mount.approve_all && (repeats_the_last_reply || answered_in_another_conversation);
     if echoed {
-        tracing::info!("spoken turn repeats the last reply verbatim — approvals stay on");
+        // Which arm dropped it, because they mean different things to
+        // whoever reads the log: one is the assistant's own voice coming
+        // back, the other is a gate that could not be evaluated.
+        if repeats_the_last_reply {
+            tracing::info!("spoken turn repeats the last reply verbatim — approvals stay on");
+        } else {
+            tracing::info!(
+                "spoken turn fell through to the facade's own conversation — the echo \
+                 check has no matching history, so approvals stay on"
+            );
+        }
     }
     // What this cannot narrow, said plainly rather than left to be found: a
     // facade started with `--yes` already carries `ModeApprover { Allow }` on
