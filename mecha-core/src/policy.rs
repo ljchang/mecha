@@ -492,7 +492,7 @@ impl ExecPolicy {
                         // module cannot read — `$PY -c 'x'`, `py* -c 'x'` —
                         // and unknown is never clean. Heads only, so `ls
                         // *.txt` is untouched (PR #148's review).
-                        || seg[0].contains(['$', '*', '?', '['])
+                        || seg[0].contains(['$', '*', '?', '[', EXPANSION])
                         // A here-string feeds the head a program from the
                         // command line, which is `-c` by another spelling.
                         || seg.iter().any(|w| w == "<<<")
@@ -783,10 +783,19 @@ fn opaque_segments(command: &str) -> Vec<Vec<String>> {
     // the separator split below would otherwise cut, leaving `1` as a head.
     // `$IFS` is whitespace spelled out, and it is replaced before the split
     // because the brace form `${IFS}` would otherwise be torn by the `{`/`}`
-    // separators into `$` and `IFS` (`rm${IFS}-rf${IFS}$HOME`).
-    let stripped = strip_redirects(command)
-        .replace("${IFS}", " ")
-        .replace("$IFS", " ");
+    // separators into `$` and `IFS` (`rm${IFS}-rf${IFS}$HOME`). `$'…'` and
+    // `$"…"` are quoting, not expansion — `rm -r$'f'` is `rm -rf` — so the
+    // `$` goes and the quote removal below does the rest. Every other
+    // `${…}` becomes one placeholder character before the brace split, so
+    // `-${a}rf` survives as one word the expansion-free view can read as
+    // `-rf` (PR #148's review found the glued spelling reaching `None`).
+    let stripped = mask_braced_expansions(
+        &strip_redirects(command)
+            .replace("${IFS}", " ")
+            .replace("$IFS", " ")
+            .replace("$'", "'")
+            .replace("$\"", "\""),
+    );
     stripped
         .split([';', '|', '&', '(', ')', '{', '}', '`', '\n'])
         .map(|piece| {
@@ -817,6 +826,64 @@ fn opaque_segments(command: &str) -> Vec<Vec<String>> {
                 .collect::<Vec<_>>()
         })
         .filter(|seg| !seg.is_empty())
+        .collect()
+}
+
+/// Stands in for a `${…}` expansion in the opaque views: not a separator, not
+/// a word character, removed by [`expansion_free`], and read by the floor as
+/// "a head the shell will expand".
+const EXPANSION: char = '\u{E000}';
+
+/// Every `${…}` replaced by [`EXPANSION`], so the brace split that follows
+/// does not tear it. An unterminated `${` is left alone.
+fn mask_braced_expansions(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("${") {
+        out.push_str(&rest[..i]);
+        match rest[i + 2..].find('}') {
+            Some(j) => {
+                out.push(EXPANSION);
+                rest = &rest[i + 2 + j + 1..];
+            }
+            None => {
+                out.push_str(&rest[i..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A segment with every expansion removed: `$name` runs and [`EXPANSION`]
+/// placeholders deleted from each word, empty words dropped. `-${a}rf` is
+/// `-rf`, `rm$X -rf` is `rm -rf`. The word search tries this view beside the
+/// literal one, because an expansion glued *inside* a pattern word is the
+/// one spelling the literal view cannot match.
+fn expansion_free(seg: &[String]) -> Vec<String> {
+    seg.iter()
+        .map(|w| {
+            let mut out = String::with_capacity(w.len());
+            let mut chars = w.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == EXPANSION {
+                    continue;
+                }
+                if c == '$' {
+                    while chars
+                        .peek()
+                        .is_some_and(|n| n.is_alphanumeric() || *n == '_')
+                    {
+                        chars.next();
+                    }
+                    continue;
+                }
+                out.push(c);
+            }
+            out
+        })
+        .filter(|w| !w.is_empty())
         .collect()
 }
 
@@ -932,7 +999,11 @@ fn strip_redirects(piece: &str) -> String {
 /// consulted here — an opaque command is never allowed by its words.
 fn narrowing_words(rules: &[&RuleConfig], command: &str) -> Option<(RuleDecision, Vec<String>)> {
     let mut best: Option<(RuleDecision, Vec<String>)> = None;
-    for seg in opaque_segments(command) {
+    let literal = opaque_segments(command);
+    let views = literal
+        .iter()
+        .flat_map(|seg| [seg.clone(), expansion_free(seg)]);
+    for seg in views {
         for start in 0..seg.len() {
             let tail = &seg[start..];
             let hit = rules
@@ -1654,6 +1725,11 @@ mod tests {
             "rm$IFS-rf$IFS$HOME",
             "rm${IFS}-rf${IFS}$HOME",
             "rm -rf\"$HOME\"",
+            // An expansion glued *inside* a pattern word, and ANSI-C quoting.
+            "rm -${a}rf $HOME",
+            "rm -r$'f' $HOME",
+            "rm$X -rf $HOME",
+            "r${x}m -rf $HOME",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(opaque)).unwrap().decision,

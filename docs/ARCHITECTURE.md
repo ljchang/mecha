@@ -1555,8 +1555,14 @@ refusal. The specification and the survey behind it are
   asked whether they run their arguments — a redirect must not make `python3
   -c` *less* restricted than it is without one, which the first fall-through
   did), and otherwise it matches no rule and the approver decides as it would
-  with none — the same answer an unmatched *splittable* command gets. The
-  first version returned `Prompt` there so
+  with none — the same answer an unmatched *splittable* command gets. Named
+  residue: the word search is under-approximate in exactly one direction, an
+  expansion the harness cannot read spliced *inside* a pattern word (it tries
+  an expansion-free view too — `-${a}rf` and `-r$'f'` are `-rf` — but a
+  value that only the shell knows is not readable here), so a false "cannot
+  split" can now cost a `forbid`, not only an `allow`; `forbid` is a control
+  against mistakes and ordinary injection, and the sandbox is the
+  containment. The first version returned `Prompt` there so
   `Allow` mode could not run a shape the splitter would not vouch for; once
   `forbidden_words` searched the opaque command for every `forbid`, what the
   prompt still bought was a cliff — with `consult` failing closed, one
@@ -1642,9 +1648,14 @@ refusal. The specification and the survey behind it are
   routed call stages and a person decides at release; a global `allow` or
   `prompt` naming a tool in `[outbox] tools` would judge nothing and `setup`
   refuses it, naming the rule and three remedies (write it as `forbid`,
-  remove it, un-route the tool). A `forbid` is a second lock and stays; under
-  `--no-outbox` every rule is live and nothing is refused; a project layer's
-  `prompt` is dropped with a warning instead. "Refuses without consulting
+  remove it, un-route the tool). A `forbid` stays and `setup` says on every
+  start that it is *unreached* while the route is on — the call becomes a
+  draft a person can release, not a refusal — because an operator who wrote
+  it expecting "never sends" deserves the signal; under `--no-outbox` every
+  rule is live and nothing is refused; a project layer's `prompt` is set
+  aside for the run with a warning instead. `setup::live_rules` is the pure
+  half, and a table of tests covers each thing a review pass found wrong
+  in the glue. "Refuses without consulting
   anyone" is true of everything that would have executed.
 
 There is deliberately no `--no-rules` flag: a `forbid` is the operator's
