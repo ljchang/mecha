@@ -34,7 +34,8 @@ people to approve, and the nightly mail classifier took both mailboxes;
 queue's similarity groups; 0.1.12 on 2026-08-22, 0.1.11 and 0.1.10 both on
 2026-08-21, 0.1.9 on 2026-08-20, and 0.1.7/0.1.8 on 2026-08-19/20 after the
 mail hold lifted).
-**`main` carries ten merges beyond v0.1.16 that are not yet tagged**:
+**Released as v0.1.17 on 2026-08-31**, carrying the ten merges beyond
+v0.1.16 that this paragraph used to list as untagged:
 the 2026-08-30 five — #125 (**four home-page queue cards did nothing**,
 plus the ExecStart-check rewrite and the `js_string_array` guard
 loosening); #126 (**the graph tab grows its notebook, composer, and the
@@ -52,13 +53,19 @@ and the 2026-08-29 four — #114, the shadow queue on every owner surface
 (plus a web entity page and chat tool-result previews); #116, the
 `/tasks` page repair; #115, the appraisal docs-page rework; #117, the
 docs site's fixture-backed web demo and its two CI gates. All in the
-`CHANGELOG.md`. **Released as v0.1.17 on 2026-08-31** — tagged, the
+`CHANGELOG.md`. The tag was cut with the
 release workflow green, and all four crates confirmed live on crates.io
 at 0.1.17 (`mecha-core`, `mecha-cli`, `mecha-mail`, `mecha-slack`) by
 querying the registry rather than by watching the job go green. Seven of
 the merges in it had landed with no changelog entry (#119, #121, #123,
-#125, #127, #128, #130) and were written up at release time; the next tag
-is v0.1.18.
+#125, #127, #128, #130) and were written up at release time.
+**`main` now carries nine merges beyond v0.1.17 that are not yet tagged**,
+all 2026-09-02/03: the audit lane's #139 and #142 and its approval-rules
+pair #143 and #148 (each has a `CHANGELOG.md` entry under Unreleased as of
+this pass); the appraisal lane's #140, #141 and #147 (**no changelog
+entry yet** — the same trap as last time, to be written at release or by
+that lane); and the two docs merges #146 and #149. The next tag is
+v0.1.18, and the installed binary is older than all nine.
 
 **Three lanes were off `main` on the evening of 2026-09-02: the audit
 lane, whose approval-rules PR landed the next morning UTC and whose
@@ -76,15 +83,22 @@ send-laundering, the cumulative usage frame, `Approver::escalate`,
 **merged at `1d21d6b` on 2026-09-03** after nine review passes on the
 rebased tree, every one of which found something real and smaller than the
 last — the arc is in `HISTORY.md` under 2026-09-02/03. Its follow-up,
-**#148** (`feat/approval-policy-followups`: an opaque command matching no
-rule falls through to the approver; an `allow`/`prompt` on a live-routed
-tool is refused at `setup`, `forbid` spared), is open on `main` and in its
-own review loop; the two rulings behind it are the owner's (2026-09-03).
-Until #148 merges, `docs/ARCHITECTURE.md` §Approval rules on `main` still
-states the behaviour each ruling replaces — an opaque command under a policy
-*prompts*, a routed-tool rule is inert with a warning — and #148's copy of
-that section is the one that states the rulings. Nothing was reinstalled
-or restarted for either: the installed binary predates them.
+**#148** (`feat/approval-policy-followups`), **merged at `c88adf0`** later
+the same day after eleven passes of its own: the owner's two rulings of
+2026-09-03 — an opaque command matching no rule falls through to the
+approver rather than cliffing every glob in every trigger into `Blocked`;
+an `allow`/`prompt` on a live-routed tool is refused at `setup`, `forbid`
+kept and noted as unreached — plus what the loop found in implementing
+them: the fall-through had quietly been doing the inline-eval floor's job
+for opaque commands, a redirect target glued to a separator swallowed the
+next command, `2>&1` had to be stripped before the separator split, a
+here-string's payload is not a file name, `$IFS` and `${…}` glued to
+pattern words, the routed-tool check was false under `--no-outbox` and so
+moved from `validate` to `setup::live_rules` (a pure function with a table
+test), and a project file could launder or un-route the operator's own
+rules. `docs/ARCHITECTURE.md` §Approval rules on `main` now states the
+rulings and the residue. Nothing was reinstalled or restarted for any of
+these: the installed binary predates them.
 The third session's **#144** (`fix/draft-shows-its-account`: `OutboxItem`
 gains `call_id` and `filled_defaults`, `OutboxStore::stage` takes an
 `outbox::Provenance`) merged `main` after both appraisal PRs and

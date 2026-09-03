@@ -939,29 +939,6 @@ impl Config {
         Ok(cfg)
     }
 
-    /// The `allow` and `prompt` rules that name a tool `[outbox] tools`
-    /// routes to staging — rules that judge nothing while the route is live,
-    /// because staging runs before the rules are read and release reads
-    /// none, and a person reviews the staged call anyway. `forbid` is *not*
-    /// listed: a second lock behind staging is never wrong, and under
-    /// `--no-outbox` (a public flag: routed tools "execute directly under the
-    /// usual gates") it is the one gate left — PR #148's review found the
-    /// first version failing the load for exactly that belt-and-braces
-    /// config, on every surface. `setup` acts on what this names where the
-    /// route is actually on — refusing the operator's, setting a project
-    /// layer's aside with a warning (`RuleConfig::from_project`); `Config::
-    /// validate` cannot, because the flag is not in the file. `tools` only:
-    /// `publish_tools` is a kind, not a route, mirroring
-    /// `OutboxRoute::routes`.
-    pub fn rules_superseded_by_staging(&self) -> Vec<(usize, &crate::policy::RuleConfig)> {
-        self.rules
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.decision != crate::policy::RuleDecision::Forbid)
-            .filter(|(_, r)| self.outbox.tools.iter().any(|t| t == &r.tool))
-            .collect()
-    }
-
     /// Refuse at load what would otherwise degrade silently at run time.
     ///
     /// `[agent] timezone` must be an IANA name — an offset is wrong twice a
@@ -2328,55 +2305,20 @@ match = ["git push origin main"]
         );
     }
 
-    /// An `allow` or `prompt` on an outbox-routed tool judges nothing while
-    /// the route is live — staging runs first and release reads no rules —
-    /// and `setup` refuses it there. A `forbid` is a second lock and the one
-    /// gate left under `--no-outbox`, so it is never named; the config loads
-    /// either way, because the flag is not in the file.
-    #[test]
-    fn rules_staging_supersedes_are_named_and_a_forbid_is_not() {
-        let mut cfg = Config::default();
-        cfg.outbox.tools = vec!["send_email".into()];
-        cfg.rules.push(crate::policy::RuleConfig {
-            tool: "send_email".into(),
-            decision: crate::policy::RuleDecision::Forbid,
-            justification: Some("never unstaged".into()),
-            ..Default::default()
-        });
-        cfg.rules.push(crate::policy::RuleConfig {
-            tool: "send_email".into(),
-            decision: crate::policy::RuleDecision::Prompt,
-            ..Default::default()
-        });
-        cfg.validate().unwrap();
-        let named: Vec<usize> = cfg
-            .rules_superseded_by_staging()
+    /// The merged state these tests are about: the `allow`/`prompt` rules on
+    /// a tool `[outbox] tools` routes, with each rule's provenance. A test
+    /// mirror of the predicate `setup::live_rules` applies with the live
+    /// route in hand (that function has its own table in `mecha-cli`); the
+    /// one production spelling lives there, and the core helper that nothing
+    /// in production called is gone.
+    fn superseded_by_staging(cfg: &Config) -> Vec<(usize, bool)> {
+        cfg.rules
             .iter()
-            .map(|(i, _)| *i)
-            .collect();
-        assert_eq!(
-            named,
-            vec![1],
-            "the prompt is superseded; the forbid is a second lock"
-        );
-        // `publish_tools` is a kind, not a route: a name there that is not
-        // also in `tools` executes unstaged, so a rule on it judges and loads.
-        let mut cfg = Config::default();
-        cfg.outbox.publish_tools = vec!["publish_page".into()];
-        cfg.rules.push(crate::policy::RuleConfig {
-            tool: "publish_page".into(),
-            decision: crate::policy::RuleDecision::Prompt,
-            ..Default::default()
-        });
-        assert!(cfg.rules_superseded_by_staging().is_empty());
-        // Unrouted, nothing is superseded.
-        let mut cfg = Config::default();
-        cfg.rules.push(crate::policy::RuleConfig {
-            tool: "send_email".into(),
-            decision: crate::policy::RuleDecision::Prompt,
-            ..Default::default()
-        });
-        assert!(cfg.rules_superseded_by_staging().is_empty());
+            .enumerate()
+            .filter(|(_, r)| r.decision != crate::policy::RuleDecision::Forbid)
+            .filter(|(_, r)| cfg.outbox.tools.iter().any(|t| t == &r.tool))
+            .map(|(i, r)| (i, r.from_project))
+            .collect()
     }
 
     /// A *project* rule on a globally routed tool is neither a load error nor
@@ -2429,12 +2371,7 @@ match = ["rm -rf build"]
         );
         // What `setup` will act on where the route is live: the prompt, and
         // it is the project's, so it is set aside rather than fatal.
-        let named: Vec<_> = cfg
-            .rules_superseded_by_staging()
-            .into_iter()
-            .map(|(i, r)| (i, r.from_project))
-            .collect();
-        assert_eq!(named, vec![(0, true)]);
+        assert_eq!(superseded_by_staging(&cfg), vec![(0, true)]);
 
         // The contradiction reached from the other side: a project that
         // *routes* a tool the global config has a rule for. The project's
@@ -2488,8 +2425,8 @@ match = ["rm -rf build"]
             "a re-declared route stays routed"
         );
         assert_eq!(
-            cfg.rules_superseded_by_staging().len(),
-            1,
+            superseded_by_staging(&cfg),
+            vec![(0, false)],
             "and the global allow behind it is still the one setup refuses"
         );
 
@@ -2533,8 +2470,8 @@ match = ["rm -rf build"]
         });
         cfg.merge_file(&unrelated, LayerTrust::Project).unwrap();
         assert_eq!(
-            cfg.rules_superseded_by_staging().len(),
-            1,
+            superseded_by_staging(&cfg),
+            vec![(0, false)],
             "a project file must not launder the operator's contradiction"
         );
     }
