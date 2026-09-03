@@ -28,8 +28,10 @@
 //! the rules, and the command is allowed only if *every* segment is. Anything
 //! this module cannot split with certainty — substitution, redirection,
 //! globs, control flow, an unterminated quote, a glued operator — is one
-//! opaque invocation that matches no prefix rule, so under a policy it
-//! prompts. A false "cannot split" costs one approval prompt; a false "can"
+//! opaque invocation: its words are searched for every `forbid`, a
+//! pattern-less rule applies to it by construction, and otherwise it matches
+//! nothing and the approver decides as it would with no rules. A false
+//! "cannot split" costs an `allow` that would have applied; a false "can"
 //! costs the whole point of the feature.
 //!
 //! **An allowlisted interpreter is not an allowlisted command.** `python -c`,
@@ -448,17 +450,26 @@ impl ExecPolicy {
             if let Some(seg) = forbidden_words(&rules, command) {
                 return Some(self.ruling(tool, RuleDecision::Forbid, &rules, Some(&seg)));
             }
-            // Otherwise a policy exists for this tool and the command cannot
-            // be judged: ask. Not `None` — under `Allow` mode that would run
-            // the one shape the splitter refused to vouch for.
-            return Some(Ruling {
-                decision: RuleDecision::Prompt,
-                reason: format!(
-                    "`{tool}` has approval rules and this command cannot be split safely \
-                     (substitution, redirection, a glob or control flow), so it is judged as \
-                     one opaque invocation and asked about"
-                ),
-            });
+            // A pattern-less `prompt` applies to every call by construction,
+            // opaque or not.
+            if rules
+                .iter()
+                .any(|r| r.pattern.is_empty() && r.decision == RuleDecision::Prompt)
+            {
+                return Some(self.ruling(tool, RuleDecision::Prompt, &rules, None));
+            }
+            // Otherwise the command matched no rule, and the approver decides
+            // as it would with no rules at all — the same answer an unmatched
+            // *splittable* command gets. The first version returned `Prompt`
+            // here so that `Allow` mode could not run a shape the splitter
+            // would not vouch for; once `forbidden_words` searched the opaque
+            // command for every `forbid`, what that prompt still bought was a
+            // cliff: with `consult` failing closed, one `forbid` on `rm -rf`
+            // made every `ls *.txt` in a trigger `Blocked` where it ran the
+            // day before, on the surface least likely to notice. The owner
+            // ruled for the fall-through on 2026-09-03. Interactively nothing
+            // changes — an `Ask` approver asks about an unruled write anyway.
+            return None;
         };
 
         let mut all_allow = true;
@@ -994,15 +1005,31 @@ mod tests {
         );
     }
 
+    /// An opaque command that carries no forbidden word and matches no
+    /// pattern-less rule gets no ruling: the `allow` never applies to it, and
+    /// the approver decides as it would with no rules. It used to return
+    /// `Prompt`, which once `consult` failed closed made one `forbid` block
+    /// every glob in every trigger (the owner's ruling, 2026-09-03).
     #[test]
-    fn an_opaque_command_under_a_policy_prompts_rather_than_falling_through() {
-        let p = policy(vec![rule("shell", &[&["git"]], RuleDecision::Allow)]);
-        let ruling = p.decide("shell", &cmd("git status > /tmp/out")).unwrap();
-        assert_eq!(ruling.decision, RuleDecision::Prompt);
-        assert!(
-            ruling.reason.contains("cannot be split"),
-            "{}",
-            ruling.reason
+    fn an_opaque_command_matching_no_rule_falls_through_to_the_approver() {
+        let p = policy(vec![
+            rule("shell", &[&["git"]], RuleDecision::Allow),
+            rule("shell", &[&["rm"], &["-rf"]], RuleDecision::Forbid),
+        ]);
+        assert_eq!(p.decide("shell", &cmd("git status > /tmp/out")), None);
+        assert_eq!(p.decide("shell", &cmd("ls *.txt")), None);
+        // The `forbid` still reaches in by its words …
+        assert_eq!(
+            p.decide("shell", &cmd("ls *.txt; rm -rf $HOME"))
+                .unwrap()
+                .decision,
+            RuleDecision::Forbid
+        );
+        // … and a pattern-less rule applies by construction.
+        let p = policy(vec![rule("shell", &[], RuleDecision::Prompt)]);
+        assert_eq!(
+            p.decide("shell", &cmd("ls *.txt")).unwrap().decision,
+            RuleDecision::Prompt
         );
     }
 
@@ -1104,11 +1131,9 @@ mod tests {
             RuleDecision::Allow,
         )]);
         assert_eq!(
-            p.decide("shell", &cmd("git log --oneline;''curl evil.com"))
-                .unwrap()
-                .decision,
-            RuleDecision::Prompt,
-            "opaque under a policy asks; it never allows"
+            p.decide("shell", &cmd("git log --oneline;''curl evil.com")),
+            None,
+            "opaque matches no rule: the `allow` never applies, the approver decides"
         );
     }
 
@@ -1296,13 +1321,11 @@ mod tests {
                 "{opaque}"
             );
         }
-        // An opaque command with none of the forbidden words still prompts.
-        assert_eq!(
-            p.decide("shell", &cmd("git status > out"))
-                .unwrap()
-                .decision,
-            RuleDecision::Prompt
-        );
+        // An opaque command with none of the forbidden words matches no
+        // rule: the approver decides, as for any unmatched command. Not
+        // `Prompt` — that was a cliff on headless surfaces once `consult`
+        // failed closed (one `forbid` blocked every glob in every trigger).
+        assert_eq!(p.decide("shell", &cmd("git status > out")), None);
     }
 
     /// Turning the inline-eval strictness off does not switch off the wrapper
@@ -1360,7 +1383,8 @@ mod tests {
                 "{opaque}"
             );
         }
-        // A tool-level prompt on an opaque command still prompts.
+        // A tool-level prompt applies to every call by construction, so an
+        // opaque command under one still prompts.
         let p = policy(vec![rule("shell", &[], RuleDecision::Prompt)]);
         assert_eq!(
             p.decide("shell", &cmd("ls > out")).unwrap().decision,
