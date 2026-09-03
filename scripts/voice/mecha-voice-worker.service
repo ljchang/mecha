@@ -56,7 +56,14 @@ WorkingDirectory=/home/ljchang/Github/mecha
 # classification with the bot-speaking edges, not the raw RMS list:
 #
 #   journalctl --user -u mecha-voice-worker \
-#     | grep -E "_bot_(started|stopped)_speaking|parakeet: duration"
+#     | grep -E "_bot_(started|stopped)_speaking|parakeet( segment gated)?: duration"
+#
+# `( segment gated)?` is not decoration: the gated segments are the
+# population the floor is set *from*, and they log as `parakeet segment
+# gated: duration=`, which `parakeet: duration` does not match. Reading only
+# the transcribed line cannot show the floor eating real turns, which is the
+# entire argument of the table above. Found on review, after a first version
+# of this recipe dropped them.
 #
 # `--user` is load-bearing: this is a user unit, so the same command without
 # it prints "No entries" and reads exactly like a quiet worker rather than a
@@ -66,8 +73,10 @@ WorkingDirectory=/home/ljchang/Github/mecha
 # prefix; they are not strings in this repo, so grepping the tree for them
 # finds nothing and proves nothing.
 #
-# After the next deploy the correlation is unnecessary: this branch puts
-# `over_speaker=` on the `parakeet:` line itself, so
+# After the next deploy the correlation is unnecessary — `over_speaker=` is
+# already on the `parakeet:` line in this tree (it predates this branch,
+# whose only change to worker.py is comments); it is the *running* worker
+# that is older than it. So once restarted,
 # `... | grep "parakeet: " | grep over_speaker=True` is the whole of it. That
 # returns nothing today, because the running worker predates it.
 #
