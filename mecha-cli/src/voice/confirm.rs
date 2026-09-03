@@ -71,6 +71,31 @@ pub struct Pending {
     pub reasks: u8,
 }
 
+impl Pending {
+    /// The same question, put again after an echo.
+    ///
+    /// **`asked` extends rather than replaces**, and this is the one place
+    /// that is true. Every other transition sets a question that supersedes
+    /// the last one; here the head is unchanged and the offer whose echo was
+    /// just caught is still playing. Comparing the next segment of that same
+    /// playback against the re-ask alone would let it through as a
+    /// non-answer, and a non-answer *drops* the question — the quiet half of
+    /// the defect this whole gate exists for, one turn later. A long offer
+    /// reads the draft aloud, so several echo segments per offer is the
+    /// expected case.
+    ///
+    /// On the type rather than at the call site because the call site is a
+    /// `match` arm in another module, and this is exactly the kind of
+    /// bookkeeping that gets it right once and drifts.
+    pub fn after_reask(&self, said: &str) -> Pending {
+        Pending {
+            queue: self.queue.clone(),
+            asked: format!("{} {}", self.asked, said),
+            reasks: self.reasks.saturating_add(1),
+        }
+    }
+}
+
 /// One repetition, then the draft is left in the outbox.
 ///
 /// The re-ask is itself spoken, so it is itself echoable; an unbounded
@@ -240,6 +265,25 @@ fn ask_about(item: &OutboxItem) -> String {
     out
 }
 
+/// Is this our own voice coming back, under either normalisation?
+///
+/// **Two spellings of "the same words" decide this, and they disagree.**
+/// `spoken_words` lowercases and strips punctuation; `review_policy`'s
+/// `normalise`, which decides whether those words *release a draft*,
+/// additionally strips `LEADING_FILLER` and `TRAILING_FILLER`. Every word on
+/// those lists is a hole in the gate by construction: `"So, send it."` is not
+/// a span of anything, normalises to `"send it"`, and releases. It needs the
+/// transcriber to insert a filler the offer did not contain, which Parakeet
+/// does — "Um options for" is in this project's own measurement table.
+///
+/// So the span is tried against both forms. Checking only the raw one is the
+/// drift `Reread`'s comment warns about three functions down: two decision
+/// sites over one utterance is how a surface and its policy come apart.
+fn ours_coming_back(utterance: &str, asked: &str) -> bool {
+    super::echoes_the_last_reply(utterance, asked)
+        || super::echoes_the_last_reply(&crate::review_policy::normalise(utterance), asked)
+}
+
 /// The last words of an offer, and deliberately not the menu.
 ///
 /// **The tail is the part that echoes** — it is the most recent thing in the
@@ -319,29 +363,39 @@ pub fn react(
     let Some(id) = pending.queue.front().cloned() else {
         return Reaction::PassToModel;
     };
-    // **Before parsing, and deliberately before every branch.** A span of
-    // the question is our own voice however it parses: as `Send` it
-    // releases a draft with nobody asked, and as a non-answer it *drops*
-    // the question and hands the words to the model, leaving a staged draft
-    // that will never be mentioned again. Both are silent.
+    // Our own voice, off the speaker — but this is checked *per outcome*,
+    // not before them all. A first version gated everything and was wrong
+    // in the dangerous direction: the offer recites the whole menu, so
+    // `"read it out"` and `"leave it"` are spans of it too. That refused
+    // the verb the offer had just taught, on precisely the drafts too long
+    // to have been read aloud, and then asked "was that a yes?" — to which
+    // a bare `"yes"` is one word, immune, and releases a draft the listener
+    // had asked to *hear*. Found on review.
     //
-    // `echoes_the_last_reply` needs two words, which is what keeps this
-    // survivable: "yes", "ok" and "sure" are one word and can never reach
-    // here, and they are what a person actually says. "send it" is two and
-    // *is* a span of the menu, so a listener who says it is asked once
-    // more and answers "yes" — one repetition, against a draft going out
-    // unasked.
-    if super::echoes_the_last_reply(utterance, &pending.asked) {
-        return if pending.reasks >= MAX_REASKS {
+    // `Later` and `ReadItOut` cause neither failure this gate exists for:
+    // one leaves the draft where it already is, the other re-reads the
+    // question and keeps it open. They are honoured however they parse.
+    let ours = ours_coming_back(utterance, &pending.asked);
+    let reask = |pending: &Pending| {
+        if pending.reasks >= MAX_REASKS {
             Reaction::Say(format!(
                 "I keep hearing myself, so I have left it in your outbox.{}",
                 next_question(next)
             ))
         } else {
-            Reaction::NotConvinced("Sorry — I think that was my own echo. Was that a yes?".into())
-        };
-    }
+            // Deliberately not "was that a yes?": a leading re-ask invites
+            // the one-word answer the gate cannot see.
+            Reaction::NotConvinced(
+                "Sorry — that may have been my own echo. Could you say it again?".into(),
+            )
+        }
+    };
     match parse_answer(utterance) {
+        // The silent half of the defect: a span that does not parse used to
+        // reach `PassToModel`, which *drops* the question — leaving a staged
+        // draft nobody is asked about again and handing our own words to the
+        // model as a turn.
+        SpokenAnswer::NotAnAnswer if ours => reask(pending),
         SpokenAnswer::NotAnAnswer => Reaction::PassToModel,
         SpokenAnswer::Later => {
             Reaction::Say(format!("Left in your outbox.{}", next_question(next)))
@@ -366,6 +420,7 @@ pub fn react(
                 next_question(next)
             )),
         },
+        SpokenAnswer::Send if ours => reask(pending),
         SpokenAnswer::Send => match head {
             Some(_) => Reaction::Release {
                 acknowledge: "Sending it now.".into(),
@@ -733,7 +788,7 @@ mod echo_at_the_confirmation_door {
     use mecha_core::outbox::OutboxKind;
     use serde_json::json;
 
-    fn draft() -> OutboxItem {
+    pub(super) fn draft() -> OutboxItem {
         OutboxItem {
             filled_defaults: vec!["account".into()],
             call_id: None,
@@ -763,8 +818,32 @@ mod echo_at_the_confirmation_door {
     /// that `Pending` did not carry what had been said, so a `Pending` a test
     /// assembles itself would test the fix against a fixture rather than
     /// against the code that has to populate it.
-    fn offered() -> (String, Pending) {
+    pub(super) fn offered() -> (String, Pending) {
         let o = compose_offer(&[draft()]).expect("a speakable draft is offered");
+        (o.speech, o.pending)
+    }
+
+    /// The long branch of `ask_about`, which is the one that recites
+    /// `"read it out"` — and therefore the one where refusing that verb
+    /// refuses the only way to hear a draft too long to be read unasked.
+    pub(super) fn long_draft() -> OutboxItem {
+        let mut item = draft();
+        let body = "Thursday works for me, and so does Friday afternoon if that is easier. \
+                    I have put a hold on the seminar room either way, and I will bring the \
+                    printed copies along with the revised handout for the second half."
+            .repeat(4);
+        item.args = json!({"to": "alice@example.com", "account": "dartmouth",
+                           "subject": "Reading group", "body_markdown": body});
+        item.args_before = item.args.clone();
+        item
+    }
+
+    pub(super) fn long_offer() -> (String, Pending) {
+        let o = compose_offer(&[long_draft()]).expect("a speakable draft is offered");
+        assert!(
+            o.speech.contains("read it out"),
+            "the fixture is not on the long branch, so it teaches no verb to refuse"
+        );
         (o.speech, o.pending)
     }
 
@@ -781,8 +860,20 @@ mod echo_at_the_confirmation_door {
     #[test]
     fn the_tail_is_not_the_accept_list() {
         let (speech, _) = offered();
-        let tail = speech.trim_end_matches(['.', ' ']);
-        let tail = &tail[tail.len().saturating_sub(60)..];
+        // Char-bounded, not byte-bounded. `&tail[len - 60..]` cannot panic
+        // on today's ASCII fixture, but it is the trap the sibling test in
+        // `mod.rs` documents avoiding, and a draft with an em-dash in its
+        // last sixty bytes turns a clear assertion failure into an
+        // unrelated one.
+        let trimmed = speech.trim_end_matches(['.', ' ']);
+        let tail: String = trimmed
+            .chars()
+            .rev()
+            .take(60)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         assert!(
             tail.contains("dartmouth account"),
             "the last words are still the menu: {tail:?}"
@@ -869,5 +960,106 @@ mod echo_at_the_confirmation_door {
             Reaction::NotConvinced(_) => {}
             other => panic!("an echo dropped the open question: {other:?}"),
         }
+    }
+}
+
+/// The three ways the first version of the gate was wrong, each found by
+/// review rather than by the tests above.
+#[cfg(test)]
+mod the_gate_must_not_eat_real_answers {
+    use super::echo_at_the_confirmation_door::*;
+    use super::*;
+
+    /// **The safety inversion.** The offer recites the whole menu, so the
+    /// safe verbs are spans of it as much as `"send it"` is — and the first
+    /// version refused them, then asked "was that a yes?". A bare `"yes"` is
+    /// one word, immune to the gate, and releases a draft the listener had
+    /// asked to *hear* or to defer.
+    #[test]
+    fn the_safe_answers_are_honoured_even_though_they_are_spans() {
+        let (_, pending) = long_offer();
+        let item = long_draft();
+        // Both really are spans, or this test proves nothing.
+        assert!(ours_coming_back("read it out", &pending.asked));
+        assert!(ours_coming_back("leave it", &pending.asked));
+
+        assert!(
+            matches!(
+                react("read it out", &pending, Some(&item), None),
+                Reaction::Reread(_)
+            ),
+            "the verb the offer just taught was refused on first use"
+        );
+        assert!(
+            matches!(
+                react("leave it", &pending, Some(&item), None),
+                Reaction::Say(_)
+            ),
+            "deferring a draft was refused, and deferring is where it already is"
+        );
+    }
+
+    /// And the re-ask must not lead: the one-word answer is the one the gate
+    /// cannot see, so inviting it is inviting the bypass.
+    #[test]
+    fn the_reask_does_not_ask_for_a_yes() {
+        let (_, pending) = offered();
+        let item = draft();
+        let Reaction::NotConvinced(said) = react("Send it.", &pending, Some(&item), None) else {
+            panic!("the dangerous branch is no longer gated");
+        };
+        let words = said.to_lowercase();
+        for leading in ["yes", "a yes", "yeah", "ok"] {
+            assert!(
+                !words.contains(leading),
+                "the re-ask invites {leading:?}, which is one word and immune: {said:?}"
+            );
+        }
+    }
+
+    /// **The filler hole.** `spoken_words` keeps `"so"`; `normalise` strips
+    /// it before deciding whether the same words release a draft. Every word
+    /// on those lists was a hole by construction.
+    #[test]
+    fn a_filler_does_not_smuggle_an_echo_past_the_span() {
+        let (_, pending) = offered();
+        let item = draft();
+        for heard in ["So, send it.", "Um, send it", "send it please"] {
+            assert_eq!(
+                parse_answer(heard),
+                crate::review_policy::SpokenAnswer::Send,
+                "{heard:?} no longer parses as a send; this test has stopped measuring anything"
+            );
+            assert!(
+                matches!(
+                    react(heard, &pending, Some(&item), None),
+                    Reaction::NotConvinced(_)
+                ),
+                "{heard:?} released a draft the span rule would have caught unfilled"
+            );
+        }
+    }
+
+    /// **The re-ask must not narrow what we compare against.** The offer is
+    /// still playing when its first echo is caught, so the next segment of
+    /// the same playback has to be checked against the offer too — not
+    /// against the eleven words of the re-ask alone.
+    #[test]
+    fn a_second_echo_of_the_same_offer_is_still_ours() {
+        let (speech, pending) = offered();
+        let after =
+            pending.after_reask("Sorry — that may have been my own echo. Could you say it again?");
+        assert!(
+            after.asked.contains(&speech),
+            "the re-ask replaced the offer instead of extending it"
+        );
+        // A different fragment of the *original* offer, which is what a
+        // second segment of the same playback is.
+        assert!(
+            ours_coming_back("to send it", &after.asked),
+            "the next segment of the same playback is no longer recognised"
+        );
+        assert_eq!(after.reasks, pending.reasks + 1);
+        assert_eq!(after.queue, pending.queue, "the head must not move");
     }
 }
