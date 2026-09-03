@@ -297,6 +297,13 @@ pub struct RunContext {
     /// approver — mechanical policy is cheaper than an interruption, and a
     /// hook cannot be talked into clicking yes. Empty by default and free.
     pub hooks: Arc<crate::hooks::HookSet>,
+    /// Per-command approval rules. Empty by default, which is exactly today's
+    /// behaviour: the approver decides alone. Consulted in `run_tools` after
+    /// the interlock, the hook and outbox staging and before the approver — a
+    /// rule narrows what the approver would have passed and never widens the
+    /// interlock or an escalation. Inherited by subagents like `hooks`, and
+    /// for the same reason.
+    pub policy: Arc<crate::policy::ExecPolicy>,
     /// Outbox routing: tools whose calls are staged for the user's review
     /// instead of executed. `None` (the default) routes nothing. See
     /// [`crate::outbox`].
@@ -341,6 +348,7 @@ impl RunContext {
             queued_input: None,
             withheld: Arc::from(Vec::new()),
             hooks: Arc::new(crate::hooks::HookSet::default()),
+            policy: Arc::new(crate::policy::ExecPolicy::empty()),
             outbox: None,
             mailbox: None,
         }
@@ -373,8 +381,6 @@ impl RunContext {
         self
     }
 
-    /// Make this run interruptible. Cancelling the token stops it at the next
-    /// safe point, keeping whatever it had already produced.
     /// Run in `phase`, hiding whatever it does not permit.
     pub fn with_phase(mut self, phase: Phase) -> Self {
         self.phase = phase;
@@ -395,6 +401,11 @@ impl RunContext {
 
     pub fn with_hooks(mut self, hooks: Arc<crate::hooks::HookSet>) -> Self {
         self.hooks = hooks;
+        self
+    }
+
+    pub fn with_policy(mut self, policy: Arc<crate::policy::ExecPolicy>) -> Self {
+        self.policy = policy;
         self
     }
 
@@ -1207,6 +1218,12 @@ impl Agent {
     /// [`Agent::set_approver`], and for the same reason.
     pub fn set_hooks(&mut self, hooks: Arc<crate::hooks::HookSet>) {
         Arc::make_mut(&mut self.cx).hooks = hooks;
+    }
+
+    /// Install the approval rules on the agent's own context. Copy-on-write,
+    /// like [`Agent::set_hooks`].
+    pub fn set_policy(&mut self, policy: Arc<crate::policy::ExecPolicy>) {
+        Arc::make_mut(&mut self.cx).policy = policy;
     }
 
     /// Route the configured tools through the outbox on the agent's own
@@ -3478,29 +3495,72 @@ impl Agent {
                 continue;
             }
 
+            // Approval rules, after the interlock and the hook and before the
+            // approver. A rule narrows what the approver would have passed:
+            // `forbid` refuses with nobody asked (machine policy, `Blocked`),
+            // `prompt` asks even for a read-only tool, `allow` says no
+            // person needs asking — through `Approver::permit`, so the
+            // approver's own mode still applies. An escalation is never
+            // softened by a rule: the interlock chose to put a person in
+            // front of this call, and a config line is not that person.
+            //
+            // Consulted *always*, escalation or not. The first version skipped
+            // the rules under an escalation so that `allow` could not soften
+            // one — and discarded `forbid` with it, the one ruling stricter
+            // than asking a person. With `ask` and an armed conversation, a
+            // `forbid` on the sender was never read and a human yes ran it:
+            // the operator's standing word was weakest in exactly the state
+            // the interlock considers most dangerous. `Allow < Prompt < Forbid`
+            // has to hold at that boundary too, so `forbid` is checked first
+            // and only `allow`/`prompt` yield to the escalation.
             // Whoever is asked sees the call *as it will execute*, defaults
             // and all — a card that omits a schema-defaulted argument is
-            // asking for a decision about a call it is not showing. **Both
-            // doors**, and `escalate` is if anything the one that needs it
-            // more: its whole content is a person being shown the call beside
-            // the reason the harness would not decide alone.
+            // asking for a decision about a call it is not showing. That is
+            // now **four** doors, not one: `escalate`, `consult`, `permit`
+            // and `approve` each put a call in front of somebody, and
+            // `escalate` and `consult` are the two that most need it, since
+            // each exists precisely to make a person look.
             //
-            // Filled only when somebody will actually be asked. The filled
-            // value is not what runs — there is no time gap here to pin, the
-            // way a staged draft has one — so computing it for the read-only
-            // calls that consult no approver would put
-            // `with_schema_defaults` on the path of every tool in the
-            // registry to buy nothing.
-            let shown = (escalation.is_some() || !tool.read_only())
-                .then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input).0);
-            let decision = match (&escalation, shown.as_ref()) {
-                (Some(why), Some(shown)) => {
-                    Some(cx.approver.escalate(tool.as_ref(), shown, why).await)
+            // `Forbid` is not among them — it refuses with nobody asked, so
+            // there is nothing to show — and `decide` below is deliberately
+            // given the **raw** input. A rule is policy over what the model
+            // asked for, and feeding it harness-pinned values would change
+            // what #143's rules match on; that is a decision for whoever owns
+            // that feature, noted rather than taken here.
+            //
+            // Filled only when somebody will actually be asked, so the
+            // read-only calls that consult nobody do not pay for it.
+            use crate::policy::RuleDecision;
+            let ruling = cx.policy.decide(name, input);
+            let rule = ruling.as_ref().map(|r| r.decision);
+            let asked = !matches!(rule, Some(RuleDecision::Forbid))
+                && (escalation.is_some()
+                    || matches!(rule, Some(RuleDecision::Prompt))
+                    || !tool.read_only());
+            let filled =
+                asked.then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input).0);
+            let shown = filled.as_ref().unwrap_or(input);
+            let decision = match (&escalation, rule) {
+                (_, Some(RuleDecision::Forbid)) => {
+                    let reason = ruling.map(|r| r.reason).unwrap_or_default();
+                    tracing::info!(tool = %name, "forbidden by an approval rule");
+                    Some(Decision::Blocked(reason))
                 }
-                // `shown` is `Some` here only when the tool is not read-only,
-                // which is the condition this arm used to carry itself.
-                (None, Some(shown)) => Some(cx.approver.approve(tool.as_ref(), shown).await),
-                _ => None,
+                (Some(why), _) => Some(cx.approver.escalate(tool.as_ref(), shown, why).await),
+                (None, Some(RuleDecision::Prompt)) => {
+                    // `consult`, not `approve`: a standing yes on the tool is
+                    // exactly what a `prompt` rule must not be answered by.
+                    let why = ruling.map(|r| r.reason).unwrap_or_default();
+                    Some(cx.approver.consult(tool.as_ref(), shown, &why).await)
+                }
+                (None, Some(RuleDecision::Allow)) if !tool.read_only() => {
+                    Some(cx.approver.permit(tool.as_ref(), shown).await)
+                }
+                (None, Some(RuleDecision::Allow)) => None,
+                (None, None) if !tool.read_only() => {
+                    Some(cx.approver.approve(tool.as_ref(), shown).await)
+                }
+                (None, None) => None,
             };
             if let Some(decision) = decision {
                 // The prefix is chosen by *who* refused, never by the approver:
@@ -10190,6 +10250,486 @@ mod tests {
                     .from_outside(),
             )
         }
+    }
+
+    // ---- approval rules -------------------------------------------------
+
+    /// An approver that panics if consulted, for proving a rule decided
+    /// without it.
+    struct NeverAsked;
+    #[async_trait]
+    impl Approver for NeverAsked {
+        async fn approve(&self, tool: &dyn Tool, _input: &Value) -> Decision {
+            panic!("the approver was consulted about `{}`", tool.name());
+        }
+    }
+
+    /// An approver that records what it was asked and says yes.
+    struct Recording {
+        asked: Mutex<Vec<String>>,
+        consulted: Mutex<Vec<String>>,
+        permitted: Mutex<Vec<String>>,
+    }
+    #[async_trait]
+    impl Approver for Recording {
+        async fn approve(&self, tool: &dyn Tool, _input: &Value) -> Decision {
+            self.asked.lock().unwrap().push(tool.name().to_string());
+            Decision::Allow
+        }
+        async fn consult(&self, tool: &dyn Tool, _input: &Value, why: &str) -> Decision {
+            self.consulted
+                .lock()
+                .unwrap()
+                .push(format!("{}: {why}", tool.name()));
+            Decision::Allow
+        }
+        async fn permit(&self, tool: &dyn Tool, _input: &Value) -> Decision {
+            self.permitted.lock().unwrap().push(tool.name().to_string());
+            Decision::Allow
+        }
+    }
+
+    /// A shell stand-in that records the exact input it was dispatched with.
+    struct RecordingShell(Arc<Mutex<Vec<Value>>>);
+    #[async_trait]
+    impl Tool for RecordingShell {
+        fn name(&self) -> &str {
+            "shell"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            self.0.lock().unwrap().push(input);
+            Ok(ToolOutput::ok("ran"))
+        }
+    }
+
+    fn shell_call(id: &str, command: &str) -> CompletionResponse {
+        assistant(
+            vec![Block::ToolUse {
+                id: id.into(),
+                name: "shell".into(),
+                input: json!({"command": command}),
+            }],
+            StopReason::ToolUse,
+        )
+    }
+
+    fn rules(toml: &str) -> Arc<crate::policy::ExecPolicy> {
+        #[derive(serde::Deserialize)]
+        struct W {
+            #[serde(rename = "rule")]
+            rules: Vec<crate::policy::RuleConfig>,
+        }
+        let w: W = toml::from_str(toml).unwrap();
+        Arc::new(crate::policy::ExecPolicy::from_config(&w.rules, true).unwrap())
+    }
+
+    const GIT_RULES: &str = r#"
+[[rule]]
+tool = "shell"
+pattern = ["git", ["status", "diff", "log"]]
+decision = "allow"
+match = ["git status", "git diff --stat"]
+not_match = ["git push"]
+
+[[rule]]
+tool = "shell"
+pattern = ["rm", "-rf"]
+decision = "forbid"
+match = ["rm -rf build"]
+justification = "never recursive-force from a model-supplied path"
+
+[[rule]]
+tool = "shell"
+pattern = ["cargo", "publish"]
+decision = "prompt"
+match = ["cargo publish"]
+"#;
+
+    /// A `forbid` rule refuses with nobody consulted — the approver here
+    /// panics if asked — and the refusal is `Blocked`, never a correction.
+    #[tokio::test]
+    async fn a_forbid_rule_refuses_without_consulting_the_approver() {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let (agent, _) = agent_with_tools(
+            vec![
+                shell_call("t0", "rm -rf ./build"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(RecordingShell(Arc::clone(&ran)))],
+            PermissionMode::Allow,
+        );
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_policy(rules(GIT_RULES));
+        let cx = RunContext {
+            approver: Arc::new(NeverAsked),
+            ..cx
+        };
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert!(ran.lock().unwrap().is_empty(), "the forbidden call ran");
+        let result = convo.messages[2].content.iter().find_map(|b| match b {
+            Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        });
+        let result = result.unwrap();
+        assert!(result.starts_with("Blocked by policy:"), "{result}");
+        assert!(result.contains("never recursive-force"), "{result}");
+    }
+
+    /// An `allow` rule means no person is asked — the approver's `permit`
+    /// runs instead of `approve` — and a `prompt` rule asks even where the
+    /// mode would have passed the call; an unmatched command is the
+    /// approver's as it always was.
+    #[tokio::test]
+    async fn allow_skips_the_prompt_and_prompt_forces_it() {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let approver = Arc::new(Recording {
+            asked: Mutex::new(Vec::new()),
+            consulted: Mutex::new(Vec::new()),
+            permitted: Mutex::new(Vec::new()),
+        });
+        let (agent, _) = agent_with_tools(
+            vec![
+                shell_call("t0", "git status && git diff --stat"),
+                shell_call("t1", "cargo publish"),
+                shell_call("t2", "ls"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(RecordingShell(Arc::clone(&ran)))],
+            PermissionMode::Allow,
+        );
+        let cx = RunContext {
+            approver: Arc::clone(&approver) as Arc<dyn Approver>,
+            ..agent.context().as_ref().clone()
+        }
+        .with_policy(rules(GIT_RULES));
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert_eq!(ran.lock().unwrap().len(), 3, "all three ran");
+        assert_eq!(
+            *approver.permitted.lock().unwrap(),
+            vec!["shell"],
+            "the allowed command went through permit, once"
+        );
+        assert_eq!(
+            *approver.asked.lock().unwrap(),
+            vec!["shell"],
+            "the unmatched command asked through `approve`"
+        );
+        // The `prompt` rule went through `consult`, never `approve`: a
+        // standing yes on `shell` is what `approve` may answer from and
+        // what a `prompt` rule exists to be asked past (the PR review's
+        // finding). The ruling's sentence rides along for the card.
+        assert_eq!(
+            *approver.consulted.lock().unwrap(),
+            vec!["shell: an approval rule asks that this `shell` call be approved"],
+            "the prompt rule consulted, once, with the ruling's reason"
+        );
+    }
+
+    /// The rule doors show the filled call too.
+    ///
+    /// `#143` turned one approver call into four, and each of `escalate`,
+    /// `consult`, `permit` and `approve` puts a call in front of somebody.
+    /// `consult` and `permit` are the two this branch could not have known
+    /// about; without a case on them, a later edit could quietly hand either
+    /// the raw arguments and show a person a send with no sender on it.
+    #[tokio::test]
+    async fn the_rule_doors_are_shown_the_defaults_the_schema_declares() {
+        struct Defaulted(&'static str);
+        #[async_trait]
+        impl Tool for Defaulted {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn input_schema(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "properties": {"account": {"type": "string", "default": "dartmouth"}},
+                })
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("done"))
+            }
+        }
+
+        struct SeenBy {
+            consulted: Mutex<Vec<Value>>,
+            permitted: Mutex<Vec<Value>>,
+        }
+        #[async_trait]
+        impl Approver for SeenBy {
+            async fn approve(&self, _t: &dyn Tool, _i: &Value) -> Decision {
+                Decision::Allow
+            }
+            async fn consult(&self, _t: &dyn Tool, input: &Value, _why: &str) -> Decision {
+                self.consulted.lock().unwrap().push(input.clone());
+                Decision::Allow
+            }
+            async fn permit(&self, _t: &dyn Tool, input: &Value) -> Decision {
+                self.permitted.lock().unwrap().push(input.clone());
+                Decision::Allow
+            }
+        }
+
+        let approver = Arc::new(SeenBy {
+            consulted: Mutex::new(Vec::new()),
+            permitted: Mutex::new(Vec::new()),
+        });
+        let call = |id: &str, tool: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: tool.into(),
+                    input: json!({"to": "ada@example.com"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, _) = agent_with_tools(
+            vec![
+                call("t0", "asked"),
+                call("t1", "waved"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(Defaulted("asked")), Arc::new(Defaulted("waved"))],
+            PermissionMode::Allow,
+        );
+        let cx = RunContext {
+            approver: Arc::clone(&approver) as Arc<dyn Approver>,
+            ..agent.context().as_ref().clone()
+        }
+        .with_policy(rules(
+            r#"
+[[rule]]
+tool = "asked"
+decision = "prompt"
+
+[[rule]]
+tool = "waved"
+decision = "allow"
+match = ["waved"]
+"#,
+        ));
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        let consulted = approver.consulted.lock().unwrap();
+        let permitted = approver.permitted.lock().unwrap();
+        assert_eq!(consulted.len(), 1, "the prompt rule consulted once");
+        assert_eq!(permitted.len(), 1, "the allow rule permitted once");
+        assert_eq!(consulted[0]["account"], json!("dartmouth"));
+        assert_eq!(permitted[0]["account"], json!("dartmouth"));
+        // And the model's own argument is untouched by the fill.
+        assert_eq!(consulted[0]["to"], json!("ada@example.com"));
+    }
+
+    /// A `prompt` rule under an approver that answers from policy — `--yes`,
+    /// `batch`, a trigger — is `Blocked`, not silently allowed: the rule says
+    /// a person must see the call, and there is none. The first version
+    /// routed it through `approve`, which under `Allow` is a yes.
+    #[tokio::test]
+    async fn a_prompt_rule_fails_closed_under_a_headless_allow() {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let (agent, _) = agent_with_tools(
+            vec![
+                shell_call("t0", "cargo publish"),
+                shell_call("t1", "git status"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(RecordingShell(Arc::clone(&ran)))],
+            PermissionMode::Allow,
+        );
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_policy(rules(GIT_RULES));
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        let ran = ran.lock().unwrap();
+        assert_eq!(ran.len(), 1, "only the allowed command ran: {ran:?}");
+        assert_eq!(ran[0]["command"], "git status");
+        let refusal = convo
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                Block::ToolResult { content, .. } if content.contains("Blocked by policy") => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .expect("the prompt-ruled call was refused by policy, not by a person");
+        assert!(
+            refusal.contains("was not put in front of anyone"),
+            "{refusal}"
+        );
+    }
+
+    /// The one place a rules file widens what *executes*: under a headless
+    /// `Ask` (a trigger, `batch` at the default mode) an `allow`-ruled write
+    /// runs where the mode alone refused it, because the rule is the yes the
+    /// run had nobody to give. An unruled write beside it stays refused.
+    /// Pinned so the widening is a decision, not a drift.
+    #[tokio::test]
+    async fn an_allow_rule_is_the_yes_a_headless_ask_has_nobody_to_give() {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let (agent, _) = agent_with_tools(
+            vec![
+                shell_call("t0", "git status"),
+                shell_call("t1", "ls"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(RecordingShell(Arc::clone(&ran)))],
+            PermissionMode::Ask,
+        );
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_policy(rules(GIT_RULES));
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        let ran = ran.lock().unwrap();
+        assert_eq!(ran.len(), 1, "only the allow-ruled command ran: {ran:?}");
+        assert_eq!(ran[0]["command"], "git status");
+        let refused = convo
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter(|b| matches!(b, Block::ToolResult { content, .. } if content.contains("Blocked by policy")))
+            .count();
+        assert_eq!(
+            refused, 1,
+            "the unruled `ls` was refused by the mode, as before"
+        );
+    }
+
+    /// A rule never softens the interlock's escalation: with `ask` and an
+    /// armed conversation, an `allow` rule on the sending tool still puts the
+    /// call in front of a person.
+    #[tokio::test]
+    async fn an_allow_rule_does_not_soften_an_escalation() {
+        struct Escalated(Mutex<bool>);
+        #[async_trait]
+        impl Approver for Escalated {
+            async fn approve(&self, tool: &dyn Tool, _input: &Value) -> Decision {
+                panic!("approve consulted for `{}`", tool.name());
+            }
+            async fn permit(&self, tool: &dyn Tool, _input: &Value) -> Decision {
+                panic!("a rule stood in for the person on `{}`", tool.name());
+            }
+            async fn escalate(&self, _tool: &dyn Tool, _input: &Value, _why: &str) -> Decision {
+                *self.0.lock().unwrap() = true;
+                Decision::Blocked("a person said no".into())
+            }
+        }
+        let approver = Arc::new(Escalated(Mutex::new(false)));
+        let mut agent = trifecta_agent(TrifectaPolicy::Ask);
+        agent.set_approver(Arc::clone(&approver) as Arc<dyn Approver>);
+        agent.set_policy(rules(
+            r#"
+[[rule]]
+tool = "send"
+decision = "allow"
+match = ["anything"]
+"#,
+        ));
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        agent.run(&mut convo, None).await.unwrap();
+        assert!(*approver.0.lock().unwrap(), "the escalation was asked");
+    }
+
+    /// `Allow < Prompt < Forbid` holds at the escalation boundary: with `ask`
+    /// and an armed conversation, a `forbid` on the sender refuses with
+    /// nobody asked, where the first version skipped the rules entirely and
+    /// let a human yes run the one command the operator had forbidden.
+    #[tokio::test]
+    async fn a_forbid_rule_holds_under_an_escalation() {
+        struct NeverEscalated;
+        #[async_trait]
+        impl Approver for NeverEscalated {
+            async fn approve(&self, tool: &dyn Tool, _input: &Value) -> Decision {
+                panic!("approve consulted for `{}`", tool.name());
+            }
+            async fn escalate(&self, tool: &dyn Tool, _input: &Value, _why: &str) -> Decision {
+                panic!("a forbidden `{}` reached a person", tool.name());
+            }
+        }
+        // `trifecta_agent`'s `send` panics if it runs, so passing is the
+        // refusal holding.
+        let mut agent = trifecta_agent(TrifectaPolicy::Ask);
+        agent.set_approver(Arc::new(NeverEscalated));
+        agent.set_policy(rules(
+            r#"
+[[rule]]
+tool = "send"
+decision = "forbid"
+justification = "this box never sends from an armed conversation"
+"#,
+        ));
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        let refusal = convo
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                Block::ToolResult { content, .. } if content.contains("forbidden") => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .expect("the forbid lands as a tool result");
+        assert!(refusal.starts_with("Blocked by policy:"), "{refusal}");
+        assert!(refusal.contains("never sends from an armed"), "{refusal}");
+        assert_eq!(
+            outcome.blocked_sends, 1,
+            "a forbidden send under an escalation is a send the harness refused"
+        );
+    }
+
+    /// The input the approver saw is the input the tool receives — the
+    /// approve-then-execute binding holds because it is the same value, and
+    /// this test is what keeps a refactor from making it two.
+    #[tokio::test]
+    async fn the_tool_receives_exactly_the_input_that_was_approved() {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let (agent, _) = agent_with_tools(
+            vec![
+                shell_call("t0", "git status"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(RecordingShell(Arc::clone(&ran)))],
+            PermissionMode::Allow,
+        );
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_policy(rules(GIT_RULES));
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(*ran.lock().unwrap(), vec![json!({"command": "git status"})]);
     }
 
     /// The loop's taint rule is `untrusted_input && external`, and an error

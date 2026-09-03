@@ -199,6 +199,20 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // event name should fail on every start, not only on the runs that use it.
     let hooks = mecha_core::hooks::HookSet::from_config(&cfg.hooks)?;
     let hooks = (!opts.no_hooks && !hooks.is_empty()).then(|| Arc::new(hooks));
+    // Approval rules: validated again here (config load already did) so a
+    // rule set built any other way fails on every start too. Installed on the
+    // parent and on every child below, like hooks and for the same reason —
+    // a rule only ever narrows, and delegating must not be the way around
+    // one. There is deliberately no `--no-rules` *flag*: a `forbid` is the
+    // operator's standing word, and a switch that lifts it for one run is the
+    // silently-degrading-guard shape. `opts.no_rules` is set by one caller,
+    // `mecha eval`'s `force_reproducible`, because a scorecard must not vary
+    // with this machine's rules file.
+    let policy = Arc::new(if opts.no_rules {
+        mecha_core::policy::ExecPolicy::empty()
+    } else {
+        mecha_core::policy::ExecPolicy::from_config(&cfg.rules, cfg.approval.strict_inline_eval)?
+    });
 
     // The outbox route. Opening the store here — not lazily at first stage —
     // makes an unwritable outbox a startup error instead of a mid-run
@@ -282,6 +296,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             child_provider_cfg,
             &ctx,
             hooks.as_ref(),
+            &policy,
             outbox.as_ref(),
         )?;
         registry.insert(Arc::new(child));
@@ -310,6 +325,31 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
 
     if let Some(hooks) = hooks {
         agent.set_hooks(hooks);
+    }
+    agent.set_policy(Arc::clone(&policy));
+    // A rule naming a tool that is not registered — `shel`, or an MCP tool
+    // whose server did not come up — loads clean and judges nothing. Same
+    // shape as the `[outbox]` warnings below, and it fires on every start
+    // for the same reason; `--tool` narrowing is the caller saying so, and is
+    // silent.
+    for name in policy.tools() {
+        let narrowed_out =
+            !excluded_by_allowlist(std::slice::from_ref(&name.to_string()), &opts.tools).is_empty();
+        if agent.registry().get(name).is_none() && !narrowed_out {
+            eprintln!(
+                "mecha: [[rule]] names `{name}`, which is not a registered tool — check the \
+                 spelling, or this rule judges nothing"
+            );
+        }
+        // The other "loads clean, judges nothing" case: a routed tool is
+        // staged before the rules are read, and released without them.
+        if outbox.as_ref().is_some_and(|o| o.routes(name)) {
+            eprintln!(
+                "mecha: [[rule]] names `{name}`, which `[outbox] tools` routes to staging — a \
+                 staged call is reviewed by a person at release, not judged by rules, so this \
+                 rule judges nothing"
+            );
+        }
     }
     if let Some(outbox) = outbox {
         // A typo in `[outbox] tools` means the *real* tool executes unrouted,
@@ -1056,6 +1096,7 @@ fn build_search_chain(configs: &[SearchBackendConfig]) -> (SearchChain, Vec<Stri
 
 /// Build one subagent: a child [`Agent`] with a restricted registry, wrapped as
 /// a tool the parent can call.
+#[allow(clippy::too_many_arguments)]
 fn build_subagent(
     profile: &SubagentProfile,
     pool: &Registry,
@@ -1063,6 +1104,7 @@ fn build_subagent(
     provider_cfg: &mecha_core::config::ProviderConfig,
     ctx: &ToolCtx,
     hooks: Option<&Arc<mecha_core::hooks::HookSet>>,
+    policy: &Arc<mecha_core::policy::ExecPolicy>,
     outbox: Option<&Arc<mecha_core::outbox::OutboxRoute>>,
 ) -> Result<Subagent> {
     let mut child_registry = Registry::new();
@@ -1160,6 +1202,8 @@ fn build_subagent(
     if let Some(hooks) = hooks {
         child.set_hooks(Arc::clone(hooks));
     }
+    // And the approval rules, which only ever narrow.
+    child.set_policy(Arc::clone(policy));
     // Same rule for the outbox: a child's send stages like the parent's, or
     // delegating becomes the way to send unstaged.
     if let Some(outbox) = outbox {
@@ -1535,6 +1579,7 @@ mod tests {
             &provider_cfg,
             &mecha_core::tool::ToolCtx::default(),
             None,
+            &std::sync::Arc::new(mecha_core::policy::ExecPolicy::empty()),
             None,
         );
         let child = match child {
@@ -1608,6 +1653,7 @@ mod tests {
             &provider_cfg,
             &mecha_core::tool::ToolCtx::default(),
             None,
+            &std::sync::Arc::new(mecha_core::policy::ExecPolicy::empty()),
             None,
         )
         .expect("a local provider needs no credential, so the child must build");

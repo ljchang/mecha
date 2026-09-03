@@ -444,10 +444,13 @@ not_match = ["git push", "git commit"]
 tool = "shell"
 pattern = ["rm", "-rf"]
 decision = "forbid"
+match = ["rm -rf build"]
 justification = "never recursive-force from a model-supplied path"
 ```
 
-`match`/`not_match` are **required to be non-empty for `allow` rules** and
+`match`/`not_match` are **required to be non-empty for `allow` rules** (and,
+as built, `match` for every patterned rule — a `forbid` too narrow to fire is
+the guard that protects nothing) and
 checked at startup. An `allow` rule that matches its own `not_match` example is
 a config error, in the class that already kills startup.
 
