@@ -1348,6 +1348,58 @@ other suites, 0 failed. Eval 36 cases, 15 tags, unchanged. `deployed-local`
 was deleted by its owner once main was on every surface — its absence again
 means "main is deployed".
 
+**2026-09-03 (~10:50 UTC, the approval-rules arc deployed)** — the owner
+asked for an update once the thirteen merges beyond v0.1.17 were in, and
+this is what each of the `update` skill's surfaces was found to be and
+left as. **Installed binaries**: `mecha` and `mecha-mail` reinstalled from
+`main` at `4a888ad` (a detached worktree, not the shared checkout — see
+below); `mecha --version` still says **0.1.17**, because the workspace
+version has not been bumped, so the check was capability: `strings` on the
+installed `mecha` carries `routes to staging` (the `live_rules` refusal)
+and `an approval rule asks that this` (a `prompt` ruling), and the
+appraisal lane's probes read true — `mecha sessions health --json` carries
+`tests_hidden`, `mecha sessions appraise --json` carries `valence` and
+`partial`. **Graph binaries untouched**: no `.rs` under
+`~/Github/mecha-graph` is newer than the installed `mecha-graph-mcp`
+(Sep 2 12:16), the nightly's `target/release/mecha-graph` is Sep 2 12:15,
+and the installed server answers 13 tools. **Web dist rebuilt**: four
+`web/` commits had landed since the served bundle was built (Sep 1 18:47,
+`index-klt_h5v8.js`), including the appraisal chip fix that otherwise
+reads a literal `neutral`; built from `main` in the worktree, rsynced to
+`~/.mecha/web/dist` (the old dist kept at `~/.mecha/web/dist.prev-20260903`),
+and the *served* page verified — the tailnet door returns 200 with
+`index-Ciycbb0R.js`; there was no `deployed-local` tag and both live
+sessions confirmed the old bundle was nobody's test. **Services**:
+`mecha-slack`, `mecha-triggers`, `mecha-drain` and `mecha-serve` restarted
+at 10:51:17 with their own startup lines (slack "Connected to cosanlab as
+mecha. 1 owner(s), 16 thread(s)", triggers "1 trigger(s), 1 enabled",
+serve's two doors). `mecha-serve` also prints two standing warnings worth
+knowing: `factory__surface_pull` and `factory__surface_push` "can send and
+[are] not routed through the outbox" — a `[outbox] tools` decision for the
+owner, not a regression. **`mecha-voice-worker` was deliberately NOT
+restarted**, and this is the one open item: its `WorkingDirectory` is the
+shared checkout `~/Github/mecha`, which is on
+**`fix/draft-shows-its-account`**, not `main` (`.git/HEAD`; mecha-26's
+report, confirmed), so a restart would relaunch the pre-#145 `worker.py`
+— #145's echo filter is *not* live until that checkout is on `main`. The
+switch is safe for `llama-local`: `scripts/start-moe-mtp.sh` hashes
+`d76da36c` on both refs, which is the check this section asks for. The
+deploying session could not run git against the shared tree (worktree
+isolation) and asked the owner to run `git -C ~/Github/mecha switch main &&
+git -C ~/Github/mecha pull --ff-only`, then restart the worker and take its
+Uvicorn line. Also from #145: `mecha-voice-worker.service` gained a
+commented `Environment=MECHA_VOICE_ECHO_RMS=0.020` slot, and the installed
+unit is a copy, not a symlink, so the slot is not in
+`~/.config/systemd/user/` until someone copies the file — harmless (the
+default applies) but invisible to whoever next looks for it.
+`mecha-parakeet` left alone (its script did not change). **Benchmark musl**
+was **stale at Sep 2 10:30** (0.1.17 by string, pre-arc by content) and was rebuilt from `main` by `bench/build-portable.sh` in the worktree, then the static binary copied to the shared checkout's `target-musl/release/mecha` — the path `bench/run.sh` executes — and verified there: `statically linked`, and `strings` carries `routes to staging`. A scorecard run before that would have measured old code and labelled it current. **Factory**: client 0.2.8 = newest tag `v0.2.8`; droplet
+read-only `factory 0.2.8`, `active`, untouched. **Sandbox image**: cargo
+1.97.1 matches host, no rebuild. **Stale-process sweep**: clean — nothing
+executes a deleted `~/.cargo/bin` binary. **Not in any repo and not
+touched**: `~/.mecha/config.toml` carries no `[[rule]]` yet, so the new
+subsystem is installed and dormant until the owner writes one.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
