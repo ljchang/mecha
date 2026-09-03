@@ -217,9 +217,17 @@ impl OutboxItem {
     /// raw list credits the harness with the person's own edit.
     ///
     /// On the item rather than at the call sites because there are already
-    /// two, and they disagreed: the spoken offer filtered and the spoken
-    /// re-read did not, which is the worse way round — the re-read exists
-    /// precisely to say what is in the store *now*.
+    /// two that want it, and they disagreed: the spoken offer filtered and
+    /// the spoken re-read did not, which is the worse way round — the
+    /// re-read exists precisely to say what is in the store *now*.
+    ///
+    /// A third reader of `filled_defaults` is not a third call site of this
+    /// and must not become one: `outbox_source` excludes pinned keys from
+    /// the ids it joins on, and it wants the **raw** list. Its question is
+    /// "what did the run read", and a value a person typed after staging is
+    /// no more evidence of that than one the harness pinned. Same field,
+    /// opposite question — worth saying here, because "three consumers, two
+    /// filter" reads like an oversight until you know which.
     pub fn unedited_defaults(&self) -> Vec<String> {
         self.filled_defaults
             .iter()
@@ -1771,6 +1779,14 @@ mod tests {
         assert!(spoken.contains("Defaults: "), "{spoken}");
         assert!(!spoken.contains("Calendar id: primary."), "{spoken}");
         assert!(!spoken.contains("All day: false."), "{spoken}");
+        // Labels, not just values. Found on review: the assertions above
+        // hold with `spoken_label` dropped from the clause — "Defaults:
+        // primary, false." keeps every value audible and tells the listener
+        // nothing about which field is which. The clause is the one place a
+        // key stops being a sentence of its own, so it is the one place
+        // worth pinning that the key is still said at all.
+        assert!(spoken.contains("calendar id primary"), "{spoken}");
+        assert!(spoken.contains("all day false"), "{spoken}");
     }
 
     /// Nothing pinned is the ordinary case, and it must read exactly as it
