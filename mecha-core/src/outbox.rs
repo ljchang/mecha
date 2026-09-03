@@ -953,15 +953,24 @@ impl DraftView {
     /// act on, on the one surface where length is a real cost — a listener
     /// hears it once, in order, at speaking speed. And a value the harness
     /// wrote is not the drafter's choice, so reading it in the same voice as
-    /// the subject line tells the reviewer something untrue: "Account:
-    /// dartmouth" said flat cannot be distinguished from a mailbox the agent
+    /// the subject line tells the reviewer something untrue: "Calendar id:
+    /// primary" said flat cannot be distinguished from a calendar the agent
     /// picked on purpose.
     ///
     /// Every value is still uttered, which is the guarantee this type
     /// inherits — the check is that each is *audible*, not that each has its
-    /// own sentence. Header fields keep their own lines whether pinned or
-    /// not: `account` is addressing, and who a message comes from is not a
-    /// footnote however it got there.
+    /// own sentence.
+    ///
+    /// Header fields keep their own lines whether pinned or not, and
+    /// `account` is the one to have in mind: it is addressing, and who a
+    /// message comes from is not a footnote however it got there. So it
+    /// never reaches the filter above — `HEADER_FIELDS` holds it, the
+    /// header loop emits it unconditionally, and a pinned account is spoken
+    /// flat *on purpose*. That is the visible-account behaviour this whole
+    /// mechanism exists to produce, not an exception to the rule above. An
+    /// earlier draft of this docstring used it as the example of what must
+    /// not be said flat, which is the one case the code exempts (found on
+    /// review).
     pub fn spoken(&self, pinned: &[String]) -> SpokenDraft {
         let is_pinned = |k: &String| pinned.iter().any(|p| p == k);
         let mut lines = Vec::new();
