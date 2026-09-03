@@ -174,6 +174,14 @@ fn spoken_words(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The shortest utterance [`echoes_the_last_reply`] will call an echo.
+///
+/// Two, argued in that function's docs. Declared *above* them rather than
+/// between them and the `fn`, which is where it first landed: a `const` in
+/// that slot silently takes the doc comment with it, leaving the security-
+/// critical function it describes with none at all. Found on review.
+const MIN_SPAN_WORDS: usize = 2;
+
 /// Is this utterance, word for word, a piece of what we just said?
 ///
 /// **The last thing standing between a speakerphone and an unapproved
@@ -216,7 +224,6 @@ fn spoken_words(text: &str) -> Vec<String> {
 /// The gate is cheap to be wrong about only because being wrong is rare,
 /// never because the consequence is mild — which is the argument for
 /// replacing it with the timing signal rather than loosening it.
-const MIN_SPAN_WORDS: usize = 2;
 pub(crate) fn echoes_the_last_reply(utterance: &str, last_reply: &str) -> bool {
     let heard = spoken_words(utterance);
     let said = spoken_words(last_reply);
