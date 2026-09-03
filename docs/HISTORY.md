@@ -3526,6 +3526,42 @@ what is cached is the vectors, not the query, so the threshold stepper stopped
 being a re-embed of the world per nudge. The graph's public mirror was
 deliberately left at 0.1.3.
 
+**2026-09-02/03 — approval stopped being tool-granularity, and every review
+pass found a way past the previous cut.** `mecha-core/src/policy.rs` (PR
+#143, merged at `1d21d6b`) built PRIOR-ART-RESEARCH §4: `[[rule]]` entries
+with a tool, a prefix pattern and one of three ordered decisions — `allow` <
+`prompt` < `forbid`, most restrictive wins — judged one shell segment at a
+time by a splitter that refuses anything it cannot take apart with
+certainty. `allow` stands in for the human's yes and nothing else: the
+approver's mode still applies through `Approver::permit`, the interlock
+still refuses an armed send, an escalation is never softened by a rule, and
+a `prompt` goes to `Approver::consult`, which asks past a standing
+`[a]lways` and fails closed where no person can be asked. Every patterned
+rule needs a `match` example checked at load, `allow` loads from the global
+file only, and `mecha eval` forces the whole policy off. Nine review passes
+on the rebased tree then found, pass after pass, the ways a rule's words and
+a command's words come apart: a quoted token hiding a bare `;`; `timeout 5 rm
+-rf` laundering a `forbid` through a wrapper; a glued `-ec` flag evading the
+inline-eval check; `./git status` matching an `allow` on `git` by basename,
+then the fix re-opened by `/abs/path/to/workspace/git` (a cloned repository
+can ship one), so a path names its program only from a system directory; a
+`prompt` rule answered by the tool's standing `[a]lways`, which got
+`consult` beside `escalate` — and whose first default (`approve`) then let a
+headless `--yes` run answer the rule that says a person must see the call;
+`prompt` grouped with `allow` for path reduction when it never widens; a
+`forbid` needing no `match` example, so `["rm", "-fr"]` loaded clean and
+protected nothing; a pattern-less and then a patterned `forbid` downgraded
+to a prompt by an opaque command (`rm -rf $HOME`); `strict_inline_eval =
+false` switching off the wrapper lookup along with the prompt floor it was
+meant to gate; quote characters, then a glued `;`, then a backtick hiding
+`rm` from the opaque-command search. Each fix is a test that fails on the
+previous commit. The two rulings the owner made from the clean pass's
+minors are the follow-up's to record when it lands (HANDOFF names it).
+**The lesson is the audit's: a policy engine's bugs are all in the gap
+between the string the operator wrote and the string the shell will run,
+and the conservative direction — refuse, or prompt — is the only one whose
+false positives cost a prompt rather than the feature.**
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
