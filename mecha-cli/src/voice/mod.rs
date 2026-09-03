@@ -1121,11 +1121,12 @@ async fn hosted_completion(
         }
     }
     // The offer comes after the model's own words and only when the turn
-    // produced an answer: a run that failed has staged nothing worth
+    // produced an answer — and those words go *with* it, because they are
+    // one stretch out of the speaker and echo together: a run that failed has staged nothing worth
     // confirming, and asking about drafts on top of an error is a question
     // over the top of the thing that needs saying.
     let offer = match &answer {
-        Ok(_) => offer_for_turn(shared, confirm_key, baseline).await,
+        Ok(a) => offer_for_turn(shared, confirm_key, baseline, &a.text).await,
         Err(_) => None,
     };
     if want_stream {
@@ -1200,13 +1201,14 @@ async fn offer_for_turn(
     shared: &Arc<Shared>,
     confirm_key: &str,
     baseline: &Option<std::collections::HashSet<String>>,
+    reply: &str,
 ) -> Option<String> {
     let baseline = baseline.as_ref()?;
     let staged = crate::review_policy::staged_since(
         OutboxStore::open(&shared.outbox_root).ok()?.items().ok()?,
         baseline,
     );
-    let offer = confirm::compose_offer(&staged)?;
+    let offer = confirm::compose_offer(&staged, reply)?;
     shared.confirmations.set(confirm_key, offer.pending).await;
     Some(offer.speech)
 }
@@ -1662,7 +1664,7 @@ async fn completion(
     // Same rule as the hosted path: the drafts this turn staged are offered
     // after the answer, and only when there was one.
     let offer = match &outcome {
-        Ok(_) => offer_for_turn(shared, &confirm_key, &outbox_baseline).await,
+        Ok(o) => offer_for_turn(shared, &confirm_key, &outbox_baseline, &o.text).await,
         Err(_) => None,
     };
 

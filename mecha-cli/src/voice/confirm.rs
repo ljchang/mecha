@@ -112,12 +112,17 @@ impl Pending {
 
     /// The same question, put again because the answer was our own voice.
     ///
-    /// The budget goes up rather than resetting, because nothing has been
-    /// answered — and the re-ask is itself spoken, so it echoes in its turn.
+    /// **Identical to [`Pending::after_saying`] except for the counter**, and
+    /// that is the point. An earlier version made these two opposites — one
+    /// extending `asked`, the other replacing it — and each was wrong in the
+    /// direction the other was right. The sliding window makes the
+    /// distinction unnecessary, because the previous utterance survives in
+    /// `asked_before` either way. The budget goes up rather than resetting
+    /// because nothing has been answered, and the re-ask is itself spoken:
     /// `MAX_REASKS` is what stops that being a loop with a send at the end.
     ///
-    /// Both transitions live on the type because both were got wrong once as
-    /// a `match` arm in another module, in opposite directions.
+    /// Both live on the type because both were got wrong once as a `match`
+    /// arm in another module.
     pub fn after_reask(&self, said: &str) -> Pending {
         self.sliding(said, self.reasks.saturating_add(1))
     }
@@ -193,7 +198,17 @@ pub enum Reaction {
 /// Returns `None` when there is nothing to ask about — including the case
 /// where everything staged was a publish, which is named rather than offered
 /// and so leaves no question open.
-pub fn compose_offer(items: &[OutboxItem]) -> Option<Offer> {
+/// `preceded_by` is the model's own reply, spoken immediately before this
+/// offer and in the *same stretch* out of the speaker — `completion` says the
+/// answer and then `say(" {offer}")`, with no pause between. So it echoes
+/// exactly as the offer does, and it seeds `asked_before`.
+///
+/// Found on review, and it is the offer's own tail one step back: any
+/// `SEND_PHRASES` entry a reply can contain but the offer cannot —
+/// `"go ahead"`, `"do that"`, `"confirm"`, `"approve"`, `"book it"` — was an
+/// unasked release. Neither window slot held it, `parse_answer` returned
+/// `Send`, `Release` fired.
+pub fn compose_offer(items: &[OutboxItem], preceded_by: &str) -> Option<Offer> {
     let (speakable_items, unspeakable): (Vec<&OutboxItem>, Vec<&OutboxItem>) =
         items.iter().partition(|i| speakable(i.kind));
 
@@ -244,7 +259,7 @@ pub fn compose_offer(items: &[OutboxItem]) -> Option<Offer> {
             // has nothing else to compare an answer against, because the
             // offer is spoken through `say` and never joins a conversation.
             asked: speech.clone(),
-            asked_before: String::new(),
+            asked_before: preceded_by.to_string(),
             reasks: 0,
         },
         speech,
@@ -408,10 +423,20 @@ pub fn react(
     let ours = ours_coming_back(utterance, pending);
     let reask = |pending: &Pending| {
         if pending.reasks >= MAX_REASKS {
-            Reaction::Say(format!(
-                "I keep hearing myself, so I have left it in your outbox.{}",
-                next_question(next)
-            ))
+            // `head` matters even here. The draft can leave the store between
+            // the question and the answer, and "I have left it in your
+            // outbox" is then false. No wrong action follows either way —
+            // but what a spoken surface says is the whole of what it does.
+            Reaction::Say(match head {
+                Some(_) => format!(
+                    "I keep hearing myself, so I have left it in your outbox.{}",
+                    next_question(next)
+                ),
+                None => format!(
+                    "I keep hearing myself, and that draft is not in the outbox any more.{}",
+                    next_question(next)
+                ),
+            })
         } else {
             // Two constraints, and they pull against each other.
             //
@@ -637,7 +662,7 @@ mod tests {
     /// an injection would add is the one a summary would drop.
     #[test]
     fn a_short_draft_is_read_out_whole() {
-        let offer = compose_offer(&[event()]).expect("an offer");
+        let offer = compose_offer(&[event()], "").expect("an offer");
         assert!(
             offer.speech.contains("Coffee with Thea"),
             "{}",
@@ -667,7 +692,7 @@ mod tests {
             json!({"subject": "Re: R01 resubmission", "body_markdown": "word ".repeat(200)}),
             false,
         );
-        let offer = compose_offer(&[long]).expect("an offer");
+        let offer = compose_offer(&[long], "").expect("an offer");
         assert!(
             offer.speech.contains("Re: R01 resubmission"),
             "{}",
@@ -685,10 +710,13 @@ mod tests {
     /// re-read the addressing line.
     #[test]
     fn a_tainted_draft_says_so_out_loud() {
-        let offer = compose_offer(&[item("c", OutboxKind::Message, json!({"title": "x"}), true)])
-            .expect("an offer");
+        let offer = compose_offer(
+            &[item("c", OutboxKind::Message, json!({"title": "x"}), true)],
+            "",
+        )
+        .expect("an offer");
         assert!(offer.speech.contains("outside content"), "{}", offer.speech);
-        assert!(!compose_offer(&[event()])
+        assert!(!compose_offer(&[event()], "")
             .unwrap()
             .speech
             .contains("outside content"));
@@ -699,12 +727,15 @@ mod tests {
     /// be a review of it.
     #[test]
     fn a_publish_is_named_and_never_offered() {
-        let offer = compose_offer(&[item(
-            "p",
-            OutboxKind::Publish,
-            json!({"bundle": "site"}),
-            false,
-        )])
+        let offer = compose_offer(
+            &[item(
+                "p",
+                OutboxKind::Publish,
+                json!({"bundle": "site"}),
+                false,
+            )],
+            "",
+        )
         .expect("it is still mentioned");
         assert!(
             offer.speech.contains("needs the screen"),
@@ -721,10 +752,13 @@ mod tests {
     /// outbound messages is not a review of any of them.
     #[test]
     fn several_drafts_are_asked_about_one_at_a_time() {
-        let offer = compose_offer(&[
-            event(),
-            item("b", OutboxKind::Message, json!({"title": "b"}), false),
-        ])
+        let offer = compose_offer(
+            &[
+                event(),
+                item("b", OutboxKind::Message, json!({"title": "b"}), false),
+            ],
+            "",
+        )
         .expect("an offer");
         assert_eq!(offer.pending.queue.len(), 2);
         assert!(offer.speech.contains("one more draft"), "{}", offer.speech);
@@ -735,7 +769,7 @@ mod tests {
 
     #[test]
     fn nothing_staged_asks_nothing() {
-        assert_eq!(compose_offer(&[]), None);
+        assert_eq!(compose_offer(&[], ""), None);
     }
 
     /// The reaction table, including the one that matters: anything that is
@@ -744,7 +778,9 @@ mod tests {
     #[test]
     fn an_unanswered_offer_is_dropped_not_held() {
         let ev = event();
-        let pending = compose_offer(std::slice::from_ref(&ev)).unwrap().pending;
+        let pending = compose_offer(std::slice::from_ref(&ev), "")
+            .unwrap()
+            .pending;
         assert_eq!(
             react("actually make it four o'clock", &pending, Some(&ev), None),
             Reaction::PassToModel
@@ -764,7 +800,9 @@ mod tests {
     #[test]
     fn reading_it_out_again_does_not_consume_the_question() {
         let ev = event();
-        let pending = compose_offer(std::slice::from_ref(&ev)).unwrap().pending;
+        let pending = compose_offer(std::slice::from_ref(&ev), "")
+            .unwrap()
+            .pending;
         match react("read it out", &pending, Some(&ev), None) {
             Reaction::Reread(said) => assert!(said.contains("Coffee with Thea"), "{said}"),
             other => panic!("expected a re-read: {other:?}"),
@@ -785,7 +823,7 @@ mod tests {
             json!({"title": "Second thing"}),
             false,
         );
-        let pending = compose_offer(&[ev.clone(), second.clone()])
+        let pending = compose_offer(&[ev.clone(), second.clone()], "")
             .unwrap()
             .pending;
         let said = match react("later", &pending, Some(&ev), Some(&second)) {
@@ -803,7 +841,9 @@ mod tests {
     #[test]
     fn a_draft_that_vanished_is_reported_not_guessed_at() {
         let ev = event();
-        let pending = compose_offer(std::slice::from_ref(&ev)).unwrap().pending;
+        let pending = compose_offer(std::slice::from_ref(&ev), "")
+            .unwrap()
+            .pending;
         match react("yes", &pending, None, None) {
             Reaction::Say(said) => assert!(said.contains("not in the outbox"), "{said}"),
             other => panic!("a missing draft must not be released: {other:?}"),
@@ -870,7 +910,7 @@ mod echo_at_the_confirmation_door {
     /// assembles itself would test the fix against a fixture rather than
     /// against the code that has to populate it.
     pub(super) fn offered() -> (String, Pending) {
-        let o = compose_offer(&[draft()]).expect("a speakable draft is offered");
+        let o = compose_offer(&[draft()], "").expect("a speakable draft is offered");
         (o.speech, o.pending)
     }
 
@@ -890,7 +930,7 @@ mod echo_at_the_confirmation_door {
     }
 
     pub(super) fn long_offer() -> (String, Pending) {
-        let o = compose_offer(&[long_draft()]).expect("a speakable draft is offered");
+        let o = compose_offer(&[long_draft()], "").expect("a speakable draft is offered");
         assert!(
             o.speech.contains("read it out"),
             "the fixture is not on the long branch, so it teaches no verb to refuse"
@@ -950,8 +990,11 @@ mod echo_at_the_confirmation_door {
 
     #[test]
     fn a_second_echo_defers_rather_than_looping() {
-        let (_, mut pending) = offered();
-        pending.reasks = MAX_REASKS;
+        let (_, pending) = offered();
+        // Driven through the transition rather than by setting the field:
+        // hand-built state is the fixture these tests avoid on purpose.
+        let pending = pending.after_reask("Sorry — that may have been my own echo.");
+        assert_eq!(pending.reasks, MAX_REASKS);
         let item = draft();
         match react("Send it.", &pending, Some(&item), None) {
             Reaction::Say(said) => assert!(said.contains("outbox"), "{said}"),
@@ -1142,6 +1185,75 @@ mod the_escape_hatches_must_stay_open {
     use super::*;
     use crate::review_policy::SpokenAnswer;
 
+    /// The gate runs ahead of the `head.is_none()` check, so the exhausted
+    /// message has to consult it itself: a draft can leave the store between
+    /// the question and the answer, and "I have left it in your outbox" is
+    /// then simply untrue. No wrong action follows — but on a spoken surface
+    /// what it says is the whole of what it does.
+    #[test]
+    fn a_deferral_does_not_claim_a_vanished_draft_is_waiting() {
+        let (_, pending) = offered();
+        let spent = pending.after_reask("Sorry — that may have been my own echo.");
+        let Reaction::Say(said) = react("Send it.", &spent, None, None) else {
+            panic!("an exhausted budget must defer");
+        };
+        assert!(
+            said.contains("not in the outbox any more"),
+            "the draft is gone and we said it was waiting: {said:?}"
+        );
+        // And the ordinary case still reads the ordinary way.
+        let item = draft();
+        let Reaction::Say(still_there) = react("Send it.", &spent, Some(&item), None) else {
+            panic!("an exhausted budget must defer");
+        };
+        assert!(
+            still_there.contains("left it in your outbox"),
+            "{still_there:?}"
+        );
+    }
+
+    /// **The reply is spoken in the same breath as the offer.**
+    ///
+    /// `completion` says the model's answer and then `say(" {offer}")` — one
+    /// stretch out of the speaker, no pause. So the reply echoes exactly as
+    /// the offer does, and the accept phrases it can contain are ones the
+    /// offer never does: `"go ahead"`, `"do that"`, `"confirm"`, `"approve"`,
+    /// `"book it"`. Before `preceded_by` seeded `asked_before`, neither
+    /// window slot held them, `parse_answer` returned `Send`, and `Release`
+    /// fired on a draft nobody was asked about. Found on review.
+    #[test]
+    fn the_reply_before_the_offer_is_in_the_window_too() {
+        let reply = "I have drafted that. If it looks right, go ahead and I will \
+                     send it — or say the word and I can book it for Thursday instead.";
+        let offer = compose_offer(&[draft()], reply).expect("a speakable draft is offered");
+        let item = draft();
+
+        for heard in ["go ahead", "book it"] {
+            // Each really is an accept the *offer alone* would not have
+            // caught, or this test proves nothing about the seeding.
+            assert_eq!(
+                parse_answer(heard),
+                crate::review_policy::SpokenAnswer::Send,
+                "{heard:?} no longer parses as a send"
+            );
+            let offer_only = Pending {
+                asked_before: String::new(),
+                ..offer.pending.clone()
+            };
+            assert!(
+                !ours_coming_back(heard, &offer_only),
+                "{heard:?} is in the offer after all, so this fixture measures nothing"
+            );
+            assert!(
+                matches!(
+                    react(heard, &offer.pending, Some(&item), None),
+                    Reaction::NotConvinced(_)
+                ),
+                "{heard:?} echoed out of the reply and released the draft"
+            );
+        }
+    }
+
     /// The rule the re-ask's wording rests on, checked against the real
     /// phrase lists instead of against a comment.
     ///
@@ -1195,8 +1307,11 @@ mod the_escape_hatches_must_stay_open {
         let second = draft();
         let report = report_release(Err("the token expired.".into()), Some(&second));
         assert!(report.contains("still in your outbox"), "{report}");
+        // The subject is the load-bearing half: `"send it"` appears in every
+        // short `ask_about`, so a disjunction on it would pass without the
+        // next draft ever being named.
         assert!(
-            report.contains("Reading group") || report.contains("send it"),
+            report.contains("Reading group"),
             "the next draft is never offered, so the next yes releases it unasked: {report}"
         );
         // And the successful branch has always done this — the two must not
