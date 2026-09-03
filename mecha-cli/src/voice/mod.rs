@@ -1250,13 +1250,35 @@ async fn answer_completion(
         confirm::Reaction::PassToModel => None,
         confirm::Reaction::Reread(said) => {
             // The head is still the open question: hearing it again is not
-            // answering it.
-            shared.confirmations.set(confirm_key, pending.clone()).await;
+            // answering it. `asked` moves to what we are about to say,
+            // here and in every arm below — one rule, in one place, because
+            // a stale `asked` is a span check against words nobody heard.
+            let mut rest = pending.clone();
+            rest.asked = said.clone();
+            shared.confirmations.set(confirm_key, rest).await;
+            Some(finish_with(stream, shared, id, want_stream, &said).await)
+        }
+        confirm::Reaction::NotConvinced(said) => {
+            // The head stays, and the count goes up: the re-ask is spoken
+            // too, so it can come back off the speaker exactly as the offer
+            // did. `MAX_REASKS` is what stops that being a loop.
+            let mut rest = pending.clone();
+            rest.asked = said.clone();
+            rest.reasks = rest.reasks.saturating_add(1);
+            tracing::info!(
+                reasks = rest.reasks,
+                "spoken answer was a span of the question — asking again rather than acting"
+            );
+            shared.confirmations.set(confirm_key, rest).await;
             Some(finish_with(stream, shared, id, want_stream, &said).await)
         }
         confirm::Reaction::Say(said) => {
             let mut rest = pending.clone();
             rest.queue.pop_front();
+            rest.asked = said.clone();
+            // A new question means a fresh budget: the count is about one
+            // draft's asking, not the call's.
+            rest.reasks = 0;
             shared.confirmations.set(confirm_key, rest).await;
             Some(finish_with(stream, shared, id, want_stream, &said).await)
         }
@@ -1274,6 +1296,8 @@ async fn answer_completion(
             let mut rest = pending.clone();
             rest.queue.pop_front();
             let report = confirm::report_release(outcome, next.as_ref());
+            rest.asked = report.clone();
+            rest.reasks = 0;
             shared.confirmations.set(confirm_key, rest).await;
             let spoken = if want_stream {
                 report

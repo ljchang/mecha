@@ -1087,14 +1087,45 @@ energy floor. It reaches `completion` and hits `shared.confirmations.take`
 draft going out with nobody asked — the one action CLAUDE.md says must cross a
 human structurally.
 
-The span rule does not transplant, and that is the point rather than an
-oversight: "yes" is a span of the question too, so the naive check silences
-every real confirmation. What might work is the timing layer rather than the
-text — a confirmation arriving *while the offer is still playing or inside its
-tail* is not a person who waited for the question — but `over_speaker` is
-computed in the worker and the confirmation is parsed in the facade, so the
-signal does not currently reach the decision. That is the shape of the fix and
-it wants its own change.
+**Closed 2026-09-03, and not the way this section predicted.** The plan here
+was timing: a confirmation arriving while the offer is still playing is not a
+person who waited for the question. That still looks right, and it is still not
+what shipped — because the constant it needs cannot be derived. Estimating
+playback from the journal gives ~33 chars/s (≈400 wpm) because TTS *generation*
+runs ahead of playback and the `Generating TTS` intervals measure buffering,
+not speech. Setting a voice constant off the wrong population is the mistake
+this same document already records against the echo floor, so the timing layer
+waits for a real call to measure the tail against.
+
+What shipped needs no constant, and it came out of noticing why the span rule
+was rejected. "yes" is a span of the question, so a naive check silences every
+real confirmation — true. But `echoes_the_last_reply` takes **two** words
+(`MIN_SPAN_WORDS`), and every one-word accept is therefore immune: "yes",
+"ok", "sure", "yeah" cannot reach the gate at all, and they are what a person
+actually says. Only multi-word accepts collide, and for those the failure is
+made cheap rather than avoided — the question is **asked again** rather than
+acted on, so a listener who says "send it" is asked once more and answers
+"yes". One repetition, against a draft going out unasked.
+
+Three parts, each pinned by a test that fails without it:
+
+- `Pending` carries `asked`, the exact words last spoken. Nothing else could:
+  the offer goes out through `say` and joins no conversation, so the anchor the
+  other two doors use does not contain the question.
+- The gate sits **ahead of `parse_answer`**, not inside the `Send` arm. A span
+  that does not parse was worse than one that does: `PassToModel` *drops* the
+  question, leaving a staged draft nobody is ever asked about again and handing
+  our own words to the model as a turn. Silent, both ways.
+- The re-ask is bounded at one, then the draft is left in the outbox. The
+  re-ask is spoken too, so an unbounded "say that again" is a loop with a send
+  at the end of it. Deferring terminates where the draft already is.
+
+And the offer no longer *ends* by reciting the parser's accept list. That
+wording — *"Say yes to send it, or later to leave it in your outbox."* — put
+the most echo-prone words in the utterance exactly where echo is likeliest, and
+a clean two-word truncation of it is `"send it"`. The menu stays; the tail is
+now which account the message is going out from, which is the one fact a
+listener cannot re-read.
 
 The fall-through arm is *not* a hole, and it took two wrong fixes to learn why.
 `completion` falls through to the facade slot when `host.speak` returns

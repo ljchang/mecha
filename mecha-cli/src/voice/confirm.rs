@@ -58,7 +58,25 @@ pub struct Pending {
     /// The drafts still to ask about, oldest first. The head is the one the
     /// last question was about.
     pub queue: VecDeque<String>,
+    /// **The exact words the speaker last played**, so an answer can be
+    /// checked against them. Without this the confirmation door is the one
+    /// place in the facade that cannot tell the room's echo from the owner:
+    /// the offer is spoken through `say` and never joins any conversation,
+    /// so `echoes_the_last_reply`'s usual anchor — the last assistant
+    /// message — does not contain the question at all.
+    pub asked: String,
+    /// How many times this question has been put again because the answer
+    /// came back as our own voice. Bounded, because the re-ask is spoken
+    /// too and can echo in its turn.
+    pub reasks: u8,
 }
+
+/// One repetition, then the draft is left in the outbox.
+///
+/// The re-ask is itself spoken, so it is itself echoable; an unbounded
+/// "say that again" is a loop with a send at the end of it. Deferring is
+/// the safe termination — it is where the draft already is.
+const MAX_REASKS: u8 = 1;
 
 /// Every conversation's open question. Keyed by the conversation the offer
 /// was made in — a hosted chat session or a facade slot — because an answer
@@ -102,6 +120,15 @@ pub enum Reaction {
     /// find out what it just did; two decision sites is how the surface and
     /// the policy drift apart.
     Reread(String),
+    /// The words were a contiguous span of the question we just asked, so
+    /// they are our own voice coming back off the speaker rather than an
+    /// answer. Say this, keep the head where it is, and count it.
+    ///
+    /// Distinct from [`Reaction::PassToModel`] for the reason that variant
+    /// exists at all: a non-answer *drops* the question, and dropping it
+    /// because the room echoed leaves a staged draft nobody was ever asked
+    /// about — silently, which is the failure the outbox exists to prevent.
+    NotConvinced(String),
     /// Say `acknowledge`, release the draft, then report the outcome and ask
     /// about whatever is next. Split in two because a release rebuilds a tool
     /// surface and can take seconds, and seconds of silence after "yes" reads
@@ -159,8 +186,15 @@ pub fn compose_offer(items: &[OutboxItem]) -> Option<Offer> {
     }
     queue.make_contiguous();
     Some(Offer {
+        pending: Pending {
+            queue,
+            // What we are about to say, recorded before we say it: `react`
+            // has nothing else to compare an answer against, because the
+            // offer is spoken through `say` and never joins a conversation.
+            asked: speech.clone(),
+            reasks: 0,
+        },
         speech,
-        pending: Pending { queue },
     })
 }
 
@@ -182,6 +216,7 @@ fn ask_about(item: &OutboxItem) -> String {
         out.push_str(&format!("Here it is, in full. {}", spoken.text()));
         out.push_str(taint_line(item));
         out.push_str(" Say yes to send it, or later to leave it in your outbox.");
+        out.push_str(&identity_tail(&view));
     } else {
         // Long enough that reading it unasked would be a monologue rather
         // than a question — so the choice of hearing it is the owner's.
@@ -200,8 +235,34 @@ fn ask_about(item: &OutboxItem) -> String {
             " Say read it out to hear the whole thing, yes to send it, \
              or later to leave it in your outbox.",
         );
+        out.push_str(&identity_tail(&view));
     }
     out
+}
+
+/// The last words of an offer, and deliberately not the menu.
+///
+/// **The tail is the part that echoes** — it is the most recent thing in the
+/// room when the microphone opens — and until this the offer ended by
+/// reciting the parser's own accept list: *"Say yes to send it, or later to
+/// leave it in your outbox."* A clean two-word truncation of that is
+/// `"send it"`, which `parse_answer` matches exactly and which released a
+/// draft with nobody asked.
+///
+/// Moving the menu off the end does not remove it from the offer, so a span
+/// of it is still possible mid-utterance — that is what the span gate in
+/// [`react`] is for. What this changes is which words are *most likely* to
+/// come back, and it spends them on the one fact a listener cannot re-read:
+/// which account this is going out from. The same answer as #144, one
+/// surface further on.
+fn identity_tail(view: &DraftView) -> String {
+    match view.headers.iter().find(|(k, _)| k == "account") {
+        Some((_, account)) => format!(" That one is from your {account} account."),
+        // Never empty, or the menu is the tail again by default. Not an
+        // answer in any phrase list, and a span of it is caught like any
+        // other span.
+        None => " That one is waiting on you.".into(),
+    }
 }
 
 /// The taint warning, spoken.
@@ -258,18 +319,45 @@ pub fn react(
     let Some(id) = pending.queue.front().cloned() else {
         return Reaction::PassToModel;
     };
+    // **Before parsing, and deliberately before every branch.** A span of
+    // the question is our own voice however it parses: as `Send` it
+    // releases a draft with nobody asked, and as a non-answer it *drops*
+    // the question and hands the words to the model, leaving a staged draft
+    // that will never be mentioned again. Both are silent.
+    //
+    // `echoes_the_last_reply` needs two words, which is what keeps this
+    // survivable: "yes", "ok" and "sure" are one word and can never reach
+    // here, and they are what a person actually says. "send it" is two and
+    // *is* a span of the menu, so a listener who says it is asked once
+    // more and answers "yes" — one repetition, against a draft going out
+    // unasked.
+    if super::echoes_the_last_reply(utterance, &pending.asked) {
+        return if pending.reasks >= MAX_REASKS {
+            Reaction::Say(format!(
+                "I keep hearing myself, so I have left it in your outbox.{}",
+                next_question(next)
+            ))
+        } else {
+            Reaction::NotConvinced("Sorry — I think that was my own echo. Was that a yes?".into())
+        };
+    }
     match parse_answer(utterance) {
         SpokenAnswer::NotAnAnswer => Reaction::PassToModel,
         SpokenAnswer::Later => {
             Reaction::Say(format!("Left in your outbox.{}", next_question(next)))
         }
         SpokenAnswer::ReadItOut => match head {
-            Some(item) => Reaction::Reread(format!(
-                "{} Say yes to send it, or later to leave it.",
-                DraftView::of(&item.args)
-                    .spoken(&item.unedited_defaults())
-                    .text()
-            )),
+            // Spoken like any other question, so its tail is echoable like
+            // any other tail — same rule, same reason. `unedited_defaults`
+            // is #154's: the pins the reviewer has not since changed.
+            Some(item) => {
+                let view = DraftView::of(&item.args);
+                Reaction::Reread(format!(
+                    "{} Say yes to send it, or later to leave it.{}",
+                    view.spoken(&item.unedited_defaults()).text(),
+                    identity_tail(&view)
+                ))
+            }
             // The draft is gone from the store between the question and the
             // answer — sent from the page, or swept. Saying so beats reading
             // out nothing, and the queue moves on.
@@ -627,5 +715,159 @@ mod tests {
     fn a_length_is_spoken_roundly() {
         assert_eq!(seconds_aloud(150), "10 seconds");
         assert_eq!(seconds_aloud(1500), "2 minutes");
+    }
+}
+
+/// The door that was open while the other two were being closed.
+///
+/// `completion` reaches `shared.confirmations.take` *before* either approval
+/// gate, so nothing those added ever saw a confirmation. The offer is spoken
+/// through `say` and joins no conversation, so `echoes_the_last_reply`'s
+/// usual anchor does not contain the question either. What made it live
+/// rather than theoretical: `ask_about` ended by reciting the accept list,
+/// so the most echo-prone words in the whole utterance were `"send it"`.
+#[cfg(test)]
+mod echo_at_the_confirmation_door {
+    use super::*;
+    use mecha_core::agent::Taint;
+    use mecha_core::outbox::OutboxKind;
+    use serde_json::json;
+
+    fn draft() -> OutboxItem {
+        OutboxItem {
+            filled_defaults: vec!["account".into()],
+            call_id: None,
+            id: "d1".into(),
+            status: "pending".into(),
+            tool: "mail__mail_send".into(),
+            kind: OutboxKind::Message,
+            args_before: json!({"to": "alice@example.com", "account": "dartmouth",
+                                "subject": "Reading group", "body_markdown": "Thursday works."}),
+            args: json!({"to": "alice@example.com", "account": "dartmouth",
+                         "subject": "Reading group", "body_markdown": "Thursday works."}),
+            summary: "a draft".into(),
+            session_id: None,
+            workspace: None,
+            taint: Taint {
+                private: false,
+                untrusted: false,
+            },
+            created_at: "2026-09-03T10:00:00Z".into(),
+            resolved_at: None,
+            error: None,
+            reason: None,
+        }
+    }
+
+    /// Built through `compose_offer`, never hand-rolled: the whole defect was
+    /// that `Pending` did not carry what had been said, so a `Pending` a test
+    /// assembles itself would test the fix against a fixture rather than
+    /// against the code that has to populate it.
+    fn offered() -> (String, Pending) {
+        let o = compose_offer(&[draft()]).expect("a speakable draft is offered");
+        (o.speech, o.pending)
+    }
+
+    #[test]
+    fn the_offer_records_what_it_said() {
+        let (speech, pending) = offered();
+        assert_eq!(
+            pending.asked, speech,
+            "`react` has nothing to compare against"
+        );
+        assert_eq!(pending.reasks, 0);
+    }
+
+    #[test]
+    fn the_tail_is_not_the_accept_list() {
+        let (speech, _) = offered();
+        let tail = speech.trim_end_matches(['.', ' ']);
+        let tail = &tail[tail.len().saturating_sub(60)..];
+        assert!(
+            tail.contains("dartmouth account"),
+            "the last words are still the menu: {tail:?}"
+        );
+        // The precise failure: a clean truncation of the old tail parsed as
+        // an accept and released a draft.
+        assert!(
+            !speech.trim_end().ends_with("in your outbox."),
+            "the offer still ends by reciting the parser's own accept list"
+        );
+    }
+
+    #[test]
+    fn our_own_voice_is_asked_again_rather_than_acted_on() {
+        let (_, pending) = offered();
+        let item = draft();
+        // A two-word truncation of the menu, which is what the room returns.
+        match react("Send it.", &pending, Some(&item), None) {
+            Reaction::NotConvinced(said) => assert!(said.contains("echo"), "{said}"),
+            other => panic!("an echo of the question released or dropped it: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_second_echo_defers_rather_than_looping() {
+        let (_, mut pending) = offered();
+        pending.reasks = MAX_REASKS;
+        let item = draft();
+        match react("Send it.", &pending, Some(&item), None) {
+            Reaction::Say(said) => assert!(said.contains("outbox"), "{said}"),
+            other => panic!("the re-ask is unbounded, and it is spoken: {other:?}"),
+        }
+    }
+
+    /// The reason the gate is survivable at all.
+    ///
+    /// `echoes_the_last_reply` needs two words, and every one-word accept is
+    /// therefore immune. That is not a lucky accident of the constant — it is
+    /// what a person actually says, and if this ever fails the gate has
+    /// started silencing real answers.
+    #[test]
+    fn a_bare_yes_still_sends() {
+        let (_, pending) = offered();
+        let item = draft();
+        for heard in ["yes", "Yes.", "yeah", "ok", "sure"] {
+            match react(heard, &pending, Some(&item), None) {
+                Reaction::Release { .. } => {}
+                other => panic!("{heard:?} no longer sends: {other:?}"),
+            }
+        }
+    }
+
+    /// A correction reuses the offer's words and must survive, which is why
+    /// the rule is a contiguous span and not a bag of words.
+    #[test]
+    fn a_correction_still_reaches_the_model() {
+        let (_, pending) = offered();
+        let item = draft();
+        for heard in [
+            "actually make it four o'clock",
+            "change the subject to reading group Friday",
+        ] {
+            assert!(
+                matches!(
+                    react(heard, &pending, Some(&item), None),
+                    Reaction::PassToModel
+                ),
+                "{heard:?} was swallowed by the echo gate"
+            );
+        }
+    }
+
+    /// The quieter half of the same defect.
+    ///
+    /// A span that does not parse as an answer used to fall to
+    /// `PassToModel`, which *drops* the question — leaving a staged draft
+    /// nobody would ever be asked about again, and handing our own words to
+    /// the model as a turn.
+    #[test]
+    fn an_echo_that_is_not_an_answer_keeps_the_question() {
+        let (_, pending) = offered();
+        let item = draft();
+        match react("from your dartmouth account", &pending, Some(&item), None) {
+            Reaction::NotConvinced(_) => {}
+            other => panic!("an echo dropped the open question: {other:?}"),
+        }
     }
 }
