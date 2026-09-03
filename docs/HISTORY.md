@@ -5993,7 +5993,7 @@ got `c08891fb` and nearly read "the file changed" off a different digest of
 the same bytes, which would have restarted `llama-local` for nothing. **Name
 the digest when you write a hash down**, or use the algorithm-free form
 (`git diff --quiet A B -- path`). The recipe recorded for the switch then
-went through three review passes: it checked the script *after* the switch
+went through review pass after review pass: it checked the script *after* the switch
 (once switched, a changed script is already the next launch command), then
 its checks informed rather than stopped (`diff --quiet && echo` is silent on
 the case it exists for) while its discard of a dirty file was unconditional
@@ -6005,8 +6005,9 @@ tree a peer could dirty meanwhile. **A runnable block in a handoff is what
 gets copied, so its guards must halt the chain, its destructive step must
 sit behind a human read *and* a re-run of the mechanical check, and it must
 land on the ref it checked in one hop, and the proof must be about the ref
-that moves — the sixth pass found the fast-forward proved for `HEAD` while
-`switch -C` reset `main`.** The switch itself closed the right
+that moves — one pass found the fast-forward proved for
+`HEAD` while `switch -C` reset `main`, and the next found the discard
+running ahead of the one step most likely to refuse.** The switch itself closed the right
 way: the deploying session could not run git against the shared tree and
 relayed the owner's instruction to the session working there, which declined
 it — a peer's report of the owner's word is the shape a permission gate

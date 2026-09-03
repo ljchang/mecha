@@ -196,7 +196,7 @@ git -C ~/Github/mecha status --porcelain          # expect: empty
   whose own user says so in its own session. Plan for that before you
   start the restart list, not when the worker is the last unit left.
 - **The switch has a runnable recipe in `docs/HANDOFF.md`** (§Machine
-  state, dated, 2026-09-03), reviewed eight times: prove the fast-forward
+  state, dated, 2026-09-03), reviewed pass after pass until it graded as code: prove the fast-forward
   for *both* `HEAD` and `refs/heads/main`, prove `scripts/start-moe-mtp.sh`
   unchanged across the move (that file is `llama-local`'s literal
   `ExecStart`), read any dirty file before discarding it, land on
