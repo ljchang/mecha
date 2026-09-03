@@ -776,13 +776,18 @@ named by what it can and cannot do.
   bug.
 - **The energy floor is now graded on whether our own speaker was playing.**
   0.010 in a silent room as before, `MECHA_VOICE_ECHO_RMS` (default 0.020)
-  while the bot is audible. It sits above room noise (~0.009) and below the
-  owner's measured speech (~0.024), so a person raising their voice over a
-  reply still interrupts and a speaker across the room does not — this section's
+  while the bot is audible. The reasoning at the time was that it sits above
+  room noise (~0.009) and below the owner's speech (~0.024) — **both figures
+  superseded**; see the 2026-09-03 classification below, which measures the
+  population this floor actually judges and finds echo sitting inside the
+  speech distribution rather than beneath it — this section's
   own warning applies, that 0.010 was tuned on a different microphone, so the
   gated path now **logs the RMS it gated at** and the env var exists to be set
-  from that rather than from a guess — `journalctl -u mecha-voice-worker -f |
-  grep "parakeet segment gated:"`, since `MECHA_LOG` is mecha's *Rust* tracing
+  from that rather than from a guess — `journalctl --user -u mecha-voice-worker -f |
+  grep -E "parakeet( segment gated)?: duration"` — both populations, since a
+  floor read only off the transcribed line cannot show itself eating real
+  turns — and `--user`, because this is a user unit and `journalctl -u`
+  without it prints "No entries". `MECHA_LOG` is mecha's *Rust* tracing
   filter and nothing in the worker reads it. It is bounded below by `MIN_SEGMENT_RMS`
   rather than by zero: under it the graded gate runs *backwards*, holding our
   own echo to a lower bar than room noise, and nothing would say so because
@@ -958,6 +963,186 @@ repeat, a false turn costs an interruption mid-sentence and a reply to nothing
 — but not at any price, because the person saying "no, stop" over a wrong
 answer is exactly who this must not silence. D4 is untouched: barge-in remains
 "finish the phrase and it stops". The structural fix is still §6 item 10.
+
+**The echo floor was measured, and the measurement says not to set it,
+2026-09-03.** `ECHO_SEGMENT_RMS` shipped as a guessed 0.020. The journal
+carries an RMS per segment *and* pipecat's own `_bot_started_speaking` /
+`_bot_stopped_speaking` edges (function names, printed by loguru in its
+`module:function:line` prefix — not strings in this repo, so grepping the tree
+for them proves nothing either way), so every segment of the preceding fortnight
+can be classified by whether our speaker was playing — which is the only
+population this floor ever judges, and the reason the first attempt at this
+number was wrong:
+
+| RMS | | |
+|---|---|---|
+| 0.0124 | `''` | silence |
+| 0.0141 | "The training." | a real turn |
+| 0.0201 | "What's on my schedule for today?" | a real turn |
+| **0.0257** | "The Starlink Mini costs one hundred ninety nine dollars." | **echo** |
+| 0.0311 | "Yeah." | a real turn |
+| 0.0457–0.0774 | | real turns |
+
+**The echo sits inside the speech distribution, between two real barge-ins.**
+No threshold separates them. 0.030 buys that one echo and costs the 0.0201 and
+0.0141 turns, and turn-start is transcription-based, so a gated turn is not a
+degraded turn but no turn at all.
+
+The first pass at this measured the same journal *unclassified*, got "echo
+0.0257 and 0.0418, speech 0.0392 and up", and concluded 0.030 with a 23%
+margin. Both numbers were real; the population was wrong. Speech over the
+speaker is systematically the harder case, and it is the only case this gate
+sees.
+
+**And the sample is of the wrong machine.** All of it predates 2026-09-03
+11:09, when the worker first ran with the mic-meter repair — until then a
+WebAudio tap had the browser's echo canceller disarmed, which is what 0.0257
+of residual echo is a measurement of. A floor derived from it would be tuned
+to a fault that no longer exists; read that way, the absence of a usable gap
+is the expected result. So the slot stays commented, the default applies, and
+the number wants re-deriving from a call made after that restart. The
+~0.024-speech figure in §7 and its copy in `worker.py` are superseded by the
+table above.
+
+**Two things the incident showed the text filter cannot do**, recorded because
+both look like bugs and only one is:
+
+- **TTS expands what the filter compares against.** `note_bot_speech` records
+  the text *submitted* ("costs $199"); the microphone hears the text *spoken*
+  ("costs one hundred ninety nine dollars"). Five of nine words exist in no
+  form in the window, so the filter scored it 4 matched of 9 and correctly
+  declined. Closing it means reimplementing a TTS front-end's number, currency
+  and abbreviation expansion. **It is not the worker's alone** — the
+  approval-side span gate below compares against `Message::text()`, also the
+  submitted text, so all three layers share one uncovered case: a long echo
+  containing anything a front-end expands.
+- **A two-word echo is under every word floor by design.** "It's prose." is
+  the whole of the second one. `MIN_ECHO_WORDS` exists because at that length
+  an echo and the plainest possible answer are the same string, and on this
+  evidence the energy floor cannot hold that band either.
+
+**`--voice-yes` no longer survives hearing ourselves, 2026-09-03.** A spoken
+turn runs with the approver off (`TurnOpts::approve_all`), so an echo that
+reaches the model as a turn reaches a `destructive` tool with nobody asked —
+`mail_triage` is gated by the approver alone and is deliberately not
+outbox-routed.
+
+`begin_turn` now asks one question of a spoken turn before choosing its
+approver: **is this, word for word, a contiguous piece of the reply we just
+gave?** If it is, the turn still happens — it is simply approved the way a
+typed one would be, which is the mode the page is already in. The narrowing is
+`narrow_for_echo`, a pure function of the four things it depends on, so the
+guarantee is testable rather than only asserted in prose.
+
+A contiguous span rather than an overlap, for the reason six rounds of the
+worker's filter established: a person correcting an offer reuses most of its
+words, so anything looser silences the corrections this exists to leave alone.
+"Move it to Friday" is not a span of "I can move it to Thursday". Any length,
+since a long verbatim repeat is *more* obviously our own voice. It only ever
+narrows: typed turns untouched, non-span spoken turns unchanged.
+
+This is the third layer, and the one that needs no threshold: it asks whether
+the words are ours rather than how loud they were. That is a narrower claim
+than it looks, and the limit belongs here rather than in a footnote — it asks
+whether they are ours **as we wrote them**. It compares against
+`Message::text()`, the submitted text, so it inherits the blind spot recorded
+above: anything a front-end expands comes back as words the reply does not
+contain, and the gate answers "not ours" confidently, in the unsafe direction.
+The echo that started all this would keep `--voice-yes` here for the same
+reason it scored 4-of-9 there.
+
+What it covers, it covers exactly: a short verbatim instruction — "delete it",
+"cancel it" — has nothing to expand, so the comparison is sound precisely
+where an echo is a destructive call with nobody asked.
+
+**A spoken turn has two doors, and both narrow.** The first version wired only
+the hosted one. `completion` reaches `VoiceHost::speak` only when the caller
+named a chat session *and* the key was well-formed — a call with no
+`X-Chat-Session`, or one whose key is malformed, falls through to the
+facade's own slot on purpose, because a dead call is a worse answer than an
+unshared one. (Not "a key no front-end holds": a valid key with no session is
+*created*. See below — that misreading cost two gates.) `--voice-yes` follows
+it down, so until this the gate was absent on exactly the path that skipped the
+gate. Both are pinned by a source-reading test, since driving either means standing up a facade or a whole session
+state; the second of those tests was itself wrong first, asserting the span
+call appeared above the grant rather than that the grant was *guarded* by it.
+
+**The spoken confirmation is a fourth door, and it is in front of both of
+these.** Recorded rather than closed, because it is a design question and not
+a one-liner — and its consequence class is worse than the one the gate above
+closes.
+
+`offer_for_turn` composes `confirm::ask_about` and speaks it through `say`
+without ever appending it to `slot.convo` or the chat session's conversation.
+So the last thing the speaker actually said is invisible to
+`echoes_the_last_reply`, which anchors on the last *assistant message* — and
+the tail of an utterance is exactly the part that echoes. The offer ends
+"Say yes to send it, or later to leave it in your outbox."
+
+An echo transcribed as "Send it." is two words: `MIN_ECHO_WORDS` makes the
+worker's text filter decline by design, and 0.0257-class residual clears the
+energy floor. It reaches `completion` and hits `shared.confirmations.take`
+**before** either approval gate, where `parse_answer` normalises it, matches
+`SEND_PHRASES`, and `Reaction::Release` releases the draft. That is an outbox
+draft going out with nobody asked — the one action CLAUDE.md says must cross a
+human structurally.
+
+The span rule does not transplant, and that is the point rather than an
+oversight: "yes" is a span of the question too, so the naive check silences
+every real confirmation. What might work is the timing layer rather than the
+text — a confirmation arriving *while the offer is still playing or inside its
+tail* is not a person who waited for the question — but `over_speaker` is
+computed in the worker and the confirmation is parsed in the facade, so the
+signal does not currently reach the decision. That is the shape of the fix and
+it wants its own change.
+
+The fall-through arm is *not* a hole, and it took two wrong fixes to learn why.
+`completion` falls through to the facade slot when `host.speak` returns
+`Hosted::Unknown`, and the comment there said that meant "a key no front-end
+holds". On that reading the slot's conversation is not the one that produced
+the reply being echoed, the span check reads an unrelated last message, and the
+standing yes is granted on a comparison that could not run — a gate whose input
+does not exist returning exactly what a clean turn returns. A flag was added.
+It cost the turn every tool (`Ask` is `Blocked` non-interactively, the
+2026-08-24 failure), so a second pass narrowed it to `last_reply.is_none()`.
+
+Both passes were built on the comment. `VoiceHost::speak` returns `Unknown`
+from exactly one place — `!valid_key(key)` — and `ensure_session` creates a
+session for any *valid* key on demand, so a valid key that no front-end holds
+never reaches this path. The fall-through means the worker sent a **malformed**
+`X-Chat-Session`: a property of its configuration, constant for the whole call.
+Which makes the facade slot the only conversation that caller has ever been
+spoken to in — the first turn has nothing to echo, every turn after it compares
+against the reply the speaker actually heard, and the check was right all along.
+The flag fired only on that first turn, bought nothing, and charged it every
+tool. Removed; the comment and the `warn!` now say what the arm means.
+
+The lesson is the one this repo keeps paying for and it is not about voice: the
+prose beside a branch is what the next reader reasons from, and a comment that
+misdescribes its own arm will be believed twice before the code is read once.
+
+One real defect came out of the same review. `echoes_the_last_reply` had no
+lower bound at all — `heard.is_empty()` was the only check, so a single word
+appearing anywhere in the reply was a "span". Against *"I can move it to
+Thursday if you want me to."*, hearing `"Thursday"` stripped the turn of every
+tool. `MIN_SPAN_WORDS = 2` now, which is where the gate's own reason to exist
+starts: "delete it" is two words. One word is left alone deliberately — it is
+the band where a span is weakest evidence and collisions are commonest.
+
+Three limits, all now stated rather than found. After a barge-in the newest
+assistant message is the cancelled partial, so an echo of the previous,
+fully-spoken reply is not a span of it. `Message::text()` joins blocks with no
+separator, so a reply of text → tool_use → text fuses the boundary words and a
+span crossing it is missed. And a facade started with `--yes` rather than
+`--voice-yes` already carries `ModeApprover { Allow }` on the agent's own
+context, so `approve_all` is false, the narrowing does nothing, and the
+permissive approver is inherited — undetectable through the `Approver` trait,
+and fixable on that surface only by refusing the turn outright, since this
+door has no mode that can be moved at all — which is the whole of the
+difference from the hosted one, per the correction above, and not the larger
+difference an earlier draft of this sentence claimed. Not taken:
+`mecha-voice-serve` is inactive and disabled here, so the change would be
+untested against any running thing.
 
 **Both standbys were removed, 2026-08-25 — a spare nothing fails over to
 is not a spare.** Voxtral (`:8082`) had held the STT seat until the swap

@@ -23,12 +23,63 @@ WorkingDirectory=/home/ljchang/Github/mecha
 # never about an unset one.
 #
 # The value is a property of this room and this microphone, and the worker
-# logs the measurement to set it from:
+# logs the measurement to set it from. Read it *classified* — the invocation
+# is at the bottom of this block, and the raw list below is what reading it
+# unclassified produced.
 #
-#   journalctl -u mecha-voice-worker -f | grep "parakeet segment gated:"
+# Measured 2026-09-03 and deliberately still not set. The journal of every
+# call in the preceding fortnight carries an RMS per segment and the bot's own
+# speaking edges, so each segment can be classified by whether our speaker was
+# playing — which is the only population this floor ever judges. Sorted, that
+# population is:
 #
-# Left commented so the default (0.020) applies until somebody has measured;
-# the slot is here so it is visible that there is one.
+#   0.0124  ''                                        (silence)
+#   0.0141  'The training.'                           <- a real turn
+#   0.0201  "What's on my schedule for today?"        <- a real turn
+#   0.0257  'The Starlink Mini costs one hundred…'    <- ECHO
+#   0.0311  'Yeah.'                                   <- a real turn
+#   0.0457 … 0.0774                                   real turns
+#
+# The echo sits *inside* the speech distribution, between two real barge-ins.
+# There is no floor that catches it and keeps them: 0.030 buys that one echo
+# and costs the 0.0201 and 0.0141 turns, and turn-start is transcription-based,
+# so a gated turn is not a degraded turn but no turn at all.
+#
+# And the sample is of the wrong machine. Every one of those lines predates
+# 2026-09-03 11:09, when the worker first ran with the mic-meter repair — until
+# then a WebAudio tap had the browser's echo canceller disarmed, which is what
+# 0.0257 of residual echo is a measurement of. A floor set from it would be
+# tuned to a fault that no longer exists.
+#
+# So the slot stays commented, the default (0.020) applies, and the number
+# wants re-deriving from a call made *after* that restart. Re-run the
+# classification with the bot-speaking edges, not the raw RMS list:
+#
+#   journalctl --user -u mecha-voice-worker \
+#     | grep -E "_bot_(started|stopped)_speaking|parakeet( segment gated)?: duration"
+#
+# `( segment gated)?` is not decoration: the gated segments are the
+# population the floor is set *from*, and they log as `parakeet segment
+# gated: duration=`, which `parakeet: duration` does not match. Reading only
+# the transcribed line cannot show the floor eating real turns, which is the
+# entire argument of the table above. Found on review, after a first version
+# of this recipe dropped them.
+#
+# `--user` is load-bearing: this is a user unit, so the same command without
+# it prints "No entries" and reads exactly like a quiet worker rather than a
+# wrong command. Checked by running both — 0 lines against 23 over the
+# 2026-09-01 21:35 call. The `_bot_*_speaking` half matches pipecat's own log
+# lines, whose function names loguru prints in its `module:function:line`
+# prefix; they are not strings in this repo, so grepping the tree for them
+# finds nothing and proves nothing.
+#
+# After the next deploy the correlation is unnecessary — `over_speaker=` is
+# already on the `parakeet:` line in this tree (it predates this branch,
+# whose only change to worker.py is comments); it is the *running* worker
+# that is older than it. So once restarted,
+# `... | grep "parakeet: " | grep over_speaker=True` is the whole of it. That
+# returns nothing today, because the running worker predates it.
+#
 #Environment=MECHA_VOICE_ECHO_RMS=0.020
 ExecStart=/home/ljchang/models/voice-worker-venv/bin/python scripts/voice/worker.py --host 127.0.0.1 --port 7860 --allowed-origins https://YOUR-HOST.YOUR-TAILNET.ts.net https://YOUR-HOST.YOUR-TAILNET.ts.net:8443
 Restart=on-failure
