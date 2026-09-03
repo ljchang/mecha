@@ -256,9 +256,28 @@ mod echo_span_tests {
             grant.contains("&& !echoed"),
             "the facade's own slot grants `--voice-yes` ungated: {grant:?}"
         );
+        // Bounded to `completion`'s body, and that is the whole assertion.
+        // Unbounded, `src.contains("echoes_the_last_reply(&text,")` matches
+        // the literal on this very line — `include_str!("mod.rs")` reads the
+        // test module too — so it was unconditionally true and could not
+        // fail. Found on review. That is the third time this file's
+        // source-reading tests have matched themselves, which is why the
+        // `chat.rs` sibling slices `begin_turn` first and why the needles
+        // below start with a real newline: in the file, this test's copies
+        // are a backslash and an `n`.
+        let i = src
+            .find("\nasync fn completion(")
+            .expect("the facade door still lives in `completion`");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`completion` still has a closing brace at column zero")];
         assert!(
-            src.contains("echoes_the_last_reply(&text,"),
-            "and `echoed` is no longer computed from the span rule"
+            body.contains("echoes_the_last_reply(&text,"),
+            "`echoed` is no longer computed from the span rule inside `completion`"
+        );
+        assert!(
+            body.contains("if shared.mount.approve_all && !echoed {"),
+            "the grant this test bounds is not in `completion` any more"
         );
     }
 
@@ -1424,8 +1443,9 @@ async fn completion(
     // `X-Chat-Session`, or one whose key is malformed, falls through to
     // here — deliberately, because a dead call is a worse answer than an
     // unshared one. (Not "a key no front-end holds": a valid key that no
-    // session exists for is *created*, so it never reaches this path.) But `--voice-yes` follows it down, so without this a
-    // verbatim "delete it" reaches `mail_triage` with nobody asked on exactly
+    // session exists for is *created*, so it never reaches this path.) But
+    // `--voice-yes` follows it down, so without this a verbatim "delete it"
+    // reaches `mail_triage` with nobody asked on exactly
     // the path that skipped the gate. Wiring one of two doors is not a gate.
     let last_reply = slot
         .convo

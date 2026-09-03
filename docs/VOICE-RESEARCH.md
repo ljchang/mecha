@@ -784,7 +784,10 @@ named by what it can and cannot do.
   own warning applies, that 0.010 was tuned on a different microphone, so the
   gated path now **logs the RMS it gated at** and the env var exists to be set
   from that rather than from a guess — `journalctl --user -u mecha-voice-worker -f |
-  grep "parakeet segment gated:"`, since `MECHA_LOG` is mecha's *Rust* tracing
+  grep -E "parakeet( segment gated)?: duration"` — both populations, since a
+  floor read only off the transcribed line cannot show itself eating real
+  turns — and `--user`, because this is a user unit and `journalctl -u`
+  without it prints "No entries". `MECHA_LOG` is mecha's *Rust* tracing
   filter and nothing in the worker reads it. It is bounded below by `MIN_SEGMENT_RMS`
   rather than by zero: under it the graded gate runs *backwards*, holding our
   own echo to a lower bar than room noise, and nothing would say so because

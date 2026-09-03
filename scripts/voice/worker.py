@@ -158,7 +158,7 @@ from echo_filter import BotSpeech, echo_rms, overlapped
 # margin against the ones it judges:
 #
 #     journalctl --user -u mecha-voice-worker \
-#       | grep -E "_bot_(started|stopped)_speaking|parakeet: duration"
+#       | grep -E "_bot_(started|stopped)_speaking|parakeet( segment gated)?: duration"
 #
 # `--user` because this is a user unit: without it the command prints "No
 # entries", which reads like a quiet worker rather than a wrong command.
