@@ -1508,18 +1508,25 @@ refusal. The specification and the survey behind it are
   and like `escalate` it defaults to `Blocked`, so under an approver that
   answers from policy (`--yes`, `batch`, a trigger) a `prompt` rule refuses
   rather than silently allowing: a rule that says a person must see the call
-  fails closed where there is none. A rule naming an outbox-routed tool
-  would be inert (staging runs first, release reads no rules) and is a load
-  error in `Config::validate`, the same treatment as a patterned rule on a
-  commandless builtin; it was a start-time warning until the owner ruled on
-  2026-09-03 that a warning on the stderr no trigger shows is the
-  silently-degrading guard wearing a label. Two edges, both from PR #148's
-  review: `publish_tools` is a kind and not a route (a name there absent from
-  `tools` executes unstaged, so a rule on it judges and loads), and a
+  fails closed where there is none. An `allow` or `prompt` naming an
+  outbox-routed tool judges nothing *while the route is live* (staging runs
+  first, release reads no rules, a person reviews the staged call anyway)
+  and `setup` refuses it there — the same treatment as a patterned rule on
+  a commandless builtin, after the owner ruled on 2026-09-03 that a warning
+  on the stderr no trigger shows is the silently-degrading guard wearing a
+  label. Not in `Config::validate`, and never for a `forbid`: whether the
+  route is live is `--no-outbox`'s to say (routed tools then "execute
+  directly under the usual gates", and the rule is the one gate left), and a
+  `forbid` behind staging is a second lock — the first version failed the
+  load for exactly that belt-and-braces config, on every surface, until
+  PR #148's review. Two more edges from the same review: `publish_tools` is
+  a kind and not a route (a name there absent from `tools` executes
+  unstaged, so a rule on it judges and loads), and a
   *project* layer can reach the contradiction from either side, and each
   time it is the project's half that goes, with a warning, never the
-  operator's: a project `[[rule]]` on a routed tool is dropped after `apply`
-  over the merged state (a project may un-route as well as route) and over
+  operator's: a project `prompt` on a routed tool is dropped after `apply`
+  over the merged state (a project may un-route as well as route; a project
+  `forbid` stays, being a second lock) and over
   that file's rules only — `apply` appends, so the index where the file's
   rules begin is the provenance, and without it any project file in the
   directory silently disarmed the operator's own contradiction — and a
@@ -1527,8 +1534,7 @@ refusal. The specification and the survey behind it are
   for is cut before `apply` — routing it would have made the operator's
   `forbid` a staged draft a person can release, the one reconciliation that
   would have removed the operator's word rather than the project's. Neither
-  fails a `mecha` command in a cloned repository's directory. The check is on
-  the config file, so `--no-outbox` does not lift the global load error.
+  fails a `mecha` command in a cloned repository's directory.
 - **The splitter is conservative on purpose.** A command is judged one
   segment at a time (`&&`, `||`, `|`, `;`), and allowed only if every segment
   is. Anything `split_segments` cannot take apart with certainty —
@@ -1537,7 +1543,8 @@ refusal. The specification and the survey behind it are
   invocation: its words are searched for every patterned `forbid` and
   `prompt` (`narrowing_words` — never for an `allow`, which an opaque
   command cannot earn), a pattern-less `forbid` or `prompt` applies to it by
-  construction, the inline-eval floor
+  construction, a head the shell will expand (`$PY -c`, `py* -c`) is a
+  program the module cannot read and prompts, the inline-eval floor
   applies to it under `strict_inline_eval` (its best-effort segment heads are
   asked whether they run their arguments — a redirect must not make `python3
   -c` *less* restricted than it is without one, which the first fall-through
@@ -1621,12 +1628,15 @@ refusal. The specification and the survey behind it are
   no `command` is refused at load; on an MCP tool the crate cannot know about,
   it asks at call time with the reason said out loud, never staying silently
   inert while its author believes it loaded.
-- **A rule on a routed tool is a load error.** Outbox staging runs before the
-  rules and release reads none, so a routed call stages and a person decides
-  at release; a global `[[rule]]` naming a tool in `[outbox] tools` would
-  judge nothing and `Config::validate` refuses it, naming the rule and the
-  two remedies (a project layer's is dropped with a warning instead). "Refuses without consulting anyone"
-  is true of everything that would have executed.
+- **An `allow` or `prompt` on a routed tool is refused where the route is
+  live.** Outbox staging runs before the rules and release reads none, so a
+  routed call stages and a person decides at release; a global `allow` or
+  `prompt` naming a tool in `[outbox] tools` would judge nothing and `setup`
+  refuses it, naming the rule and three remedies (write it as `forbid`,
+  remove it, un-route the tool). A `forbid` is a second lock and stays; under
+  `--no-outbox` every rule is live and nothing is refused; a project layer's
+  `prompt` is dropped with a warning instead. "Refuses without consulting
+  anyone" is true of everything that would have executed.
 
 There is deliberately no `--no-rules` flag: a `forbid` is the operator's
 standing word, and a switch that lifts it for one run is the
