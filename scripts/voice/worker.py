@@ -28,6 +28,11 @@ from openai.types.audio import Transcription
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+)
 from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
     TranscriptionUserTurnStartStrategy,
 )
@@ -113,44 +118,191 @@ MIN_SEGMENT_RMS = 0.010
 MIN_SEGMENT_SECONDS = 0.3
 
 
-# What the bot said recently, normalized, for the echo filter: a phone on
-# speaker hears its own TTS, and when client-side echo cancellation fails
-# (a known WebKit trap once WebAudio taps the mic track), the bot's words
-# come back as the owner's. Text is the one signal that survives every
-# acoustic path: if the transcript is contained in what the bot just said,
-# it is the speaker, not the speaker's owner.
-import collections
-import re
+# The echo defence: a phone or a laptop on speaker hears its own TTS, and
+# everything downstream is faithful about it - the VAD finds speech in it and
+# a transducer transcribes it - so the bot's words come back as the owner's.
+# The reasoning, the thresholds and the tests live in `echo_filter`, which is
+# a pure module for exactly that reason; this file owns the frames and the
+# clock that feed it.
 import time as _time
 
-RECENT_BOT_SPEECH: collections.deque = collections.deque(maxlen=12)
-ECHO_WINDOW_SECONDS = 20.0
+from echo_filter import BotSpeech, echo_rms, overlapped
 
 
-def _normalize(text: str) -> str:
-    return re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
+# The energy floor while our own speaker is playing. Echo that survives the
+# browser's canceller is far quieter than a voice at the microphone, so this
+# sits above the room-noise floor below and below the owner's measured speech
+# (~0.024 RMS) - a person raising their voice over a reply clears it, a
+# speaker across the room does not.
+#
+# Tunable because the right value is a property of *this room and this
+# laptop*, not of the code — and it is set in `mecha-voice-worker.service`,
+# which carries a commented slot for it, never in a shell: systemd inherits no
+# login environment, so an `export` reaches this process not at all. The
+# measurement to set it from is in the worker's own journal, which logs the
+# RMS of every gated segment:
+#
+#     journalctl -u mecha-voice-worker -f | grep "parakeet segment gated:"
+#
+# Named precisely because the argument for having a knob at all is that the
+# measurement is checkable, and an instruction that does not work makes that
+# argument false. `MECHA_LOG` is mecha's *Rust* tracing filter and nothing in
+# this file reads it; loguru is what logs here.
+_ECHO_RMS_DEFAULT = 0.020
 
 
-def note_bot_speech(text: str) -> None:
-    RECENT_BOT_SPEECH.append((_time.monotonic(), _normalize(text)))
+def _echo_rms_from_env() -> float:
+    """The floor, or the default and a complaint.
+
+    The decision is `echo_filter.echo_rms`, which is pure and therefore
+    tested; this half owns the environment and the logger. Falling back is
+    never the silent kind — the refused value is named — because this is a
+    knob the comment above invites the owner to set by hand, and a typo in a
+    unit file must not be voice down in a restart loop.
+    """
+    value, complaint = echo_rms(
+        os.environ.get("MECHA_VOICE_ECHO_RMS"),
+        floor=MIN_SEGMENT_RMS,
+        default=_ECHO_RMS_DEFAULT,
+    )
+    if complaint:
+        from loguru import logger
+
+        logger.warning(complaint)
+    return value
 
 
-def is_probable_echo(transcript: str) -> bool:
-    norm = _normalize(transcript)
-    if len(norm) < 8:
-        return False
-    now = _time.monotonic()
-    for stamp, spoken in RECENT_BOT_SPEECH:
-        if now - stamp < ECHO_WINDOW_SECONDS and norm in spoken:
-            return True
-    return False
+ECHO_SEGMENT_RMS = _echo_rms_from_env()
+
+
+def _new_echo_window() -> BotSpeech:
+    """One window per call, minted in `run_bot` beside everything else that
+    is per-connection.
+
+    It was a module global, which every other piece of per-call state here
+    deliberately is not — `LocalTTS`'s own docstring makes the point, and the
+    worker accepts concurrent calls, each with its own `run_bot`. A shared
+    window means caller A's replies land in caller B's blob, and B's fuzzy arm
+    is armed whenever B's *own* speaker is audible, so B can be judged against
+    words B never heard. Contamination only ever adds echo verdicts, and an
+    added echo verdict is a turn that never happens.
+
+    It mattered less when the match was per-phrase and exact, because a
+    cross-call collision then required B to say one of A's sentences verbatim.
+    Joining the window and matching by ordered subsequence made it require
+    only resemblance — to a haystack that was the union of every live call.
+    """
+    return BotSpeech()
 
 
 class SegmentGatedSTT(BaseWhisperSTTService):
     """The energy/duration gate every segment passes before any model sees
     it. Split out from the transcriber because it is a property of the
     *audio*, not of whichever model reads it: room noise and half-second
-    breaths are not speech regardless of what is listening."""
+    breaths are not speech regardless of what is listening.
+
+    It also keeps the clock the echo defence needs: **was our own speaker
+    playing while this segment was captured**. Kept here rather than in a
+    processor of its own because pipecat pushes the bot-speaking edges
+    *upstream* as well as downstream (`base_output.py`), so the STT service
+    sees them where it stands, and because the question is asked in the same
+    breath as the energy floor it changes.
+
+    The edges are the transport's, not the TTS service's, and that is the
+    point: `BotStartedSpeakingFrame` fires when audio starts being written
+    out, which is when a room can hear it. TTS text is generated well before
+    that and would put the window in the wrong place."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # This connection's own echo window. `run_bot` hands the same object
+        # to the TTS, which writes what it speaks into it.
+        self.echo_window = _new_echo_window()
+        self._segment_started_at = None
+        # Said once per connection, not once per segment: the condition is a
+        # property of the pipeline, so repeating it every turn would bury it.
+        self._warned_no_segment_start = False
+        self._bot_speaking = False
+        # Never `0.0`: `time.monotonic()` is uptime on Linux, so a zero here
+        # is "the bot stopped speaking at boot", which on a freshly started
+        # box is inside the tail.
+        self._bot_audible_until = float("-inf")
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._segment_started_at = _time.monotonic()
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+            self._bot_audible_until = _time.monotonic()
+
+    def take_segment_start(self) -> float | None:
+        """The start of the segment being transcribed, **consumed**.
+
+        Read-and-clear, so a start belongs to exactly one segment. Left in
+        place it was inherited, and inheriting it is not a stale reading — it
+        latches. `_bot_audible_until` only ever increases, so once the stored
+        start is older than the most recent `BotStoppedSpeakingFrame`,
+        `overlapped` answers True for every segment for the rest of the call:
+        the graded floor and the fuzzy text arm both stay armed, and the log
+        line reads `over_speaker=True segment_start=<a plausible float>`,
+        which is indistinguishable from a correct verdict.
+        `VADUserStartedSpeakingFrame` arriving for turn one and then stopping
+        is all it takes — a reordered processor, a partial rename, or audio
+        flushed without a paired onset — and it silences turns.
+
+        Clearing it collapses that case onto the diagnostic that already
+        exists: a segment with no start of its own reports `None` instead of
+        borrowing the last one's.
+        """
+        start, self._segment_started_at = self._segment_started_at, None
+        if start is None and not self._warned_no_segment_start:
+            from loguru import logger
+
+            self._warned_no_segment_start = True
+            # Not a debug line, because this is the whole graded defence going
+            # quiet. `overlapped` collapses to `bot_speaking` alone without a
+            # start, and Parakeet is offline — a segment is transcribed *after*
+            # it ends, so for the case this filter exists for (the mic caught
+            # the tail of a reply that has since finished) `bot_speaking` is
+            # already False. The raised floor and the whole fuzzy text arm
+            # would stop applying, and `over_speaker=False` would read as a
+            # healthy verdict on every line.
+            #
+            # It should be unreachable: `VADUserStartedSpeakingFrame` is
+            # broadcast, so it is pushed upstream as well as downstream
+            # (`frame_processor.broadcast_frame`), and `SegmentedSTTService`
+            # needs the pair to segment at all — `run_stt` is called from
+            # `_handle_user_stopped_speaking` and nowhere else. A pipecat
+            # change that delivered the stop and not the start would leave
+            # transcription limping rather than dead, which is exactly the
+            # shape that goes unnoticed.
+            logger.warning(
+                "no VAD segment start recorded — the echo filter's timing "
+                "layer is not receiving VADUserStartedSpeakingFrame, so the "
+                "graded RMS floor and the fuzzy text arm are both inert"
+            )
+        return start
+
+    def heard_the_speaker(self, segment_started_at: float | None) -> bool:
+        """Did our own reply overlap the segment about to be transcribed?
+
+        The start is logged beside the answer, not just the answer.
+        `over_speaker=False` reads identically whether the timing layer
+        decided "no overlap" or whether no start was recorded at all — a
+        pipecat upgrade renaming `VADUserStartedSpeakingFrame` would collapse
+        `overlapped` to `bot_speaking` alone, the graded floor would quietly
+        stop applying to everything but a live barge-in, and every log line
+        would still read healthy. `segment_start=None` is what makes that
+        visible, and `take_segment_start` is what makes it reachable.
+        """
+        return overlapped(
+            segment_started_at=segment_started_at,
+            bot_speaking=self._bot_speaking,
+            bot_audible_until=self._bot_audible_until,
+        )
 
     @staticmethod
     def _segment_stats(audio: bytes):
@@ -186,16 +338,33 @@ class ParakeetSTT(SegmentGatedSTT):
             duration, rms = self._segment_stats(audio)
         except Exception:
             duration, rms = 1.0, 1.0
-        if duration < MIN_SEGMENT_SECONDS or rms < MIN_SEGMENT_RMS:
-            logger.debug(f"parakeet segment gated: duration={duration:.2f}s rms={rms:.4f}")
+        # Whether our own speaker was playing changes what this segment has to
+        # clear, and it is asked once here so the floor and the text filter
+        # cannot disagree about it.
+        segment_started_at = self.take_segment_start()
+        echoey = self.heard_the_speaker(segment_started_at)
+        floor = ECHO_SEGMENT_RMS if echoey else MIN_SEGMENT_RMS
+        if duration < MIN_SEGMENT_SECONDS or rms < floor:
+            # The RMS is printed on the gated path too, and deliberately: it
+            # is the only measurement of what this room's echo actually looks
+            # like, and `MECHA_VOICE_ECHO_RMS` has to be set from something.
+            logger.debug(
+                f"parakeet segment gated: duration={duration:.2f}s rms={rms:.4f} "
+                f"floor={floor:.4f} over_speaker={echoey} "
+                f"segment_start={segment_started_at}"
+            )
             return Transcription(text="")
         r = await self._client.audio.transcriptions.create(
             model="parakeet", file=("segment.wav", audio, "audio/wav")
         )
         text = (r.text or "").strip()
-        logger.debug(f"parakeet: duration={duration:.2f}s rms={rms:.4f} text={text[:100]!r}")
-        if is_probable_echo(text):
-            logger.debug(f"parakeet echo filter: {text[:60]!r}")
+        logger.debug(
+            f"parakeet: duration={duration:.2f}s rms={rms:.4f} "
+            f"over_speaker={echoey} segment_start={segment_started_at} "
+            f"text={text[:100]!r}"
+        )
+        if self.echo_window.is_probable_echo(text, bot_was_audible=echoey):
+            logger.debug(f"parakeet echo filter: {text[:60]!r} over_speaker={echoey}")
             return Transcription(text="")
         return Transcription(text=text)
 
@@ -254,8 +423,23 @@ class LocalTTS(OpenAITTSService):
     def __init__(self, *args, speed: float = 1.0,
                  exaggeration: float = TTS_EXAGGERATION,
                  cfg_weight: float = TTS_CFG_WEIGHT,
-                 affect_key: str | None = None, **kwargs):
+                 affect_key: str | None = None,
+                 echo_window: BotSpeech, **kwargs):
         super().__init__(*args, **kwargs)
+        # Where this connection's spoken text is recorded for the echo filter:
+        # a reference to the STT's own window, so the two halves are the same
+        # object.
+        #
+        # Required, with no default, and that is the whole point. Optional
+        # plus a `None` check meant a TTS built without it spoke into nothing,
+        # the read side went on asking a window that could never fill, every
+        # transcript came back "not an echo", and the log line read
+        # `over_speaker=True` with no verdict — which is to say healthy. That
+        # is the silently-degrading guard this branch removed from the mic
+        # meter, arriving one door over. The module global it replaced could
+        # not be wired wrong; the price of per-connection state is that it can
+        # be, so a missing wire is a TypeError at startup instead.
+        self._echo_window = echo_window
         self._speed = speed
         self._exaggeration = exaggeration
         self._cfg_weight = cfg_weight
@@ -413,7 +597,7 @@ class LocalTTS(OpenAITTSService):
                     yield ErrorFrame(error=f"TTS error {r.status_code}: {error}")
                     return
                 await self.start_tts_usage_metrics(text)
-                note_bot_speech(text)
+                self._echo_window.note(text)
                 async for chunk in r.iter_bytes(self.chunk_size):
                     if len(chunk) > 0:
                         await self.stop_ttfb_metrics()
@@ -431,6 +615,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         speed=TTS_SPEED,
         exaggeration=TTS_EXAGGERATION,
         cfg_weight=TTS_CFG_WEIGHT,
+        # One window, both ends: the STT reads what the TTS wrote, and no
+        # other call on this worker can reach it.
+        echo_window=stt.echo_window,
     )
     # The facade ignores the re-sent history (the Conversation is the
     # server's state) and the system prompt rides in mecha's cached prefix,
