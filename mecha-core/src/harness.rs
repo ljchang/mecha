@@ -99,7 +99,8 @@ impl OverrideKey {
 /// record does not name is a confound that nothing can read back — and it
 /// is defined once, here, so `mecha eval`'s bare arm and an experiment's
 /// cannot disagree about what "bare" means: eval forces every lever off
-/// except the two it allows as opt-ins, through [`Lever::bare`].
+/// except the two it allows as opt-ins, through [`Lever::bare`] — plus the
+/// one lever `bare` never throws on its own, see there.
 ///
 /// **A variant here is a switch that exists**, not a wish. A lever with no
 /// off position would make the record say "absent" of something that ran,
@@ -200,14 +201,21 @@ impl Lever {
     }
 
     /// The bare arm: every lever off except `allow`, in [`Lever::ALL`]'s
-    /// order. This is what `mecha eval` runs (`--mcp` and `--ab-rules` are
+    /// order — **except [`Lever::ApprovalRules`], which no preset throws.**
+    /// A `forbid` is the operator's standing word, and a preset that lifted
+    /// it for one run is the silently-degrading-guard shape; the lever is in
+    /// the set so the record can *name* the one caller that does lift it
+    /// (`mecha eval`, whose fixture workspaces justify it), and that caller
+    /// throws it explicitly and on its own line. A future `exp` arm over a
+    /// real workspace gets "bare" and keeps the rules (found on review).
+    /// Otherwise this is what `mecha eval` runs (`--mcp` and `--ab-rules` are
     /// its two opt-ins) and what an experiment's `bare` preset means, from
     /// one definition — a second spelling is how the measurement arm and
     /// the acceptance arm silently stop being comparable.
     pub fn bare(allow: &[Lever]) -> Vec<Lever> {
         Self::ALL
             .into_iter()
-            .filter(|l| !allow.contains(l))
+            .filter(|l| !allow.contains(l) && *l != Lever::ApprovalRules)
             .collect()
     }
 }
@@ -882,9 +890,10 @@ mod tests {
     }
 
     /// `ALL` is the closed set: exhaustive over the enum, no duplicates, and
-    /// the set the bare arm is built from.
+    /// the set the bare arm is built from — minus the one lever no preset
+    /// may throw, so "bare" cannot quietly become "unguarded".
     #[test]
-    fn the_lever_set_is_closed_and_the_bare_arm_is_all_of_it() {
+    fn the_lever_set_is_closed_and_the_bare_arm_keeps_the_operators_rules() {
         // Exhaustive: a new variant fails to compile here until it is listed.
         for lever in Lever::ALL {
             match lever {
@@ -905,9 +914,22 @@ mod tests {
         }
         let mut seen = std::collections::BTreeSet::new();
         assert!(Lever::ALL.iter().all(|l| seen.insert(*l)), "no duplicates");
-        assert_eq!(Lever::bare(&[]), Lever::ALL.to_vec());
+        let bare = Lever::bare(&[]);
+        assert!(
+            !bare.contains(&Lever::ApprovalRules),
+            "a forbid is never lifted by preset"
+        );
+        assert_eq!(
+            bare.len(),
+            Lever::ALL.len() - 1,
+            "and everything else is off"
+        );
+        assert!(
+            Lever::ALL.contains(&Lever::ApprovalRules),
+            "but the record can still name it"
+        );
         let with_opt_ins = Lever::bare(&[Lever::Mcp, Lever::LearnedRules]);
-        assert_eq!(with_opt_ins.len(), Lever::ALL.len() - 2);
+        assert_eq!(with_opt_ins.len(), Lever::ALL.len() - 3);
         assert!(!with_opt_ins.contains(&Lever::Mcp));
         assert!(!with_opt_ins.contains(&Lever::LearnedRules));
         assert!(

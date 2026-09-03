@@ -1208,6 +1208,11 @@ fn force_reproducible(opts: &mut GlobalOpts, allow_mcp: bool, allow_learned_rule
         crate::setup::switch_off(opts, lever);
     }
     opts.no_learned_rules = !allow_learned_rules;
+    // The one lever `bare` never throws, thrown here and nowhere else: a
+    // `forbid` in this box's rules file would score a case's `shell` call
+    // as `Blocked by policy:` here and not there, and eval's fixture
+    // workspaces are what make lifting the operator's word defensible.
+    crate::setup::switch_off(opts, Lever::ApprovalRules);
 }
 
 #[cfg(test)]
@@ -1310,26 +1315,38 @@ mod tests {
     #[test]
     fn the_record_names_exactly_what_eval_forced() {
         let cfg = mecha_core::config::Config::default();
+        // Eval is the bare preset *plus* the operator's rules lifted — the
+        // one lever `Lever::bare` refuses to throw, so it is asserted here
+        // by name rather than folded into the preset.
+        let bare_plus_rules = |allow: &[Lever]| {
+            let mut v = Lever::bare(allow);
+            v.push(Lever::ApprovalRules);
+            Lever::ALL
+                .into_iter()
+                .filter(|l| v.contains(l))
+                .collect::<Vec<_>>()
+        };
         let mut bare = GlobalOpts::default();
         force_reproducible(&mut bare, false, false);
         assert_eq!(
             crate::setup::levers_off(&bare, &cfg, true),
-            Lever::bare(&[]),
-            "the bare arm records every lever off"
+            bare_plus_rules(&[]),
+            "the bare arm records every lever off, the rules included"
         );
+        assert_eq!(bare_plus_rules(&[]), Lever::ALL.to_vec());
 
         let mut with_mcp = GlobalOpts::default();
         force_reproducible(&mut with_mcp, true, false);
         assert_eq!(
             crate::setup::levers_off(&with_mcp, &cfg, true),
-            Lever::bare(&[Lever::Mcp])
+            bare_plus_rules(&[Lever::Mcp])
         );
 
         let mut with_rules = GlobalOpts::default();
         force_reproducible(&mut with_rules, false, true);
         assert_eq!(
             crate::setup::levers_off(&with_rules, &cfg, true),
-            Lever::bare(&[Lever::LearnedRules])
+            bare_plus_rules(&[Lever::LearnedRules])
         );
 
         // And the other direction: a switch thrown by hand reads as off.

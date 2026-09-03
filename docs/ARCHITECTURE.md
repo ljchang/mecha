@@ -2329,7 +2329,11 @@ The decisions that carry it, each a bug if undone:
   the thirteen subsystems a run can carry structurally absent, each a switch
   that exists today, recorded on `RunConfig::levers_off` in `Lever::ALL`'s
   order. `mecha eval`'s `force_reproducible` is `Lever::bare` thrown through
-  `setup::switch_off`, and `setup::levers_off` reads the same switches back
+  `setup::switch_off` plus one explicit line for `ApprovalRules` — the lever
+  `bare` never throws, because a `forbid` is the operator's standing word
+  and a preset must not become "unguarded" by definition; eval's fixture
+  workspaces are what justify lifting it there — and `setup::levers_off`
+  reads the same switches back
   for the record, so eval's bare arm and any recorded run's absences come
   from one definition — a test reads each through the other (eval itself
   writes no session, so the meeting point is the function, not a record).
