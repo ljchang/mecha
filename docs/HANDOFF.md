@@ -1567,8 +1567,9 @@ tail measurement needs the same restart. Open PRs at close: #153, #154, #158
 #155 superseded it (the first draft of this entry listed it open; the
 review caught it against the API).
 The shared checkout `~/Github/mecha` is on `main` at `4a888ad` and clean —
-**one merge behind `b50eb24`**, so the next `update` still has to
-fast-forward it before building from it: block 1 of the recipe above, then
+**two merges behind `b50eb24`** (#152, which edited the `update` skill
+itself, and #155), so the next `update` still has to fast-forward it before
+building from it: block 1 of the recipe above, then
 `git -C ~/Github/mecha merge --ff-only origin/main` (no `switch`, it is
 already on `main`), then the restart list. Single-writer docs are held by
 nobody.
