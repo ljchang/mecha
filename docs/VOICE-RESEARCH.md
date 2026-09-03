@@ -1105,9 +1105,23 @@ What that costs had to be priced, and the first version did not price it.
 Dropping the standing yes on this door does not leave a turn that asks someone
 — it leaves the shared agent's own approver, which is `Ask`, which
 non-interactively is `Decision::Blocked` for every tool. That is the named
-2026-08-24 "I don't have access to your calendar" failure, and it is the
-asymmetry with the hosted door, where `begin_turn` falls back to a
-`WebApprover` and there is a page to ask. So a flag raised for every turn on
+2026-08-24 "I don't have access to your calendar" failure.
+
+It is *not* the asymmetry with the hosted door, though the first write-up of
+this said it was. Narrowing the hosted door leaves `WebApprover` over
+`ws.mode`, and `ws.mode` is initialised to `ReadOnly` and only moves when
+someone clicks; `WebApprover` short-circuits to `ModeApprover` for every mode
+that is not `Ask`, so at the default a narrowed hosted turn is `Blocked` for
+every non-read-only tool exactly like this one. The real difference is only
+that the page *can* be moved to `Ask` and this door cannot be moved at all.
+Which matters beyond the correction: it means a false positive on **either**
+gate costs a turn its tools, and a verbatim span is also the most natural human
+answer to an enumerated offer — "delete it" against *"I can cancel it, delete
+it, or do it now"* is the same bytes whoever said it. The span rule is
+therefore a stopgap on both doors, and the timing signal proposed below for the
+confirmation door is the thing that would replace it here too.
+
+So a flag raised for every turn on
 the fall-through path would buy one turn's caution and pay for it with the rest
 of the call's tools. It is raised only while `slot.convo` holds no assistant
 message — which is exactly as long as the premise lasts, since this turn's own
