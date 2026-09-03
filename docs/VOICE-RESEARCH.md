@@ -1052,12 +1052,13 @@ where an echo is a destructive call with nobody asked.
 
 **A spoken turn has two doors, and both narrow.** The first version wired only
 the hosted one. `completion` reaches `VoiceHost::speak` only when the caller
-named a chat session *and* the host recognised it — a call with no
-`X-Chat-Session`, or naming a key no front-end holds, falls through to the
+named a chat session *and* the key was well-formed — a call with no
+`X-Chat-Session`, or one whose key is malformed, falls through to the
 facade's own slot on purpose, because a dead call is a worse answer than an
-unshared one. `--voice-yes` follows it down, so until this the gate was absent
-on exactly the path that skipped the gate. Both are pinned by a source-reading
-test, since driving either means standing up a facade or a whole session
+unshared one. (Not "a key no front-end holds": a valid key with no session is
+*created*. See below — that misreading cost two gates.) `--voice-yes` follows
+it down, so until this the gate was absent on exactly the path that skipped the
+gate. Both are pinned by a source-reading test, since driving either means standing up a facade or a whole session
 state; the second of those tests was itself wrong first, asserting the span
 call appeared above the grant rather than that the grant was *guarded* by it.
 
