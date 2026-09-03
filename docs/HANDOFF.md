@@ -223,6 +223,21 @@ First thing to run in a fresh context:
 cargo test --workspace && cargo clippy --all-targets --all-features
 ```
 
+**Not re-measured at session close (2026-09-03, `main` at `b50eb24`).**
+When the close pass began (~17:40 UTC) a peer's 169-call appraisal run held
+llama-server and this box's rule is no build during inference; when the run
+released it (17:56) the deploy's `cargo install` ran (18:04) but `cargo
+test --workspace` did not — the owner was closing the session, and the
+verifiable fact without the run was CI's green test jobs on `b50eb24`. So
+the count below stands as measured at `49166e3` — eleven merges ago
+(`git log --first-parent --merges --reverse 49166e3..b50eb24`: #146, #147,
+#143, #149, #148, #150, #151, #145, #144, #152, #155), of which #143's
+`policy` suite, #144, #148, #150 and #155 added cargo tests — and CI's
+test jobs were green on `b50eb24`, which is the fact that was verifiable
+without a build. Four of the five open PRs add tests too (#158, #153,
+#157, #154; #156 is docs); mecha-26 reports `mecha-cli` alone goes 707 →
+715 across its three.
+
 On **`main` at `49166e3`** (#139, #140, #141 and #142 all in), measured
 2026-09-02 (~20:30 UTC): **2,160 tests**, no failures — **691** in
 `mecha-cli` (1 ignored), **20** in `first_run`, **1,224** in `mecha-core`
@@ -1537,6 +1552,40 @@ any repo and not touched**: `~/.mecha/config.toml` carries no `[[rule]]`
 yet, so the new subsystem is installed and dormant until the owner writes
 one.
 
+**2026-09-03 (~18:20 UTC, the audit lane's session close)** — one more
+merge since the deploy entry above, **#155** (`deps/tower-http-0.7`, at
+`b50eb24`; what it changes is `HISTORY.md`'s 2026-09-03 entry), and it
+**is deployed**: as soon as mecha-2d's 169-call appraisal run released
+llama-server (17:56), `mecha` was reinstalled at 18:04 from a worktree
+whose code diffs empty against `b50eb24` (the first draft cited a `strings`
+literal here that does not exist in the binary; the evidence that the
+installed binary is post-bump is the HTTP probe below), and `mecha-slack`,
+`mecha-triggers`,
+`mecha-drain` and `mecha-serve` restarted at 18:04:29 with their startup
+lines (slack "Connected to cosanlab as mecha. 1 owner(s), 16 thread(s)",
+triggers "1 trigger(s), 1 enabled", serve's two doors, drain's start).
+The probe from the skill's step 1b, run against the tailnet door: `GET /`
+→ `200` with `etag: "6a9950bf.0bc7b844-20a"`, `last-modified`,
+`cache-control: no-cache`; the same request with `If-None-Match` set to
+that tag → `304` carrying the same `etag`, `last-modified` and
+`no-cache`. A bare `304` would have meant the old binary; it is not bare.
+Stale-process sweep clean. `mecha-voice-worker` and `mecha-parakeet` not
+restarted — nothing merged reaches them; the two measurements that need a
+worker restart (#153's echo floor, which needs `over_speaker=` on the
+`parakeet:` line; #158's deferred tail) wait on those PRs merging first
+(mecha-26's report). Open PRs at close: #153, #154, #158
+(mecha-26), #156, #157 (mecha-2d). #129 — dependabot's version of the
+`tower-http` bump — was closed by the owner at 15:24 UTC, two minutes after
+#155 superseded it (the first draft of this entry listed it open; the
+review caught it against the API).
+The shared checkout `~/Github/mecha` is on `main` at **`b50eb24`**, clean
+— re-read from its `.git` at ~18:15 after mecha-26 corrected this entry's
+first draft, which had carried the morning's `4a888ad` reading forward
+without re-reading it (someone had fast-forwarded it at ~17:47). The deploy
+built from a worktree at `main` anyway, because the deploying session
+cannot run git against the shared tree; the bytes are the same.
+Single-writer docs are held by nobody.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -1579,6 +1628,30 @@ one person's mailbox rather than a public fact.
 ---
 
 ## What to do next
+
+- **When #153 and #158 merge, restart `mecha-voice-worker` — and check the
+  shared checkout first, every time.** The unit's `WorkingDirectory` is
+  `~/Github/mecha` and its `ExecStart` runs `scripts/voice/worker.py` from
+  there, not from an installed artifact, so "restart the worker" and "the
+  checkout is on the merged `main` at that moment" are two facts and only
+  one of them is in the unit file (mecha-26's framing). This repo already
+  paid for it once, on 2026-09-03 morning. Block 1 of the recipe above is
+  the check; the checkout is on `main` at `b50eb24` and clean as of ~18:15,
+  so today nothing is owed — the item is the habit, not a repair. #153's
+  echo-floor and #158's tail measurements both wait on that restart.
+- **Three residues from #152's last review pass**, all in the shared-checkout
+  recipe's presentation (HANDOFF §Machine state, dated, 2026-09-03), none
+  behavioural: the tolerated dirty path `docs/README.md` is hard-coded in six
+  places where one `ALLOW=` at the top of block 1 would do; the recipe's
+  version history is narrated in both that entry and `HISTORY.md`
+  §Environment — HISTORY's is the copy to keep, the HANDOFF one should
+  shrink to the block and the end state; and the `update` skill's "the one
+  unit here that goes stale on a change that never touched Rust" now
+  undercounts (`mecha-frontdoor` and `mecha-ruminate` run scripts from the
+  tree too, but are `.timer`-fired and exec fresh, which is why the recipe
+  need not guard them — say so), and `mecha-mail-classify.timer` is a fourth
+  timer unit that appears in neither of the skill's two lists (it runs the
+  installed `mecha`, so "needs nothing" — but absent is not classified).
 
 - **Two macOS residues from #113's CI arm, parked deliberately** (that
   lane's own flag, so they are not lost): `homeostat.rs` reads
