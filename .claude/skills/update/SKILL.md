@@ -175,6 +175,46 @@ it runs `scripts/voice/worker.py` **from the repo working tree**, so it is
 the one unit here that goes stale on a change that never touched Rust at
 all and never appears in `cargo install` output.
 
+**And "from the repo working tree" means from whatever branch the shared
+checkout is on — check that before the restart, not after.** On 2026-09-03
+`~/Github/mecha` was on a merged feature branch (a session had branched
+there, as the HANDOFF banner says not to), so restarting the worker would
+have relaunched the pre-merge `worker.py` and reported success; the fix
+that was being deployed (#145) would not have been live. Three things
+follow, each learned that morning:
+
+```bash
+git -C ~/Github/mecha symbolic-ref --short HEAD   # expect: main
+git -C ~/Github/mecha status --porcelain          # expect: empty
+```
+
+- **A worktree-isolated session cannot fix this.** Its guard refuses git
+  aimed at the shared checkout, and relaying the owner's instruction to
+  the session that works there does not lift *that* session's gate either
+  — a peer's report of the owner's word is exactly the shape a permission
+  gate exists to refuse. So the switch is the owner's, or the session
+  whose own user says so in its own session. Plan for that before you
+  start the restart list, not when the worker is the last unit left.
+- **The switch has a runnable recipe in `docs/HANDOFF.md`** (§Machine
+  state, dated, 2026-09-03), reviewed pass after pass until it graded as code: prove the fast-forward
+  for *both* `HEAD` and `refs/heads/main`, prove `scripts/start-moe-mtp.sh` and `scripts/voice/parakeet_server.py`
+  unchanged across the move (the first is `llama-local`'s literal
+  `ExecStart`, the second is what `mecha-parakeet` runs from this tree), read any dirty file before discarding it, land on
+  `origin/main` in one hop, and only then restart the worker. Copy that
+  block; do not improvise a `switch main && pull`, which is the version
+  that failed silently on a dirty file and would have passed through a
+  stale local `main`.
+- **Name the digest.** The launch-script check compares git blob ids
+  (`git rev-parse <ref>:path`, `d76da36c…` that day). A peer re-checking
+  with `sha256sum` got a different number for the same bytes and nearly
+  read it as "the file changed", which would have restarted `llama-local`
+  for nothing. `git diff --quiet A B -- path` is the algorithm-free form.
+
+Verify the worker the same way as every other unit: its own `Uvicorn
+running on http://127.0.0.1:7860` line, from a journal window that opens
+*at* the restart (`--since "$since UTC"`, with `since` taken just before
+`systemctl restart`), or the old process's line passes the check.
+
 **`mecha-parakeet` is deliberately not in the list.** It runs
 `scripts/voice/parakeet_server.py`, so restart it when *that* file changes —
 and only then, because coming back costs a model load and voice is deaf

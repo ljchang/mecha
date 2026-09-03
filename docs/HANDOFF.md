@@ -1241,6 +1241,11 @@ Sonnet 5 is $3/$15 ($2/$10 introductory through 2026-08-31). We send
 `cache_control` with no `ttl`, so the 5-minute tier applies and mecha's default
 multipliers (1.25 write, 0.1 read) are already correct.
 
+### Machine state, dated
+
+Deploy and environment entries, newest last. They had been accreting under
+`### Provider credentials` above, which is not what they are.
+
 **What is on the box is not main, and `deployed-local` is how you find out
 (2026-08-29).** Sessions deploy merged draft branches here for the owner to
 live-test, so `~/.mecha/web/dist` routinely holds a build of something that
@@ -1258,7 +1263,6 @@ then-open PRs — `feat/graph-tab` (#120), `fix/web-cache-headers` (#121) and
 for `index-0ZAqQKph.js`. No binary changed for #118 and no unit was restarted
 for it: `mecha serve` reads assets per request through `ServeDir`, so an asset
 deploy needs no restart and a *binary* change still does.
-
 
 **2026-09-02 (~10:30, after the repo move and a full update)** — the graph
 stopped being two repositories. `~/Github/mecha-graph` is now the working
@@ -1347,6 +1351,191 @@ Tests this date: **1132** core, 688 + 133 + 75 + 20 + 9 + 6 + 1 across the
 other suites, 0 failed. Eval 36 cases, 15 tags, unchanged. `deployed-local`
 was deleted by its owner once main was on every surface — its absence again
 means "main is deployed".
+
+**2026-09-03 (~10:50 UTC, the approval-rules arc deployed)** — the owner
+asked for an update once the thirteen PR merges beyond v0.1.17 were in (`git
+log --first-parent --merges v0.1.17..4a888ad`; `rev-list --count --merges`
+says 18, counting merges inside feature branches too), and this is what each
+of the `update` skill's surfaces was found to be and left as. **Installed
+binaries**: `mecha` and `mecha-mail` reinstalled from `main` at `4a888ad` (a
+detached worktree, not the shared checkout — see below); `mecha --version`
+still says **0.1.17**, because the workspace version has not been bumped, so
+the check was capability: `strings` on the installed `mecha` carries `routes
+to staging` (the `live_rules` refusal) and `an approval rule asks that this`
+(a `prompt` ruling), and the appraisal lane's probes read true — `mecha
+sessions health --json` carries `tests_hidden`, `mecha sessions appraise
+--json` carries `valence` and `partial`. **Graph binaries untouched**: no
+`.rs` under `~/Github/mecha-graph` is newer than the installed
+`mecha-graph-mcp` (Sep 2 12:16), the nightly's `target/release/mecha-graph`
+is Sep 2 12:15, and the installed server answers 13 tools. **Web dist
+rebuilt**: four `web/` commits had landed since the served bundle was built
+(Sep 1 18:47, `index-klt_h5v8.js`), including the appraisal chip fix that
+otherwise reads a literal `neutral`; built from `main` in the worktree,
+rsynced to `~/.mecha/web/dist` (the old dist kept at
+`~/.mecha/web/dist.prev-20260903`), and the *served* page verified — the
+tailnet door returns 200 with `index-Ciycbb0R.js`; there was no
+`deployed-local` tag and both live sessions confirmed the old bundle was
+nobody's test. **Services**: `mecha-slack`, `mecha-triggers`, `mecha-drain`
+and `mecha-serve` restarted at 10:51:17 with their own startup lines (slack
+"Connected to cosanlab as mecha. 1 owner(s), 16 thread(s)", triggers "1
+trigger(s), 1 enabled", serve's two doors). `mecha-serve` also prints two
+standing warnings worth knowing: `factory__surface_pull` and
+`factory__surface_push` "can send and [are] not routed through the outbox" —
+a `[outbox] tools` decision for the owner, not a regression.
+**`mecha-voice-worker` was deliberately NOT restarted at first**, and was
+the one open item until ~11:09 (resolution below): its `WorkingDirectory` is
+the shared checkout `~/Github/mecha`, which is on
+**`fix/draft-shows-its-account`**, not `main` (`.git/HEAD`; mecha-26's
+report, confirmed), so a restart would relaunch the pre-#145 `worker.py` —
+#145's echo filter is *not* live until that checkout is on `main`. The
+deploying session could not run git against the shared tree (worktree
+isolation), so the switch is the owner's, and **the probe is recorded here
+rather than its result**, because the two halves of this section's check are
+"the launch script hashes the same on both refs" *and* "the working copy is
+clean", and only the first could be run from outside. As found on 2026-09-03
+~11:00: `scripts/start-moe-mtp.sh` hashed `d76da36c` on
+`fix/draft-shows-its-account` and on `origin/main` at `4a888ad`; local
+`main` was at `102bacc`, twelve merges behind, so `switch main` alone lands
+on a stale ref and the `pull --ff-only` does the real work — and moves the
+checkout to whatever `origin/main` is *at execution time*, so re-run the
+hash check against that commit, not against `4a888ad`. The working copy was
+**not** clean: `git status --porcelain` showed one file, ` M docs/README.md`
+— an added `APPRAISAL-RESEARCH.md` row in the research index that `main`
+already carries (landed in `1724b2c`, #140), so it is a stale duplicate of
+merged work, present before mecha-26's session began and nobody's live edit;
+it is what made the owner's first `switch` refuse silently. So, at execution
+time, in this order (**run and closed on 2026-09-03 at ~11:08**, see below;
+kept here as the recipe for the next time a shared checkout has to move, not
+as an open item — a clean tree passes the porcelain test, so the recipe still
+runs on a day with nothing to discard):
+
+```
+# Block 1 — the checks. Every line is chained on &&, so a failing check
+# STOPS the chain rather than printing and moving on. Two is-ancestor lines:
+# one for HEAD (the tree that moves) and one for refs/heads/main (the ref
+# block 2 force-resets) — each must be behind origin/main, or the one-hop
+# `switch -C` would discard something. And no *linked* worktree may have
+# main checked out, or `switch -C` refuses — after block 2's discard has
+# run; the shared checkout holding main itself is the steady state and
+# passes.
+R=~/Github/mecha
+git -C $R fetch origin \
+&& git -C $R merge-base --is-ancestor HEAD origin/main \
+&& { ! git -C $R show-ref --verify --quiet refs/heads/main \
+     || git -C $R merge-base --is-ancestor refs/heads/main origin/main; } \
+&& wt=$(git -C $R for-each-ref --format='%(worktreepath)' refs/heads/main) \
+&& { test -z "$wt" || test "$wt" = "$(realpath $R)"; } \
+&& git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
+&& git -C $R diff --quiet HEAD origin/main -- scripts/voice/parakeet_server.py \
+&& p=$(git -C $R status --porcelain) \
+&& { test -z "$p" || test "$p" = " M docs/README.md"; } \
+&& { test -z "$p" || h=$(git -C $R hash-object docs/README.md); } \
+&& { test -z "$p" || git -C $R diff -- docs/README.md; } \
+&& echo "checks passed — if a diff printed above, READ it: only the one APPRAISAL row? then block 2"
+```
+
+If block 1 stops before the echo: the move is not a fast-forward for one of
+the two refs, or a *linked* worktree has `main` checked out (`switch -C`
+would refuse — find that session), or the launch script differs between
+`HEAD` and `origin/main` (do not switch — read the banner), or
+`scripts/voice/parakeet_server.py` differs (the move is still fine, but
+`mecha-parakeet` runs that file from this tree too and must be restarted
+after the switch — a model load, so it is deliberately not in block 2), or
+the working copy holds something other than that one file (find its owner
+first). Run both blocks in the same shell: block 2 reads `p` and `h` from
+block 1. The discard
+in block 2 is destructive; it runs only when there is something to discard,
+and a person reads the diff between the blocks before it does.
+
+```
+# Block 2 — only after a person has read block 1's diff. It re-asserts
+# block 1's mechanical precondition first (a peer can dirty a shared
+# checkout during the read), lands on the checked ref in one hop
+# (`switch -C main origin/main` — never `switch main` then merge, which
+# passes through stale local `main` and, if the ff-merge refuses, strands
+# the tree there), and opens the journal window at the restart itself.
+# Block 1's checks are re-run here — a peer fetching in the shared checkout
+# during the read moves origin/main under it — the discard runs only when
+# there is something to discard AND its bytes are the ones block 1 showed
+# (the blob id `h` carried across; a peer editing the same file during the
+# read would otherwise lose bytes nobody read), and the journal window names its zone,
+# since journalctl reads --since in local time and this block travels; the
+# follow is self-timing (60 s cap) rather than a fixed sleep guessing how
+# long the worker takes to come up.
+R=~/Github/mecha
+p=$(git -C $R status --porcelain) \
+&& { test -z "$p" || test "$p" = " M docs/README.md"; } \
+&& git -C $R merge-base --is-ancestor HEAD origin/main \
+&& { ! git -C $R show-ref --verify --quiet refs/heads/main \
+     || git -C $R merge-base --is-ancestor refs/heads/main origin/main; } \
+&& wt=$(git -C $R for-each-ref --format='%(worktreepath)' refs/heads/main) \
+&& { test -z "$wt" || test "$wt" = "$(realpath $R)"; } \
+&& git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
+&& git -C $R diff --quiet HEAD origin/main -- scripts/voice/parakeet_server.py \
+&& { test -z "$p" || test "$(git -C $R hash-object docs/README.md)" = "$h"; } \
+&& { test -z "$p" || git -C $R checkout -- docs/README.md; } \
+&& git -C $R switch -C main origin/main \
+&& since=$(date -u '+%Y-%m-%d %H:%M:%S') \
+&& systemctl --user restart mecha-voice-worker.service \
+&& timeout 60 journalctl --user -u mecha-voice-worker.service --since "$since UTC" -f \
+   | grep -m1 Uvicorn
+```
+
+The launch-script check comes **first**, against the commit the pull will
+land (`origin/main` after a fetch), because once the switch has happened a
+changed script is already the server's next launch command — the first
+version of this block checked afterwards, which the banner above says is the
+ordering that fails; the second version's checks informed rather than
+stopped, and its discard was unconditional in a checkout many sessions
+share; the third pulled, which re-fetches past the ref the checks had seen;
+the fourth switched onto stale local `main` before merging, a ref nothing
+had checked, and did not re-assert the clean-tree check after the human
+read; the fifth force-reset `main` with nothing proving the move was a
+fast-forward, and re-ran one half of the check but not the other; the
+sixth proved the fast-forward for `HEAD` but not for `refs/heads/main`,
+the ref that actually moves, and hard-coded the one dirty path so a clean
+tree — the safe state — failed; the seventh ran the discard ahead of the
+one step most likely to refuse (`switch -C` with `main` held by a linked
+worktree); the eighth guarded one launch script and not the other
+(`parakeet_server.py` runs from the same tree) and compared the dirty
+file's *status* rather than its bytes across the human read. Every pass of PR #152's review landed on this copyable block and
+none on the record, which is the point of grading a recipe as code. The lessons are in `HISTORY.md` under Environment. **Run, and
+closed, at ~11:08 UTC the same morning** — by mecha-26's session on its own
+user's word there, not on the relayed instruction, which that session
+declined as it should: a peer's report of the owner's word is the shape a
+permission gate exists to refuse. Verbatim end state: `.git/HEAD →
+refs/heads/main`, `HEAD → 4a888ad`, `status --porcelain` empty;
+`docs/README.md` discarded after `grep -qxF` proved the added line
+byte-identical to `origin/main`'s (a copy sits in that session's
+scratchpad); `worker.py` carries six `echo_filter`/`take_segment_start`
+references, `echo_filter.py` present, `test_echo_filter.py` runs 34 tests
+OK. **`mecha-voice-worker` then restarted at 11:09:34** and logged `Uvicorn
+running on http://127.0.0.1:7860` — #145's echo filter is live. One
+near-miss worth keeping: `d76da36c` is a **git blob id** (`git hash-object`,
+`rev-parse <ref>:path`), not a `sha256sum`; the same file digests to
+`c08891fb…` under SHA-256, and "the hash changed" read off a different
+algorithm would have restarted `llama-local` for nothing. Name the digest
+when you write a hash down. `git diff --quiet fix/draft-shows-its-account origin/main --
+scripts/start-moe-mtp.sh` — the two trees the switch moves between — is
+the algorithm-free form. Also from
+#145: `mecha-voice-worker.service` gained a
+commented `Environment=MECHA_VOICE_ECHO_RMS=0.020` slot, and the installed
+unit is a copy, not a symlink, so the slot is not in
+`~/.config/systemd/user/` until someone copies the file — harmless (the
+default applies) but invisible to whoever next looks for it.
+`mecha-parakeet` left alone (its script did not change). **Benchmark musl**
+was **stale at Sep 2 10:30** (0.1.17 by string, pre-arc by content) and was
+rebuilt from `main` by `bench/build-portable.sh` in the worktree, then the
+static binary copied to the shared checkout's `target-musl/release/mecha` —
+the path `bench/run.sh` executes — and verified there: `statically linked`,
+and `strings` carries `routes to staging`. A scorecard run before that would
+have measured old code and labelled it current. **Factory**: client 0.2.8 =
+newest tag `v0.2.8`; droplet read-only `factory 0.2.8`, `active`, untouched.
+**Sandbox image**: cargo 1.97.1 matches host, no rebuild. **Stale-process
+sweep**: clean — nothing executes a deleted `~/.cargo/bin` binary. **Not in
+any repo and not touched**: `~/.mecha/config.toml` carries no `[[rule]]`
+yet, so the new subsystem is installed and dormant until the owner writes
+one.
 
 ## What the measurements say
 
