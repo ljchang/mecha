@@ -939,6 +939,29 @@ impl Config {
         Ok(cfg)
     }
 
+    /// The `allow` and `prompt` rules that name a tool `[outbox] tools`
+    /// routes to staging — rules that judge nothing while the route is live,
+    /// because staging runs before the rules are read and release reads
+    /// none, and a person reviews the staged call anyway. `forbid` is *not*
+    /// listed: a second lock behind staging is never wrong, and under
+    /// `--no-outbox` (a public flag: routed tools "execute directly under the
+    /// usual gates") it is the one gate left — PR #148's review found the
+    /// first version failing the load for exactly that belt-and-braces
+    /// config, on every surface. `setup` acts on what this names where the
+    /// route is actually on — refusing the operator's, setting a project
+    /// layer's aside with a warning (`RuleConfig::from_project`); `Config::
+    /// validate` cannot, because the flag is not in the file. `tools` only:
+    /// `publish_tools` is a kind, not a route, mirroring
+    /// `OutboxRoute::routes`.
+    pub fn rules_superseded_by_staging(&self) -> Vec<(usize, &crate::policy::RuleConfig)> {
+        self.rules
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.decision != crate::policy::RuleDecision::Forbid)
+            .filter(|(_, r)| self.outbox.tools.iter().any(|t| t == &r.tool))
+            .collect()
+    }
+
     /// Refuse at load what would otherwise degrade silently at run time.
     ///
     /// `[agent] timezone` must be an IANA name — an offset is wrong twice a
@@ -952,6 +975,10 @@ impl Config {
         // start, not on the run that needed it. See `policy::ExecPolicy`.
         crate::policy::ExecPolicy::from_config(&self.rules, self.approval.strict_inline_eval)
             .context("[[rule]] in config")?;
+        // A rule on an outbox-routed tool is *not* checked here: whether it
+        // judges anything depends on whether the route is live, which is a
+        // flag (`--no-outbox`) the config cannot see. `rules_superseded_by_
+        // staging` names them and `setup` refuses them where the route is on.
         if let Some(name) = self.agent.timezone.as_deref() {
             if name.parse::<chrono_tz::Tz>().is_err() {
                 anyhow::bail!(
@@ -1049,6 +1076,49 @@ impl Config {
                     path.display()
                 );
             }
+            // A project may route tools to the outbox, but not a tool the
+            // global config has a rule for: routing it would make the
+            // operator's `forbid` inert (staging runs before the rules), and
+            // dropping the *global* half of the contradiction would be the
+            // one project-layer reconciliation that removes the operator's
+            // word rather than the project's (PR #148's review). The
+            // project's route entry is the overstep, so it is what goes.
+            if let Some(o) = layer.outbox.as_mut() {
+                if let Some(tools) = o.tools.as_mut() {
+                    let before = tools.len();
+                    // Only an entry that would *add* a route goes. One that
+                    // re-declares a route the global config already has
+                    // changes nothing and stays — dropping it emptied the
+                    // project's list, which `apply` then assigned wholesale,
+                    // wiping the operator's own route and with it the `setup`
+                    // refusal of the global `allow` behind it (PR #148's
+                    // review). And when the cut empties the list, the key goes
+                    // with it rather than an empty list reaching `apply`: a
+                    // project routing *only* ruled tools was still wiping
+                    // every operator route while the warning said "ignored"
+                    // (the same review, one pass later). The wholesale assign
+                    // is the AUDIT-RESEARCH §2 row; this keeps the new code
+                    // from aiming it at exactly the tools the operator ruled on.
+                    let already = self.outbox.tools.clone();
+                    tools.retain(|t| {
+                        already.contains(t) || !self.rules.iter().any(|r| &r.tool == t)
+                    });
+                    let cut = before - tools.len();
+                    if cut > 0 {
+                        tracing::warn!(
+                            "{} `[outbox] tools` entr{} in {} name a tool the global config has \
+                             a `[[rule]]` for and are ignored — a project layer may not route \
+                             away a rule the operator wrote; the operator's routes stand",
+                            cut,
+                            if cut == 1 { "y" } else { "ies" },
+                            path.display()
+                        );
+                    }
+                    if tools.is_empty() && before > 0 {
+                        o.tools = None;
+                    }
+                }
+            }
         }
         // `[skills]` from a project layer may only ever *narrow*, and that is
         // enforced here rather than asked for. `dir` is dropped outright — a
@@ -1092,7 +1162,33 @@ impl Config {
                 }
             }
         }
+        // `apply` appends rules, so everything at an index below this is the
+        // layers before — the operator's — and everything at or above it is
+        // this file's. Without that line a global contradiction (a global
+        // rule on a globally routed tool) was silently disarmed by the
+        // presence of *any* project file, because the operator's rule was
+        // dropped here before `setup` could refuse it, with a warning naming
+        // the project file as the rule's source (PR #148's review).
+        let inherited = self.rules.len();
         layer.apply(self);
+        // A rule on an outbox-routed tool judges nothing *while the route is
+        // live*, and whether it is live is `--no-outbox`'s to say — a flag
+        // this file cannot see. So nothing is dropped here: the project's
+        // rules are marked as the project's and `setup` decides with the
+        // live route in hand, refusing the operator's `allow`/`prompt` and
+        // setting the project's aside with a warning, so a cloned repository
+        // can neither fail every `mecha` command in its directory nor lose
+        // the `prompt` that under `--no-outbox` is the one gate forcing a
+        // `consult`. The first version dropped the project's `prompt` at
+        // load, which kept the `--no-outbox` reasoning for `forbid` and
+        // silently denied it to `prompt` (PR #148's review). The other side —
+        // a project *routing* a tool the global config has a rule for — is
+        // cut from the route list above, before `apply`.
+        if trust == LayerTrust::Project {
+            for rule in &mut self.rules[inherited..] {
+                rule.from_project = true;
+            }
+        }
         Ok(())
     }
 
@@ -2223,11 +2319,223 @@ match = ["git push origin main"]
             examples: vec!["git status".into()],
             not_match: vec!["git push".into()],
             justification: None,
+            from_project: false,
         });
         let err = format!("{:#}", cfg.validate().unwrap_err());
         assert!(
             err.contains("[[rule]]") && err.contains("not_match"),
             "{err}"
+        );
+    }
+
+    /// An `allow` or `prompt` on an outbox-routed tool judges nothing while
+    /// the route is live — staging runs first and release reads no rules —
+    /// and `setup` refuses it there. A `forbid` is a second lock and the one
+    /// gate left under `--no-outbox`, so it is never named; the config loads
+    /// either way, because the flag is not in the file.
+    #[test]
+    fn rules_staging_supersedes_are_named_and_a_forbid_is_not() {
+        let mut cfg = Config::default();
+        cfg.outbox.tools = vec!["send_email".into()];
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "send_email".into(),
+            decision: crate::policy::RuleDecision::Forbid,
+            justification: Some("never unstaged".into()),
+            ..Default::default()
+        });
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "send_email".into(),
+            decision: crate::policy::RuleDecision::Prompt,
+            ..Default::default()
+        });
+        cfg.validate().unwrap();
+        let named: Vec<usize> = cfg
+            .rules_superseded_by_staging()
+            .iter()
+            .map(|(i, _)| *i)
+            .collect();
+        assert_eq!(
+            named,
+            vec![1],
+            "the prompt is superseded; the forbid is a second lock"
+        );
+        // `publish_tools` is a kind, not a route: a name there that is not
+        // also in `tools` executes unstaged, so a rule on it judges and loads.
+        let mut cfg = Config::default();
+        cfg.outbox.publish_tools = vec!["publish_page".into()];
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "publish_page".into(),
+            decision: crate::policy::RuleDecision::Prompt,
+            ..Default::default()
+        });
+        assert!(cfg.rules_superseded_by_staging().is_empty());
+        // Unrouted, nothing is superseded.
+        let mut cfg = Config::default();
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "send_email".into(),
+            decision: crate::policy::RuleDecision::Prompt,
+            ..Default::default()
+        });
+        assert!(cfg.rules_superseded_by_staging().is_empty());
+    }
+
+    /// A *project* rule on a globally routed tool is neither a load error nor
+    /// dropped at load: it is kept, marked as the project's, and `setup`
+    /// decides with the live route in hand — so a cloned repository can
+    /// neither fail every `mecha` command in its directory nor lose the
+    /// `prompt` that under `--no-outbox` is the one gate left.
+    #[test]
+    fn a_project_rule_on_a_routed_tool_is_marked_not_dropped_and_not_fatal() {
+        let dir = std::env::temp_dir().join(format!("mecha-routed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("mecha.toml");
+        std::fs::write(
+            &project,
+            r#"
+[[rule]]
+tool = "send_email"
+decision = "prompt"
+
+[[rule]]
+tool = "send_email"
+decision = "forbid"
+
+[[rule]]
+tool = "shell"
+pattern = ["rm", "-rf"]
+decision = "forbid"
+match = ["rm -rf build"]
+"#,
+        )
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.outbox.tools = vec!["send_email".into()];
+        cfg.merge_file(&project, LayerTrust::Project).unwrap();
+        cfg.validate().unwrap();
+        let kept: Vec<_> = cfg
+            .rules
+            .iter()
+            .map(|r| (r.tool.as_str(), r.decision, r.from_project))
+            .collect();
+        assert_eq!(
+            kept,
+            vec![
+                ("send_email", crate::policy::RuleDecision::Prompt, true),
+                ("send_email", crate::policy::RuleDecision::Forbid, true),
+                ("shell", crate::policy::RuleDecision::Forbid, true),
+            ],
+            "all three load, all three are the project's; nothing is dropped where the \
+             route's liveness is unknown"
+        );
+        // What `setup` will act on where the route is live: the prompt, and
+        // it is the project's, so it is set aside rather than fatal.
+        let named: Vec<_> = cfg
+            .rules_superseded_by_staging()
+            .into_iter()
+            .map(|(i, r)| (i, r.from_project))
+            .collect();
+        assert_eq!(named, vec![(0, true)]);
+
+        // The contradiction reached from the other side: a project that
+        // *routes* a tool the global config has a rule for. The project's
+        // route entry is the overstep and is what goes — the operator's
+        // `forbid` stands, the other route entry survives, the load succeeds.
+        let routing = dir.join("routing.toml");
+        std::fs::write(&routing, "[outbox]\ntools = [\"shell\", \"send_email\"]\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "shell".into(),
+            pattern: vec![
+                crate::policy::PatternElement::Word("rm".into()),
+                crate::policy::PatternElement::Word("-rf".into()),
+            ],
+            decision: crate::policy::RuleDecision::Forbid,
+            examples: vec!["rm -rf build".into()],
+            ..Default::default()
+        });
+        cfg.merge_file(&routing, LayerTrust::Project).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.rules.len(),
+            1,
+            "the operator's forbid on `shell` stands"
+        );
+        assert_eq!(
+            cfg.outbox.tools,
+            vec!["send_email".to_string()],
+            "the project's route for the ruled tool was ignored; its other route kept"
+        );
+
+        // A project that merely re-declares a route the global config already
+        // has changes nothing and must not be read as routing away a rule:
+        // dropping the entry emptied the list, `apply` assigned it wholesale,
+        // and the operator's own route — and the `setup` refusal of the
+        // `allow` behind it — vanished.
+        let redeclared = dir.join("redeclared.toml");
+        std::fs::write(&redeclared, "[outbox]\ntools = [\"send_email\"]\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.outbox.tools = vec!["send_email".into()];
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "send_email".into(),
+            decision: crate::policy::RuleDecision::Allow,
+            examples: vec!["anything".into()],
+            ..Default::default()
+        });
+        cfg.merge_file(&redeclared, LayerTrust::Project).unwrap();
+        assert_eq!(
+            cfg.outbox.tools,
+            vec!["send_email".to_string()],
+            "a re-declared route stays routed"
+        );
+        assert_eq!(
+            cfg.rules_superseded_by_staging().len(),
+            1,
+            "and the global allow behind it is still the one setup refuses"
+        );
+
+        // A project routing *only* a ruled tool the global config does not
+        // route: the cut empties its list, and the key goes with it, so the
+        // operator's own route is not assigned away.
+        let only_ruled = dir.join("only_ruled.toml");
+        std::fs::write(&only_ruled, "[outbox]\ntools = [\"shell\"]\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.outbox.tools = vec!["send_email".into()];
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "shell".into(),
+            pattern: vec![
+                crate::policy::PatternElement::Word("rm".into()),
+                crate::policy::PatternElement::Word("-rf".into()),
+            ],
+            decision: crate::policy::RuleDecision::Forbid,
+            examples: vec!["rm -rf build".into()],
+            ..Default::default()
+        });
+        cfg.merge_file(&only_ruled, LayerTrust::Project).unwrap();
+        assert_eq!(
+            cfg.outbox.tools,
+            vec!["send_email".to_string()],
+            "the operator's route stands when the project's list is cut to nothing"
+        );
+
+        // And a project file in the directory — any project file — does not
+        // disarm the *global* load error: the operator's own contradiction
+        // (a global rule on a globally routed tool) still fails the start,
+        // because the post-`apply` drop reaches only the rules the project
+        // file added.
+        let unrelated = dir.join("unrelated.toml");
+        std::fs::write(&unrelated, "[agent]\nmax_turns = 3\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.outbox.tools = vec!["send_email".into()];
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "send_email".into(),
+            decision: crate::policy::RuleDecision::Prompt,
+            ..Default::default()
+        });
+        cfg.merge_file(&unrelated, LayerTrust::Project).unwrap();
+        assert_eq!(
+            cfg.rules_superseded_by_staging().len(),
+            1,
+            "a project file must not launder the operator's contradiction"
         );
     }
 
