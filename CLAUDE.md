@@ -147,6 +147,8 @@ cache_lens.rs  per-run observer: is the cached prefix actually being reused?
 subagent.rs  a profile-narrowed child agent, exposed to the parent as a tool
 skill.rs     user-authored procedures: the store, and the level-1 prompt block
 hooks.rs     user commands at lifecycle points; pre_tool can deny a call
+policy.rs    per-command approval rules: `allow | prompt | forbid` by prefix,
+             narrowing only; an allowlisted interpreter is not an allowlisted command
 outbox.rs    the store behind staged sends and publishes
 outbox_source.rs  what a staged draft answers, joined out of the staging session
 questions.rs the outbox's inbound twin: a delegated run's question, and the resume

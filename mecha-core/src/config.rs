@@ -37,6 +37,13 @@ pub struct Config {
     /// User commands run at loop lifecycle points. See [`crate::hooks`].
     #[serde(rename = "hook")]
     pub hooks: Vec<HookConfig>,
+    /// Per-command approval rules. See [`crate::policy`]. A project layer may
+    /// add `prompt` and `forbid` rules; `allow` rules load from the global
+    /// file only.
+    #[serde(rename = "rule")]
+    pub rules: Vec<crate::policy::RuleConfig>,
+    /// How the rules are applied. Global file only.
+    pub approval: ApprovalConfig,
     /// Outbound tools staged for user review instead of executed. See
     /// [`crate::outbox`].
     pub outbox: OutboxConfig,
@@ -275,6 +282,25 @@ pub struct HookConfig {
     pub timeout_secs: Option<u64>,
 }
 
+/// `[approval]`: how the `[[rule]]` set is applied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ApprovalConfig {
+    /// An allowlisted interpreter is not an allowlisted command: `python -c`,
+    /// `sh -c`, `xargs`, `env`, `timeout` and their kind are judged as at
+    /// least `prompt` whatever the rules say. On by default; turning it off
+    /// is a decision someone makes on purpose, in the global file only.
+    pub strict_inline_eval: bool,
+}
+
+impl Default for ApprovalConfig {
+    fn default() -> Self {
+        ApprovalConfig {
+            strict_inline_eval: true,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         let mut providers = BTreeMap::new();
@@ -314,6 +340,8 @@ impl Default for Config {
             subagents: Vec::new(),
             search: Vec::new(),
             hooks: Vec::new(),
+            rules: Vec::new(),
+            approval: ApprovalConfig::default(),
             outbox: OutboxConfig::default(),
             work: WorkConfig::default(),
             slack: SlackConfig::default(),
@@ -920,6 +948,10 @@ impl Config {
     /// wrong zone with the only notice on a stderr nobody reads at 03:00. A
     /// name that does not parse is now a load error naming the fix.
     pub fn validate(&self) -> Result<()> {
+        // A rule that does not do what its author believes fails on every
+        // start, not on the run that needed it. See `policy::ExecPolicy`.
+        crate::policy::ExecPolicy::from_config(&self.rules, self.approval.strict_inline_eval)
+            .context("[[rule]] in config")?;
         if let Some(name) = self.agent.timezone.as_deref() {
             if name.parse::<chrono_tz::Tz>().is_err() {
                 anyhow::bail!(
@@ -992,6 +1024,31 @@ impl Config {
                  loads from the global config only",
                 path.display()
             );
+        }
+        // `[[rule]]` from a project layer may only ever *narrow*: `prompt` and
+        // `forbid` rules stay, `allow` rules are dropped with a warning, and
+        // `[approval]` (whose one knob only widens) is dropped whole. A cloned
+        // repository must not be able to make its own commands run unasked.
+        if trust == LayerTrust::Project {
+            if let Some(rules) = layer.rules.as_mut() {
+                let before = rules.len();
+                rules.retain(|r| r.decision != crate::policy::RuleDecision::Allow);
+                if rules.len() != before {
+                    tracing::warn!(
+                        "{} `allow` rule(s) in {} are ignored — a project layer may add \
+                         `prompt` and `forbid` rules only; `allow` loads from the global \
+                         config",
+                        before - rules.len(),
+                        path.display()
+                    );
+                }
+            }
+            if layer.approval.take().is_some() {
+                tracing::warn!(
+                    "[approval] in {} is ignored — it loads from the global config only",
+                    path.display()
+                );
+            }
         }
         // `[skills]` from a project layer may only ever *narrow*, and that is
         // enforced here rather than asked for. `dir` is dropped outright — a
@@ -1157,6 +1214,9 @@ struct ConfigLayer {
     search: Option<Vec<SearchBackendConfig>>,
     #[serde(rename = "hook")]
     hooks: Option<Vec<HookConfig>>,
+    #[serde(rename = "rule")]
+    rules: Option<Vec<crate::policy::RuleConfig>>,
+    approval: Option<ApprovalLayer>,
     sandbox: Option<SandboxLayer>,
     outbox: Option<OutboxLayer>,
     work: Option<WorkLayer>,
@@ -1173,6 +1233,14 @@ struct ConfigLayer {
 #[serde(deny_unknown_fields)]
 struct HarnessLayer {
     source_dir: Option<PathBuf>,
+}
+
+/// A layer's `[approval]`. Global file only: every field here can only widen
+/// what runs unapproved.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovalLayer {
+    strict_inline_eval: Option<bool>,
 }
 
 /// A layer's opinion about which skills to carry.
@@ -1443,6 +1511,19 @@ impl ConfigLayer {
         // cannot turn a global hook off cannot be trusted to run anything.
         if let Some(v) = self.hooks {
             cfg.hooks = v;
+        }
+        // Appended, not replaced: a rule only ever narrows, so a later layer
+        // adding one cannot loosen an earlier layer's — and `merge_file` has
+        // already stripped a project layer's `allow` rules, so appending is
+        // exactly "the project may add restrictions". The most restrictive
+        // matching rule wins at decision time, whichever layer wrote it.
+        if let Some(v) = self.rules {
+            cfg.rules.extend(v);
+        }
+        if let Some(x) = self.approval {
+            if let Some(v) = x.strict_inline_eval {
+                cfg.approval.strict_inline_eval = v;
+            }
         }
         if let Some(x) = self.outbox {
             let t = &mut cfg.outbox;
@@ -2067,6 +2148,87 @@ mod tests {
             .to_string();
         assert!(err.contains("IANA"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A project file arrives with a cloned repository. It may add `prompt`
+    /// and `forbid` rules — narrowing is always safe — and may not add an
+    /// `allow` rule or touch `[approval]`, because either makes the
+    /// repository's own commands run unasked.
+    #[test]
+    fn a_project_layer_may_add_rules_that_narrow_and_none_that_widen() {
+        let dir = std::env::temp_dir().join(format!("mecha-rules-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("mecha.toml");
+        std::fs::write(
+            &project,
+            r#"
+[approval]
+strict_inline_eval = false
+
+[[rule]]
+tool = "shell"
+pattern = ["make"]
+decision = "allow"
+match = ["make test"]
+
+[[rule]]
+tool = "shell"
+pattern = ["rm", "-rf"]
+decision = "forbid"
+match = ["rm -rf build"]
+
+[[rule]]
+tool = "shell"
+pattern = ["git", "push"]
+decision = "prompt"
+match = ["git push origin main"]
+"#,
+        )
+        .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.merge_file(&project, LayerTrust::Project).unwrap();
+        let decisions: Vec<_> = cfg.rules.iter().map(|r| r.decision).collect();
+        assert_eq!(
+            decisions,
+            vec![
+                crate::policy::RuleDecision::Forbid,
+                crate::policy::RuleDecision::Prompt
+            ],
+            "the allow rule is dropped, the narrowing rules stay"
+        );
+        assert!(
+            cfg.approval.strict_inline_eval,
+            "[approval] from a project file is ignored"
+        );
+
+        // The same file as the global layer is taken whole.
+        let mut cfg = Config::default();
+        cfg.merge_file(&project, LayerTrust::Global).unwrap();
+        assert_eq!(cfg.rules.len(), 3);
+        assert!(!cfg.approval.strict_inline_eval);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rule that does not do what its author believes is a load error, on
+    /// every start, not a surprise on the run that needed it.
+    #[test]
+    fn a_rule_wider_than_its_examples_claim_is_a_load_error() {
+        let mut cfg = Config::default();
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "shell".into(),
+            pattern: vec![crate::policy::PatternElement::Word("git".into())],
+            decision: crate::policy::RuleDecision::Allow,
+            examples: vec!["git status".into()],
+            not_match: vec!["git push".into()],
+            justification: None,
+        });
+        let err = format!("{:#}", cfg.validate().unwrap_err());
+        assert!(
+            err.contains("[[rule]]") && err.contains("not_match"),
+            "{err}"
+        );
     }
 
     /// The fix for a guard that fell through: an unparseable zone used to be

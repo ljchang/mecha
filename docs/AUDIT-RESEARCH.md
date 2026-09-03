@@ -87,7 +87,18 @@ Ranked by leverage for this project. Each item is one PR through the review
 loop, with a test named up front. Sizes: **S** under a day, **M** a few days,
 **L** a week or more.
 
-### 3.1 Per-command approval policy, with argv binding — L
+### 3.1 ~~Per-command approval policy, with argv binding~~ — built 2026-09-02 on `feat/approval-policy`
+
+Built to the spec below as `mecha-core/src/policy.rs` (`ExecPolicy`,
+`split_segments`, the inline-eval set), `Approver::permit`, `[[rule]]` and
+`[approval]` in config with project-layer narrowing, and rules installed on
+parent and children in setup; `ARCHITECTURE.md` §Approval rules holds the
+invariants. The argv binding holds by construction in-process and is pinned
+by a test rather than by code. What remains of this item is use: a first
+rules file for this box, and the approve-rate measurement that says whether
+the prompts fell.
+
+#### As specified
 
 **What exists.** `ModeApprover::approve` takes `_input` and ignores it;
 `TuiApprover` and `TerminalApprover` remember "always" per tool name;
@@ -423,8 +434,9 @@ where `shell` needs approval or is not registered, laundered through a plan
 field — "confined" and "approved" are different guards. So a check is
 dispatched exactly as a model `shell` call is: interlock, `pre_tool` hook,
 approver (`escalate` where the trifecta says so), sandbox, in that order,
-with the trace `name: "check"`, `input: {command}`. A refused check is
-`denied: true` and `step.rs` reads it as refused, never failed; on a surface
+with the trace `name: "check"` (`step::CHECK_TRACE`), `input: {command}`. A
+refused check is `denied: true` **and** `is_error: true`, exactly as the loop
+writes a denial, or `Outcome::of` reads it as failed rather than refused; on a surface
 with no `shell` tool, a declared check does not run and the step's finding
 says so. The record freezes each item's `check` at the first write that
 declared it (a hash in `Tracked`); a later write that changes it on a

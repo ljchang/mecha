@@ -1485,6 +1485,139 @@ carry:
   this shape since it was written. Parity, not a regression, and the shape a
   Slack thread will show once.
 
+## Approval rules
+
+`mecha-core/src/policy.rs`. `[[rule]]` entries in config make approval
+per-command: `tool`, a prefix `pattern` of words and alternatives
+(`["git", ["status", "diff"]]`), a decision of `allow | prompt | forbid`,
+`match` / `not_match` examples, and a `justification` the model reads in a
+refusal. The specification and the survey behind it are
+`PRIOR-ART-RESEARCH.md` §4; the invariants are these.
+
+- **A rule narrows and never loosens.** Where several rules match, the most
+  restrictive wins. `forbid` refuses with nobody consulted and renders as
+  `Blocked by policy:` — machine policy, never mined as a correction.
+  `prompt` asks even for a read-only tool. `allow` says only that *no person
+  needs to be asked*: it reaches the approver through `Approver::permit`, and
+  a read-only run, a read-only Slack thread or a read-only web surface still
+  refuses a write — a config rule may stand in for the human's yes and for
+  nothing else. Rules sit after the interlock, the hook and outbox staging
+  and before the approver, and an escalation (`trifecta = "ask"`) is never
+  softened by one: the interlock chose to put a person in front of the call,
+  and a config line is not that person. Under a headless `Ask` — a trigger,
+  `batch` at the default mode — `allow` is the one place a rules file widens
+  what *executes*: `ModeApprover::permit` runs the ruled write the mode alone
+  refused, because the rule is the yes the run had nobody to give
+  (`an_allow_rule_is_the_yes_a_headless_ask_has_nobody_to_give` pins it).
+  The policy rides on `RunContext`; `RunContext::new` carries an empty one, so
+  the direct-construction sites (`gossip`, `vet`, `corroborate`, the probes)
+  run without rules — all read-only, shell-less agents, the same as hooks.
+  A `prompt` ruling goes to
+  `Approver::consult`, never `approve`: `approve` may answer from a standing
+  yes — `[a]lways`, Slack's "approve for run" — and one `[a]lways` to
+  `shell: ls` was covering a later `shell: cargo publish` the operator had
+  written a `prompt` rule for, the tool-granularity problem surviving inside
+  the mechanism built to end it. `consult` asks past the shortcuts and an
+  "always" answered there allows one call only, the shape `escalate` set —
+  and like `escalate` it defaults to `Blocked`, so under an approver that
+  answers from policy (`--yes`, `batch`, a trigger) a `prompt` rule refuses
+  rather than silently allowing: a rule that says a person must see the call
+  fails closed where there is none. A rule naming an outbox-routed tool is
+  inert (staging runs first, release reads no rules) and `setup` says so on
+  every start, beside the unregistered-tool warning.
+- **The splitter is conservative on purpose.** A command is judged one
+  segment at a time (`&&`, `||`, `|`, `;`), and allowed only if every segment
+  is. Anything `split_segments` cannot take apart with certainty —
+  substitution, redirection, globs, braces, backslashes, comments, control
+  flow, an unterminated quote, an operator glued to a word — is one opaque
+  invocation that matches no prefix rule, so under a policy it prompts — and
+  where no person can be asked (`--yes`, a trigger, `batch`) a prompt is a
+  refusal, so one `allow` rule on `shell` makes every later `ls *.txt` in a
+  trigger `Blocked` where it ran before. Narrowing, and deliberate: the
+  alternative is an opaque command answered by a mode. A false "cannot split"
+  costs one prompt, or that command; a false "can" costs the feature.
+  `forbid` is the one rule that reaches into an opaque command: a pattern-less
+  one by construction, a patterned one by its words (`forbidden_words` —
+  split on whitespace and the shell's separators with quote characters
+  dropped, matched at every position, deliberately over-approximate), so
+  `rm -rf $HOME`, `"rm" -rf $HOME`, `git status; rm -rf *` and the glued
+  `git status;rm -rf *` are refused rather than downgraded to the prompt a
+  headless `Allow` mode answers yes to. **A program path names its program
+  only where the model cannot write.** `allow` reduces `/usr/bin/git` to
+  `git` and nothing outside `SYSTEM_BIN_DIRS` (`/bin`, `/sbin`, `/usr/bin`,
+  `/usr/sbin`): `./git` may be a file the model wrote, and
+  `/abs/path/to/workspace/git` may be one a cloned repository shipped — the
+  PR review found each in turn. `prompt` and `forbid` reduce any path,
+  because there the false positive costs a prompt. A rule that wants a binary elsewhere spells
+  the path and matches it literally.
+- **An allowlisted interpreter is not an allowlisted command.** `python -c`,
+  `node -e`, `sh -c`, `sed -e`, `find -exec`, and the wrappers that run their
+  arguments — `xargs`, `env`, `sudo`, `timeout`, `nohup`, `watch` — are judged
+  as at least `prompt` whatever the rules say, because a prefix rule on `rm`
+  is bypassed by `timeout 5 rm -rf`. `[approval] strict_inline_eval` is on by
+  default and loads from the global file only — and it gates only the
+  `prompt` floor: the wrapper's argv is judged against the rules whatever the
+  setting, because that lookup only ever raises the decision, and gating it
+  once made turning the knob off silently disable the `timeout 5 rm -rf` rule.
+  A quoted argument the splitter finds opaque (`bash -ec 'cd /tmp; rm -rf
+  x'`) gets the same forbidden-word search an opaque outer command gets. The
+  floor is about inline source and wrappers, **not about an interpreter
+  handed a program**: `python3 safe.py` under an `allow` on `python3` is
+  allowed, though `safe.py` is a file `fs_write` can create, and `echo … |
+  python3` needs no flag at all. An `allow` on a bare interpreter is the
+  operator saying so; the sandbox is the containment. Stated, not closed.
+- **Examples are checked at load.** An `allow` rule and every patterned rule
+  must carry `match` examples; every `match` must match the rule and every
+  `not_match` must not, or `Config::validate` fails the start naming the rule.
+  The principle is the hooks one: a policy that does not do what its author
+  believes fails on every start, not on the run that needed it — and it cuts
+  both ways: an `allow` too wide is the hole, and a `forbid` too narrow
+  (`["rm", "-fr"]`, one transposition off) loaded clean, was reported as
+  covering `shell`, and judged nothing until the PR review asked why only the
+  harmless direction was checked. An empty alternation (`["git", []]`) is
+  refused for the same reason. A pattern-less rule applies to every call and
+  needs no example.
+- **A project layer may only narrow.** `merge_file` drops a project file's
+  `allow` rules with a warning and ignores its `[approval]`; `prompt` and
+  `forbid` rules are appended. A cloned repository must not be able to make
+  its own commands run unasked — the `[messages]`/`[slack]`/triggers rule.
+- **Children inherit the rules**, like hooks and the outbox route, so
+  delegating is not the way around a `forbid`. Empty rules are exactly the
+  behaviour before this section existed: `ExecPolicy::decide` returns `None`
+  and the approver decides alone.
+
+- **A wrapper is judged by what it wraps.** `timeout 5 rm -rf x`, `env rm
+  -rf x`, `sh -c 'rm -rf x'`: the rules are matched against every proper
+  suffix of a wrapper's argv and every quoted argument that splits as a
+  command, so a `forbid` on the inner command is not laundered down to a
+  prompt — which under a headless `Allow` mode is a yes. The wrapper set is
+  necessarily incomplete — it now names `setsid`, `stdbuf`, `flock`,
+  `unshare`, `nsenter`, `parallel`, `ssh` and the container executors after
+  the PR review listed them, but `git -c core.pager=…`, `git rebase -x`,
+  `git bisect run` and `git submodule foreach` execute their arguments and
+  `git` is rightly not a wrapper (the recommended narrow pattern `["git",
+  ["status", "diff", "log"]]` does not reach them; a bare `allow` on `git`
+  would) — so `forbid` is a control against mistakes and ordinary injection,
+  not containment against a deliberate adversary at `--yes`; the sandbox is
+  the containment.
+- **A `pattern` is for `shell`.** A patterned rule on a builtin that carries
+  no `command` is refused at load; on an MCP tool the crate cannot know about,
+  it asks at call time with the reason said out loud, never staying silently
+  inert while its author believes it loaded.
+- **`forbid` does not cover a routed tool.** Outbox staging runs before the
+  rules, so a routed call stages and a person decides at release; "refuses
+  without consulting anyone" is true of everything that would have executed.
+
+There is deliberately no `--no-rules` flag: a `forbid` is the operator's
+standing word, and a switch that lifts it for one run is the
+silently-degrading-guard shape. The one thing that turns rules off is
+`mecha eval`, structurally, through `force_reproducible` — a scorecard must not
+vary with this machine's rules file. The approve-then-execute binding the
+survey asked for holds by construction in-process — the `input` the approver
+saw is the value the tool receives — and a test
+(`the_tool_receives_exactly_the_input_that_was_approved`) is what keeps a
+refactor from making it two values.
+
 ## The outbox
 
 `[outbox] tools = [...]` names tools whose calls are **staged, not executed**:
