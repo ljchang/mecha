@@ -1121,9 +1121,9 @@ it, or do it now"* is the same bytes whoever said it. The span rule is
 therefore a stopgap on both doors, and the timing signal proposed below for the
 confirmation door is the thing that would replace it here too.
 
-So a flag raised for every turn on
-the fall-through path would buy one turn's caution and pay for it with the rest
-of the call's tools. It is raised only while `slot.convo` holds no assistant
+None of which changes the shape of the narrowing, only its justification: a
+flag raised for every turn on the fall-through path would buy one turn's
+caution and pay for it with the rest of the call's tools. It is raised only while `slot.convo` holds no assistant
 message — which is exactly as long as the premise lasts, since this turn's own
 reply lands there and the next turn's span check has real input to read.
 
@@ -1135,8 +1135,10 @@ span crossing it is missed. And a facade started with `--yes` rather than
 `--voice-yes` already carries `ModeApprover { Allow }` on the agent's own
 context, so `approve_all` is false, the narrowing does nothing, and the
 permissive approver is inherited — undetectable through the `Approver` trait,
-and fixable on that surface only by refusing the turn outright, since unlike
-the hosted door there is no page mode to fall back to. Not taken:
+and fixable on that surface only by refusing the turn outright, since this
+door has no mode that can be moved at all — which is the whole of the
+difference from the hosted one, per the correction above, and not the larger
+difference an earlier draft of this sentence claimed. Not taken:
 `mecha-voice-serve` is inactive and disabled here, so the change would be
 untested against any running thing.
 
