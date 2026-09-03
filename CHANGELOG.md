@@ -128,7 +128,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the session drawer into the chat header, where it is one tap from
   anywhere, and no longer prompts for a lowercase-and-dashes name.
 
-
 ## [0.1.17] - 2026-08-31
 
 ### Changed
