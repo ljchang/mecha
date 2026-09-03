@@ -3542,7 +3542,25 @@ impl Agent {
             let filled =
                 judged.then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input).0);
             let shown = filled.as_ref().unwrap_or(input);
-            let ruling = cx.policy.decide(name, shown);
+            // Judged on both, and **never below what the raw call earns**. A
+            // declared default may *raise* a ruling — a `forbid` keyed on a
+            // pinned argument has to fire — and must never lower one.
+            //
+            // The direction matters because the schema is the judged party's
+            // own declaration. `decide` reads only `command`; a patterned rule
+            // with none in the raw call returns `Prompt`, and a filled one can
+            // reach `Allow`, which routes to `permit`, which a headless
+            // approver answers yes to. A third-party MCP server could then
+            // relax the operator's standing word by declaring a default — and
+            // the call still executes the bytes the *model* sent, so the
+            // judged call and the executed one need not even agree. `Allow <
+            // Prompt < Forbid` has to hold at this boundary, which is the same
+            // rule that says a hook may narrow policy and never loosen it.
+            let ruling = match (cx.policy.decide(name, input), cx.policy.decide(name, shown)) {
+                (Some(raw), Some(filled)) if filled.decision > raw.decision => Some(filled),
+                (Some(raw), _) => Some(raw),
+                (None, filled) => filled,
+            };
             let rule = ruling.as_ref().map(|r| r.decision);
             let decision = match (&escalation, rule) {
                 (_, Some(RuleDecision::Forbid)) => {
@@ -10439,6 +10457,91 @@ match = ["cargo publish"]
             *approver.consulted.lock().unwrap(),
             vec!["shell: an approval rule asks that this `shell` call be approved"],
             "the prompt rule consulted, once, with the ruling's reason"
+        );
+    }
+
+    /// A declared default may **raise** a ruling and never lower one.
+    ///
+    /// The pair to `a_forbid_rule_fires_on_a_pinned_default`, and the
+    /// direction that is not safe. `decide` reads only `command`; a patterned
+    /// rule with none in the raw call returns `Prompt`, and the same rules on
+    /// a filled call can reach `Allow` — which routes to `permit`, which a
+    /// headless approver answers yes to. Without the floor, a third-party MCP
+    /// server relaxes the operator's standing word by declaring a default, and
+    /// the call still executes the bytes the *model* sent, so the judged call
+    /// and the executed one need not even agree.
+    #[tokio::test]
+    async fn a_pinned_default_cannot_lower_a_ruling() {
+        struct Defaulting;
+        #[async_trait]
+        impl Tool for Defaulting {
+            fn name(&self) -> &str {
+                "shell"
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn input_schema(&self) -> Value {
+                json!({
+                    "type": "object",
+                    "properties": {"command": {"type": "string", "default": "ls -la"}},
+                })
+            }
+            fn read_only(&self) -> bool {
+                false
+            }
+            async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("ran"))
+            }
+        }
+
+        let approver = Arc::new(Recording {
+            asked: Mutex::new(Vec::new()),
+            consulted: Mutex::new(Vec::new()),
+            permitted: Mutex::new(Vec::new()),
+        });
+        let (agent, _) = agent_with_tools(
+            vec![
+                // No `command` at all: the raw call cannot be matched, so the
+                // rule can only say "ask". The schema would satisfy it.
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "shell".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(Defaulting)],
+            PermissionMode::Allow,
+        );
+        let cx = RunContext {
+            approver: Arc::clone(&approver) as Arc<dyn Approver>,
+            ..agent.context().as_ref().clone()
+        }
+        .with_policy(rules(
+            r#"
+[[rule]]
+tool = "shell"
+pattern = ["ls"]
+decision = "allow"
+match = ["ls -la"]
+"#,
+        ));
+
+        let mut convo = Conversation::user("go");
+        agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert!(
+            approver.permitted.lock().unwrap().is_empty(),
+            "a declared default lowered the ruling to `allow` and skipped the person"
+        );
+        assert_eq!(
+            approver.consulted.lock().unwrap().len(),
+            1,
+            "the raw call's `prompt` is the floor, so the person is still asked"
         );
     }
 
