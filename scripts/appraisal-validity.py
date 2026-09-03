@@ -45,7 +45,8 @@ Discrimination is AUROC against Harbor's verdict (fail = reward 0), oriented
 so that higher predictor = more likely to fail, with a seeded bootstrap
 interval; binary predictors also get their rate among failures and among
 passes, which is what a reader needs to decide whether a flag is worth
-gating on. Trials with no verdict (the verifier never ran) and trials with
+gating on, and the others their per-class median, so every number the
+research doc argues from is in this one table. Trials with no verdict (the verifier never ran) and trials with
 no session file are counted and excluded, never folded in as either class.
 
 The result belongs beside `docs/APPRAISAL-RESEARCH.md` §1's table.
@@ -59,6 +60,7 @@ import pathlib
 import random
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -320,11 +322,17 @@ def discrimination(rows, key, draws, seed):
     a = auroc(pairs)
     lo, hi = bootstrap_ci(pairs, draws, seed) if a is not None else (None, None)
     out = {"n": len(pairs), "auroc": a, "ci_low": lo, "ci_high": hi}
+    fails = [v for v, y in pairs if y]
+    passes = [v for v, y in pairs if not y]
     if all(v in (0, 1, True, False) for v, _ in pairs):
-        fails = [v for v, y in pairs if y]
-        passes = [v for v, y in pairs if not y]
         out["rate_in_fail"] = sum(map(int, fails)) / len(fails) if fails else None
         out["rate_in_pass"] = sum(map(int, passes)) / len(passes) if passes else None
+    else:
+        # The per-class centre for a count or a duration, so the prose that
+        # argues from "passes made more errored calls" is reading this table
+        # and not a number typed in from somewhere else (found on review).
+        out["median_in_fail"] = statistics.median(fails) if fails else None
+        out["median_in_pass"] = statistics.median(passes) if passes else None
     return out
 
 
@@ -339,6 +347,12 @@ def fmt(x, digits=2):
     if isinstance(x, float):
         return f"{x:.{digits}f}"
     return str(x)
+
+
+def median(x):
+    """`1` and `3`, not `1.0` and `3` — `statistics.median` returns whichever
+    the sample had, and a table should not look like two precisions."""
+    return "—" if x is None else f"{float(x):g}"
 
 
 def main():
@@ -477,13 +491,19 @@ def main():
         "\"read, nothing to appraise\" for every one.\n"
     )
     print("## 2. Discrimination against Harbor's verdict (fail = reward 0)\n")
-    print("| source | predictor (higher = worse) | n | AUROC | 95% CI | rate in fail | rate in pass |")
+    print("| source | predictor (higher = worse) | n | AUROC | 95% CI | in fail | in pass |")
     print("|---|---|---|---|---|---|---|")
+    print("| | *(binary: rate · otherwise: median)* | | | | | |")
     for t in table:
         ci = f"{fmt(t.get('ci_low'))}–{fmt(t.get('ci_high'))}" if t.get("ci_low") is not None else "—"
+        if "rate_in_fail" in t:
+            in_fail, in_pass = fmt(t["rate_in_fail"]), fmt(t["rate_in_pass"])
+        else:
+            in_fail = f"median {median(t.get('median_in_fail'))}"
+            in_pass = f"median {median(t.get('median_in_pass'))}"
         print(
             f"| {t['group']} | {t['predictor']} | {t['n']} | {fmt(t.get('auroc'))} | {ci} "
-            f"| {fmt(t.get('rate_in_fail'))} | {fmt(t.get('rate_in_pass'))} |"
+            f"| {in_fail} | {in_pass} |"
         )
     print("\n## 3. What the readout cannot see\n")
     print(f"- failures silent to the readout (no signed error): **{len(silent_fails)} of {len(fails)}**")
