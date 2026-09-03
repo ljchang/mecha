@@ -1508,27 +1508,80 @@ refusal. The specification and the survey behind it are
   and like `escalate` it defaults to `Blocked`, so under an approver that
   answers from policy (`--yes`, `batch`, a trigger) a `prompt` rule refuses
   rather than silently allowing: a rule that says a person must see the call
-  fails closed where there is none. A rule naming an outbox-routed tool is
-  inert (staging runs first, release reads no rules) and `setup` says so on
-  every start, beside the unregistered-tool warning.
+  fails closed where there is none. An `allow` or `prompt` naming an
+  outbox-routed tool judges nothing *while the route is live* (staging runs
+  first, release reads no rules, a person reviews the staged call anyway)
+  and `setup` refuses it there — the same treatment as a patterned rule on
+  a commandless builtin, after the owner ruled on 2026-09-03 that a warning
+  on the stderr no trigger shows is the silently-degrading guard wearing a
+  label. Not in `Config::validate`, and never for a `forbid`: whether the
+  route is live is `--no-outbox`'s to say (routed tools then "execute
+  directly under the usual gates", and the rule is the one gate left), and a
+  `forbid` behind staging is a second lock — the first version failed the
+  load for exactly that belt-and-braces config, on every surface, until
+  PR #148's review. Two more edges from the same review: `publish_tools` is
+  a kind and not a route (a name there absent from `tools` executes
+  unstaged, so a rule on it judges and loads), and a
+  *project* layer can reach the contradiction from either side, and each
+  time it is the project's half that goes, with a warning, never the
+  operator's: a project `prompt` on a routed tool is kept at load and
+  marked as the project's (`RuleConfig::from_project`; `apply` appends, so
+  the index where the file's rules begin is the provenance), and `setup`
+  sets it aside with a warning where the route is live — never at load,
+  where `--no-outbox` is not yet known and the same `prompt` is the one gate
+  forcing a `consult`; the first version dropped it at load and so kept the
+  `--no-outbox` reasoning for `forbid` while silently denying it to
+  `prompt` — and a
+  project `[outbox] tools` entry naming a tool the global config has a rule
+  for is cut before `apply` — routing it would have made the operator's
+  `forbid` a staged draft a person can release, the one reconciliation that
+  would have removed the operator's word rather than the project's — unless
+  the entry re-declares a route the global config already has, which changes
+  nothing and stays: cutting it emptied the project's list, `apply` assigned
+  that wholesale, and the operator's own route vanished with the `setup`
+  refusal behind it. Neither
+  fails a `mecha` command in a cloned repository's directory.
 - **The splitter is conservative on purpose.** A command is judged one
   segment at a time (`&&`, `||`, `|`, `;`), and allowed only if every segment
   is. Anything `split_segments` cannot take apart with certainty —
   substitution, redirection, globs, braces, backslashes, comments, control
   flow, an unterminated quote, an operator glued to a word — is one opaque
-  invocation that matches no prefix rule, so under a policy it prompts — and
-  where no person can be asked (`--yes`, a trigger, `batch`) a prompt is a
-  refusal, so one `allow` rule on `shell` makes every later `ls *.txt` in a
-  trigger `Blocked` where it ran before. Narrowing, and deliberate: the
-  alternative is an opaque command answered by a mode. A false "cannot split"
-  costs one prompt, or that command; a false "can" costs the feature.
-  `forbid` is the one rule that reaches into an opaque command: a pattern-less
-  one by construction, a patterned one by its words (`forbidden_words` —
-  split on whitespace and the shell's separators with quote characters
-  dropped, matched at every position, deliberately over-approximate), so
-  `rm -rf $HOME`, `"rm" -rf $HOME`, `git status; rm -rf *` and the glued
-  `git status;rm -rf *` are refused rather than downgraded to the prompt a
-  headless `Allow` mode answers yes to. **A program path names its program
+  invocation: its words are searched for every patterned `forbid` and
+  `prompt` (`narrowing_words` — never for an `allow`, which an opaque
+  command cannot earn), a pattern-less `forbid` or `prompt` applies to it by
+  construction, a head the shell will expand (`$PY -c`, `py* -c`) is a
+  program the module cannot read and prompts, the inline-eval floor
+  applies to it under `strict_inline_eval` (its best-effort segment heads are
+  asked whether they run their arguments — a redirect must not make `python3
+  -c` *less* restricted than it is without one, which the first fall-through
+  did), and otherwise it matches no rule and the approver decides as it would
+  with none — the same answer an unmatched *splittable* command gets. Named
+  residue: the word search is under-approximate in exactly one direction, an
+  expansion the harness cannot read spliced *inside* a pattern word (it tries
+  an expansion-free view too — `-${a}rf` and `-r$'f'` are `-rf` — but a
+  value that only the shell knows is not readable here), so a false "cannot
+  split" can now cost a `forbid`, not only an `allow`; `forbid` is a control
+  against mistakes and ordinary injection, and the sandbox is the
+  containment. The first version returned `Prompt` there so
+  `Allow` mode could not run a shape the splitter would not vouch for; once
+  `forbidden_words` searched the opaque command for every `forbid`, what the
+  prompt still bought was a cliff — with `consult` failing closed, one
+  `forbid` on `rm -rf` made every `ls *.txt` in every trigger `Blocked` where
+  it had run the day before — and the owner ruled for the fall-through on
+  2026-09-03. A false "cannot split" costs an `allow` that would have applied;
+  a false "can" costs the feature.
+  `forbid` and `prompt` are the rules that reach into an opaque command: a
+  pattern-less one by construction, a patterned one by its words
+  (`narrowing_words` over `opaque_segments` — cut at the shell's separators
+  with redirections removed operator-and-target, a here-string's `<<<` kept
+  as a word so its payload stays visible (`bash <<< 'rm -rf $HOME'` runs it),
+  quote characters and backslashes dropped, a word cut at every interior `$`
+  with `$IFS` read as the space it is (`rm$IFS-rf$IFS$HOME`), leading keywords
+  and assignments skipped, matched at every position, deliberately over-approximate), so `rm -rf $HOME`, `"rm"
+  -rf $HOME`, `git status; rm -rf *`, the glued `git status;rm -rf *` and
+  `git push origin main > /dev/null` under a `prompt` on `git push` are
+  refused or asked about rather than downgraded to what a headless `Allow`
+  mode answers yes to. **A program path names its program
   only where the model cannot write.** `allow` reduces `/usr/bin/git` to
   `git` and nothing outside `SYSTEM_BIN_DIRS` (`/bin`, `/sbin`, `/usr/bin`,
   `/usr/sbin`): `./git` may be a file the model wrote, and
@@ -1590,9 +1643,20 @@ refusal. The specification and the survey behind it are
   no `command` is refused at load; on an MCP tool the crate cannot know about,
   it asks at call time with the reason said out loud, never staying silently
   inert while its author believes it loaded.
-- **`forbid` does not cover a routed tool.** Outbox staging runs before the
-  rules, so a routed call stages and a person decides at release; "refuses
-  without consulting anyone" is true of everything that would have executed.
+- **An `allow` or `prompt` on a routed tool is refused where the route is
+  live.** Outbox staging runs before the rules and release reads none, so a
+  routed call stages and a person decides at release; a global `allow` or
+  `prompt` naming a tool in `[outbox] tools` would judge nothing and `setup`
+  refuses it, naming the rule and three remedies (write it as `forbid`,
+  remove it, un-route the tool). A `forbid` stays and `setup` says on every
+  start that it is *unreached* while the route is on — the call becomes a
+  draft a person can release, not a refusal — because an operator who wrote
+  it expecting "never sends" deserves the signal; under `--no-outbox` every
+  rule is live and nothing is refused; a project layer's `prompt` is set
+  aside for the run with a warning instead. `setup::live_rules` is the pure
+  half, and a table of tests covers each thing a review pass found wrong
+  in the glue. "Refuses without consulting
+  anyone" is true of everything that would have executed.
 
 There is deliberately no `--no-rules` flag: a `forbid` is the operator's
 standing word, and a switch that lifts it for one run is the
