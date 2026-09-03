@@ -1155,6 +1155,83 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The entry document revalidates by `ETag` as well as by date, and the
+    /// `304` names what it confirmed.
+    ///
+    /// This is what tower-http 0.7 added to `ServeDir` (strong `ETag`s from
+    /// size and mtime, `If-None-Match` per RFC 9110 §13.1.2) and what the
+    /// `no-cache` half of `cache_headers` now rides on: a browser holding the
+    /// document sends the tag back, and a `304` that carries no validators
+    /// would leave it unable to update the entry it just confirmed (RFC 9110
+    /// §15.4.5). Under 0.6 the response had no `ETag` at all and the `304`
+    /// was bare — this test fails there at the first `expect`.
+    #[tokio::test]
+    async fn a_revalidation_by_etag_answers_304_with_both_validators() {
+        let dir = std::env::temp_dir().join(format!("mecha-cache-etag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let router = test_router_with_assets(&dir);
+
+        let first = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first
+            .headers()
+            .get("etag")
+            .expect("ServeDir tags what it serves")
+            .clone();
+        assert!(
+            !etag.as_bytes().starts_with(b"W/"),
+            "a weak tag would not satisfy If-Match or a byte-range resume"
+        );
+        let last_modified = first
+            .headers()
+            .get("last-modified")
+            .expect("ServeDir dates what it serves")
+            .clone();
+
+        let again = router
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("If-None-Match", etag.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            again.status(),
+            StatusCode::NOT_MODIFIED,
+            "a matching tag must cost no bytes"
+        );
+        assert_eq!(
+            again.headers().get("etag"),
+            Some(&etag),
+            "the 304 must name the tag it confirmed"
+        );
+        assert_eq!(
+            again.headers().get("last-modified"),
+            Some(&last_modified),
+            "the 304 must carry the date it confirmed"
+        );
+        assert_eq!(
+            again.headers().get("cache-control").unwrap(),
+            "no-cache",
+            "our own header still rides on the tag-validated 304"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn tiny_wav(rate: u32, seconds: f64) -> Vec<u8> {
         let byte_rate = rate * 2;
         let data_len = (f64::from(byte_rate) * seconds) as u32;
