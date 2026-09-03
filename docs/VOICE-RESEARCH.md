@@ -1061,6 +1061,40 @@ test, since driving either means standing up a facade or a whole session
 state; the second of those tests was itself wrong first, asserting the span
 call appeared above the grant rather than that the grant was *guarded* by it.
 
+**The spoken confirmation is a fourth door, and it is in front of both of
+these.** Recorded rather than closed, because it is a design question and not
+a one-liner — and its consequence class is worse than the one the gate above
+closes.
+
+`offer_for_turn` composes `confirm::ask_about` and speaks it through `say`
+without ever appending it to `slot.convo` or the chat session's conversation.
+So the last thing the speaker actually said is invisible to
+`echoes_the_last_reply`, which anchors on the last *assistant message* — and
+the tail of an utterance is exactly the part that echoes. The offer ends
+"Say yes to send it, or later to leave it in your outbox."
+
+An echo transcribed as "Send it." is two words: `MIN_ECHO_WORDS` makes the
+worker's text filter decline by design, and 0.0257-class residual clears the
+energy floor. It reaches `completion` and hits `shared.confirmations.take`
+**before** either approval gate, where `parse_answer` normalises it, matches
+`SEND_PHRASES`, and `Reaction::Release` releases the draft. That is an outbox
+draft going out with nobody asked — the one action CLAUDE.md says must cross a
+human structurally.
+
+The span rule does not transplant, and that is the point rather than an
+oversight: "yes" is a span of the question too, so the naive check silences
+every real confirmation. What might work is the timing layer rather than the
+text — a confirmation arriving *while the offer is still playing or inside its
+tail* is not a person who waited for the question — but `over_speaker` is
+computed in the worker and the confirmation is parsed in the facade, so the
+signal does not currently reach the decision. That is the shape of the fix and
+it wants its own change.
+
+A smaller sibling: when `completion` falls through to the facade slot after a
+hosted turn (an `X-Chat-Session` the host does not recognise), `slot.convo` is
+a different conversation from the one that produced the reply being echoed, so
+`echoed` is false and the standing yes is granted.
+
 Three limits, all now stated rather than found. After a barge-in the newest
 assistant message is the cancelled partial, so an echo of the previous,
 fully-spoken reply is not a span of it. `Message::text()` joins blocks with no
