@@ -230,69 +230,44 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     };
 
     // Which rules are live is the route's to say, so the policy is built
-    // here, after it. An `allow` or `prompt` on a tool the live route stages
-    // judges nothing (staging runs first, release reads none, a person
-    // reviews the staged call anyway): the operator's fails the start; a
-    // project layer's is set aside with a warning, because a cloned
-    // repository must not be able to fail every `mecha` command in its
-    // directory — and neither is dropped at *load*, where `--no-outbox` is
-    // not yet known and the same rule is the one gate left (PR #148's
-    // review, twice). A `forbid` is a second lock on either surface and is
-    // never touched. `--tool` narrowing is the caller saying so, as for the
-    // unregistered-tool warning below.
-    let mut live_rules: Vec<mecha_core::policy::RuleConfig> = cfg.rules.clone();
-    if let Some(route) = &outbox {
-        if !opts.no_rules {
-            let superseded: Vec<(usize, &mecha_core::policy::RuleConfig)> = cfg
-                .rules_superseded_by_staging()
-                .into_iter()
-                .filter(|(_, r)| {
-                    excluded_by_allowlist(std::slice::from_ref(&r.tool), &opts.tools).is_empty()
-                })
-                .filter(|(_, r)| route.routes(&r.tool))
-                .collect();
-            let set_aside: Vec<usize> = superseded
-                .iter()
-                .filter(|(_, r)| r.from_project)
-                .map(|(i, _)| *i)
-                .collect();
-            if !set_aside.is_empty() {
-                eprintln!(
-                    "mecha: {} project-layer [[rule]] entr{} name a tool `[outbox] tools` routes \
-                     to staging and are set aside for this run — a staged call is reviewed at \
-                     release, not judged by rules",
-                    set_aside.len(),
-                    if set_aside.len() == 1 { "y" } else { "ies" }
-                );
-                let mut index = 0;
-                live_rules.retain(|_| {
-                    let keep = !set_aside.contains(&index);
-                    index += 1;
-                    keep
-                });
-            }
-            if let Some((i, rule)) = superseded.into_iter().find(|(_, r)| !r.from_project) {
-                anyhow::bail!(
-                    "[[rule]] #{} is a `{}` on `{}`, which `[outbox] tools` routes to staging. \
-                     While the route is on, a staged call is reviewed by a person at release \
-                     and never judged by rules, so this rule judges nothing. Write it as \
-                     `forbid` (a second lock, and the gate `--no-outbox` runs against), remove \
-                     it, or take the tool out of `[outbox] tools`",
-                    i + 1,
-                    match rule.decision {
-                        mecha_core::policy::RuleDecision::Allow => "allow",
-                        mecha_core::policy::RuleDecision::Prompt => "prompt",
-                        mecha_core::policy::RuleDecision::Forbid => "forbid",
-                    },
-                    rule.tool
-                );
-            }
-        }
-    }
+    // here, after it — through `live_rules`, the pure half a table of tests
+    // covers, because the glue (`--no-outbox`, `--no-rules`, `--tool`, the
+    // provenance mark, the bail) was exactly the part two review passes kept
+    // finding wrong and nothing measured (PR #148's review).
     let policy = Arc::new(if opts.no_rules {
         mecha_core::policy::ExecPolicy::empty()
     } else {
-        mecha_core::policy::ExecPolicy::from_config(&live_rules, cfg.approval.strict_inline_eval)?
+        let live = live_rules(
+            &cfg.rules,
+            |tool| outbox.as_ref().is_some_and(|route| route.routes(tool)),
+            |tool| {
+                !excluded_by_allowlist(std::slice::from_ref(&tool.to_string()), &opts.tools)
+                    .is_empty()
+            },
+        )?;
+        if !live.set_aside.is_empty() {
+            eprintln!(
+                "mecha: {} project-layer [[rule]] entr{} name a tool `[outbox] tools` routes \
+                 to staging and are set aside for this run — a staged call is reviewed at \
+                 release, not judged by rules",
+                live.set_aside.len(),
+                if live.set_aside.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            );
+        }
+        for i in &live.unreached_forbids {
+            eprintln!(
+                "mecha: [[rule]] #{} is a `forbid` on `{}`, which `[outbox] tools` routes to \
+                 staging — while the route is on it is not reached: the call becomes a draft a \
+                 person can release, not a refusal. It is the gate `--no-outbox` runs against.",
+                i + 1,
+                cfg.rules[*i].tool
+            );
+        }
+        mecha_core::policy::ExecPolicy::from_config(&live.rules, cfg.approval.strict_inline_eval)?
     });
 
     // Subagents are built from the same tool pool but get their own registry —
@@ -1770,5 +1745,150 @@ mod tests {
             excluded_by_allowlist(&wanted, &full).is_empty(),
             "an allowlist that covers the profile keeps it"
         );
+    }
+}
+
+/// What `live_rules` decided for one run.
+#[derive(Debug)]
+pub(crate) struct LiveRules {
+    /// The rules the policy is built from: everything the config carries,
+    /// minus a project layer's `allow`/`prompt` on a tool the live route
+    /// stages.
+    pub rules: Vec<mecha_core::policy::RuleConfig>,
+    /// Indices (into the config's list) of the project rules set aside.
+    pub set_aside: Vec<usize>,
+    /// Indices of `forbid` rules on a live-routed tool: kept, because they are
+    /// the gate `--no-outbox` runs against, but not reached while the route
+    /// is on — an operator who wrote one expecting "never sends" gets a
+    /// releasable draft, and deserves to hear so.
+    pub unreached_forbids: Vec<usize>,
+}
+
+/// Which approval rules are live for this run, given whether the outbox
+/// route stages each tool (`routes`) and whether `--tool` narrowed it out
+/// (`narrowed_out`).
+///
+/// An `allow` or `prompt` on a tool the live route stages judges nothing —
+/// staging runs before the rules and release reads none, and a person
+/// reviews the staged call anyway. The operator's is an error: the
+/// contradiction is in one file they hold, and a warning on the stderr no
+/// trigger shows anyone is the silently-degrading guard wearing a label. A
+/// project layer's is set aside for the run instead, because a cloned
+/// repository must not be able to fail every `mecha` command in its
+/// directory. Neither is decided at *load*, where `--no-outbox` is not yet
+/// known and the same rule is the one gate left. A `forbid` is never touched
+/// and is reported as unreached. `--tool` narrowing is the caller saying so.
+pub(crate) fn live_rules(
+    rules: &[mecha_core::policy::RuleConfig],
+    routes: impl Fn(&str) -> bool,
+    narrowed_out: impl Fn(&str) -> bool,
+) -> anyhow::Result<LiveRules> {
+    use mecha_core::policy::RuleDecision;
+    let mut set_aside = Vec::new();
+    let mut unreached_forbids = Vec::new();
+    for (i, rule) in rules.iter().enumerate() {
+        if !routes(&rule.tool) || narrowed_out(&rule.tool) {
+            continue;
+        }
+        match rule.decision {
+            RuleDecision::Forbid => unreached_forbids.push(i),
+            RuleDecision::Allow | RuleDecision::Prompt if rule.from_project => set_aside.push(i),
+            decision => anyhow::bail!(
+                "[[rule]] #{} is a `{}` on `{}`, which `[outbox] tools` routes to staging. \
+                 While the route is on, a staged call is reviewed by a person at release and \
+                 never judged by rules, so this rule judges nothing. Write it as `forbid` (the \
+                 gate `--no-outbox` runs against), remove it, or take the tool out of \
+                 `[outbox] tools`",
+                i + 1,
+                match decision {
+                    RuleDecision::Allow => "allow",
+                    RuleDecision::Prompt => "prompt",
+                    RuleDecision::Forbid => "forbid",
+                },
+                rule.tool
+            ),
+        }
+    }
+    let live = rules
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !set_aside.contains(i))
+        .map(|(_, r)| r.clone())
+        .collect();
+    Ok(LiveRules {
+        rules: live,
+        set_aside,
+        unreached_forbids,
+    })
+}
+
+#[cfg(test)]
+mod live_rules_tests {
+    use super::*;
+    use mecha_core::policy::{RuleConfig, RuleDecision};
+
+    fn rule(tool: &str, decision: RuleDecision, from_project: bool) -> RuleConfig {
+        RuleConfig {
+            tool: tool.into(),
+            decision,
+            from_project,
+            ..Default::default()
+        }
+    }
+    fn routed(tool: &str) -> bool {
+        tool == "send_email"
+    }
+    fn nothing(_: &str) -> bool {
+        false
+    }
+
+    /// The table the glue is measured against: each row is one thing a
+    /// review pass found wrong or unmeasured.
+    #[test]
+    fn the_rules_that_are_live_follow_the_route_and_the_flags() {
+        let rules = vec![
+            rule("send_email", RuleDecision::Forbid, false),
+            rule("send_email", RuleDecision::Prompt, true),
+            rule("shell", RuleDecision::Prompt, false),
+        ];
+
+        // No live route (`--no-outbox`, or nothing routed): every rule is
+        // live, the project prompt included — it is the one gate left.
+        let live = live_rules(&rules, nothing, nothing).unwrap();
+        assert_eq!(live.rules.len(), 3);
+        assert!(live.set_aside.is_empty() && live.unreached_forbids.is_empty());
+
+        // A live route: the project prompt is set aside, the forbid is kept
+        // and reported unreached, the unrouted rule is untouched.
+        let live = live_rules(&rules, routed, nothing).unwrap();
+        assert_eq!(live.set_aside, vec![1]);
+        assert_eq!(live.unreached_forbids, vec![0]);
+        let kept: Vec<_> = live
+            .rules
+            .iter()
+            .map(|r| (r.tool.as_str(), r.decision))
+            .collect();
+        assert_eq!(
+            kept,
+            vec![
+                ("send_email", RuleDecision::Forbid),
+                ("shell", RuleDecision::Prompt)
+            ]
+        );
+
+        // The operator's own prompt/allow on a live-routed tool fails the
+        // start, naming the rule.
+        let mut with_operator = rules.clone();
+        with_operator.push(rule("send_email", RuleDecision::Allow, false));
+        let err = live_rules(&with_operator, routed, nothing)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("#4") && err.contains("`allow`"), "{err}");
+
+        // `--tool` narrowing the routed tool out is the caller saying so:
+        // nothing fires, the operator's rule loads.
+        let live = live_rules(&with_operator, routed, |t| t == "send_email").unwrap();
+        assert_eq!(live.rules.len(), 4);
+        assert!(live.set_aside.is_empty() && live.unreached_forbids.is_empty());
     }
 }

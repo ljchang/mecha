@@ -1083,31 +1083,40 @@ impl Config {
             // one project-layer reconciliation that removes the operator's
             // word rather than the project's (PR #148's review). The
             // project's route entry is the overstep, so it is what goes.
-            if let Some(tools) = layer.outbox.as_mut().and_then(|o| o.tools.as_mut()) {
-                let before = tools.len();
-                // Only an entry that would *add* a route goes. One that
-                // re-declares a route the global config already has changes
-                // nothing and stays — dropping it emptied the project's list,
-                // which `apply` then assigned wholesale, wiping the operator's
-                // own route and with it the `setup` refusal of the global
-                // `allow` behind it (PR #148's review). The wholesale assign
-                // is the AUDIT-RESEARCH §2 row; this keeps the new code from
-                // aiming it at exactly the tools the operator ruled on.
-                let already = self.outbox.tools.clone();
-                tools.retain(|t| already.contains(t) || !self.rules.iter().any(|r| &r.tool == t));
-                if tools.len() != before {
-                    tracing::warn!(
-                        "{} `[outbox] tools` entr{} in {} name a tool the global config has a \
-                         `[[rule]]` for and are ignored — a project layer may not route away \
-                         a rule the operator wrote",
-                        before - tools.len(),
-                        if before - tools.len() == 1 {
-                            "y"
-                        } else {
-                            "ies"
-                        },
-                        path.display()
-                    );
+            if let Some(o) = layer.outbox.as_mut() {
+                if let Some(tools) = o.tools.as_mut() {
+                    let before = tools.len();
+                    // Only an entry that would *add* a route goes. One that
+                    // re-declares a route the global config already has
+                    // changes nothing and stays — dropping it emptied the
+                    // project's list, which `apply` then assigned wholesale,
+                    // wiping the operator's own route and with it the `setup`
+                    // refusal of the global `allow` behind it (PR #148's
+                    // review). And when the cut empties the list, the key goes
+                    // with it rather than an empty list reaching `apply`: a
+                    // project routing *only* ruled tools was still wiping
+                    // every operator route while the warning said "ignored"
+                    // (the same review, one pass later). The wholesale assign
+                    // is the AUDIT-RESEARCH §2 row; this keeps the new code
+                    // from aiming it at exactly the tools the operator ruled on.
+                    let already = self.outbox.tools.clone();
+                    tools.retain(|t| {
+                        already.contains(t) || !self.rules.iter().any(|r| &r.tool == t)
+                    });
+                    let cut = before - tools.len();
+                    if cut > 0 {
+                        tracing::warn!(
+                            "{} `[outbox] tools` entr{} in {} name a tool the global config has \
+                             a `[[rule]]` for and are ignored — a project layer may not route \
+                             away a rule the operator wrote; the operator's routes stand",
+                            cut,
+                            if cut == 1 { "y" } else { "ies" },
+                            path.display()
+                        );
+                    }
+                    if tools.is_empty() && before > 0 {
+                        o.tools = None;
+                    }
                 }
             }
         }
@@ -2482,6 +2491,30 @@ match = ["rm -rf build"]
             cfg.rules_superseded_by_staging().len(),
             1,
             "and the global allow behind it is still the one setup refuses"
+        );
+
+        // A project routing *only* a ruled tool the global config does not
+        // route: the cut empties its list, and the key goes with it, so the
+        // operator's own route is not assigned away.
+        let only_ruled = dir.join("only_ruled.toml");
+        std::fs::write(&only_ruled, "[outbox]\ntools = [\"shell\"]\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.outbox.tools = vec!["send_email".into()];
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "shell".into(),
+            pattern: vec![
+                crate::policy::PatternElement::Word("rm".into()),
+                crate::policy::PatternElement::Word("-rf".into()),
+            ],
+            decision: crate::policy::RuleDecision::Forbid,
+            examples: vec!["rm -rf build".into()],
+            ..Default::default()
+        });
+        cfg.merge_file(&only_ruled, LayerTrust::Project).unwrap();
+        assert_eq!(
+            cfg.outbox.tools,
+            vec!["send_email".to_string()],
+            "the operator's route stands when the project's list is cut to nothing"
         );
 
         // And a project file in the directory — any project file — does not
