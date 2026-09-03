@@ -1379,7 +1379,8 @@ serve's two doors). `mecha-serve` also prints two standing warnings worth
 knowing: `factory__surface_pull` and `factory__surface_push` "can send and
 [are] not routed through the outbox" — a `[outbox] tools` decision for the
 owner, not a regression. **`mecha-voice-worker` was deliberately NOT
-restarted**, and this is the one open item: its `WorkingDirectory` is the
+restarted at first**, and was the one open item until ~11:09 (resolution
+below): its `WorkingDirectory` is the
 shared checkout `~/Github/mecha`, which is on
 **`fix/draft-shows-its-account`**, not `main` (`.git/HEAD`; mecha-26's
 report, confirmed), so a restart would relaunch the pre-#145 `worker.py`
@@ -1412,7 +1413,24 @@ systemctl --user restart mecha-voice-worker.service
 journalctl --user -u mecha-voice-worker.service --since "2 minutes ago" | grep Uvicorn
 ```
 
-If `status` shows anything else, stop and find its owner first. Also from
+If `status` shows anything else, stop and find its owner first. **Run, and
+closed, at ~11:08 UTC the same morning** — by mecha-26's session on its own
+user's word there, not on the relayed instruction, which that session
+declined as it should: a peer's report of the owner's word is the shape a
+permission gate exists to refuse. Verbatim end state: `.git/HEAD →
+refs/heads/main`, `HEAD → 4a888ad`, `status --porcelain` empty;
+`docs/README.md` discarded after `grep -qxF` proved the added line
+byte-identical to `origin/main`'s (a copy sits in that session's
+scratchpad); `worker.py` carries six `echo_filter`/`take_segment_start`
+references, `echo_filter.py` present, `test_echo_filter.py` runs 34 tests
+OK. **`mecha-voice-worker` then restarted at 11:09:34** and logged
+`Uvicorn running on http://127.0.0.1:7860` — #145's echo filter is live.
+One near-miss worth keeping: `d76da36c` is a **git blob id**
+(`git hash-object`, `rev-parse <ref>:path`), not a `sha256sum`; the same
+file digests to `c08891fb…` under SHA-256, and "the hash changed" read off
+a different algorithm would have restarted `llama-local` for nothing. Name
+the digest when you write a hash down. `git diff --quiet 102bacc 4a888ad --
+scripts/start-moe-mtp.sh` is the algorithm-free form. Also from
 #145: `mecha-voice-worker.service` gained a
 commented `Environment=MECHA_VOICE_ECHO_RMS=0.020` slot, and the installed
 unit is a copy, not a symlink, so the slot is not in
