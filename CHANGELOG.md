@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-command approval rules** (`[[rule]]` and `[approval]` in config,
+  `mecha_core::policy`; PRs #143 and #148). Approval used to be
+  tool-granularity — a run either approved every `shell` command or asked
+  about every one. A rule names a tool, a prefix pattern
+  (`["git", ["status", "diff", "log"]]`) and one of three ordered decisions,
+  `allow` < `prompt` < `forbid`, most restrictive wins, judged one shell
+  segment at a time by a splitter that refuses anything it cannot take apart
+  with certainty. `allow` removes the human prompt and nothing else — the
+  approver's mode, the trifecta interlock and an escalation all still apply;
+  `prompt` puts the call in front of a person even past a standing "always",
+  and fails closed where no person can be asked; `forbid` refuses without
+  consulting anyone and is never mined as a correction. An allowlisted
+  interpreter is not an allowlisted command (`python -c`, `sh -c`, `xargs`,
+  `sudo`, `timeout` and the rest are judged as at least `prompt`), every
+  patterned rule must carry a `match` example checked at load, `allow` loads
+  from the global file only, and `mecha eval` forces the whole policy off.
+  A command the splitter finds opaque is searched for every `forbid` and
+  `prompt` by its words (redirects, here-strings, `$IFS` and braced
+  expansions accounted for) and otherwise falls through to the approver as
+  an unmatched command does; an `allow`/`prompt` on a tool the live outbox
+  route stages is refused at startup, since staging runs before the rules.
+
 - **The web app has a desktop layout** (`REMOTE-SURFACE-DESIGN.md` D10). It
   was nine phone screens faithfully built, so a 1500px window rendered a
   560px column and left the rest of the screen empty. Two breakpoints, each
@@ -31,6 +53,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assistant text, never tool results: a title is rendered in the owner's
   session list for as long as the session exists, which is a longer-lived
   display than any single answer.
+
+### Fixed
+
+- **Six-lane harness review** (PRs #139 and #142): a dangling symlink no
+  longer passes the path jail as a new file and both writers open with
+  `O_NOFOLLOW`; a delegated child inherits the parent's taint and a child
+  holding a send-capable tool is itself `external_send`, so an armed run
+  cannot launder a send through a subagent; `trifecta = "ask"` no longer
+  equals `"allow"` under a headless approver (`Approver::escalate`, default
+  `Blocked`); streamed Anthropic usage frames replace rather than add;
+  `Failover` reports its primary's vision; the compaction summariser and
+  validator no longer stream as the assistant's words; a cancelled run hands
+  back the assistant's last words rather than the tool-result tail; a
+  panicking tool costs the call, not the run; the OpenAI-compatible decoder
+  surfaces llama-server's mid-stream error frame; a stream that simply ends
+  is an error, not a turn; one compaction summary survives instead of
+  stacking; and the HTTP client splits into a streaming and a non-streaming
+  one so a stall bound no longer caps a long non-streaming exchange.
 
 ### Changed
 
