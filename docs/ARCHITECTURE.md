@@ -1756,6 +1756,25 @@ knowledge of the outbox to be covered by it. Decisions that carry it:
 - **A routed name that matches no registered tool warns on every start** — a
   typo means the real tool executes unrouted, which is the silently-degrading
   sandbox shape again.
+- **A hook on a routed call judges what a release will run.** `pre_tool` is
+  the last mechanical gate a staged call passes — `release` runs no hooks, and
+  a routed call returns before the policy block — so it reads the pinned
+  arguments, computed once above the hook and handed to the store below it.
+  Only when routed: for a call that executes immediately the raw input *is*
+  what runs, so raw is what a hook should judge. It could never have loosened
+  anything (a hook only denies, so less information means fewer denials), but
+  a hook written to refuse sends from one mailbox could not see the account
+  the draft would send from.
+- **What the harness pinned is spoken once, at the end, and named as a
+  default.** `DraftView::spoken` takes the pinned key list, keeps header
+  fields on their own lines — who a message is from is not a footnote however
+  it got there — and collapses the rest into a single "Defaults: …" clause. A
+  listener hears a draft once, in order, at speaking speed, so a calendar
+  draft opening with "All day: false. Calendar id: primary." spends the one
+  pass before anything actionable; and a value the harness supplied, read in
+  the same voice as the subject line, says something untrue about who chose
+  it. Every value is still audible, which is the guarantee — it is on values,
+  not on sentences.
 - **The staging call is found by its `tool_use` id, not by its arguments.**
   `outbox_source` walks the transcript back from the draft and must stop at
   the call that staged it, or the draft joins to *itself* on its own

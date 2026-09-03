@@ -422,7 +422,7 @@ mod tests {
             "when": "Thursday August 27, 3:00pm to 3:30pm",
             "account": "dartmouth",
         }))
-        .spoken();
+        .spoken(&[]);
         assert!(
             event.chars() < SPOKEN_UNPROMPTED_CHARS,
             "an event is read out without asking: {} chars",
@@ -433,7 +433,7 @@ mod tests {
             "subject": "Re: R01 resubmission",
             "body_markdown": "Dear Dirk,\n\n".to_string() + &"word ".repeat(120),
         }))
-        .spoken();
+        .spoken(&[]);
         assert!(
             letter.chars() > SPOKEN_UNPROMPTED_CHARS,
             "a letter is offered, not recited: {} chars",

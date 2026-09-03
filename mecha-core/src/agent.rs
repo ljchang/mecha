@@ -3341,13 +3341,36 @@ impl Agent {
                 }
             }
 
+            // What a *staged* call will really execute, computed here rather
+            // than at the staging site thirty lines below, so the hook and the
+            // store are handed the same object.
+            //
+            // A release runs `args`, not the bytes the model sent, and
+            // `release` runs no hooks — so `pre_tool` is the last mechanical
+            // gate a routed call passes, and it was reading arguments that a
+            // pinned default had not reached yet. A hook written to deny sends
+            // from one mailbox never saw the `account` the draft would
+            // actually send from. It could not loosen anything (a hook only
+            // denies, so less information means fewer denials), which is why
+            // this was a consistency gap rather than a hole — but it is the
+            // gap this branch's own rule closes everywhere else: the machine
+            // judge and the human one read the same bytes.
+            //
+            // Only when routed. For a call that executes immediately the raw
+            // input *is* what runs, so raw is what a hook should judge, and
+            // filling there would put `with_schema_defaults` on the path of
+            // every tool in the registry to buy nothing.
+            let staged =
+                routed.then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input));
+            let judged = staged.as_ref().map_or(input, |(args, _)| args);
+
             // Hooks decide before the human is asked: a mechanical denial is
             // cheaper than an interruption, and a hook cannot be talked into
             // clicking yes. The interlock above still ran first — a hook can
             // narrow policy, never loosen security.
             if cx.hooks.watches_tools() {
                 if let crate::hooks::HookVerdict::Deny(reason) =
-                    cx.hooks.pre_tool(name, input, &cx.tools.workspace).await
+                    cx.hooks.pre_tool(name, judged, &cx.tools.workspace).await
                 {
                     emit(
                         events,
@@ -3382,7 +3405,7 @@ impl Agent {
             if routed {
                 let route = cx.outbox.as_ref().expect("routed implies a route");
                 let (staged_args, filled_defaults) =
-                    crate::tool::with_schema_defaults(&tool.input_schema(), input);
+                    staged.expect("routed implies the fill was computed above");
                 match route.store.stage(
                     name,
                     route.kind_of(name),
@@ -9595,6 +9618,44 @@ mod tests {
 
         let items = route.store.items().unwrap();
         assert_eq!(items[0].args["account"], json!("personal"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A hook judging a **staged** call sees the arguments a release will run.
+    ///
+    /// `release` runs no hooks, so `pre_tool` is the last mechanical gate a
+    /// routed call passes — and it was reading the model's bytes while the
+    /// store recorded the pinned ones. A hook written to deny sends from one
+    /// mailbox never saw the `account` the draft would actually send from.
+    ///
+    /// The hook here denies on exactly that pinned value, which the model
+    /// never sent, so it can only fire if the fill reached the hook.
+    #[tokio::test]
+    async fn a_hook_on_a_staged_call_sees_the_pinned_arguments() {
+        let (mut agent, _) = agent_with(send_turns(), PermissionMode::Allow);
+        agent.registry.insert(Arc::new(MustNotRun));
+        let (route, root) = outbox_route("hook-sees-fill");
+        agent.set_outbox(Arc::clone(&route));
+        agent.set_hooks(hooked(
+            "grep -q dartmouth && echo 'the draft would send from dartmouth' && exit 2; exit 0",
+            vec!["send_data".into()],
+        ));
+
+        let mut convo = Conversation::from(vec![Message::user("send it")]);
+        agent.run(&mut convo, None).await.unwrap();
+
+        match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => assert_eq!(
+                content, "Blocked by a hook: the draft would send from dartmouth",
+                "the hook judged the model's bytes, not the ones a release runs"
+            ),
+            other => panic!("expected the hook's denial, got {other:?}"),
+        }
+        assert!(
+            route.store.items().unwrap().is_empty(),
+            "a hook denial must stop the staging too"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

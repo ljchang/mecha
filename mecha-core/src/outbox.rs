@@ -923,7 +923,28 @@ fn spoken_value(value: &str) -> String {
 
 impl DraftView {
     /// This draft, spoken.
-    pub fn spoken(&self) -> SpokenDraft {
+    /// `pinned` names the arguments the harness supplied from the tool's
+    /// schema rather than the agent composing them
+    /// ([`OutboxItem::filled_defaults`]).
+    ///
+    /// They are spoken **as one trailing clause, and named as defaults**,
+    /// rather than a sentence each. Two reasons, and the second is the one
+    /// that matters. A calendar draft otherwise reads "All day: false.
+    /// Calendar id: primary." before the listener reaches anything they can
+    /// act on, on the one surface where length is a real cost — a listener
+    /// hears it once, in order, at speaking speed. And a value the harness
+    /// wrote is not the drafter's choice, so reading it in the same voice as
+    /// the subject line tells the reviewer something untrue: "Account:
+    /// dartmouth" said flat cannot be distinguished from a mailbox the agent
+    /// picked on purpose.
+    ///
+    /// Every value is still uttered, which is the guarantee this type
+    /// inherits — the check is that each is *audible*, not that each has its
+    /// own sentence. Header fields keep their own lines whether pinned or
+    /// not: `account` is addressing, and who a message comes from is not a
+    /// footnote however it got there.
+    pub fn spoken(&self, pinned: &[String]) -> SpokenDraft {
+        let is_pinned = |k: &String| pinned.iter().any(|p| p == k);
         let mut lines = Vec::new();
         for (key, value) in &self.headers {
             lines.push(format!("{}: {}.", spoken_label(key), spoken_value(value)));
@@ -935,8 +956,17 @@ impl DraftView {
             // report, and no surface has ever needed to hear it.
             lines.push(body.trim().to_string());
         }
-        for (key, value) in &self.other {
+        for (key, value) in self.other.iter().filter(|(k, _)| !is_pinned(k)) {
             lines.push(format!("{}: {}.", spoken_label(key), spoken_value(value)));
+        }
+        let defaults: Vec<String> = self
+            .other
+            .iter()
+            .filter(|(k, _)| is_pinned(k))
+            .map(|(k, v)| format!("{} {}", spoken_label(k).to_lowercase(), spoken_value(v)))
+            .collect();
+        if !defaults.is_empty() {
+            lines.push(format!("Defaults: {}.", defaults.join(", ")));
         }
         SpokenDraft { lines }
     }
@@ -1651,7 +1681,7 @@ mod tests {
             "account": "dartmouth",
             "importance": "high",
         });
-        let spoken = DraftView::of(&args).spoken().text();
+        let spoken = DraftView::of(&args).spoken(&[]).text();
         for audible in [
             "a@x.org",
             "b@x.org",
@@ -1673,6 +1703,58 @@ mod tests {
         assert!(spoken.contains("Importance: high."), "{spoken}");
     }
 
+    /// What the harness pinned is said once, at the end, and named as such.
+    ///
+    /// Two things at once. A calendar draft otherwise opens the listener's
+    /// only pass with "All day: false. Calendar id: primary." before anything
+    /// they can act on, on the surface where length costs most. And a value
+    /// the harness supplied is not the drafter's choice — read in the same
+    /// voice as the subject line it says something untrue about who decided.
+    ///
+    /// Every value is still audible, which is the guarantee; a header keeps
+    /// its own line pinned or not, because who a message is from is not a
+    /// footnote however it got there.
+    #[test]
+    fn pinned_defaults_are_spoken_once_at_the_end_as_defaults() {
+        let args = json!({
+            "title": "Reading group",
+            "account": "personal",
+            "calendar_id": "primary",
+            "all_day": false,
+        });
+        let pinned = vec![
+            "account".to_string(),
+            "calendar_id".into(),
+            "all_day".into(),
+        ];
+        let spoken = DraftView::of(&args).spoken(&pinned).text();
+
+        // Still audible, every one of them — the guarantee is on values.
+        for audible in ["Reading group", "personal", "primary", "false"] {
+            assert!(
+                spoken.contains(audible),
+                "{audible} was never said: {spoken}"
+            );
+        }
+        // The header keeps its own line even though it was pinned.
+        assert!(spoken.contains("Account: personal."), "{spoken}");
+        // The other two are one clause, named as defaults, and no longer two
+        // sentences in front of the listener.
+        assert!(spoken.contains("Defaults: "), "{spoken}");
+        assert!(!spoken.contains("Calendar id: primary."), "{spoken}");
+        assert!(!spoken.contains("All day: false."), "{spoken}");
+    }
+
+    /// Nothing pinned is the ordinary case, and it must read exactly as it
+    /// did before the clause existed.
+    #[test]
+    fn an_unpinned_draft_is_spoken_as_it_always_was() {
+        let args = json!({"to": "ada@example.com", "importance": "high"});
+        let spoken = DraftView::of(&args).spoken(&[]).text();
+        assert!(spoken.contains("Importance: high."), "{spoken}");
+        assert!(!spoken.contains("Defaults:"), "{spoken}");
+    }
+
     /// A calendar draft is mostly timestamps, and a timestamp read out as
     /// digits is a draft nobody can check. Rendered in the offset the string
     /// carries — hearing a different moment than the draft names is the
@@ -1684,7 +1766,7 @@ mod tests {
             "start_time": "2026-08-28T14:00:00-04:00",
             "end_time": "2026-08-28T14:30:00-04:00",
         }))
-        .spoken()
+        .spoken(&[])
         .text();
         assert!(spoken.contains("Friday August 28 at 2 PM"), "{spoken}");
         assert!(spoken.contains("Friday August 28 at 2:30 PM"), "{spoken}");
@@ -1696,7 +1778,7 @@ mod tests {
             "start_time": "2026-08-28T16:00:00",
             "timezone": "America/New_York",
         }))
-        .spoken()
+        .spoken(&[])
         .text();
         assert!(naive.contains("Friday August 28 at 4 PM"), "{naive}");
         // Start before end, whatever order the map hands them back in.
@@ -1711,7 +1793,7 @@ mod tests {
     #[test]
     fn an_unparseable_value_is_spoken_unchanged() {
         let spoken = DraftView::of(&json!({"when": "sometime next week"}))
-            .spoken()
+            .spoken(&[])
             .text();
         assert_eq!(spoken, "When: sometime next week.");
     }
@@ -1722,7 +1804,7 @@ mod tests {
     #[test]
     fn an_unanticipated_argument_is_spoken_stiffly_not_silently() {
         let spoken = DraftView::of(&json!({"emoji": "wave", "ts": 17}))
-            .spoken()
+            .spoken(&[])
             .text();
         assert_eq!(spoken, "Emoji: wave. Ts: 17.");
     }
