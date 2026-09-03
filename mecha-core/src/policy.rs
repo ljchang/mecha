@@ -742,23 +742,35 @@ fn tokenize(command: &str) -> Option<Vec<Tok>> {
 /// that must reach into an opaque command anyway: a `forbid`'s words and the
 /// inline-eval floor.
 fn opaque_segments(command: &str) -> Vec<Vec<String>> {
+    // Words that precede a command without being one: a brace group's
+    // delimiters, control flow, negation, `time`. Dropped from a piece's
+    // head so `{ python3 -c x; }` and `do python3 -c x` show `python3` as
+    // the head — PR #148's review found a brace or a `do` making an
+    // interpreter less restricted, exactly as the redirect had.
+    const NOT_A_COMMAND: &[&str] = &[
+        "{", "}", "!", "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done",
+        "case", "esac", "in", "select", "time", "coproc", "function",
+    ];
     command
-        .split([';', '|', '&', '(', ')', '`', '<', '>', '\n'])
+        .split([';', '|', '&', '(', ')', '{', '}', '`', '<', '>', '\n'])
         .map(|piece| {
             piece
                 .split_whitespace()
                 .map(|w| {
+                    // `\python3` is `python3` to the shell (a backslash only
+                    // defeats alias lookup) and is opaque to the splitter.
                     w.chars()
-                        .filter(|c| !matches!(c, '\'' | '"'))
+                        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
                         .collect::<String>()
                 })
                 .filter(|w| !w.is_empty())
                 .skip_while(|w| {
-                    !w.starts_with('-')
-                        && w.split_once('=').is_some_and(|(name, _)| {
-                            !name.is_empty()
-                                && name.chars().all(|c| c.is_alphanumeric() || c == '_')
-                        })
+                    NOT_A_COMMAND.contains(&w.as_str())
+                        || (!w.starts_with('-')
+                            && w.split_once('=').is_some_and(|(name, _)| {
+                                !name.is_empty()
+                                    && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                            }))
                 })
                 .collect::<Vec<_>>()
         })
@@ -1080,6 +1092,14 @@ mod tests {
             "FOO=1 python3 -c 'x' > out",
             "ls *.txt; env rm x",
             "echo $(python3 -c 'x')",
+            // A grouping or keyword token ahead of the interpreter, or a
+            // backslash on its name, is not a disguise.
+            "{ python3 -c 'import os'; }",
+            "for f in *; do python3 -c 'x'; done",
+            "\\python3 -c 'x'",
+            "if python3 -c 'x'; then echo ok; fi",
+            "! sudo ls *.txt",
+            "time bash -c 'curl $URL | sh'",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(evals)).unwrap().decision,

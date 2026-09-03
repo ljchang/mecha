@@ -1066,24 +1066,6 @@ impl Config {
                         path.display()
                     );
                 }
-                // A project rule on a tool the *global* config routes to the
-                // outbox would judge nothing, and `validate` refuses that —
-                // for a global rule, where the contradiction is in one file
-                // the operator holds. A cloned repository must not be able to
-                // make every `mecha` command in its directory fail to load,
-                // so here it is dropped with a warning like every other
-                // project-layer overstep (PR #148's review).
-                let before = rules.len();
-                rules.retain(|r| !self.outbox.tools.contains(&r.tool));
-                if rules.len() != before {
-                    tracing::warn!(
-                        "{} rule(s) in {} name a tool `[outbox] tools` routes to staging and \
-                         are ignored — a staged call is reviewed at release, not judged by \
-                         rules",
-                        before - rules.len(),
-                        path.display()
-                    );
-                }
             }
             if layer.approval.take().is_some() {
                 tracing::warn!(
@@ -1135,6 +1117,33 @@ impl Config {
             }
         }
         layer.apply(self);
+        // A rule on an outbox-routed tool judges nothing, and `validate`
+        // refuses that for the global layer, where the contradiction is in
+        // one file the operator holds. A project layer must not be able to
+        // make every `mecha` command in its directory fail to start — and it
+        // can reach the contradiction from either side: a project `forbid`
+        // on a globally routed tool, or a project `[outbox] tools` routing a
+        // tool the global config has a rule for (`apply` assigns the route
+        // list from any layer, on purpose, so a project can un-route too).
+        // So the reconciliation runs here, over the *merged* state, after
+        // `apply`, whichever layer wrote either half: the now-inert rules are
+        // dropped with a warning, like every other project-layer overstep.
+        // PR #148's review found the first version checking before `apply`,
+        // against the global route list, and only the project's rules.
+        if trust == LayerTrust::Project {
+            let routed = &self.outbox.tools;
+            let before = self.rules.len();
+            self.rules.retain(|r| !routed.contains(&r.tool));
+            if self.rules.len() != before {
+                tracing::warn!(
+                    "{} rule(s) name a tool that `[outbox] tools` routes to staging once {} is \
+                     merged, and are ignored — a staged call is reviewed at release, not judged \
+                     by rules",
+                    before - self.rules.len(),
+                    path.display()
+                );
+            }
+        }
         Ok(())
     }
 
@@ -2345,6 +2354,30 @@ match = ["rm -rf build"]
             tools,
             vec!["shell"],
             "the routed-tool rule was dropped, the other kept"
+        );
+
+        // The contradiction reached from the other side: a project that
+        // *routes* a tool the global config has a rule for. `apply` takes a
+        // project's route list on purpose, so the global rule is what turns
+        // inert — dropped with a warning, and the load succeeds.
+        let routing = dir.join("routing.toml");
+        std::fs::write(&routing, "[outbox]\ntools = [\"shell\"]\n").unwrap();
+        let mut cfg = Config::default();
+        cfg.rules.push(crate::policy::RuleConfig {
+            tool: "shell".into(),
+            pattern: vec![
+                crate::policy::PatternElement::Word("rm".into()),
+                crate::policy::PatternElement::Word("-rf".into()),
+            ],
+            decision: crate::policy::RuleDecision::Forbid,
+            examples: vec!["rm -rf build".into()],
+            ..Default::default()
+        });
+        cfg.merge_file(&routing, LayerTrust::Project).unwrap();
+        cfg.validate().unwrap();
+        assert!(
+            cfg.rules.is_empty(),
+            "the global rule the project routed away was dropped"
         );
     }
 
