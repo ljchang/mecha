@@ -1567,8 +1567,9 @@ refusal. The specification and the survey behind it are
   (`narrowing_words` over `opaque_segments` — cut at the shell's separators
   with redirections removed operator-and-target, a here-string's `<<<` kept
   as a word so its payload stays visible (`bash <<< 'rm -rf $HOME'` runs it),
-  quote characters and backslashes dropped, leading keywords and assignments
-  skipped, matched at every position, deliberately over-approximate), so `rm -rf $HOME`, `"rm"
+  quote characters and backslashes dropped, a word cut at every interior `$`
+  with `$IFS` read as the space it is (`rm$IFS-rf$IFS$HOME`), leading keywords
+  and assignments skipped, matched at every position, deliberately over-approximate), so `rm -rf $HOME`, `"rm"
   -rf $HOME`, `git status; rm -rf *`, the glued `git status;rm -rf *` and
   `git push origin main > /dev/null` under a `prompt` on `git push` are
   refused or asked about rather than downgraded to what a headless `Allow`
