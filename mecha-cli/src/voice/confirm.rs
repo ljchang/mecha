@@ -69,47 +69,57 @@ pub struct Pending {
     /// came back as our own voice. Bounded, because the re-ask is spoken
     /// too and can echo in its turn.
     pub reasks: u8,
+    /// The utterance before [`Pending::asked`]. See
+    /// [`Pending::recently_said`] for why there are two of these and not one,
+    /// and not a log.
+    pub asked_before: String,
 }
 
 impl Pending {
-    /// The same question, put again after an echo.
+    /// Everything said recently enough to still be coming out of the speaker.
     ///
-    /// **`asked` extends rather than replaces**, and this is the one place
-    /// that is true. Every other transition sets a question that supersedes
-    /// the last one; here the head is unchanged and the offer whose echo was
-    /// just caught is still playing. Comparing the next segment of that same
-    /// playback against the re-ask alone would let it through as a
-    /// non-answer, and a non-answer *drops* the question — the quiet half of
-    /// the defect this whole gate exists for, one turn later. A long offer
-    /// reads the draft aloud, so several echo segments per offer is the
-    /// expected case.
-    ///
-    /// On the type rather than at the call site because the call site is a
-    /// `match` arm in another module, and this is exactly the kind of
-    /// bookkeeping that gets it right once and drifts.
-    /// The same draft, asked again in different words — a re-read.
-    ///
-    /// `asked` is *replaced*, unlike [`Pending::after_reask`]: a real answer
-    /// arrived, so the offer that produced it has finished playing and the
-    /// re-read supersedes it. And `reasks` resets, which it did not at
-    /// first: this is the only transition that re-asks the same draft while
-    /// carrying the old echo budget, so an echo, then a genuine "read it
-    /// out", then a genuine "send it" spent the last of it and answered
-    /// "I keep hearing myself" — by then untrue. Found on review.
-    pub fn after_reread(&self, said: &str) -> Pending {
+    /// Two slots, not one, and not an unbounded log. One was wrong: after a
+    /// re-read `asked` held only the re-read, while the offer that produced
+    /// the echo was still playing — so the next segment of that same
+    /// playback matched nothing, fell to `PassToModel`, and *dropped* the
+    /// question. An unbounded join is wrong the other way: a listener can
+    /// ask for a re-read as often as they like, and every draft read aloud
+    /// would accumulate.
+    pub fn recently_said(&self) -> [&str; 2] {
+        [self.asked.as_str(), self.asked_before.as_str()]
+    }
+
+    /// The window slides: what we are about to say becomes `asked`, and what
+    /// was `asked` becomes `asked_before`.
+    fn sliding(&self, said: &str, reasks: u8) -> Pending {
         Pending {
             queue: self.queue.clone(),
             asked: said.to_string(),
-            reasks: 0,
+            asked_before: self.asked.clone(),
+            reasks,
         }
     }
 
+    /// Something was said in answer, so the echo streak is over.
+    ///
+    /// `reasks` resets here and only here. It did not at first, and the one
+    /// transition that matters is the re-read: an echo, then a genuine "read
+    /// it out", then a genuine "send it" spent the last of the budget and
+    /// answered "I keep hearing myself" — untrue by then.
+    pub fn after_saying(&self, said: &str) -> Pending {
+        self.sliding(said, 0)
+    }
+
+    /// The same question, put again because the answer was our own voice.
+    ///
+    /// The budget goes up rather than resetting, because nothing has been
+    /// answered — and the re-ask is itself spoken, so it echoes in its turn.
+    /// `MAX_REASKS` is what stops that being a loop with a send at the end.
+    ///
+    /// Both transitions live on the type because both were got wrong once as
+    /// a `match` arm in another module, in opposite directions.
     pub fn after_reask(&self, said: &str) -> Pending {
-        Pending {
-            queue: self.queue.clone(),
-            asked: format!("{} {}", self.asked, said),
-            reasks: self.reasks.saturating_add(1),
-        }
+        self.sliding(said, self.reasks.saturating_add(1))
     }
 }
 
@@ -234,6 +244,7 @@ pub fn compose_offer(items: &[OutboxItem]) -> Option<Offer> {
             // has nothing else to compare an answer against, because the
             // offer is spoken through `say` and never joins a conversation.
             asked: speech.clone(),
+            asked_before: String::new(),
             reasks: 0,
         },
         speech,
@@ -296,9 +307,11 @@ fn ask_about(item: &OutboxItem) -> String {
 /// So the span is tried against both forms. Checking only the raw one is the
 /// drift `Reread`'s comment warns about three functions down: two decision
 /// sites over one utterance is how a surface and its policy come apart.
-fn ours_coming_back(utterance: &str, asked: &str) -> bool {
-    super::echoes_the_last_reply(utterance, asked)
-        || super::echoes_the_last_reply(&crate::review_policy::normalise(utterance), asked)
+fn ours_coming_back(utterance: &str, pending: &Pending) -> bool {
+    pending.recently_said().iter().any(|said| {
+        super::echoes_the_last_reply(utterance, said)
+            || super::echoes_the_last_reply(&crate::review_policy::normalise(utterance), said)
+    })
 }
 
 /// The last words of an offer, and deliberately not the menu.
@@ -392,7 +405,7 @@ pub fn react(
     // `Later` and `ReadItOut` cause neither failure this gate exists for:
     // one leaves the draft where it already is, the other re-reads the
     // question and keeps it open. They are honoured however they parse.
-    let ours = ours_coming_back(utterance, &pending.asked);
+    let ours = ours_coming_back(utterance, pending);
     let reask = |pending: &Pending| {
         if pending.reasks >= MAX_REASKS {
             Reaction::Say(format!(
@@ -1018,8 +1031,8 @@ mod the_gate_must_not_eat_real_answers {
         let (_, pending) = long_offer();
         let item = long_draft();
         // Both really are spans, or this test proves nothing.
-        assert!(ours_coming_back("read it out", &pending.asked));
-        assert!(ours_coming_back("leave it", &pending.asked));
+        assert!(ours_coming_back("read it out", &pending));
+        assert!(ours_coming_back("leave it", &pending));
 
         assert!(
             matches!(
@@ -1084,20 +1097,40 @@ mod the_gate_must_not_eat_real_answers {
     /// against the eleven words of the re-ask alone.
     #[test]
     fn a_second_echo_of_the_same_offer_is_still_ours() {
-        let (speech, pending) = offered();
+        let (_, pending) = offered();
         let after =
             pending.after_reask("Sorry — that may have been my own echo. Could you say it again?");
-        assert!(
-            after.asked.contains(&speech),
-            "the re-ask replaced the offer instead of extending it"
-        );
         // A different fragment of the *original* offer, which is what a
         // second segment of the same playback is.
         assert!(
-            ours_coming_back("to send it", &after.asked),
+            ours_coming_back("to send it", &after),
             "the next segment of the same playback is no longer recognised"
         );
         assert_eq!(after.reasks, pending.reasks + 1);
+        assert_eq!(after.queue, pending.queue, "the head must not move");
+    }
+
+    /// **The same guarantee across a re-read**, which is the transition that
+    /// was wrong.
+    ///
+    /// `react` honours `ReadItOut` however it parses — deliberately, and
+    /// `the_safe_answers_are_honoured_even_though_they_are_spans` asserts
+    /// `"read it out"` *is* a span of the long offer. So a re-read is
+    /// reachable **from an echo**, and on that path "a real answer arrived,
+    /// so the offer has finished playing" is false. Replacing the window
+    /// there dropped the offer while it was still in the speaker, and the
+    /// next segment of it fell through to `PassToModel` — which strands the
+    /// draft. Found on review; it is this branch's own defect, one
+    /// transition further on.
+    #[test]
+    fn a_reread_does_not_forget_the_offer_still_playing() {
+        let (_, pending) = long_offer();
+        let after = pending.after_saying("Here it is, in full. Thursday works.");
+        assert!(
+            ours_coming_back("to hear the whole thing", &after),
+            "the offer left the window while it was still playing"
+        );
+        assert_eq!(after.reasks, 0, "a real answer must clear the streak");
         assert_eq!(after.queue, pending.queue, "the head must not move");
     }
 }
@@ -1142,7 +1175,7 @@ mod the_escape_hatches_must_stay_open {
         // A genuine "read it out" between the echo and the answer. Driven
         // through the transition the arm calls, not re-derived here, because
         // the whole bug was that the arm carried the count forward.
-        let resumed = after.after_reread("Here it is, in full. Thursday works.");
+        let resumed = after.after_saying("Here it is, in full. Thursday works.");
         assert_eq!(
             resumed.reasks, 0,
             "a real answer left the budget spent, so the next echo defers on a stale count"

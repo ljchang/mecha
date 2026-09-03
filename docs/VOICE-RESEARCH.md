@@ -1109,9 +1109,13 @@ acted on, so a listener who says "send it" is asked once more and answers
 
 Three parts, each pinned by a test that fails without it:
 
-- `Pending` carries `asked`, the exact words last spoken. Nothing else could:
-  the offer goes out through `say` and joins no conversation, so the anchor the
-  other two doors use does not contain the question.
+- `Pending` carries a **two-slot window** of what the speaker recently played.
+  Nothing else could: the offer goes out through `say` and joins no
+  conversation, so the anchor the other two doors use does not contain the
+  question. Two slots rather than one because the offer is still playing when
+  its first echo is caught, and a long offer reads the whole draft aloud — so
+  the *next* segment of that same playback must still be recognised. Not a log
+  either: a listener can ask for a re-read as often as they like.
 - The gate sits **ahead of `parse_answer`**, not inside the `Send` arm. A span
   that does not parse was worse than one that does: `PassToModel` *drops* the
   question, leaving a staged draft nobody is ever asked about again and handing
@@ -1119,6 +1123,17 @@ Three parts, each pinned by a test that fails without it:
 - The re-ask is bounded at one, then the draft is left in the outbox. The
   re-ask is spoken too, so an unbounded "say that again" is a loop with a send
   at the end of it. Deferring terminates where the draft already is.
+
+**The residual, stated in the direction that matters.** `MIN_SPAN_WORDS = 2`
+is written above as what keeps real answers alive — one-word accepts are
+immune, and they are what a person says. It is symmetric, and the other half
+is the reason the timing layer is still wanted: the offer contains *"Say yes
+to send it"*, so an echo transcribed as the bare word **"yes"** is also below
+the floor, also invisible to the gate, and releases the draft. Same
+consequence class as `"send it"`, and structurally out of reach of *any* span
+rule — a rule that caught it would silence every real confirmation. Only
+something that is not about the words can separate them, which is what
+arriving-while-the-offer-is-still-playing would be.
 
 Three things review found in the gate itself, and one older hole beside it.
 

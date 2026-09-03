@@ -1250,12 +1250,10 @@ async fn answer_completion(
         confirm::Reaction::PassToModel => None,
         confirm::Reaction::Reread(said) => {
             // The head is still the open question: hearing it again is not
-            // answering it. `asked` moves to what we are about to say,
-            // here and in every arm below — one rule, in one place, because
-            // a stale `asked` is a span check against words nobody heard.
-            // `after_reread` owns both halves — the replacement and the
-            // reset — beside `after_reask`, which owns the opposite of each.
-            let rest = pending.after_reread(&said);
+            // answering it. Every arm slides the window over what it is
+            // about to say — one rule, in one place, because a stale window
+            // is a span check against words nobody heard.
+            let rest = pending.after_saying(&said);
             shared.confirmations.set(confirm_key, rest).await;
             Some(finish_with(stream, shared, id, want_stream, &said).await)
         }
@@ -1271,12 +1269,8 @@ async fn answer_completion(
             Some(finish_with(stream, shared, id, want_stream, &said).await)
         }
         confirm::Reaction::Say(said) => {
-            let mut rest = pending.clone();
+            let mut rest = pending.after_saying(&said);
             rest.queue.pop_front();
-            rest.asked = said.clone();
-            // A new question means a fresh budget: the count is about one
-            // draft's asking, not the call's.
-            rest.reasks = 0;
             shared.confirmations.set(confirm_key, rest).await;
             Some(finish_with(stream, shared, id, want_stream, &said).await)
         }
@@ -1291,11 +1285,11 @@ async fn answer_completion(
                 say(stream, shared, id, &acknowledge).await;
             }
             let outcome = confirm::release(&item).await;
-            let mut rest = pending.clone();
-            rest.queue.pop_front();
             let report = confirm::report_release(outcome, next.as_ref());
-            rest.asked = report.clone();
-            rest.reasks = 0;
+            // The acknowledgement is spoken too, as its own chunk, so it
+            // belongs in the window like everything else we say.
+            let mut rest = pending.after_saying(&format!("{acknowledge} {report}"));
+            rest.queue.pop_front();
             shared.confirmations.set(confirm_key, rest).await;
             let spoken = if want_stream {
                 report
