@@ -1101,6 +1101,18 @@ ORs in: a turn answering in a conversation it never named drops the standing
 yes on the grounds that the check could not run, which is the *unknown is never
 clean* rule landing somewhere new.
 
+What that costs had to be priced, and the first version did not price it.
+Dropping the standing yes on this door does not leave a turn that asks someone
+— it leaves the shared agent's own approver, which is `Ask`, which
+non-interactively is `Decision::Blocked` for every tool. That is the named
+2026-08-24 "I don't have access to your calendar" failure, and it is the
+asymmetry with the hosted door, where `begin_turn` falls back to a
+`WebApprover` and there is a page to ask. So a flag raised for every turn on
+the fall-through path would buy one turn's caution and pay for it with the rest
+of the call's tools. It is raised only while `slot.convo` holds no assistant
+message — which is exactly as long as the premise lasts, since this turn's own
+reply lands there and the next turn's span check has real input to read.
+
 Three limits, all now stated rather than found. After a barge-in the newest
 assistant message is the cancelled partial, so an echo of the previous,
 fully-spoken reply is not a span of it. `Message::text()` joins blocks with no

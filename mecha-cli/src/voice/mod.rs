@@ -264,8 +264,26 @@ mod echo_span_tests {
             .expect("the facade door still computes `echoed`");
         let echoed = &src[i + 1..][..src[i + 1..].find(';').expect("a statement")];
         assert!(
-            echoed.contains("answered_in_another_conversation"),
+            echoed.contains("nothing_to_compare"),
             "a turn answered in a conversation it never named keeps the standing yes: {echoed:?}"
+        );
+        // Both halves of what `nothing_to_compare` means, because they fail
+        // in opposite directions. Losing the flag re-opens the hole; losing
+        // `last_reply.is_none()` re-broadens it to every turn on the path,
+        // and since dropping the standing yes here leaves an `Ask` approver
+        // that is `Blocked` non-interactively, that costs the whole call its
+        // tools. The second version of this branch shipped that.
+        let d = src
+            .find("\n    let nothing_to_compare =")
+            .expect("the fall-through still narrows the standing yes");
+        let derived = &src[d + 1..][..src[d + 1..].find(';').expect("a statement")];
+        assert!(
+            derived.contains("answered_in_another_conversation"),
+            "the fall-through no longer reaches the gate: {derived:?}"
+        );
+        assert!(
+            derived.contains("last_reply.is_none()"),
+            "every turn on the fall-through path now runs tool-less, not just the first: {derived:?}"
         );
         // And that the flag is raised, not merely read: a binding left
         // permanently false would satisfy the assertion above.
@@ -1423,25 +1441,36 @@ async fn completion(
     // unshared one. But `--voice-yes` follows it down, so without this a
     // verbatim "delete it" reaches `mail_triage` with nobody asked on exactly
     // the path that skipped the gate. Wiring one of two doors is not a gate.
-    let repeats_the_last_reply = slot
+    let last_reply = slot
         .convo
         .messages
         .iter()
         .rev()
-        .find(|m| m.role == mecha_core::message::Role::Assistant)
-        .is_some_and(|m| echoes_the_last_reply(&text, &m.text()));
+        .find(|m| m.role == mecha_core::message::Role::Assistant);
+    let repeats_the_last_reply =
+        last_reply.is_some_and(|m| echoes_the_last_reply(&text, &m.text()));
 
     // Found on review: the comment above claims this door covers both
     // callers, and it did not. On the `Hosted::Unknown` fall-through the
-    // slot's conversation is *not* the one that produced the reply being
-    // echoed, so the span check just above reads an unrelated last message
-    // and cannot fire — the standing yes was granted on a comparison that
-    // could not run. Having nothing to compare against is not the same
-    // finding as a clean turn, and this is the arm where the caller has
-    // already been told (a `warn!`) that it is not getting the conversation
-    // it asked for.
-    let echoed =
-        shared.mount.approve_all && (repeats_the_last_reply || answered_in_another_conversation);
+    // reply the speaker is echoing came from a conversation this slot does
+    // not hold, so the span check reads whatever this slot last said — and
+    // `false` from a check with no input is indistinguishable from `false`
+    // meaning a clean turn. Unknown is never clean.
+    //
+    // `last_reply.is_none()` is what makes this *one* turn rather than the
+    // rest of the call, and the distinction is not cosmetic: dropping the
+    // standing yes here leaves the shared agent's own approver, which is
+    // `Ask`, which non-interactively is `Blocked` for every tool — there is
+    // no page to ask, which is the asymmetry with the hosted door. So the
+    // cost of being cautious is a whole turn with no tools, and it is only
+    // worth paying while the premise holds. It stops holding immediately:
+    // this turn's own reply lands in `slot.convo`, so from the next one on
+    // the last assistant message *is* what the speaker heard, the span
+    // check has real input, and the gate goes back to measuring rather
+    // than assuming. Found on review after the first version raised this
+    // for every turn on the path.
+    let nothing_to_compare = answered_in_another_conversation && last_reply.is_none();
+    let echoed = shared.mount.approve_all && (repeats_the_last_reply || nothing_to_compare);
     if echoed {
         // Which arm dropped it, because they mean different things to
         // whoever reads the log: one is the assistant's own voice coming
