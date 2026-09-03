@@ -50,6 +50,15 @@ gating on, and the others their per-class median, so every number the
 research doc argues from is in this one table. Trials with no verdict (the verifier never ran) and trials with
 no session file are counted and excluded, never folded in as either class.
 
+`--appraise` adds the one paid pass: the quarantined appraiser
+(`mecha sessions appraise --appraise`, §3.10 of the appraisal review) driven
+once per session over the same synthesised store, against the local model
+the scratch home's config names. Its evidence is numbers only — the signed
+error counts, the label, whether a goal was named, the homeostat's two
+readings — never the transcript, so this measures whether a model can add a
+signed error the counters could not, on the counters alone. About fifteen
+seconds a session on the local server.
+
 The result belongs beside `docs/APPRAISAL-RESEARCH.md` §1's table.
 """
 
@@ -253,23 +262,51 @@ def reconstruct(trial):
 # ─── Layers 1 and 3: the real reader ─────────────────────────────────────────
 
 
-def run_appraise(mecha, home, session_dir):
+def run_appraise(mecha, home, session_dir, appraise=False):
+    """The free readout, or with `appraise` the paid pass too (one appraisal,
+    since the store holds one session). Returns the CLI's JSON plus, for the
+    paid pass, the appraiser's own reasoning line off stderr as `reasoning`
+    — the model's words, kept as data beside the verdict."""
     env = dict(os.environ, MECHA_HOME=str(home), MECHA_SESSION_DIR=str(session_dir))
     # The scratch home must not inherit a session kind, or `MECHA_SESSION_KIND`
     # from an operator shell would mark nothing here (it only marks writes).
     env.pop("MECHA_SESSION_KIND", None)
-    p = subprocess.run(
-        [mecha, "sessions", "appraise", "--days", DAYS, "--json"],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+    cmd = [mecha, "sessions", "appraise", "--days", DAYS, "--json"]
+    if appraise:
+        cmd += ["--appraise", "--max-appraisals", "1"]
+    p = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if p.returncode != 0:
         sys.exit(f"{mecha} sessions appraise failed over {session_dir}:\n{p.stderr}")
     start = p.stdout.find("{")
     if start < 0:
         sys.exit(f"no JSON from {mecha} sessions appraise over {session_dir}:\n{p.stdout}\n{p.stderr}")
-    return json.loads(p.stdout[start:])
+    out = json.loads(p.stdout[start:])
+    if appraise:
+        lines = [l for l in p.stderr.splitlines() if l.startswith("\u00b7 ")]
+        out["reasoning"] = lines[-1].split(": ", 1)[-1] if lines else None
+    return out
+
+
+def write_scratch_config(home, base_url, model):
+    """The paid pass needs a provider; the free one must not see this
+    machine's config at all, so the scratch home gets exactly one local
+    provider and nothing else."""
+    (home / "config.toml").write_text(
+        "default_provider = \"local\"\n\n[providers.local]\nkind = \"local\"\n"
+        f"base_url = \"{base_url}\"\nmodel = \"{model}\"\n"
+    )
+
+
+def served_model(base_url):
+    """Ask the server what it serves (`/props` → `model_alias`); llama-server
+    ignores the request's `model` field, so asserting one would be a guess."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{base_url}/props", timeout=5) as r:
+            return json.load(r).get("model_alias")
+    except Exception as e:  # noqa: BLE001 — any failure is "not reachable"
+        sys.exit(f"--appraise needs a reachable local server at {base_url}: {e}")
 
 
 # ─── Discrimination ──────────────────────────────────────────────────────────
@@ -364,6 +401,8 @@ def main():
     ap.add_argument("--draws", type=int, default=2000, help="bootstrap resamples for the AUROC interval")
     ap.add_argument("--seed", type=int, default=20260903)
     ap.add_argument("--keep", action="store_true", help="leave the scratch stores on disk and print where")
+    ap.add_argument("--appraise", action="store_true", help="also drive the quarantined appraiser once per session (paid; ~15 s each)")
+    ap.add_argument("--base-url", default="http://127.0.0.1:8080", help="the local server the appraiser runs against")
     args = ap.parse_args()
 
     if not args.jobs.is_dir():
@@ -374,6 +413,11 @@ def main():
     scratch = pathlib.Path(tempfile.mkdtemp(prefix="appraisal-validity-"))
     home = scratch / "home"
     home.mkdir()
+    appraiser_model = None
+    if args.appraise:
+        appraiser_model = served_model(args.base_url)
+        write_scratch_config(home, args.base_url, appraiser_model)
+        print(f"appraiser: {appraiser_model} at {args.base_url}", file=sys.stderr)
 
     # Layer 1: as-is.
     verbatim = scratch / "verbatim"
@@ -403,6 +447,21 @@ def main():
         if readout["appraised"] != 1:
             sys.exit(f"{t.name}: expected one appraisal over the synthesised outcome, got {readout}")
         v = readout["valence"]
+        appraiser = None
+        if args.appraise:
+            paid = run_appraise(args.mecha, home, one, appraise=True)
+            tally = paid["appraiser"]
+            sign = -1 if tally["found_negative"] else (1 if tally["found_positive"] else 0)
+            appraiser = {
+                "driven": tally["driven"],
+                "failed": tally["failed"],
+                # The appraiser's own signed error, oriented like the rest:
+                # higher = worse. `None` when the pass failed (a malformed
+                # reply twice), which is "not answered", never "nothing".
+                "sign": None if tally["failed"] else -sign,
+                "negative_with_appraiser": paid["valence"]["negative"],
+                "reasoning": paid.get("reasoning"),
+            }
         rows.append(
             {
                 "run": t.run,
@@ -427,6 +486,7 @@ def main():
                     "signed": v["signed_sessions"] == 1,
                     "partial": v["partial"],
                 },
+                "appraiser": appraiser,
             }
         )
 
@@ -453,6 +513,15 @@ def main():
         ("readout", "valence.negative, completed runs only (the clean-but-wrong regime)", lambda r: r["readout"]["negative"] if r["reconstructed"].get("stop_cause") == "completed" else None),
         ("counter", "stop_cause interrupted (Harbor timeout/cancel; skipped by of_session)", lambda r: int(r["reconstructed"].get("stop_cause") == "interrupted")),
         ("harbor", "wall-clock seconds", lambda r: r["wall_seconds"]),
+    ]
+    if args.appraise:
+        predictors += [
+            ("appraiser", "appraiser's signed error (−1 found positive · 0 nothing · +1 found negative)", lambda r: (r["appraiser"] or {}).get("sign")),
+            ("appraiser", "found a negative error", lambda r: None if (r["appraiser"] or {}).get("sign") is None else int(r["appraiser"]["sign"] > 0)),
+            ("appraiser", "valence.negative with the appraiser's error added", lambda r: (r["appraiser"] or {}).get("negative_with_appraiser")),
+            ("appraiser", "… completed runs only", lambda r: (r["appraiser"] or {}).get("negative_with_appraiser") if r["reconstructed"].get("stop_cause") == "completed" else None),
+        ]
+    predictors += [
         ("harbor", "no summary record (process died)", lambda r: int(not r["reconstruction"]["has_summary"])),
     ]
     table = []
@@ -527,6 +596,22 @@ def main():
     print("|---|---|---|---|---|")
     for run, b in by_run.items():
         print(f"| {run} | {b['version']} | {b['n']} | {b['fail']} | {fmt(b['auroc_negative'])} |")
+    if args.appraise:
+        tally = collections.Counter()
+        for r in rows:
+            a = r["appraiser"] or {}
+            tally["failed" if a.get("failed") else {-1: "found positive", 0: "found nothing", 1: "found negative"}[a.get("sign", 0)]] += 1
+        found_neg = [r for r in rows if (r["appraiser"] or {}).get("sign") == 1]
+        print(f"\n## 5. The appraiser's marginal yield (§3.10)\n")
+        print(f"model: `{appraiser_model}`  ·  driven: {len(rows)}  ·  {dict(tally)}")
+        print(
+            f"- of the {len(silent_fails)} failures silent to the readout, the appraiser signed "
+            f"**{sum(1 for r in silent_fails if (r['appraiser'] or {}).get('sign') == 1)}** negative"
+        )
+        print(
+            f"- of the {len(found_neg)} runs it signed negative, {sum(1 for r in found_neg if r['failed'])} failed "
+            f"and {sum(1 for r in found_neg if not r['failed'])} passed"
+        )
     channels = collections.Counter()
     for r in rows:
         for c, n in r["readout"]["channels"].items():
@@ -557,6 +642,7 @@ def main():
                     "by_run": by_run,
                     "channels": dict(channels),
                     "labels": dict(labels),
+                    "appraiser_model": appraiser_model,
                     "rows": rows,
                 },
                 f,
