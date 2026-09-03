@@ -1404,23 +1404,37 @@ edit; it is what made the owner's first `switch` refuse silently. So, at
 execution time, in this order:
 
 ```
-git -C ~/Github/mecha fetch origin
-git -C ~/Github/mecha diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
-  && echo "launch script unchanged"          # BEFORE any switch: the banner's check
-git -C ~/Github/mecha status --porcelain            # expect only " M docs/README.md"
-git -C ~/Github/mecha diff -- docs/README.md        # expect only the APPRAISAL-RESEARCH row
-git -C ~/Github/mecha checkout -- docs/README.md    # drop the duplicate (main has it)
-git -C ~/Github/mecha switch main && git -C ~/Github/mecha pull --ff-only
-systemctl --user restart mecha-voice-worker.service
-journalctl --user -u mecha-voice-worker.service --since "2 minutes ago" | grep Uvicorn
+# Block 1 — the checks. Every line is chained on &&, so a failing check
+# STOPS the chain rather than printing and moving on.
+git -C ~/Github/mecha fetch origin \
+&& git -C ~/Github/mecha diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
+&& test "$(git -C ~/Github/mecha status --porcelain)" = " M docs/README.md" \
+&& git -C ~/Github/mecha diff -- docs/README.md \
+&& echo "checks passed — READ the diff above: only if it is the one APPRAISAL-RESEARCH row, run block 2"
+```
+
+If block 1 stops before the echo: the launch script differs between `HEAD`
+and `origin/main` (do not switch — read the banner), or the working copy
+holds something other than that one file (find its owner first). The
+discard in block 2 is destructive and is not conditional, which is why a
+person reads the diff between the blocks.
+
+```
+# Block 2 — only after a person has read block 1's diff.
+git -C ~/Github/mecha checkout -- docs/README.md \
+&& git -C ~/Github/mecha switch main && git -C ~/Github/mecha pull --ff-only \
+&& systemctl --user restart mecha-voice-worker.service \
+&& sleep 10 \
+&& journalctl --user -u mecha-voice-worker.service --since "2 minutes ago" | grep Uvicorn
 ```
 
 The launch-script check comes **first**, against the commit the pull will
 land (`origin/main` after a fetch), because once the switch has happened a
 changed script is already the server's next launch command — the first
 version of this block checked afterwards, which the banner above says is
-the ordering that fails (PR #152's review). If `status` shows anything
-else, stop and find its owner first. **Run, and
+the ordering that fails; the second version's checks informed rather than
+stopped, and its discard was unconditional in a checkout many sessions
+share (PR #152's review, two passes). **Run, and
 closed, at ~11:08 UTC the same morning** — by mecha-26's session on its own
 user's word there, not on the relayed instruction, which that session
 declined as it should: a peer's report of the owner's word is the shape a
