@@ -485,6 +485,7 @@ def main():
     print(f"readout binary: `{version}`  ·  sessions: {sum(1 for t in trials if t.session)} of {len(trials)} trials")
     print(
         f"trials without result.json: {listing['no_result']}  ·  without a session file: {listing['no_session']}"
+        f"  ·  with more than one session file (first by name taken): {listing['many_sessions']}"
         f"  ·  excluded, no verdict: {excluded['no verdict']}  ·  joined: {len(rows)} ({len(fails)} fail, {len(passes)} pass)\n"
     )
     print("## 1. The readout as-is\n")

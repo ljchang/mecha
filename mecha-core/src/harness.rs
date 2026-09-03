@@ -94,7 +94,16 @@ impl OverrideKey {
 ///
 /// An ablation here is a subsystem that is *structurally absent* from a run:
 /// chosen by a switch, recorded on `RunConfig::levers_off`, never a sentence
-/// in a prompt (`docs/EXPERIMENT-DESIGN.md` §15, D14). The set is closed for
+/// in a prompt (`docs/EXPERIMENT-DESIGN.md` §15, D14). **The record is the
+/// switch, not the effect**, for every variant alike: `levers_off` says
+/// which switches the run was built with thrown, and the realised surface —
+/// whether a charter block or a rules block actually reached the prompt,
+/// whether `compact` or an MCP tool was actually registered — is on the same
+/// `RunConfig` in `system_prompt` and `tools`. An experiment pairs arms on
+/// the switch set and checks the realised surface from those two fields; a
+/// field that mixed the two meanings (found on review, when one variant
+/// briefly recorded its effect) could not be read either way. The set is
+/// closed for
 /// the same reason `OverrideKey` is — an arm that can vary something the
 /// record does not name is a confound that nothing can read back — and it
 /// is defined once, here, so `mecha eval`'s bare arm and an experiment's
@@ -116,35 +125,38 @@ impl OverrideKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Lever {
-    /// Configured MCP servers are not connected.
+    /// `--no-mcp`: configured MCP servers are not connected. (Whether any
+    /// *were* configured is `tools`' to say.)
     Mcp,
-    /// The learned-rules block is absent from the cached prefix.
+    /// `--no-learned-rules`: the learned-rules block is not built into the
+    /// prefix. (An empty store leaves this lever on; `system_prompt` shows
+    /// the block either way.)
     LearnedRules,
-    /// Configured `[[hook]]` commands do not run.
+    /// `--no-hooks`: configured `[[hook]]` commands do not run.
     Hooks,
-    /// `[outbox] tools` execute unstaged — nothing is routed to the outbox.
+    /// `--no-outbox`: `[outbox] tools` execute unstaged.
     Outbox,
-    /// A provider failure is not retried against a fallback.
+    /// `--no-fallback`: a provider failure is not retried against a fallback.
     Fallback,
-    /// No mailbox: inter-agent messages are neither delivered nor sent.
+    /// `--no-messages`: no mailbox is attached.
     Messages,
-    /// The level-1 skill block is absent.
+    /// `--no-skills`: the level-1 skill block is not built.
     Skills,
-    /// The charter block is absent.
+    /// `--no-charter`: the charter block is not built.
     Charter,
-    /// The `compact` tool is not registered — by the flag, or because it
-    /// could not be: it needs the provider's `context_window` and a
-    /// `[tools]` list that admits it. Recorded off in either case, since the
-    /// tool is the front of the cached prefix and a run without it is the
-    /// same run whichever reason kept it out.
+    /// `--no-compact-tool`: the `compact` tool is not registered by request.
+    /// It may also be absent because it could not exist (no provider
+    /// `context_window`, or a `[tools]` list that excludes it); that is
+    /// `tools`' to say, and this lever stays on.
     CompactTool,
-    /// A completed step is not escalated to the quarantined revise pass.
+    /// `--no-step-escalation`, or `[agent] step_escalation = false`.
     StepEscalation,
-    /// This machine's approval rules file is not loaded.
+    /// `no_rules`, which only `mecha eval` sets: the approval rules file is
+    /// not loaded.
     ApprovalRules,
-    /// The in-run boredom notice is not issued.
+    /// `--no-boredom`, or `[agent] boredom = false`.
     Boredom,
-    /// A compaction summary is not checked for omissions.
+    /// `--no-compact-validate`, or `[agent] compact_validate = false`.
     CompactValidate,
 }
 

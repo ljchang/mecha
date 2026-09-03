@@ -231,28 +231,14 @@ Beyond the defaults, a case may ask for:
 ## What eval forces off, and why
 
 A scorecard shaped by local scripts grades the machine, not the model. So every
-run overwrites what the caller asked for:
-
-```rust
-let mut opts = GlobalOpts {
-    workspace: Some(fixture.to_path_buf()),
-    read_only: true,
-    yes: false,
-    ..global.clone()
-};
-if !args.mcp {
-    opts.no_mcp = true;
-}
-opts.no_learned_rules = !allow_learned_rules;   // the `--ab-rules` lever
-opts.no_hooks = true;
-opts.no_outbox = true;
-opts.no_fallback = true;
-opts.no_messages = true;
-opts.no_skills = true;
-opts.no_charter = true;
-opts.no_compact_tool = true;
-opts.no_step_escalation = true;
-```
+run overwrites what the caller asked for: the workspace becomes the fixture,
+the run goes read-only, and every lever in the closed set
+`mecha_core::harness::Lever` is thrown off through `Lever::bare` — the same
+definition an experiment's bare arm uses, and the one every session's
+`config` record reads its `levers_off` from — except the two eval allows as
+opt-ins (`--mcp`, `--ab-rules`). The approval rules are the one lever
+`Lever::bare` never lifts on its own; eval lifts them by name, on its own
+line, because its fixture workspaces are what make that defensible.
 
 | Forced off | Because |
 |---|---|
@@ -266,6 +252,8 @@ opts.no_step_escalation = true;
 | [Provider fallbacks](/docs/features/providers) | a case silently answered by a fallback model is a measurement of nothing |
 | The `compact` tool | **the one that was missed.** It is registered from local `context_window` / `compact_at_tokens` and sits at the front of the cached prefix, so two differently-configured boxes graded different prefixes — it changes the *tool list*, not merely what a run may do |
 | Step escalation | off by default, but a machine's own `config.toml` could turn it on, and a scorecard must not depend on that either |
+| Boredom, compact validation | the two `[agent]` switches that ship *on*: a notice in the model's context and a second model call per compaction, each decided by this machine's config. Forced since the lever set named them; a scorecard taken before that ran with whatever the box said |
+| [Approval rules](/docs/features/tools) | a `forbid` in this box's rules file would score a case's `shell` call as `Blocked by policy:` here and not there |
 
 The workspace is also forced to the fixture and the run to read-only. Sandboxed
 cases get their writes only through their own approver, scoped to their own
@@ -273,8 +261,10 @@ staged copy.
 
 The list is asserted **as a set** in a test rather than flag by flag, because
 the way this breaks is one entry quietly missing from a list written in prose
-across forty lines — which is exactly how `compact` went unnoticed. Anything
-added to the run surface has to be decided about there.
+across forty lines — which is exactly how `compact` went unnoticed. Since the
+lever set exists the list *is* `Lever::ALL`, so a new lever joins eval's bare
+arm the moment it is named, and a second test reads what eval forced back
+through the function that writes every session's record.
 
 `--ab-rules` is the one deliberate exception to the learned-rules rule; see
 [Learning](/docs/features/learning). It runs the case set rules-free and then
