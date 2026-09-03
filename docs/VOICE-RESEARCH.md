@@ -1090,42 +1090,38 @@ computed in the worker and the confirmation is parsed in the facade, so the
 signal does not currently reach the decision. That is the shape of the fix and
 it wants its own change.
 
-The fall-through arm is closed, and what it cost to see is worth keeping. When
-`completion` falls through to the facade slot (an `X-Chat-Session` the host
-does not recognise), `slot.convo` is a different conversation from the one that
-produced the reply being echoed, so the span check reads an unrelated last
-message. It returned `false` — and a gate whose input does not exist returns
-exactly what a clean turn returns. So the door was written for two callers,
-wired for one, and read as covering both. The arm now raises a flag the gate
-ORs in: a turn answering in a conversation it never named drops the standing
-yes on the grounds that the check could not run, which is the *unknown is never
-clean* rule landing somewhere new.
+The fall-through arm is *not* a hole, and it took two wrong fixes to learn why.
+`completion` falls through to the facade slot when `host.speak` returns
+`Hosted::Unknown`, and the comment there said that meant "a key no front-end
+holds". On that reading the slot's conversation is not the one that produced
+the reply being echoed, the span check reads an unrelated last message, and the
+standing yes is granted on a comparison that could not run — a gate whose input
+does not exist returning exactly what a clean turn returns. A flag was added.
+It cost the turn every tool (`Ask` is `Blocked` non-interactively, the
+2026-08-24 failure), so a second pass narrowed it to `last_reply.is_none()`.
 
-What that costs had to be priced, and the first version did not price it.
-Dropping the standing yes on this door does not leave a turn that asks someone
-— it leaves the shared agent's own approver, which is `Ask`, which
-non-interactively is `Decision::Blocked` for every tool. That is the named
-2026-08-24 "I don't have access to your calendar" failure.
+Both passes were built on the comment. `VoiceHost::speak` returns `Unknown`
+from exactly one place — `!valid_key(key)` — and `ensure_session` creates a
+session for any *valid* key on demand, so a valid key that no front-end holds
+never reaches this path. The fall-through means the worker sent a **malformed**
+`X-Chat-Session`: a property of its configuration, constant for the whole call.
+Which makes the facade slot the only conversation that caller has ever been
+spoken to in — the first turn has nothing to echo, every turn after it compares
+against the reply the speaker actually heard, and the check was right all along.
+The flag fired only on that first turn, bought nothing, and charged it every
+tool. Removed; the comment and the `warn!` now say what the arm means.
 
-It is *not* the asymmetry with the hosted door, though the first write-up of
-this said it was. Narrowing the hosted door leaves `WebApprover` over
-`ws.mode`, and `ws.mode` is initialised to `ReadOnly` and only moves when
-someone clicks; `WebApprover` short-circuits to `ModeApprover` for every mode
-that is not `Ask`, so at the default a narrowed hosted turn is `Blocked` for
-every non-read-only tool exactly like this one. The real difference is only
-that the page *can* be moved to `Ask` and this door cannot be moved at all.
-Which matters beyond the correction: it means a false positive on **either**
-gate costs a turn its tools, and a verbatim span is also the most natural human
-answer to an enumerated offer — "delete it" against *"I can cancel it, delete
-it, or do it now"* is the same bytes whoever said it. The span rule is
-therefore a stopgap on both doors, and the timing signal proposed below for the
-confirmation door is the thing that would replace it here too.
+The lesson is the one this repo keeps paying for and it is not about voice: the
+prose beside a branch is what the next reader reasons from, and a comment that
+misdescribes its own arm will be believed twice before the code is read once.
 
-None of which changes the shape of the narrowing, only its justification: a
-flag raised for every turn on the fall-through path would buy one turn's
-caution and pay for it with the rest of the call's tools. It is raised only while `slot.convo` holds no assistant
-message — which is exactly as long as the premise lasts, since this turn's own
-reply lands there and the next turn's span check has real input to read.
+One real defect came out of the same review. `echoes_the_last_reply` had no
+lower bound at all — `heard.is_empty()` was the only check, so a single word
+appearing anywhere in the reply was a "span". Against *"I can move it to
+Thursday if you want me to."*, hearing `"Thursday"` stripped the turn of every
+tool. `MIN_SPAN_WORDS = 2` now, which is where the gate's own reason to exist
+starts: "delete it" is two words. One word is left alone deliberately — it is
+the band where a span is weakest evidence and collisions are commonest.
 
 Three limits, all now stated rather than found. After a barge-in the newest
 assistant message is the cancelled partial, so an echo of the previous,
