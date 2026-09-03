@@ -15,6 +15,21 @@ WorkingDirectory=/home/ljchang/Github/mecha
 # website in a browser on a tailnet device could post an offer and feed
 # synthetic speech into an owner-postured agent. Only the two app origins
 # may initiate a call.
+
+# The echo filter's energy floor while mecha's own voice is playing, in RMS.
+# It goes *here*, not in a shell: systemd does not inherit a login shell's
+# environment, so `export MECHA_VOICE_ECHO_RMS=...` reaches this process not
+# at all — and silently, since the worker warns about an invalid value and
+# never about an unset one.
+#
+# The value is a property of this room and this microphone, and the worker
+# logs the measurement to set it from:
+#
+#   journalctl -u mecha-voice-worker -f | grep "parakeet segment gated:"
+#
+# Left commented so the default (0.020) applies until somebody has measured;
+# the slot is here so it is visible that there is one.
+#Environment=MECHA_VOICE_ECHO_RMS=0.020
 ExecStart=/home/ljchang/models/voice-worker-venv/bin/python scripts/voice/worker.py --host 127.0.0.1 --port 7860 --allowed-origins https://YOUR-HOST.YOUR-TAILNET.ts.net https://YOUR-HOST.YOUR-TAILNET.ts.net:8443
 Restart=on-failure
 RestartSec=5

@@ -171,7 +171,68 @@ export function createVoiceSession(opts = {}) {
     } else if (!on && thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
   }
 
-  let pc = null, dc = null, micStream = null, meterTrack = null, levelRAF = 0, ended = false;
+  let pc = null, dc = null, micStream = null, levelTimer = 0, ended = false;
+  /* Is the bot audible right now? Held so a VAD edge caused by our own
+     speaker cannot be rendered as the owner talking - see `onRtvi`. */
+  let botSpeaking = false;
+
+  /* The mic level, read from **WebRTC's own sender stats** rather than from
+     a WebAudio tap on the microphone.
+
+     This used to analyse a CLONE of the mic track, to dodge a known WebKit
+     trap: echo cancellation is silently disabled on a getUserMedia track
+     once WebAudio attaches to it, and a phone that hears its own speaker
+     becomes a bot talking to itself (observed in production 2026-08-24 -
+     transcripts attributed to the owner that were the TTS). But a clone is
+     not a different microphone. It shares the source, so on the browsers
+     where that trap is real the clone can disarm the canceller for the
+     track actually being sent, and the defence reads as one without being
+     one - the worst kind, because the failure it leaves behind is quiet
+     echo rather than a broken meter.
+
+     `media-source.audioLevel` needs no tap at all: the browser is already
+     measuring the track it is encoding, *after* its own processing, so the
+     ring shows what the far end will hear. Nothing on this page touches the
+     mic through WebAudio any more, which is a property that can be checked
+     by reading the file rather than a threshold that has to be tuned.
+
+     The cost, stated: ~10 Hz instead of a frame rate, and a browser that
+     reports no `audioLevel` gets a still ring. A flat ring is a cosmetic
+     loss; a disabled echo canceller is the bug this whole change is about,
+     so the trade is not close. */
+  const LEVEL_POLL_MS = 100;
+  let levelBusy = false;
+  function startMeter() {
+    if (levelTimer) return;
+    levelTimer = setInterval(async () => {
+      // `getStats` is a promise, and setInterval does not wait for one: on a
+      // loaded phone a slow read would otherwise stack ticks behind it and
+      // deliver them in a burst, which is a ring that stutters rather than
+      // breathes. A skipped tick is the right answer - the next one is 100ms
+      // away and carries a fresher number than the one being skipped.
+      if (levelBusy || !pc) return;
+      levelBusy = true;
+      let level = null;
+      try {
+        (await pc.getStats()).forEach(r => {
+          if (r.type === "media-source" && r.kind === "audio" && typeof r.audioLevel === "number") level = r.audioLevel;
+        });
+      } catch { /* a closing connection; the next tick is the recovery */ }
+      finally { levelBusy = false; }
+      // Re-checked *after* the await, not only before it: a tick already in
+      // flight when `end()` runs resolves afterwards, and would light the
+      // ring back up a moment after the teardown zeroed it - leaving it lit
+      // for the whole of the idle state that follows.
+      if (!pc) return;
+      // A display curve, not a measurement: audioLevel is linear amplitude,
+      // where ordinary speech sits low enough that a linear ring barely
+      // moves. The square root spends the ring's travel where the voice is.
+      if (level !== null) cfg.onLevel(Math.min(1, Math.sqrt(level) * 2));
+    }, LEVEL_POLL_MS);
+  }
+  function stopMeter() {
+    clearInterval(levelTimer); levelTimer = 0;
+  }
   /* `linked` is "we have been connected once", which is what separates a
      first connect (chime, start the meter) from a recovery (neither, or the
      call chimes and stacks a second animation loop every time wifi coughs).
@@ -191,20 +252,38 @@ export function createVoiceSession(opts = {}) {
 
   function onRtvi(msg) {
     switch (msg.type) {
+      /* Both user-speaking edges are ignored while the bot is audible.
+         They come from the VAD, which on a laptop without headphones fires
+         on the speaker as readily as on the room - and "listening" written
+         under a reply that is still being spoken is the harness saying it
+         heard you when what it heard was itself. It is not feedback that is
+         being withheld: a turn starts on a *transcription* here, never on
+         the VAD (worker.py), so a barge-in does not take effect at this
+         edge either way, and the state that follows a real one is the same
+         state it would have shown. */
       case "user-started-speaking":
+        if (botSpeaking) break;
         thinkingSound(false); setState("listening", "listening"); break;
       case "user-stopped-speaking":
+        if (botSpeaking) break;
         setState("connecting", "…"); break;
       case "user-transcription":
         cfg.onTranscript({ who: "user", text: msg.data.text, interim: !msg.data.final }); break;
       case "bot-llm-started": // request in flight, no first token: D7's trigger
+        // Also the watchdog on the flag above: a request in flight is by
+        // definition not a reply being played, so a `bot-stopped-speaking`
+        // that never arrived cannot leave the user's own edges suppressed
+        // for the rest of the call.
+        botSpeaking = false;
         thinkingSound(true); setState("thinking", "thinking"); break;
       case "bot-tts-started":
       case "bot-started-speaking":
+        botSpeaking = true;
         thinkingSound(false); setState("speaking", "speaking"); break;
       case "bot-transcription":
         cfg.onTranscript({ who: "bot", text: msg.data.text, interim: false }); break;
       case "bot-stopped-speaking":
+        botSpeaking = false;
         cfg.onBotTurnEnd(); setState("listening", "listening"); break;
       case "server-message":
         // Custom server→client payloads share one RTVI type, so they are
@@ -232,7 +311,7 @@ export function createVoiceSession(opts = {}) {
     // Every per-call flag resets together: a session object that is
     // reconnected must not inherit the previous call's grace window or the
     // reason the previous one ended.
-    ended = false; linked = false; endLabel = null;
+    ended = false; linked = false; endLabel = null; botSpeaking = false;
     clearTimeout(dropTimer); dropTimer = null;
     await AC.resume();
     setState("connecting", "connecting…");
@@ -246,25 +325,6 @@ export function createVoiceSession(opts = {}) {
       setState("idle", "microphone refused — tap to retry");
       return;
     }
-    // The meter taps a CLONE of the mic track, never the one WebRTC
-    // sends: WebKit silently disables echo cancellation on a getUserMedia
-    // track once WebAudio attaches to it, and a phone that hears its own
-    // speaker becomes a bot talking to itself (observed in production,
-    // 2026-08-24: transcripts attributed to the owner that were the TTS).
-    meterTrack = micStream.getAudioTracks()[0].clone();
-    const meterStream = new MediaStream([meterTrack]);
-    const src = AC.createMediaStreamSource(meterStream);
-    const analyser = AC.createAnalyser(); analyser.fftSize = 512;
-    src.connect(analyser);
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    const step = () => {
-      analyser.getByteTimeDomainData(data);
-      let peak = 0;
-      for (const v of data) peak = Math.max(peak, Math.abs(v - 128) / 128);
-      cfg.onLevel(Math.min(1, peak * 2.2));
-      levelRAF = requestAnimationFrame(step);
-    };
-
     pc = new RTCPeerConnection();
     micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
     pc.addTransceiver("audio", { direction: "recvonly" });
@@ -312,12 +372,13 @@ export function createVoiceSession(opts = {}) {
         cfg.onLink(true);
         setState("listening", "listening");
         // A recovery is not a new call. Chiming again would announce an
-        // arrival that already happened, and a second `requestAnimationFrame`
-        // would leave two meter loops running for the rest of the session.
+        // arrival that already happened, and a second meter would leave two
+        // polling loops running for the rest of the session (`startMeter` is
+        // idempotent for the same reason, belt and braces).
         if (!linked) {
           linked = true;
           chimeStart();
-          levelRAF = requestAnimationFrame(step);
+          startMeter();
         }
       } else if (state === "disconnected") {
         if (ended || dropTimer) return;
@@ -388,10 +449,9 @@ export function createVoiceSession(opts = {}) {
     clearTimeout(dropTimer); dropTimer = null;
     thinkingSound(false);
     chimeEnd();
-    cancelAnimationFrame(levelRAF);
+    stopMeter();
     cfg.onLevel(0);
     if (micStream) micStream.getTracks().forEach(t => t.stop());
-    if (meterTrack) meterTrack.stop();
     if (pc) { try { pc.close(); } catch { /* already gone */ } }
     pc = null; dc = null;
     cfg.onLink(false);

@@ -755,6 +755,210 @@ Verified both directions: synthetic noise at rms 0.0122 — matching the
 0.0124 that interrupted the real call — starts no turn and yields no
 transcript, while a spoken question still transcribes and is answered.
 
+**On speakers, the microphone still heard the reply — three layers,
+2026-09-02.** Reported from a real call without headphones: the mic takes the
+bot's own voice as the owner talking. Every existing defence was in place and
+none of them was the whole answer, so the fix is layered, and each layer is
+named by what it can and cannot do.
+
+- **The mic meter was the suspect worth removing, not tuning.** The page asked
+  for `echoCancellation: true` and analysed a *clone* of the mic track to dodge
+  the known WebKit trap (WebAudio attaching to a getUserMedia track silently
+  disables the canceller — §7's 2026-08-24 sighting). But a clone is not a
+  different microphone: it shares the source, so on the browsers where the trap
+  is real the clone can disarm the canceller for the track actually being sent,
+  and the defence reads as one without being one. The meter now reads
+  `media-source.audioLevel` off `RTCPeerConnection.getStats()`, so **nothing on
+  the page touches the mic through WebAudio at all** — a property that can be
+  checked by reading the file rather than a threshold that has to be tuned.
+  Costs a frame-rate ring (10 Hz now) and gives a still ring on a browser that
+  reports no `audioLevel`; a flat ring is cosmetic, a disabled canceller is the
+  bug.
+- **The energy floor is now graded on whether our own speaker was playing.**
+  0.010 in a silent room as before, `MECHA_VOICE_ECHO_RMS` (default 0.020)
+  while the bot is audible. It sits above room noise (~0.009) and below the
+  owner's measured speech (~0.024), so a person raising their voice over a
+  reply still interrupts and a speaker across the room does not — this section's
+  own warning applies, that 0.010 was tuned on a different microphone, so the
+  gated path now **logs the RMS it gated at** and the env var exists to be set
+  from that rather than from a guess — `journalctl -u mecha-voice-worker -f |
+  grep "parakeet segment gated:"`, since `MECHA_LOG` is mecha's *Rust* tracing
+  filter and nothing in the worker reads it. It is bounded below by `MIN_SEGMENT_RMS`
+  rather than by zero: under it the graded gate runs *backwards*, holding our
+  own echo to a lower bar than room noise, and nothing would say so because
+  0.005 is a perfectly good RMS — one keystroke from the value the comment
+  invites you to type. "Was the speaker playing" comes from
+  `BotStartedSpeakingFrame`/`BotStoppedSpeakingFrame`, which pipecat pushes
+  **upstream as well as downstream**, so the STT service sees them where it
+  already stands; they are the *transport's* edges, firing when audio starts
+  being written out rather than when TTS text was generated, plus a 1.2 s tail
+  for the client's jitter buffer and the room.
+- **The text filter went fuzzy, and got tests.** §6 item 10 already calls it a
+  heuristic on the untrusted-content path; it was also an *exact substring*
+  test against one spoken phrase, which is two failures. Recognition of a
+  speaker across a room is not verbatim — one word lands differently and the
+  match is gone — and TTS is handed a sentence at a time, so an echo running
+  over a sentence boundary was contained in no single phrase. It now matches
+  the transcript against the joined window by an **ordered** match — a longest
+  common subsequence — and calls it echo only when the transcript is at least
+  eight words long and nothing beyond a small, length-scaled slip allowance is
+  left over, with exact containment kept as before.
+
+  **Every fraction tried here silenced a correction, and raising it only moved
+  the failure up the scale.** An unweighted bag of words at 0.6 silenced "no,
+  cancel it" over "…or would you rather I cancel it?". Adding a four-word floor
+  moved it to "can you move it to Friday" over "I can move it to Thursday" —
+  four matched, 0.667. Raising the bar to 0.8 moved it to "book the small room
+  for Tuesday" over "Shall I book the room for Tuesday?" — five of six. Each is
+  a correction, and each shares most of its words with the offer it corrects,
+  because that is what correcting an offer sounds like. Ordering is no defence
+  either: a counter-instruction reuses the offer's word order.
+
+  So the question is not *how much of this was ours* but **is any of it not
+  ours**, and **is all of it in one place**. An echo is our own sentence coming
+  back; a person saying something is saying something we did not say, and one
+  new word is the whole signal — "small", "Friday". One unmatched word is
+  forgiven only at eight words or more, where a mangled word is plausibly
+  noise; at six a single unmatched word is the point of the sentence.
+
+  The second half is what that allowance made necessary, and it is the same
+  length-dependence in a new costume. The window is not one offer, it is every
+  phrase of the last twenty seconds joined together, so a *follow-up* on the
+  same topic can gather a whole sentence's worth of words out of it without
+  repeating any phrase: "can you also add a note to that one" matches eight of
+  its nine words, in order, against a twenty-five word reply — leaving one
+  over, which the allowance forgives. What it does not have is contiguity. So
+  the match must be tight as well as complete: an echo is a *contiguous
+  stretch* of what we said, and one skipped word is the same recognition slip
+  seen from the other side. Measured across the matrix, real echoes span
+  1.00-1.17 words of window per word matched; that follow-up spans 1.75 and a
+  correction 2.50. Both guards are kept because neither implies the other — a
+  follow-up can leave nothing over and still be gathered from all over the
+  window, and a correction can be perfectly contiguous and still say one thing
+  we never did.
+
+  The allowance **grows with the sentence**, and that is recall rather than
+  laxity. Recognition error is roughly per-word, so a sixteen-word echo comes
+  back with two words mangled about as often as an eight-word one comes back
+  with one — and a flat allowance of one made the filter weakest exactly where
+  an echo is easiest to be sure about: "your first meeting tomorrow is at nine
+  with the finance team in a small conference groom" is fourteen of our sixteen
+  words, in order, in one tight span, and it arrived as the owner's turn. Zero
+  slips below eight words, one above, one more per sixteen after that. This is
+  not the ratio the section rejected, and the difference is where each is
+  loosest: a ratio is loosest at short lengths, which is where corrections
+  live; this is loosest at long ones, where what it forgives is a mis-heard
+  word rather than the point of the sentence. Because turn-start is transcription-based, a
+  gated transcript is not a degraded turn but no turn at all, which is what
+  makes this the expensive direction to be wrong in.
+
+  Ordering still earns its place: real echo arrives with words dropped from the
+  middle, so contiguity is too strict, and a coincidental match rarely survives
+  having to be in order — "actually cancel that" cannot match a window that
+  says "that" before "cancel".
+
+  And the band no text rule can decide is worth stating rather than tuning at:
+  a person repeating our own proposal back ("move it to Thursday") *is*, as
+  text, our sentence. **That band is answered by refusing to answer it** — one
+  floor of eight words, both arms, every overlap state, below which this filter
+  says nothing at all.
+
+  The earlier version split that floor by circumstance and kept silencing
+  turns, because the circumstances do not distinguish what they seemed to.
+  `bot_speaking` at transcribe time means the owner spoke *over* a reply still
+  playing — echo on speakers, a barge-in on headphones, and nothing in the text
+  tells them apart. The 1.2 s tail is not a speakerphone condition either: it
+  starts when the last sample is written out, and a person hears it a jitter
+  buffer later and answers within a second, so "inside the tail" is where a
+  prompt answer to a question lands. Most answers are "audible".
+
+  It is also the correction to a claim this section made twice: the energy
+  floor is **not** a layer behind the text filter. `_transcribe` gates on RMS
+  and returns, then runs the filter on whatever survived — the two are ANDed,
+  so clearing the raised bar does not exempt a transcript, it only earns it the
+  right to be killed by the text test. Anything the filter rejects is rejected
+  finally, which is why it may only speak where a person is unlikely to have
+  said exactly that.
+
+  **The cost, stated accurately.** A short echo that clears the raised RMS
+  floor becomes a turn — and a spoken turn is not always an answer. Production
+  runs `mecha serve --voice-yes`, which sets `TurnOpts::approve_all` and runs
+  the spoken turn with the approver **off**. Sends still stage through the
+  outbox and the trifecta interlock is untouched, but a `destructive` local
+  call is gated by the approver alone, and `mail_triage` is deliberately not
+  outbox-routed. So on speakers, mecha offering "I can cancel it, delete it,
+  or do it now" and hearing "delete it" back is that call with no human in it,
+  and below the floor the only thing left is `ECHO_SEGMENT_RMS` — a guess
+  pending measurement, shipped commented out.
+
+  The floor stays, because the other direction is worse in the way that
+  matters most: a wrong suppression is not a degraded turn but no turn, and
+  the owner repeats themselves into a mic that keeps discarding them. **Open
+  for the owner**: the sub-eight-word band wants a defence with more state
+  than a text filter has — a spoken turn that is a verbatim span of the offer
+  it answers might reasonably not inherit `approve_all`. That is a change to
+  the approval model in `mecha-cli`, not to this filter, and it is not made
+  here.
+
+  The timing layer's own trap belongs beside them: the segment start is
+  **consumed** when read, not left in place. `_bot_audible_until` only ever
+  increases, so a start left behind does not merely go stale — it latches.
+  Once it is older than the most recent `BotStoppedSpeakingFrame`, every later
+  segment reads as overlapping the speaker for the rest of the call, floor and
+  text filter both armed, the log line reading `over_speaker=True` beside a
+  plausible float. `VADUserStartedSpeakingFrame` arriving for turn one and then
+  stopping is all it takes. Read-and-clear collapses that onto the diagnostic
+  that already exists: a segment with no start of its own reports `None`
+  rather than borrowing the last one's.
+
+  And the fuzzy arm now runs **only** when the speaker was audible, rather
+  than at a higher bar: with nothing playing there was no echo to have, so
+  resemblance is a person agreeing in the words of the question they were
+  asked. That also retired a margin far too thin to keep — "yes, move the
+  seminar to Thursday" against "Shall I move the seminar to Thursday?" scored
+  0.833 against 0.85, one word from silencing the plainest yes in the language.
+
+  The **verbatim** arm needed the same floor, and for the same reason one door
+  over. It was a *character* count — 8 — which is two short words: "go ahead"
+  is 8, "cancel it" and "delete it" are 9, and each is a substring of the reply
+  that just offered it. So the plainest confirmations in the language were
+  dropped as echo, and dropped on headphones too, since that arm runs whether
+  or not the speaker was playing. Joining the window had widened the surface it
+  arrives on, from one phrase to every cross-boundary span in twenty seconds.
+  It now takes a word floor, which costs it nothing it is for: a real verbatim
+  echo of a spoken sentence is much longer than three words. It stays
+  unconditional, because the timing layer can be wrong and this is the fallback
+  for when it is — and it takes the same eight-word floor as the fuzzy arm,
+  since a fallback only ever needs to catch a whole sentence.
+
+  **The window is per-connection**, like everything else per-call in the
+  worker. It was a module global, which mattered less when matching was
+  per-phrase and exact: a cross-call collision then needed one caller to say
+  another's sentence verbatim. Joining the window and matching by ordered
+  subsequence made it need only resemblance — to a haystack that was the union
+  of every live call, so a second caller could be judged against words it never
+  heard, and contamination only ever *adds* echo verdicts. The `BotSpeech`
+  instance now hangs off the per-connection `ParakeetSTT`, and `run_bot` hands
+  the same object to `LocalTTS` as a **required** constructor argument. Not
+  optional with a `None` check: that made a missing wire silent — the TTS would
+  speak into nothing, the read side would ask a window that could never fill,
+  every transcript would come back "not an echo", and the log line would read
+  `over_speaker=True` with no verdict, which is to say healthy. The global it
+  replaced could not be wired wrong; the price of per-connection state is that
+  it can be, so a missing wire is a `TypeError` at startup instead.
+
+  It moved to `scripts/voice/echo_filter.py` — a pure module with no pipecat
+  import — for the sole reason that testing it used to mean standing up a GPU
+  box and a WebRTC stack, and a heuristic that decides whether a person's turn
+  happens at all had no test of any kind.
+  `python3 scripts/voice/test_echo_filter.py`.
+
+The bias is written down where the thresholds are: a dropped turn costs a
+repeat, a false turn costs an interruption mid-sentence and a reply to nothing
+— but not at any price, because the person saying "no, stop" over a wrong
+answer is exactly who this must not silence. D4 is untouched: barge-in remains
+"finish the phrase and it stops". The structural fix is still §6 item 10.
+
 **Both standbys were removed, 2026-08-25 — a spare nothing fails over to
 is not a spare.** Voxtral (`:8082`) had held the STT seat until the swap
 that morning and then sat idle for the rest of the day: **0 requests**,
