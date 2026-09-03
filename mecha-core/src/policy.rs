@@ -160,6 +160,13 @@ pub struct RuleConfig {
     pub not_match: Vec<String>,
     /// Shown to the model in a refusal, so a `forbid` says why.
     pub justification: Option<String>,
+    /// Set by `Config::merge_file` for a rule a *project* layer added; never
+    /// read from a file. `setup` needs it: a project `prompt` on a tool the
+    /// live outbox routes is set aside with a warning where the operator's
+    /// would fail the start — and under `--no-outbox` both are live, which is
+    /// why neither is dropped at load, where the flag is not yet known.
+    #[serde(skip)]
+    pub from_project: bool,
 }
 
 impl RuleConfig {
@@ -1042,6 +1049,7 @@ mod tests {
             examples: Vec::new(),
             not_match: Vec::new(),
             justification: None,
+            from_project: false,
         }
     }
 

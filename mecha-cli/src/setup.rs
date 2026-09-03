@@ -208,11 +208,8 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // silently-degrading-guard shape. `opts.no_rules` is set by one caller,
     // `mecha eval`'s `force_reproducible`, because a scorecard must not vary
     // with this machine's rules file.
-    let policy = Arc::new(if opts.no_rules {
-        mecha_core::policy::ExecPolicy::empty()
-    } else {
-        mecha_core::policy::ExecPolicy::from_config(&cfg.rules, cfg.approval.strict_inline_eval)?
-    });
+    // (Built below, after the outbox route, because which rules are live
+    // depends on whether the route is.)
 
     // The outbox route. Opening the store here — not lazily at first stage —
     // makes an unwritable outbox a startup error instead of a mid-run
@@ -231,6 +228,72 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     } else {
         None
     };
+
+    // Which rules are live is the route's to say, so the policy is built
+    // here, after it. An `allow` or `prompt` on a tool the live route stages
+    // judges nothing (staging runs first, release reads none, a person
+    // reviews the staged call anyway): the operator's fails the start; a
+    // project layer's is set aside with a warning, because a cloned
+    // repository must not be able to fail every `mecha` command in its
+    // directory — and neither is dropped at *load*, where `--no-outbox` is
+    // not yet known and the same rule is the one gate left (PR #148's
+    // review, twice). A `forbid` is a second lock on either surface and is
+    // never touched. `--tool` narrowing is the caller saying so, as for the
+    // unregistered-tool warning below.
+    let mut live_rules: Vec<mecha_core::policy::RuleConfig> = cfg.rules.clone();
+    if let Some(route) = &outbox {
+        if !opts.no_rules {
+            let superseded: Vec<(usize, &mecha_core::policy::RuleConfig)> = cfg
+                .rules_superseded_by_staging()
+                .into_iter()
+                .filter(|(_, r)| {
+                    excluded_by_allowlist(std::slice::from_ref(&r.tool), &opts.tools).is_empty()
+                })
+                .filter(|(_, r)| route.routes(&r.tool))
+                .collect();
+            let set_aside: Vec<usize> = superseded
+                .iter()
+                .filter(|(_, r)| r.from_project)
+                .map(|(i, _)| *i)
+                .collect();
+            if !set_aside.is_empty() {
+                eprintln!(
+                    "mecha: {} project-layer [[rule]] entr{} name a tool `[outbox] tools` routes \
+                     to staging and are set aside for this run — a staged call is reviewed at \
+                     release, not judged by rules",
+                    set_aside.len(),
+                    if set_aside.len() == 1 { "y" } else { "ies" }
+                );
+                let mut index = 0;
+                live_rules.retain(|_| {
+                    let keep = !set_aside.contains(&index);
+                    index += 1;
+                    keep
+                });
+            }
+            if let Some((i, rule)) = superseded.into_iter().find(|(_, r)| !r.from_project) {
+                anyhow::bail!(
+                    "[[rule]] #{} is a `{}` on `{}`, which `[outbox] tools` routes to staging. \
+                     While the route is on, a staged call is reviewed by a person at release \
+                     and never judged by rules, so this rule judges nothing. Write it as \
+                     `forbid` (a second lock, and the gate `--no-outbox` runs against), remove \
+                     it, or take the tool out of `[outbox] tools`",
+                    i + 1,
+                    match rule.decision {
+                        mecha_core::policy::RuleDecision::Allow => "allow",
+                        mecha_core::policy::RuleDecision::Prompt => "prompt",
+                        mecha_core::policy::RuleDecision::Forbid => "forbid",
+                    },
+                    rule.tool
+                );
+            }
+        }
+    }
+    let policy = Arc::new(if opts.no_rules {
+        mecha_core::policy::ExecPolicy::empty()
+    } else {
+        mecha_core::policy::ExecPolicy::from_config(&live_rules, cfg.approval.strict_inline_eval)?
+    });
 
     // Subagents are built from the same tool pool but get their own registry —
     // an allowlist, not an inheritance. Do this before the parent takes
@@ -351,37 +414,6 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // and a `forbid` is a second lock on either surface, so it is never
     // refused (PR #148's review). Not under `--no-rules`: `eval` grades the
     // model, not the machine, and has already switched the rules off.
-    if let Some(route) = &outbox {
-        if !opts.no_rules {
-            // `--tool` narrowing is the caller saying so, as for the
-            // unregistered-tool warning above — and a hard failure on a run
-            // that deliberately excludes the tool is a stronger reason to
-            // stand aside than a warning was, not a weaker one.
-            if let Some((i, rule)) = cfg
-                .rules_superseded_by_staging()
-                .into_iter()
-                .filter(|(_, r)| {
-                    excluded_by_allowlist(std::slice::from_ref(&r.tool), &opts.tools).is_empty()
-                })
-                .find(|(_, r)| route.routes(&r.tool))
-            {
-                anyhow::bail!(
-                    "[[rule]] #{} is a `{}` on `{}`, which `[outbox] tools` routes to staging. \
-                     While the route is on, a staged call is reviewed by a person at release \
-                     and never judged by rules, so this rule judges nothing. Write it as \
-                     `forbid` (a second lock, and the gate `--no-outbox` runs against), remove \
-                     it, or take the tool out of `[outbox] tools`",
-                    i + 1,
-                    match rule.decision {
-                        mecha_core::policy::RuleDecision::Allow => "allow",
-                        mecha_core::policy::RuleDecision::Prompt => "prompt",
-                        mecha_core::policy::RuleDecision::Forbid => "forbid",
-                    },
-                    rule.tool
-                );
-            }
-        }
-    }
     if let Some(outbox) = outbox {
         // A typo in `[outbox] tools` means the *real* tool executes unrouted,
         // silently — the degrading-sandbox shape. It cannot be a hard error

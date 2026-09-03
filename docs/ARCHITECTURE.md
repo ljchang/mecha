@@ -1524,12 +1524,14 @@ refusal. The specification and the survey behind it are
   unstaged, so a rule on it judges and loads), and a
   *project* layer can reach the contradiction from either side, and each
   time it is the project's half that goes, with a warning, never the
-  operator's: a project `prompt` on a routed tool is dropped after `apply`
-  over the merged state (a project may un-route as well as route; a project
-  `forbid` stays, being a second lock) and over
-  that file's rules only — `apply` appends, so the index where the file's
-  rules begin is the provenance, and without it any project file in the
-  directory silently disarmed the operator's own contradiction — and a
+  operator's: a project `prompt` on a routed tool is kept at load and
+  marked as the project's (`RuleConfig::from_project`; `apply` appends, so
+  the index where the file's rules begin is the provenance), and `setup`
+  sets it aside with a warning where the route is live — never at load,
+  where `--no-outbox` is not yet known and the same `prompt` is the one gate
+  forcing a `consult`; the first version dropped it at load and so kept the
+  `--no-outbox` reasoning for `forbid` while silently denying it to
+  `prompt` — and a
   project `[outbox] tools` entry naming a tool the global config has a rule
   for is cut before `apply` — routing it would have made the operator's
   `forbid` a staged draft a person can release, the one reconciliation that
