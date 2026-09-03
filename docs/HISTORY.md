@@ -3578,8 +3578,10 @@ agreed point for point — Codex over the upstream source diff, the PR
 workflow over the tree — and the tests pin both halves: a matching tag from
 either precondition header gets a `304` with both validators, and a stale
 tag gets `200` with a new tag, which is the half that protects against the
-2026-08-29 "the feature had gone" incident. Not deployed at merge; the
-`update` skill's step-1b probe tells the two binaries apart.
+2026-08-29 "the feature had gone" incident. Not deployed at merge —
+installed and restarted at 18:04 the same day, once a peer's inference run
+had released the model server, and the skill's step-1b probe confirmed the
+new binary from the served page (a `304` naming its `ETag`, not a bare one).
 
 ## The measurement record
 
