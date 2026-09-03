@@ -157,8 +157,13 @@ from echo_filter import BotSpeech, echo_rms, overlapped
 # speaker was playing, and a margin computed over turns in silence is not a
 # margin against the ones it judges:
 #
-#     journalctl -u mecha-voice-worker \
+#     journalctl --user -u mecha-voice-worker \
 #       | grep -E "_bot_(started|stopped)_speaking|parakeet: duration"
+#
+# `--user` because this is a user unit: without it the command prints "No
+# entries", which reads like a quiet worker rather than a wrong command.
+# Once a call has been made against *this* file, `over_speaker=` is on the
+# `parakeet:` line and the edges need no correlating at all.
 #
 # Named precisely because the argument for having a knob at all is that the
 # measurement is checkable, and an instruction that does not work makes that

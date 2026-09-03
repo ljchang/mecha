@@ -1457,19 +1457,6 @@ async fn completion(
     if echoed {
         tracing::info!("spoken turn repeats the last reply verbatim — approvals stay on");
     }
-    if echoed {
-        // Which arm dropped it, because they mean different things to
-        // whoever reads the log: one is the assistant's own voice coming
-        // back, the other is a gate that could not be evaluated.
-        if repeats_the_last_reply {
-            tracing::info!("spoken turn repeats the last reply verbatim — approvals stay on");
-        } else {
-            tracing::info!(
-                "spoken turn fell through to the facade's own conversation — the echo \
-                 check has no matching history, so approvals stay on"
-            );
-        }
-    }
     // What this cannot narrow, said plainly rather than left to be found: a
     // facade started with `--yes` already carries `ModeApprover { Allow }` on
     // the agent's own context, so `approve_all` is false, this check does
