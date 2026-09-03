@@ -163,6 +163,216 @@ pub(crate) fn open_spoken_turn(text: &str, previous_turn_was_spoken: bool) -> St
     }
 }
 
+/// Words as an echo comparison sees them: lowercase, punctuation gone.
+fn spoken_words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The shortest utterance [`echoes_the_last_reply`] will call an echo.
+///
+/// Two, argued in that function's docs. Declared *above* them rather than
+/// between them and the `fn`, which is where it first landed: a `const` in
+/// that slot silently takes the doc comment with it, leaving the security-
+/// critical function it describes with none at all. Found on review.
+const MIN_SPAN_WORDS: usize = 2;
+
+/// Is this utterance, word for word, a piece of what we just said?
+///
+/// **The last thing standing between a speakerphone and an unapproved
+/// destructive call.** A spoken turn runs with the approver off under
+/// `--voice-yes`, and `mail_triage` is `destructive`, gated by the approver
+/// alone and deliberately not outbox-routed. So mecha offering "I can cancel
+/// it, delete it, or do it now" and hearing "delete it" back is that call
+/// with nobody asked — and the voice worker's own filters cannot help here,
+/// because at two or three words an echo and the plainest possible answer are
+/// the same string. That is not a threshold that wants tuning; it is a fact
+/// about short English, and it is why this gate is on the *approval* rather
+/// than on the audio.
+///
+/// A **contiguous span** and not a bag of words, for the reason six rounds of
+/// the worker's text filter established: a person correcting an offer reuses
+/// most of its words, so anything looser silences the corrections this is
+/// meant to leave alone. "Move it to Friday" against "I can move it to
+/// Thursday" is not a span of it and keeps its standing yes.
+///
+/// Any length, deliberately: a long verbatim repeat is *more* obviously our
+/// own voice, not less. That is the upper bound. The lower bound used to
+/// rest on a claim this branch went on to disprove — "the cost of being
+/// wrong is small, the turn still happens, it is simply approved the way a
+/// typed one would be". It is not. A narrowed turn falls back to
+/// `WebApprover` over a `ws.mode` that starts at `ReadOnly` and only moves
+/// when someone clicks, and `WebApprover` short-circuits to `ModeApprover`
+/// for every mode that is not `Ask` — so a false positive costs the turn
+/// every non-read-only tool, on both doors.
+///
+/// So the lower bound has to be an actual bound, and until this was found
+/// on review there was none: one word appearing anywhere in the reply was
+/// a span, and against *"I can move it to Thursday if you want me to."*
+/// hearing `"Thursday"` cost the turn every tool. `MIN_SPAN_WORDS` is two,
+/// which is where the first paragraph's argument actually starts — "delete
+/// it" is the case this gate exists for, and it is two words. A single
+/// word is left alone on purpose: it is the band where a span is weakest
+/// evidence and collisions are commonest, and the pre-existing behaviour
+/// there is what this branch inherited rather than something it chose.
+///
+/// The gate is cheap to be wrong about only because being wrong is rare,
+/// never because the consequence is mild — which is the argument for
+/// replacing it with the timing signal rather than loosening it.
+pub(crate) fn echoes_the_last_reply(utterance: &str, last_reply: &str) -> bool {
+    let heard = spoken_words(utterance);
+    let said = spoken_words(last_reply);
+    if heard.len() < MIN_SPAN_WORDS || said.len() < heard.len() {
+        return false;
+    }
+    said.windows(heard.len()).any(|w| w == heard.as_slice())
+}
+
+#[cfg(test)]
+mod echo_span_tests {
+    /// Both doors narrow, which the unit cases below cannot say.
+    ///
+    /// They measure `echoes_the_last_reply`; the guarantee is that each path
+    /// to a spoken run *calls* it, and the first version of this branch wired
+    /// only the hosted one. Driving either for real means standing up a
+    /// facade or a whole session state, so this reads the source — the same
+    /// `include_str!` idiom `serve/review.rs` uses on the Svelte components,
+    /// with the same limit: it pins that the call is written, not that it
+    /// runs.
+    #[test]
+    fn the_facade_slot_narrows_before_it_grants() {
+        let src = include_str!("mod.rs");
+        // The *guard*, not merely the call. An earlier version asserted that
+        // `echoes_the_last_reply` appeared somewhere above the grant, which a
+        // change computing `echoed` and then ignoring it would have passed.
+        let grant = src
+            .find("\n    if shared.mount.approve_all")
+            // Line-bounded, not byte-bounded: `&src[i..i + 60]` would
+            // panic on a char boundary the day a comment above the grant
+            // gains an em-dash within 60 bytes of it, turning a clear
+            // assertion failure into an unrelated one. `i` is the newline,
+            // so `i + 1` is always a boundary.
+            .map(|i| src[i + 1..].lines().next().unwrap_or_default())
+            .expect("the slot still grants the standing yes here");
+        assert!(
+            grant.contains("&& !echoed"),
+            "the facade's own slot grants `--voice-yes` ungated: {grant:?}"
+        );
+        // Bounded to `completion`'s body, and that is the whole assertion.
+        // Unbounded, `src.contains("echoes_the_last_reply(&text,")` matches
+        // the literal on this very line — `include_str!("mod.rs")` reads the
+        // test module too — so it was unconditionally true and could not
+        // fail. Found on review. That is the third time this file's
+        // source-reading tests have matched themselves, which is why the
+        // `chat.rs` sibling slices `begin_turn` first and why the needles
+        // below start with a real newline: in the file, this test's copies
+        // are a backslash and an `n`.
+        let i = src
+            .find("\nasync fn completion(")
+            .expect("the facade door still lives in `completion`");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`completion` still has a closing brace at column zero")];
+        assert!(
+            body.contains("echoes_the_last_reply(&text,"),
+            "`echoed` is no longer computed from the span rule inside `completion`"
+        );
+        assert!(
+            body.contains("if shared.mount.approve_all && !echoed {"),
+            "the grant this test bounds is not in `completion` any more"
+        );
+    }
+
+    use super::echoes_the_last_reply;
+
+    const OFFER: &str = "I can cancel it, delete it, or do it now — which would you like?";
+
+    /// One word is not evidence, and until this was found on review it was.
+    ///
+    /// `heard.is_empty()` was the only lower bound, so any single word
+    /// appearing anywhere in the reply matched — and a false positive is not
+    /// cheap: it leaves an approver that is `Blocked` for every non-read-only
+    /// tool. "Thursday" is the case that showed it, because it is a word a
+    /// person says on its own in answer to a question containing it.
+    #[test]
+    fn a_single_word_is_below_the_floor() {
+        let said = "I can move it to Thursday if you want me to.";
+        for heard in ["Thursday", "move", "to", "want"] {
+            assert!(
+                !echoes_the_last_reply(heard, said),
+                "{heard:?} alone narrowed the turn"
+            );
+        }
+        // Two is the floor because two is where the gate's own reason to
+        // exist starts: "delete it" against an enumerated offer.
+        assert!(echoes_the_last_reply("delete it", OFFER));
+        assert!(echoes_the_last_reply("move it", said));
+    }
+
+    #[test]
+    fn a_span_of_the_offer_is_our_own_voice() {
+        // Each is a contiguous piece of the sentence that proposed it, and
+        // each is a `destructive` instruction if it reaches the model as a
+        // turn with the approver off.
+        for heard in [
+            "delete it",
+            "cancel it",
+            "do it now",
+            "cancel it, delete it",
+        ] {
+            assert!(
+                echoes_the_last_reply(heard, OFFER),
+                "{heard:?} was not recognised as our own words"
+            );
+        }
+    }
+
+    #[test]
+    fn punctuation_and_case_do_not_hide_it() {
+        assert!(echoes_the_last_reply("Delete it.", OFFER));
+        assert!(echoes_the_last_reply("  DELETE  IT  ", OFFER));
+    }
+
+    #[test]
+    fn a_correction_keeps_its_standing_yes() {
+        // The failure this must not have. A person correcting an offer reuses
+        // most of its words, which is exactly why the test is a contiguous
+        // span rather than an overlap — six rounds of the worker's text
+        // filter established that the loose version silences these.
+        let offer = "I can move it to Thursday if you want me to.";
+        for heard in [
+            "move it to friday",
+            "no, not thursday",
+            "can you move it to friday instead",
+            "actually cancel that",
+        ] {
+            assert!(
+                !echoes_the_last_reply(heard, offer),
+                "{heard:?} lost its approval mode"
+            );
+        }
+    }
+
+    #[test]
+    fn an_answer_longer_than_the_reply_is_not_a_span_of_it() {
+        assert!(!echoes_the_last_reply(
+            "delete it and then tell me what is left",
+            OFFER
+        ));
+    }
+
+    #[test]
+    fn nothing_said_and_nothing_heard_are_both_false() {
+        assert!(!echoes_the_last_reply("", OFFER));
+        assert!(!echoes_the_last_reply("delete it", ""));
+    }
+}
+
 /// One voice session between runs: its conversation and its transcript.
 struct Slot {
     convo: Conversation,
@@ -1198,8 +1408,10 @@ async fn completion(
                 }
                 Hosted::Unknown => {
                     tracing::warn!(
-                        "voice call named chat session {chat_key:?}, which no front-end \
-                         holds — answering in a conversation of its own instead"
+                        "voice call named chat session {chat_key:?}, which is not a \
+                         valid session key — answering in a conversation of its own \
+                         instead. A valid key is created on demand, so this is the \
+                         caller's header, not a dropped session."
                     );
                     // `confirm_key` is still `chat:{chat_key}` below — this
                     // turn runs in the facade's own untracked slot instead,
@@ -1230,7 +1442,63 @@ async fn completion(
     // nothing below uses `?` until it has.
     let mut cx = (**shared.agent.context()).clone();
     cx.cancel = Some(cancel.clone());
-    if shared.mount.approve_all {
+    // The facade's own slot is the *second* door a spoken turn can take, and
+    // it needs the same narrowing the hosted one got.
+    //
+    // `completion` above only reaches `host.speak` when the caller named a
+    // chat session and the key was well-formed; a call with no
+    // `X-Chat-Session`, or one whose key is malformed, falls through to
+    // here — deliberately, because a dead call is a worse answer than an
+    // unshared one. (Not "a key no front-end holds": a valid key that no
+    // session exists for is *created*, so it never reaches this path.) But
+    // `--voice-yes` follows it down, so without this a verbatim "delete it"
+    // reaches `mail_triage` with nobody asked on exactly
+    // the path that skipped the gate. Wiring one of two doors is not a gate.
+    let last_reply = slot
+        .convo
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == mecha_core::message::Role::Assistant);
+    let repeats_the_last_reply =
+        last_reply.is_some_and(|m| echoes_the_last_reply(&text, &m.text()));
+
+    // No flag for the `Hosted::Unknown` fall-through, and the two rounds
+    // that put one here are the reason to say why. `VoiceHost::speak`
+    // returns `Unknown` from exactly one place — `!valid_key(key)` — and
+    // `ensure_session` creates a session for any *valid* key on demand. So
+    // the fall-through does not mean "a front-end dropped the session it
+    // was holding", which is what the comment used to say and what a gate
+    // was built on twice. It means the worker sent a malformed
+    // `X-Chat-Session`, which is a property of its configuration and
+    // constant for the whole call.
+    //
+    // Which makes the slot below the only conversation this caller has ever
+    // been spoken to in: the first turn has nothing to echo, and every turn
+    // after it is comparing against the reply the speaker actually heard.
+    // The check is right here as it stands. A flag keyed on the
+    // fall-through fired only on that first turn, bought nothing, and cost
+    // it every tool — `Ask` is `Blocked` non-interactively, the 2026-08-24
+    // failure — on the first spoken turn of any misconfigured worker.
+    let echoed = shared.mount.approve_all && repeats_the_last_reply;
+    if echoed {
+        tracing::info!("spoken turn repeats the last reply verbatim — approvals stay on");
+    }
+    // What this cannot narrow, said plainly rather than left to be found: a
+    // facade started with `--yes` already carries `ModeApprover { Allow }` on
+    // the agent's own context, so `approve_all` is false, this check does
+    // nothing, and the permissive approver is simply inherited. Detecting
+    // that through the `Approver` trait is not possible, and the only fix
+    // available on that surface is to refuse the turn outright — this door
+    // has no mode that can be moved at all, where the hosted one at least
+    // *can* be put into `Ask` from the page. (An earlier version of this
+    // sentence called that "the difference from the hosted door" and meant
+    // something stronger; see the correction thirty lines up.) Not taken,
+    // because `mecha-voice-serve` is inactive and disabled
+    // here (the mounted facade replaced it), so the change would be untested
+    // against any running thing. It is a real residual and it belongs in
+    // VOICE-RESEARCH beside the other three.
+    if shared.mount.approve_all && !echoed {
         cx.approver = Arc::new(mecha_core::tool::ModeApprover {
             mode: mecha_core::config::PermissionMode::Allow,
         });

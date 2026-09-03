@@ -129,20 +129,41 @@ import time as _time
 from echo_filter import BotSpeech, echo_rms, overlapped
 
 
-# The energy floor while our own speaker is playing. Echo that survives the
-# browser's canceller is far quieter than a voice at the microphone, so this
-# sits above the room-noise floor below and below the owner's measured speech
-# (~0.024 RMS) - a person raising their voice over a reply clears it, a
-# speaker across the room does not.
+# The energy floor while our own speaker is playing.
+#
+# The premise was that echo surviving the browser's canceller is far quieter
+# than a voice at the microphone. Measured 2026-09-03 against the only
+# population this floor judges — segments classified by the bot's own speaking
+# edges — that is not true on this hardware: real barge-ins land at 0.0141,
+# 0.0201 and 0.0311, and the one identified echo sits at 0.0257, *between*
+# them. No threshold separates those, and every one high enough to catch the
+# echo costs a turn observed in the same fortnight.
+#
+# (An earlier note here and at the VAD comment below put the owner's speech at
+# ~0.024. That figure predates the classification and is superseded by the
+# numbers above; `docs/VOICE-RESEARCH.md` carries the method so the next person
+# re-derives rather than inherits.)
+#
+# The sample is also of the wrong machine — all of it predates the mic-meter
+# repair that put the browser's echo canceller back in the path — so the
+# quantity wants re-measuring before this is tuned at all.
 #
 # Tunable because the right value is a property of *this room and this
 # laptop*, not of the code — and it is set in `mecha-voice-worker.service`,
 # which carries a commented slot for it, never in a shell: systemd inherits no
 # login environment, so an `export` reaches this process not at all. The
-# measurement to set it from is in the worker's own journal, which logs the
-# RMS of every gated segment:
+# measurement to set it from is in the worker's own journal — but read it
+# **classified**, because this floor only ever applies to segments where the
+# speaker was playing, and a margin computed over turns in silence is not a
+# margin against the ones it judges:
 #
-#     journalctl -u mecha-voice-worker -f | grep "parakeet segment gated:"
+#     journalctl --user -u mecha-voice-worker \
+#       | grep -E "_bot_(started|stopped)_speaking|parakeet( segment gated)?: duration"
+#
+# `--user` because this is a user unit: without it the command prints "No
+# entries", which reads like a quiet worker rather than a wrong command.
+# Once a call has been made against *this* file, `over_speaker=` is on the
+# `parakeet:` line and the edges need no correlating at all.
 #
 # Named precisely because the argument for having a knob at all is that the
 # measurement is checkable, and an instruction that does not work makes that
@@ -694,6 +715,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     # wasted 92ms transcription instead of an interruption, so the gate can
     # afford to stay sensitive. That matters here: the owner's measured
     # speech is ~0.024 RMS against a 0.14 tuning assumption, so raising VAD
+    # (that 0.024 is superseded — see `ECHO_SEGMENT_RMS` above, where the same
+    # quantity classified by speaker state runs 0.0141 to 0.0774 — but the
+    # conclusion it supported here, that the gap to noise is small, holds)
     # thresholds to chase noise would start dropping quiet real speech.
     # start_secs 0.2 -> 0.3 only rejects the shortest transients; confidence
     # and min_volume are left alone deliberately.
