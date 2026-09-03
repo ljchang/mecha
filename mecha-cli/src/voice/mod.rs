@@ -1259,12 +1259,9 @@ async fn answer_completion(
             Some(finish_with(stream, shared, id, want_stream, &said).await)
         }
         confirm::Reaction::NotConvinced(said) => {
-            // The head stays, and the count goes up: the re-ask is spoken
-            // too, so it can come back off the speaker exactly as the offer
-            // did. `MAX_REASKS` is what stops that being a loop.
-            let mut rest = pending.clone();
-            rest.asked = said.clone();
-            rest.reasks = rest.reasks.saturating_add(1);
+            // The head stays and the count goes up; `after_reask` owns both,
+            // and owns the reason `asked` extends rather than replaces here.
+            let rest = pending.after_reask(&said);
             tracing::info!(
                 reasks = rest.reasks,
                 "spoken answer was a span of the question — asking again rather than acting"
