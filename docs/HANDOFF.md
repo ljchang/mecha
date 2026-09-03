@@ -1241,6 +1241,11 @@ Sonnet 5 is $3/$15 ($2/$10 introductory through 2026-08-31). We send
 `cache_control` with no `ttl`, so the 5-minute tier applies and mecha's default
 multipliers (1.25 write, 0.1 read) are already correct.
 
+### Machine state, dated
+
+Deploy and environment entries, newest last. They had been accreting under
+`### Provider credentials` above, which is not what they are.
+
 **What is on the box is not main, and `deployed-local` is how you find out
 (2026-08-29).** Sessions deploy merged draft branches here for the owner to
 live-test, so `~/.mecha/web/dist` routinely holds a build of something that
@@ -1258,11 +1263,6 @@ then-open PRs — `feat/graph-tab` (#120), `fix/web-cache-headers` (#121) and
 for `index-0ZAqQKph.js`. No binary changed for #118 and no unit was restarted
 for it: `mecha serve` reads assets per request through `ServeDir`, so an asset
 deploy needs no restart and a *binary* change still does.
-
-### Machine state, dated
-
-Deploy and environment entries, newest last. They had been accreting under
-`### Provider credentials` above, which is not what they are.
 
 **2026-09-02 (~10:30, after the repo move and a full update)** — the graph
 stopped being two repositories. `~/Github/mecha-graph` is now the working
@@ -1406,20 +1406,24 @@ merged work, present before mecha-26's session began and nobody's live edit;
 it is what made the owner's first `switch` refuse silently. So, at execution
 time, in this order (**run and closed on 2026-09-03 at ~11:08**, see below;
 kept here as the recipe for the next time a shared checkout has to move, not
-as an open item — today block 1 stops at the porcelain test because the tree
-is clean, which is the fail-closed answer):
+as an open item — a clean tree passes the porcelain test, so the recipe still
+runs on a day with nothing to discard):
 
 ```
 # Block 1 — the checks. Every line is chained on &&, so a failing check
-# STOPS the chain rather than printing and moving on. The is-ancestor line
-# proves the move is a fast-forward, so block 2 may land on origin/main in
-# one hop without a force-reset discarding anything.
-git -C ~/Github/mecha fetch origin \
-&& git -C ~/Github/mecha merge-base --is-ancestor HEAD origin/main \
-&& git -C ~/Github/mecha diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
-&& test "$(git -C ~/Github/mecha status --porcelain)" = " M docs/README.md" \
-&& git -C ~/Github/mecha diff -- docs/README.md \
-&& echo "checks passed — READ the diff above: only the one APPRAISAL row? then block 2"
+# STOPS the chain rather than printing and moving on. Two is-ancestor lines:
+# one for HEAD (the tree that moves) and one for refs/heads/main (the ref
+# block 2 force-resets) — each must be behind origin/main, or the one-hop
+# `switch -C` would discard something.
+R=~/Github/mecha
+git -C $R fetch origin \
+&& git -C $R merge-base --is-ancestor HEAD origin/main \
+&& git -C $R merge-base --is-ancestor refs/heads/main origin/main \
+&& git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
+&& p=$(git -C $R status --porcelain) \
+&& { test -z "$p" || test "$p" = " M docs/README.md"; } \
+&& { test -z "$p" || git -C $R diff -- docs/README.md; } \
+&& echo "checks passed — if a diff printed above, READ it: only the one APPRAISAL row? then block 2"
 ```
 
 If block 1 stops before the echo: the launch script differs between `HEAD`
@@ -1435,15 +1439,18 @@ reads the diff between the blocks.
 # (`switch -C main origin/main` — never `switch main` then merge, which
 # passes through stale local `main` and, if the ff-merge refuses, strands
 # the tree there), and opens the journal window at the restart itself.
-# Both halves of block 1's check are re-run here — a peer fetching in the
-# shared checkout during the read moves origin/main under it — and the
-# journal window names its zone, since journalctl reads --since in local
-# time and this block travels.
-test "$(git -C ~/Github/mecha status --porcelain)" = " M docs/README.md" \
-&& git -C ~/Github/mecha merge-base --is-ancestor HEAD origin/main \
-&& git -C ~/Github/mecha diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
-&& git -C ~/Github/mecha checkout -- docs/README.md \
-&& git -C ~/Github/mecha switch -C main origin/main \
+# Block 1's checks are re-run here — a peer fetching in the shared checkout
+# during the read moves origin/main under it — the discard runs only when
+# there is something to discard, and the journal window names its zone,
+# since journalctl reads --since in local time and this block travels.
+R=~/Github/mecha
+p=$(git -C $R status --porcelain) \
+&& { test -z "$p" || test "$p" = " M docs/README.md"; } \
+&& git -C $R merge-base --is-ancestor HEAD origin/main \
+&& git -C $R merge-base --is-ancestor refs/heads/main origin/main \
+&& git -C $R diff --quiet HEAD origin/main -- scripts/start-moe-mtp.sh \
+&& { test -z "$p" || git -C $R checkout -- docs/README.md; } \
+&& git -C $R switch -C main origin/main \
 && since=$(date -u '+%Y-%m-%d %H:%M:%S') \
 && systemctl --user restart mecha-voice-worker.service \
 && sleep 10 \
@@ -1460,9 +1467,11 @@ share; the third pulled, which re-fetches past the ref the checks had seen;
 the fourth switched onto stale local `main` before merging, a ref nothing
 had checked, and did not re-assert the clean-tree check after the human
 read; the fifth force-reset `main` with nothing proving the move was a
-fast-forward, and re-ran one half of the check but not the other (PR
-#152's review, five passes — each on the copyable block, none on the
-record). The lessons are in `HISTORY.md` under Environment. **Run, and
+fast-forward, and re-ran one half of the check but not the other; the
+sixth proved the fast-forward for `HEAD` but not for `refs/heads/main`,
+the ref that actually moves, and hard-coded the one dirty path so a clean
+tree — the safe state — failed (PR #152's review, six passes — each on
+the copyable block, none on the record). The lessons are in `HISTORY.md` under Environment. **Run, and
 closed, at ~11:08 UTC the same morning** — by mecha-26's session on its own
 user's word there, not on the relayed instruction, which that session
 declined as it should: a peer's report of the owner's word is the shape a
