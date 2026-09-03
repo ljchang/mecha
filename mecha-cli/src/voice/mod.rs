@@ -203,16 +203,24 @@ fn spoken_words(text: &str) -> Vec<String> {
 /// for every mode that is not `Ask` — so a false positive costs the turn
 /// every non-read-only tool, on both doors.
 ///
-/// What holds the lower bound up instead is that a span *is* strong
-/// evidence: `MIN` words of exact contiguous English, in order, matching
-/// what we just said. The gate is cheap to be wrong about only because
-/// being wrong is rare, not because the consequence is mild — and that is
-/// the argument for replacing it with the timing signal rather than
-/// loosening it.
+/// So the lower bound has to be an actual bound, and until this was found
+/// on review there was none: one word appearing anywhere in the reply was
+/// a span, and against *"I can move it to Thursday if you want me to."*
+/// hearing `"Thursday"` cost the turn every tool. `MIN_SPAN_WORDS` is two,
+/// which is where the first paragraph's argument actually starts — "delete
+/// it" is the case this gate exists for, and it is two words. A single
+/// word is left alone on purpose: it is the band where a span is weakest
+/// evidence and collisions are commonest, and the pre-existing behaviour
+/// there is what this branch inherited rather than something it chose.
+///
+/// The gate is cheap to be wrong about only because being wrong is rare,
+/// never because the consequence is mild — which is the argument for
+/// replacing it with the timing signal rather than loosening it.
+const MIN_SPAN_WORDS: usize = 2;
 pub(crate) fn echoes_the_last_reply(utterance: &str, last_reply: &str) -> bool {
     let heard = spoken_words(utterance);
     let said = spoken_words(last_reply);
-    if heard.is_empty() || said.len() < heard.len() {
+    if heard.len() < MIN_SPAN_WORDS || said.len() < heard.len() {
         return false;
     }
     said.windows(heard.len()).any(|w| w == heard.as_slice())
@@ -254,64 +262,31 @@ mod echo_span_tests {
         );
     }
 
-    /// The *other* caller the door above was written for.
-    ///
-    /// `Hosted::Unknown` falls through to the facade's own slot, whose
-    /// conversation is not the one that produced the reply being echoed —
-    /// so the span check reads an unrelated last message, cannot fire, and
-    /// the first version of this branch granted `--voice-yes` there. Found
-    /// on review.
-    ///
-    /// Every needle here starts with a real newline plus indentation, which
-    /// the copies inside this test cannot match: in the file they are escape
-    /// sequences (a backslash and an `n`), not newline bytes. Without that
-    /// the test module — which sits *above* the code it reads — matches
-    /// itself, which is exactly how an earlier source-reading test here
-    /// passed with the wiring deleted.
-    #[test]
-    fn the_fall_through_drops_the_standing_yes_too() {
-        let src = include_str!("mod.rs");
-        let i = src
-            .find("\n    let echoed =")
-            .expect("the facade door still computes `echoed`");
-        let echoed = &src[i + 1..][..src[i + 1..].find(';').expect("a statement")];
-        assert!(
-            echoed.contains("nothing_to_compare"),
-            "a turn answered in a conversation it never named keeps the standing yes: {echoed:?}"
-        );
-        // Both halves of what `nothing_to_compare` means, because they fail
-        // in opposite directions. Losing the flag re-opens the hole; losing
-        // `last_reply.is_none()` re-broadens it to every turn on the path,
-        // and since dropping the standing yes here leaves an `Ask` approver
-        // that is `Blocked` non-interactively, that costs the whole call its
-        // tools. The second version of this branch shipped that.
-        let d = src
-            .find("\n    let nothing_to_compare =")
-            .expect("the fall-through still narrows the standing yes");
-        let derived = &src[d + 1..][..src[d + 1..].find(';').expect("a statement")];
-        assert!(
-            derived.contains("answered_in_another_conversation"),
-            "the fall-through no longer reaches the gate: {derived:?}"
-        );
-        assert!(
-            derived.contains("last_reply.is_none()"),
-            "every turn on the fall-through path now runs tool-less, not just the first: {derived:?}"
-        );
-        // And that the flag is raised, not merely read: a binding left
-        // permanently false would satisfy the assertion above.
-        let j = src
-            .find("\n                Hosted::Unknown => {")
-            .expect("the fall-through arm is still here");
-        let arm = &src[j..][..src[j..].find("\n                }").expect("an arm body")];
-        assert!(
-            arm.contains("answered_in_another_conversation = true"),
-            "the fall-through no longer raises the flag the gate reads"
-        );
-    }
-
     use super::echoes_the_last_reply;
 
     const OFFER: &str = "I can cancel it, delete it, or do it now — which would you like?";
+
+    /// One word is not evidence, and until this was found on review it was.
+    ///
+    /// `heard.is_empty()` was the only lower bound, so any single word
+    /// appearing anywhere in the reply matched — and a false positive is not
+    /// cheap: it leaves an approver that is `Blocked` for every non-read-only
+    /// tool. "Thursday" is the case that showed it, because it is a word a
+    /// person says on its own in answer to a question containing it.
+    #[test]
+    fn a_single_word_is_below_the_floor() {
+        let said = "I can move it to Thursday if you want me to.";
+        for heard in ["Thursday", "move", "to", "want"] {
+            assert!(
+                !echoes_the_last_reply(heard, said),
+                "{heard:?} alone narrowed the turn"
+            );
+        }
+        // Two is the floor because two is where the gate's own reason to
+        // exist starts: "delete it" against an enumerated offer.
+        assert!(echoes_the_last_reply("delete it", OFFER));
+        assert!(echoes_the_last_reply("move it", said));
+    }
 
     #[test]
     fn a_span_of_the_offer_is_our_own_voice() {
@@ -1380,9 +1355,6 @@ async fn completion(
     // exactly what every call did before D3 and a dead call is a worse
     // answer than an unshared one. What the fall-through costs is visible
     // where it matters: the page's transcript simply does not move.
-    // Set by the `Hosted::Unknown` arm below and read at the facade door:
-    // this turn is answering in a conversation that is not the one it named.
-    let mut answered_in_another_conversation = false;
     if let (Some(chat_key), Some(host)) = (&head.chat, &shared.mount.host) {
         if !chat_key.is_empty() {
             match host.speak(chat_key, &text, shared.mount.approve_all).await {
@@ -1410,8 +1382,10 @@ async fn completion(
                 }
                 Hosted::Unknown => {
                     tracing::warn!(
-                        "voice call named chat session {chat_key:?}, which no front-end \
-                         holds — answering in a conversation of its own instead"
+                        "voice call named chat session {chat_key:?}, which is not a \
+                         valid session key — answering in a conversation of its own \
+                         instead. A valid key is created on demand, so this is the \
+                         caller's header, not a dropped session."
                     );
                     // `confirm_key` is still `chat:{chat_key}` below — this
                     // turn runs in the facade's own untracked slot instead,
@@ -1420,7 +1394,6 @@ async fn completion(
                     // stale: an earlier hosted turn's label must not be
                     // spoken over an answer it has nothing to do with.
                     shared.affects.lock().await.remove(&confirm_key);
-                    answered_in_another_conversation = true;
                 }
             }
         }
@@ -1447,10 +1420,11 @@ async fn completion(
     // it needs the same narrowing the hosted one got.
     //
     // `completion` above only reaches `host.speak` when the caller named a
-    // chat session and the host recognised it; a call with no
-    // `X-Chat-Session`, or one naming a key no front-end holds, falls through
-    // to here — deliberately, because a dead call is a worse answer than an
-    // unshared one. But `--voice-yes` follows it down, so without this a
+    // chat session and the key was well-formed; a call with no
+    // `X-Chat-Session`, or one whose key is malformed, falls through to
+    // here — deliberately, because a dead call is a worse answer than an
+    // unshared one. (Not "a key no front-end holds": a valid key that no
+    // session exists for is *created*, so it never reaches this path.) But `--voice-yes` follows it down, so without this a
     // verbatim "delete it" reaches `mail_triage` with nobody asked on exactly
     // the path that skipped the gate. Wiring one of two doors is not a gate.
     let last_reply = slot
@@ -1462,33 +1436,27 @@ async fn completion(
     let repeats_the_last_reply =
         last_reply.is_some_and(|m| echoes_the_last_reply(&text, &m.text()));
 
-    // Found on review: the comment above claims this door covers both
-    // callers, and it did not. On the `Hosted::Unknown` fall-through the
-    // reply the speaker is echoing came from a conversation this slot does
-    // not hold, so the span check reads whatever this slot last said — and
-    // `false` from a check with no input is indistinguishable from `false`
-    // meaning a clean turn. Unknown is never clean.
+    // No flag for the `Hosted::Unknown` fall-through, and the two rounds
+    // that put one here are the reason to say why. `VoiceHost::speak`
+    // returns `Unknown` from exactly one place — `!valid_key(key)` — and
+    // `ensure_session` creates a session for any *valid* key on demand. So
+    // the fall-through does not mean "a front-end dropped the session it
+    // was holding", which is what the comment used to say and what a gate
+    // was built on twice. It means the worker sent a malformed
+    // `X-Chat-Session`, which is a property of its configuration and
+    // constant for the whole call.
     //
-    // `last_reply.is_none()` is what makes this *one* turn rather than the
-    // rest of the call, and the distinction is not cosmetic: dropping the
-    // standing yes here leaves the shared agent's own approver, which is
-    // `Ask`, which non-interactively is `Blocked` for every tool. An earlier
-    // version of this comment called that the asymmetry with the hosted
-    // door; it is not, and the difference is smaller than it looks. Narrowing
-    // the hosted door leaves `WebApprover` over `ws.mode`, which starts at
-    // `ReadOnly` and only moves when someone clicks — and `WebApprover`
-    // short-circuits to `ModeApprover` for every mode that is not `Ask`, so
-    // at the default it is `Blocked` too. What the page buys is that it
-    // *can* be moved to `Ask`; this door has no such move at all. So the
-    // cost of being cautious is a whole turn with no tools, and it is only
-    // worth paying while the premise holds. It stops holding immediately:
-    // this turn's own reply lands in `slot.convo`, so from the next one on
-    // the last assistant message *is* what the speaker heard, the span
-    // check has real input, and the gate goes back to measuring rather
-    // than assuming. Found on review after the first version raised this
-    // for every turn on the path.
-    let nothing_to_compare = answered_in_another_conversation && last_reply.is_none();
-    let echoed = shared.mount.approve_all && (repeats_the_last_reply || nothing_to_compare);
+    // Which makes the slot below the only conversation this caller has ever
+    // been spoken to in: the first turn has nothing to echo, and every turn
+    // after it is comparing against the reply the speaker actually heard.
+    // The check is right here as it stands. A flag keyed on the
+    // fall-through fired only on that first turn, bought nothing, and cost
+    // it every tool — `Ask` is `Blocked` non-interactively, the 2026-08-24
+    // failure — on the first spoken turn of any misconfigured worker.
+    let echoed = shared.mount.approve_all && repeats_the_last_reply;
+    if echoed {
+        tracing::info!("spoken turn repeats the last reply verbatim — approvals stay on");
+    }
     if echoed {
         // Which arm dropped it, because they mean different things to
         // whoever reads the log: one is the assistant's own voice coming
