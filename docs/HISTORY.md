@@ -5998,17 +5998,19 @@ switch (once switched, a changed script is already the next launch
 command), then its checks informed rather than stopped (`diff --quiet &&
 echo` is silent on the case it exists for) while its discard of a dirty
 file was unconditional in a checkout many sessions share, then it `pull`ed,
-which re-fetches past the ref the checks had verified. **A runnable block
-in a handoff is what gets copied, so its guards must halt the chain, its
-destructive step must sit behind a human read, and it must act on the ref
-it checked.** The switch itself closed the right way: the deploying session
+which re-fetches past the ref the checks had verified; then it switched
+onto stale local `main` before merging — a ref nothing had checked, and a
+place a refused ff-merge would have stranded the tree — and let the human
+read be the only gate on a tree a peer could dirty meanwhile. **A runnable
+block in a handoff is what gets copied, so its guards must halt the chain,
+its destructive step must sit behind a human read *and* a re-run of the
+mechanical check, and it must land on the ref it checked in one hop.** The switch itself closed the right way: the deploying session
 could not run git against the shared tree and relayed the owner's
 instruction to the session working there, which declined it — a peer's
 report of the owner's word is the shape a permission gate exists to refuse
 — and ran it only once its own user said so in its own session. The one
 dirty file that had made the owner's first `switch` refuse silently was a
 duplicate of a row `main` already carried.
-
 
 **2026-08-30 — this box's clippy is 1.97, CI's is 1.98, and an `async fn`
 hides its `Result` from the older one.** `result_large_err` cannot see
