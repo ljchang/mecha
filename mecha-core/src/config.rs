@@ -947,10 +947,12 @@ impl Config {
     /// `--no-outbox` (a public flag: routed tools "execute directly under the
     /// usual gates") it is the one gate left — PR #148's review found the
     /// first version failing the load for exactly that belt-and-braces
-    /// config, on every surface. `setup` refuses what this names where the
-    /// route is actually on; `Config::validate` cannot, because the flag is
-    /// not in the file. `tools` only: `publish_tools` is a kind, not a route,
-    /// mirroring `OutboxRoute::routes`.
+    /// config, on every surface. `setup` acts on what this names where the
+    /// route is actually on — refusing the operator's, setting a project
+    /// layer's aside with a warning (`RuleConfig::from_project`); `Config::
+    /// validate` cannot, because the flag is not in the file. `tools` only:
+    /// `publish_tools` is a kind, not a route, mirroring
+    /// `OutboxRoute::routes`.
     pub fn rules_superseded_by_staging(&self) -> Vec<(usize, &crate::policy::RuleConfig)> {
         self.rules
             .iter()
@@ -1153,45 +1155,29 @@ impl Config {
         }
         // `apply` appends rules, so everything at an index below this is the
         // layers before — the operator's — and everything at or above it is
-        // this file's. The retain below needs that line: without it a global
-        // contradiction (a global rule on a globally routed tool) was
-        // silently disarmed by the presence of *any* project file, because
-        // the operator's rule was dropped here before `validate` could refuse
-        // it, with a warning naming the project file as the rule's source
-        // (PR #148's review).
+        // this file's. Without that line a global contradiction (a global
+        // rule on a globally routed tool) was silently disarmed by the
+        // presence of *any* project file, because the operator's rule was
+        // dropped here before `setup` could refuse it, with a warning naming
+        // the project file as the rule's source (PR #148's review).
         let inherited = self.rules.len();
         layer.apply(self);
-        // A rule on an outbox-routed tool judges nothing, and `validate`
-        // refuses that for the global layer, where the contradiction is in
-        // one file the operator holds. A project layer must not be able to
-        // make every `mecha` command in its directory fail to start, so its
-        // own overstep is dropped here instead: a project rule on a tool the
-        // merged config routes. (The other side — a project *routing* a tool
-        // the global config has a rule for — was cut from the route list
-        // above, before `apply`.) Over the merged state, after `apply`,
-        // because a project may un-route as well as route; over this file's
-        // rules only, so the operator's reach `validate` untouched.
+        // A rule on an outbox-routed tool judges nothing *while the route is
+        // live*, and whether it is live is `--no-outbox`'s to say — a flag
+        // this file cannot see. So nothing is dropped here: the project's
+        // rules are marked as the project's and `setup` decides with the
+        // live route in hand, refusing the operator's `allow`/`prompt` and
+        // setting the project's aside with a warning, so a cloned repository
+        // can neither fail every `mecha` command in its directory nor lose
+        // the `prompt` that under `--no-outbox` is the one gate forcing a
+        // `consult`. The first version dropped the project's `prompt` at
+        // load, which kept the `--no-outbox` reasoning for `forbid` and
+        // silently denied it to `prompt` (PR #148's review). The other side —
+        // a project *routing* a tool the global config has a rule for — is
+        // cut from the route list above, before `apply`.
         if trust == LayerTrust::Project {
-            let routed = &self.outbox.tools;
-            let before = self.rules.len();
-            let mut index = 0;
-            self.rules.retain(|r| {
-                // A project `forbid` behind staging is a second lock, and the
-                // live gate under `--no-outbox`; only `prompt` is superseded
-                // (`allow` was stripped above).
-                let keep = index < inherited
-                    || r.decision == crate::policy::RuleDecision::Forbid
-                    || !routed.contains(&r.tool);
-                index += 1;
-                keep
-            });
-            if self.rules.len() != before {
-                tracing::warn!(
-                    "{} rule(s) in {} name a tool that `[outbox] tools` routes to staging and \
-                     are ignored — a staged call is reviewed at release, not judged by rules",
-                    before - self.rules.len(),
-                    path.display()
-                );
+            for rule in &mut self.rules[inherited..] {
+                rule.from_project = true;
             }
         }
         Ok(())
@@ -2324,6 +2310,7 @@ match = ["git push origin main"]
             examples: vec!["git status".into()],
             not_match: vec!["git push".into()],
             justification: None,
+            from_project: false,
         });
         let err = format!("{:#}", cfg.validate().unwrap_err());
         assert!(
@@ -2383,11 +2370,13 @@ match = ["git push origin main"]
         assert!(cfg.rules_superseded_by_staging().is_empty());
     }
 
-    /// A *project* rule on a globally routed tool is dropped with a warning,
-    /// not a load error: a cloned repository must not be able to make every
-    /// `mecha` command in its directory fail to start.
+    /// A *project* rule on a globally routed tool is neither a load error nor
+    /// dropped at load: it is kept, marked as the project's, and `setup`
+    /// decides with the live route in hand — so a cloned repository can
+    /// neither fail every `mecha` command in its directory nor lose the
+    /// `prompt` that under `--no-outbox` is the one gate left.
     #[test]
-    fn a_project_rule_on_a_routed_tool_is_dropped_not_fatal() {
+    fn a_project_rule_on_a_routed_tool_is_marked_not_dropped_and_not_fatal() {
         let dir = std::env::temp_dir().join(format!("mecha-routed-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let project = dir.join("mecha.toml");
@@ -2417,16 +2406,26 @@ match = ["rm -rf build"]
         let kept: Vec<_> = cfg
             .rules
             .iter()
-            .map(|r| (r.tool.as_str(), r.decision))
+            .map(|r| (r.tool.as_str(), r.decision, r.from_project))
             .collect();
         assert_eq!(
             kept,
             vec![
-                ("send_email", crate::policy::RuleDecision::Forbid),
-                ("shell", crate::policy::RuleDecision::Forbid),
+                ("send_email", crate::policy::RuleDecision::Prompt, true),
+                ("send_email", crate::policy::RuleDecision::Forbid, true),
+                ("shell", crate::policy::RuleDecision::Forbid, true),
             ],
-            "the superseded prompt was dropped; the forbid is a second lock and stays"
+            "all three load, all three are the project's; nothing is dropped where the \
+             route's liveness is unknown"
         );
+        // What `setup` will act on where the route is live: the prompt, and
+        // it is the project's, so it is set aside rather than fatal.
+        let named: Vec<_> = cfg
+            .rules_superseded_by_staging()
+            .into_iter()
+            .map(|(i, r)| (i, r.from_project))
+            .collect();
+        assert_eq!(named, vec![(0, true)]);
 
         // The contradiction reached from the other side: a project that
         // *routes* a tool the global config has a rule for. The project's
