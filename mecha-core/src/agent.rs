@@ -3535,6 +3535,22 @@ impl Agent {
             // Still not on every call's path. A read-only tool with no rule
             // over it and no escalation reaches no judge at all, and
             // `rules_for` is the cheap way to ask whether one exists.
+            //
+            // **One judge is deliberately not on this list: the `pre_tool`
+            // hook above, which reads the model's own bytes.** For an
+            // ordinarily-executed call that is not an inconsistency but the
+            // correct answer — raw is what runs, so raw is what a hook should
+            // judge. For a *staged* call it is a real gap: the fill below is
+            // pinned, so a release executes `staged_args`, and a hook written
+            // to deny sends from one mailbox never sees the `account` the
+            // draft will actually send from. It cannot loosen anything — a
+            // hook only ever denies, so less information means fewer denials —
+            // which is why it is recorded rather than fixed here: hooks are a
+            // subsystem this change does not otherwise touch, and the fix has
+            // a shape (hoist the fill above the hook when `routed`, hand the
+            // hook and `stage` the one value, leave the non-routed arm raw)
+            // that deserves its own pass. `docs/AUDIT-RESEARCH.md` §2 carries
+            // it.
             use crate::policy::RuleDecision;
             let judged = escalation.is_some()
                 || !tool.read_only()
