@@ -783,7 +783,7 @@ named by what it can and cannot do.
   speech distribution rather than beneath it — this section's
   own warning applies, that 0.010 was tuned on a different microphone, so the
   gated path now **logs the RMS it gated at** and the env var exists to be set
-  from that rather than from a guess — `journalctl -u mecha-voice-worker -f |
+  from that rather than from a guess — `journalctl --user -u mecha-voice-worker -f |
   grep "parakeet segment gated:"`, since `MECHA_LOG` is mecha's *Rust* tracing
   filter and nothing in the worker reads it. It is bounded below by `MIN_SEGMENT_RMS`
   rather than by zero: under it the graded gate runs *backwards*, holding our
@@ -963,9 +963,11 @@ answer is exactly who this must not silence. D4 is untouched: barge-in remains
 
 **The echo floor was measured, and the measurement says not to set it,
 2026-09-03.** `ECHO_SEGMENT_RMS` shipped as a guessed 0.020. The journal
-carries an RMS per segment *and* the bot's own `_bot_started_speaking` /
-`_bot_stopped_speaking` edges, so every segment of the preceding fortnight can
-be classified by whether our speaker was playing — which is the only
+carries an RMS per segment *and* pipecat's own `_bot_started_speaking` /
+`_bot_stopped_speaking` edges (function names, printed by loguru in its
+`module:function:line` prefix — not strings in this repo, so grepping the tree
+for them proves nothing either way), so every segment of the preceding fortnight
+can be classified by whether our speaker was playing — which is the only
 population this floor ever judges, and the reason the first attempt at this
 number was wrong:
 
