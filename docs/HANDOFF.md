@@ -1640,7 +1640,10 @@ one person's mailbox rather than a public fact.
   installed or run from that directory — the voice worker runs
   `scripts/voice/worker.py` out of it — gets a feature branch's content
   silently rather than an error (mecha-83's framing, verified by both
-  lanes). Put it back on `main` before the next deploy. Three things merged to `main`
+  lanes). Put it back on `main` before the next deploy — the deploy step is
+  **check the branch, then pull, then restart**, not "pull, then restart",
+  and that ordering is the whole content of the voice-worker item below
+  (mecha-26). Three things merged to `main`
   and **not deployed**: #159 (the handoff close), #153 and #154 — the last
   two are also **unrecorded in this document** (mecha-83's flag; their
   owners' entries are owed, this lane did not read their diffs). The
