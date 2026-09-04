@@ -2453,9 +2453,12 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
-**2026-09-04, later — §17.6 item 3 is built as PR #168
-(`feat/situation-scope`, unmerged), with §17.7 item 1's run record in the
-same change because it was the merge condition.** What it built is in
+**2026-09-04, later — §17.6 item 3 is built and merged as PR #168
+(`feat/situation-scope`, merged at `046ef0f` after twelve review passes,
+the last clean at the bar), with §17.7 item 1's run record in the same
+change because it was the merge condition. Not yet deployed: the
+installed binary is behind main by several lanes, and the next `update`
+run takes them all.** What it built is in
 `HISTORY.md` under this date: `situation.rs`, the situation on every new
 reflection, `scope` on `Rule` assigned by the harness from the batch's shared
 keys, one learner call per focus-tool batch, the loader matching scope
@@ -3226,8 +3229,8 @@ What is missing beyond that is refinement:
   chains user rules then consolidated rules; the third leg — a window of recent
   unconsolidated reflections — was designed and not built.
 - **Rules are scoped by domain, by run, and now by tool set — but nothing
-  delivers one mid-run.** `Rule::scope` exists (PR #168, unmerged at the
-  time of writing) and `rules_carried_for` loads a scoped rule only into a
+  delivers one mid-run.** `Rule::scope` exists (PR #168, merged
+  2026-09-04) and `rules_carried_for` loads a scoped rule only into a
   run whose registry matches it. What is still missing is the §17.4
   *Delivery* half — one line on a tool's result the first time a recorded
   condition recurs, ruled off-by-default in `GOAL-SYSTEM-DESIGN.md` §17.7
