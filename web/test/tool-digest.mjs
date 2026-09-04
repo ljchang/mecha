@@ -37,6 +37,7 @@ function readConst(name) {
 
 const toolDigest = new Function(
   `${readConst('DIGEST_FIELDS')}
+   ${readConst('SHARED_FIELDS')}
    ${readConst('QUANTITY')}
    ${readOut('  function oneLine(text) {')}
    ${readOut('  function toolDigest(draft) {')}
@@ -94,6 +95,48 @@ is(
   toolDigest(draft([['to', 'tomas@example.org'], ['subject', 'Re: review']], [['account', 'personal']])),
   'tomas@example.org',
   'a mail call leads with who it is addressed to'
+);
+
+// `account` is a HEADER_FIELDS member, and on every item-scoped mail and
+// calendar tool it is the *only* header — so a headers-first digest labelled
+// three different threads `personal`. These are the real schemas from
+// `mecha-mail/src/unified.rs`, and `account` is required whenever more than
+// one account is configured, which is the owner's setup.
+is(
+  toolDigest(draft([['account', 'personal']], [['thread_id', '18f2c9a']])),
+  '18f2c9a',
+  'mail_get_thread names the thread, not the account every call shares'
+);
+is(
+  toolDigest(draft([['account', 'personal']], [['action', 'archive'], ['thread_id', '18f2c9a']])),
+  '18f2c9a',
+  'mail_triage names the thread rather than the verb that sorts before it'
+);
+is(
+  toolDigest(draft([['account', 'personal']], [['thread_id', '18f2c9a']], 'Yes — I can take this one.')),
+  '18f2c9a',
+  'mail_reply has no to/subject, and still names the thread'
+);
+is(
+  toolDigest(draft([['account', 'personal']], [['max_results', '20'], ['query', 'ostrander']])),
+  'ostrander',
+  'mail_search names the query, not the account'
+);
+is(
+  toolDigest(draft([['account', 'personal']], [['event_id', 'ev-7741']])),
+  'ev-7741',
+  'calendar_delete_event names the event'
+);
+is(
+  toolDigest(draft([['title', 'Ostrander committee'], ['start', '2026-09-16T14:00'], ['account', 'personal']], [])),
+  'Ostrander committee',
+  'a created event still leads with its title'
+);
+// The account beats nothing at all.
+is(
+  toolDigest(draft([['account', 'personal']], [])),
+  'personal',
+  'a call whose only argument is the account names the account'
 );
 
 // A tool nobody anticipated still gets a label rather than a quantity.

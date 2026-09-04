@@ -915,25 +915,24 @@ export const transcript = {
     // is the whole point of embedding the app rather than a screenshot.
     {
       kind: 'tool',
-      name: 'mail__mail_triage',
+      name: 'mail__mail_search',
       pending: false,
       is_error: false,
       draft: {
         headers: [['account', 'personal']],
         body: null,
         other: [
-          ['since', '2026-08-28T00:00:00Z'],
-          ['unread_only', 'true'],
+          ['max_results', '20'],
+          ['query', 'is:unread newer_than:2d'],
         ],
       },
-      args: '{\n  "account": "personal",\n  "since": "2026-08-28T00:00:00Z",\n  "unread_only": true\n}',
-      preview: `14 threads appraised, 3 want an answer:
+      args: '{\n  "query": "is:unread newer_than:2d",\n  "account": "personal",\n  "max_results": 20\n}',
+      preview: `14 threads, newest first:
 
-  needs_reply   Tomas Lindqvist — review request, decision by Friday
-  needs_reply   Hollis Barnett — Ostrander nomination, closes Monday
-  needs_reply   Cape Town logistics — flight change offered
-  fyi           9 threads
-  archive       2 threads`,
+  Tomas Lindqvist   Review request — manuscript 2026-0413
+  Hollis Barnett    Ostrander nomination closes Monday
+  Amara Osei        Cape Town seminar — Thursday or Friday?
+  … 11 more`,
     },
     {
       kind: 'tool',

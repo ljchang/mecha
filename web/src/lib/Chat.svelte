@@ -74,6 +74,18 @@
   // every one of its readers. Checked by `web/test/tool-digest.mjs`.
   const DIGEST_FIELDS = ['path', 'command', 'query', 'url', 'pattern', 'task', 'name', 'id'];
 
+  // Header arguments that name the *store* rather than the call. `account`
+  // is a `HEADER_FIELDS` member, so on every item-scoped mail and calendar
+  // tool — `mail_get_thread {thread_id, account}`, `mail_reply`,
+  // `mail_triage`, `calendar_delete_event` — it is the only header present
+  // and would win outright, labelling three different threads `personal`.
+  // It is required whenever several accounts are configured, so that is the
+  // ordinary case here, not a corner: the argument shared by every call in
+  // the turn is the one argument that cannot tell two of them apart. Kept as
+  // a last resort below, because naming the account still beats naming
+  // nothing.
+  const SHARED_FIELDS = ['account'];
+
   // A bare number or boolean never says *which* call this was — it says how
   // much, how deep, how many. Values reach the page already rendered to
   // strings, so the type is gone and the shape is all that is left to go on.
@@ -81,26 +93,56 @@
 
   // One line saying *which* call this was, for the closed chip.
   //
-  // Addressing first — `DraftView` ordered `headers` for a reader already.
-  // Then a known identifying argument, then any argument that is not a bare
-  // quantity, and only then the first one there is: an unanticipated tool
-  // still gets a label, which is the fallback `other` has always been.
-  // Display only; the whole call is one tap below, and nothing here decides
-  // anything.
+  // Addressing first, minus the shared scope — `DraftView` ordered `headers`
+  // for a reader already. Then a known identifying argument, then anything
+  // ending in `_id`, then any argument that is not a bare quantity, and only
+  // then the first one there is: an unanticipated tool still gets a label,
+  // which is the fallback `other` has always been. Display only; the whole
+  // call is one tap below, and nothing here decides anything.
   function toolDigest(draft) {
     if (!draft) return '';
     const other = draft.other ?? [];
+    const headers = draft.headers ?? [];
     const pair =
-      draft.headers?.[0] ??
+      headers.find(([name]) => !SHARED_FIELDS.includes(name)) ??
       DIGEST_FIELDS.map((k) => other.find(([name]) => name === k)).find(Boolean) ??
+      other.find(([name]) => name.endsWith('_id')) ??
       other.find(([, value]) => !QUANTITY.test(String(value).trim())) ??
-      other[0];
+      other[0] ??
+      headers[0];
     return oneLine(pair ? pair[1] : (draft.body ?? ''));
   }
 
   function oneLine(text) {
     const flat = String(text).replace(/\s+/g, ' ').trim();
     return flat.length > 72 ? `${flat.slice(0, 72)}…` : flat;
+  }
+
+  // A denial is the *end* of the call above it, not a second call.
+  //
+  // Three of the four denial paths in `Agent::run_tools` — the trifecta
+  // interlock, a `pre_tool` hook deny, and the approver — emit `ToolDenied`
+  // and write the tool-result block straight into `results[i]` with no
+  // `AgentEvent::ToolResult` behind it. (Only the planning-phase refusal
+  // emits both.) So nothing else will ever resolve the chip the `tool` event
+  // opened: pushing a second entry left the first one `pending` for the rest
+  // of the session. That was an inert row before the call carried `args`;
+  // now the row is a working disclosure, and opening it asserted "still
+  // running" over a call the interlock had already refused — the harness
+  // rendering its own guard's refusal as work in flight.
+  //
+  // It also settles a disagreement between the two renderings: the reload
+  // path sees the recorded result and draws *one* chip for this call, so a
+  // live view drawing two was the transcript contradicting itself.
+  function resolveDenial(entries, ev) {
+    const open = entries.findLast(
+      (e) => e.kind === 'tool' && e.pending && e.name === ev.name
+    );
+    if (!open) return false;
+    open.pending = false;
+    open.blocked = true;
+    open.preview = ev.reason ?? '';
+    return true;
   }
 
   function pushEntry(entry) {
@@ -253,7 +295,17 @@
           break;
         }
         case 'denied':
-          pushEntry({ kind: 'tool', name: ev.name, blocked: true, pending: false });
+          // The fallback stays: a refusal with no call above it is still a
+          // refusal, and dropping it would be the quietest failure here.
+          if (!resolveDenial(entries, ev)) {
+            pushEntry({
+              kind: 'tool',
+              name: ev.name,
+              blocked: true,
+              pending: false,
+              preview: ev.reason ?? '',
+            });
+          }
           break;
         case 'usage':
           usage = { prompt: ev.prompt_tokens, window: ev.context_window };
@@ -980,7 +1032,7 @@
             {#if digest}<span class="tooldigest">{digest}</span>{/if}
           </button>
           {#if entry.pending}<span class="tool-state">running…</span>
-          {:else if entry.blocked}<span class="tool-state">blocked (read-only)</span>
+          {:else if entry.blocked}<span class="tool-state">blocked</span>
           {:else if entry.is_error}<span class="tool-state">failed</span>{/if}
         </div>
         {#if entry.open}
@@ -1009,7 +1061,14 @@
             <!-- "still running", "answered nothing" and "answered this" are
                  three different readings, and an absent block would collapse
                  the first two into the third. -->
-            {#if entry.preview}
+            <!-- A refusal is not an answer. The reload path cannot tell the
+                 two apart — it sees only `is_error` on the recorded result —
+                 so the live view is the more precise of the two here, not a
+                 second opinion about the same fact. -->
+            {#if entry.blocked && entry.preview}
+              <div class="tsep">refused with</div>
+              <pre class="toolout">{entry.preview}</pre>
+            {:else if entry.preview}
               <div class="tsep">{entry.is_error ? 'failed with' : 'answered'}</div>
               <pre class="toolout">{entry.preview}</pre>
             {:else if entry.pending}
