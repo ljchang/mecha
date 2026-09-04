@@ -270,8 +270,9 @@ through the function that writes every session's record.
 `--ab-rules` is the one deliberate exception to the learned-rules rule; see
 [Learning](/docs/features/learning). It runs the case set rules-free and then
 rules-on, prints the per-case flips, and writes a **differently shaped** JSON
-(`{"ab_rules": true, "without_rules": …, "with_rules": …, "flips": […]}`) that
-`--compare` cannot mistake for a scorecard. Neither arm's ordinary scorecard is
+(`{"experiment", "ab_rules", "ab_config", "holdout_in", "judgement", "pairs",
+"arm_a", "arm_b", "flips": [{"id", "was", "now"}, …]}`, the same shape
+`--ab-config` writes) that `--compare` cannot mistake for a scorecard. Neither arm's ordinary scorecard is
 printed, and it always exits 0 — the delta is a finding, not a gate.
 
 Experiments — arms that vary the lever set, a stored design, an isolated
@@ -365,7 +366,7 @@ proposal; see [Run quality](/docs/features/run-quality#the-diagnostic-stage).
 | `--compare <PATHS…>` | — | print a table from written reports instead of running |
 | `--ab-rules` | off | paired rules-free / rules-on run |
 | `--ab-config <K=V>` | — | paired run under a config override, judged; repeatable |
-| `--holdout-in <N>` | 3 | one case in N held out of selection, for `--ab-config` |
+| `--holdout-in <N>` | 3 | one case in N held out of selection, for `--ab-config` and `--ab-rules` |
 
 `mecha eval` exits non-zero when any case failed, so it also works as a
 regression gate on the harness itself. (`--compare`, `--ab-rules` and

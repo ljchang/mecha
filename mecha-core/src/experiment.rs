@@ -240,17 +240,23 @@ impl Manifest {
         holdout_in: u64,
         repetitions: u32,
         shared_levers_on: &[String],
+        shared_overrides: &[String],
     ) -> Result<Manifest> {
-        // Levers both arms carry on over the preset — eval's `--mcp` opt-in
-        // — so the record says what ran rather than `bare` for a control
-        // that had its MCP servers (found on review). The condition hash
-        // follows.
+        // What both arms carry over the preset: the levers eval opts back
+        // in (`--mcp`), and the knobs both arms inherit from the machine and
+        // the flags (`max_turns`, `compact_at_tokens`, `max_output_tokens`,
+        // `effort`) — so the record says what the control ran rather than
+        // `bare` for a control that had its MCP servers or a `--max-turns
+        // 60` nobody wrote down; the condition hash follows (found on
+        // review, both halves). The treatment's own overrides come last and
+        // win.
         let mut arms = BTreeMap::new();
         arms.insert(
             "bare".to_string(),
             Arm {
                 preset: Some(Preset::Bare),
                 levers_on: shared_levers_on.to_vec(),
+                overrides: shared_overrides.to_vec(),
                 ..Arm::default()
             },
         );
@@ -259,6 +265,17 @@ impl Manifest {
                 treatment.levers_on.push(lever.clone());
             }
         }
+        let own = std::mem::take(&mut treatment.overrides);
+        treatment.overrides = shared_overrides
+            .iter()
+            .filter(|s| {
+                let key = s.split_once('=').map(|(k, _)| k.trim()).unwrap_or("");
+                !own.iter()
+                    .any(|o| o.split_once('=').map(|(k, _)| k.trim()) == Some(key))
+            })
+            .cloned()
+            .chain(own)
+            .collect();
         let split_seed = {
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for b in format!(
@@ -1414,7 +1431,7 @@ rationale = "no notice, fewer turns"
             ..Arm::default()
         };
         let mk = |name: &str, t: Arm, shared: &[String]| {
-            Manifest::two_arm(name, "treatment", t, tasks.clone(), 3, 1, shared).unwrap()
+            Manifest::two_arm(name, "treatment", t, tasks.clone(), 3, 1, shared, &[]).unwrap()
         };
         let a = mk("eval-ab", treatment.clone(), &[]);
         let b = mk("eval-ab-again", treatment.clone(), &[]);
@@ -1454,6 +1471,36 @@ rationale = "no notice, fewer turns"
         let back = Manifest::parse(&text).unwrap();
         assert_eq!(back.arms.len(), 2);
         assert_eq!(back.arms["treatment"].overrides, vec!["max_turns=40"]);
+
+        // The knobs both arms inherit are on both records; the treatment's
+        // own value for a shared key wins, and its hash differs from the
+        // control's by exactly that.
+        let shared = ["max_turns=60".to_string(), "effort=high".to_string()];
+        let m = Manifest::two_arm(
+            "eval-ab-knobs",
+            "treatment",
+            Arm {
+                preset: Some(Preset::Bare),
+                overrides: vec!["max_turns=40".into()],
+                prediction: Some(Prediction {
+                    metric: ExpMetric::Failure,
+                    rationale: "x".into(),
+                }),
+                ..Arm::default()
+            },
+            tasks.clone(),
+            3,
+            1,
+            &[],
+            &shared,
+        )
+        .unwrap();
+        assert_eq!(m.arms["bare"].overrides, shared.to_vec());
+        assert_eq!(
+            m.arms["treatment"].overrides,
+            vec!["effort=high".to_string(), "max_turns=40".to_string()],
+            "the treatment's own max_turns replaces the shared one"
+        );
     }
 
     #[test]
