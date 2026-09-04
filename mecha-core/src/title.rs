@@ -152,6 +152,26 @@ pub fn due(owner_turns: usize, titled_at: usize) -> bool {
         .any(|&at| titled_at < at && owner_turns >= at)
 }
 
+/// Whether the run that just ended is a moment to name anything at all.
+///
+/// [`due`] counts turns; this asks how the last one ended. A run a person cut
+/// off is a run whose *next* turn is already on its way — a spoken turn the
+/// owner talked over, a stop button pressed to re-ask — and the name is a
+/// thinking generation on the same server that next turn is about to need.
+/// On 2026-09-04 a barge-in ended the first run of a voice call, the title
+/// pass started on it and thought for eighteen seconds beside the retry, and
+/// the retry's generation ran at half speed while the TTS behind it did too.
+/// A shutdown is the same shape with nobody listening. Every other ending is
+/// the run's own — the model finished, parked a question, or hit a ceiling —
+/// and the conversation is idle for as long as a name takes.
+pub fn settled(stop: crate::agent::StopCause) -> bool {
+    use crate::agent::StopCause;
+    !matches!(
+        stop,
+        StopCause::Interrupted | StopCause::Stopped | StopCause::Shutdown
+    )
+}
+
 const SYSTEM: &str = "\
 You name conversations. You will be shown the opening messages a person sent \
 to their assistant. Reply with a title for that conversation: at most six \
@@ -435,6 +455,27 @@ mod tests {
         assert!(!due(2, 1));
         assert!(!due(9, 8));
         assert!(!due(400, 8));
+    }
+
+    #[test]
+    fn a_run_the_owner_cut_off_is_not_named_yet() {
+        use crate::agent::StopCause;
+        // The next turn is already coming; the name would race it.
+        for cut in [StopCause::Interrupted, StopCause::Stopped, StopCause::Shutdown] {
+            assert!(!settled(cut), "{cut:?} is not a settled ending");
+        }
+        // The run ended on its own; the server is idle for a name.
+        for own in [
+            StopCause::Completed,
+            StopCause::Parked,
+            StopCause::MaxTurns,
+            StopCause::OutputTokenBudget,
+            StopCause::CostBudget,
+            StopCause::Loop,
+            StopCause::NoOutput,
+        ] {
+            assert!(settled(own), "{own:?} is the run's own ending");
+        }
     }
 
     #[test]
