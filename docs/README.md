@@ -87,6 +87,7 @@ something shipped.
 | [`SCHEDULING-DESIGN.md`](SCHEDULING-DESIGN.md) | The scheduling instrument: booking, the admin door, the frontend |
 | [`SLACK-ACTIONS-DESIGN.md`](SLACK-ACTIONS-DESIGN.md) | Executable actions from a phone: the closed `Action` enum and the tainted two-step |
 | [`SLACK-DESIGN.md`](SLACK-DESIGN.md) | How mecha is driven from Slack: the transport, the allowlist, the thread state machine |
+| [`SPOKEN-OVERRIDE-DESIGN.md`](SPOKEN-OVERRIDE-DESIGN.md) | Changing a harness-supplied parameter by ear: state the default, accept an override, read the result back |
 | [`SWITCHBOARD-DESIGN.md`](SWITCHBOARD-DESIGN.md) | The switchboard over the public surface |
 | [`TASK-AGENT-DESIGN.md`](TASK-AGENT-DESIGN.md) | The medium tier: delegated tasks, the resource model, and who holds the ball |
 
