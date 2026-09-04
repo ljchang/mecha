@@ -14,9 +14,11 @@ experience to be true.*
 > `mecha-factory` fdfbb7b, before the build. Two things the build settled
 > beyond the text: a clean winner is **re-verified against live freebusy**
 > before the event is made, and a collision flips the verdict to a pick with
-> the reason (`conflict`); and the reconciled `booked` for a pick carries
-> `via: outbox:<id>` rather than an event id, because the outbox does not
-> record a release's output.
+> the reason (`conflict`); and the outbox now records a release's output
+> (`OutboxItem::output`), so the reconciled `booked` for a pick carries the
+> event id beside `via: outbox:<id>`. Deploy also needs
+> `mail__calendar_create_event` in `[outbox] tools` — the documented default
+> — or no pick card can be staged.
 
 ## 0. The one-sentence shape
 

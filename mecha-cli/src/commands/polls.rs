@@ -405,6 +405,17 @@ pub fn repick(record: &PollRecord, current: &Value, index: usize) -> Result<Valu
     Ok(args)
 }
 
+/// The event id in `calendar_create_event`'s answer — "created in `a`:"
+/// followed by the event as JSON. Empty when the answer has no readable id,
+/// which the record shows as such rather than inventing one.
+pub fn event_id_of(output: &str) -> String {
+    output
+        .find('{')
+        .and_then(|i| serde_json::from_str::<Value>(&output[i..]).ok())
+        .and_then(|v| v["event_id"].as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
 /// The line on a pick card that names its poll.
 pub fn poll_marker(poll_id: &str) -> String {
     format!("poll: {poll_id}")
@@ -418,7 +429,7 @@ fn adoptable_card(store: &OutboxStore, tool: &str, poll_id: &str) -> Result<Opti
     let marker = poll_marker(poll_id);
     Ok(store.items()?.into_iter().find(|item| {
         item.status == "pending"
-            && item.author == mecha_core::outbox::Author::Harness
+            && item.author() == mecha_core::outbox::Author::Harness
             && item.tool == tool
             && item.args["description"]
                 .as_str()
@@ -589,7 +600,7 @@ fn step(
                     record.set(
                         "booked",
                         json!({
-                            "event_id": "",
+                            "event_id": event_id_of(item.output.as_deref().unwrap_or("")),
                             "account": item.args["account"].as_str().unwrap_or(""),
                             "at": item.resolved_at.clone().unwrap_or_default(),
                             "via": format!("outbox:{}", item.id),
@@ -747,6 +758,7 @@ mod tests {
     fn the_loaded_candidate_is_found_by_its_start() {
         let r = record(json!({"ranked": ranked()}));
         let mut item = OutboxItem {
+            output: None,
             author: Default::default(),
             id: "ob1".into(),
             status: "pending".into(),
@@ -875,21 +887,34 @@ mod tests {
         let item = store.item(&item_id).unwrap();
         assert_eq!(item.tool, "mail__calendar_create_event");
         assert_eq!(item.kind, OutboxKind::Message);
-        assert_eq!(item.author, Author::Harness, "nobody's draft: never mined");
+        assert_eq!(
+            item.author(),
+            Author::Harness,
+            "nobody's draft: never mined"
+        );
         assert_eq!(item.args["start_time"], "2030-02-05T18:00:00Z");
         assert!(
             step(&mut r, &store, &cfg).unwrap().is_none(),
             "pending: nothing to do"
         );
 
-        // Released: the record learns the slot; the page's sentence is the
-        // factory sweep's to write.
-        store.resolve(&item_id, "sent", None).unwrap();
+        // Released: the record learns the slot and the event the tool made;
+        // the page's sentence is the factory sweep's to write.
+        store
+            .resolve_with_output(
+                &item_id,
+                "sent",
+                None,
+                Some("created in `work`:\n{\n  \"event_id\": \"ev42\",\n  \"title\": \"Lab meeting\"\n}".into()),
+            )
+            .unwrap();
         let line = step(&mut r, &store, &cfg).unwrap().expect("reconciled");
         assert!(line.contains("booked 2030-02-05T18:00:00Z"), "{line}");
         let life = r.lifecycle();
         assert_eq!(life["book"]["duration_minutes"], 60);
+        assert_eq!(life["booked"]["event_id"], "ev42");
         assert_eq!(life["booked"]["via"], format!("outbox:{item_id}"));
+        assert_eq!(event_id_of("nothing here"), "", "no id is no id");
         assert_eq!(life["a_field_from_the_future"], 1);
         assert!(
             step(&mut r, &store, &cfg).unwrap().is_none(),
