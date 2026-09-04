@@ -1826,22 +1826,6 @@ mod tests {
         assert!(step_escalation_enabled(true, false));
     }
 
-    /// **A child that cannot compact must not be handed the button for it.**
-    ///
-    /// `AgentConfig::compact_at` *derives* the threshold from the context
-    /// window when `compact_at_tokens` is unset — which is the default — so a
-    /// child built without a window has `compact_limit() == None` and never
-    /// compacts at any length. That was survivable while nothing said
-    /// otherwise, and stopped being so when `compact` shipped: the child gets
-    /// the tool (it is in the pool before children are built) and the channel
-    /// (`subagent.rs` clones the parent's `ToolCtx` wholesale), so it was told
-    /// *"the transcript will be summarised before your next turn"* by a loop
-    /// that would never read the flag.
-    ///
-    /// The two halves are inherited by different mechanisms — the channel on
-    /// the context, the threshold on the agent — and only one made the trip.
-    /// Fails on the old `build_subagent`, which never called
-    /// `with_context_window`.
     /// Every tool a front-end inserts after `build` must be in
     /// `Situation::FRONTEND_TOOLS`, or a rule can be scoped to it and never
     /// load. `surface_only_registry` holds the two `setup` itself inserts;
@@ -1860,6 +1844,22 @@ mod tests {
         assert!(mecha_core::situation::Situation::FRONTEND_TOOLS.contains(&show.name()));
     }
 
+    /// **A child that cannot compact must not be handed the button for it.**
+    ///
+    /// `AgentConfig::compact_at` *derives* the threshold from the context
+    /// window when `compact_at_tokens` is unset — which is the default — so a
+    /// child built without a window has `compact_limit() == None` and never
+    /// compacts at any length. That was survivable while nothing said
+    /// otherwise, and stopped being so when `compact` shipped: the child gets
+    /// the tool (it is in the pool before children are built) and the channel
+    /// (`subagent.rs` clones the parent's `ToolCtx` wholesale), so it was told
+    /// *"the transcript will be summarised before your next turn"* by a loop
+    /// that would never read the flag.
+    ///
+    /// The two halves are inherited by different mechanisms — the channel on
+    /// the context, the threshold on the agent — and only one made the trip.
+    /// Fails on the old `build_subagent`, which never called
+    /// `with_context_window`.
     #[test]
     fn a_subagent_inherits_the_window_its_compaction_threshold_derives_from() {
         let cfg = mecha_core::config::Config::default();
