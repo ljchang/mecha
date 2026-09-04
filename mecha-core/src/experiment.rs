@@ -158,10 +158,6 @@ impl Schedule {
         }
         out
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.reflect == 0 && self.learn == 0 && self.validate == 0 && self.ruminate == 0
-    }
 }
 
 /// The loop-stage levers, `lifetime` only (Part II §15's second table): a
@@ -1128,6 +1124,31 @@ impl ExperimentStore {
         Ok(())
     }
 
+    /// Every lifetime's stage runs on this store, and the torn-line count
+    /// across them — what `judge` and `export` read, since for a lifetime
+    /// the ledger is the evidence that a treatment occurred.
+    pub fn all_stage_runs(&self) -> Result<(Vec<StageRun>, usize)> {
+        let dir = self.root.join("stages");
+        let (mut out, mut torn) = (Vec::new(), 0);
+        if !dir.exists() {
+            return Ok((out, torn));
+        }
+        let mut names: Vec<String> = std::fs::read_dir(&dir)?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.strip_suffix(".jsonl").map(str::to_string)
+            })
+            .collect();
+        names.sort();
+        for lifetime in names {
+            let (runs, t) = self.stage_runs(&lifetime)?;
+            out.extend(runs);
+            torn += t;
+        }
+        Ok((out, torn))
+    }
+
     /// The stage runs on one lifetime's ledger, in order, and the count of
     /// lines that did not parse — a torn line is a finding, not a stage
     /// that never ran.
@@ -1158,6 +1179,11 @@ pub struct StageRun {
     pub stage: StageLever,
     /// The position whose task ran just before this stage.
     pub after_position: u32,
+    /// Which attempt this is for the (position, stage) pair; the running
+    /// line and its terminal line share one. Rows written before the
+    /// field existed read as attempt 1.
+    #[serde(default = "one")]
+    pub attempt: u32,
     pub started_at: String,
     pub finished_at: String,
     pub status: StageStatus,
@@ -1170,6 +1196,12 @@ pub struct StageRun {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StageStatus {
+    /// Appended *before* the child is spawned, so a driver killed
+    /// mid-stage leaves a line: the attempt number is burnt and the rerun
+    /// cannot truncate the interrupted attempt's log. A `running` line no
+    /// terminal line supersedes (same position, stage and attempt) reads
+    /// as an interrupted stage (found on review).
+    Running,
     Done,
     Failed,
     /// A status this build does not know: counted neither done nor failed,
@@ -1177,6 +1209,47 @@ pub enum StageStatus {
     /// a status this build cannot read is not proof the stage finished.
     #[serde(other)]
     Unknown,
+}
+
+/// How a set of stage runs went — one lifetime's, or every lifetime of an
+/// arm's. `interrupted` is a `running` line no terminal line supersedes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct StageHealth {
+    pub done: usize,
+    pub failed: usize,
+    pub interrupted: usize,
+    pub unknown: usize,
+}
+
+impl StageHealth {
+    /// A stage that did not run as designed: failed or interrupted.
+    pub fn broken(&self) -> usize {
+        self.failed + self.interrupted
+    }
+}
+
+pub fn stage_health(runs: &[StageRun]) -> StageHealth {
+    let mut h = StageHealth::default();
+    for r in runs {
+        match r.status {
+            StageStatus::Done => h.done += 1,
+            StageStatus::Failed => h.failed += 1,
+            StageStatus::Unknown => h.unknown += 1,
+            StageStatus::Running => {
+                let superseded = runs.iter().any(|t| {
+                    t.status != StageStatus::Running
+                        && t.lifetime == r.lifetime
+                        && t.after_position == r.after_position
+                        && t.stage == r.stage
+                        && t.attempt == r.attempt
+                });
+                if !superseded {
+                    h.interrupted += 1;
+                }
+            }
+        }
+    }
+    h
 }
 
 /// The stages still due after `position`: the schedule's, minus the arm's
@@ -1516,6 +1589,15 @@ pub struct ArmJudgement {
     pub selection: usize,
     pub holdout: usize,
     pub judgement: Judgement,
+    /// The treatment arm's and the control's stage runs, over every
+    /// lifetime of each. Zero everywhere on a `single`. A broken stage on
+    /// either side holds the verdict at *propose*: the ledger is the
+    /// evidence that the treatment occurred, and a stage that failed or
+    /// was interrupted is a treatment not known to have run as designed —
+    /// the rule "a trial that cannot answer the metric drops its pair
+    /// rather than counting as zero", one level up (found on review).
+    pub stages: StageHealth,
+    pub control_stages: StageHealth,
 }
 
 /// A finished control trial and the treatment trial on the same episode.
@@ -1534,7 +1616,11 @@ struct TrialPair<'a> {
 /// same way twice), and judge each arm through the gate. A trial that
 /// cannot answer the metric drops its pair; an arm with no pairs is
 /// reported with none rather than omitted.
-pub fn judge(manifest: &Manifest, trials: &[Trial]) -> Vec<ArmJudgement> {
+pub fn judge(manifest: &Manifest, trials: &[Trial], stages: &[StageRun]) -> Vec<ArmJudgement> {
+    let health_of = |arm: &str| {
+        let own: Vec<StageRun> = stages.iter().filter(|r| r.arm == arm).cloned().collect();
+        stage_health(&own)
+    };
     // A measurement has no control and nothing to judge: every arm is read
     // for what it measured, never paired.
     let Some(control_name) = &manifest.control else {
@@ -1605,6 +1691,15 @@ pub fn judge(manifest: &Manifest, trials: &[Trial]) -> Vec<ArmJudgement> {
                 )
             },
         );
+        let stages = health_of(name);
+        let control_stages = health_of(control_name);
+        let mut judgement = judgement;
+        let broken = stages.broken() + control_stages.broken();
+        if broken > 0 && judgement.disposition == crate::candidate::Disposition::Accept {
+            judgement.disposition = crate::candidate::Disposition::Propose(format!(
+                "{broken} stage run(s) failed or were interrupted across this arm's and the control's lifetimes; the treatment is not known to have run as designed"
+            ));
+        }
         out.push(ArmJudgement {
             arm: name.clone(),
             metric,
@@ -1612,6 +1707,8 @@ pub fn judge(manifest: &Manifest, trials: &[Trial]) -> Vec<ArmJudgement> {
             selection: selection.len(),
             holdout: holdout.len(),
             judgement,
+            stages,
+            control_stages,
         });
     }
     out
@@ -1952,7 +2049,7 @@ rationale = "no notice, fewer turns"
         };
         let m = Manifest::one_arm("eval-x", "bare", bare.clone(), tasks.clone(), 1).unwrap();
         assert_eq!(m.control, None);
-        assert!(judge(&m, &[]).is_empty(), "nothing to judge");
+        assert!(judge(&m, &[], &[]).is_empty(), "nothing to judge");
         let text = toml::to_string_pretty(&m).unwrap();
         let back = Manifest::parse(&text).unwrap();
         assert_eq!(back.control, None);
@@ -1976,7 +2073,7 @@ rationale = "no notice, fewer turns"
         assert_eq!(bake.control, None);
         assert_eq!(bake.arms.len(), 3);
         assert!(
-            judge(&bake, &[]).is_empty(),
+            judge(&bake, &[], &[]).is_empty(),
             "a bake-off judges nothing either"
         );
         // And a comparison still needs the control and a treatment arm: one
@@ -2376,6 +2473,7 @@ rationale = "no rumination should fail more over the sequence"
             arm: "full".into(),
             stage,
             after_position: after,
+            attempt: 1,
             started_at: "t0".into(),
             finished_at: "t1".into(),
             status,
@@ -2447,7 +2545,72 @@ rationale = "no rumination should fail more over the sequence"
             2,
             "a torn line may have been this pair's: never reuse its number"
         );
+        // A running line no terminal line supersedes is an interrupted
+        // stage; one a terminal line supersedes is that terminal line's.
+        let mut running = run(StageLever::Ruminate, 4, StageStatus::Running);
+        running.attempt = 3;
+        store.record_stage(&running).unwrap();
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        let h = stage_health(&ledger);
+        assert_eq!(
+            (h.done, h.failed, h.interrupted, h.unknown),
+            (1, 1, 1, 1),
+            "reflect done, learn failed, the running ruminate interrupted, the paused line unknown: {h:?}"
+        );
+        assert_eq!(
+            ExperimentStore::next_attempt(&ledger, 0, 4, StageLever::Ruminate),
+            2,
+            "the running line burns its attempt"
+        );
+        let mut done = run(StageLever::Ruminate, 4, StageStatus::Done);
+        done.attempt = 3;
+        store.record_stage(&done).unwrap();
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        let h = stage_health(&ledger);
+        assert_eq!((h.done, h.interrupted), (2, 0), "{h:?}");
+        let (all, torn) = store.all_stage_runs().unwrap();
+        assert_eq!((all.len(), torn), (ledger.len(), 1));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A broken stage on either side of a comparison holds the verdict at
+    /// propose: a treatment whose stages failed is not known to have run.
+    #[test]
+    fn a_broken_stage_holds_the_verdict_at_propose() {
+        let m = Manifest::parse(MANIFEST).unwrap();
+        let mut trials = Vec::new();
+        for i in 0..12u64 {
+            trials.push(done("full", &format!("t{i}"), 1, true, 10));
+            trials.push(done("bare", &format!("t{i}"), 1, false, 10));
+        }
+        let clean = judge(&m, &trials, &[]);
+        let bare = clean.iter().find(|v| v.arm == "bare").unwrap();
+        assert_eq!(bare.stages, StageHealth::default());
+        let failed = StageRun {
+            lifetime: "bare__s1__r1".into(),
+            arm: "bare".into(),
+            stage: StageLever::Ruminate,
+            after_position: 10,
+            attempt: 1,
+            started_at: "t0".into(),
+            finished_at: "t1".into(),
+            status: StageStatus::Failed,
+            exit_code: Some(1),
+            error: None,
+        };
+        let held = judge(&m, &trials, &[failed]);
+        let bare_held = held.iter().find(|v| v.arm == "bare").unwrap();
+        assert_eq!(bare_held.stages.failed, 1);
+        assert_ne!(
+            bare_held.judgement.disposition,
+            crate::candidate::Disposition::Accept,
+            "never accepted over a stage that did not run: {:?}",
+            bare_held.judgement.disposition
+        );
+        assert_eq!(
+            bare_held.judgement.selection, bare.judgement.selection,
+            "the tallies are untouched"
+        );
     }
 
     /// What a stage accepted inside the home reaches the next task: the
@@ -2563,7 +2726,7 @@ rationale = "no rumination should fail more over the sequence"
         }
         // One quiet trial never got stats: its pair drops.
         trials.iter_mut().find(|t| t.arm == "quiet").unwrap().stats = None;
-        let verdicts = judge(&m, &trials);
+        let verdicts = judge(&m, &trials, &[]);
         assert_eq!(verdicts.len(), 2);
         let bare = verdicts.iter().find(|v| v.arm == "bare").unwrap();
         assert_eq!(bare.metric, ExpMetric::Failure);
@@ -2589,7 +2752,7 @@ rationale = "no rumination should fail more over the sequence"
             quiet.judgement.disposition
         );
         // Deterministic: the same manifest draws the same holdout.
-        let again = judge(&m, &trials);
+        let again = judge(&m, &trials, &[]);
         assert_eq!(again[0].holdout, verdicts[0].holdout);
         assert_eq!(
             again[0].judgement.holdout.wins,

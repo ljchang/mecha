@@ -422,12 +422,24 @@ async fn run_stage(
         arm: after.arm.clone(),
         stage,
         after_position: position,
+        attempt,
         started_at,
         finished_at: String::new(),
-        status: StageStatus::Failed,
+        status: StageStatus::Running,
         exit_code: None,
         error: None,
     };
+    // The running line first, so a driver killed mid-stage leaves a record
+    // and the rerun takes the next attempt number rather than this one's
+    // log. Its own failure is the stage's: nothing spawns over a ledger
+    // that cannot be written.
+    if let Err(e) = store.record_stage(&run) {
+        run.status = StageStatus::Failed;
+        run.error = Some(format!("the ledger could not take the running line: {e:#}"));
+        run.finished_at = chrono::Utc::now().to_rfc3339();
+        return run;
+    }
+    run.status = StageStatus::Failed;
     let outcome: Result<std::process::ExitStatus> = async {
         let argv =
             stage_argv(stage, flags).context("a config-switch lever is not a stage to run")?;
@@ -743,6 +755,7 @@ fn status(name: &str, json: bool) -> Result<()> {
                     })).collect::<Vec<_>>(),
                     "stages_done": l.stages_done,
                     "stages_failed": l.stages_failed,
+                    "stages_interrupted": l.stages_interrupted,
                     "stages_unknown": l.stages_unknown,
                     "unreadable_stage_lines": l.torn,
                 })
@@ -808,13 +821,25 @@ fn status(name: &str, json: bool) -> Result<()> {
                 marks,
                 l.stages_done,
                 l.stages_failed,
-                match (l.stages_unknown, l.torn) {
-                    (0, 0) => String::new(),
-                    (u, 0) => format!("  ({u} stage line(s) in a status this build cannot read)"),
-                    (0, t) => format!("  ({t} ledger line(s) unreadable)"),
-                    (u, t) => format!(
-                        "  ({u} stage line(s) in a status this build cannot read; {t} unreadable)"
-                    ),
+                {
+                    let mut notes = Vec::new();
+                    if l.stages_interrupted > 0 {
+                        notes.push(format!("{} interrupted", l.stages_interrupted));
+                    }
+                    if l.stages_unknown > 0 {
+                        notes.push(format!(
+                            "{} stage line(s) in a status this build cannot read",
+                            l.stages_unknown
+                        ));
+                    }
+                    if l.torn > 0 {
+                        notes.push(format!("{} ledger line(s) unreadable", l.torn));
+                    }
+                    if notes.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  ({})", notes.join("; "))
+                    }
                 }
             );
         }
@@ -840,6 +865,9 @@ struct LifetimeReadout {
     positions: Vec<(u32, Trial)>,
     stages_done: usize,
     stages_failed: usize,
+    /// A running line no terminal line superseded: the driver died
+    /// mid-stage.
+    stages_interrupted: usize,
     /// Lines in a status this build cannot read: a finding, never a stage
     /// that was not scheduled.
     stages_unknown: usize,
@@ -850,7 +878,6 @@ fn lifetime_readout(
     store: &ExperimentStore,
     trials: &std::collections::BTreeMap<String, Trial>,
 ) -> Result<Vec<LifetimeReadout>> {
-    use mecha_core::experiment::StageStatus;
     let mut by_id: std::collections::BTreeMap<String, LifetimeReadout> = Default::default();
     for t in trials.values() {
         let (Some(id), Some(pos)) = (&t.lifetime, t.position) else {
@@ -864,6 +891,7 @@ fn lifetime_readout(
                 positions: Vec::new(),
                 stages_done: 0,
                 stages_failed: 0,
+                stages_interrupted: 0,
                 stages_unknown: 0,
                 torn: 0,
             })
@@ -875,13 +903,11 @@ fn lifetime_readout(
         l.positions.sort_by_key(|(p, _)| *p);
         let (runs, torn) = store.stage_runs(&l.id)?;
         l.torn = torn;
-        for r in runs {
-            match r.status {
-                StageStatus::Done => l.stages_done += 1,
-                StageStatus::Failed => l.stages_failed += 1,
-                StageStatus::Unknown => l.stages_unknown += 1,
-            }
-        }
+        let h = mecha_core::experiment::stage_health(&runs);
+        l.stages_done = h.done;
+        l.stages_failed = h.failed;
+        l.stages_interrupted = h.interrupted;
+        l.stages_unknown = h.unknown;
     }
     Ok(out)
 }
@@ -891,7 +917,8 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
     let manifest = store.manifest()?;
     let (trials, skipped) = store.trials()?;
     let trials: Vec<Trial> = trials.into_values().collect();
-    let verdicts = judge(&manifest, &trials);
+    let (stages, torn_stages) = store.all_stage_runs()?;
+    let verdicts = judge(&manifest, &trials, &stages);
     if json {
         println!(
             "{}",
@@ -900,6 +927,7 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
                 "control": manifest.control,
                 "arms": verdicts,
                 "unreadable_trials": skipped,
+                "unreadable_stage_lines": torn_stages,
             }))?
         );
         return Ok(());
@@ -932,6 +960,17 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
             j.holdout.losses,
             j.holdout.ties
         );
+        if manifest.kind == TrialKind::Lifetime {
+            println!(
+                "  stages: treatment {} ok · {} failed · {} interrupted    control {} ok · {} failed · {} interrupted",
+                v.stages.done,
+                v.stages.failed,
+                v.stages.interrupted,
+                v.control_stages.done,
+                v.control_stages.failed,
+                v.control_stages.interrupted
+            );
+        }
         println!(
             "  work: control {} calls, treatment {} calls",
             j.work_baseline, j.work_candidate
@@ -957,14 +996,20 @@ fn export(name: &str) -> Result<()> {
     let manifest = store.manifest()?;
     let (trials, skipped) = store.trials()?;
     let trials: Vec<Trial> = trials.into_values().collect();
-    let verdicts = judge(&manifest, &trials);
+    // The ledger rides in the export: for a lifetime it is the evidence
+    // that a treatment occurred, and the reviewable object is the whole
+    // record (found on review).
+    let (stages, torn_stages) = store.all_stage_runs()?;
+    let verdicts = judge(&manifest, &trials, &stages);
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "manifest": manifest,
             "trials": trials,
+            "stages": stages,
             "judgements": verdicts,
             "unreadable_trials": skipped,
+            "unreadable_stage_lines": torn_stages,
         }))?
     );
     Ok(())
