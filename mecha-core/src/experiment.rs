@@ -1220,6 +1220,13 @@ pub enum StageStatus {
     Running,
     Done,
     Failed,
+    /// Due, but a later position had already finished when the driver came
+    /// back to it: a stage that ran now would act on sessions its tasks
+    /// never ran under — causally inert, and a success that would have
+    /// released the judge's hold on a treatment that did not occur (found
+    /// on review). Terminal: never rerun, counted as broken, and it
+    /// supersedes the failure it stands for so the count is not doubled.
+    Skipped,
     /// A status this build does not know: counted neither done nor failed,
     /// and **due again** (`stages_due` reruns anything not `done`), because
     /// a status this build cannot read is not proof the stage finished.
@@ -1234,6 +1241,8 @@ pub struct StageHealth {
     pub done: usize,
     pub failed: usize,
     pub interrupted: usize,
+    /// Due stages the driver could no longer run in sequence.
+    pub skipped: usize,
     pub unknown: usize,
 }
 
@@ -1246,15 +1255,17 @@ impl StageHealth {
     /// without this, one transient failure held every verdict at propose
     /// forever).
     pub fn broken(&self) -> usize {
-        self.failed + self.interrupted + self.unknown
+        self.failed + self.interrupted + self.skipped + self.unknown
     }
 }
 
 pub fn stage_health(runs: &[StageRun]) -> StageHealth {
     let mut h = StageHealth::default();
-    let later_done = |r: &StageRun| {
+    // A later attempt that settled the pair — ran, or was recorded skipped
+    // out of sequence — stands for every earlier line of it.
+    let later_settled = |r: &StageRun| {
         runs.iter().any(|t| {
-            t.status == StageStatus::Done
+            matches!(t.status, StageStatus::Done | StageStatus::Skipped)
                 && t.lifetime == r.lifetime
                 && t.after_position == r.after_position
                 && t.stage == r.stage
@@ -1264,13 +1275,14 @@ pub fn stage_health(runs: &[StageRun]) -> StageHealth {
     for r in runs {
         match r.status {
             StageStatus::Done => h.done += 1,
+            StageStatus::Skipped => h.skipped += 1,
             StageStatus::Failed => {
-                if !later_done(r) {
+                if !later_settled(r) {
                     h.failed += 1;
                 }
             }
             StageStatus::Unknown => {
-                if !later_done(r) {
+                if !later_settled(r) {
                     h.unknown += 1;
                 }
             }
@@ -1285,7 +1297,7 @@ pub fn stage_health(runs: &[StageRun]) -> StageHealth {
                         && t.after_position == r.after_position
                         && t.stage == r.stage
                         && t.attempt == r.attempt
-                }) || later_done(r);
+                }) || later_settled(r);
                 if !superseded {
                     h.interrupted += 1;
                 }
@@ -1311,10 +1323,23 @@ pub fn stages_due(
         .filter(|s| !stages_off.contains(s))
         .filter(|s| {
             !ledger.iter().any(|r| {
-                r.after_position == position && r.stage == *s && r.status == StageStatus::Done
+                r.after_position == position
+                    && r.stage == *s
+                    && matches!(r.status, StageStatus::Done | StageStatus::Skipped)
             })
         })
         .collect()
+}
+
+/// Whether a stage due after `position` can still run in sequence: it
+/// cannot once any later position of the lifetime has finished (done or
+/// failed), because what it would act on is no longer what the next task
+/// started from. The driver records such a stage `skipped` instead.
+pub fn out_of_sequence<'a>(position: u32, rows: impl IntoIterator<Item = &'a Trial>) -> bool {
+    rows.into_iter().any(|t| {
+        t.position.is_some_and(|p| p > position)
+            && matches!(t.status, TrialStatus::Done | TrialStatus::Failed)
+    })
 }
 
 /// D12's refusal, and `setup`'s rule for a workspace applied to the store:
@@ -2638,9 +2663,9 @@ rationale = "no rumination should fail more over the sequence"
             2,
             "the running line burns its attempt"
         );
-        let mut done = run(StageLever::Ruminate, 4, StageStatus::Done);
-        done.attempt = 3;
-        store.record_stage(&done).unwrap();
+        let mut settled = run(StageLever::Ruminate, 4, StageStatus::Done);
+        settled.attempt = 3;
+        store.record_stage(&settled).unwrap();
         let (ledger, _) = store.stage_runs("full__r1").unwrap();
         let h = stage_health(&ledger);
         assert_eq!((h.done, h.interrupted), (2, 0), "{h:?}");
@@ -2670,6 +2695,38 @@ rationale = "no rumination should fail more over the sequence"
         let (ledger, _) = store.stage_runs("full__r1").unwrap();
         let h = stage_health(&ledger);
         assert_eq!((h.interrupted, h.done), (0, 4), "{h:?}");
+        // A stage the driver could no longer run in sequence: recorded
+        // skipped, never due again, broken, and standing for its failure.
+        store
+            .record_stage(&run(StageLever::Reflect, 6, StageStatus::Failed))
+            .unwrap();
+        let mut skipped = run(StageLever::Reflect, 6, StageStatus::Skipped);
+        skipped.attempt = 2;
+        store.record_stage(&skipped).unwrap();
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        let h = stage_health(&ledger);
+        assert_eq!(
+            (h.skipped, h.failed, h.broken()),
+            (1, 0, 2),
+            "the skip stands for its failure; the paused line at 3 is the other broken one: {h:?}"
+        );
+        assert!(
+            !stages_due(&schedule, 6, &[], &ledger).contains(&StageLever::Reflect),
+            "a skipped stage is never due again"
+        );
+        let mut rows = vec![done("full", "a", 1, true, 3), done("full", "b", 1, true, 3)];
+        rows[0].position = Some(6);
+        rows[1].position = Some(7);
+        assert!(
+            out_of_sequence(6, &rows),
+            "position 7 finished: a stage after 6 is out of sequence"
+        );
+        rows[1].status = TrialStatus::Pending;
+        assert!(
+            !out_of_sequence(6, &rows),
+            "nothing later finished: still in sequence"
+        );
+        assert!(!out_of_sequence(7, &rows));
         assert_eq!(
             stages_due(&schedule, 2, &[], &ledger),
             vec![StageLever::Validate],

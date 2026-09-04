@@ -332,7 +332,7 @@ async fn run_lifetimes(
         let ChildInvocation {
             flags, passthrough, ..
         } = mecha_core::experiment::child_invocation(real, arm, first.seed)?;
-        for planned_trial in rows {
+        for planned_trial in rows.iter().copied() {
             let position = planned_trial
                 .position
                 .context("a lifetime row without a position")?;
@@ -369,8 +369,37 @@ async fn run_lifetimes(
                     break;
                 }
             }
+            // A due stage can run only while no later position has
+            // finished: past that it would act on sessions its tasks never
+            // ran under, and its success would release the judge's hold on
+            // a treatment that did not occur. Recorded skipped instead.
+            let late = mecha_core::experiment::out_of_sequence(position, rows.iter().copied());
             for stage in stages_due(&manifest.schedule, position, &stages_off, &ledger) {
                 let attempt = ExperimentStore::next_attempt(&ledger, torn, position, stage);
+                if late {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let run = mecha_core::experiment::StageRun {
+                        lifetime: lifetime.clone(),
+                        arm: trial.arm.clone(),
+                        stage,
+                        after_position: position,
+                        attempt,
+                        started_at: now.clone(),
+                        finished_at: now,
+                        status: mecha_core::experiment::StageStatus::Skipped,
+                        exit_code: None,
+                        error: Some(format!(
+                            "a later position had finished before this stage could run after {position}; out of sequence, not run"
+                        )),
+                    };
+                    eprintln!(
+                        "  ↳ {} · skipped: a later position had already finished; a stage after {position} cannot run in sequence",
+                        stage.as_str()
+                    );
+                    store.record_stage(&run)?;
+                    ledger.push(run);
+                    continue;
+                }
                 let run = run_stage(
                     store,
                     mecha,
@@ -769,6 +798,7 @@ fn status(name: &str, json: bool) -> Result<()> {
                     "stages_done": l.stages_done,
                     "stages_failed": l.stages_failed,
                     "stages_interrupted": l.stages_interrupted,
+                    "stages_skipped": l.stages_skipped,
                     "stages_unknown": l.stages_unknown,
                     "unreadable_stage_lines": l.torn,
                 })
@@ -839,6 +869,9 @@ fn status(name: &str, json: bool) -> Result<()> {
                     if l.stages_interrupted > 0 {
                         notes.push(format!("{} interrupted", l.stages_interrupted));
                     }
+                    if l.stages_skipped > 0 {
+                        notes.push(format!("{} skipped out of sequence", l.stages_skipped));
+                    }
                     if l.stages_unknown > 0 {
                         notes.push(format!(
                             "{} stage line(s) in a status this build cannot read",
@@ -881,6 +914,8 @@ struct LifetimeReadout {
     /// A running line no terminal line superseded: the driver died
     /// mid-stage.
     stages_interrupted: usize,
+    /// Due stages the driver could no longer run in sequence.
+    stages_skipped: usize,
     /// Lines in a status this build cannot read: a finding, never a stage
     /// that was not scheduled.
     stages_unknown: usize,
@@ -905,6 +940,7 @@ fn lifetime_readout(
                 stages_done: 0,
                 stages_failed: 0,
                 stages_interrupted: 0,
+                stages_skipped: 0,
                 stages_unknown: 0,
                 torn: 0,
             })
@@ -920,6 +956,7 @@ fn lifetime_readout(
         l.stages_done = h.done;
         l.stages_failed = h.failed;
         l.stages_interrupted = h.interrupted;
+        l.stages_skipped = h.skipped;
         l.stages_unknown = h.unknown;
     }
     Ok(out)
@@ -975,14 +1012,16 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
         );
         if manifest.kind == TrialKind::Lifetime {
             println!(
-                "  stages: treatment {} ok · {} failed · {} interrupted · {} unknown    control {} ok · {} failed · {} interrupted · {} unknown{}",
+                "  stages: treatment {} ok · {} failed · {} interrupted · {} skipped · {} unknown    control {} ok · {} failed · {} interrupted · {} skipped · {} unknown{}",
                 v.stages.done,
                 v.stages.failed,
                 v.stages.interrupted,
+                v.stages.skipped,
                 v.stages.unknown,
                 v.control_stages.done,
                 v.control_stages.failed,
                 v.control_stages.interrupted,
+                v.control_stages.skipped,
                 v.control_stages.unknown,
                 if v.unreadable_stage_lines > 0 {
                     format!(

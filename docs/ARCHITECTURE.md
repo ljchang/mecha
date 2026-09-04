@@ -3098,8 +3098,13 @@ comparison over a chosen set**, with the design written before the run.
   what was scheduled, and `stages_due` is the schedule minus the arm's
   stage levers minus the ledger's done lines — so a resumed driver runs
   the stage a crash fell between before the next task, a failed stage is
-  due again as a second line, and a torn line is counted, never read as
-  a stage that ran. A `running` line is appended *before* the spawn, so
+  due again as a second line — **only while no later position has
+  finished**: past that the driver records it `skipped`, out of
+  sequence, because a stage run after later tasks acts on sessions those
+  tasks never ran under and its success would have released the judge's
+  hold on a treatment that did not occur (found on review); a skipped
+  stage is never rerun, counts as broken, and stands for the failure it
+  follows — and a torn line is counted, never read as a stage that ran. A `running` line is appended *before* the spawn, so
   a driver killed mid-stage leaves a record, the attempt number is burnt
   and the rerun's log is a new file; a `running` line nothing supersedes
   reads as interrupted. **`judge` and `export` read the ledger**: for a
