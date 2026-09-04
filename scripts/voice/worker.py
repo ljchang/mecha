@@ -22,6 +22,7 @@ The three legs are env-configurable base URLs (D6):
 
 import os
 import uuid
+from dataclasses import dataclass
 
 import httpx
 from openai.types.audio import Transcription
@@ -32,6 +33,7 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    DataFrame,
     TranscriptionFrame,
     VADUserStartedSpeakingFrame,
 )
@@ -41,6 +43,7 @@ from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
     TurnAnalyzerUserTurnStopStrategy,
 )
+from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -239,6 +242,17 @@ def _new_echo_window() -> BotSpeech:
     return BotSpeech()
 
 
+@dataclass
+class SegmentDroppedFrame(DataFrame):
+    """A VAD segment that will yield no transcript - the gate or the echo
+    filter dropped it, or the transcriber failed. `SegmentedSTTService`
+    runs the transcriber exactly once per VAD stop, so every stop ends in
+    either a `TranscriptionFrame` or one of these, and the turn logic can
+    count them against each other rather than guess. A data frame, not a
+    system frame, so it keeps its place in the queue behind the transcripts
+    ahead of it."""
+
+
 class SegmentGatedSTT(BaseWhisperSTTService):
     """The energy/duration gate every segment passes before any model sees
     it. Split out from the transcriber because it is a property of the
@@ -290,10 +304,16 @@ class SegmentGatedSTT(BaseWhisperSTTService):
         # waiting out the STT safety net (`STT_TTFS_P99`) on top of it, and
         # it is what makes a smart-turn COMPLETE wait for *this* segment's
         # text rather than settle for the previous one's.
+        transcribed = False
         async for frame in super().run_stt(audio):
             if isinstance(frame, TranscriptionFrame):
                 frame.finalized = True
+                transcribed = True
             yield frame
+        if not transcribed:
+            # The base emits nothing for empty text; the turn logic still
+            # needs to hear that this segment is accounted for.
+            yield SegmentDroppedFrame()
 
     def take_segment_start(self) -> float | None:
         """The start of the segment being transcribed, **consumed**.
@@ -698,8 +718,11 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
     segment owed one transcript (or none, when the gate drops it), so the
     override counts segments still awaiting text and treats the transcript
     as final for the turn only when nothing is outstanding. A dropped
-    segment leaves the count at one and the turn falls to the STT safety
-    net (`STT_TTFS_P99`), which is that net doing its job.
+    segment says so (`SegmentDroppedFrame`, from the STT) and is counted
+    off the same way, so echo and breaths between turns - every bot
+    sentence on speakers - leave nothing outstanding when the owner's next
+    transcript opens a turn. The STT safety net (`STT_TTFS_P99`) is left
+    for a transcript that never comes at all.
     """
 
     def __init__(self, **kwargs):
@@ -721,6 +744,18 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
             frame.finalized = False
         await super()._handle_transcription(frame)
 
+    async def process_frame(self, frame):
+        if isinstance(frame, SegmentDroppedFrame):
+            self._segments_awaiting_text = max(0, self._segments_awaiting_text - 1)
+            if not self._segments_awaiting_text and self._text:
+                # The last words heard are, after all, the last words: a
+                # COMPLETE waiting on this segment can end the turn now
+                # rather than at the safety net.
+                self._transcript_finalized = True
+                await self._maybe_trigger_user_turn_stopped()
+            return ProcessFrameResult.CONTINUE
+        return await super().process_frame(frame)
+
     async def handle_user_turn_stopped(self):
         self._segments_awaiting_text = 0
         await super().handle_user_turn_stopped()
@@ -730,7 +765,7 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
         # it would otherwise turn this back into the stock strategy without a
         # word - the silently-degrading guard - so it is a refusal to start
         # the call instead.
-        for private in ("_vad_stopped", "_transcript_finalized"):
+        for private in ("_vad_stopped", "_transcript_finalized", "_text"):
             if not hasattr(self, private):
                 raise RuntimeError(
                     "TranscriptStartedTurnStop: pipecat's TurnAnalyzerUserTurnStopStrategy "
@@ -745,6 +780,8 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
             "handle_user_turn_stopped",
             "_handle_vad_user_stopped_speaking",
             "_handle_transcription",
+            "_maybe_trigger_user_turn_stopped",
+            "process_frame",
         ):
             if not any(method in vars(c) for c in type(self).__mro__[1:]):
                 raise RuntimeError(

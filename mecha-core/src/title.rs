@@ -161,22 +161,26 @@ pub fn due(owner_turns: usize, titled_at: usize) -> bool {
 /// On 2026-09-04 a barge-in ended the first run of a voice call, the title
 /// pass started on it and thought for eighteen seconds beside the retry, and
 /// the retry's generation ran at half speed while the TTS behind it did too.
-/// A shutdown is the same shape with nobody listening. Every other ending is
-/// the run's own — the model finished, parked a question, or hit a ceiling —
-/// and the conversation is idle for as long as a name takes.
+/// A shutdown is the same shape with nobody listening, and so is a run that
+/// produced nothing (`NoOutput`): on the local server that is the common
+/// "thinking ate the reply" case, and the owner re-asks within seconds.
+/// Every other ending is the run's own — the model finished, parked a
+/// question, or hit a ceiling — and the conversation is idle for as long as
+/// a name takes.
 pub fn settled(stop: crate::agent::StopCause) -> bool {
     use crate::agent::StopCause;
     // Exhaustive on purpose: a new ending has to choose a side here, rather
     // than default into "name it" through a negated pattern.
     match stop {
-        StopCause::Interrupted | StopCause::Stopped | StopCause::Shutdown => false,
+        StopCause::Interrupted | StopCause::Stopped | StopCause::Shutdown | StopCause::NoOutput => {
+            false
+        }
         StopCause::Completed
         | StopCause::Parked
         | StopCause::MaxTurns
         | StopCause::OutputTokenBudget
         | StopCause::CostBudget
-        | StopCause::Loop
-        | StopCause::NoOutput => true,
+        | StopCause::Loop => true,
     }
 }
 
@@ -473,6 +477,7 @@ mod tests {
             StopCause::Interrupted,
             StopCause::Stopped,
             StopCause::Shutdown,
+            StopCause::NoOutput,
         ] {
             assert!(!settled(cut), "{cut:?} is not a settled ending");
         }
@@ -484,7 +489,6 @@ mod tests {
             StopCause::OutputTokenBudget,
             StopCause::CostBudget,
             StopCause::Loop,
-            StopCause::NoOutput,
         ] {
             assert!(settled(own), "{own:?} is the run's own ending");
         }
