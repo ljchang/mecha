@@ -1803,11 +1803,12 @@ accumulates), per-region validation (needs 3), the goal-relative steer
 verdict and blind replay (last, because they change what a replay
 concludes).
 
-### 17.7 Open on 2026-09-03, worked through 2026-09-04 — proposed, not yet ruled
+### 17.7 Open on 2026-09-03, worked through 2026-09-04
 
 Eight decisions §17.3–17.6 leave open. Each is stated with the fact in the
-tree it turns on and a proposed resolution; the owner accepts or overrides
-per item. None is built.
+tree it turns on and its resolution. Items 2 and 3 decide what the owner
+sees mid-run and were **ruled by the owner on 2026-09-04**; the other six
+follow from facts in the tree and stand as written. None is built.
 
 1. **A run records what it loaded.** `ValidationRecord` keys on
    `rules_hash` of the rendered block plus `rule_ids`; `SessionMeta` carries
@@ -1818,7 +1819,7 @@ per item. None is built.
    — pointers only, the taint snapshot's shape. A run without the field
    replays with the prefix block and reports the scoped set as *unknown*,
    never empty. Lands with sprint item 3 or item 3 does not merge.
-2. **Delivered is not applied.** *Proposed:* two columns — `delivered`, a
+2. **Delivered is not applied.** *Ruled 2026-09-04:* two columns — `delivered`, a
    harness fact, and `followed`, trace-graded by the probe's structural
    verdict — and tenure moves only on graded outcomes; delivery is a
    denominator. The delivery line is templated (*a lesson from a previous
@@ -1826,11 +1827,10 @@ per item. None is built.
    posture, and the null-step and restart counters are read before it is
    turned on: the tree's own evidence is that a nudge makes a model restart
    work it had done.
-3. **The ask, by surface.** `ask_user` is registered only by a front-end
+3. **The ask, by surface — ruled 2026-09-04.** `ask_user` is registered only by a front-end
    that owns a human; a task run's question goes through the question store
    and ends the run (D13); an unattended run is told what to do and approves
-   everything. *Proposed:* no numeric threshold in v1, three structural
-   cases. A delegated task run folds the goal sentence **into the one
+   everything. No numeric threshold in v1, three structural cases. A delegated task run folds the goal sentence **into the one
    question the seed already asks first** — no second run-ending question.
    Chat and TUI *state* the goal sentence and ask only when the seed cannot
    put it in one sentence. Unattended and trigger runs never ask; the
