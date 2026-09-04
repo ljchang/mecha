@@ -909,17 +909,52 @@ export const transcript = {
       kind: 'user',
       text: 'What needs me this morning? Draft what you can.',
     },
+    // A chip carries the call, not only its name: `draft` is the shaped
+    // view, `args` the exact bytes behind it, `preview` what came back. A
+    // reader who taps one on the docs site sees what an owner sees, which
+    // is the whole point of embedding the app rather than a screenshot.
     {
       kind: 'tool',
       name: 'mail__mail_triage',
       pending: false,
       is_error: false,
+      draft: {
+        headers: [['account', 'personal']],
+        body: null,
+        other: [
+          ['since', '2026-08-28T00:00:00Z'],
+          ['unread_only', 'true'],
+        ],
+      },
+      args: '{\n  "account": "personal",\n  "since": "2026-08-28T00:00:00Z",\n  "unread_only": true\n}',
+      preview: `14 threads appraised, 3 want an answer:
+
+  needs_reply   Tomas Lindqvist — review request, decision by Friday
+  needs_reply   Hollis Barnett — Ostrander nomination, closes Monday
+  needs_reply   Cape Town logistics — flight change offered
+  fyi           9 threads
+  archive       2 threads`,
     },
     {
       kind: 'tool',
       name: 'mail__calendar_list',
       pending: false,
       is_error: false,
+      draft: {
+        headers: [
+          ['start', '2026-08-29'],
+          ['end', '2026-09-19'],
+        ],
+        body: null,
+        other: [['account', 'personal']],
+      },
+      args: '{\n  "account": "personal",\n  "start": "2026-08-29",\n  "end": "2026-09-19"\n}',
+      preview: `4 events in 21 days:
+
+  Sep 08–Sep 12  Cape Town (travel)
+  Sep 15  10:00  lab meeting
+  Sep 16  14:00  Ostrander committee
+  Sep 18  09:30  dentist`,
     },
     {
       kind: 'assistant',

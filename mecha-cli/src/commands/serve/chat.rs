@@ -303,6 +303,22 @@ fn clip_to(text: String, max: usize) -> String {
     format!("{head}… (clipped — the whole call is in the session record)")
 }
 
+/// The exact arguments, pretty-printed and clipped where they run long.
+///
+/// Beside [`WireDraft`], never instead of it: the shaped view is what a
+/// person reads, and this is what they check it against. Shared by the
+/// approval card and the transcript chip, because a call rendered two ways
+/// is two renderings that drift.
+pub(super) fn clip_args(input: &serde_json::Value) -> String {
+    let pretty = serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string());
+    if pretty.chars().count() > 2000 {
+        let cut: String = pretty.chars().take(2000).collect();
+        format!("{cut}\n… (truncated — the full call is in the session record)")
+    } else {
+        pretty
+    }
+}
+
 impl WireDraft {
     /// `None` when the call has nothing a person would read as a message —
     /// an empty object, or a card that is prose already. A card with no
@@ -373,8 +389,25 @@ pub enum WireEvent {
     Queued {
         text: String,
     },
+    /// A call the run just made — its name, and what it was called with.
+    ///
+    /// The name alone is a claim the reader cannot check: two `fs_write`
+    /// chips in a row are indistinguishable until one of them is the wrong
+    /// file. So the call travels the way the approval card already sends
+    /// one — the essentials shaped by [`WireDraft`], the exact arguments
+    /// beside them, nothing dropped between the two — and through the same
+    /// two functions, so what a person approved and what they re-read
+    /// afterwards are one rendering rather than two that can disagree.
+    ///
+    /// Arguments are the *model's* words, but an MCP call can echo a page
+    /// it was handed, so the page renders these as TEXT like every other
+    /// tool byte.
     Tool {
         name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        draft: Option<WireDraft>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        args: Option<String>,
     },
     ToolResult {
         name: String,
@@ -487,7 +520,11 @@ fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Option<WireEve
     match event {
         AgentEvent::TextDelta(text) => Some(WireEvent::Delta { text: text.clone() }),
         AgentEvent::QueuedInput(text) => Some(WireEvent::Queued { text: text.clone() }),
-        AgentEvent::ToolCall { name, .. } => Some(WireEvent::Tool { name: name.clone() }),
+        AgentEvent::ToolCall { name, input, .. } => Some(WireEvent::Tool {
+            name: name.clone(),
+            draft: WireDraft::of(input),
+            args: Some(clip_args(input)),
+        }),
         AgentEvent::ToolResult {
             name,
             is_error,
@@ -532,6 +569,14 @@ pub enum Entry {
     Tool {
         name: String,
         is_error: Option<bool>,
+        /// What the call was made with, shaped and clipped exactly as
+        /// [`WireEvent::Tool`] sends it live. A reload that showed less
+        /// than the run did would make re-reading a conversation a worse
+        /// view of it than watching it, which is the wrong way round.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        draft: Option<WireDraft>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        args: Option<String>,
         /// What the tool answered, capped by [`result_preview`] — the page
         /// shows the tool's own words behind a tap, because a chip that
         /// says only `graph__kg_search` is a claim the reader cannot check.
@@ -575,7 +620,9 @@ fn strip_voice_preamble(text: &str) -> &str {
 }
 
 fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
-    let mut names: HashMap<String, String> = HashMap::new();
+    // The call's arguments, kept until its result arrives — a `tool_result`
+    // block names only the id that produced it.
+    let mut names: HashMap<String, (String, serde_json::Value)> = HashMap::new();
     let mut entries = Vec::new();
     for message in messages {
         match message.role {
@@ -594,13 +641,21 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                             is_error,
                             content,
                         } => {
-                            let name = names
-                                .get(tool_use_id)
-                                .cloned()
-                                .unwrap_or_else(|| "tool".into());
+                            let (name, draft, args) = match names.get(tool_use_id) {
+                                Some((name, input)) => {
+                                    (name.clone(), WireDraft::of(input), Some(clip_args(input)))
+                                }
+                                // A result whose call is not in the window —
+                                // compaction cut above it. The result is still
+                                // the record; a chip that showed nothing would
+                                // read as a call that never happened.
+                                None => ("tool".to_string(), None, None),
+                            };
                             entries.push(Entry::Tool {
                                 name,
                                 is_error: Some(*is_error),
+                                draft,
+                                args,
                                 preview: Some(result_preview(content)),
                             });
                         }
@@ -625,8 +680,8 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                                 entries.push(Entry::Assistant { text: text.clone() });
                             }
                         }
-                        Block::ToolUse { id, name, .. } => {
-                            names.insert(id.clone(), name.clone());
+                        Block::ToolUse { id, name, input } => {
+                            names.insert(id.clone(), (name.clone(), input.clone()));
                         }
                         _ => {}
                     }
@@ -2677,6 +2732,35 @@ mod wire_tests {
     }
 
     #[test]
+    fn a_tool_chip_carries_the_call_and_not_only_its_name() {
+        // Two writes in one turn are one chip repeated until the arguments
+        // are on it. The shaping is the approval card's, so what the owner
+        // saw before allowing the call is what the chip shows after it.
+        let wire = wire_event(
+            &AgentEvent::ToolCall {
+                id: "t1".into(),
+                name: "fs_write".into(),
+                input: serde_json::json!({"path": "policy.toml", "content": "days = 3"}),
+            },
+            None,
+        )
+        .unwrap();
+        match wire {
+            WireEvent::Tool { name, draft, args } => {
+                assert_eq!(name, "fs_write");
+                let draft = draft.expect("a write has a shape");
+                assert_eq!(draft.body.as_deref(), Some("days = 3"));
+                assert_eq!(
+                    draft.other,
+                    vec![("path".to_string(), "policy.toml".to_string())]
+                );
+                assert!(args.unwrap().contains("policy.toml"));
+            }
+            other => panic!("wrong event: {other:?}"),
+        }
+    }
+
+    #[test]
     fn transcript_names_a_tool_result_from_its_call() {
         let messages = vec![
             Message {
@@ -2716,6 +2800,12 @@ mod wire_tests {
                 Entry::Tool {
                     name: "mail_search".into(),
                     is_error: Some(false),
+                    // An empty call has no shape to read, and the arguments
+                    // beside it are `{}` — shown, because "called with
+                    // nothing" and "we did not keep what it was called
+                    // with" are different readings of the same chip.
+                    draft: None,
+                    args: Some("{}".into()),
                     preview: Some("3 results".into()),
                 },
             ]
@@ -2902,6 +2992,53 @@ mod wire_tests {
     }
 
     #[test]
+    fn a_reload_shows_the_call_the_live_run_showed() {
+        // The SSE path and the transcript read are two renderings of one
+        // conversation; a reload that dropped the arguments would make
+        // re-reading a run a worse view of it than watching it.
+        let input = serde_json::json!({"command": "ls -la"});
+        let messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "t1".into(),
+                    name: "shell".into(),
+                    input: input.clone(),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                }],
+            },
+        ];
+        let live = wire_event(
+            &AgentEvent::ToolCall {
+                id: "t1".into(),
+                name: "shell".into(),
+                input,
+            },
+            None,
+        )
+        .unwrap();
+        let (live_draft, live_args) = match live {
+            WireEvent::Tool { draft, args, .. } => (draft, args),
+            other => panic!("wrong event: {other:?}"),
+        };
+        match &transcript_entries(&messages)[0] {
+            Entry::Tool { draft, args, .. } => {
+                assert_eq!(draft, &live_draft);
+                assert_eq!(args, &live_args);
+                assert!(args.as_ref().unwrap().contains("ls -la"));
+            }
+            other => panic!("wrong entry: {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_tool_result_only_message_adds_no_empty_user_entry() {
         let messages = vec![Message {
             role: Role::User,
@@ -2917,6 +3054,8 @@ mod wire_tests {
             vec![Entry::Tool {
                 name: "tool".into(),
                 is_error: Some(true),
+                draft: None,
+                args: None,
                 preview: Some("…".into()),
             }]
         );

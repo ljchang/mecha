@@ -58,6 +58,25 @@
   // chosen launch voice, barge-in) replaces this when the speech servers
   // land; until then it is the fail-to-a-lesser-mode shape, and marked so.
 
+  // One line saying *which* call this was, for the closed chip.
+  //
+  // Two `fs_write` rows in a turn are the same row twice until the path is
+  // on one of them. The server already shaped the call the way a person
+  // reads one, and that shaping puts the salient argument first: addressing
+  // if the call has any, else the first plain argument — `command` for a
+  // shell, `path` for a write, `query` for a search. Display only; the
+  // whole call is one tap below, and nothing here decides anything.
+  function toolDigest(draft) {
+    if (!draft) return '';
+    const pair = draft.headers?.[0] ?? draft.other?.[0];
+    return oneLine(pair ? pair[1] : (draft.body ?? ''));
+  }
+
+  function oneLine(text) {
+    const flat = String(text).replace(/\s+/g, ' ').trim();
+    return flat.length > 72 ? `${flat.slice(0, 72)}…` : flat;
+  }
+
   function pushEntry(entry) {
     flushStreaming();
     entries.push(entry);
@@ -182,7 +201,16 @@
           running = true;
           break;
         case 'tool':
-          pushEntry({ kind: 'tool', name: ev.name, pending: true });
+          // `draft` and `args` arrive with the call, so a run in flight is
+          // as readable as one being re-read — the chip can say which file
+          // it is writing while it writes it.
+          pushEntry({
+            kind: 'tool',
+            name: ev.name,
+            draft: ev.draft ?? null,
+            args: ev.args ?? null,
+            pending: true,
+          });
           break;
         case 'tool_result': {
           const open = entries.findLast((e) => e.kind === 'tool' && e.pending);
@@ -905,24 +933,65 @@
       {:else if entry.kind === 'assistant'}
         <div class="answer">{entry.text}</div>
       {:else if entry.kind === 'tool'}
-        <!-- The chip names the call; the tap shows what came back — the
-             tool's own words, capped server-side. Rendered as TEXT only
-             (Svelte escapes interpolation): tool results carry third-party
-             content, and this page must display it, never interpret it. -->
+        <!-- The chip names the call and says which one it was; the tap opens
+             the whole of it — what it was called with, then what came back,
+             both capped server-side. The chevron is the affordance, so it
+             turns: a disclosure arrow that never moves is what made this row
+             look inert. Rendered as TEXT only (Svelte escapes interpolation):
+             results carry third-party content and an MCP call's arguments can
+             echo it, so this page displays them, never interprets them. -->
+        {@const digest = toolDigest(entry.draft)}
+        {@const detail = !!(entry.draft || entry.args || entry.preview)}
         <div class="tool" class:err={entry.is_error} class:blocked={entry.blocked}>
-          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
-          <span>{entry.name}</span>
+          <button
+            class="toolhead"
+            disabled={!detail}
+            aria-expanded={detail ? entry.open === true : undefined}
+            onclick={() => (entry.open = !entry.open)}
+          >
+            <svg class="toolchev" class:down={entry.open} viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
+            <span class="toolname">{entry.name}</span>
+            {#if digest}<span class="tooldigest">{digest}</span>{/if}
+          </button>
           {#if entry.pending}<span class="tool-state">running…</span>
           {:else if entry.blocked}<span class="tool-state">blocked (read-only)</span>
           {:else if entry.is_error}<span class="tool-state">failed</span>{/if}
-          {#if entry.preview}
-            <button class="tool-open" onclick={() => (entry.open = !entry.open)}>
-              {entry.open ? 'hide' : 'output'}
-            </button>
-          {/if}
         </div>
-        {#if entry.open && entry.preview}
-          <pre class="toolout">{entry.preview}</pre>
+        {#if entry.open}
+          <div class="toolpanel">
+            {#if entry.draft}
+              {#each entry.draft.headers as [k, v]}
+                <div class="tfield"><span class="tkey">{k.replace(/_/g, ' ')}</span><span>{v}</span></div>
+              {/each}
+              {#if entry.draft.body}<pre class="tbody">{entry.draft.body}</pre>{/if}
+              <!-- After the body and never behind the toggle, for the reason
+                   the approval card gives: `shell` has no header or body
+                   field at all, so hiding `other` renders an empty panel
+                   over `rm -rf build`. -->
+              {#each entry.draft.other as [k, v]}
+                <div class="tfield"><span class="tkey">{k.replace(/_/g, ' ')}</span><span>{v}</span></div>
+              {/each}
+              {#if entry.args}
+                <button class="qmore" onclick={() => (entry.rawOpen = !entry.rawOpen)}>
+                  {entry.rawOpen ? 'less' : 'the whole call'}
+                </button>
+                {#if entry.rawOpen}<pre class="toolout">{entry.args}</pre>{/if}
+              {/if}
+            {:else if entry.args}
+              <pre class="toolout">{entry.args}</pre>
+            {/if}
+            <!-- "still running", "answered nothing" and "answered this" are
+                 three different readings, and an absent block would collapse
+                 the first two into the third. -->
+            {#if entry.preview}
+              <div class="tsep">{entry.is_error ? 'failed with' : 'answered'}</div>
+              <pre class="toolout">{entry.preview}</pre>
+            {:else if entry.pending}
+              <div class="tsep">still running</div>
+            {:else if !entry.blocked}
+              <div class="tsep">answered with nothing</div>
+            {/if}
+          </div>
         {/if}
       {:else if entry.kind === 'notice'}
         <div class="notice">{entry.text}</div>
@@ -1542,6 +1611,22 @@
     flex-direction: column;
     gap: 12px;
   }
+  /* A column flex container hands out *negative* free space too, and a
+     child that is itself a scroll container has an automatic minimum size of
+     zero rather than a content-sized one — so it is the one kind of child
+     this column can crush. `.toolout` used to sit here directly: measured at
+     700x400 on the shape this file had before, a 37px result rendered 28px
+     high, which is a line of output cut through the middle on exactly the
+     transcripts long enough to want reading.
+
+     It is nested a level down now, under a panel with visible overflow, so
+     the squeeze has no way in — but the next `pre` or scroll box someone
+     drops straight into the transcript would land right back on it, and it
+     would look like a rendering glitch rather than a layout rule.
+     `.drawer-scroll` carries the same line for the same reason. */
+  .transcript > * {
+    flex-shrink: 0;
+  }
   .bubble {
     align-self: flex-end;
     max-width: 82%;
@@ -1580,8 +1665,86 @@
   .tool svg {
     color: var(--accent-700);
   }
-  .tool-open { background: none; border: none; color: var(--accent-400); font-family: var(--mono); font-size: 10px; cursor: pointer; padding: 2px 6px; min-height: 24px; }
-  .toolout { font-family: var(--mono); font-size: 11px; color: var(--text-muted); line-height: 1.5; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 10px 12px; margin: 2px 0 4px 18px; max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .toolhead {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    padding: 2px 0;
+    min-height: 28px;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .toolhead:disabled {
+    cursor: default;
+  }
+  .toolchev {
+    color: var(--accent-700);
+    flex-shrink: 0;
+    transition: transform 120ms ease;
+  }
+  .toolchev.down {
+    transform: rotate(90deg);
+  }
+  .toolname {
+    flex-shrink: 0;
+  }
+  /* Which call this was, on the closed chip. Truncated rather than wrapped:
+     the chip is one line, and a long path is recognised by its end as much
+     as its start — so the box scrolls it under the ellipsis rather than
+     growing. */
+  .tooldigest {
+    color: var(--accent-700);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .toolpanel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: -6px 0 0 18px;
+  }
+  .tfield {
+    display: flex;
+    gap: 10px;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+  .tkey {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    flex: 0 0 84px;
+    padding-top: 3px;
+  }
+  .tbody {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text);
+    background: var(--void);
+    border: 1px solid var(--accent-900);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    max-height: 40vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .tsep {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+  .toolout { font-family: var(--mono); font-size: 11px; color: var(--text-muted); line-height: 1.5; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 10px 12px; margin: 0; max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
   .tool-state {
     font-size: 11px;
     color: var(--accent-700);
