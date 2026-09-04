@@ -270,9 +270,11 @@ through the function that writes every session's record.
 `--ab-rules` is the one deliberate exception to the learned-rules rule; see
 [Learning](/docs/features/learning). It runs the case set rules-free and then
 rules-on, prints the per-case flips, and writes a **differently shaped** JSON
-(`{"experiment", "ab_rules", "ab_config", "holdout_in", "judgement", "pairs",
-"arm_a", "arm_b", "flips": [{"id", "was", "now"}, …]}`, the same shape
-`--ab-config` writes) that `--compare` cannot mistake for a scorecard. Neither arm's ordinary scorecard is
+(`{"experiment", "ab_rules", "ab_config", "arm_a_overrides",
+"arm_b_overrides", "holdout_in", "judgement", "pairs", "arm_a", "arm_b",
+"flips": [{"id", "was", "now"}, …]}` — `ab_config` is the flag as passed,
+the two `*_overrides` are what each arm actually ran with, the machine's
+knobs included; the same shape `--ab-config` writes) that `--compare` cannot mistake for a scorecard. Neither arm's ordinary scorecard is
 printed, and it always exits 0 — the delta is a finding, not a gate.
 
 Experiments — arms that vary the lever set, a stored design, an isolated

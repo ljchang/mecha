@@ -270,19 +270,15 @@ impl Manifest {
             }
         }
         let own = std::mem::take(&mut treatment.overrides);
-        let key_of = |s: &str| s.split_once('=').map(|(k, _)| k.trim().to_string());
-        let mut merged: Vec<String> = shared_overrides
-            .iter()
-            .filter(|s| !own.iter().any(|o| key_of(o) == key_of(s)))
-            .cloned()
-            .collect();
-        merged.extend(own);
-        treatment.overrides = merged;
+        // Seeded from the delta alone — the treatment's own overrides before
+        // the machine's inherited knobs are merged in — so the promise is
+        // per delta and case set, not per machine configuration (found on
+        // review).
         let split_seed = {
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for b in format!(
                 "{}|{:?}|{:?}|{:?}",
-                treatment_name, treatment.levers_off, treatment.levers_on, treatment.overrides
+                treatment_name, treatment.levers_off, treatment.levers_on, own
             )
             .bytes()
             {
@@ -291,6 +287,14 @@ impl Manifest {
             }
             h
         };
+        let key_of = |s: &str| s.split_once('=').map(|(k, _)| k.trim().to_string());
+        let mut merged: Vec<String> = shared_overrides
+            .iter()
+            .filter(|s| !own.iter().any(|o| key_of(o) == key_of(s)))
+            .cloned()
+            .collect();
+        merged.extend(own);
+        treatment.overrides = merged;
         arms.insert(treatment_name.to_string(), treatment);
         let m = Manifest {
             name: name.to_string(),
