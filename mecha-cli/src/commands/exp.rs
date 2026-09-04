@@ -23,6 +23,7 @@ use mecha_core::experiment::{
     judge, ChildInvocation, ExperimentRef, ExperimentStore, Manifest, Trial, TrialKind,
     TrialStatus, EXPERIMENT_REF_ENV,
 };
+use mecha_core::experiment::{PrincipalPoint, StageLever};
 use std::path::{Path, PathBuf};
 
 /// How long a case's `expect.verify` command may run in the trial's
@@ -337,17 +338,52 @@ async fn run_lifetimes(
                 .position
                 .context("a lifetime row without a position")?;
             let mut trial = planned_trial.clone();
+            let case = cases
+                .iter()
+                .find(|c| c.id == trial.task)
+                .expect("planned from these cases");
+            // A due stage — or a principal's act after a task — can run
+            // only while no later position has finished: past that it
+            // would act on sessions its tasks never ran under, and its
+            // success would release the judge's hold on a treatment that
+            // did not occur. Recorded skipped instead.
+            let late = mecha_core::experiment::out_of_sequence(position, rows.iter().copied());
             match trial.status {
                 TrialStatus::Pending | TrialStatus::Running => {
                     if limit.is_some_and(|l| ran >= l) {
                         return Ok(ran);
                     }
-                    let case = cases
-                        .iter()
-                        .find(|c| c.id == trial.task)
-                        .expect("planned from these cases");
                     ran += 1;
                     eprintln!("· {} ({ran}) · {lifetime} position {position}", trial.id);
+                    // The principal first: it may script refusals for this
+                    // task, which the run child reads from the home.
+                    if let Some(principal) = &manifest.principal {
+                        if !principal_done(&ledger, position, PrincipalPoint::BeforeTask) {
+                            let run = principal_call(
+                                store,
+                                mecha,
+                                &home,
+                                &flags,
+                                &passthrough,
+                                manifest,
+                                principal,
+                                &trial,
+                                case,
+                                &lifetime,
+                                position,
+                                PrincipalPoint::BeforeTask,
+                                ExperimentStore::next_attempt(
+                                    &ledger,
+                                    torn,
+                                    position,
+                                    StageLever::Principal,
+                                ),
+                            )
+                            .await;
+                            store.record_stage(&run)?;
+                            ledger.push(run);
+                        }
+                    }
                     match run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await
                     {
                         Ok(()) => {}
@@ -369,29 +405,60 @@ async fn run_lifetimes(
                     break;
                 }
             }
-            // A due stage can run only while no later position has
-            // finished: past that it would act on sessions its tasks never
-            // ran under, and its success would release the judge's hold on
-            // a treatment that did not occur. Recorded skipped instead.
-            let late = mecha_core::experiment::out_of_sequence(position, rows.iter().copied());
+            // The principal after the task: it judges what the run left and
+            // closes what gold closes. Due while the task has finished and
+            // the ledger lacks its line; skipped, like a stage, once a later
+            // position has finished.
+            if let Some(principal) = &manifest.principal {
+                if matches!(trial.status, TrialStatus::Done | TrialStatus::Failed)
+                    && !principal_done(&ledger, position, PrincipalPoint::AfterTask)
+                {
+                    let attempt = ExperimentStore::next_attempt(
+                        &ledger,
+                        torn,
+                        position,
+                        StageLever::Principal,
+                    );
+                    let run = if late {
+                        skipped_line(
+                            &lifetime,
+                            &trial.arm,
+                            StageLever::Principal,
+                            position,
+                            attempt,
+                            Some(PrincipalPoint::AfterTask),
+                        )
+                    } else {
+                        principal_call(
+                            store,
+                            mecha,
+                            &home,
+                            &flags,
+                            &passthrough,
+                            manifest,
+                            principal,
+                            &trial,
+                            case,
+                            &lifetime,
+                            position,
+                            PrincipalPoint::AfterTask,
+                            attempt,
+                        )
+                        .await
+                    };
+                    if run.status == mecha_core::experiment::StageStatus::Skipped {
+                        eprintln!(
+                            "  ↳ principal (after_task) · skipped: a later position had already finished"
+                        );
+                    }
+                    store.record_stage(&run)?;
+                    ledger.push(run);
+                }
+            }
             for stage in stages_due(&manifest.schedule, position, &stages_off, &ledger) {
                 let attempt = ExperimentStore::next_attempt(&ledger, torn, position, stage);
                 if late {
-                    let now = chrono::Utc::now().to_rfc3339();
-                    let run = mecha_core::experiment::StageRun {
-                        lifetime: lifetime.clone(),
-                        arm: trial.arm.clone(),
-                        stage,
-                        after_position: position,
-                        attempt,
-                        started_at: now.clone(),
-                        finished_at: now,
-                        status: mecha_core::experiment::StageStatus::Skipped,
-                        exit_code: None,
-                        error: Some(format!(
-                            "a later position had finished before this stage could run after {position}; out of sequence, not run"
-                        )),
-                    };
+                    let run = skipped_line(&lifetime, &trial.arm, stage, position, attempt, None);
                     eprintln!(
                         "  ↳ {} · skipped: a later position had already finished; a stage after {position} cannot run in sequence",
                         stage.as_str()
@@ -420,6 +487,267 @@ async fn run_lifetimes(
         }
     }
     Ok(ran)
+}
+
+/// A ledger line for a stage — or a principal's call — the driver could
+/// no longer run in sequence.
+fn skipped_line(
+    lifetime: &str,
+    arm: &str,
+    stage: StageLever,
+    position: u32,
+    attempt: u32,
+    point: Option<PrincipalPoint>,
+) -> mecha_core::experiment::StageRun {
+    let now = chrono::Utc::now().to_rfc3339();
+    mecha_core::experiment::StageRun {
+        lifetime: lifetime.to_string(),
+        arm: arm.to_string(),
+        stage,
+        after_position: position,
+        attempt,
+        started_at: now.clone(),
+        finished_at: now,
+        status: mecha_core::experiment::StageStatus::Skipped,
+        exit_code: None,
+        error: Some(format!(
+            "a later position had finished before this could run after {position}; out of sequence, not run"
+        )),
+        point,
+        acts: Vec::new(),
+    }
+}
+
+/// Whether the ledger shows the principal's call at this point done.
+fn principal_done(
+    ledger: &[mecha_core::experiment::StageRun],
+    position: u32,
+    point: PrincipalPoint,
+) -> bool {
+    ledger.iter().any(|r| {
+        r.stage == StageLever::Principal
+            && r.after_position == position
+            && r.point == Some(point)
+            && r.status == mecha_core::experiment::StageStatus::Done
+    })
+}
+
+/// The principal's call at one point of one position (Part II §16, §21.1):
+/// the trial's state on its stdin — the case, the graded row after the
+/// task, what the run left in the outbox and the question store — and its
+/// answer read back as the owner's verbs to run and the refusals to
+/// script. **The driver runs the verbs**, each a child `mecha` against
+/// the trial home from the closed set `allowed_verb` names, so the
+/// principal is pure and the record is the driver's: every act, with its
+/// exit status, is on the ledger line. Never an `Err`: a principal that
+/// could not act is a failed line, and `stage_health` holds the verdict
+/// over it — a treatment not known to have occurred.
+#[allow(clippy::too_many_arguments)]
+async fn principal_call(
+    store: &ExperimentStore,
+    mecha: &Path,
+    home: &Path,
+    flags: &[String],
+    passthrough: &[String],
+    manifest: &Manifest,
+    principal: &mecha_core::experiment::Principal,
+    trial: &Trial,
+    case: &mecha_core::eval::EvalCase,
+    lifetime: &str,
+    position: u32,
+    point: PrincipalPoint,
+    attempt: u32,
+) -> mecha_core::experiment::StageRun {
+    use mecha_core::experiment::{PrincipalInput, PrincipalOutput, StageRun, StageStatus};
+    let started = std::time::Instant::now();
+    let mut run = StageRun {
+        lifetime: lifetime.to_string(),
+        arm: trial.arm.clone(),
+        stage: StageLever::Principal,
+        after_position: position,
+        attempt,
+        started_at: chrono::Utc::now().to_rfc3339(),
+        finished_at: String::new(),
+        status: StageStatus::Running,
+        exit_code: None,
+        error: None,
+        point: Some(point),
+        acts: Vec::new(),
+    };
+    if let Err(e) = store.record_stage(&run) {
+        run.status = StageStatus::Failed;
+        run.error = Some(format!("the ledger could not take the running line: {e:#}"));
+        run.finished_at = chrono::Utc::now().to_rfc3339();
+        return run;
+    }
+    run.status = StageStatus::Failed;
+    let log = store.stage_log(lifetime, position, StageLever::Principal, attempt);
+    let workspace = store.stage_workspace(lifetime);
+    let reference = ExperimentRef {
+        exp_id: manifest.name.clone(),
+        trial_id: lifetime.to_string(),
+        arm: trial.arm.clone(),
+        actor: lifetime.to_string(),
+        role: Some("principal".into()),
+        task: format!("principal:{}", point.as_str()),
+        repetition: trial.repetition,
+        condition_hash: trial.condition_hash.clone(),
+    };
+    let env_for = |cmd: &mut tokio::process::Command| -> Result<()> {
+        cmd.env_clear();
+        for (k, v) in mecha_core::sandbox::Sandbox::child_env(passthrough) {
+            cmd.env(k, v);
+        }
+        cmd.env("MECHA_HOME", home)
+            .env(mecha_core::session::SESSION_KIND_ENV, "experiment")
+            .env(EXPERIMENT_REF_ENV, serde_json::to_string(&reference)?)
+            .env("MECHA_BIN", mecha)
+            .current_dir(&workspace);
+        Ok(())
+    };
+    let outcome: Result<PrincipalOutput> = async {
+        std::fs::create_dir_all(&workspace)?;
+        if let Some(parent) = log.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let input = PrincipalInput {
+            point,
+            experiment: manifest.name.clone(),
+            lifetime: lifetime.to_string(),
+            arm: trial.arm.clone(),
+            position,
+            home: home.to_path_buf(),
+            workspace: workspace.clone(),
+            case: case.clone(),
+            trial: (point == PrincipalPoint::AfterTask).then(|| trial.clone()),
+            pending_outbox: mecha_core::outbox::OutboxStore::open(home.join("outbox"))?
+                .items()?
+                .into_iter()
+                .filter(|i| i.status == "pending")
+                .collect(),
+            open_questions: mecha_core::questions::QuestionStore::open(home.join("questions"))?
+                .open_items()?,
+        };
+        let (exe, args) = principal
+            .command
+            .split_first()
+            .context("the principal names no executable")?;
+        let mut cmd = tokio::process::Command::new(exe);
+        cmd.args(args);
+        env_for(&mut cmd)?;
+        let err =
+            std::fs::File::create(&log).with_context(|| format!("creating {}", log.display()))?;
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::from(err));
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("spawning the principal `{exe}`"))?;
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut stdin = child.stdin.take().context("the principal's stdin")?;
+            stdin
+                .write_all(serde_json::to_string(&input)?.as_bytes())
+                .await?;
+            stdin.shutdown().await?;
+        }
+        let output = match tokio::time::timeout(
+            std::time::Duration::from_secs(principal.timeout_secs),
+            child.wait_with_output(),
+        )
+        .await
+        {
+            Ok(o) => o.context("waiting for the principal")?,
+            Err(_) => anyhow::bail!(
+                "the principal did not answer within {}s; its stderr is at {}",
+                principal.timeout_secs,
+                log.display()
+            ),
+        };
+        anyhow::ensure!(
+            output.status.success(),
+            "the principal exited {}; its stderr is at {}",
+            output.status,
+            log.display()
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        let start = text.find('{').context("the principal printed no JSON")?;
+        serde_json::from_str::<PrincipalOutput>(&text[start..])
+            .context("the principal's answer is not the contract's shape")
+    }
+    .await;
+    match outcome {
+        Err(e) => run.error = Some(format!("{e:#}")),
+        Ok(answer) => {
+            let mut failures = Vec::new();
+            // Refusals for the task about to run, written for the child;
+            // an empty list clears what an earlier position scripted.
+            if point == PrincipalPoint::BeforeTask {
+                if let Err(e) = mecha_core::experiment::write_denials(home, &answer.deny) {
+                    failures.push(format!("the denials file could not be written: {e:#}"));
+                }
+            } else if !answer.deny.is_empty() {
+                failures.push("refusals are scripted before a task, not after it".into());
+            }
+            for mut act in answer.acts {
+                if !mecha_core::experiment::allowed_verb(&act.verb) {
+                    act.ok = Some(false);
+                    failures.push(format!(
+                        "`{}` is not an owner's verb the principal may run",
+                        act.verb.join(" ")
+                    ));
+                    run.acts.push(act);
+                    continue;
+                }
+                let status: Result<std::process::ExitStatus> = async {
+                    let mut cmd = tokio::process::Command::new(mecha);
+                    cmd.args(&act.verb).args(flags);
+                    env_for(&mut cmd)?;
+                    let out = std::fs::OpenOptions::new().append(true).open(&log)?;
+                    let err = out.try_clone()?;
+                    cmd.stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::from(out))
+                        .stderr(std::process::Stdio::from(err));
+                    cmd.status()
+                        .await
+                        .with_context(|| format!("running `mecha {}`", act.verb.join(" ")))
+                }
+                .await;
+                match status {
+                    Ok(s) => {
+                        act.exit_code = s.code();
+                        act.ok = Some(s.success());
+                        if !s.success() {
+                            failures.push(format!("`mecha {}` exited {s}", act.verb.join(" ")));
+                        }
+                    }
+                    Err(e) => {
+                        act.ok = Some(false);
+                        failures.push(format!("{e:#}"));
+                    }
+                }
+                run.acts.push(act);
+            }
+            if failures.is_empty() {
+                run.status = StageStatus::Done;
+                run.exit_code = Some(0);
+            } else {
+                run.error = Some(failures.join("; "));
+            }
+        }
+    }
+    run.finished_at = chrono::Utc::now().to_rfc3339();
+    eprintln!(
+        "  ↳ principal ({}) · {} · {} act(s) · {}s",
+        point.as_str(),
+        match run.status {
+            StageStatus::Done => "ok",
+            _ => "FAILED",
+        },
+        run.acts.len(),
+        started.elapsed().as_secs()
+    );
+    run
 }
 
 /// One loop stage as a child `mecha` verb against the lifetime's home, with
@@ -457,6 +785,8 @@ async fn run_stage(
         status: StageStatus::Running,
         exit_code: None,
         error: None,
+        point: None,
+        acts: Vec::new(),
     };
     // The running line first, so a driver killed mid-stage leaves a record
     // and the rerun takes the next attempt number rather than this one's
@@ -658,8 +988,15 @@ async fn run_one(
         .env(mecha_core::session::SESSION_KIND_ENV, "experiment")
         .env(EXPERIMENT_REF_ENV, serde_json::to_string(&reference)?)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stdout(std::process::Stdio::piped());
+    // The principal's scripted refusals for this task, when it left any:
+    // the child's approver answers them ahead of its own, as "Denied by
+    // the user" — the owner's word inside the trial home (D12).
+    let denials = mecha_core::experiment::denials_file(&home);
+    if denials.exists() {
+        cmd.env(mecha_core::tool::DENIALS_FILE_ENV, &denials);
+    }
+    cmd.stderr(std::process::Stdio::piped());
     let output = cmd.output().await.context("spawning mecha run")?;
     let trial_dir = store.workspace_for(&trial.id);
     let log = trial_dir
