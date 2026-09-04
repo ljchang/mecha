@@ -62,6 +62,7 @@ pub mod diagnose;
 pub mod distill;
 pub mod doctor;
 pub mod eval;
+pub mod experiment;
 pub mod frontdoor;
 pub mod goal;
 pub mod gossip;

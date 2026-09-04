@@ -206,6 +206,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             let all = Session::list(&dir)?;
             let unkinded = all.iter().filter(|(meta, _)| meta.kind.is_none()).count();
             let hidden_tests = all.iter().filter(|(meta, _)| scan.hides_test(meta)).count();
+            let hidden_experiments = all
+                .iter()
+                .filter(|(meta, _)| scan.hides_experiment(meta))
+                .count();
             let total = all.len();
             let sessions: Vec<_> = all
                 .into_iter()
@@ -233,6 +237,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     if hidden_tests > 0 {
                         why.push(format!(
                             "{hidden_tests} smoke-test session(s) hidden (`--include-tests` shows them)"
+                        ));
+                    }
+                    if hidden_experiments > 0 {
+                        why.push(format!(
+                            "{hidden_experiments} experiment session(s) hidden (they belong to a trial home)"
                         ));
                     }
                     if unkinded > 0 && kind.is_some() {
@@ -270,6 +279,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             if hidden_tests > 0 {
                 println!(
                     "({hidden_tests} smoke-test session(s) hidden; `--include-tests` shows them)"
+                );
+            }
+            if hidden_experiments > 0 {
+                println!(
+                    "({hidden_experiments} experiment session(s) hidden; they belong to a trial home)"
                 );
             }
         }
@@ -529,6 +543,8 @@ async fn appraise(
         workspace: None,
         kind,
         include_tests,
+        // Experiment sessions belong to their trial home's readers (D13).
+        include_experiments: mecha_core::experiment::in_experiment_home(),
     };
 
     // Best-effort, like every reader over these stores: a read failure costs
@@ -616,6 +632,7 @@ async fn appraise(
     // all surfaces is the dash-versus-zero inversion.
     let (listed, mut sessions_unreadable) = Session::list_counting(dir)?;
     let mut tests_hidden = 0usize;
+    let mut experiments_hidden = 0usize;
     for (meta, path) in listed {
         // The cap first, then attribution, as `Corpus::scan` orders them.
         if limit.is_some_and(|n| sessions_read >= n) {
@@ -624,6 +641,9 @@ async fn appraise(
         if !scan.admits(&meta) {
             if scan.hides_test(&meta) {
                 tests_hidden += 1;
+            }
+            if scan.hides_experiment(&meta) {
+                experiments_hidden += 1;
             }
             continue;
         }
@@ -861,6 +881,7 @@ async fn appraise(
                 "sessions_read": sessions_read,
                 "sessions_unreadable": sessions_unreadable,
                 "tests_hidden": tests_hidden,
+                "experiments_hidden": experiments_hidden,
                 "named_a_goal": named_a_goal,
                 "attributed_by_sensor": attributed_by_sensor,
                 "cite_a_charter_line": cite_a_charter_line,
@@ -1123,6 +1144,8 @@ fn health(
             workspace: None,
             kind,
             include_tests,
+            // Experiment sessions belong to their trial home's readers (D13).
+            include_experiments: mecha_core::experiment::in_experiment_home(),
         },
     )?;
 
@@ -1147,7 +1170,7 @@ fn health(
     };
     // The same rule for the filter this readout applies by default: a
     // hidden row is counted where the reader can see the count.
-    let hidden_line = if corpus.hidden_tests > 0 {
+    let mut hidden_line = if corpus.hidden_tests > 0 {
         format!(
             " · {} smoke-test session(s) hidden (`--include-tests` shows them)",
             corpus.hidden_tests
@@ -1155,6 +1178,12 @@ fn health(
     } else {
         String::new()
     };
+    if corpus.hidden_experiments > 0 {
+        hidden_line.push_str(&format!(
+            " · {} experiment session(s) hidden (they belong to a trial home)",
+            corpus.hidden_experiments
+        ));
+    }
 
     if corpus.is_empty() {
         println!(
@@ -1320,6 +1349,7 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         // something: a script grading the store cannot tell "no runs" from
         // "every run filtered" without this (found on review).
         "tests_hidden": corpus.hidden_tests,
+        "experiments_hidden": corpus.hidden_experiments,
         "tool_calls": corpus.tool_calls(),
         "tool_errors": corpus.tool_errors(),
         "tool_error_rate": corpus.tool_error_rate(),

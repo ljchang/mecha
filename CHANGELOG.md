@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha exp` — experiments** (`mecha_core::experiment`;
+  `docs/EXPERIMENT-DESIGN.md`). A designed comparison over a chosen set of
+  runs: `new` writes a manifest once (arms naming a provider and model
+  and varying the closed lever set and the override knobs — either axis
+  or both — a control, a falsifiable prediction per treatment
+  arm, the tasks as an eval case file, the seeds, the split seed), `run`
+  drives one child `mecha run` per arm × task × seed × repetition into an
+  isolated home per arm whose `config.toml` is the arm (the operator's
+  posture with keys scrubbed and the arm applied; the learning store,
+  skills and charter seeded once; a clean, allowlisted environment; the
+  staged workspace as cwd), `status` and
+  `judge` read the trials back (each treatment arm against the control
+  through the candidate gate, the task outcome entering as a cost), and
+  `export` hands the whole record over. `eval` is the special case of
+  arms that name models under the `bare` preset, and is to become a thin
+  front over this. New with it: `SessionKind::Experiment`, hidden from the real store's
+  readers and admitted in a trial home; `RunConfig::experiment`, the trial
+  reference a child's session carries; and `mecha run --json` now a
+  superset of the batch result (tool calls, taint, counters, elapsed), so
+  a run driven as a process reaches the same grader. Only `single` trials
+  run today; the lifetime driver is next.
+
 - **Two more levers: `predictive_compaction` and `carried_state`**
   (`[agent] predictive_compaction`, `[agent] carried_state`,
   `--no-predictive-compaction`, `--no-carried-state`). The two in-run

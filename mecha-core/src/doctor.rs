@@ -1353,6 +1353,8 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
             workspace: None,
             kind: None,
             include_tests: false,
+            // As the other readers: admitted in a trial home, hidden elsewhere.
+            include_experiments: crate::experiment::in_experiment_home(),
         },
     ) {
         Ok(c) => c,

@@ -2960,6 +2960,98 @@ an unreadable outbox prints "the edit channel is missing, not empty" *before*
 the empty-corpus early return, which is the one path where a reader most needs
 to know it.
 
+## The experiment store
+
+`experiment.rs` and `mecha exp` (`docs/EXPERIMENT-DESIGN.md` §3–§4, Part II
+§14–§15, §18 — the design lives on PR #156 until it lands). An experiment
+is the unit larger than a run that no other store had: a **designed
+comparison over a chosen set**, with the design written before the run.
+
+- **The manifest is the design, written once.** Arms, the control, each
+  treatment arm's falsifiable prediction (its metric and rationale), the
+  tasks (an eval case file and its fixture), the seeds, the split seed. `new`
+  refuses to overwrite one: a second design over the same trials is the
+  after-the-fact redesign the manifest exists to prevent, `candidate.rs`'s
+  rule carried up a level. The control carries no prediction; every other
+  arm must. Loading is where every rule is enforced, so a `Manifest` value
+  is one that passed.
+- **An arm is a model and a harness configuration.** It may name a
+  `provider` (a key in the operator's `[providers]`) and a `model`, or
+  inherit the defaults; the condition hash follows the arm. That is the
+  axis `mecha eval` varies, and it is why the two converge rather than
+  stay peers: eval is the special case of arms that name models under the
+  `bare` preset, and its A/B flags are two-arm manifests. Beyond the model,
+  **an arm varies the closed set and nothing else** (D5, D14): levers by
+  name from `harness::Lever`, knobs by `KEY=VALUE` through
+  `harness::parse_change`, a preset (`bare` is what `mecha eval` runs,
+  `full` is every lever on) applied first. An unknown lever name is a load
+  error, never a skipped line. `approval_rules` is refused outright: a
+  `forbid` is the operator's standing word, and only eval's fixture
+  workspaces justify lifting it.
+- **Isolation is the whole store** (D12). Every trial runs as a child
+  `mecha run` with `MECHA_HOME` pointing at its arm's home under the
+  experiment directory, whose `config.toml` *is* the arm: the operator's
+  whole config with every inline provider key scrubbed (the variable
+  `api_key_env` names passes through), the trial's seed on the default
+  provider, and the arm's `[agent]` switches and knobs applied; the
+  CLI-only levers ride as `--no-*` flags. **The machine's posture
+  travels** — sandbox, security, the approval `[[rule]]`s, `[mcp]`,
+  `[[hook]]`, `[outbox]` — because an arm varies the closed set and nothing
+  else, and the first cut dropped the rules while running `--yes`, which
+  is the silently-degrading-guard shape the `approval_rules` refusal
+  exists to prevent (found on review). The stores a lever left on reads —
+  `learning/`, `skills/`, `charter.toml` — are seeded once into the arm's
+  home from the real one when it is first created, never written back, so
+  `full` means the harness as this machine had it. The child's
+  environment is an **allowlist** on `Sandbox::child_env`'s shape: the
+  base set, the provider key variables, and the three that name the trial
+  — `MECHA_HOME` is not the only variable that moves a store, and an
+  exported `MECHA_LEARNING_DIR` would have pointed a trial at the real
+  learning store (found on review). Its cwd is the staged workspace, so
+  no `mecha.toml` in the runner's checkout layers over the arm. The runner
+  refuses a home that is, or contains, the real one, on `setup`'s rule for
+  a workspace. Nothing in a trial home is ever copied back: a rule learned
+  inside a trial that landed in `~/.mecha/learning/` would ride every real
+  run's cached prefix from then on.
+- **A session in a trial home is `SessionKind::Experiment`** (D13), set by
+  the runner through `MECHA_SESSION_KIND` — the second and last kind an
+  environment may set, beside `test`. `runlog::Scan` hides it in the real
+  store like a test session — and counts what it hid
+  (`Corpus::hidden_experiments`, `hides_experiment`), on the incident
+  behind `hidden_tests`: the failure was never that test runs were
+  counted, it was that nothing said they had been excluded — and admits
+  it by default in a home carrying the `EXPERIMENT` marker, so `reflect`,
+  `learn` and the corpus read a trial's sessions there without a flag
+  anyone has to remember. And the
+  session names its trial back: `RunConfig::experiment` carries the
+  `ExperimentRef` the runner set in the child's environment, so neither
+  store is the only index.
+- **Each actor is its own process** (D3). D7 kept the runner a peer of
+  `mecha eval` so a scorecard's forcings could not become negotiable by
+  flag; a manifest records the preset on every session, which answers
+  the same concern the other way, so the intended end state is `eval` as
+  a thin front over `exp` for the model bake-off (the owner's ruling,
+  2026-09-04), with the scorecard output kept. They share the substrate — the case file and its graders, the fixture
+  staging, the gate — and `mecha run --json` is a superset of the batch
+  result, tested as a round-trip through `BatchResult` on a refused run
+  whose last call failed, so the child's answer reaches the same grader
+  with every field the grader reads (a refusal used to arrive as a struct
+  where the result wants a string, which made every refused trial
+  unparseable and dropped its episode from both arms; found on review).
+- **The gate is the existing one, over arm sets** (D4). Each treatment arm
+  is paired with the control by (task, seed, repetition), the holdout is
+  drawn uniformly with the manifest's split seed, and
+  `candidate::judge_slices` rules. Every metric is a cost: the task outcome
+  enters as `1 − passed`, never as a benefit axis. A trial that cannot
+  answer the metric — no grade, no stats — drops its pair rather than
+  scoring an unknown as zero, and a trial file that does not parse is
+  counted, never read as pending.
+- **Resume is the store.** A trial found `running` at start crashed with
+  its runner and is rerun; a finished one never is; an unknown status is
+  neither rerun nor judged. Only `single` trials run today; a `lifetime`
+  manifest loads and `run` refuses it by name — the design can be written
+  ahead of its driver.
+
 ## The doctor
 
 `mecha doctor` (`doctor.rs`, `commands/doctor.rs`) reads every store in one

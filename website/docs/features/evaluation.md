@@ -274,6 +274,11 @@ rules-on, prints the per-case flips, and writes a **differently shaped** JSON
 `--compare` cannot mistake for a scorecard. Neither arm's ordinary scorecard is
 printed, and it always exits 0 — the delta is a finding, not a gate.
 
+Experiments — arms that vary the lever set, a stored design, an isolated
+home per arm — are [`mecha exp`](/docs/features/experiments), a peer of eval
+that shares this page's case file, fixture and graders and holds the
+opposite thing fixed: the model, not the harness.
+
 ## `--ab-config`: measuring a proposed change
 
 `--ab-config KEY=VALUE` runs the case set twice, differing only in the override,
