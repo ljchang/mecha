@@ -347,6 +347,32 @@ pub struct RunConfig {
     pub rules_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rule_ids: Vec<String>,
+    /// Which trial this run is one actor of (`docs/EXPERIMENT-DESIGN.md`
+    /// §4). `None` for every ordinary run. Read off the environment the
+    /// runner set (`experiment::EXPERIMENT_REF_ENV`) rather than handed in,
+    /// because the runner and the child are different processes and the
+    /// eleven front-ends that write this record have no other channel to
+    /// it; a session carrying it can say which trial it belonged to without
+    /// a scan of the experiment store, and the trial names the session
+    /// back — two pointers, so neither store is the only index.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_experiment"
+    )]
+    pub experiment: Option<crate::experiment::ExperimentRef>,
+}
+
+/// Wire-format rule, as for `levers_off`: a reference this build cannot
+/// read is `None`, never a failed record.
+fn lenient_experiment<'de, D>(
+    d: D,
+) -> std::result::Result<Option<crate::experiment::ExperimentRef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
 }
 
 impl RunConfig {
@@ -402,6 +428,7 @@ impl Default for RunConfig {
             sandbox: "none".into(),
             sandbox_network: false,
             levers_off: None,
+            experiment: None,
             rules_hash: None,
             rule_ids: Vec::new(),
         }
@@ -473,6 +500,7 @@ impl RunConfig {
             sandbox: config.sandbox.kind.as_str().to_string(),
             sandbox_network: config.sandbox.network,
             levers_off: Some(levers_off),
+            experiment: crate::experiment::ExperimentRef::from_env(),
             rules_hash: rules.map(|r| r.hash.clone()),
             rule_ids: rules.map(|r| r.rule_ids.clone()).unwrap_or_default(),
         }
@@ -889,6 +917,11 @@ pub enum SessionKind {
     /// whatever the front-end would have written — the one override, and it
     /// only ever narrows toward this variant.
     Test,
+    /// One actor of an experiment trial, marked by `mecha exp` on the child
+    /// runs it spawns into a trial home (`experiment.rs`, D13). Hidden from
+    /// the real store's readers like `Test`; admitted by default only in a
+    /// home carrying `experiment::HOME_MARKER`.
+    Experiment,
 }
 
 /// Environment variable that marks every session a process opens as
@@ -898,7 +931,7 @@ pub enum SessionKind {
 pub const SESSION_KIND_ENV: &str = "MECHA_SESSION_KIND";
 
 impl SessionKind {
-    pub const ALL: [SessionKind; 11] = [
+    pub const ALL: [SessionKind; 12] = [
         SessionKind::Run,
         SessionKind::Chat,
         SessionKind::Tui,
@@ -910,6 +943,7 @@ impl SessionKind {
         SessionKind::Mail,
         SessionKind::Slack,
         SessionKind::Test,
+        SessionKind::Experiment,
     ];
 
     /// The wire form — `serde`'s own `snake_case`, spelled out for callers
@@ -927,6 +961,7 @@ impl SessionKind {
             SessionKind::Mail => "mail",
             SessionKind::Slack => "slack",
             SessionKind::Test => "test",
+            SessionKind::Experiment => "experiment",
         }
     }
 
@@ -942,9 +977,14 @@ impl SessionKind {
     pub fn test_override() -> Option<SessionKind> {
         match std::env::var(SESSION_KIND_ENV) {
             Ok(v) if v == SessionKind::Test.as_str() => Some(SessionKind::Test),
+            // The one other kind an environment may set: `mecha exp` marks
+            // the child runs it spawns into a trial home (D13). Both are
+            // marks a *process* puts on a session, not surfaces a person
+            // opened, which is why the list is these two and no more.
+            Ok(v) if v == SessionKind::Experiment.as_str() => Some(SessionKind::Experiment),
             Ok(v) if !v.is_empty() => {
                 tracing::warn!(
-                    "{SESSION_KIND_ENV}={v:?} ignored: only `test` may override a session's kind"
+                    "{SESSION_KIND_ENV}={v:?} ignored: only `test` and `experiment` may override a session's kind"
                 );
                 None
             }
@@ -3190,7 +3230,7 @@ mod tests {
             assert_eq!(serde_json::from_str::<SessionKind>(&json).unwrap(), kind);
             assert_eq!(SessionKind::parse_lenient(kind.as_str()), Some(kind));
         }
-        // Compiler-forced, not a length literal: `ALL` is `[SessionKind; 11]`,
+        // Compiler-forced, not a length literal: `ALL` is `[SessionKind; 12]`,
         // so a length assert is a tautology about its own type and a
         // twelfth variant with an updated `as_str` and a forgotten `ALL`
         // entry would leave every test green while the binary read its own
@@ -3209,6 +3249,7 @@ mod tests {
                 SessionKind::Mail => 8,
                 SessionKind::Slack => 9,
                 SessionKind::Test => 10,
+                SessionKind::Experiment => 11,
             }
         }
         assert!(
@@ -3243,9 +3284,16 @@ mod tests {
     /// the (ignored) probe below through the test binary itself with the
     /// variable set, and grades the exit status.
     #[test]
-    fn the_test_override_narrows_to_test_and_never_widens_to_anything_else() {
+    fn the_env_override_narrows_to_test_or_experiment_and_never_widens_to_anything_else() {
         let exe = std::env::current_exe().unwrap();
-        for (value, expect) in [("test", "test"), ("web", "run"), ("", "run")] {
+        for (value, expect) in [
+            ("test", "test"),
+            // The second and last value an environment may set: what
+            // `mecha exp` marks its child runs with (D13).
+            ("experiment", "experiment"),
+            ("web", "run"),
+            ("", "run"),
+        ] {
             let out = std::process::Command::new(&exe)
                 .args([
                     "kind_override_probe",

@@ -7,6 +7,7 @@ pub mod diagnose;
 pub mod distill;
 pub mod doctor;
 pub mod eval;
+pub mod exp;
 pub mod frontdoor;
 pub mod gossip;
 pub mod harness;
