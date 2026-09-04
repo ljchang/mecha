@@ -62,6 +62,23 @@ pub enum OutboxKind {
     Publish,
 }
 
+/// Who wrote the draft: a model in a run (the default, and what every item
+/// before the field existed was), or the harness from its own records.
+///
+/// Decides one thing — whether a release says anything about *drafting*.
+/// A pick card for a meeting poll is a real `calendar_create_event` draft
+/// so that releasing it is the booking through the normal route, but no
+/// model composed it and a keypress rewrites its slot; `writing_outcome`
+/// returns `None` for it. Defaulted on load like `kind`, so an older item
+/// stays the model's draft it was.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Author {
+    #[default]
+    Model,
+    Harness,
+}
+
 impl OutboxKind {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -170,6 +187,9 @@ pub struct OutboxItem {
     /// `pending` — the draft is still good; the delivery was not.
     #[serde(default)]
     pub error: Option<String>,
+    /// Who wrote it. See [`Author`].
+    #[serde(default)]
+    pub author: Author,
     /// The `tool_use` id of the call that staged this, when a call staged it.
     ///
     /// The anchor [`crate::outbox_source`] walks a transcript to find. It used
@@ -280,10 +300,20 @@ impl OutboxItem {
     ///
     /// `None` for anything that says nothing about drafting — a pending item
     /// (undecided), a rejected one (never went out, and its reason is the
-    /// record), or a publish (whose diff is a path and a visibility flag, not
-    /// prose).
+    /// record), a publish (whose diff is a path and a visibility flag, not
+    /// prose), **or an item the harness staged from its own records**
+    /// ([`Author::Harness`]: a meeting poll's pick card, built by `mecha
+    /// polls sweep` and moved by a keypress). An edit to that is not a
+    /// correction of any model's voice, and an unedited release is not
+    /// evidence that a model drafted well; before the field existed a pick
+    /// card whose slot had been swapped once was mined as a `writing`
+    /// correction — two machine-generated time stamps diffed into a rule
+    /// that would ride every future prompt's cached prefix.
     pub fn writing_outcome(&self) -> Option<WritingOutcome> {
         if self.kind != OutboxKind::Message || self.status != "sent" {
+            return None;
+        }
+        if self.author == Author::Harness {
             return None;
         }
         Some(match self.edited() {
@@ -474,9 +504,27 @@ impl OutboxStore {
             resolved_at: None,
             reason: None,
             error: None,
+            author: Author::Model,
             call_id,
             filled_defaults,
         };
+        self.write_item(&item)?;
+        Ok(item)
+    }
+
+    /// Stage a call the harness composed from its own records — no run, no
+    /// model, a clean taint (the inputs are the owner's files and enum
+    /// answers), and [`Author::Harness`] so its release is never read as
+    /// evidence about drafting. Reviewed and released exactly as any message.
+    pub fn stage_by_harness(&self, tool: &str, args: Value) -> Result<OutboxItem> {
+        let mut item = self.stage(
+            tool,
+            OutboxKind::Message,
+            args,
+            Taint::default(),
+            Provenance::default(),
+        )?;
+        item.author = Author::Harness;
         self.write_item(&item)?;
         Ok(item)
     }
@@ -1484,6 +1532,39 @@ mod tests {
         assert_eq!(items[0].call_id, None);
         assert!(items[0].filled_defaults.is_empty());
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What the harness staged from its own records is nobody's draft:
+    /// released as written or with its slot swapped, it says nothing about
+    /// drafting — while the same item read by an older binary, or an older
+    /// item read by this one, stays the model's draft it defaults to.
+    #[test]
+    fn a_harness_staged_item_is_invisible_to_the_writing_miner() {
+        let root = scratch("harness-author");
+        let store = OutboxStore::open(&root).unwrap();
+        let staged = store
+            .stage_by_harness("mail__calendar_create_event", json!({"start_time": "a"}))
+            .unwrap();
+        assert_eq!(staged.author, Author::Harness);
+        assert_eq!(staged.kind, OutboxKind::Message, "reviewed as a message");
+        let mut sent = store.item(&staged.id).unwrap();
+        sent.status = "sent".into();
+        assert_eq!(sent.writing_outcome(), None, "unswapped");
+        sent.args = json!({"start_time": "b"});
+        assert!(sent.edited());
+        assert_eq!(sent.writing_outcome(), None, "swapped");
+        assert!(!sent.mineable_as_writing());
+        assert_eq!(WritingTally::of([&sent]).sent(), 0);
+
+        let legacy: OutboxItem = serde_json::from_value(json!({
+            "id": "20260101-000000-abc", "status": "sent", "tool": "mail__send",
+            "args_before": {"body": "a"}, "args": {"body": "b"},
+            "summary": "mail__send", "created_at": "2026-01-01T00:00:00Z",
+        }))
+        .unwrap();
+        assert_eq!(legacy.author, Author::Model);
+        assert!(legacy.mineable_as_writing());
         let _ = std::fs::remove_dir_all(&root);
     }
 

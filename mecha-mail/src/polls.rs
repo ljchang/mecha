@@ -227,26 +227,33 @@ fn person(v: &Value) -> Option<Person> {
     })
 }
 
-/// Parse one record. `None` for a record with no lifecycle — a general
+/// Parse one record. `Ok(None)` for a record with no lifecycle — a general
 /// poll, or one from before the lifecycle existed — which this handler has
-/// nothing to do for.
-pub fn parse_record(path: &Path, value: Value) -> Option<PollRecord> {
+/// nothing to do for. A record *with* a lifecycle that this cannot make
+/// sense of is an error, never `None`: it would otherwise be a poll that
+/// silently gets no invitations, no nudge and no booking.
+pub fn parse_record(path: &Path, value: Value) -> Result<Option<PollRecord>> {
     if !value["lifecycle"].is_object() {
-        return None;
+        return Ok(None);
     }
+    let poll_id = value["poll_id"]
+        .as_str()
+        .context("a lifecycle record with no `poll_id`")?
+        .to_string();
     let people = value["participants"]
-        .as_array()?
+        .as_array()
+        .context("a lifecycle record whose `participants` is not a list")?
         .iter()
         .filter_map(person)
         .collect();
-    Some(PollRecord {
+    Ok(Some(PollRecord {
         path: path.to_path_buf(),
-        poll_id: value["poll_id"].as_str()?.to_string(),
+        poll_id,
         title: value["title"].as_str().unwrap_or("Meeting").to_string(),
         duration_minutes: value["duration_minutes"].as_u64().unwrap_or(0) as u32,
         people,
         value,
-    })
+    }))
 }
 
 /// Every record with a lifecycle, and every file that could not be read —
@@ -264,13 +271,13 @@ pub fn scan(dir: &Path) -> Result<(Vec<PollRecord>, Vec<String>)> {
         let parsed = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
             .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()));
-        match parsed {
-            Ok(value) => {
-                if let Some(record) = parse_record(&path, value) {
-                    records.push(record);
-                }
-            }
-            Err(e) => problems.push(format!("{}: {e}", path.display())),
+        match parsed
+            .map_err(anyhow::Error::msg)
+            .and_then(|v| parse_record(&path, v))
+        {
+            Ok(Some(record)) => records.push(record),
+            Ok(None) => {}
+            Err(e) => problems.push(format!("{}: {e:#}", path.display())),
         }
     }
     Ok((records, problems))
@@ -416,6 +423,7 @@ mod tests {
                 "lifecycle": life,
             }),
         )
+        .unwrap()
         .expect("a record with a lifecycle")
     }
 
@@ -614,10 +622,22 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.path().join("c.json"), "{").unwrap();
+        // A lifecycle record this cannot read is a finding, not a poll
+        // that quietly gets no mail.
+        std::fs::write(
+            dir.path().join("d.json"),
+            json!({"poll_id": "d", "participants": "Priya", "lifecycle": {}}).to_string(),
+        )
+        .unwrap();
         let (records, problems) = scan(dir.path()).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].poll_id, "a");
-        assert_eq!(problems.len(), 1);
+        assert_eq!(problems.len(), 2);
         assert!(problems[0].contains("c.json"));
+        assert!(
+            problems[1].contains("d.json") && problems[1].contains("participants"),
+            "{}",
+            problems[1]
+        );
     }
 }

@@ -19,9 +19,12 @@
 //!   templated to say, and the owner is right there to say it.
 //!
 //! `pick <poll> <n>` swaps the draft's slot for the n-th ranked candidate —
-//! an `update_args` on `start_time`/`end_time` and nothing else, so the
-//! draft stays the thing the reviewer reads. The `/polls` modal's `p` key is
-//! this function.
+//! an `update_args` on `start_time`/`end_time`, and on the description only
+//! while it is still the generated one (its `▸` marks the loaded slot), so
+//! a title or attendee the owner edited in survives the swap and the draft
+//! stays the thing the reviewer read. The `/polls` modal's `p` key is this
+//! function. The card is staged by the harness (`OutboxStore::stage_by_harness`),
+//! which is what keeps its release out of the writing miner.
 //!
 //! The record is `factory-publish`'s file, edited through the JSON it came
 //! from: this side writes `pick_item`, `book`, `booked`, `verdict` and
@@ -32,7 +35,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 use crate::GlobalOpts;
-use mecha_core::outbox::{OutboxItem, OutboxKind, OutboxStore, Provenance};
+use mecha_core::outbox::{OutboxItem, OutboxStore};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -338,6 +341,30 @@ pub fn pick_args(record: &PollRecord, index: usize) -> Result<Value> {
     Ok(args)
 }
 
+/// The draft's arguments with the n-th candidate loaded, keeping every edit
+/// the owner made: only the two time fields move, and the description only
+/// when it is still the one this side generated for the slot it held.
+pub fn repick(record: &PollRecord, current: &Value, index: usize) -> Result<Value> {
+    let fresh = pick_args(record, index)?;
+    let mut args = current.clone();
+    args["start_time"] = fresh["start_time"].clone();
+    args["end_time"] = fresh["end_time"].clone();
+    let untouched = current["start_time"]
+        .as_str()
+        .and_then(|s| {
+            record
+                .ranked()
+                .iter()
+                .position(|c| c["start"].as_str() == Some(s))
+        })
+        .and_then(|loaded| pick_args(record, loaded).ok())
+        .is_some_and(|generated| generated["description"] == current["description"]);
+    if untouched {
+        args["description"] = fresh["description"].clone();
+    }
+    Ok(args)
+}
+
 /// Which ranked candidate a draft currently holds, by its start.
 pub fn loaded_index(record: &PollRecord, item: &OutboxItem) -> Option<usize> {
     let start = item.args["start_time"].as_str()?;
@@ -368,7 +395,7 @@ pub fn pick(poll_id: &str, n: usize) -> Result<String> {
         "the pick card {item_id} is {}, not pending",
         item.status
     );
-    let args = pick_args(&record, n - 1)?;
+    let args = repick(&record, &item.args, n - 1)?;
     let _lock = store.lock()?;
     store.update_args(item_id, args)?;
     let tz = record.lifecycle()["timezone"].as_str().unwrap_or("UTC");
@@ -405,9 +432,16 @@ pub fn sweep() -> Result<Vec<String>> {
         .map(|p| format!("unreadable: {p}"))
         .collect();
     for mut record in records {
-        if let Some(line) = step(&mut record, &store, &cfg)? {
-            save(&record)?;
-            lines.push(format!("{}: {line}", record.poll_id));
+        // One record's failure is that record's line, never the reason a
+        // later poll's decision goes unreconciled.
+        let outcome = step(&mut record, &store, &cfg).and_then(|line| match line {
+            Some(line) => save(&record).map(|()| Some(line)),
+            None => Ok(None),
+        });
+        match outcome {
+            Ok(Some(line)) => lines.push(format!("{}: {line}", record.poll_id)),
+            Ok(None) => {}
+            Err(e) => lines.push(format!("{}: failed — {e:#}", record.poll_id)),
         }
     }
     Ok(lines)
@@ -437,15 +471,10 @@ fn step(
             }
             let tool = create_event_tool(cfg)?;
             let args = pick_args(record, 0)?;
-            // The owner's records and the box's enum answers: nothing
-            // untrusted was in front of whoever this card is for.
-            let item = store.stage(
-                &tool,
-                OutboxKind::Message,
-                args,
-                mecha_core::agent::Taint::default(),
-                Provenance::default(),
-            )?;
+            // The harness's own bookkeeping: the owner's records and the
+            // box's enum answers, no model, and a release that says nothing
+            // about drafting.
+            let item = store.stage_by_harness(&tool, args)?;
             record.lifecycle_mut()["pick_item"] = json!(item.id);
             Ok(Some(format!(
                 "pick card staged as {} — release books the top candidate; `mecha polls pick {} <n>` or `p` in /polls swaps it",
@@ -514,6 +543,7 @@ fn step(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mecha_core::outbox::{Author, OutboxKind};
 
     /// A fresh directory under the system temp dir, removed on drop. No
     /// `tempfile` in this crate's dev-dependencies, and one helper is
@@ -601,10 +631,41 @@ mod tests {
         assert!(err.contains("2 candidate(s), not 3"), "{err}");
     }
 
+    /// The owner edited the card — a title, an extra attendee — and then
+    /// swapped the slot: only the two times move, and the generated
+    /// description follows the slot unless the owner rewrote it too.
+    #[test]
+    fn a_pick_keeps_the_owners_edits_to_the_card() {
+        let r = record(json!({"verdict": "pick", "ranked": ranked(), "timezone": "UTC"}));
+        let mut edited = pick_args(&r, 0).unwrap();
+        edited["title"] = json!("Lab meeting (grant)");
+        edited["attendees"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("assistant@example.edu"));
+        let swapped = repick(&r, &edited, 1).unwrap();
+        assert_eq!(swapped["title"], "Lab meeting (grant)");
+        assert_eq!(swapped["attendees"].as_array().unwrap().len(), 3);
+        assert_eq!(swapped["start_time"], "2030-02-07T18:00:00Z");
+        assert_eq!(swapped["end_time"], "2030-02-07T19:00:00Z");
+        assert!(
+            swapped["description"].as_str().unwrap().contains("▸ 2."),
+            "the untouched description follows the slot"
+        );
+
+        // A rewritten description is the owner's and stays theirs.
+        let mut rewritten = pick_args(&r, 0).unwrap();
+        rewritten["description"] = json!("Bring the draft.");
+        let swapped = repick(&r, &rewritten, 1).unwrap();
+        assert_eq!(swapped["description"], "Bring the draft.");
+        assert_eq!(swapped["start_time"], "2030-02-07T18:00:00Z");
+    }
+
     #[test]
     fn the_loaded_candidate_is_found_by_its_start() {
         let r = record(json!({"ranked": ranked()}));
         let mut item = OutboxItem {
+            author: Default::default(),
             id: "ob1".into(),
             status: "pending".into(),
             tool: "mail__calendar_create_event".into(),
@@ -693,6 +754,7 @@ mod tests {
         let item = store.item(&item_id).unwrap();
         assert_eq!(item.tool, "mail__calendar_create_event");
         assert_eq!(item.kind, OutboxKind::Message);
+        assert_eq!(item.author, Author::Harness, "nobody's draft: never mined");
         assert_eq!(item.args["start_time"], "2030-02-05T18:00:00Z");
         assert!(
             step(&mut r, &store, &cfg).unwrap().is_none(),
