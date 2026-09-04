@@ -1680,10 +1680,16 @@ one person's mailbox rather than a public fact.
   **check the branch, then pull, then restart**, not "pull, then restart",
   and that ordering is the whole content of the voice-worker item below
   (mecha-26). *Since resolved, 2026-09-04 afternoon:* #161 and #162 merged
-  at 09:45Z and 09:52Z, and the shared checkout is back on `main` (at
-  `6e606a9`, checked from this lane), so what remains there is ordinary lag
-  behind `origin/main` rather than a feature branch's content — the deploy
-  ordering above still holds, for the ordinary reason. ~~Three things merged to `main`
+  at 09:45Z and 09:52Z; the checkout was on `main` at `6e606a9` when this
+  lane looked at ~13:00 (44 behind `origin/main` by 15:29, mecha-83's
+  count), and by 15:45 sat at `58fc21a` — `origin/main`'s tip — on a branch
+  named `fix/selection-slice-power` for four minutes (reflog 15:33–15:37,
+  mecha-26's lane), then back on `main` at `58fc21a`, clean, where it is
+  now. The 15:29 deploy built from a temporary worktree at `origin/main`
+  for exactly this reason, and the voice worker was restarted only after
+  the worker file's blob id matched `origin/main`'s. The ordering above
+  still holds; the check that settles it is the blob id of the file the
+  unit runs, never the branch name. ~~Three things merged to `main`
   and **not deployed**: #159 (the handoff close), #153 and #154~~ — #153 and
   #154 are still **unrecorded in this document** (mecha-83's flag; their
   owners' entries are owed, this lane did not read their diffs). ~~The
@@ -1989,6 +1995,39 @@ What is actually open now:
   said four callers: a grep for `global_config_only: true` misses
   `voice/mod.rs`, which assigns instead. The pattern you search with is
   part of the claim you can make.*
+- **The harness candidate queue was cleared 2026-09-04, and the gate that
+  filled it could not measure** (machine state in
+  `~/.mecha/learning/harness/candidates/`, which no clone records; verified
+  from this lane: `mecha harness list` reads "nothing waiting on you
+  (8 resolved)", seven files rejected today, `mecha harness overrides`
+  empty so no config moved). Per mecha-26, who did the clearing at the
+  owner's instruction: three candidates named config keys that never
+  existed (`tool.validation.strict`, `context.auto_compact`,
+  `context.compaction.threshold` — pre-fix residue, the closed set is now
+  named in `DIAGNOSE_INSTRUCTION`); three (`compact_at_tokens`,
+  `max_output_tokens`, `effort`) measured 0 wins, 0 losses, all ties with
+  identical work on both arms, filed as "below the floor of 8" when the
+  finding was that the arms never differed; one was an architecture
+  proposal contradicted by its own brief. **The rejection reasons are
+  prompt text**: `harness_history()` replays the newest 20 verbatim into
+  the next brief as "do not propose any of these again", so three of the
+  four overridable knobs were one careless reason away from retirement on
+  evidence that measured nothing. Why the gate had no power: the only
+  episodes surviving replay were four copies of one scripted echo/todo
+  smoke test whose prompt pins the tool sequence, and a pinned sequence
+  cannot diverge — `Metric::headroom` does not catch it (those episodes
+  carry 32 recorded calls of headroom and zero elasticity). Worse, a full
+  slice of all-ties read `!sel.better()` and *rejected*: no discriminating
+  power is not evidence against, the dash-is-never-zero shape one layer
+  up. A fix exists on `fix/selection-slice-power` at `cbc3738`
+  (`judge_slices` checks for identical arms ahead of the pair-count floor;
+  note in `ARCHITECTURE.md § The gate`) — **unmerged, no PR, the owner
+  has not decided**. Two upstream causes are open and belong here, not in
+  history: those smoke-test sessions carry no `SessionKind`, so
+  `include_tests = false` never excluded them; and the baseline arm
+  diverges on most non-scripted episodes (ten of eleven divergences on
+  2026-09-03 were baseline-arm) because a local sampler does not
+  reproduce its own tool sequence.
 - **Read the record, weekly at first.** `mecha harness list --all` and the
   nightly log. §2's failure mode (harness updating without benefiting) is now
   answerable from the store instead of from impression — but only if someone
@@ -2467,20 +2506,41 @@ the mechanism and every decision. What it left standing:
 (`feat/situation-scope`, merged at `046ef0f` after thirteen review
 passes — eleven rounds of findings, then two clean at the bar), with
 §17.7 item 1's run record in the same change because it was the merge
-condition. Not yet deployed, and the staleness is two rows, not one. The
-installed `mecha` is behind main by at least #167/#168/#169: asked, not
-inferred — `strings ~/.cargo/bin/mecha` on 2026-09-04 afternoon holds
-none of `duration_secs` (#167), `learned rules: prefix block` (#168) or
-`predictive_compaction` (#169), and its version string, 0.1.17, cannot
-tell builds apart; the next `update` run of the *mecha* lines takes them
-all. The installed `mecha-graph` and `mecha-graph-mcp` carry a 2026-09-02
-file date and are *deliberately* not updated — the `~/Github/mecha-graph`
-checkout sits on `feat/task-entity-association` at `f2725d9`, clean
-(checked from this lane, 2026-09-04 afternoon), which is PR #6's branch
-and PR #6 is open, so running the `update` skill's graph `cargo install`
-lines from that checkout would ship the unmerged branch. Run the mecha
-lines only, and check the graph checkout's branch before ever running
-the graph ones.** What it built is in
+condition. **Deployed 2026-09-04 15:29–15:37 by mecha-83, verified from
+this lane by asking the artifacts:** `strings ~/.cargo/bin/mecha` now holds
+`duration_secs` (#167), `learned rules: prefix block` (#168) and
+`predictive_compaction` (#169), where the same probe at ~14:30 held none —
+the version string read 0.1.17 both times and cannot tell builds apart,
+which is why the probe is a literal and not a version. Built from a
+temporary worktree at `origin/main` `58fc21a`, not from the shared
+checkout, which at 15:29 was 44 commits behind `origin/main` with every
+version string reading current (mecha-83's count). The checkout is now
+on `main` at `58fc21a`, clean; its reflog shows it on
+`fix/selection-slice-power` from 15:33 to 15:37 (mecha-26's lane, one
+commit, moved back), which is the window one lane's read landed in — so
+the branch name was wrong for four minutes and the tree was right
+throughout, the inverse of 2026-09-03. The deploy did not depend on
+either: the check used was the blob id of the file the unit execs, and
+that is the check to record. mecha-graph PR #6 merged the
+same hour and `mecha-graph` + `mecha-graph-mcp` were installed from
+mecha-graph main `7fa6a69` (the installed server's strings carry the new
+`about`/`entity` schema); `target/release/mecha-graph` rebuilt for the
+01:30 nightly, which execs that path. Restarted, each confirmed active
+from `systemctl --user` here: mecha-slack, mecha-triggers, mecha-drain
+(15:29:57), mecha-serve (15:31:47), mecha-voice-worker (15:37:37 — the
+worker.py on disk hashes to `d818fa3`, identical to
+`origin/main:scripts/voice/worker.py`, so the +174-line worker is what
+runs). Not restarted, correctly: mecha-parakeet (active since
+2026-08-24; `parakeet_server.py` unchanged). The web dist rebuilt and deployed — verified: `[web] assets` in
+`~/.mecha/config.toml` is `~/.mecha/web/dist`, deliberately not a repo
+path (production once served from a session worktree that was later
+cleaned), and that directory holds `index-NFyEeisJ.js` at 15:31; the
+repo's own `web/dist` still holds `index-cix-ATEa.js`, which is expected
+and is the trap the path exists to create — this lane looked there first.
+The musl bench binary is still 2026-09-03 11:00 (verified), so a
+scorecard run now measures old code. Reported by mecha-83 and not
+verified from this lane: factory client and droplet already 0.2.8. PR #6's review residue
+is mecha-graph issue #8.** What it built is in
 `HISTORY.md` under this date: `situation.rs`, the situation on every new
 reflection, `scope` on `Rule` assigned by the harness from the batch's shared
 keys, one learner call per focus-tool batch, the loader matching scope
