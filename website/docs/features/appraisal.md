@@ -127,10 +127,15 @@ setpoint = "24h"
 **A line may carry a sensor.** An observable mecha reads from its own stores,
 with a setpoint you wrote saying what the line means by "short" or "few". The
 kinds are a closed set — `outbox_waiting`, `outbox_age`, `question_latency`,
-`request_closure`, `board_overdue`, `intervention_rate`, `cost` — and each fixes
-its setpoint's unit (a duration like `24h`, a whole number, a rate like `20%`,
-dollars); a kind mecha does not know, or a setpoint in the wrong unit, refuses
-the whole file at load and says which line. What a sensor buys today is
+`request_closure`, `intervention_rate` — and each fixes its setpoint's unit (a
+duration like `24h`, a whole number, a rate like `20%`); a kind mecha does not
+know, or a setpoint in the wrong unit, refuses the whole file at load and says
+which line. Every kind listed does something today; two the design names
+(`board_overdue`, `cost`) wait until a reading exists for them, rather than
+being accepted and ignored. One consequence of the refusal to know before you
+author a sensor: a machine still on an older release does not refuse to
+start — it runs with **no charter at all**, with one stderr line, until
+`mecha doctor` reports it. Update every machine first. What a sensor buys today is
 **attribution**: a run that released a draft, parked a question or triaged a
 request is appraised *against that line*, with no plan and no `serves:`, which
 is how an ordinary run comes to reference the charter at all — and how a draft

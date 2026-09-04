@@ -863,6 +863,13 @@ pub fn load_charter() -> (Option<crate::charter::Charter>, bool) {
 /// would be exactly the false credit the containment names. Counters name
 /// the run's own record and no store an owner's setpoint watches, and the
 /// appraiser's pointer is the whole run.
+///
+/// **Every `SensorKind` appears on the right-hand side here**, and the
+/// test beside `line_for_sensor` holds that: a kind an owner can write
+/// that no pointer maps to would parse, validate and do nothing, which is
+/// why §11.1's `board_overdue` and `cost` — store- and run-level numbers
+/// with no item a trace touches — are not variants until the readings
+/// phase gives them a reader.
 fn sensor_kinds_for(cite: &Cite) -> &'static [crate::charter::SensorKind] {
     use crate::charter::SensorKind;
     match cite {
@@ -3473,6 +3480,34 @@ text = "Tell me the truth early."
 "#,
         )
         .unwrap()
+    }
+
+    /// Every kind an owner can write does something: each `SensorKind` is
+    /// on the right-hand side of `sensor_kinds_for` for some pointer. A kind
+    /// that parsed, validated its setpoint and mapped to nothing would be
+    /// the `deny_unknown_fields` failure one field down — the owner writes
+    /// it, believes it did something, and never finds out (found on review,
+    /// when `board_overdue` and `cost` were exactly that).
+    #[test]
+    fn every_sensor_kind_is_reached_by_some_pointer() {
+        let every_cite = [
+            Cite::Turn(0),
+            Cite::Draft("o".into()),
+            Cite::Counter("c".into()),
+            Cite::Setpoint("s".into()),
+            Cite::Reflexion("r".into()),
+            Cite::Question("q".into()),
+            Cite::Request(1),
+            Cite::Appraiser,
+        ];
+        for kind in crate::charter::SensorKind::ALL {
+            assert!(
+                every_cite
+                    .iter()
+                    .any(|c| sensor_kinds_for(c).contains(&kind)),
+                "{kind:?} is a kind an owner can write that no pointer attributes to"
+            );
+        }
     }
 
     /// The producer §11.1 promised for the charter reference on an ordinary

@@ -1064,7 +1064,15 @@ charter is `Prose` class and cannot be cheaply A/B tested:
 > showing a reading beside the line (containment 5's first guard), and the
 > replay tiebreak. Every containment below holds in the built half: no
 > `Metric` reads a charter, the sensor is not rendered into the prompt, an
-> unknown kind refuses the document at load.
+> unknown kind refuses the document at load. Two corrections from the
+> build: **five kinds shipped, not seven** — `board_overdue` and `cost` are
+> store- and run-level numbers with no item a trace touches, so they can
+> only be reading sensors and are not variants until a reader exists (a
+> kind that parses and does nothing is the `deny_unknown_fields` failure
+> one field down); and **containment 7 overstates itself** — on an older
+> binary the load error is not a startup refusal, because `setup.rs`
+> degrades to an un-chartered run with one stderr line; `mecha doctor`'s
+> charter finding is the actual containment, and the `update` skill the fix.
 
 The owner ruled that a charter line may carry a **sensor**: an observable
 the harness reads from its own stores, with a setpoint the owner wrote. It

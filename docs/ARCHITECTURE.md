@@ -2469,11 +2469,20 @@ than refusing, because the cost is prefix bytes on every request.
 attribution join built 2026-09-04, the readings and the doctor's owner
 thresholds not yet). `[line.sensor]` is `kind` from a **closed enum**
 (`SensorKind`: `outbox_waiting`, `outbox_age`, `question_latency`,
-`request_closure`, `board_overdue`, `intervention_rate`, `cost`) and a
-`setpoint` the kind types (a duration like `24h`, a count, a rate like `20%`,
-dollars) — an unknown kind or a setpoint in the wrong unit refuses the whole
-document at load, which is the fail-closed direction the charter already has
-and, on purpose, a startup refusal on an older binary. Three things to keep
+`request_closure`, `intervention_rate`) and a `setpoint` the kind types (a
+duration like `24h`, a count, a rate like `20%`) — an unknown kind or a
+setpoint in the wrong unit refuses the whole document at load, which is the
+fail-closed direction the charter already has. **Every variant does
+something today** — each is a key in `appraisal::sensor_kinds_for` — and
+§11.1's `board_overdue` and `cost` are deliberately not variants until the
+readings phase gives them a reader: a kind an owner can write that parses,
+validates and does nothing is the failure `deny_unknown_fields` exists to
+refuse, one field down (found on review). **On an older binary a sensored
+line is not a startup refusal**: `setup.rs` catches every `Charter::load`
+error, prints one stderr line the TUI's alternate screen covers, and runs
+*un-chartered* — so authoring one here silently costs a machine on the
+previous release its whole charter until `mecha doctor` reports it, which is
+the real containment; the fix is the `update` skill. Three things to keep
 when touching it:
 
 - **`prompt_block` renders a sensored line exactly as an unsensored one.** The
