@@ -19,7 +19,30 @@
 //! the same rule one noun over: state is derived from the record, never
 //! self-reported.
 //!
-//! ## Five labels are unreachable today, and that is the finding
+//! ## The gate is relevance, and the label comes from sign and agency
+//!
+//! §17.1 (ruled 2026-09-03): an appraisal's first check is whether the
+//! outcome bears on a live goal; the label derives from sign and agency;
+//! controllability *refines* a label once a replay has filled it and is
+//! never a precondition for one. Here that reads as follows. **Relevance is
+//! decided by the channel arms in [`of_session`]** — a pending draft, a
+//! follow-up question, a Ctrl-C each produce no error at all, because
+//! nothing bore on the work — so every [`GoalError`] that exists has passed
+//! the gate, whether or not the run named a goal (`goal: None` is a fact
+//! about the run, §3, not a reason to lose the error). [`label_of`] then
+//! names every negative from its sign and agency alone: `Anger` where nothing
+//! here caused it, `Embarrassment` where it reached somebody, and otherwise
+//! **`Distress`** — the coarse word, a signed and attributed error that is not
+//! yet regret or disappointment — which a probe verdict later refines into
+//! one of those two. The incident: this function used to give an owner- or
+//! self-caused negative no word until `controllable` was filled, and
+//! `controllable` is filled only by a paid replay, so twenty-two rejected
+//! drafts — the largest owner verdict in the store — all read `Neutral`.
+//! The ruling accepts a coarser word over no word, with the cost stated:
+//! §6's table separates regret from disappointment on controllability
+//! alone, and `Distress` is honest about not yet knowing which.
+//!
+//! ## Four labels are unreachable today, and that is the finding
 //!
 //! §14 puts this rung at *observation only* — build the corpus and check the
 //! labels are not degenerate before anything consumes them. Working the
@@ -28,11 +51,17 @@
 //!
 //! | label | what it needs | where that comes from |
 //! |---|---|---|
-//! | `Pride` | a charter line, not a task | closure against the charter (§11), unbuilt |
 //! | `Guilt` | *harmed another* | nothing computes harm; `visible` is exposure |
 //! | `Shame` | a pattern across runs | an aggregate — a per-event function cannot see it |
 //! | `Excitement` | a *predicted* error | anticipatory appraisal (§7.4), unbuilt |
 //! | `Embarrassment` | a **visible negative** error | no assembler emits one — see below |
+//!
+//! `Pride` left this table on 2026-09-04: a positive, self-caused error
+//! against a charter line, which the sensored-line attribution in
+//! [`of_session`] (§11.1) can now produce — a draft sent unchanged, on a
+//! machine whose charter has a line watching the outbox. Reachable in the
+//! sense `Regret` is: the path is shipped and needs a configuration (a
+//! sensored line; a probe run) to fire.
 //!
 //! `Embarrassment` is the one whose unreachability arrived silently rather
 //! than by design, so it gets its own sentence: exposure used to have a
@@ -53,36 +82,36 @@
 //! schema does not move when it does. A store is a wire format; adding a
 //! variant later is the change that costs.
 //!
-//! What is left is narrower than it looks, and saying so is the point. The
-//! **free** readout — [`of_session`] over on-disk records, no model — can
-//! only ever *label* a session `Neutral`: every negative it assembles is
-//! `Own`/`Owner` with `controllable` unfilled, which is the one branch of
-//! [`label_of`] with no word for it, and no counter kind fires twice in one
-//! session, so `Frustration`'s repetition cannot occur. (`Anger` is the
-//! quarantined appraiser's alone now — a ceiling used to read as `World`
-//! agency, and a limit the owner set is not something nobody here caused.)
-//! The **probe** (§5.3, a paid replay per intervention) is what buys the
-//! rest: `Regret` and `Disappointment` directly, and `Frustration` when two
-//! probed steers on one goal both come back load-bearing. The alternative to
-//! stating this is inventing precedence until every run gets an interesting
-//! word, which manufactures the signal this rung exists to test for.
+//! What the **free** readout — [`of_session`] over on-disk records, no
+//! model — can say is now: `Distress` on every negative it assembles
+//! (`Own`/`Owner`, `controllable` unfilled), `Pride` on a positive against a
+//! sensored charter line, and `Neutral` on a record with no negative and no
+//! such positive. It still cannot say `Regret` or `Disappointment` — those
+//! are the **probe**'s (§5.3, a paid replay per intervention), which refines
+//! a `Distress` into one or the other — nor `Frustration`, which needs two
+//! probed steers on one goal both coming back load-bearing, since no counter
+//! kind fires twice in one session. (`Anger` is the quarantined appraiser's
+//! alone — a ceiling used to read as `World` agency, and a limit the owner
+//! set is not something nobody here caused.) Stating the range rather than
+//! inventing precedence until every run gets an interesting word is what
+//! keeps the corpus a measurement.
 //!
 //! ## The label is not the readout
 //!
-//! That the label is `Neutral` on nearly every session was the finding of
+//! That the label was `Neutral` on nearly every session was the finding of
 //! rung 7's corpus, and `docs/APPRAISAL-RESEARCH.md` §1 found the reason
 //! narrower than the design's "five dimensions nothing measures": the
-//! label gates on the most expensive dimension it has (`controllable`, a
-//! paid replay) and discards the cheapest — the **sign**, which every error
-//! carries. Twenty-two owner-rejected drafts all read `Neutral`. So the
-//! readout every surface shows is [`Valence`]: the signed magnitudes the
-//! record already holds, positive and negative kept apart (averaging them is
-//! the mixed-polarity mistake `candidate::Metric`'s docstring forbids), with
-//! the label beside it as the second line, derived exactly as before and
-//! firing when its dimensions are filled. Every computational appraisal
-//! model that pass reviewed puts its one gate at relevance and then labels
-//! from two variables; a product over unfilled dimensions collapses, and
-//! [`label_of`] was that product in a different costume.
+//! label gated on the most expensive dimension it has (`controllable`, a
+//! paid replay) and discarded the cheapest — the **sign**, which every error
+//! carries. So the readout every surface shows is [`Valence`]: the signed
+//! magnitudes the record already holds, positive and negative kept apart
+//! (averaging them is the mixed-polarity mistake `candidate::Metric`'s
+//! docstring forbids), with the label beside it as the second line. Every
+//! computational appraisal model that pass reviewed puts its one gate at
+//! relevance and then labels from two variables; a product over unfilled
+//! dimensions collapses, and [`label_of`] was that product in a different
+//! costume until §17.1 ungated it. The valence stays first on every surface:
+//! a word is one error's name, and the sums are the run's.
 //!
 //! ## Mood is not here
 //!
@@ -253,9 +282,26 @@ pub enum Cite {
 pub struct Appraisal {
     pub id: String,
     pub session_id: String,
-    /// What was live.
+    /// What the run *named*: the plan's `serves:`, or the goal a caller
+    /// already knew (the closure appraisal's task). Never filled by the
+    /// harness — that is `attributed`'s — so "how many sessions named a
+    /// goal" stays the `serves:` coverage number it was.
     #[serde(default, deserialize_with = "crate::goal::de_lenient_vec")]
     pub goals: Vec<GoalRef>,
+    /// Charter lines the sensored-line attribution in [`of_session`] gave
+    /// this run's errors (§11.1) — a store the run's own trace touched,
+    /// joined by id to the line whose sensor watches it, with no plan and
+    /// no `serves:`. Kept apart from `goals` on purpose (found on review):
+    /// folding them together made the corpus readout unable to tell the
+    /// `serves:` ask from the attribution it ships beside, so item 1's own
+    /// exit criterion could go green on attribution alone. Absent on the
+    /// wire when empty; an older record reads as nothing attributed.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::goal::de_lenient_vec"
+    )]
+    pub attributed: Vec<GoalRef>,
     /// Conditions at the time. An outcome is not interpretable without the
     /// state it happened in — a run that failed under a saturated machine and
     /// one that failed on an idle one are the same row otherwise.
@@ -292,12 +338,23 @@ pub struct Appraisal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Affect {
-    /// Nothing the derivation can name. The common answer today, and the
-    /// number this rung exists to measure.
+    /// Nothing the derivation can name: no negative error, and no positive
+    /// against a charter line.
     Neutral,
     /// Negative, and caused by something with no address here — a 429, an MCP
     /// server, a machine under load.
     Anger,
+    /// Negative, self- or owner-caused, private, and not yet known to have
+    /// had an alternative. **The coarse word §17.1 accepts over no word**:
+    /// a signed, attributed error before a probe has split it into regret
+    /// (an alternative existed) or disappointment (none did). The name is
+    /// OCC's undifferentiated well-being emotion — displeased about an
+    /// undesirable event — which their model refines exactly as this one
+    /// does, by attribution and then by controllability. What it is not: a
+    /// judgement that mecha erred. A rejected draft labels `Distress` and
+    /// the owner may simply have wanted something else; the label says a
+    /// verdict landed against the work, and a replay says whose it was.
+    Distress,
     /// Negative and it reached somebody. Computed exposure, never a feeling.
     Embarrassment,
     /// Repeated negative error on one goal with no progress between.
@@ -328,9 +385,10 @@ impl Affect {
     /// arm the author then writes asserts membership here — a length assert
     /// alone would be a tautology about `[Affect; 10]`'s own type, which is
     /// exactly the quietly-short count this constant exists to prevent.
-    pub const ALL: [Affect; 10] = [
+    pub const ALL: [Affect; 11] = [
         Affect::Neutral,
         Affect::Anger,
+        Affect::Distress,
         Affect::Embarrassment,
         Affect::Frustration,
         Affect::Regret,
@@ -349,11 +407,13 @@ impl Affect {
     /// neither was recorded at the time, which is why the split below is
     /// spelled out:
     ///
-    /// - `Neutral` is the **free** readout's whole label range — see the
-    ///   module note on why [`of_session`] alone can produce nothing else,
-    ///   and why the surfaces show [`Valence`] instead. `Anger` is
-    ///   reachable through the quarantined appraiser's `other`/`world`
-    ///   agency verdict alone, since a ceiling stopped reading as `World`.
+    /// - `Neutral`, `Distress` and `Pride` are the **free** readout's label
+    ///   range — see the module note: every negative [`of_session`] assembles
+    ///   is `Distress` until a probe refines it, and `Pride` needs a charter
+    ///   line with a sensor watching the store the positive came from.
+    ///   `Anger` is reachable through the quarantined appraiser's
+    ///   `other`/`world` agency verdict alone, since a ceiling stopped
+    ///   reading as `World`.
     /// - `Regret`, `Disappointment` and `Frustration` are **probe-gated**:
     ///   the counterfactual pass (§5.3, shipped in the appraisal probe) is
     ///   the only thing that fills `controllable` or turns an intervention
@@ -367,9 +427,32 @@ impl Affect {
             self,
             Affect::Neutral
                 | Affect::Anger
+                | Affect::Distress
                 | Affect::Regret
                 | Affect::Disappointment
                 | Affect::Frustration
+                | Affect::Pride
+        )
+    }
+
+    /// Does this word name *residue* — work left undone or done wrong that
+    /// a person might act on — rather than only a verdict? The follow-up
+    /// gate on a task closure (`mecha tasks set --status done`) reads this:
+    /// a `Distress` is a rejected draft or a steer, a verdict the owner
+    /// already delivered with nothing in it to put on a board, and staging
+    /// a "revisit" task from one would override the decision the owner just
+    /// made. A *positive* word names no residue either — `Pride` and
+    /// `Excitement` say the run served a line well or is expected to, and
+    /// staging a follow-up from one would be the same override, one sign
+    /// over (found on review: dormant while the closure path always passes
+    /// a `Task` goal, but the gate is defined on the label and `Pride` has
+    /// a producer now). Every other word names something a person might
+    /// act on. Here rather than in the gate, so the split lives beside the
+    /// variant it is about and a new variant has to answer it.
+    pub fn names_residue(self) -> bool {
+        !matches!(
+            self,
+            Affect::Neutral | Affect::Distress | Affect::Pride | Affect::Excitement
         )
     }
 
@@ -389,26 +472,57 @@ impl Affect {
     }
 }
 
-/// What one error on its own says.
+/// What one error on its own says — from its sign and agency, with
+/// controllability as a refinement (§17.1).
 ///
 /// **Agency is read before exposure**, because agency decides who can act: a
 /// provider outage that reached somebody is still an outage, and reporting it
 /// as this machine's failure would send a change at code that is working.
+///
+/// **Every negative gets a word.** The ungating this ruling made: a private
+/// `Own`/`Owner` negative used to be `Neutral` until a probe filled
+/// `controllable`, and is `Distress` now, refined to `Regret` (an
+/// alternative existed, and it was the agent's) or `Disappointment` (none
+/// did) when a verdict arrives. An `Owner` error a probe marks controllable
+/// stays `Distress`: `apply_probe` never produces that pairing — a steer
+/// that mattered moves agency to `Own` first — so there is no honest word
+/// for it yet, and inventing one here would be the precedence-invention
+/// the module note refuses.
+///
+/// **A positive says `Pride` only for a delivery against the charter.**
+/// §6's row is "positive · self-agency · against a charter line, not a
+/// task": a task well done is deliberately not it, so a positive with a
+/// `Task` goal, no goal, or `Owner` agency reads `Neutral` here and shows
+/// on the valence. And *delivery* is load-bearing (found on review): every
+/// arm copies the run's named goal onto its positive, so gating on the goal
+/// alone let two channels that never meant "delivered against the line"
+/// earn the word — the queue-delta arm (`Cite::Setpoint`, a global level
+/// difference that credits a run for the owner emptying the outbox by hand,
+/// the false credit containment 6 names) and the quarantined appraiser
+/// (`Channel::Appraisal`, a model's own `strongly_positive`/`self` verdict,
+/// which would make `Pride` a self-report). So the arm is an allow-list on
+/// the pointer: a draft sent unchanged or a question answered and the work
+/// finished — the two items a run's own trace delivers — and nothing else.
+/// A future positive arm has to be added here to earn the word, which is
+/// the direction a label that must never be self-reported wants.
 fn label_of(e: &GoalError) -> Affect {
+    if e.sign > 0.0 {
+        return match (&e.goal, e.agency, &e.cite) {
+            (Some(GoalRef::Charter(_)), Agency::Own, Cite::Draft(_) | Cite::Question(_)) => {
+                Affect::Pride
+            }
+            _ => Affect::Neutral,
+        };
+    }
     match e.agency {
         // Nothing here caused it, so nothing here fixes it.
         Agency::Other | Agency::World => Affect::Anger,
         Agency::Own | Agency::Owner if e.visible => Affect::Embarrassment,
-        Agency::Own | Agency::Owner => {
-            // Regret and disappointment split on `controllable`, which a probe
-            // fills and nothing in this rung runs. Neutral is the honest
-            // answer, and its share of the corpus is the measurement.
-            match e.controllable {
-                Some(true) if e.agency == Agency::Own => Affect::Regret,
-                Some(false) => Affect::Disappointment,
-                _ => Affect::Neutral,
-            }
-        }
+        Agency::Own | Agency::Owner => match e.controllable {
+            Some(true) if e.agency == Agency::Own => Affect::Regret,
+            Some(false) => Affect::Disappointment,
+            _ => Affect::Distress,
+        },
     }
 }
 
@@ -428,26 +542,28 @@ fn label_of(e: &GoalError) -> Affect {
 /// left answerable instead of decided by accident.
 ///
 /// **Exhaustive on purpose, with no catch-all.** A `_ => 0` arm would put any
-/// future label — `Guilt`, `Shame`, `Pride`, `Excitement`, and `Frustration`
-/// itself — at the same rank as `Neutral`, silently contradicting the rule
-/// above that `Neutral` loses every tie: a variant added to [`label_of`] would
-/// compile fine and mask nothing, when the whole point of this function is
-/// that everything *but* `Neutral` should be able to win one. Listing every
+/// future label — `Guilt`, `Shame`, `Excitement`, and `Frustration` itself —
+/// at the same rank as `Neutral`, silently contradicting the rule above that
+/// `Neutral` loses every tie: a variant added to [`label_of`] would compile
+/// fine and mask nothing, when the whole point of this function is that
+/// everything *but* `Neutral` should be able to win one. Listing every
 /// variant means the compiler catches that instead. `Guilt`/`Shame` join
 /// `Embarrassment`'s rank: all three are exposure-flavoured harm that a reader
-/// most needs surfaced. `Anger`/`Pride`/`Excitement` join the lowest non-zero
-/// rank — `label_of` never actually produces the latter two, so this is only
-/// ever exercised through `Anger`. `Frustration` never reaches this function
-/// today either (`affect_of` decides it separately, see below), but its rank
-/// still has to sit *below* the exposure tier so a repeated self-inflicted
-/// error can never be preferred over — or mistaken for beating — a visible
-/// mistake in the same record.
+/// most needs surfaced. `Distress` sits with `Anger` at the lowest non-zero
+/// rank: it names an attributed error and nothing more, so a refined word of
+/// the same magnitude beats it, and it beats `Neutral`. `Pride`/`Excitement`
+/// share that rank and only a positive-only record ever reaches them, where
+/// no tie is broken. `Frustration` never reaches this function today either
+/// (`affect_of` decides it separately, see below), but its rank still has to
+/// sit *below* the exposure tier so a repeated self-inflicted error can never
+/// be preferred over — or mistaken for beating — a visible mistake in the
+/// same record.
 fn says_more(a: Affect) -> u8 {
     match a {
         Affect::Embarrassment | Affect::Guilt | Affect::Shame => 4,
         Affect::Frustration | Affect::Regret => 3,
         Affect::Disappointment => 2,
-        Affect::Anger | Affect::Pride | Affect::Excitement => 1,
+        Affect::Anger | Affect::Distress | Affect::Pride | Affect::Excitement => 1,
         Affect::Neutral => 0,
     }
 }
@@ -461,95 +577,47 @@ fn says_more(a: Affect) -> u8 {
 pub fn affect_of(appraisal: &Appraisal) -> Affect {
     let negatives: Vec<&GoalError> = appraisal.errors.iter().filter(|e| e.sign < 0.0).collect();
     if negatives.is_empty() {
-        // Positive-only, which today has no label: `Pride` needs a charter
-        // line, and a task well done is deliberately not it. A real gap rather
-        // than a rounding — the positive channel exists, is recorded, and has
-        // nothing to say until §11 lands.
-        return Affect::Neutral;
+        // Positive-only. `Pride` if any positive is the agent's own against
+        // a charter line (§6's row; reachable since a sensored line can
+        // attribute a sent draft to one) — the largest such positive is the
+        // one named, mirroring the reduce below. A task well done is
+        // deliberately not `Pride`, so a record of `Task`-goal positives
+        // alone stays `Neutral` and shows on the valence.
+        return appraisal
+            .errors
+            .iter()
+            .filter(|e| e.sign > 0.0)
+            .map(|e| (e.sign, label_of(e)))
+            .filter(|&(_, l)| l != Affect::Neutral)
+            .reduce(|a, b| if b.0 > a.0 { b } else { a })
+            .map(|(_, l)| l)
+            .unwrap_or(Affect::Neutral);
     }
 
     // The most negative error decides, exactly as when there is no
     // repetition below — computed first so the repetition check can only
     // ever upgrade this result, never bury it. See that check for why the
-    // order matters. Carries the channel along only for the appraiser-scoped
-    // correction just below; `label_of`'s reduce itself never reads it.
-    let (reduced, reduced_channel) = negatives
+    // order matters.
+    //
+    // A correction used to sit here: a large-magnitude appraiser verdict
+    // that reduced to `Neutral` (`self`/`owner`, `controllable` unfilled)
+    // could outrank a smaller error that named something, so the reduce was
+    // re-run over the non-`Neutral` subset for `Channel::Appraisal` alone.
+    // §17.1 removed the case — `label_of` names every negative now, so no
+    // negative reduces to `Neutral` and a label that names nothing can no
+    // longer win on magnitude. The principle it enforced survives in
+    // `says_more`'s tie-break: `Neutral` still loses every tie.
+    let reduced = negatives
         .iter()
-        .map(|e| (e.sign, label_of(e), e.channel))
+        .map(|e| (e.sign, label_of(e)))
         .reduce(|a, b| match a.0.total_cmp(&b.0) {
             std::cmp::Ordering::Less => a,
             std::cmp::Ordering::Greater => b,
             std::cmp::Ordering::Equal if says_more(b.1) > says_more(a.1) => b,
             std::cmp::Ordering::Equal => a,
         })
-        .map(|(_, label, channel)| (label, channel))
-        .unwrap_or((Affect::Neutral, Channel::Counter));
-
-    // **A large-magnitude `Neutral` from the quarantined appraiser must not
-    // bury a smaller error that names something.** `apply_appraiser` starts
-    // `visible`/`controllable` conservative, so a `self`/`owner` verdict
-    // reduces to `Neutral` under `label_of` whatever magnitude the model
-    // picked — and the magnitude-first reduce above would let that outrank a
-    // smaller, already-informative error purely on size. (Which error: one
-    // the appraiser itself signed with a `world`/`other` agency, since the
-    // ceiling reclassified to `Agency::Owner`, those two agencies reach the
-    // record only through the parsed verdict, and no free-readout error
-    // earns a label at all — the point `the_free_readouts_label_is_always_
-    // neutral_and_its_valence_is_not` pins.) `says_more`'s own stated principle ("a label that names
-    // nothing must never mask one that names something") already covers this
-    // in spirit; the reduce above only ever applied it within an exact tie.
-    //
-    // **Deliberately scoped to `Channel::Appraisal`, not every channel.** The
-    // identical shape exists among deterministic channels too
-    // (`ended_on_failed_call` at a fixed `-1.0` outranks any `-0.5`), and
-    // today it buries nothing there, because every free-readout error is
-    // `Neutral`; but that is `of_session`'s free readout — the number
-    // `GOAL-SYSTEM-DESIGN.md`'s 120-session measurement and `HANDOFF.md`'s
-    // "today affect is a constant" are stated against — and a general fix
-    // changes it without either document saying so. The appraiser is what
-    // makes an arbitrarily large label-less `Neutral` a *model's free choice*
-    // on any session rather than one specific counter; narrowing the
-    // correction to the channel that introduces that freedom is what keeps
-    // the free readout's own numbers reproducible while still closing the
-    // hole this channel opened.
-    //
-    // **Not a total guarantee — dormant on an exact sign tie.** An appraiser
-    // `Neutral` (say, `strongly_negative`/`self` at `-1.0`) can tie exactly
-    // with a deterministic `Neutral` of the same magnitude
-    // (`ended_on_failed_call` is also `-1.0`); `says_more` is `0` on both, so
-    // the reduce above keeps whichever was encountered first — the
-    // deterministic error, since `of_session` builds those before
-    // `apply_appraiser` pushes the appraiser's — and `reduced_channel` reads
-    // `Channel::Counter`, so this correction never fires. The record still
-    // reports `Neutral` even if a smaller error elsewhere names something.
-    // Not a regression: a session with no appraiser and this same tie already
-    // reads `Neutral` today, which is exactly the pre-existing behaviour the
-    // scoping above protects — but worth stating plainly rather than letting
-    // "must not bury" above read as unconditional.
-    // Re-runs the *same* magnitude-first reduce over the non-`Neutral`
-    // subset rather than ranking by `says_more` alone — `max_by_key` would
-    // drop magnitude entirely (a `-0.1` `Embarrassment` beating a `-0.9`
-    // `Anger`, abandoning "the most negative error decides" for the very
-    // subset this correction exists to fix) and break ties on record
-    // position, which is the ordering `says_more`'s own tie-break was written
-    // to replace. Reusing the identical reduce keeps the two orderings from
-    // disagreeing depending on which branch ran.
-    let reduced = if reduced == Affect::Neutral && reduced_channel == Channel::Appraisal {
-        negatives
-            .iter()
-            .map(|e| (e.sign, label_of(e)))
-            .filter(|&(_, l)| l != Affect::Neutral)
-            .reduce(|a, b| match a.0.total_cmp(&b.0) {
-                std::cmp::Ordering::Less => a,
-                std::cmp::Ordering::Greater => b,
-                std::cmp::Ordering::Equal if says_more(b.1) > says_more(a.1) => b,
-                std::cmp::Ordering::Equal => a,
-            })
-            .map(|(_, l)| l)
-            .unwrap_or(Affect::Neutral)
-    } else {
-        reduced
-    };
+        .map(|(_, label)| label)
+        .unwrap_or(Affect::Neutral);
 
     // Repeated negative error on one goal, self-agency, of the *same kind*
     // (§6.1: "repeated, one goal, self-agency"). Whole-record by
@@ -770,6 +838,19 @@ pub struct SessionRecords<'a> {
     pub frontdoor_unreadable: bool,
     pub reflexions: &'a [crate::learning::Reflexion],
     pub learning_unreadable: bool,
+    /// The owner's charter, for the sensored-line attribution
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §11.1): an error whose pointer is an
+    /// item a sensored line watches is attributed to that line when the run
+    /// named no goal of its own. `None` when the caller did not load one —
+    /// the live readout, which reads no stores at all — and then nothing is
+    /// attributed, which is the honest reading of "not consulted".
+    pub charter: Option<&'a crate::charter::Charter>,
+    /// The charter exists and did not load, so `charter` is unknown rather
+    /// than absent: every error that could have been attributed stays
+    /// goal-less and the reading is marked partial, on the rule every other
+    /// store here follows. Not set for a missing file — that loads as an
+    /// empty charter and attributes nothing, truthfully.
+    pub charter_unreadable: bool,
 }
 
 impl SessionRecords<'_> {
@@ -779,6 +860,55 @@ impl SessionRecords<'_> {
             || self.questions_unreadable
             || self.frontdoor_unreadable
             || self.learning_unreadable
+            || self.charter_unreadable
+    }
+}
+
+/// The charter as an appraisal store: read best-effort from its one path,
+/// on the terms every other store in [`SessionRecords`] gets. A missing
+/// file is an *empty* charter (loaded, attributes nothing, not partial); a
+/// file that does not parse is *unknown* — `None` with the flag set, so the
+/// reading is marked partial rather than silently un-attributed. The three
+/// offline readers (`sessions appraise`, `tasks set`, `distill`) call this
+/// so the rule is decided once.
+pub fn load_charter() -> (Option<crate::charter::Charter>, bool) {
+    let path = match crate::charter::Charter::default_path() {
+        Ok(p) => p,
+        Err(_) => return (None, true),
+    };
+    match crate::charter::Charter::load(&path) {
+        Ok(charter) => (Some(charter), false),
+        Err(_) => (None, true),
+    }
+}
+
+/// Which sensor kinds a pointer bears on — the attribution join's one table.
+///
+/// **By id, never by delta** (§11.1, containment 6): a `Cite::Draft` is the
+/// draft this run staged and the owner resolved, a `Cite::Question` the
+/// question this run parked, a `Cite::Request` the request this run
+/// triaged, and an intervention pointer is this run's own trace. The
+/// queue-delta arm (`Cite::Setpoint("backlog_delta")`) is a before/after
+/// diff of the stores that credits a run for the owner clearing the outbox
+/// by hand mid-run, so it maps to nothing here on purpose — the attribution
+/// would be exactly the false credit the containment names. Counters name
+/// the run's own record and no store an owner's setpoint watches, and the
+/// appraiser's pointer is the whole run.
+///
+/// **Every `SensorKind` appears on the right-hand side here**, and the
+/// test beside `line_for_sensor` holds that: a kind an owner can write
+/// that no pointer maps to would parse, validate and do nothing, which is
+/// why §11.1's `board_overdue` and `cost` — store- and run-level numbers
+/// with no item a trace touches — are not variants until the readings
+/// phase gives them a reader.
+fn sensor_kinds_for(cite: &Cite) -> &'static [crate::charter::SensorKind] {
+    use crate::charter::SensorKind;
+    match cite {
+        Cite::Draft(_) => &[SensorKind::OutboxAge, SensorKind::OutboxWaiting],
+        Cite::Question(_) => &[SensorKind::QuestionLatency],
+        Cite::Request(_) => &[SensorKind::RequestClosure],
+        Cite::Turn(_) | Cite::Reflexion(_) => &[SensorKind::InterventionRate],
+        Cite::Counter(_) | Cite::Setpoint(_) | Cite::Appraiser => &[],
     }
 }
 
@@ -842,6 +972,33 @@ pub fn of_session(
     end_taint: Option<crate::agent::Taint>,
     created_at: String,
 ) -> Appraisal {
+    // **A charter reference is kept only if the loaded charter contains
+    // the line.** `goals` may carry the model's own `serves:` string
+    // (`for_transcript`, via the plan), and `GoalRef::from_str` constrains
+    // only the kind word — the id is free text a plan could put anything
+    // in. Left alone, `serves: charter:no-such-line` plus one draft sent
+    // unchanged would derive `Pride` on a machine with no charter at all
+    // (found on review), which makes the label a self-report — the one
+    // thing this module says it structurally is not. So a `Charter` id is
+    // checked against `records.charter` here, before any error is built:
+    // named and present, it stays; named and absent, or no charter
+    // consulted (the live readout reads no stores), or the charter
+    // unreadable, it is dropped and the run appraises as goal-less on that
+    // reference. Fail-closed on purpose — unknown is never clean — and
+    // `Task`/`Setpoint` references are untouched: the board owns those
+    // ids and the closure appraisal supplies its own. The attributed
+    // references added below come from the charter itself, so they need
+    // no check.
+    let goals: Vec<GoalRef> = goals
+        .iter()
+        .filter(|g| match g {
+            GoalRef::Charter(id) => records
+                .charter
+                .is_some_and(|c| c.lines().iter().any(|l| &l.id == id)),
+            GoalRef::Task(_) | GoalRef::Setpoint(_) => true,
+        })
+        .cloned()
+        .collect();
     let goal = goals.first().cloned();
     let mut errors = Vec::new();
 
@@ -1218,10 +1375,41 @@ pub fn of_session(
         }
     }
 
+    // --- Attribution: the charter line whose sensor watches what this run touched ---
+    //
+    // §11.1's producer for the charter reference on an ordinary run: a run
+    // whose own trace released a draft, parked a question or triaged a
+    // request is attributed, after the fact, to the highest-ranked line
+    // with a sensor on that store — with no `serves:` and no plan. Only
+    // where the run named no goal of its own: a delegated task run's
+    // errors stay against its task, because the closure appraisal reads
+    // them by that goal. A line so attributed goes on the error and into
+    // `attributed`, never into `goals`: `goals` is what the run *named*,
+    // and the corpus readout counts the two apart so the `serves:` ask and
+    // the attribution — the two producers this sprint ships — each stay
+    // measurable (found on review). Frustration's per-goal repetition reads
+    // `e.goal`, so it sees the attributed line either way. `goal.is_none()`
+    // per error rather than once for the run, so a future arm that fills
+    // its own goal is left alone.
+    let mut attributed: Vec<GoalRef> = Vec::new();
+    if let Some(charter) = records.charter {
+        for e in errors.iter_mut().filter(|e| e.goal.is_none()) {
+            let kinds = sensor_kinds_for(&e.cite);
+            if let Some(line) = charter.line_for_sensor(kinds) {
+                let goal = GoalRef::Charter(line.id.clone());
+                if !attributed.contains(&goal) {
+                    attributed.push(goal.clone());
+                }
+                e.goal = Some(goal);
+            }
+        }
+    }
+
     let mut a = Appraisal {
         id: session_id.to_string(),
         session_id: session_id.to_string(),
-        goals: goals.to_vec(),
+        goals,
+        attributed,
         state: stats.homeostat.clone(),
         errors,
         label: Affect::Neutral,
@@ -1382,19 +1570,21 @@ pub fn live(
 /// [`live`], with the dimensional reading beside the label — what the
 /// surfaces actually show (`docs/APPRAISAL-RESEARCH.md` §3.1).
 ///
-/// **One positive is reachable on a live surface, and no label word is.**
+/// **One positive is reachable on a live surface, and one label word.**
 /// This passes no drafts (below), so a draft sent unchanged — the outbox's
 /// positive — never signs here; the one positive a live run can carry is
 /// the queue-delta arm (`Channel::Commitment`, `+0.5`), read off the run's
 /// own homeostat, which every ordinary front-end records: a run that left
 /// fewer things waiting on the owner than it found shows a grey badge, a
-/// right-hand bar, a `+0.5` in the thread. The free readout's *label* is
-/// still `Neutral` on every error it can build (`Own`/`Owner`,
-/// `controllable` unfilled), so the label word never reaches a live chip
-/// or badge and the voice nudge behind `affect_label` never fires. The
-/// draft positive and the labels live on the offline readers — `sessions
-/// appraise`, the closure appraisal — which read the outbox and can run
-/// the probe.
+/// right-hand bar, a `+0.5` in the thread. Every negative a live run can
+/// build (`Own`/`Owner`, `controllable` unfilled) labels `Distress` since
+/// §17.1 ungated the word, so a ceiling stop or a steer puts `distress`
+/// beside the number on the badge and the chip, and the voice nudge behind
+/// `affect_label` fires on it. `Regret`/`Disappointment`, the draft
+/// positive and `Pride` live on the offline readers — `sessions appraise`,
+/// the closure appraisal — which read the outbox and the charter and can
+/// run the probe; this passes no charter either, so nothing is attributed
+/// here.
 ///
 /// **Accepted, and said here because it is visible:** the delta is a
 /// global before/after diff of the stores, not a join on what this session
@@ -1922,6 +2112,7 @@ mod tests {
             id: "a1".into(),
             session_id: "s1".into(),
             goals: Vec::new(),
+            attributed: Vec::new(),
             state: None,
             errors,
             label: Affect::Neutral,
@@ -1938,18 +2129,60 @@ mod tests {
     }
 
     /// The gap that matters most, stated as a test so it fails when the
-    /// charter lands and nobody wires it: a run that went *well* has a
-    /// recorded positive error and no word for it.
+    /// charter's row is misread: §6 makes `Pride` "positive · self-agency ·
+    /// against a charter line, not a task", so a task well done — or a
+    /// positive nobody attributed — has no word and shows on the valence,
+    /// and only the agent's own positive against a charter line earns one.
     #[test]
-    fn a_run_that_went_well_has_no_label_yet() {
+    fn a_task_well_done_is_not_pride_but_a_charter_line_served_is() {
+        // A delivery pointer: `Pride` is an allow-list on the cite, and the
+        // helper's default counter pointer is exactly what it refuses.
         let good = GoalError {
             channel: Channel::Edit,
-            sign: 1.0,
-            agency: Agency::Own,
+            cite: Cite::Draft("o1".into()),
             ..err(1.0, Agency::Own)
         };
-        assert_eq!(affect_of(&appraisal(vec![good])), Affect::Neutral);
-        assert!(!Affect::Pride.reachable_today());
+        assert_eq!(affect_of(&appraisal(vec![good.clone()])), Affect::Neutral);
+
+        let task = GoalError {
+            goal: Some(GoalRef::Task("t1".into())),
+            ..good.clone()
+        };
+        assert_eq!(affect_of(&appraisal(vec![task])), Affect::Neutral);
+
+        let line = GoalError {
+            goal: Some(GoalRef::Charter("answer-what-waits".into())),
+            ..good.clone()
+        };
+        assert_eq!(affect_of(&appraisal(vec![line.clone()])), Affect::Pride);
+        assert!(Affect::Pride.reachable_today());
+
+        // The owner's positive against a line is not the agent's pride.
+        let owners = GoalError {
+            agency: Agency::Owner,
+            ..line.clone()
+        };
+        assert_eq!(affect_of(&appraisal(vec![owners])), Affect::Neutral);
+
+        // Nor is a positive whose pointer is not a delivery — a counter or
+        // the queue delta — whatever goal it carries.
+        for cite in [
+            Cite::Counter("c".into()),
+            Cite::Setpoint("backlog_delta".into()),
+        ] {
+            let undelivered = GoalError {
+                cite,
+                ..line.clone()
+            };
+            assert_eq!(affect_of(&appraisal(vec![undelivered])), Affect::Neutral);
+        }
+
+        // And the most negative error still decides when there is one:
+        // pride never buries a negative in the same record.
+        assert_eq!(
+            affect_of(&appraisal(vec![line, err(-0.5, Agency::Owner)])),
+            Affect::Distress
+        );
     }
 
     #[test]
@@ -1980,20 +2213,32 @@ mod tests {
         assert_eq!(affect_of(&appraisal(vec![e])), Affect::Embarrassment);
     }
 
-    /// The unmeasured dimension: without a probe verdict there is nothing to
-    /// split regret from disappointment on, so a private self-caused error
-    /// has no word. Both labels are reachable — the probe pass shipped and
-    /// is what fills `controllable` — which `reachable_today` now states;
-    /// what stays true is that the *free* readout alone never produces
-    /// either.
+    /// §17.1's ungating, as the test that failed on the old behaviour: a
+    /// private self- or owner-caused negative with no probe verdict is
+    /// `Distress` — the coarse word — where it used to be `Neutral`, and a
+    /// verdict refines it to regret or disappointment. Both refined labels
+    /// are reachable only through the probe pass, which is what fills
+    /// `controllable`; the *free* readout alone never produces either.
     #[test]
-    fn without_a_probe_verdict_a_private_self_caused_error_has_no_word() {
+    fn without_a_probe_verdict_a_private_error_is_distress_until_a_probe_refines_it() {
         assert_eq!(
             affect_of(&appraisal(vec![err(-1.0, Agency::Own)])),
-            Affect::Neutral
+            Affect::Distress
         );
+        assert_eq!(
+            affect_of(&appraisal(vec![err(-1.0, Agency::Owner)])),
+            Affect::Distress
+        );
+        assert!(Affect::Distress.reachable_today());
         assert!(Affect::Regret.reachable_today());
         assert!(Affect::Disappointment.reachable_today());
+
+        // An owner-agency error a probe marks controllable has no honest
+        // refined word (`apply_probe` never produces the pairing), so it
+        // stays the coarse one rather than inventing a precedence.
+        let mut owner_could = err(-1.0, Agency::Owner);
+        owner_could.controllable = Some(true);
+        assert_eq!(affect_of(&appraisal(vec![owner_could])), Affect::Distress);
 
         // And with a verdict, both are live — the probe pass is what pays
         // for one.
@@ -2110,7 +2355,9 @@ mod tests {
     #[test]
     fn errors_with_no_goal_never_add_up_to_frustration() {
         let two = vec![err(-1.0, Agency::Own), err(-1.0, Agency::Own)];
-        assert_eq!(affect_of(&appraisal(two)), Affect::Neutral);
+        // Each is a word on its own now; together they are still not a
+        // repetition on one goal.
+        assert_eq!(affect_of(&appraisal(two)), Affect::Distress);
     }
 
     /// Two errors of equal weight, one of which got out. The first tie-break
@@ -2146,7 +2393,7 @@ mod tests {
     }
 
     #[test]
-    fn only_five_labels_are_reachable_and_the_rest_say_why() {
+    fn only_seven_labels_are_reachable_and_the_rest_say_why() {
         // Honest about what can and cannot be checked here: without a
         // variant-enumerating macro there is no assertion over `ALL` that
         // notices a variant the list forgot — a length check is a tautology
@@ -2165,8 +2412,27 @@ mod tests {
         }
         assert_eq!(
             Affect::ALL.iter().filter(|a| a.reachable_today()).count(),
-            5
+            7
         );
+        // The residue split every variant has to answer: the two words that
+        // are a verdict with nothing to put on a board, the two positive
+        // words, and everything else.
+        for a in [
+            Affect::Neutral,
+            Affect::Distress,
+            Affect::Pride,
+            Affect::Excitement,
+        ] {
+            assert!(!a.names_residue(), "{a:?} names no residue");
+        }
+        for a in Affect::ALL {
+            if !matches!(
+                a,
+                Affect::Neutral | Affect::Distress | Affect::Pride | Affect::Excitement
+            ) {
+                assert!(a.names_residue(), "{a:?}");
+            }
+        }
     }
 
     /// Exposure lost its only producer when the `SentEdited` arm was made
@@ -2210,16 +2476,17 @@ mod tests {
         assert_ne!(a.label, Affect::Embarrassment);
     }
 
-    /// The free readout's whole label range, pinned. `of_session` with no
-    /// probe verdict reduces every negative it can assemble to `Neutral`
-    /// (invisible `Own`/`Owner`, `controllable` unfilled), and no counter
-    /// kind fires twice in one session, so `Frustration`'s repetition cannot
-    /// occur — it is probe-gated, not deterministic, which this would catch
-    /// changing silently in either direction. The *valence* is what varies
-    /// across these fixtures, and the second assertion pins that it does:
-    /// a label that says nothing must not mean a reading that says nothing.
+    /// The free readout's whole negative label range, pinned. `of_session`
+    /// with no probe verdict labels every negative it can assemble
+    /// `Distress` (invisible `Own`/`Owner`, `controllable` unfilled) — never
+    /// `Regret` or `Disappointment`, which are the probe's, and never
+    /// `Frustration`, since no counter kind fires twice in one session. The
+    /// old pin said `Neutral` here on every cause; §17.1's ungating is what
+    /// this test failed on, and it would catch the range moving again in
+    /// either direction. The *valence* still varies across these fixtures,
+    /// and the second assertion pins that it does.
     #[test]
-    fn the_free_readouts_label_is_always_neutral_and_its_valence_is_not() {
+    fn the_free_readouts_label_is_distress_on_every_negative_and_never_a_probe_word() {
         use crate::agent::StopCause;
         let goal = GoalRef::Task("01J8ZK".into());
         let steer = crate::learning::Intervention {
@@ -2275,8 +2542,8 @@ mod tests {
             );
             assert_eq!(
                 a.label,
-                Affect::Neutral,
-                "the free readout produced a label under {cause:?} — a new \
+                Affect::Distress,
+                "the free readout's word moved under {cause:?} — a new \
                  deterministic label; update the module note and \
                  reachable_today's split"
             );
@@ -2352,8 +2619,12 @@ mod tests {
         assert!(a.errors[0].sign > 0.0);
         assert_eq!(a.errors[0].channel, Channel::Edit);
         assert!(a.errors[0].visible, "it went out");
-        // …and still has no word for it, which is the finding above.
+        // …and no word for it without a charter line watching the outbox:
+        // `Pride` is against the charter, not a task, and `built` passes no
+        // charter. `a_sent_draft_attributed_to_a_charter_line_is_pride` is
+        // the other half.
         assert_eq!(a.label, Affect::Neutral);
+        assert!(a.goals.is_empty());
     }
 
     /// The owner's rewrite is what reached the recipient, not mecha's
@@ -2370,7 +2641,7 @@ mod tests {
             !a.errors[0].visible,
             "the owner's words went out, not mecha's mistake"
         );
-        assert_eq!(a.label, Affect::Neutral);
+        assert_eq!(a.label, Affect::Distress, "a verdict, not an exposure");
     }
 
     /// A queue nobody has reached is not a verdict in either direction.
@@ -2399,16 +2670,17 @@ mod tests {
         assert_eq!(a.label, Affect::Neutral);
     }
 
-    /// A ceiling is the owner's own limit, so it is a signed error the
-    /// valence carries and not a label — it used to read `Anger` through
-    /// `Agency::World`, the one non-neutral word a surface ever showed, and
-    /// "somebody else's fault" is the wrong word for a budget you set.
+    /// A ceiling is the owner's own limit, so it is a signed error against
+    /// the owner's agency — it used to read `Anger` through `Agency::World`,
+    /// and "somebody else's fault" is the wrong word for a budget you set.
+    /// It labels `Distress` now (an attributed negative, no probe), never
+    /// `Anger`.
     #[test]
     fn a_ceiling_is_the_owners_limit_and_a_loop_is_the_runs_own_fault() {
         let mut ceiling = stats();
         ceiling.stop_cause = Some(crate::agent::StopCause::MaxTurns);
         let a = built(&ceiling, &[], &[]);
-        assert_eq!(a.label, Affect::Neutral);
+        assert_eq!(a.label, Affect::Distress);
         assert_eq!(a.errors.len(), 1);
         assert_eq!(a.errors[0].agency, Agency::Owner);
         assert_eq!(a.errors[0].sign, -0.5);
@@ -2576,7 +2848,7 @@ mod tests {
 
         let mut a = appraisal(vec![e]);
         relabel(&mut a);
-        assert_eq!(a.label, Affect::Neutral);
+        assert_eq!(a.label, Affect::Distress, "the coarse word, unrefined");
     }
 
     /// The magnitude is evidence the probe does not speak to, so it is left
@@ -2789,17 +3061,15 @@ mod tests {
         );
     }
 
-    /// The bug the review found on PR #96, round 3. `apply_appraiser` starts
-    /// `visible`/`controllable` conservative, so a `self`/`owner` verdict
-    /// reduces to `Neutral` under `label_of` however large its magnitude —
-    /// and before the fix above, the plain magnitude reduce let that `Neutral`
-    /// out-rank a smaller but *named* error, discarding the fact that
-    /// something else in the same record actually said something. Reproduces
-    /// the reviewer's own trace: a `MaxTurns` ceiling (`-0.5`, `Anger`)
-    /// alongside a `strongly_negative`/`self` appraiser verdict (`-1.0`,
-    /// reduces to `Neutral`) must still read `Anger`.
+    /// The correction this replaced (PR #96, round 3) re-ran the reduce when
+    /// a large appraiser verdict reduced to `Neutral` and buried a smaller
+    /// error that named something. §17.1 removed the case: a `self`/`owner`
+    /// verdict is `Distress` now — a word — so the plain magnitude-first
+    /// reduce is the whole rule again, and a `-1.0` appraiser `Distress`
+    /// beats a `-0.5` ceiling `Anger` because it *is* the more negative
+    /// error, not because a label-less one won on size.
     #[test]
-    fn a_large_neutral_appraiser_error_does_not_bury_a_smaller_named_one() {
+    fn an_appraiser_self_verdict_is_a_word_and_the_most_negative_still_decides() {
         let ceiling = GoalError {
             cite: Cite::Counter("stop_cause".into()),
             ..err(-0.5, Agency::World)
@@ -2813,102 +3083,21 @@ mod tests {
                 reasoning: None,
             },
         );
-        assert_eq!(
-            a.label,
-            Affect::Anger,
-            "a bigger but label-less error must not mask a smaller one that names something"
-        );
-    }
-
-    /// The correction above is scoped to `Channel::Appraisal` on purpose:
-    /// the identical shape from deterministic channels alone (no appraiser
-    /// involved) is the free readout's own pre-existing behaviour, and the
-    /// 120-session measurement recorded in `GOAL-SYSTEM-DESIGN.md` was taken
-    /// against it. Widening the fix would move that number silently.
-    #[test]
-    fn the_same_shape_from_deterministic_channels_alone_is_unchanged() {
-        let ceiling = GoalError {
+        assert_eq!(a.label, Affect::Distress);
+        // And the smaller named error wins when it is the more negative one.
+        let mut b = appraisal(vec![GoalError {
             cite: Cite::Counter("stop_cause".into()),
-            ..err(-0.5, Agency::World)
-        };
-        let ended_on_failed_call = GoalError {
-            cite: Cite::Counter("ended_on_failed_call".into()),
-            ..err(-1.0, Agency::Own)
-        };
-        assert_eq!(
-            affect_of(&appraisal(vec![ceiling, ended_on_failed_call])),
-            Affect::Neutral,
-            "no Channel::Appraisal error is present, so the free readout's \
-             pre-existing reduce must decide exactly as it always has"
-        );
-    }
-
-    /// The gap the correction's own doc comment names: an exact sign tie
-    /// between an appraiser `Neutral` and a deterministic one is dormant,
-    /// because `reduced_channel` reads whichever tied error came first
-    /// (`of_session`'s deterministic errors, built before `apply_appraiser`
-    /// runs), not `Channel::Appraisal`. Pinned as expected rather than left
-    /// to be rediscovered as a surprise: this is the pre-existing behaviour
-    /// the scoping protects, not a new hole.
-    #[test]
-    fn an_exact_tie_between_an_appraiser_neutral_and_a_deterministic_one_is_dormant() {
-        let ceiling = GoalError {
-            cite: Cite::Counter("stop_cause".into()),
-            ..err(-0.5, Agency::World)
-        }; // Anger, but not the most negative error present
-        let ended_on_failed_call = GoalError {
-            cite: Cite::Counter("ended_on_failed_call".into()),
-            ..err(-1.0, Agency::Own)
-        }; // reduces to Neutral, ties with the appraiser's -1.0 below
-        let mut a = appraisal(vec![ceiling, ended_on_failed_call]);
+            ..err(-1.0, Agency::World)
+        }]);
         apply_appraiser(
-            &mut a,
+            &mut b,
             AppraiserVerdict {
-                sign: Some(-1.0),
+                sign: Some(-0.5),
                 agency: Agency::Own,
                 reasoning: None,
             },
         );
-        assert_eq!(
-            a.label,
-            Affect::Neutral,
-            "an exact-magnitude tie with a deterministic Neutral keeps the \
-             correction dormant, exactly as documented above"
-        );
-    }
-
-    /// The correction re-runs the magnitude-first reduce rather than ranking
-    /// by `says_more` alone: a small `Embarrassment` must not beat a larger
-    /// `Anger` just because it names something more specific. Constructed so
-    /// a `max_by_key(says_more)` implementation picks the wrong one —
-    /// `Embarrassment` outranks `Anger` on informativeness alone — while the
-    /// magnitude-first reduce picks the more negative `Anger` instead.
-    #[test]
-    fn the_correction_still_picks_the_most_negative_label_not_the_most_informative_one() {
-        let mut a = appraisal(vec![
-            GoalError {
-                cite: Cite::Counter("stop_cause".into()),
-                visible: true,
-                ..err(-0.1, Agency::Owner)
-            }, // label_of -> Embarrassment
-            GoalError {
-                cite: Cite::Counter("tool_errors".into()),
-                ..err(-0.9, Agency::Other)
-            }, // label_of -> Anger, more negative than the Embarrassment above
-        ]);
-        apply_appraiser(
-            &mut a,
-            AppraiserVerdict {
-                sign: Some(-1.0),
-                agency: Agency::Own,
-                reasoning: None,
-            }, // reduces to Neutral and wins the initial reduce at -1.0
-        );
-        assert_eq!(
-            a.label,
-            Affect::Anger,
-            "the most negative non-Neutral label must still win, not the most informative one"
-        );
+        assert_eq!(b.label, Affect::Anger);
     }
 
     #[test]
@@ -3038,23 +3227,23 @@ mod tests {
         assert_eq!(live("s1", &outcome, &convo, 0), Affect::Neutral);
     }
 
-    /// A run the harness cut short (`MaxTurns`) labels `Neutral` — the
-    /// owner's limit, `controllable` unfilled — and reads `−0.5` on the
-    /// valence. This is the one condition reachable without any goal at
-    /// all, so it is what a manual TUI/web check should force to see the
-    /// badge: the badge is the number now, not a word.
+    /// A run the harness cut short (`MaxTurns`) labels `Distress` — the
+    /// owner's limit, `controllable` unfilled, a word since §17.1 — and
+    /// reads `−0.5` on the valence. This is the one condition reachable
+    /// without any goal at all, so it is what a manual TUI/web check should
+    /// force to see the badge: the number, with the word beside it.
     #[test]
-    fn a_run_cut_short_by_a_ceiling_is_silent_in_label_and_signed_in_valence() {
+    fn a_run_cut_short_by_a_ceiling_labels_distress_and_signs_the_valence() {
         let mut outcome = bare_outcome();
         outcome.stop_cause = crate::agent::StopCause::MaxTurns;
         outcome.exhausted = true;
         let convo = crate::agent::Conversation::default();
         let r = live_readout("s1", &outcome, &convo, 0);
-        assert_eq!(r.label, Affect::Neutral);
+        assert_eq!(r.label, Affect::Distress);
         assert_eq!(r.valence.compact(), "\u{2212}0.5");
         assert!(!r.valence.partial);
         assert!(!r.is_silent());
-        assert_eq!(live("s1", &outcome, &convo, 0), Affect::Neutral);
+        assert_eq!(live("s1", &outcome, &convo, 0), Affect::Distress);
     }
 
     #[test]
@@ -3237,14 +3426,15 @@ mod tests {
         let convo = crate::agent::Conversation::from(messages);
 
         // Without a compaction, the steer's `-1.0` outranks the ceiling's
-        // `-0.5` in `affect_of`'s magnitude-first reduce and masks it down
-        // to `Neutral` — the pre-existing, correct behaviour for an
-        // uncompacted run, included here so the next assertion is a
-        // contrast: the same fixture, only `compactions` differs.
+        // `-0.5` in `affect_of`'s magnitude-first reduce; both are
+        // `Distress` since §17.1, so the word is the same either way and the
+        // contrast the next assertion draws is the label going *silent* on
+        // a compaction, not louder: the same fixture, only `compactions`
+        // differs.
         let mut clean = bare_outcome();
         clean.stop_cause = crate::agent::StopCause::MaxTurns;
         let uncompacted = live_readout("s1", &clean, &convo, 0);
-        assert_eq!(uncompacted.label, Affect::Neutral);
+        assert_eq!(uncompacted.label, Affect::Distress);
         assert_eq!(
             uncompacted.valence.negatives, 2,
             "the steer and the ceiling are both signed on an uncompacted run"
@@ -3275,14 +3465,14 @@ mod tests {
     /// test pins that it — and only it — is reachable. When either fails,
     /// the docs are stale — update them, not this.
     #[test]
-    fn the_live_readout_is_neutral_only_and_negative_only_without_a_queue_delta() {
+    fn the_live_readouts_only_word_is_distress_and_it_signs_no_positive_without_a_queue_delta() {
         let mut outcome = bare_outcome();
         outcome.stop_cause = crate::agent::StopCause::MaxTurns;
         outcome.ended_on_failed_call = true;
         outcome.boredom_notices = 2;
         let convo = crate::agent::Conversation::default();
         let r = live_readout("s1", &outcome, &convo, 0);
-        assert_eq!(r.label, Affect::Neutral);
+        assert_eq!(r.label, Affect::Distress);
         assert_eq!((r.valence.positives, r.valence.positive), (0, 0.0));
         assert!(r.valence.negatives >= 2);
     }
@@ -3306,6 +3496,417 @@ mod tests {
             "the badge, the bar and the thread line all show it"
         );
         assert_eq!(r.valence.compact(), "+0.5");
+    }
+
+    // --- the sensored-line attribution (§11.1) -------------------------------
+
+    /// A charter whose top line watches the outbox by age, a second by
+    /// count, and a third the question store.
+    fn charter_with_sensors() -> crate::charter::Charter {
+        crate::charter::Charter::parse(
+            r#"
+[[line]]
+id = "answer-what-waits"
+text = "Keep what waits on me short."
+[line.sensor]
+kind = "outbox_age"
+setpoint = "24h"
+
+[[line]]
+id = "few-drafts"
+text = "Few drafts at once."
+[line.sensor]
+kind = "outbox_waiting"
+setpoint = "3"
+
+[[line]]
+id = "answer-my-questions"
+text = "A question should not go unanswered."
+[line.sensor]
+kind = "question_latency"
+setpoint = "1d"
+
+[[line]]
+id = "tell-the-truth-early"
+text = "Tell me the truth early."
+"#,
+        )
+        .unwrap()
+    }
+
+    /// Every kind an owner can write does something: each `SensorKind` is
+    /// on the right-hand side of `sensor_kinds_for` for some pointer. A kind
+    /// that parsed, validated its setpoint and mapped to nothing would be
+    /// the `deny_unknown_fields` failure one field down — the owner writes
+    /// it, believes it did something, and never finds out (found on review,
+    /// when `board_overdue` and `cost` were exactly that).
+    #[test]
+    fn every_sensor_kind_is_reached_by_some_pointer() {
+        let every_cite = [
+            Cite::Turn(0),
+            Cite::Draft("o".into()),
+            Cite::Counter("c".into()),
+            Cite::Setpoint("s".into()),
+            Cite::Reflexion("r".into()),
+            Cite::Question("q".into()),
+            Cite::Request(1),
+            Cite::Appraiser,
+        ];
+        for kind in crate::charter::SensorKind::ALL {
+            assert!(
+                every_cite
+                    .iter()
+                    .any(|c| sensor_kinds_for(c).contains(&kind)),
+                "{kind:?} is a kind an owner can write that no pointer attributes to"
+            );
+        }
+    }
+
+    /// The producer §11.1 promised for the charter reference on an ordinary
+    /// run: a rejected draft, with no `serves:` and no plan, is attributed
+    /// to the highest-ranked line whose sensor watches the outbox — and
+    /// that line joins `goals`, so the corpus's "named a goal" question
+    /// sees it. Fails on the old behaviour, where `goal` stayed `None` on
+    /// every appraised session.
+    #[test]
+    fn a_rejected_draft_is_attributed_to_the_highest_ranked_line_watching_the_outbox() {
+        let charter = charter_with_sensors();
+        let rejected = draft("o1", "rejected", false);
+        let a = of_session(
+            "s1",
+            &stats(),
+            &[],
+            &[],
+            SessionRecords {
+                drafts: &[&rejected],
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        let line = GoalRef::Charter("answer-what-waits".into());
+        assert_eq!(a.errors.len(), 1);
+        assert_eq!(
+            a.errors[0].goal,
+            Some(line.clone()),
+            "rank decides between two outbox lines"
+        );
+        assert_eq!(a.attributed, vec![line]);
+        assert!(a.goals.is_empty(), "attribution is not naming");
+        assert_eq!(a.label, Affect::Distress);
+        assert!(!a.partial);
+    }
+
+    /// `Pride`'s first producer: a draft sent unchanged is the agent's own
+    /// positive, and attributed to a charter line it is §6's row exactly —
+    /// "positive · self-agency · against a charter line, not a task".
+    #[test]
+    fn a_sent_draft_attributed_to_a_charter_line_is_pride() {
+        let charter = charter_with_sensors();
+        let sent = draft("o1", "sent", false);
+        let a = of_session(
+            "s1",
+            &stats(),
+            &[],
+            &[],
+            SessionRecords {
+                drafts: &[&sent],
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        assert_eq!(a.label, Affect::Pride);
+        assert_eq!(Valence::of(&a).compact(), "+1.0");
+    }
+
+    /// The label must not be derivable from a string the model wrote
+    /// (found on review): `serves: charter:no-such-line` plus one clean
+    /// send used to reach `Pride` with no charter on the machine, because
+    /// `GoalRef::from_str` constrains only the kind word. A charter
+    /// reference survives into the record only if the loaded charter
+    /// contains the line; absent, unreadable or not consulted, it is
+    /// dropped and the run appraises goal-less on it. `Task` references
+    /// are the board's and pass through.
+    #[test]
+    fn a_charter_reference_the_loaded_charter_does_not_contain_is_dropped() {
+        let sent = draft("o1", "sent", false);
+        let fabricated = GoalRef::Charter("no-such-line".into());
+        // No charter consulted at all — the live readout's shape.
+        let a = of_session(
+            "s1",
+            &stats(),
+            std::slice::from_ref(&fabricated),
+            &[],
+            SessionRecords {
+                drafts: &[&sent],
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        assert_eq!(
+            a.label,
+            Affect::Neutral,
+            "no Pride from a model-authored id"
+        );
+        assert!(a.goals.is_empty());
+        assert_eq!(a.errors[0].goal, None);
+
+        // A charter that does not contain the line: same answer.
+        let charter = charter_with_sensors();
+        let a = of_session(
+            "s1",
+            &stats(),
+            std::slice::from_ref(&fabricated),
+            &[],
+            SessionRecords {
+                drafts: &[&sent],
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        // The fabricated reference is gone; the sensored line then
+        // attributes the draft, which is the charter's own reference.
+        assert!(a.goals.is_empty());
+        assert_eq!(
+            a.attributed,
+            vec![GoalRef::Charter("answer-what-waits".into())]
+        );
+
+        // A line the charter does contain, named by the plan, is kept —
+        // the `serves:` producer works when it tells the truth.
+        let real = GoalRef::Charter("tell-the-truth-early".into());
+        let a = of_session(
+            "s1",
+            &stats(),
+            std::slice::from_ref(&real),
+            &[],
+            SessionRecords {
+                drafts: &[&sent],
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        assert_eq!(a.goals, vec![real.clone()]);
+        assert_eq!(a.errors[0].goal, Some(real));
+        assert_eq!(a.label, Affect::Pride);
+
+        // A task reference passes through unchecked: the board owns it.
+        let task = GoalRef::Task("t1".into());
+        let a = of_session(
+            "s1",
+            &stats(),
+            std::slice::from_ref(&task),
+            &[],
+            SessionRecords::default(),
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        assert_eq!(a.goals, vec![task]);
+    }
+
+    /// `Pride` is a *delivery* word (found on review): a run that named a
+    /// real charter line still earns nothing from the queue-delta arm — the
+    /// owner emptying the outbox by hand mid-run is a level difference, not
+    /// a delivery — nor from the quarantined appraiser's own
+    /// `strongly_positive`/`self` verdict, which is a self-report. Both
+    /// read `Pride` before the arm became an allow-list on the pointer.
+    #[test]
+    fn pride_needs_a_delivery_not_a_queue_delta_or_an_appraiser_verdict() {
+        let charter = charter_with_sensors();
+        let real = GoalRef::Charter("tell-the-truth-early".into());
+        let mut s = stats();
+        s.homeostat = Some(crate::homeostat::Homeostat {
+            backlog_delta: Some(crate::backlog::BacklogDelta {
+                outbox: Some(-1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let a = of_session(
+            "s1",
+            &s,
+            std::slice::from_ref(&real),
+            &[],
+            SessionRecords {
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        assert_eq!(a.errors.len(), 1, "the queue delta signed, and only it");
+        assert_eq!(a.errors[0].goal, Some(real.clone()));
+        assert_eq!(
+            a.label,
+            Affect::Neutral,
+            "a level difference is not a delivery"
+        );
+        assert_eq!(Valence::of(&a).compact(), "+0.5", "the number still shows");
+
+        let mut clean = of_session(
+            "s1",
+            &stats(),
+            std::slice::from_ref(&real),
+            &[],
+            SessionRecords {
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        apply_appraiser(
+            &mut clean,
+            AppraiserVerdict {
+                sign: Some(1.0),
+                agency: Agency::Own,
+                reasoning: None,
+            },
+        );
+        assert_eq!(
+            clean.errors.len(),
+            1,
+            "the appraiser's positive is on the record"
+        );
+        assert_eq!(
+            clean.label,
+            Affect::Neutral,
+            "a model's own verdict is not a delivery"
+        );
+    }
+
+    /// A run that named its own goal keeps it: the closure appraisal reads
+    /// a delegated run's errors by its task, and attribution fills a gap
+    /// rather than overriding a statement.
+    #[test]
+    fn a_named_goal_is_never_overridden_by_attribution() {
+        let charter = charter_with_sensors();
+        let task = GoalRef::Task("t1".into());
+        let rejected = draft("o1", "rejected", false);
+        let a = of_session(
+            "s1",
+            &stats(),
+            std::slice::from_ref(&task),
+            &[],
+            SessionRecords {
+                drafts: &[&rejected],
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        assert_eq!(a.errors[0].goal, Some(task.clone()));
+        assert_eq!(a.goals, vec![task]);
+    }
+
+    /// Each pointer kind joins its own store, and the queue-delta arm joins
+    /// nothing — by id, never by delta (containment 6): a level difference
+    /// credits a run for the owner clearing the outbox by hand, and
+    /// attributing it to a line would make that false credit a `Pride`.
+    #[test]
+    fn attribution_is_by_the_pointers_store_and_never_by_the_queue_delta() {
+        let charter = charter_with_sensors();
+        let abandoned = question("q1", "s1", crate::questions::ABANDONED);
+        let mut s = stats();
+        s.stop_cause = Some(crate::agent::StopCause::MaxTurns);
+        s.homeostat = Some(crate::homeostat::Homeostat {
+            backlog_delta: Some(crate::backlog::BacklogDelta {
+                outbox: Some(-1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let a = of_session(
+            "s1",
+            &s,
+            &[],
+            &[],
+            SessionRecords {
+                questions: std::slice::from_ref(&abandoned),
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        let by_cite = |a: &Appraisal, f: fn(&Cite) -> bool| {
+            a.errors.iter().find(|e| f(&e.cite)).unwrap().goal.clone()
+        };
+        assert_eq!(
+            by_cite(&a, |c| matches!(c, Cite::Question(_))),
+            Some(GoalRef::Charter("answer-my-questions".into()))
+        );
+        assert_eq!(
+            by_cite(&a, |c| matches!(c, Cite::Setpoint(_))),
+            None,
+            "the queue delta is a before/after diff, not an item this run touched"
+        );
+        assert_eq!(
+            by_cite(&a, |c| matches!(c, Cite::Counter(_))),
+            None,
+            "a counter names the run's own record, not a store a line watches"
+        );
+        assert!(a.goals.is_empty());
+        assert_eq!(
+            a.attributed,
+            vec![GoalRef::Charter("answer-my-questions".into())]
+        );
+    }
+
+    /// No charter, or a charter with no sensors, attributes nothing — and
+    /// says nothing about being partial, because there was nothing to read.
+    /// An unreadable charter is the other case: unknown, not absent, so the
+    /// reading is marked partial on the rule every other store follows.
+    #[test]
+    fn no_sensored_line_attributes_nothing_and_an_unreadable_charter_is_partial() {
+        let rejected = draft("o1", "rejected", false);
+        let plain =
+            crate::charter::Charter::parse("[[line]]\nid = \"a\"\ntext = \"one\"\n").unwrap();
+        for charter in [None, Some(&plain)] {
+            let a = of_session(
+                "s1",
+                &stats(),
+                &[],
+                &[],
+                SessionRecords {
+                    drafts: &[&rejected],
+                    charter,
+                    ..Default::default()
+                },
+                Some(crate::agent::Taint::default()),
+                "2026-09-04T00:00:00Z".into(),
+            );
+            assert_eq!(a.errors[0].goal, None);
+            assert!(a.goals.is_empty());
+            assert!(a.attributed.is_empty());
+            assert!(!a.partial);
+        }
+        let a = of_session(
+            "s1",
+            &stats(),
+            &[],
+            &[],
+            SessionRecords {
+                drafts: &[&rejected],
+                charter_unreadable: true,
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        assert!(
+            a.partial,
+            "an unreadable charter is a finding, not an empty one"
+        );
     }
 
     // --- phase B channels ----------------------------------------------------

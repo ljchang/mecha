@@ -44,8 +44,21 @@ const want = marked[1];
 const produced = serialize('# What mecha is for, most important first.\n#\n# Order is rank.', [
   { id: 'say-no-early', text: 'A refusal on Monday is a kindness.' },
   { id: 'quote-and-break', text: 'She said "no" early.\nAnd meant it.' },
+  // The sensor rides through a save exactly as the server served it — the
+  // owner's own setpoint spelling under a `[line.sensor]` table. A
+  // serialiser that dropped it would delete the owner's sensor on the next
+  // re-rank, silently (GOAL-SYSTEM-DESIGN §11.1).
+  { id: 'answer-what-waits', text: 'Keep what waits on me short.', sensor: { kind: 'outbox_age', setpoint: '24h' } },
 ]);
 eq(produced, want, 'the serialiser no longer emits the document charter.rs reads back');
+
+// A line whose `sensor` is null or absent writes no table at all, so a
+// charter with no sensors serialises exactly as it did before sensors existed.
+eq(
+  serialize('', [{ id: 'a', text: 't', sensor: null }, { id: 'b', text: 'u' }]),
+  '[[line]]\nid = "a"\ntext = "t"\n\n[[line]]\nid = "b"\ntext = "u"\n',
+  'no sensor, no table'
+);
 
 // --- escaping -------------------------------------------------------------
 eq(esc('plain'), '"plain"', 'a plain string');

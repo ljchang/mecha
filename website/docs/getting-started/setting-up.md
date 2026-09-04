@@ -272,6 +272,13 @@ Order is rank and there is no priority field: when two lines conflict, the
 higher one wins outright, and no amount of urgency on a lower line outranks a
 higher one. Re-ranking is moving a line.
 
+A line may also carry a `[line.sensor]` table — a `kind` from a closed set and
+a `setpoint` you wrote, such as `kind = "outbox_age"` with `setpoint = "24h"` —
+so that runs which touch what the sensor watches are appraised against that
+line. The template you are handed shows one commented out;
+[the appraisal page](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words)
+lists the kinds and their units.
+
 `mecha charter edit` creates a commented template if you have no file yet and
 hands it to `$EDITOR` — the same bytes the TUI's `/charter` and the web settings
 page hand out. **mecha never writes a priority.** The template is comments only,

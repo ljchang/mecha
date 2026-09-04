@@ -72,7 +72,15 @@
     const split = splitHeader(raw);
     header = split.header;
     blocked = split.blocked;
-    lines = (c.lines ?? []).map((l) => ({ uid: ++uidSeq, id: l.id, text: l.text }));
+    // `sensor` is carried, never edited here: the list editor re-ranks and
+    // rewrites text, and a save must write the owner's sensor back exactly
+    // as it was read (see `serialize`). Editing one is the TOML editor's.
+    lines = (c.lines ?? []).map((l) => ({
+      uid: ++uidSeq,
+      id: l.id,
+      text: l.text,
+      sensor: l.sensor ? { kind: l.sensor.kind, setpoint: l.sensor.setpoint } : null,
+    }));
     original = snapshot();
   }
 
@@ -94,7 +102,8 @@
 
   const serialize = () => toToml(header, lines);
 
-  const snapshot = () => JSON.stringify(lines.map((l) => [l.id, l.text]));
+  const snapshot = () =>
+    JSON.stringify(lines.map((l) => [l.id, l.text, l.sensor?.kind ?? null, l.sensor?.setpoint ?? null]));
 
   // Reads `lines`, writes neither of the values it sets, so it cannot
   // re-trigger itself. `save()` arms `confirming` without touching `lines`,
@@ -162,7 +171,7 @@
   });
 
   function addLine() {
-    const line = { uid: ++uidSeq, id: '', text: '' };
+    const line = { uid: ++uidSeq, id: '', text: '', sensor: null };
     lines = [...lines, line];
     editing = line.uid;
     savedNote = null;
@@ -453,6 +462,16 @@
             {line.text || 'Empty — tap to write it.'}
           </button>
         {/if}
+        {#if line.sensor}
+          <!-- Read-only here: the owner's own setpoint, in their spelling,
+               kept across a save by `serialize`. Changing or adding one is
+               the TOML editor's job — a form for it would be this page
+               proposing a number, and the current reading beside it is a
+               later phase (§11.1 containment 5). -->
+          <div class="sensor" title="an observable mecha reads from its own stores; runs that touch what it watches are attributed to this line — the reading never enters a prompt">
+            sensor · {line.sensor.kind} · setpoint {line.sensor.setpoint} · edit as TOML to change
+          </div>
+        {/if}
       </div>
     {/each}
   </div>
@@ -621,6 +640,12 @@
     text-align: left;
     cursor: text;
     color: var(--text);
+  }
+  .sensor {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted, #8a8f98);
+    margin-top: 4px;
   }
   .idbtn {
     font-family: var(--mono);

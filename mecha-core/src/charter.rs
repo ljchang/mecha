@@ -88,20 +88,260 @@ pub const CHARTER_CHAR_BUDGET: usize = 2000;
 
 /// One standing priority.
 ///
+/// Built from a [`RawLine`] by [`Charter::validate`], never deserialised
+/// directly: the sensor's setpoint is typed by its kind, and that check has
+/// to run against the kind beside it, which `serde` cannot express per field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharterLine {
+    /// What a [`crate::goal::GoalRef::Charter`] names. Unique within a
+    /// charter — see [`Charter::load`].
+    pub id: String,
+    pub text: String,
+    /// An observable the harness reads from its own stores, with a setpoint
+    /// the owner wrote — `docs/GOAL-SYSTEM-DESIGN.md` §11.1. Most lines have
+    /// none, and a line without one is not the lesser kind (containment 4):
+    /// it still counts through the task tier and the closure appraisal.
+    pub sensor: Option<Sensor>,
+}
+
+/// The `[[line]]` table as the file spells it.
+///
 /// **Denies unknown fields**, unlike [`crate::skill::Skill`]'s frontmatter —
 /// that leniency is for portability across harnesses that might author a
 /// `SKILL.md`, and nothing else authors a `charter.toml`. A stray `priority`
 /// or `rank` key is exactly the field §11 says there deliberately is none of;
 /// silently dropping it would let an owner write one, believe it did
 /// something, and never find out it didn't.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CharterLine {
-    /// What a [`crate::goal::GoalRef::Charter`] names. Unique within a
-    /// charter — see [`Charter::load`].
+pub struct RawLine {
     pub id: String,
     pub text: String,
+    #[serde(default)]
+    pub sensor: Option<RawSensor>,
 }
+
+/// The `[line.sensor]` table as the file spells it: a kind word from the
+/// closed set, and a setpoint the kind decides how to read.
+///
+/// `setpoint` accepts a TOML string or a bare number, because `setpoint = 3`
+/// is how an owner naturally writes a count; both are kept as the owner's
+/// own spelling and typed by [`SensorKind::parse_setpoint`] at validation.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawSensor {
+    pub kind: SensorKind,
+    pub setpoint: RawSetpoint,
+}
+
+/// A setpoint before its kind has typed it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum RawSetpoint {
+    Text(String),
+    Integer(i64),
+    Float(f64),
+}
+
+impl RawSetpoint {
+    /// The owner's spelling, as one string. A number is rendered the way
+    /// TOML would print it, so the web editor's round trip (`setpoint = 3`
+    /// in, `setpoint = "3"` out) changes the quoting and nothing else.
+    fn text(&self) -> String {
+        match self {
+            RawSetpoint::Text(s) => s.trim().to_string(),
+            RawSetpoint::Integer(n) => n.to_string(),
+            RawSetpoint::Float(f) => f.to_string(),
+        }
+    }
+}
+
+/// What a sensored line watches — **a closed set the owner picks from**,
+/// never an expression, a command or a path, so the file stays a wire format
+/// `Charter::load` can refuse exactly as it refuses an unknown key. Every
+/// kind here is an observable a store already holds *with an id per item*
+/// that a run's own trace can touch, because attribution
+/// (`appraisal::of_session`) joins on that id, never on a before/after delta
+/// of the store (§11.1, containment 6) — and **every kind here does
+/// something today**: each is a key in `sensor_kinds_for`'s table. §11.1
+/// also names `board_overdue` and `cost`, which are store- and run-level
+/// numbers with no item a trace touches; they can only ever be *reading*
+/// sensors, and the readings are the section's unbuilt phase. They are
+/// deliberately not variants yet: a kind that parses, validates its setpoint
+/// and then does nothing is the failure `RawLine`'s `deny_unknown_fields`
+/// exists to refuse, one field down (found on review). They join when a
+/// reader does.
+///
+/// A kind this binary does not know is a load error, which is the
+/// fail-closed direction the charter already has. On an older binary that
+/// is **not** a startup refusal — `setup.rs` catches every `Charter::load`
+/// error, prints one stderr line (covered by the TUI's alternate screen) and
+/// runs *un-chartered*, so a sensored line authored here silently costs a
+/// machine on the previous release its whole charter until `mecha doctor`
+/// reports it, which it does at the severity it deserves. The fix is the
+/// `update` skill, not a lenient parser; §11.1's containment 7 says
+/// "refusal" and is corrected here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SensorKind {
+    /// How many outbox drafts are waiting on the owner. A count.
+    OutboxWaiting,
+    /// How long a staged draft has sat unreviewed. A duration.
+    OutboxAge,
+    /// How long a parked question waits for the owner's answer. A duration.
+    QuestionLatency,
+    /// How long a front-door request stays open before it is closed or
+    /// answered. A duration.
+    RequestClosure,
+    /// The share of runs in which the owner had to step in. A rate.
+    InterventionRate,
+}
+
+/// The unit a kind's setpoint is read in — fixed by the kind, never chosen
+/// in the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    Duration,
+    Count,
+    Rate,
+}
+
+/// A setpoint typed by its kind.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Setpoint {
+    Duration(std::time::Duration),
+    Count(u64),
+    /// A share in `0.0..=1.0`.
+    Rate(f64),
+}
+
+impl SensorKind {
+    /// Every kind, for a surface that lists what an owner may pick from.
+    pub const ALL: [SensorKind; 5] = [
+        SensorKind::OutboxWaiting,
+        SensorKind::OutboxAge,
+        SensorKind::QuestionLatency,
+        SensorKind::RequestClosure,
+        SensorKind::InterventionRate,
+    ];
+
+    /// The wire word — `serde`'s own `snake_case` spelling, for a message
+    /// or a JSON field that wants a bare `&str`.
+    pub fn wire(self) -> &'static str {
+        match self {
+            SensorKind::OutboxWaiting => "outbox_waiting",
+            SensorKind::OutboxAge => "outbox_age",
+            SensorKind::QuestionLatency => "question_latency",
+            SensorKind::RequestClosure => "request_closure",
+            SensorKind::InterventionRate => "intervention_rate",
+        }
+    }
+
+    pub fn unit(self) -> Unit {
+        match self {
+            SensorKind::OutboxAge | SensorKind::QuestionLatency | SensorKind::RequestClosure => {
+                Unit::Duration
+            }
+            SensorKind::OutboxWaiting => Unit::Count,
+            SensorKind::InterventionRate => Unit::Rate,
+        }
+    }
+
+    /// Read a setpoint in this kind's unit, or say what the unit is.
+    ///
+    /// Durations are `<n><unit>` tokens — `24h`, `90m`, `7d`, `1h30m` — over
+    /// `s`, `m`, `h`, `d`, `w`; counts are whole numbers; a rate is `0.2` or
+    /// `20%`. Strict on purpose:
+    /// a setpoint of one hour where the owner meant one day saturates a
+    /// reading (containment 5), and the place to catch a unit the owner did
+    /// not mean is the parse, where the error names the line.
+    pub fn parse_setpoint(self, text: &str) -> Result<Setpoint> {
+        let text = text.trim();
+        if text.is_empty() {
+            bail!("setpoint is empty");
+        }
+        match self.unit() {
+            Unit::Duration => parse_duration(text).map(Setpoint::Duration),
+            Unit::Count => text
+                .parse::<u64>()
+                .map(Setpoint::Count)
+                .map_err(|_| anyhow::anyhow!("`{text}` is not a whole number")),
+            Unit::Rate => {
+                let (body, scale) = match text.strip_suffix('%') {
+                    Some(pct) => (pct.trim(), 0.01),
+                    None => (text, 1.0),
+                };
+                let n: f64 = body
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("`{text}` is not a rate like `0.2` or `20%`"))?;
+                let rate = n * scale;
+                if !(0.0..=1.0).contains(&rate) {
+                    bail!("`{text}` is not a share between 0 and 1");
+                }
+                Ok(Setpoint::Rate(rate))
+            }
+        }
+    }
+}
+
+/// `1h30m` → 5400 seconds. Tokens are a run of digits then one unit letter;
+/// anything else is an error naming the grammar.
+fn parse_duration(text: &str) -> Result<std::time::Duration> {
+    let mut total: u64 = 0;
+    let mut digits = String::new();
+    let mut saw_token = false;
+    for c in text.chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            continue;
+        }
+        if c.is_whitespace() && digits.is_empty() {
+            continue;
+        }
+        let n: u64 = digits
+            .parse()
+            .map_err(|_| anyhow::anyhow!("`{text}` is not a duration like `24h` or `7d`"))?;
+        digits.clear();
+        let per = match c {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86_400,
+            'w' => 7 * 86_400,
+            _ => bail!("`{text}` is not a duration — units are s, m, h, d, w"),
+        };
+        total = n
+            .checked_mul(per)
+            .and_then(|v| total.checked_add(v))
+            .ok_or_else(|| anyhow::anyhow!("`{text}` is too long a duration"))?;
+        saw_token = true;
+    }
+    if !digits.is_empty() || !saw_token {
+        bail!("`{text}` is not a duration like `24h` or `7d` — every number needs a unit");
+    }
+    Ok(std::time::Duration::from_secs(total))
+}
+
+/// A sensor on a charter line, validated.
+///
+/// **The author rule is the same rule.** A sensor is typed by a person, at
+/// any surface; the template shows one commented out and nothing else; no
+/// model composes, suggests or tunes one. And its *reading* never reaches
+/// the prompt (containment 2): the line's text already rides in the cached
+/// prefix, the sensor's value is harness-only, and [`prompt_block`] does not
+/// render this table at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sensor {
+    pub kind: SensorKind,
+    /// The setpoint in the kind's unit.
+    pub setpoint: Setpoint,
+    /// The setpoint as the owner spelled it — what a surface shows back and
+    /// what the web editor writes on a save, so nothing the owner typed is
+    /// re-rendered by the harness.
+    pub setpoint_text: String,
+}
+
+impl Eq for Sensor {}
 
 /// The owner's charter, in file order.
 ///
@@ -125,7 +365,7 @@ pub struct Charter {
 #[serde(deny_unknown_fields)]
 struct RawCharter {
     #[serde(default, rename = "line")]
-    line: Vec<CharterLine>,
+    line: Vec<RawLine>,
 }
 
 impl Charter {
@@ -168,9 +408,31 @@ impl Charter {
     /// charter because an eleventh line pushed it over a budget would un-rank
     /// every priority in it over a problem that is really about cost, not
     /// validity.
-    fn validate(lines: Vec<CharterLine>) -> Result<Charter> {
+    fn validate(lines: Vec<RawLine>) -> Result<Charter> {
         let mut seen = BTreeSet::new();
+        let mut kinds_seen: std::collections::BTreeMap<SensorKind, &str> = Default::default();
         for line in &lines {
+            // Two lines with the same *kind* is not a tie rank can decide
+            // (two kinds watching one store is — see `line_for_sensor`); it
+            // is a dead line, because `line_for_sensor` finds the first and
+            // the lower one can never be attributed anything. Refused naming
+            // both, on the same principle as the duplicate id: an owner must
+            // not write a sensor, believe it did something, and never find
+            // out (found on review). When the readings phase gives each line
+            // its own reading this becomes a real question again; today
+            // there is nothing for the second line to mean.
+            if let Some(sensor) = &line.sensor {
+                if let Some(first) = kinds_seen.insert(sensor.kind, line.id.trim()) {
+                    bail!(
+                        "charter lines `{}` and `{}` both carry a `{}` sensor — only the \
+                         higher-ranked line would ever be attributed anything, so the \
+                         second does nothing; keep one",
+                        first,
+                        line.id.trim(),
+                        sensor.kind.wire()
+                    );
+                }
+            }
             if line.id.trim().is_empty() {
                 bail!("a charter line has an empty `id`");
             }
@@ -198,18 +460,75 @@ impl Charter {
         // future `GoalRef::Charter("x")` lookup — itself trimmed, per
         // `goal.rs` — would miss a line recorded as `"x "`. Store what was
         // checked.
+        //
+        // The sensor's setpoint is typed here, against the kind beside it:
+        // a setpoint the kind cannot read refuses the whole document, the
+        // same fail-closed direction an unknown kind word already takes in
+        // `serde`, and the error names the line so the owner knows which
+        // table to fix.
         let lines = lines
             .into_iter()
-            .map(|l| CharterLine {
-                id: l.id.trim().to_string(),
-                ..l
+            .map(|l| {
+                let id = l.id.trim().to_string();
+                let sensor = match l.sensor {
+                    None => None,
+                    Some(raw) => {
+                        let setpoint_text = raw.setpoint.text();
+                        let setpoint =
+                            raw.kind.parse_setpoint(&setpoint_text).with_context(|| {
+                                format!(
+                                    "charter line `{id}`: sensor `{}` reads its setpoint as a {}",
+                                    raw.kind.wire(),
+                                    match raw.kind.unit() {
+                                        Unit::Duration => "duration like `24h` or `7d`",
+                                        Unit::Count => "whole number",
+                                        Unit::Rate => "rate like `0.2` or `20%`",
+                                    }
+                                )
+                            })?;
+                        Some(Sensor {
+                            kind: raw.kind,
+                            setpoint,
+                            setpoint_text,
+                        })
+                    }
+                };
+                Ok(CharterLine {
+                    id,
+                    text: l.text,
+                    sensor,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         Ok(Charter { lines })
     }
 
     pub fn lines(&self) -> &[CharterLine] {
         &self.lines
+    }
+
+    /// The highest-ranked line whose sensor watches one of `kinds`, or
+    /// `None` when no line does.
+    ///
+    /// **Rank decides a tie**, which is the first consumer line order has
+    /// ever had: two lines watching the same store by *different* kinds —
+    /// one on how many drafts wait, one on how long — both bear on a
+    /// released draft, and the one higher in the file is the one the owner
+    /// ranked higher. Two lines with the *same* kind never reach here:
+    /// `validate` refuses them, because the lower one would be a dead line.
+    /// What this answers is *which line a record bearing on that store is
+    /// attributed to*; it never reads the store itself.
+    pub fn line_for_sensor(&self, kinds: &[SensorKind]) -> Option<&CharterLine> {
+        self.lines
+            .iter()
+            .find(|l| l.sensor.as_ref().is_some_and(|s| kinds.contains(&s.kind)))
+    }
+
+    /// Does any line carry a sensor? A surface that says "attributed by
+    /// sensor" reads this first, so a charter with none is reported as
+    /// having none rather than as attributing nothing.
+    pub fn has_sensors(&self) -> bool {
+        self.lines.iter().any(|l| l.sensor.is_some())
     }
 
     /// How many characters the charter actually costs when rendered into the
@@ -264,24 +583,55 @@ pub const TEMPLATE: &str = "\
 #   [[line]]
 #   id = \"tell-the-truth-early\"
 #   text = \"Tell me the truth early, especially when it disappoints.\"
+#
+# A line may carry a sensor: an observable mecha reads from its own stores,
+# with a setpoint you wrote saying what the line means by \"short\" or
+# \"few\". mecha then attributes a run that touched what the sensor watches
+# to that line. Kinds (each fixes its setpoint's unit): outbox_waiting
+# (count), outbox_age (duration), question_latency (duration),
+# request_closure (duration), intervention_rate (rate, e.g. \"20%\"). The
+# reading never enters a prompt.
+#
+#   [[line]]
+#   id = \"answer-what-waits-on-me\"
+#   text = \"Keep what waits on me short: a staged draft should not sit for days.\"
+#   [line.sensor]
+#   kind = \"outbox_age\"
+#   setpoint = \"24h\"
 ";
 
 /// The block rendered straight into the system prompt. `None` when the
 /// charter is empty, so a machine with no charter authored yet sends no block
 /// at all — the same reason [`crate::skill::prompt_block`] returns `None` on
 /// an empty store.
+///
+/// The rendering [`Charter::char_count`] measures: with the `serves:` ask,
+/// because `todo` is a default builtin and the surface without it is the
+/// exception. See [`prompt_block_for`] for the switch.
 pub fn prompt_block(charter: &Charter) -> Option<String> {
+    prompt_block_for(charter, true)
+}
+
+/// [`prompt_block`], told whether the `todo` tool is in the run's surface.
+///
+/// **The block asks for a charter cite** (`docs/GOAL-SYSTEM-DESIGN.md`
+/// §17.1's prerequisite): the plan's `serves:` is the one producer of a
+/// goal reference an ordinary run has, and thirty days of corpus held zero
+/// sessions naming one while this block deliberately did not ask. It asks
+/// only when `todo` is registered — a system prompt saying "pass `serves`
+/// on the `todo` tool" to a surface with no such tool (a narrow `--tool`
+/// allowlist, Slack's own set) costs the model a turn on a call that can
+/// only fail, the same reason `setup.rs` withholds the skills block when
+/// `skill` is not in the surface. The list of lines renders either way.
+///
+/// What the sentence does not do: render a sensor. A sensored line is
+/// listed exactly as an unsensored one — the sensor's kind and setpoint are
+/// harness-only (§11.1, containment 2), and a number in the prompt is a
+/// number the model reasons about.
+pub fn prompt_block_for(charter: &Charter, todo_in_surface: bool) -> Option<String> {
     if charter.is_empty() {
         return None;
     }
-    // No instruction to cite a line's id via `serves`, deliberately: `todo`'s
-    // schema documents only `task:<id>` there (`tool/todo.rs`), and this
-    // block is unconditional — rendered whether or not `todo` is even in the
-    // tool surface (a narrow `--tool` allowlist, Slack's own set). Asking for
-    // a citation with nowhere reliable to put it, or a tool that may not
-    // exist, is worse than not asking; wiring that up is the appraisal
-    // consumer's job (see the rung 10 note in `GOAL-SYSTEM-DESIGN.md`), not
-    // this block's.
     let mut out = String::from(
         "## Charter\n\n\
          Standing priorities the owner has written for you, ranked highest first \
@@ -291,6 +641,14 @@ pub fn prompt_block(charter: &Charter) -> Option<String> {
     );
     for (i, line) in charter.lines().iter().enumerate() {
         out.push_str(&format!("{}. `{}` — {}\n", i + 1, line.id, line.text));
+    }
+    if todo_in_surface {
+        out.push_str(
+            "\nWhen you write a plan with the `todo` tool, say which line the work serves: \
+             `serves: charter:<id>` with the line's id from this list, or `task:<id>` when \
+             the work serves a task on the board. Name the one line it most serves, and \
+             leave `serves` out when none applies.\n",
+        );
     }
     Some(out.trim_end().to_string())
 }
@@ -316,10 +674,31 @@ mod tests {
         assert!(c.is_empty());
     }
 
-    fn line(id: &str, text: &str) -> CharterLine {
+    /// The file's shape, for `validate`.
+    fn line(id: &str, text: &str) -> RawLine {
+        RawLine {
+            id: id.to_string(),
+            text: text.to_string(),
+            sensor: None,
+        }
+    }
+
+    /// The validated shape, for a `Charter` built by hand.
+    fn cline(id: &str, text: &str) -> CharterLine {
         CharterLine {
             id: id.to_string(),
             text: text.to_string(),
+            sensor: None,
+        }
+    }
+
+    fn sensored(id: &str, text: &str, kind: SensorKind, setpoint: &str) -> RawLine {
+        RawLine {
+            sensor: Some(RawSensor {
+                kind,
+                setpoint: RawSetpoint::Text(setpoint.to_string()),
+            }),
+            ..line(id, text)
         }
     }
 
@@ -353,16 +732,246 @@ text = "Tell the owner the truth early, especially when it disappoints."
         assert_eq!(
             charter.lines(),
             &[
-                line(
+                cline(
                     "protect-the-owner",
                     "Protect the owner's interests above all else."
                 ),
-                line(
+                cline(
                     "tell-the-truth-early",
                     "Tell the owner the truth early, especially when it disappoints."
                 ),
             ]
         );
+    }
+
+    // --- sensored lines (§11.1) ---
+
+    #[test]
+    fn a_sensored_line_parses_with_its_setpoint_typed_by_the_kind() {
+        let raw = r#"
+[[line]]
+id = "answer-what-waits-on-me"
+text = "Keep what waits on me short."
+[line.sensor]
+kind = "outbox_age"
+setpoint = "24h"
+
+[[line]]
+id = "few-open-drafts"
+text = "Few drafts at once."
+[line.sensor]
+kind = "outbox_waiting"
+setpoint = 3
+"#;
+        let charter = write_and_load(raw).unwrap();
+        let s = charter.lines()[0].sensor.as_ref().unwrap();
+        assert_eq!(s.kind, SensorKind::OutboxAge);
+        assert_eq!(
+            s.setpoint,
+            Setpoint::Duration(std::time::Duration::from_secs(24 * 3600))
+        );
+        assert_eq!(s.setpoint_text, "24h", "the owner's spelling survives");
+        // A bare number is how a count is naturally written; it is kept as
+        // its own spelling so a web round trip changes quoting and nothing
+        // else.
+        let s = charter.lines()[1].sensor.as_ref().unwrap();
+        assert_eq!(s.setpoint, Setpoint::Count(3));
+        assert_eq!(s.setpoint_text, "3");
+        assert!(charter.has_sensors());
+    }
+
+    /// The kind set is closed at the type: a word this binary has not heard
+    /// of is a load error, never a line that silently watches nothing — and
+    /// on an older binary `setup` runs un-chartered with a stderr line and
+    /// `mecha doctor` reports it — see `SensorKind`'s doc for why that is
+    /// not the refusal §11.1 claims.
+    #[test]
+    fn an_unknown_sensor_kind_is_a_load_error() {
+        let raw = r#"
+[[line]]
+id = "a"
+text = "one"
+[line.sensor]
+kind = "vibes"
+setpoint = "high"
+"#;
+        let e = write_and_load(raw).unwrap_err().to_string();
+        assert!(e.contains("parsing"), "{e}");
+    }
+
+    /// Each kind fixes its unit, and a setpoint the kind cannot read refuses
+    /// the document naming the line and the unit — the place to catch an
+    /// hour the owner meant as a day is the parse, not a saturated reading
+    /// weeks later (containment 5).
+    #[test]
+    fn a_setpoint_in_the_wrong_unit_is_refused_naming_the_line_and_the_unit() {
+        let e =
+            Charter::validate(vec![sensored("a", "one", SensorKind::OutboxAge, "3")]).unwrap_err();
+        let e = format!("{e:#}");
+        assert!(e.contains("line `a`"), "{e}");
+        assert!(e.contains("duration"), "{e}");
+        assert!(e.contains("every number needs a unit"), "{e}");
+
+        let e = Charter::validate(vec![sensored("b", "two", SensorKind::OutboxWaiting, "24h")])
+            .unwrap_err();
+        assert!(format!("{e:#}").contains("whole number"), "{e:#}");
+
+        let e = Charter::validate(vec![sensored(
+            "c",
+            "three",
+            SensorKind::InterventionRate,
+            "150%",
+        )])
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("between 0 and 1"), "{e:#}");
+    }
+
+    #[test]
+    fn every_setpoint_unit_has_a_grammar() {
+        assert_eq!(
+            SensorKind::QuestionLatency.parse_setpoint("1h30m").unwrap(),
+            Setpoint::Duration(std::time::Duration::from_secs(5400))
+        );
+        assert_eq!(
+            SensorKind::RequestClosure.parse_setpoint("1w").unwrap(),
+            Setpoint::Duration(std::time::Duration::from_secs(7 * 86_400))
+        );
+        assert_eq!(
+            SensorKind::OutboxWaiting.parse_setpoint("0").unwrap(),
+            Setpoint::Count(0)
+        );
+        assert_eq!(
+            SensorKind::InterventionRate.parse_setpoint("20%").unwrap(),
+            Setpoint::Rate(0.2)
+        );
+        assert_eq!(
+            SensorKind::InterventionRate.parse_setpoint("0.2").unwrap(),
+            Setpoint::Rate(0.2)
+        );
+        assert!(SensorKind::OutboxWaiting.parse_setpoint("-1").is_err());
+        assert!(SensorKind::OutboxAge.parse_setpoint("24 hours").is_err());
+        assert!(SensorKind::OutboxAge.parse_setpoint("").is_err());
+        // Every kind answers `unit`, and the two lists agree on length — a
+        // kind added to the enum without a row here is a compile error in
+        // `unit`'s match, and one added to `ALL` twice is caught below.
+        let mut seen = std::collections::BTreeSet::new();
+        for k in SensorKind::ALL {
+            assert!(
+                seen.insert(k.wire()),
+                "{k:?} appears twice in SensorKind::ALL"
+            );
+            let _ = k.unit();
+        }
+    }
+
+    /// Two lines carrying the same kind: the lower one could never be
+    /// attributed anything, so the document is refused naming both — a
+    /// dead sensor is the "wrote it, believed it, never found out" failure
+    /// one field down from a stray key.
+    #[test]
+    fn two_lines_with_the_same_sensor_kind_are_refused_naming_both() {
+        let e = Charter::validate(vec![
+            sensored("first", "one", SensorKind::OutboxAge, "24h"),
+            line("plain", "two"),
+            sensored("second", "three", SensorKind::OutboxAge, "48h"),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("`first`") && e.contains("`second`"), "{e}");
+        assert!(e.contains("outbox_age"), "{e}");
+        // Different kinds on one store remain a tie rank decides.
+        assert!(Charter::validate(vec![
+            sensored("a", "one", SensorKind::OutboxAge, "24h"),
+            sensored("b", "two", SensorKind::OutboxWaiting, "3"),
+        ])
+        .is_ok());
+    }
+
+    /// A stray key under the sensor table is refused like one under the
+    /// line — `threshold = ` where `setpoint = ` was meant must not parse as
+    /// a sensor with no setpoint.
+    #[test]
+    fn a_stray_field_on_a_sensor_is_a_load_error() {
+        let raw = r#"
+[[line]]
+id = "a"
+text = "one"
+[line.sensor]
+kind = "outbox_age"
+setpoint = "24h"
+weight = 2
+"#;
+        assert!(write_and_load(raw).is_err());
+    }
+
+    /// The sensor's reading is harness-only (containment 2): the block lists
+    /// a sensored line exactly as an unsensored one, so neither the kind
+    /// word nor the setpoint ever rides in a prompt.
+    #[test]
+    fn the_prompt_block_never_renders_a_sensor() {
+        let charter = Charter::validate(vec![sensored(
+            "answer-what-waits",
+            "Keep what waits on me short.",
+            SensorKind::OutboxAge,
+            "24h",
+        )])
+        .unwrap();
+        let block = prompt_block(&charter).unwrap();
+        assert!(block.contains("answer-what-waits"));
+        assert!(!block.contains("24h"), "{block}");
+        assert!(!block.contains("outbox_age"), "{block}");
+        assert!(!block.contains("sensor"), "{block}");
+    }
+
+    /// Rank is the tiebreak, and this is its first consumer: two lines
+    /// watching the outbox both bear on a draft, and the higher one wins.
+    #[test]
+    fn line_for_sensor_returns_the_highest_ranked_match() {
+        let charter = Charter::validate(vec![
+            line("unsensored", "first"),
+            sensored("count", "few", SensorKind::OutboxWaiting, "3"),
+            sensored("age", "short", SensorKind::OutboxAge, "24h"),
+            sensored("asks", "answered", SensorKind::QuestionLatency, "1d"),
+        ])
+        .unwrap();
+        let both = [SensorKind::OutboxAge, SensorKind::OutboxWaiting];
+        assert_eq!(charter.line_for_sensor(&both).unwrap().id, "count");
+        assert_eq!(
+            charter
+                .line_for_sensor(&[SensorKind::OutboxAge])
+                .unwrap()
+                .id,
+            "age"
+        );
+        assert_eq!(
+            charter
+                .line_for_sensor(&[SensorKind::QuestionLatency])
+                .unwrap()
+                .id,
+            "asks"
+        );
+        assert!(charter
+            .line_for_sensor(&[SensorKind::RequestClosure])
+            .is_none());
+        assert!(Charter::default().line_for_sensor(&both).is_none());
+        assert!(!Charter::default().has_sensors());
+    }
+
+    /// The block asks for a charter cite (§17.1's prerequisite) only where
+    /// the `todo` tool exists to carry it — asking a surface with no such
+    /// tool costs a turn on a call that can only fail.
+    #[test]
+    fn the_block_asks_for_a_serves_cite_only_when_todo_is_in_the_surface() {
+        let charter = Charter::validate(vec![line("a", "one")]).unwrap();
+        let with = prompt_block_for(&charter, true).unwrap();
+        assert!(with.contains("serves: charter:<id>"), "{with}");
+        assert!(with.contains("`todo`"), "{with}");
+        let without = prompt_block_for(&charter, false).unwrap();
+        assert!(!without.contains("serves"), "{without}");
+        assert!(without.contains("`a` — one"), "the lines render either way");
+        // `prompt_block` is the with-cite rendering, which is what
+        // `char_count` measures.
+        assert_eq!(prompt_block(&charter), Some(with));
     }
 
     #[test]
@@ -485,8 +1094,8 @@ priority = 1
         // "a-line"]` must render in that order, never alphabetically.
         let charter = Charter {
             lines: vec![
-                line("b-line", "second priority"),
-                line("a-line", "first priority"),
+                cline("b-line", "second priority"),
+                cline("a-line", "first priority"),
             ],
         };
         let block = prompt_block(&charter).unwrap();
@@ -498,7 +1107,7 @@ priority = 1
     #[test]
     fn the_block_explains_the_ordering_is_load_bearing() {
         let charter = Charter {
-            lines: vec![line("only", "the only priority")],
+            lines: vec![cline("only", "the only priority")],
         };
         let block = prompt_block(&charter).unwrap();
         assert!(block.contains("not weighted"), "{block}");
@@ -519,7 +1128,12 @@ priority = 1
     /// owner's header comments, and the whole template on a first charter)
     /// and regenerates only the tables, always as single-line basic strings,
     /// because an escape sequence is unambiguous where a bare quote or
-    /// newline is not.
+    /// newline is not. A line's sensor is written back as a `[line.sensor]`
+    /// table with the owner's own setpoint spelling — the editor does not
+    /// compose or edit one, it carries one through a save, which is the
+    /// half of §11.1's "parser, serialiser and template move together" that
+    /// this fixture pins: a serialiser that dropped the table would silently
+    /// delete the owner's sensor on the next re-rank.
     // web-editor-sample:begin
     const WEB_EDITOR_SAMPLE: &str = r#"# What mecha is for, most important first.
 #
@@ -532,6 +1146,13 @@ text = "A refusal on Monday is a kindness."
 [[line]]
 id = "quote-and-break"
 text = "She said \"no\" early.\nAnd meant it."
+
+[[line]]
+id = "answer-what-waits"
+text = "Keep what waits on me short."
+[line.sensor]
+kind = "outbox_age"
+setpoint = "24h"
 "#;
     // web-editor-sample:end
 
@@ -544,13 +1165,19 @@ text = "She said \"no\" early.\nAnd meant it."
         let ids: Vec<&str> = charter.lines().iter().map(|l| l.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["say-no-early", "quote-and-break"],
+            ["say-no-early", "quote-and-break", "answer-what-waits"],
             "file order is rank"
         );
         assert_eq!(
             charter.lines()[1].text,
             "She said \"no\" early.\nAnd meant it.",
             "the editor's escaping must survive the reader"
+        );
+        assert_eq!(charter.lines()[0].sensor, None);
+        let s = charter.lines()[2].sensor.as_ref().unwrap();
+        assert_eq!(
+            (s.kind, s.setpoint_text.as_str()),
+            (SensorKind::OutboxAge, "24h")
         );
     }
 }

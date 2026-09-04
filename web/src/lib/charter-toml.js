@@ -32,11 +32,27 @@ export const esc = (s) =>
 /// trims trailing whitespace and exactly one blank line is re-emitted before
 /// the tables, so a header ending in several blank lines comes back with one.
 /// The promise that matters is that nothing the owner wrote is lost.
+///
+/// A line's `sensor` (`{kind, setpoint}`, as the server serves it) is written
+/// back as a `[line.sensor]` sub-table with the owner's own setpoint
+/// spelling, always as a string — `setpoint = 3` on disk comes back as
+/// `setpoint = "3"`, which the reader types identically. The editor never
+/// composes a sensor; this exists so a re-rank or a text edit does not
+/// silently delete one (GOAL-SYSTEM-DESIGN §11.1: the parser, this
+/// serialiser and the template move together).
 export function serialize(header, lines) {
   const out = [];
   if (header.trim()) out.push(header, '');
   for (const l of lines) {
-    out.push('[[line]]', `id = ${esc(l.id.trim())}`, `text = ${esc(l.text.trim())}`, '');
+    out.push('[[line]]', `id = ${esc(l.id.trim())}`, `text = ${esc(l.text.trim())}`);
+    if (l.sensor && l.sensor.kind) {
+      out.push(
+        '[line.sensor]',
+        `kind = ${esc(String(l.sensor.kind).trim())}`,
+        `setpoint = ${esc(String(l.sensor.setpoint ?? '').trim())}`
+      );
+    }
+    out.push('');
   }
   return out.join('\n').replace(/\n+$/, '\n');
 }

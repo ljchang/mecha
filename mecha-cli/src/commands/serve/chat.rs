@@ -1513,13 +1513,12 @@ fn begin_turn(
             if readout.label != mecha_core::appraisal::Affect::Neutral {
                 // The voice nudge keys on the word alone: a `cfg_weight`
                 // has no use for a magnitude, and a number is not a mood.
-                // **Unreachable today**: the free readout's label is
-                // `Neutral` on every error a live run can assemble
+                // Reachable since §17.1 ungated the label: a ceiling stop
+                // or a steer on a live run labels `distress`
                 // (`live_readout`'s doc), so this arm, the chip's word and
-                // the TTS nudge wait on a channel that labels off the run's
-                // own record. Kept, because the shape is right and the
-                // label is a pure function that will start saying a word
-                // the day one does (found on review).
+                // the TTS nudge all fire on it. This comment used to say
+                // "unreachable today", written when the free readout's
+                // whole label range was `Neutral`.
                 affect_label = Some(readout.label.wire());
             }
             if !readout.is_silent() {

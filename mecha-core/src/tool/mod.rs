@@ -1068,10 +1068,7 @@ impl Registry {
         sandbox: Arc<crate::sandbox::Sandbox>,
     ) -> Self {
         for tool in builtin::all(sandbox) {
-            let name = tool.name();
-            let allowed = cfg.enabled.is_empty() || cfg.enabled.iter().any(|e| e == name);
-            let blocked = cfg.disabled.iter().any(|d| d == name);
-            if allowed && !blocked {
+            if cfg.registers(tool.name()) {
                 self.insert(tool);
             }
         }
