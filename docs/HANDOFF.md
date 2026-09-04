@@ -2451,10 +2451,30 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
-### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first sprint is a PR, and rung 9's review-queue salience is unverified from this branch
+### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
+
+**2026-09-04, later — §17.6 item 3 is built as PR #168
+(`feat/situation-scope`, unmerged), with §17.7 item 1's run record in the
+same change because it was the merge condition.** What it built is in
+`HISTORY.md` under this date: `situation.rs`, the situation on every new
+reflection, `scope` on `Rule` assigned by the harness from the batch's shared
+keys, one learner call per focus-tool batch, the loader matching scope
+against the run's registry (`rules_carried_for`), and `RunConfig::rules_hash`
++ `rule_ids` beside `RunStats::delivered`. **Open from item 3, named in the
+§17.4 built note:** mid-run delivery on a recurring condition (§17.7 item 2
+keeps it off by default until the null-step and restart counters are read),
+region widening and narrowing in consolidation, per-region validation
+budgets, the situation backfill for the 41 reflections mined before the
+field (§17.7 item 6), and surface and workspace as *scope* keys — both are
+recorded, neither is matched, for the reasons in `situation.rs`'s module doc
+(the surface needs `prepare` to be told the session kind; the workspace
+waits on widening, or nearly every rule pins to one workspace). The twelve
+live rules on this machine are unscoped and load everywhere as before, until
+the standing batch rewrites them; the first scoped rule appears when a
+region batch of new reflections learns.
 
 **2026-09-04 — the owner's rulings of 2026-09-03 are recorded (§17, PR #161)
-and §17.6's first sprint is built as #162, stacked on it; both unmerged.**
+and §17.6's first sprint is built as #162, stacked on it; both since merged.**
 What #162 built is in `HISTORY.md` under this date: sensored charter lines
 (five kinds, each with a reader), the `serves: charter:<id>` ask on the
 prompt block, the attribution join in `of_session`, and the relevance gate —
@@ -2463,10 +2483,8 @@ against a charter line the loaded charter contains. **Paragraphs below that
 say the label is `Neutral` on every session, that `Pride` is genuinely
 unbuilt, or that no session names a goal are true of the corpus as measured
 and stop being true of the derivation when #162 merges** — they are kept as
-the measurement they were. **Open, in the order §17.6 sets:** item 3
-(`Situation` persisted on the reflection, `scope` on `Rule`, the learner
-batched by region), which **does not merge without the run record carrying
-`rules_hash` and a `delivered` list** (§17.7 item 1); §11.1's later phases —
+the measurement they were. **Open, in the order §17.6 sets** (item 3 is
+#168 above, its merge condition met in the same change): §11.1's later phases —
 the per-line readings, the line-specific guilt, the doctor's owner
 thresholds, the editor showing a reading beside the line, the replay
 tiebreak, and `board_overdue`/`cost` as kinds once a reader exists; item 4,
@@ -3207,11 +3225,15 @@ What is missing beyond that is refinement:
 - **The sliding window of recent raw reflections never shipped.** Prompt assembly
   chains user rules then consolidated rules; the third leg — a window of recent
   unconsolidated reflections — was designed and not built.
-- **Rules are scoped by domain and by run, but not by tool.** A run now selects
-  which domains it carries (`RUN_DOMAINS`, 2026-08-18), so a domain no longer
-  rides in every prefix by default. What is still missing is the finer grain:
-  `Rule` has no `scope` field, and nothing injects rules into a tool's own
-  block.
+- **Rules are scoped by domain, by run, and now by tool set — but nothing
+  delivers one mid-run.** `Rule::scope` exists (PR #168, unmerged at the
+  time of writing) and `rules_carried_for` loads a scoped rule only into a
+  run whose registry matches it. What is still missing is the §17.4
+  *Delivery* half — one line on a tool's result the first time a recorded
+  condition recurs, ruled off-by-default in `GOAL-SYSTEM-DESIGN.md` §17.7
+  item 2 — plus consolidation's widening across sub-regions and the
+  per-region validation budget; without widening a rule stays as narrow as
+  the batch that learned it.
 - **Rules that are facts should graduate to pkg.** No classifier routes
   fact-shaped rules into `kg_upsert` as staged candidates; `distill.rs` pushes
   episodes only.
