@@ -115,16 +115,6 @@ impl Questions {
     }
 }
 
-fn clip_args(input: &serde_json::Value) -> String {
-    let pretty = serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string());
-    if pretty.chars().count() > 2000 {
-        let cut: String = pretty.chars().take(2000).collect();
-        format!("{cut}\n… (truncated — the full call is in the session record)")
-    } else {
-        pretty
-    }
-}
-
 /// The per-run approver: delegates to [`ModeApprover`] except in `ask` mode,
 /// where the question goes to the page.
 pub struct WebApprover {
@@ -211,7 +201,7 @@ impl WebApprover {
             qid,
             kind: "approval".into(),
             tool: Some(tool.name().to_string()),
-            args: Some(clip_args(input)),
+            args: Some(super::chat::clip_args(input)),
             // The essentials, with the whole call still beside them. A
             // reviewer who cannot read what they are approving approves it
             // anyway — which is the failure this card exists to prevent,
