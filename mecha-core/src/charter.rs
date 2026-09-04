@@ -159,15 +159,28 @@ impl RawSetpoint {
 /// What a sensored line watches — **a closed set the owner picks from**,
 /// never an expression, a command or a path, so the file stays a wire format
 /// `Charter::load` can refuse exactly as it refuses an unknown key. Every
-/// kind is an observable a store already holds *with an id per item*,
-/// because attribution (`appraisal::of_session`) joins on the id the run's
-/// own trace touched, never on a before/after delta of the store (§11.1,
-/// containment 6).
+/// kind here is an observable a store already holds *with an id per item*
+/// that a run's own trace can touch, because attribution
+/// (`appraisal::of_session`) joins on that id, never on a before/after delta
+/// of the store (§11.1, containment 6) — and **every kind here does
+/// something today**: each is a key in `sensor_kinds_for`'s table. §11.1
+/// also names `board_overdue` and `cost`, which are store- and run-level
+/// numbers with no item a trace touches; they can only ever be *reading*
+/// sensors, and the readings are the section's unbuilt phase. They are
+/// deliberately not variants yet: a kind that parses, validates its setpoint
+/// and then does nothing is the failure `RawLine`'s `deny_unknown_fields`
+/// exists to refuse, one field down (found on review). They join when a
+/// reader does.
 ///
 /// A kind this binary does not know is a load error, which is the
-/// fail-closed direction the charter already has — and, on purpose, a
-/// startup refusal on an older machine (containment 7): the fix is the
-/// `update` skill, not a lenient parser.
+/// fail-closed direction the charter already has. On an older binary that
+/// is **not** a startup refusal — `setup.rs` catches every `Charter::load`
+/// error, prints one stderr line (covered by the TUI's alternate screen) and
+/// runs *un-chartered*, so a sensored line authored here silently costs a
+/// machine on the previous release its whole charter until `mecha doctor`
+/// reports it, which it does at the severity it deserves. The fix is the
+/// `update` skill, not a lenient parser; §11.1's containment 7 says
+/// "refusal" and is corrected here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SensorKind {
@@ -180,12 +193,8 @@ pub enum SensorKind {
     /// How long a front-door request stays open before it is closed or
     /// answered. A duration.
     RequestClosure,
-    /// How many board tasks are past their `due_at`. A count.
-    BoardOverdue,
     /// The share of runs in which the owner had to step in. A rate.
     InterventionRate,
-    /// What a run costs, in US dollars.
-    Cost,
 }
 
 /// The unit a kind's setpoint is read in — fixed by the kind, never chosen
@@ -195,7 +204,6 @@ pub enum Unit {
     Duration,
     Count,
     Rate,
-    Usd,
 }
 
 /// A setpoint typed by its kind.
@@ -205,19 +213,16 @@ pub enum Setpoint {
     Count(u64),
     /// A share in `0.0..=1.0`.
     Rate(f64),
-    Usd(f64),
 }
 
 impl SensorKind {
     /// Every kind, for a surface that lists what an owner may pick from.
-    pub const ALL: [SensorKind; 7] = [
+    pub const ALL: [SensorKind; 5] = [
         SensorKind::OutboxWaiting,
         SensorKind::OutboxAge,
         SensorKind::QuestionLatency,
         SensorKind::RequestClosure,
-        SensorKind::BoardOverdue,
         SensorKind::InterventionRate,
-        SensorKind::Cost,
     ];
 
     /// The wire word — `serde`'s own `snake_case` spelling, for a message
@@ -228,9 +233,7 @@ impl SensorKind {
             SensorKind::OutboxAge => "outbox_age",
             SensorKind::QuestionLatency => "question_latency",
             SensorKind::RequestClosure => "request_closure",
-            SensorKind::BoardOverdue => "board_overdue",
             SensorKind::InterventionRate => "intervention_rate",
-            SensorKind::Cost => "cost",
         }
     }
 
@@ -239,9 +242,8 @@ impl SensorKind {
             SensorKind::OutboxAge | SensorKind::QuestionLatency | SensorKind::RequestClosure => {
                 Unit::Duration
             }
-            SensorKind::OutboxWaiting | SensorKind::BoardOverdue => Unit::Count,
+            SensorKind::OutboxWaiting => Unit::Count,
             SensorKind::InterventionRate => Unit::Rate,
-            SensorKind::Cost => Unit::Usd,
         }
     }
 
@@ -249,7 +251,7 @@ impl SensorKind {
     ///
     /// Durations are `<n><unit>` tokens — `24h`, `90m`, `7d`, `1h30m` — over
     /// `s`, `m`, `h`, `d`, `w`; counts are whole numbers; a rate is `0.2` or
-    /// `20%`; a cost is dollars, with or without the `$`. Strict on purpose:
+    /// `20%`. Strict on purpose:
     /// a setpoint of one hour where the owner meant one day saturates a
     /// reading (containment 5), and the place to catch a unit the owner did
     /// not mean is the parse, where the error names the line.
@@ -277,16 +279,6 @@ impl SensorKind {
                     bail!("`{text}` is not a share between 0 and 1");
                 }
                 Ok(Setpoint::Rate(rate))
-            }
-            Unit::Usd => {
-                let body = text.strip_prefix('$').unwrap_or(text).trim();
-                let n: f64 = body
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("`{text}` is not a dollar amount like `1.50`"))?;
-                if !n.is_finite() || n < 0.0 {
-                    bail!("`{text}` is not a dollar amount");
-                }
-                Ok(Setpoint::Usd(n))
             }
         }
     }
@@ -469,7 +461,6 @@ impl Charter {
                                         Unit::Duration => "duration like `24h` or `7d`",
                                         Unit::Count => "whole number",
                                         Unit::Rate => "rate like `0.2` or `20%`",
-                                        Unit::Usd => "dollar amount like `1.50`",
                                     }
                                 )
                             })?;
@@ -574,8 +565,8 @@ pub const TEMPLATE: &str = "\
 # \"few\". mecha then attributes a run that touched what the sensor watches
 # to that line. Kinds (each fixes its setpoint's unit): outbox_waiting
 # (count), outbox_age (duration), question_latency (duration),
-# request_closure (duration), board_overdue (count), intervention_rate
-# (rate, e.g. \"20%\"), cost (dollars). The reading never enters a prompt.
+# request_closure (duration), intervention_rate (rate, e.g. \"20%\"). The
+# reading never enters a prompt.
 #
 #   [[line]]
 #   id = \"answer-what-waits-on-me\"
@@ -767,7 +758,9 @@ setpoint = 3
 
     /// The kind set is closed at the type: a word this binary has not heard
     /// of is a load error, never a line that silently watches nothing — and
-    /// on an older binary that is the startup refusal containment 7 wants.
+    /// on an older binary `setup` runs un-chartered with a stderr line and
+    /// `mecha doctor` reports it — see `SensorKind`'s doc for why that is
+    /// not the refusal §11.1 claims.
     #[test]
     fn an_unknown_sensor_kind_is_a_load_error() {
         let raw = r#"
@@ -820,7 +813,7 @@ setpoint = "high"
             Setpoint::Duration(std::time::Duration::from_secs(7 * 86_400))
         );
         assert_eq!(
-            SensorKind::BoardOverdue.parse_setpoint("0").unwrap(),
+            SensorKind::OutboxWaiting.parse_setpoint("0").unwrap(),
             Setpoint::Count(0)
         );
         assert_eq!(
@@ -831,11 +824,7 @@ setpoint = "high"
             SensorKind::InterventionRate.parse_setpoint("0.2").unwrap(),
             Setpoint::Rate(0.2)
         );
-        assert_eq!(
-            SensorKind::Cost.parse_setpoint("$1.50").unwrap(),
-            Setpoint::Usd(1.5)
-        );
-        assert!(SensorKind::Cost.parse_setpoint("-1").is_err());
+        assert!(SensorKind::OutboxWaiting.parse_setpoint("-1").is_err());
         assert!(SensorKind::OutboxAge.parse_setpoint("24 hours").is_err());
         assert!(SensorKind::OutboxAge.parse_setpoint("").is_err());
         // Every kind answers `unit`, and the two lists agree on length — a
@@ -914,7 +903,9 @@ weight = 2
                 .id,
             "asks"
         );
-        assert!(charter.line_for_sensor(&[SensorKind::Cost]).is_none());
+        assert!(charter
+            .line_for_sensor(&[SensorKind::RequestClosure])
+            .is_none());
         assert!(Charter::default().line_for_sensor(&both).is_none());
         assert!(!Charter::default().has_sensors());
     }
