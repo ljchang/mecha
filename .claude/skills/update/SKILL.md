@@ -148,10 +148,17 @@ here, as §2 says: each firing execs a fresh `mecha` and a fresh server, and
 restarting one by hand does not refresh a process, it *runs the sweep*.
 What those units do need is `~/.cargo/bin` on their `Environment=PATH`,
 because a bare `command = "mecha-graph-mcp"` resolves against the unit's
-PATH and a spawn failure is skipped with one stderr line — `mecha
-ruminate`'s nightly `distill` would stage nothing and exit 0. Every shipped
-unit that execs `mecha`, directly or through a wrapper, now carries that
-line (`scripts/*.service`, `scripts/voice/*.service`). After every install of
+PATH, and what a failed spawn does depends on the caller: everything that
+reaches `setup::prepare*` (`mail classify`, `frontdoor`, `serve`, `slack`,
+`triggers`, `reflect`, `learn`) skips the server with one stderr line and
+carries on — the classifier or the front door would run a whole sweep with
+the `kg_*` tools absent and exit 0 — while the four direct-connect commands
+(`distill`, `corroborate`, `gossip`, `vet`) fail that step loudly with a
+non-zero exit, which in `ruminate.sh` (not `set -e`) shows up in the dated
+logfile while the script walks on. The silent case is the one to guard;
+the loud one is the good outcome. Every shipped unit that execs `mecha`,
+directly or through a wrapper, now carries that line (`scripts/*.service`,
+`scripts/voice/*.service`). After every install of
 `mecha-graph-mcp`, either restart those hosts or accept that they run the
 previous build until their next start; nothing about a stale child
 announces itself, which is the same silence the removed `pkg-mcp` entry
