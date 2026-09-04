@@ -419,8 +419,45 @@ pub fn repick(record: &PollRecord, current: &Value, index: usize) -> Result<Valu
         .is_some_and(|generated| generated["description"] == current["description"]);
     if untouched {
         args["description"] = fresh["description"].clone();
+    } else if let Some(edited) = current["description"].as_str() {
+        // The owner edited the prose: keep every word of it, but the `▸`
+        // is generated state and must follow the slot — a card that marks
+        // Tuesday and books Thursday is the event body every attendee gets.
+        args["description"] = json!(move_marker(edited, index));
     }
     Ok(args)
+}
+
+/// Move the `▸` in a card's ranking to the `index`-th row, leaving every
+/// other character as the owner left it. Rows are the generated
+/// `  N. …` / `▸ N. …` lines; a description with no such rows is returned
+/// unchanged.
+pub fn move_marker(description: &str, index: usize) -> String {
+    let wanted = format!("{}. ", index + 1);
+    description
+        .lines()
+        .map(|line| {
+            let (marker, rest) = if let Some(rest) = line.strip_prefix("▸ ") {
+                ("▸ ", rest)
+            } else if let Some(rest) = line.strip_prefix("  ") {
+                ("  ", rest)
+            } else {
+                return line.to_string();
+            };
+            let is_row = rest
+                .split_once(". ")
+                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+            if !is_row {
+                return format!("{marker}{rest}");
+            }
+            if rest.starts_with(&wanted) {
+                format!("▸ {rest}")
+            } else {
+                format!("  {rest}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The event id in `calendar_create_event`'s answer — "created in `a`:"
@@ -482,13 +519,6 @@ pub fn loaded_index(record: &PollRecord, item: &OutboxItem) -> Option<usize> {
 pub fn pick(poll_id: &str, n: usize) -> Result<String> {
     let (_cfg, store) = cfg_and_store()?;
     let record = load_by_id(poll_id)?;
-    let Some(item_id) = record.lifecycle()["pick_item"].as_str() else {
-        bail!(
-            "`{poll_id}` has no pick card ({}) — `mecha polls sweep` stages one when the \
-             verdict is a pick",
-            summary(record.lifecycle())
-        );
-    };
     anyhow::ensure!(n >= 1, "candidates are numbered from 1");
     // Taken before the read it protects: an `outbox edit` landing between
     // the read and the write would otherwise be rebuilt over. Never waited
@@ -497,7 +527,50 @@ pub fn pick(poll_id: &str, n: usize) -> Result<String> {
     let Some(_lock) = store.try_lock()? else {
         bail!("the outbox is locked by a review in progress — try again in a moment");
     };
-    let item = store.item(item_id)?;
+    let item = pick_card(&store, &record)?;
+    let args = repick(&record, &item.args, n - 1)?;
+    store.update_args(&item.id, args)?;
+    let tz = record.lifecycle()["timezone"].as_str().unwrap_or("UTC");
+    Ok(local_range(&record.ranked()[n - 1], tz))
+}
+
+/// Advance to the next candidate, wrapping — the `/polls` modal's `p` key.
+pub fn pick_next(poll_id: &str) -> Result<String> {
+    let (_cfg, store) = cfg_and_store()?;
+    let record = load_by_id(poll_id)?;
+    let count = record.ranked().len();
+    anyhow::ensure!(count > 0, "the ranking is empty");
+    // The next index is computed under the same lock the write takes, from
+    // the same read — one exact-id read of the store, on the TUI's event
+    // loop, and no window for an `outbox edit` to land between them.
+    let Some(_lock) = store.try_lock()? else {
+        bail!("the outbox is locked by a review in progress — try again in a moment");
+    };
+    let item = pick_card(&store, &record)?;
+    let next = loaded_index(&record, &item)
+        .map(|i| (i + 1) % count)
+        .unwrap_or(0);
+    let args = repick(&record, &item.args, next)?;
+    store.update_args(&item.id, args)?;
+    let tz = record.lifecycle()["timezone"].as_str().unwrap_or("UTC");
+    Ok(local_range(&record.ranked()[next], tz))
+}
+
+/// The poll's pending pick card — read once, by its exact id (never the
+/// whole-store scan `item()` is), and checked to be a card this side staged
+/// before anything rewrites it.
+fn pick_card(store: &OutboxStore, record: &PollRecord) -> Result<OutboxItem> {
+    let Some(item_id) = record.lifecycle()["pick_item"].as_str() else {
+        bail!(
+            "`{}` has no pick card ({}) — `mecha polls sweep` stages one when the verdict \
+             is a pick",
+            record.poll_id,
+            summary(record.lifecycle())
+        );
+    };
+    let item = store
+        .item_exact(item_id)?
+        .ok_or_else(|| anyhow::anyhow!("the pick card {item_id} is not in the outbox"))?;
     anyhow::ensure!(
         item.status == "pending",
         "the pick card {item_id} is {}, not pending",
@@ -512,26 +585,7 @@ pub fn pick(poll_id: &str, n: usize) -> Result<String> {
         item.tool,
         item.author
     );
-    let args = repick(&record, &item.args, n - 1)?;
-    store.update_args(item_id, args)?;
-    let tz = record.lifecycle()["timezone"].as_str().unwrap_or("UTC");
-    Ok(local_range(&record.ranked()[n - 1], tz))
-}
-
-/// Advance to the next candidate, wrapping — the `/polls` modal's `p` key.
-pub fn pick_next(poll_id: &str) -> Result<String> {
-    let (_cfg, store) = cfg_and_store()?;
-    let record = load_by_id(poll_id)?;
-    let Some(item_id) = record.lifecycle()["pick_item"].as_str() else {
-        bail!("no pick card — {}", summary(record.lifecycle()));
-    };
-    let item = store.item(item_id)?;
-    let count = record.ranked().len();
-    anyhow::ensure!(count > 0, "the ranking is empty");
-    let next = loaded_index(&record, &item)
-        .map(|i| (i + 1) % count)
-        .unwrap_or(0);
-    pick(poll_id, next + 1)
+    Ok(item)
 }
 
 /// One tick: stage what needs a card, reconcile what has been decided.
@@ -819,6 +873,22 @@ mod tests {
         let swapped = repick(&r, &rewritten, 1).unwrap();
         assert_eq!(swapped["description"], "Bring the draft.");
         assert_eq!(swapped["start_time"], "2030-02-07T18:00:00Z");
+
+        // A partial edit — one word fixed — keeps every word, and the marker
+        // still follows the slot: the card never names a row it will not book.
+        let mut touched = pick_args(&r, 0).unwrap();
+        let text = touched["description"]
+            .as_str()
+            .unwrap()
+            .replace("Scheduled from", "Chosen from");
+        touched["description"] = json!(text);
+        let swapped = repick(&r, &touched, 1).unwrap();
+        let description = swapped["description"].as_str().unwrap();
+        assert!(description.contains("Chosen from"), "{description}");
+        assert!(description.contains("\n  1. "), "{description}");
+        assert!(description.contains("\n▸ 2. "), "{description}");
+        assert!(!description.contains("▸ 1. "), "{description}");
+        assert_eq!(move_marker("no rows here", 1), "no rows here");
     }
 
     #[test]

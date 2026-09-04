@@ -229,11 +229,15 @@ pub fn event_text(record: &PollRecord) -> (String, String) {
 
 /// Where `factory-publish` keeps the records.
 pub fn records_dir() -> Result<PathBuf> {
-    Ok(dirs::home_dir()
-        .context("cannot determine home directory")?
-        .join(".mecha")
-        .join("factory")
-        .join("polls"))
+    // `MECHA_HOME` first, as `mecha` resolves it: this is the first store
+    // both binaries write, and under an isolated home they must agree.
+    let home = match std::env::var("MECHA_HOME") {
+        Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => dirs::home_dir()
+            .context("cannot determine home directory")?
+            .join(".mecha"),
+    };
+    Ok(home.join("factory").join("polls"))
 }
 
 fn person(v: &Value) -> Option<Person> {
