@@ -58,9 +58,12 @@ the public checkout was a generated artifact — `git archive HEAD` from
 `~/Github/personalized_knowledge_graph` minus an exclusion list, through a
 gate that *deletes* the tree it refuses — and this file said in bold that
 `~/Github/mecha-graph` was not a source. It is the source now. Work happens
-there; the private repo keeps only the ten files the export used to strip
-(the gold eval sets derived from real episodes, the operator docs, and the
-roster tooling) and is no longer where code is written.
+there; the private repo keeps only its notes — `HANDOFF`, `RESEARCH_LOOP`,
+`OPERATIONS` — and the roster tooling, and is no longer where code is
+written. The gold eval sets are **not** there either: they moved to
+`~/.mecha-graph/eval/` (0600), resolved by `eval::gold_path_from`, and
+private PR #5 (2026-09-02) removed `eval/gold*.jsonl` and
+`scripts/nightly-mecha.sh` from that checkout outright.
 
 What made that safe was moving the gate rather than dropping it. The public
 repo carries `.githooks/pre-push` and `.github/workflows/denylist.yml`, both
@@ -75,19 +78,35 @@ level and had let them reach 0.1.3 against 0.1.4, which is the cost the
 split was charging. The last export ran on 2026-09-01 and is
 `mecha-graph#2`; the histories stay disjoint, and nothing was back-published.
 
-**The boundary is not clean, and the exception is operational.**
-`scripts/nightly-mecha.sh` is private-only *by design* — the export strips
-it — and the 08:00 crontab line runs it from
-`~/Github/personalized_knowledge_graph`. So the private repo is not retired:
-it still holds that script, the gold eval sets and the roster tooling, and
-both crontab lines still point at it. `scripts/nightly.sh` exists in both;
-the cron runs the private copy.
+**Nothing runs from the private checkout any more (2026-09-04, the owner's
+ruling: no calls to `pkg`, everything on the public repo).** Both crontab
+lines run from `~/Github/mecha-graph` — 01:30 `scripts/nightly.sh` and 08:00
+`scripts/nightly-mecha.sh`, both of which exist there — and every MCP
+consumer runs `~/.cargo/bin/mecha-graph-mcp`, byte-identical to the public
+release build: mecha's own `[[mcp]] name = "graph"`, Claude Code's
+user-scope server (now also named `graph`; the `pkg` entry that pointed at
+the private repo's Aug-16 `pkg-mcp` — holding the empty pre-rename
+`~/pkg/graph.db`, so every `kg_*` call answered with nothing rather than an
+error — was removed), and Hermes's `mcp_servers.pkg` entry, repointed the
+same morning. A host app keeps its old server process until it restarts:
+Claude Code sessions and the Hermes dashboard started before the change are
+still holding the private binary, and restart to pick up the new one. The
+private repo keeps only its notes and the roster tooling (above), and
+nothing on this machine executes from it. This paragraph used to say the
+08:00 line ran the private copy of `nightly-mecha.sh` "by design"; that
+copy has not existed since private PR #5 on 2026-09-02, and the 01:30 line
+was the last one moved.
 
-A change spanning the two must land **public first**. The gossip cooldown
-arc is the worked example: `--min-sources` is a flag on the public binary
-and `nightly-mecha.sh` is the private caller that passes it, so landing the
-private half first gives the nightly a flag the installed binary does not
-have.
+The "land public first" rule for a change spanning the two repos has no
+code case left: its worked example — `--min-sources` on the public binary
+and `nightly-mecha.sh` as the private caller passing it — collapsed when
+the caller moved public, and nothing that runs now lives on the private
+side. What still spans the split is the roster
+(`~/.mecha-graph/denylist.txt` and the `PUBLIC_DENYLIST` secret, read by the
+public repo's `.githooks/pre-push` and `denylist.yml`) and the operator docs, neither of
+which gates a binary; the reflex that survives is that a public-side hook
+which reads a roster must be able to read it before a roster edit relies
+on it.
 
 ```bash
 cargo install --path mecha-graph     --locked --force   # mecha-graph (CLI)
@@ -116,6 +135,37 @@ graph server answers from the *installed* path:
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   | ~/.cargo/bin/mecha-graph-mcp | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["result"]["tools"]), "tools")'
 ```
+
+**And that probe only proves the file.** Every host that spawned the
+server as its own child keeps the *old* process until it restarts — the
+long-running `mecha` units in §2 that reach `setup::prepare*` do
+(`mecha-serve`, `mecha-slack`, `mecha-triggers`, `mecha-drain`; the voice
+worker runs `worker.py` under the Pipecat venv and spawns no MCP child),
+and so do Claude Code sessions (user-scope server `graph`) and the Hermes
+dashboard, which no step here restarts. The timer-fired oneshots
+(`mecha-mail-classify`, `mecha-ruminate`, `mecha-frontdoor`) need nothing
+here, as §2 says: each firing execs a fresh `mecha` and a fresh server, and
+restarting one by hand does not refresh a process, it *runs the sweep*.
+What those units do need is `~/.cargo/bin` on their `Environment=PATH`,
+because a bare `command = "mecha-graph-mcp"` resolves against the unit's
+PATH, and what a failed spawn does depends on the caller: everything that
+reaches `setup::prepare*` (`mail classify`, `frontdoor`, `serve`, `slack`,
+`triggers`, `validate`, `learn` — not `reflect`, which builds its provider
+from `Config::load` and spawns no MCP child) skips the server with one stderr line and
+carries on — the classifier or the front door would run a whole sweep with
+the `kg_*` tools absent and exit 0 — while the four direct-connect commands
+(`distill`, `corroborate`, `gossip`, `vet`) fail that step loudly with a
+non-zero exit, which in `ruminate.sh` (not `set -e`) shows up in the dated
+logfile while the script walks on. The silent case is the one to guard;
+the loud one is the good outcome. Every shipped unit that execs `mecha`,
+directly or through a wrapper, now carries that line (`scripts/*.service`,
+`scripts/voice/*.service`). After every install of
+`mecha-graph-mcp`, either restart those hosts or accept that they run the
+previous build until their next start; nothing about a stale child
+announces itself, which is the same silence the removed `pkg-mcp` entry
+hid behind (the two-repo paragraph earlier in this step). Check with
+`pgrep -af mecha-graph-mcp` and compare each process's start time to the
+binary's mtime.
 
 ### 1b. The web app's assets
 

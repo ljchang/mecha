@@ -14,4 +14,12 @@ Description=mecha nightly rumination (reflect, validate, learn)
 
 [Service]
 Type=oneshot
+# The wrapper runs `mecha` by absolute path, but the graph MCP server mecha
+# spawns is resolved by name against *this* PATH (passed through to the
+# child). Here the failure would be loud rather than silent: ruminate.sh's
+# `mecha distill` connects to the server directly and errors out on a failed
+# spawn, so the step announces itself in the dated log while the script (not
+# `set -e`) walks on. The same line the slack and triggers units carry
+# (found on review).
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=%h/Github/mecha/scripts/ruminate.sh

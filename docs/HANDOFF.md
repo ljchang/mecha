@@ -1692,7 +1692,20 @@ one person's mailbox rather than a public fact.
   -u mecha-voice-worker | grep "Say yes to send it"` is empty over thirty
   days — the spoken outbox confirmation has never played in a real call,
   most likely because no draft was ever staged during a voice turn; stage
-  one on purpose. Nothing was installed or restarted by this lane.
+  one on purpose. Nothing was installed or restarted by this lane. **Later
+  the same morning (~10:00), the owner ruled that nothing calls `pkg` any
+  more:** the 01:30 crontab line now runs
+  `~/Github/mecha-graph/scripts/nightly.sh` (backup at
+  `~/.mecha-graph/crontab.bak.20260904`), Claude
+  Code's user-scope MCP server is `graph` on `~/.cargo/bin/mecha-graph-mcp`
+  (the `pkg` entry on the private repo's stale binary and empty
+  `~/pkg/graph.db` is gone; `~/.claude.json.bak.20260904-pkg` is the
+  backup), and Hermes's entry was repointed the same way (its key is still
+  `pkg`). Restart Hermes and any long-lived Claude Code session to drop the
+  old server processes; mecha itself was already on the public binary. The
+  `update` skill's paragraph on the two repos says the rest. Owed in the
+  mecha-graph repo, not here: `docs/integrations.md`'s "Consumers (MCP)"
+  section still tells a reader to add `pkg-mcp` from the private path.
 - **When #153 and #158 merge, restart `mecha-voice-worker` — and check the
   shared checkout first, every time.** The unit's `WorkingDirectory` is
   `~/Github/mecha` and its `ExecStart` runs `scripts/voice/worker.py` from
