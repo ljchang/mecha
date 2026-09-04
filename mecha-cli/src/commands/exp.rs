@@ -632,13 +632,22 @@ async fn principal_call(
             workspace: workspace.clone(),
             case: case.clone(),
             trial: (point == PrincipalPoint::AfterTask).then(|| trial.clone()),
-            pending_outbox: mecha_core::outbox::OutboxStore::open(home.join("outbox"))?
-                .items()?
-                .into_iter()
-                .filter(|i| i.status == "pending")
-                .collect(),
-            open_questions: mecha_core::questions::QuestionStore::open(home.join("questions"))?
-                .open_items()?,
+            // A read: open only what exists, on the doctor's rule that an
+            // examination must not create what it was about to report.
+            pending_outbox: if home.join("outbox").is_dir() {
+                mecha_core::outbox::OutboxStore::open(home.join("outbox"))?
+                    .items()?
+                    .into_iter()
+                    .filter(|i| i.status == "pending")
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            open_questions: if home.join("questions").is_dir() {
+                mecha_core::questions::QuestionStore::open(home.join("questions"))?.open_items()?
+            } else {
+                Vec::new()
+            },
         };
         let (exe, args) = principal
             .command
@@ -713,7 +722,13 @@ async fn principal_call(
                 }
                 let status: Result<std::process::ExitStatus> = async {
                     let mut cmd = tokio::process::Command::new(mecha);
-                    cmd.args(&act.verb).args(flags);
+                    // The workspace last, as the stage runner's: `[tools]
+                    // workspace` rides into the home's config and beats
+                    // the cwd, and nothing in the verb may name one.
+                    cmd.args(&act.verb)
+                        .args(flags)
+                        .arg("--workspace")
+                        .arg(&workspace);
                     env_for(&mut cmd)?;
                     let out = std::fs::OpenOptions::new().append(true).open(&log)?;
                     let err = out.try_clone()?;
