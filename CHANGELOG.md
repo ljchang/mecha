@@ -200,6 +200,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`mecha eval --ab-config` and `--ab-rules` are two-arm experiments.**
+  Each writes its design to `~/.mecha/experiments/eval-ab-<kind>-<stamp>/`
+  before the arms run — a `bare` control and a `bare`-plus-delta treatment
+  (the override, or `learned_rules` turned back on: an arm's new
+  `levers_on`) predicting a lower failure cost — files each case as a
+  trial scored pass^k over `--runs`, and takes its verdict from
+  `experiment::judge`, so `mecha exp judge <name>` re-derives it. The arms
+  still run in-process on eval's forcings; the printed output keeps its
+  shape, the holdout is drawn by a seed derived from the delta rather
+  than a hash of the case id (the same delta over the same case set still
+  holds out the same cases; a case added to the file reshuffles the draw),
+  and both flags now write one JSON shape — `experiment`, `ab_rules`,
+  `ab_config`, `holdout_in`, `judgement`, `pairs`, `arm_a`, `arm_b`,
+  `flips` (each `{id, was, now}`) — where `--ab-rules` used to write
+  `without_rules`/`with_rules` and `flips` keyed the same way. Two
+  narrowings: `--mcp-file` is refused with either A/B flag, since the
+  fixture servers it adds have no lever to record them under; and the
+  manifest's description says that both arms ran with the operator's
+  approval rules lifted, eval's fixture forcing, which no lever can name. Both arms'
+  records carry the four knobs the machine and the flags set, so a control
+  run at `--max-turns 60` is filed as such.
+
 - **`mecha eval` now forces boredom and compact validation off**, with the
   rest of the lever set. Both are `[agent]` switches that ship on, so two
   machines with different config graded different runs — a boredom notice

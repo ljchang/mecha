@@ -127,7 +127,7 @@ pub struct Args {
     #[arg(long, conflicts_with = "compare")]
     pub ab_rules: bool,
 
-    /// Measure a candidate config change: run the case set once as configured
+    /// Measure a candidate config change: run the case set once bare
     /// and once with these overrides, and judge the difference.
     ///
     /// `KEY=VALUE`, repeatable. Keys are run options, which is the honest
@@ -147,7 +147,8 @@ pub struct Args {
     )]
     pub ab_config: Vec<String>,
 
-    /// One episode in this many is held out of selection, for `--ab-config`.
+    /// One episode in this many is held out of selection, for `--ab-config`
+    /// and `--ab-rules`.
     #[arg(long, default_value_t = 3, value_name = "N")]
     pub holdout_in: u64,
 }
@@ -469,17 +470,6 @@ async fn run_arm(
     Ok((scorecard, graded))
 }
 
-/// The `--ab-rules` report: both arms in full, so nothing about either is
-/// hidden, under a top-level shape `--compare` cannot mistake for a
-/// scorecard.
-#[derive(serde::Serialize)]
-struct AbReport {
-    ab_rules: bool,
-    without_rules: Report,
-    with_rules: Report,
-    flips: Vec<serde_json::Value>,
-}
-
 /// Run the set rules-free and rules-on and report the per-case flips.
 ///
 /// Case-level pass means pass^k under `--runs`, per arm — reliability flips
@@ -491,8 +481,6 @@ async fn ab_rules(
     cases: &[EvalCase],
     fixture: &Path,
 ) -> Result<()> {
-    // Fail before an hour of inference, not after: the treatment arm needs
-    // rules to measure.
     let has_rules = mecha_core::learning::LearningStore::open_existing_default()
         .and_then(|s| {
             s.rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)
@@ -504,49 +492,219 @@ async fn ab_rules(
         has_rules,
         "--ab-rules: the learning store has no rules to measure"
     );
-
-    eprintln!("── arm A: rules-free ──");
-    let (a_card, a_graded) = run_arm(global, args, cases, fixture, false, &[], "a").await?;
-    eprintln!("── arm B: with this machine's learned rules ──");
-    let (b_card, b_graded) = run_arm(global, args, cases, fixture, true, &[], "b").await?;
-
-    // A case passes an arm when every run of it passed — the same pass^k the
-    // scorecard reports.
-    let case_pass = |graded: &[GradedCase], id: &str| {
-        let runs: Vec<&GradedCase> = graded.iter().filter(|g| g.id == id).collect();
-        !runs.is_empty() && runs.iter().all(|g| g.passed)
+    let treatment = mecha_core::experiment::Arm {
+        preset: Some(mecha_core::experiment::Preset::Bare),
+        levers_on: vec!["learned_rules".into()],
+        prediction: Some(mecha_core::experiment::Prediction {
+            metric: mecha_core::experiment::ExpMetric::Failure,
+            rationale: "--ab-rules: this machine's learned rules, bare otherwise".into(),
+        }),
+        ..Default::default()
     };
+    ab_experiment(
+        global,
+        args,
+        cases,
+        fixture,
+        "rules",
+        treatment,
+        "with this machine's learned rules",
+        true,
+    )
+    .await
+}
 
-    let mut flips = Vec::new();
-    println!("\n── rules A/B ──");
-    println!(
-        "arm A (rules-free):  {}/{} cases",
-        a_card.passed, a_card.total
+/// Both A/B flags, as the two-arm experiment they are (`docs/EXPERIMENT-DESIGN.md`,
+/// the owner's ruling of 2026-09-04 that eval converges into `exp`): the
+/// control is `bare`, the treatment is `bare` plus one delta, the design is
+/// written to the experiment store *before* either arm runs, each case is
+/// filed as a trial — scored pass^k over `--runs`, one pair per case, as
+/// the old pairing scored it — and the verdict comes from
+/// `experiment::judge`, with the holdout drawn by the manifest's seed
+/// (derived from the delta, so a rerun holds out the same cases, which is
+/// the property the hash-by-id holdout used to give). The arms still run
+/// in-process through `run_arm`, on eval's forcings; what changed is that
+/// the design and the verdict are on the record like any other
+/// experiment's, and `mecha exp judge <name>` re-derives the verdict.
+#[allow(clippy::too_many_arguments)]
+async fn ab_experiment(
+    global: &GlobalOpts,
+    args: &Args,
+    cases: &[EvalCase],
+    fixture: &Path,
+    kind: &str,
+    treatment: mecha_core::experiment::Arm,
+    label: &str,
+    with_rules: bool,
+) -> Result<()> {
+    use mecha_core::candidate::Disposition;
+    use mecha_core::experiment::{ExperimentStore, Manifest, Tasks, Trial};
+
+    anyhow::ensure!(
+        args.holdout_in >= 2,
+        "--holdout-in must be at least 2, or every episode is held out and \
+         nothing selects"
     );
-    println!(
-        "arm B (with rules):  {}/{} cases",
-        b_card.passed, b_card.total
+    // The record must say what ran. `--mcp` puts the MCP lever on in both
+    // arms, and the manifest says so through the shared `levers_on`;
+    // `--mcp-file` adds servers no lever can name, so an A/B under it is
+    // refused rather than filed as bare (found on review).
+    anyhow::ensure!(
+        args.mcp_file.is_none(),
+        "--mcp-file cannot be recorded on an A/B's design (no lever names a fixture server); run the A/B without it"
     );
-    for case in cases {
-        let (a, b) = (
-            case_pass(&a_graded, &case.id),
-            case_pass(&b_graded, &case.id),
-        );
-        if a != b {
-            let label = if b { "IMPROVED" } else { "REGRESSED" };
-            println!("  {label}: {}", case.id);
-            flips.push(serde_json::json!({
-                "id": case.id,
-                "without_rules": a,
-                "with_rules": b,
-            }));
+    let shared: Vec<String> = if args.mcp {
+        vec!["mcp".into()]
+    } else {
+        Vec::new()
+    };
+    // And the knobs both arms inherit from this machine and the flags —
+    // the four `OverrideKey`s reach a run from `config.toml` and
+    // `GlobalOpts`, and `run_arm` carries them into both arms verbatim —
+    // go on both records, or a control run at `--max-turns 60` is filed
+    // as the default and hashes like one (found on review).
+    let shared_overrides = effective_overrides(global)?;
+    let name = ab_name(kind, chrono::Utc::now());
+    let mut manifest = Manifest::two_arm(
+        &name,
+        "treatment",
+        treatment,
+        Tasks {
+            cases: args.cases.clone(),
+            fixture: fixture.to_path_buf(),
+            ids: cases.iter().map(|c| c.id.clone()).collect(),
+            tags: Vec::new(),
+        },
+        args.holdout_in,
+        1,
+        &shared,
+        &shared_overrides,
+    )?;
+    // The one condition no lever can name: eval lifts the operator's
+    // approval rules in both arms (`force_reproducible`), while `bare` on a
+    // manifest means rules *on* and `Arm::resolve_levers` refuses the
+    // name. Said in the one field eval sets, so a later `mecha exp run` of
+    // this design — which would keep the rules — is not mistaken for the
+    // same condition (found on review).
+    manifest.description = format!(
+        "mecha eval A/B ({kind}): {label}; {} run(s) per case, scored pass^k, one pair per case; \
+         approval rules lifted in both arms (eval's fixture forcing, not expressible as a lever)",
+        args.runs
+    );
+    let store = ExperimentStore::open_default(&name)?;
+    store.create_manifest(&manifest)?;
+    eprintln!(
+        "recorded as experiment `{name}` ({})",
+        store.root().display()
+    );
+
+    // **The record drives both arms.** Each arm runs with exactly the
+    // overrides its manifest row carries — the shared knobs on both, the
+    // delta on the treatment — so what was measured is what was written,
+    // whatever this machine's config says; the first cut applied the shared
+    // knobs to arm B only and left arm A on the machine's values, a confound
+    // the manifest recorded as identical (found on review).
+    let control_overrides = manifest.arms["bare"].overrides.clone();
+    let overrides = manifest.arms["treatment"].overrides.clone();
+    eprintln!("── arm A: bare ──");
+    let (a_card, a_graded) =
+        run_arm(global, args, cases, fixture, false, &control_overrides, "a").await?;
+    eprintln!("── arm B: {label} ──");
+    let (b_card, b_graded) =
+        run_arm(global, args, cases, fixture, with_rules, &overrides, "b").await?;
+
+    let task_ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
+    let planned = manifest.trials(&task_ids, &a_card.provider, &a_card.model);
+    let mut trials = Vec::new();
+    for t in &planned {
+        let graded: Vec<&GradedCase> = if t.arm == "bare" {
+            &a_graded
+        } else {
+            &b_graded
+        }
+        .iter()
+        .filter(|g| g.id == t.task)
+        .collect();
+        if graded.is_empty() {
+            // Ran in neither arm or only one: missing is missing, not a tie.
+            continue;
+        }
+        trials.push(trial_of(t, &graded));
+    }
+    // Both arms have run by here, so a row that fails to write must not
+    // take the verdict and `--out` with it: the rows are the durable record,
+    // the printed verdict is what the operator waited an hour for (found on
+    // review). Failures are counted and said.
+    let mut unsaved = 0usize;
+    for t in &trials {
+        if let Err(e) = store.save_trial(t) {
+            unsaved += 1;
+            eprintln!("mecha eval: trial `{}` could not be written: {e:#}", t.id);
         }
     }
-    let net = b_card.passed as i64 - a_card.passed as i64;
+    if unsaved > 0 {
+        eprintln!(
+            "mecha eval: {unsaved} trial row(s) not on the store; the verdict below is from memory and `mecha exp judge {name}` will not reproduce it"
+        );
+    }
+    let verdicts = mecha_core::experiment::judge(&manifest, &trials);
+    let verdict = verdicts
+        .into_iter()
+        .find(|v| v.arm == "treatment")
+        .context("the treatment arm produced no verdict")?;
+    let judgement = &verdict.judgement;
+
+    let passed = |trials: &[Trial], arm: &str, task: &str| {
+        trials
+            .iter()
+            .find(|t| t.arm == arm && t.task == task)
+            .and_then(|t| t.passed)
+    };
+    println!("\n── {kind} A/B ──");
+    println!("arm A (bare):  {}/{} cases", a_card.passed, a_card.total);
+    println!("arm B ({label}):  {}/{} cases", b_card.passed, b_card.total);
+    let mut flips = Vec::new();
+    for case in cases {
+        let (was, now) = (
+            passed(&trials, "bare", &case.id),
+            passed(&trials, "treatment", &case.id),
+        );
+        if let (Some(was), Some(now)) = (was, now) {
+            if was != now {
+                println!(
+                    "  {}: {}",
+                    if now { "IMPROVED" } else { "REGRESSED" },
+                    case.id
+                );
+                flips.push(serde_json::json!({ "id": case.id, "was": was, "now": now }));
+            }
+        }
+    }
     println!(
-        "net: {net:+} case(s); {} flip(s) — judge-graded flips are a prompt to read the \
-         answers, not a verdict",
-        flips.len()
+        "\nselection  {}+ {}- {}=    holdout  {}+ {}- {}=    ({} pairs)",
+        judgement.selection.wins,
+        judgement.selection.losses,
+        judgement.selection.ties,
+        judgement.holdout.wins,
+        judgement.holdout.losses,
+        judgement.holdout.ties,
+        verdict.pairs,
+    );
+    println!(
+        "work       {} tool calls → {}",
+        judgement.work_baseline, judgement.work_candidate
+    );
+    match &judgement.disposition {
+        Disposition::Accept => println!(
+            "\nverdict: BETTER — beat the original on the selection slice and held on the \
+             holdout"
+        ),
+        Disposition::Propose(why) => println!("\nverdict: READ IT — {why}"),
+        Disposition::Reject(why) => println!("\nverdict: NO — {why}"),
+    }
+    println!(
+        "\njudge-graded flips are a prompt to read the answers, not a verdict; this is one \
+         sample of a non-deterministic measurement. `mecha exp judge {name}` re-derives it."
     );
 
     if let Some(path) = &args.out {
@@ -557,17 +715,122 @@ async fn ab_rules(
                 .map(|g| serde_json::to_value(g).unwrap_or(serde_json::Value::Null))
                 .collect(),
         };
-        let ab = AbReport {
-            ab_rules: true,
-            without_rules: report(&a_card, &a_graded),
-            with_rules: report(&b_card, &b_graded),
-            flips,
-        };
-        std::fs::write(path, serde_json::to_string_pretty(&ab)?)
+        let out = serde_json::json!({
+            "experiment": name,
+            "ab_rules": with_rules,
+            "ab_config": args.ab_config,
+            "arm_b_overrides": overrides,
+            "arm_a_overrides": control_overrides,
+            "holdout_in": args.holdout_in,
+            "judgement": judgement,
+            "pairs": verdict.pairs,
+            "arm_a": report(&a_card, &a_graded),
+            "arm_b": report(&b_card, &b_graded),
+            "flips": flips,
+        });
+        std::fs::write(path, serde_json::to_string_pretty(&out)?)
             .with_context(|| format!("writing {}", path.display()))?;
         eprintln!("\nwrote {}", path.display());
     }
     Ok(())
+}
+
+/// The four override knobs as both arms actually run them, spelled as
+/// `KEY=VALUE` so they land on the manifest through the same parser an
+/// arm's own overrides go through. **Loaded the way the arms load**:
+/// `prepare_tools` reads the config against the working directory (or the
+/// global file alone under `--global-config-only`) with the flags on top,
+/// and the first cut read it against the fixture — a different file
+/// whenever either end carried a `mecha.toml`, and the value it recorded
+/// was then applied to one arm only (found on review). A knob whose
+/// effective value the closed set will not accept (`compact_at_tokens`
+/// under its floor is legal config) is dropped with a warning rather than
+/// refusing the A/B: it is being recorded, not proposed. An unset knob is
+/// not recorded — there is nothing to write.
+fn effective_overrides(global: &GlobalOpts) -> Result<Vec<String>> {
+    let cfg = if global.global_config_only {
+        mecha_core::config::Config::load_global()?
+    } else {
+        let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+        mecha_core::config::Config::load(&cwd)?
+    };
+    let mut candidates = Vec::new();
+    let max_turns = global.max_turns.unwrap_or(cfg.agent.max_turns);
+    candidates.push(format!("max_turns={max_turns}"));
+    if let Some(n) = global.compact_at.or(cfg.agent.compact_at_tokens) {
+        candidates.push(format!("compact_at_tokens={n}"));
+    }
+    if let Some(n) = global.max_output_tokens.or(cfg.agent.max_output_tokens) {
+        candidates.push(format!("max_output_tokens={n}"));
+    }
+    if let Some(e) = global.effort.or(cfg.agent.effort) {
+        candidates.push(format!("effort={}", e.as_str()));
+    }
+    let mut out = Vec::new();
+    for spec in candidates {
+        match mecha_core::harness::parse_change(&spec) {
+            Ok(_) => out.push(spec),
+            Err(e) => eprintln!(
+                "mecha eval: this machine's effective `{spec}` is not recorded on the A/B's design ({e:#}); both arms still run with it"
+            ),
+        }
+    }
+    Ok(out)
+}
+
+/// The experiment an A/B records as. A producer name, so lowercase, digits,
+/// `-` and `_` only — the first cut stamped `%Y%m%dT%H%M%S`, whose `T`
+/// failed `valid_producer` and killed every A/B before an arm ran (found
+/// on review); the test below validates the exact string this builds.
+fn ab_name(kind: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    format!("eval-ab-{kind}-{}", now.format("%Y%m%d-%H%M%S"))
+}
+
+/// One case's graded runs as a trial row: pass^k over the runs, the checks
+/// concatenated, the stats folded — the same pair the old A/B scored, on the
+/// experiment store's row.
+fn trial_of(
+    planned: &mecha_core::experiment::Trial,
+    graded: &[&GradedCase],
+) -> mecha_core::experiment::Trial {
+    let passed = graded.iter().all(|g| g.passed);
+    let checks = graded
+        .iter()
+        .flat_map(|g| g.checks.iter().cloned())
+        .collect();
+    // `RunStats::fold` is written for one session's *sequential* runs, so
+    // its `stop_cause`, `exhausted` and `ended_on_failed_call` are
+    // last-wins. These rows are independent replicates of one case, and
+    // "the last replicate's" is not what those field names say — so on a
+    // multi-run row the three are left unmeasured (`None` / their
+    // defaults) rather than borrowed from run k, and `duration_secs` is
+    // the total across replicates (found on review). A single run's row is
+    // that run's, in full.
+    let replicates = graded.len();
+    let stats =
+        mecha_core::session::RunStats::fold(graded.iter().map(|g| mecha_core::session::RunStats {
+            turns: g.turns,
+            usage: g.usage.clone(),
+            tool_calls: g.tools_called.len() as u32,
+            // `GradedCase` splits what `RunStats` folds, on opposite axes:
+            // its `tool_errors` is `is_error && !unknown` (denials in,
+            // invented tools apart), the run record's is
+            // `unknown || (is_error && !denied)`. Re-derived here so the
+            // row means what every row on the store means (found on
+            // review).
+            tool_errors: g.tool_errors.saturating_sub(g.tool_denied) + g.unknown_tools,
+            tool_denied: g.tool_denied,
+            malformed_tool_args: g.malformed_tool_args,
+            duration_secs: Some(g.elapsed_ms as f64 / 1000.0),
+            // Carried, not defaulted: a zero here would read as measured.
+            compactions: g.compactions,
+            ended_on_failed_call: replicates == 1 && g.ended_on_failed_call,
+            blocked_sends: g.blocked_sends,
+            stop_cause: if replicates == 1 { g.stop_cause } else { None },
+            usage_complete: g.usage_complete,
+            ..Default::default()
+        }));
+    mecha_core::experiment::Trial::finished(planned, passed, checks, stats)
 }
 
 /// Build the per-item contexts: a private staged workspace for sandboxed cases,
@@ -1025,138 +1288,23 @@ async fn ab_config(
     cases: &[EvalCase],
     fixture: &Path,
 ) -> Result<()> {
-    use mecha_core::candidate::{judge_with, ChangeClass, Disposition};
-
-    // Parse before an hour of inference, not after: a typo in an override
-    // should cost a line of output, not two full arms.
     for spec in &args.ab_config {
         apply_override(&mut global.clone(), spec)?;
     }
-    anyhow::ensure!(
-        args.holdout_in >= 2,
-        "--holdout-in must be at least 2, or every episode is held out and \
-         nothing selects"
-    );
-
-    eprintln!("── arm A: as configured ──");
-    let (a_card, a_graded) = run_arm(global, args, cases, fixture, false, &[], "a").await?;
-    eprintln!("── arm B: {} ──", args.ab_config.join(", "));
-    let (b_card, b_graded) =
-        run_arm(global, args, cases, fixture, false, &args.ab_config, "b").await?;
-
-    // pass^k in both arms, the same bar the scorecard reports.
-    let case_pass = |graded: &[GradedCase], id: &str| {
-        let runs: Vec<&GradedCase> = graded.iter().filter(|g| g.id == id).collect();
-        !runs.is_empty() && runs.iter().all(|g| g.passed)
+    let treatment = mecha_core::experiment::Arm {
+        preset: Some(mecha_core::experiment::Preset::Bare),
+        overrides: args.ab_config.clone(),
+        prediction: Some(mecha_core::experiment::Prediction {
+            metric: mecha_core::experiment::ExpMetric::Failure,
+            rationale: format!("--ab-config {}", args.ab_config.join(" ")),
+        }),
+        ..Default::default()
     };
-    let calls = |graded: &[GradedCase], id: &str| -> u64 {
-        graded
-            .iter()
-            .filter(|g| g.id == id)
-            .map(|g| g.tools_called.len() as u64)
-            .sum()
-    };
-
-    struct Outcome {
-        id: String,
-        was: bool,
-        now: bool,
-        work_a: u64,
-        work_b: u64,
-    }
-    // Only cases that ran in both arms: one missing from an arm is missing,
-    // not a tie, and scoring it either way lets a candidate that dies on the
-    // hard cases look good on the ones it survived.
-    let outcomes: Vec<Outcome> = cases
-        .iter()
-        .filter(|c| a_graded.iter().any(|g| g.id == c.id) && b_graded.iter().any(|g| g.id == c.id))
-        .map(|c| Outcome {
-            id: c.id.clone(),
-            was: case_pass(&a_graded, &c.id),
-            now: case_pass(&b_graded, &c.id),
-            work_a: calls(&a_graded, &c.id),
-            work_b: calls(&b_graded, &c.id),
-        })
-        .collect();
-
-    fn cost(o: &Outcome) -> (&str, f64, f64) {
-        (
-            o.id.as_str(),
-            f64::from(u8::from(!o.was)),
-            f64::from(u8::from(!o.now)),
-        )
-    }
-    let judgement = judge_with(
-        ChangeClass::Config,
-        &outcomes,
-        cost,
-        |o| (o.work_a, o.work_b),
-        args.holdout_in,
-    );
-
-    println!("\n── config A/B ──");
-    println!(
-        "arm A (as configured): {}/{} cases",
-        a_card.passed, a_card.total
-    );
-    println!(
-        "arm B ({}): {}/{} cases",
-        args.ab_config.join(", "),
-        b_card.passed,
-        b_card.total
-    );
-    for o in &outcomes {
-        if o.was != o.now {
-            println!(
-                "  {}: {}",
-                if o.now { "IMPROVED" } else { "REGRESSED" },
-                o.id
-            );
-        }
-    }
-    println!(
-        "\nselection  {}+ {}- {}=    holdout  {}+ {}- {}=",
-        judgement.selection.wins,
-        judgement.selection.losses,
-        judgement.selection.ties,
-        judgement.holdout.wins,
-        judgement.holdout.losses,
-        judgement.holdout.ties,
-    );
-    println!(
-        "work       {} tool calls → {}",
-        judgement.work_baseline, judgement.work_candidate
-    );
-    match &judgement.disposition {
-        Disposition::Accept => println!(
-            "\nverdict: BETTER — beat the original on the selection slice and held on the \
-             holdout"
-        ),
-        Disposition::Propose(why) => println!("\nverdict: READ IT — {why}"),
-        Disposition::Reject(why) => println!("\nverdict: NO — {why}"),
-    }
-    println!(
-        "\njudge-graded flips are a prompt to read the answers, not a verdict; this is one \
-         sample of a non-deterministic measurement"
-    );
-
-    if let Some(path) = &args.out {
-        let out = serde_json::json!({
-            "ab_config": args.ab_config,
-            "holdout_in": args.holdout_in,
-            "judgement": judgement,
-            "arm_a": { "passed": a_card.passed, "total": a_card.total },
-            "arm_b": { "passed": b_card.passed, "total": b_card.total },
-            "cases": outcomes.iter().map(|o| serde_json::json!({
-                "id": o.id, "was": o.was, "now": o.now,
-                "work_a": o.work_a, "work_b": o.work_b,
-            })).collect::<Vec<_>>(),
-        });
-        std::fs::write(path, serde_json::to_string_pretty(&out)?)
-            .with_context(|| format!("writing {}", path.display()))?;
-        eprintln!("\nwrote {}", path.display());
-    }
-    Ok(())
+    let label = args.ab_config.join(", ");
+    ab_experiment(
+        global, args, cases, fixture, "config", treatment, &label, false,
+    )
+    .await
 }
 
 /// Everything a scorecard must not depend on, asserted in one place.
@@ -1272,6 +1420,94 @@ mod tests {
         assert!(!with_mcp.no_mcp, "--mcp is opt-in, not overridden");
         assert!(with_mcp.no_compact_tool, "and it opts into nothing else");
         assert!(with_mcp.no_step_escalation, "including this one");
+    }
+
+    /// The name an A/B records under is the name the store accepts — checked
+    /// on the exact string the CLI builds, since the two-arm tests build
+    /// their own names and the first cut's stamp failed the producer rule.
+    #[test]
+    fn the_ab_experiment_name_is_a_valid_producer_name() {
+        for kind in ["config", "rules"] {
+            let name = ab_name(kind, chrono::Utc::now());
+            mecha_core::work::valid_producer(&name).unwrap();
+            assert!(name.starts_with(&format!("eval-ab-{kind}-")));
+            mecha_core::experiment::ExperimentStore::open(std::env::temp_dir(), &name).unwrap();
+        }
+    }
+
+    /// A case's runs fold into one trial row the way the old pairing scored
+    /// them: pass^k over the runs, the stats summed, the checks kept.
+    #[test]
+    fn a_cases_runs_fold_into_one_trial_scored_pass_k() {
+        let graded = |run: u32, passed: bool, turns: u32| -> GradedCase {
+            serde_json::from_value(serde_json::json!({
+                "id": "c", "run": run, "passed": passed, "tags": ["t"],
+                "checks": [{"name": "contains", "passed": passed, "detail": ""}],
+                "turns": turns, "elapsed_ms": 500, "malformed_tool_args": 0,
+                "unknown_tools": 1, "tool_errors": 2, "tool_denied": 1, "tools_called": ["shell", "fs_read"],
+                "compactions": 1, "ended_on_failed_call": true, "blocked_sends": 1, "stop_cause": "completed", "usage_complete": true,
+                "usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                "error": null, "text": "x"
+            }))
+            .unwrap()
+        };
+        let planned = mecha_core::experiment::Trial {
+            id: "bare__c__r1".into(),
+            arm: "bare".into(),
+            task: "c".into(),
+            seed: None,
+            repetition: 1,
+            condition_hash: "h".into(),
+            status: mecha_core::experiment::TrialStatus::Pending,
+            session_id: None,
+            started_at: None,
+            finished_at: None,
+            error: None,
+            passed: None,
+            checks: Vec::new(),
+            stats: None,
+        };
+        let runs = [graded(1, true, 3), graded(2, false, 5)];
+        let t = trial_of(&planned, &runs.iter().collect::<Vec<_>>());
+        assert_eq!(
+            t.passed,
+            Some(false),
+            "pass^k: one failed run fails the case"
+        );
+        assert_eq!(t.checks.len(), 2);
+        let s = t.stats.unwrap();
+        assert_eq!(s.turns, 8);
+        assert_eq!(s.tool_calls, 4);
+        // Per run: 2 graded errors, of which 1 a denial, plus 1 invented
+        // tool → 2 run-record errors and 1 denial; two runs fold to 4 and 2.
+        assert_eq!(s.tool_errors, 4);
+        assert_eq!(s.tool_denied, 2);
+        assert_eq!(s.compactions, 2, "carried, not defaulted");
+        assert_eq!(s.blocked_sends, 2);
+        assert!(
+            !s.ended_on_failed_call,
+            "unmeasured on a multi-run row, not run k's"
+        );
+        assert_eq!(s.stop_cause, None, "unmeasured on a multi-run row");
+        let one = [graded(1, true, 3)];
+        let single = trial_of(&planned, &one.iter().collect::<Vec<_>>())
+            .stats
+            .unwrap();
+        assert!(
+            single.ended_on_failed_call,
+            "a single run's row is that run's"
+        );
+        assert_eq!(
+            single.stop_cause,
+            Some(mecha_core::agent::StopCause::Completed)
+        );
+        assert_eq!(s.duration_secs, Some(1.0));
+        assert_eq!(t.status, mecha_core::experiment::TrialStatus::Done);
+        let all_pass = [graded(1, true, 3), graded(2, true, 3)];
+        assert_eq!(
+            trial_of(&planned, &all_pass.iter().collect::<Vec<_>>()).passed,
+            Some(true)
+        );
     }
 
     /// `--ab-rules`' treatment arm must actually carry rules.

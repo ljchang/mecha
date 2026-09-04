@@ -39,6 +39,13 @@ levers_off = ["boredom"]
 metric = "turns"
 rationale = "without the notice, the run does not spend turns answering it"
 
+[arms.rules-only]
+preset = "bare"
+levers_on = ["learned_rules"]     # add-one-to-bare
+[arms.rules-only.prediction]
+metric = "failure"
+rationale = "the rules alone, over nothing else"
+
 [arms.bare]
 preset = "bare"
 [arms.bare.prediction]
@@ -55,7 +62,9 @@ rationale = "the same harness on a smaller model fails more"
 
 An arm may name its `provider` (a key in your config's `[providers]` table)
 and `model`; absent, it runs against your default. Beyond that it may only
-vary the closed set: levers by name (the list is
+vary the closed set: levers by name in `levers_off`, or turned back on
+after a preset in `levers_on` (`bare` plus `learned_rules` is the
+add-one-to-bare design; a name in both lists is on — the list of levers is
 `mecha_core::harness::Lever`), knobs as `KEY=VALUE` over the same override set
 `harness ruminate` uses, and a preset — `bare` is what eval runs, `full` is
 every lever on. An unknown lever name is a load error. The `approval_rules`

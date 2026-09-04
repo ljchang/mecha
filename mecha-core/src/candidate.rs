@@ -519,8 +519,10 @@ pub fn judge_with<T>(
 ///
 /// **Extracted because prioritising a corpus prioritises both halves of a
 /// partition of it.** [`is_holdout`] splits one pool, which is right when the
-/// pool was gathered uniformly — every eval case runs, so `--ab-config` still
-/// uses it. It is wrong the moment the pool is drawn by informativeness:
+/// pool was gathered uniformly. (`--ab-config` used it for that reason until
+/// eval's A/B became a two-arm experiment; `experiment::judge` now draws the
+/// holdout with the manifest's seed, and [`judge`] is this split's one
+/// caller.) It is wrong the moment the pool is drawn by informativeness:
 /// hashing a biased pool yields two biased slices, and the holdout stops being
 /// the thing that corrects the selection's bias. Prioritised experience replay
 /// has the same problem and answers it with importance weights; here the

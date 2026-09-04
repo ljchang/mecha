@@ -270,8 +270,11 @@ through the function that writes every session's record.
 `--ab-rules` is the one deliberate exception to the learned-rules rule; see
 [Learning](/docs/features/learning). It runs the case set rules-free and then
 rules-on, prints the per-case flips, and writes a **differently shaped** JSON
-(`{"ab_rules": true, "without_rules": …, "with_rules": …, "flips": […]}`) that
-`--compare` cannot mistake for a scorecard. Neither arm's ordinary scorecard is
+(`{"experiment", "ab_rules", "ab_config", "arm_a_overrides",
+"arm_b_overrides", "holdout_in", "judgement", "pairs", "arm_a", "arm_b",
+"flips": [{"id", "was", "now"}, …]}` — `ab_config` is the flag as passed,
+the two `*_overrides` are what each arm actually ran with, the machine's
+knobs included; the same shape `--ab-config` writes) that `--compare` cannot mistake for a scorecard. Neither arm's ordinary scorecard is
 printed, and it always exits 0 — the delta is a finding, not a gate.
 
 Experiments — arms that vary the lever set, a stored design, an isolated
@@ -279,12 +282,23 @@ home per arm — are [`mecha exp`](/docs/features/experiments), a peer of eval
 that shares this page's case file, fixture and graders and holds the
 opposite thing fixed: the model, not the harness.
 
+`--ab-rules` is the same shape with `learned_rules` turned back on over the
+bare preset — the add-one-to-bare design — recorded under
+`eval-ab-rules-<stamp>` and judged the same way, with the per-case flips
+still printed.
+
 ## `--ab-config`: measuring a proposed change
 
 `--ab-config KEY=VALUE` runs the case set twice, differing only in the override,
-and judges the difference. It is the **content-sensitive arm of the
-[candidate gate](/docs/features/run-quality#the-gate)**: a case's cost is failing it, so a
-pass is a win and every guardrail in the gate applies unchanged.
+and judges the difference. It is a **two-arm [experiment](/docs/features/experiments)**:
+the design — a `bare` control and a `bare`-plus-override treatment predicting
+a lower failure cost — is written to `~/.mecha/experiments/eval-ab-config-<stamp>/`
+before either arm runs, each case is filed as a trial, and the verdict comes
+from the experiment gate; `mecha exp judge <name>` re-derives it. The arms
+still run in-process on eval's forcings. It is the **content-sensitive arm of
+the [candidate gate](/docs/features/run-quality#the-gate)**: a case's cost is
+failing it, so a pass is a win and every guardrail in the gate applies
+unchanged.
 
 ```bash
 mecha eval --ab-config max_turns=40 eval/cases.jsonl
@@ -315,9 +329,11 @@ inference.
 Four properties come from the gate rather than from this command:
 
 - **Paired by case, and split.** A case is scored on pass^k in both arms. One in
-  `--holdout-in` cases (default 3) is held out of selection by a hash of its id
-  — never at random, or a rerun grades against a different holdout and
-  "confirmed on unseen cases" stops meaning anything.
+  `--holdout-in` cases (default 3), and never fewer than the gate's floor of
+  four, is held out of selection by a draw seeded from the override itself — never at random, so the same override over the
+  same case set grades against the same holdout on a rerun. (Add a case to
+  the file and the draw reshuffles: the promise is per case set, not per
+  case id.)
 - **A case that ran in only one arm is dropped.** Missing is missing, not a tie.
 - **The work guardrail outranks the score.** Tool calls falling below 75% of the
   baseline rejects the change: passing more cases while attempting less is the
@@ -349,12 +365,12 @@ proposal; see [Run quality](/docs/features/run-quality#the-diagnostic-stage).
 | `--judge-model` / `--judge-provider` | the model under test | who grades `expect.judge` |
 | `--keep-workspaces` | off | do not delete the staging root |
 | `--mcp` | off | connect this machine's MCP servers |
-| `--mcp-file <PATH>` | — | connect exactly the servers in that file |
+| `--mcp-file <PATH>` | — | connect exactly the servers in that file; refused with `--ab-config` / `--ab-rules`, since fixture servers have no lever to record them under and an A/B will not file its design as bare |
 | `--no-ask-user` | off | withhold `ask_user` (by default it is present and always declines) |
 | `--compare <PATHS…>` | — | print a table from written reports instead of running |
 | `--ab-rules` | off | paired rules-free / rules-on run |
 | `--ab-config <K=V>` | — | paired run under a config override, judged; repeatable |
-| `--holdout-in <N>` | 3 | one case in N held out of selection, for `--ab-config` |
+| `--holdout-in <N>` | 3 | one case in N held out of selection, for `--ab-config` and `--ab-rules` |
 
 `mecha eval` exits non-zero when any case failed, so it also works as a
 regression gate on the harness itself. (`--compare`, `--ab-rules` and

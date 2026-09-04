@@ -310,6 +310,26 @@ pub struct GradedCase {
     pub malformed_tool_args: u32,
     pub unknown_tools: u32,
     pub tool_errors: u32,
+    /// Calls the approver refused. Counted apart because `tool_errors`
+    /// here includes them (a denied trace carries `is_error`) while
+    /// `RunStats::tool_errors` excludes them, and a row filed on the
+    /// experiment store from a graded case has to mean what every other
+    /// row there means (found on review).
+    #[serde(default)]
+    pub tool_denied: u32,
+    /// The run-record counters the result carried, kept so a row filed from
+    /// a graded case does not write "measured zero" where the run was never
+    /// asked (found on review). Defaults on read for rows from before them.
+    #[serde(default)]
+    pub compactions: u32,
+    #[serde(default)]
+    pub ended_on_failed_call: bool,
+    #[serde(default)]
+    pub blocked_sends: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_cause: Option<crate::agent::StopCause>,
+    #[serde(default)]
+    pub usage_complete: bool,
     pub tools_called: Vec<String>,
     pub usage: crate::message::Usage,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -606,6 +626,12 @@ pub fn grade(case: &EvalCase, result: &BatchResult) -> GradedCase {
             .iter()
             .filter(|c| c.is_error && !c.unknown)
             .count() as u32,
+        tool_denied: result.tool_calls.iter().filter(|c| c.denied).count() as u32,
+        compactions: result.compactions,
+        ended_on_failed_call: result.ended_on_failed_call,
+        blocked_sends: result.blocked_sends,
+        stop_cause: result.stop_cause,
+        usage_complete: result.usage_complete,
         tools_called: called,
         usage: result.usage.clone(),
         error: result.error.clone(),
@@ -1462,6 +1488,12 @@ mod tests {
             elapsed_ms: 10,
             malformed_tool_args: 0,
             unknown_tools: 0,
+            tool_denied: 0,
+            compactions: 0,
+            ended_on_failed_call: false,
+            blocked_sends: 0,
+            stop_cause: None,
+            usage_complete: true,
             tool_errors: 0,
             tools_called: vec![],
             usage: Default::default(),
