@@ -266,16 +266,14 @@ impl Manifest {
             }
         }
         let own = std::mem::take(&mut treatment.overrides);
-        treatment.overrides = shared_overrides
+        let key_of = |s: &str| s.split_once('=').map(|(k, _)| k.trim().to_string());
+        let mut merged: Vec<String> = shared_overrides
             .iter()
-            .filter(|s| {
-                let key = s.split_once('=').map(|(k, _)| k.trim()).unwrap_or("");
-                !own.iter()
-                    .any(|o| o.split_once('=').map(|(k, _)| k.trim()) == Some(key))
-            })
+            .filter(|s| !own.iter().any(|o| key_of(o) == key_of(s)))
             .cloned()
-            .chain(own)
             .collect();
+        merged.extend(own);
+        treatment.overrides = merged;
         let split_seed = {
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for b in format!(
