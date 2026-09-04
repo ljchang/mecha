@@ -7,8 +7,8 @@ experience — what the owner types, what they review, and what happens
 while they are not looking — and the lifecycle that has to exist for the
 experience to be true.*
 
-> **Status: designed, not built.** §7 is the build order; §6 lists the
-> rulings the build waits on. Everything in §2 is measured against the
+> **Status: ruled 2026-09-04, phase 1 in progress.** §6 records the six
+> rulings; §7 is the build order. Everything in §2 is measured against the
 > tree at `mecha` 5e85ce5 and `mecha-factory` fdfbb7b.
 
 ## 0. The one-sentence shape
@@ -40,10 +40,10 @@ named addition to one.
    **the invitation as the recipients will read it**: the owner's own
    sentence above a default block that explains the link, the deadline and
    what happens next. Beside it: who (name and address), how long, when
-   answers close, how many candidate times and over which dates, and which
-   account it sends from. `edit` changes the message. Release does two
-   things and the card says both: mint the poll on the box, and send each
-   person their link from the owner's account.
+   answers close, the date window the times will be drawn from, and which
+   account it sends from. `edit` changes the message or the template.
+   Release does two things and the card says both: mint the poll on the
+   box, and send each person their link from the owner's account.
 3. **Wait.** The `/polls` monitor and the morning briefing show the
    lifecycle in one line — *"lab meeting · invites sent · 2 of 3 answered ·
    closes Fri 5pm"* — and the owner does nothing. The sweep nudges
@@ -119,10 +119,12 @@ same footing as `~/.mecha/factory/publish.key`.
 
 **Candidates are computed at release, and the card says so.** A poll
 staged at five and released at nine is seeded from nine o'clock's calendar.
-The card shows *how many* candidates over *which dates* as of staging, with
-the line "recomputed from live availability at release". This is §2.1's
-own reasoning applied: the candidate set is deterministic code over the
-owner's own calendar, which the slot push already declines to review.
+Staging executes nothing, so the card cannot count them; it shows the
+window they will be drawn from and says "times drawn from live
+availability at release", and the release output and the record carry the
+list. This is §2.1's own reasoning applied: the candidate set is
+deterministic code over the owner's own calendar, which the slot push
+already declines to review.
 
 ### 3.2 The record is the state machine
 
@@ -154,10 +156,14 @@ values load as `null`, never fail the record.
 ### 3.3 The invitation
 
 Templated at home, sent from the owner's account, one message per
-participant carrying that person's link. Subject and body are compiled-in
-defaults, overridable by a `[poll_mail]` table in the policy file (the
-owner's, like SCHEDULING-DESIGN's `[mail]`), with `{title}`, `{duration}`,
-`{deadline_local}`, `{url}`, `{message}` placeholders:
+participant carrying that person's link. The subject and body templates
+are **`default`s declared in the tool's own schema**, so staging pins them
+into the card (`tool::with_schema_defaults` — the same mechanism that pins
+`mail_send`'s account) and the owner edits them there; the record stores
+what was released and the sweep substitutes `{title}`, `{duration}`,
+`{deadline_local}`, `{url}` and `{message}` per participant. No separate
+template file: the card *is* the template, per poll, and an edit there is
+the owner's voice in the owner's outbox.
 
 ```
 Subject: When can you meet? — {title}
@@ -175,10 +181,9 @@ the answers are yours — so please don't forward it. Once everyone has
 answered, I'll send a calendar invitation for the time that works.
 ```
 
-The card shows this rendered once, for the first participant, with the
-recipient list beside it; `edit` changes `message` and the re-rendered
-body follows. The writing miner may learn from that edit — it is the owner
-correcting a letter in their own voice, which is the outbox's whole
+The card shows `message` and the template as prose with the recipient
+list beside them. The writing miner may learn from an edit — it is the
+owner correcting a letter in their own voice, which is the outbox's whole
 learning signal — so the card is `Message`-kind, and `poll_create` /
 `poll_meeting_create` leave `publish_tools` (G7). The onboarding page's
 routing block changes with it.
@@ -254,7 +259,7 @@ tick.
 
 | surface | shows |
 |---|---|
-| the outbox card (moment 2) | the rendered invitation, the recipient list, duration, deadline, candidate count and date range, the sending account |
+| the outbox card (moment 2) | the message and the invitation template as prose, the recipient list, duration, deadline, the date window, the sending account |
 | `/polls` monitor, briefing, `mecha doctor` | one lifecycle line per open poll: *invites sent 3/3 · 2 answered · closes Fri 5pm*; *needs a pick* as a finding, never a silent queue |
 | the pick card (moment 4) | the event draft, the ranking with reasons, which slot is loaded |
 | the poll page | the outcome sentence, for anyone holding a link |
@@ -289,12 +294,24 @@ a nudge eleven hours after an invitation is nagging.
 | yes | nothing feasible | pick, titled *no time works for everyone* | same | same |
 | no (deadline) | any | pick, silent people named | same | same |
 
-`auto_book` lives in the policy file's `[poll]` table. The default is the
-existing ruling; `"feasible"` is for the owner who would rather never see
-a card than protect a colleague's if-needed; `"never"` is for the owner
-who wants to look every time. There is no fourth value that books over a
-silent participant — a meeting someone never agreed to is the failure the
-poll exists to prevent.
+The numbers and the knob live in the policy file's `[poll]` table, every
+key optional:
+
+```toml
+[poll]
+auto_book = "unanimous"     # unanimous | feasible | manual
+deadline_days = 3           # answers close this many days after the invitations
+deadline_hour = 17          # at this hour, in the policy's zone
+nudge_hours_before = 24     # one nudge to the silent; 0 disables it
+nudge_min_lead_hours = 36   # no nudge when the deadline was closer than this at send
+```
+
+A per-call `deadline` overrides the two deadline keys for that poll. The
+default is the existing ruling; `"feasible"` is for the owner who would
+rather never see a card than protect a colleague's if-needed; `"manual"`
+is for the owner who wants to look every time. There is no fourth value
+that books over a silent participant — a meeting someone never agreed to
+is the failure the poll exists to prevent.
 
 **What booking means.** One event on the owner's calendar in the named
 account, every participant as attendee, notifications on — so the
@@ -309,28 +326,30 @@ lifecycle (`poll_status` returns the record's lifecycle beside the tally,
 so "how's the lab-meeting poll?" has an answer), but every transition is
 the sweep's or the owner's.
 
-## 6. Rulings the build waits on
+## 6. Rulings — 2026-09-04
 
-Each has a recommendation; a one-word answer per line is enough.
+Recorded so they are not re-litigated.
 
-1. **`auto_book` default stays `unanimous`** (the 2026-08-07 ruling), with
-   `feasible` and `never` as the knob. *Recommend: yes.*
-2. **Default deadline: 3 days at 5pm local; one nudge at −24h.** *Recommend:
-   yes* (SCHEDULING §8.4 left this open; a lab meeting four days out
-   still works).
-3. **Candidates recomputed at release, card shows count and range.**
-   *Recommend: yes* — the alternative is a card whose times are stale by
-   the time it is read, or a freshness refusal at nine in the morning.
-4. **The pick is an outbox calendar draft** (faithful to §5.4's "staged
-   through the outbox with reasons"), with the `p` key in `/polls` to swap
-   candidates. The alternative is the questions store with its own answer
-   surface. *Recommend: the outbox* — one review surface, and the object
-   released is the booking itself.
-5. **Reject on the pick card closes the poll as "no time found" with no
-   mail to participants.** *Recommend: yes.*
-6. **`poll_create` / `poll_meeting_create` move from `Publish` to
-   `Message` kind** (leave `publish_tools`). *Recommend: yes* — the
-   reviewable object is a letter.
+1. **`auto_book` defaults to `unanimous`** (the 2026-08-07 ruling), with
+   `feasible` and **`manual`** as the knob — the owner asked for the
+   manual value by name.
+2. **Deadline three days out at 5pm local, one nudge at −24h — and every
+   number configurable**, in `[poll]` (§5). SCHEDULING §8.4 is closed by
+   this.
+3. **Candidates are recomputed at release.** The card shows the window,
+   not a count — staging executes nothing.
+4. **The pick is an outbox calendar draft**, with the `p` key in `/polls`
+   to swap candidates. Not the questions store: one review surface, and
+   the object released is the booking itself.
+5. **Reject on the pick card closes the poll as "no time found", no mail.**
+6. **`poll_create` / `poll_meeting_create` are `Message`-kind** and leave
+   `publish_tools`. The kind governs review, not routing: a `Publish` card
+   for a poll leads with local paths that do not exist, refuses `edit` on
+   the owner's own sentence, and hides the outbox's one positive signal
+   (an invitation sent as drafted) from the writing miner. A third
+   `OutboxKind` was considered and refused — a closed enum in an
+   append-only store is a wire format, and every reader would change to
+   buy nothing `Message` lacks.
 
 ## 7. Build order
 
@@ -340,14 +359,15 @@ phase alone makes the tool usable by hand.
 1. **`mecha-factory` — the tool and the record.** `slots push` tees the
    freebusy cache; `create_meeting` defaults `freebusy`, `policy`,
    `instrument`, `poll_id`, `deadline`, `account`; `message`, `earliest`,
-   `latest` arrive; the record gains `lifecycle`; `describe_created`
-   describes the card, not the links; `polls sweep` (the box half, §3.4);
+   `latest` arrive; the record gains `lifecycle` and the candidate list;
+   the subject and invitation templates are schema defaults; `polls sweep`
+   (the box half, §3.4);
    `poll_status` returns the lifecycle; holds in `slots push` (§3.6). Tests:
    the freshness refusal names the timer; a poll created with no
    `freebusy` reads the cache; the sweep's verdict table (§5) as a
    property test over `rank_poll`; a record with an unknown verdict loads.
-2. **`mecha-mail` — `polls` verb.** Templates with `[poll_mail]`
-   overrides; invitations, nudge, the booking, the ledger. Tests mirror
+2. **`mecha-mail` — `polls` verb.** Substitutes the record's templates;
+   invitations, nudge, the booking, the ledger. Tests mirror
    `bookings.rs`: every rule against one clock, each fires once, never
    after the fact.
 3. **`mecha` — the owner's half.** `mecha polls sweep` and `pick`; the
@@ -368,7 +388,7 @@ phase alone makes the tool usable by hand.
   per-person link is invisible to the owner and is what makes *"everyone
   answered"* a decidable question; an open link has no *everyone*. The
   roster CSV covers a large group. If a real case arrives, it is a
-  `times` question on a `link` audience with `auto_book = "never"`, and it
+  `times` question on a `link` audience with `auto_book = "manual"`, and it
   is a day's work then.
 - **Rescheduling a booked meeting.** The event is the provider's; move it
   there and the attendees get the native update. A poll is for finding a
