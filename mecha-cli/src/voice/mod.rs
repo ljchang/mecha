@@ -1064,6 +1064,26 @@ async fn take_slot(
 /// Shared by the facade's own slots and by a hosted conversation on
 /// purpose: what the worker hears must not depend on whose conversation
 /// answered it.
+/// What a streamed run put on the wire.
+///
+/// `said` is **everything the speaker played**, not the final turn's text.
+/// `RunOutcome::text` is the last assistant message; `pump` streams every
+/// `TextDelta` of every turn and the worker speaks all of them. A draft can
+/// only be staged by a tool call, so any run that produces an offer has
+/// interstitial narration by construction — and that narration is as
+/// echoable as the offer. Seeding the echo window from the final turn alone
+/// left `"go ahead"`, `"do it"`, `"send it"` and `"confirm"` spoken one turn
+/// back in neither window slot, which is the same unasked release the
+/// `preceded_by` seeding closes for the reply. Found on review.
+///
+/// Empty on the blocking path, where nothing streams and the single JSON
+/// body is the whole of what is spoken.
+#[derive(Default)]
+struct Streamed {
+    disconnected: bool,
+    said: String,
+}
+
 async fn pump(
     stream: &mut TcpStream,
     id: &str,
@@ -1071,11 +1091,12 @@ async fn pump(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
     cancel: &CancellationToken,
     want_stream: bool,
-) -> bool {
+) -> Streamed {
     if !want_stream {
         while rx.recv().await.is_some() {}
-        return false;
+        return Streamed::default();
     }
+    let mut said = String::new();
     let mut disconnected = !open_sse(stream, id, model).await;
     if disconnected {
         cancel.cancel();
@@ -1086,6 +1107,10 @@ async fn pump(
         tokio::select! {
             ev = rx.recv() => match ev {
                 Some(AgentEvent::TextDelta(t)) if !disconnected => {
+                    // Kept because the speaker plays it: every delta of every
+                    // turn is spoken, not just the final one, and all of it
+                    // can echo. See `Streamed::said`.
+                    said.push_str(&t);
                     let chunk = sse_chunk(id, model, json!({"content": t}), None);
                     if write_chunk(stream, chunk.as_bytes()).await.is_err() {
                         cancel.cancel();
@@ -1106,7 +1131,7 @@ async fn pump(
             }
         }
     }
-    disconnected
+    Streamed { disconnected, said }
 }
 
 /// Close the SSE body. A failure must be *audible*: a clean "stop" after
@@ -1142,7 +1167,7 @@ async fn hosted_completion(
     confirm_key: &str,
     baseline: &Option<std::collections::HashSet<String>>,
 ) -> Result<()> {
-    let disconnected = pump(
+    let Streamed { disconnected, said } = pump(
         stream,
         id,
         &shared.model,
@@ -1189,7 +1214,13 @@ async fn hosted_completion(
     // confirming, and asking about drafts on top of an error is a question
     // over the top of the thing that needs saying.
     let offer = match &answer {
-        Ok(a) => offer_for_turn(shared, baseline, &a.text).await,
+        // Everything the speaker played, which on the streaming path is
+        // every turn's deltas and not just the last one's text. The blocking
+        // path speaks a single JSON body, so its reply *is* the final turn.
+        Ok(a) => {
+            let spoken = if want_stream { &said } else { &a.text };
+            offer_for_turn(shared, baseline, spoken).await
+        }
         Err(_) => None,
     };
     if want_stream {
@@ -1778,7 +1809,8 @@ async fn completion(
         (slot, outcome)
     });
 
-    let disconnected = pump(stream, &id, &shared.model, &mut rx, &cancel, want_stream).await;
+    let Streamed { disconnected, said } =
+        pump(stream, &id, &shared.model, &mut rx, &cancel, want_stream).await;
 
     let (mut slot, outcome) = match run.await {
         Ok(pair) => pair,
@@ -1851,7 +1883,10 @@ async fn completion(
     // Same rule as the hosted path: the drafts this turn staged are offered
     // after the answer, and only when there was one.
     let offer = match &outcome {
-        Ok(o) => offer_for_turn(shared, &outbox_baseline, &o.text).await,
+        Ok(o) => {
+            let spoken = if want_stream { &said } else { &o.text };
+            offer_for_turn(shared, &outbox_baseline, spoken).await
+        }
         Err(_) => None,
     };
 
@@ -2240,6 +2275,50 @@ mod tests {
 mod the_reply_reaches_the_wire {
     use super::*;
     use tokio::io::AsyncReadExt;
+
+    /// The echo window is seeded from **everything spoken**, not the final
+    /// turn.
+    ///
+    /// `RunOutcome::text` is the last assistant message; `pump` streams every
+    /// `TextDelta` of every turn and the worker speaks all of them. A draft
+    /// can only be staged by a tool call, so a run that produces an offer has
+    /// interstitial narration by construction — spoken, echoable, and in
+    /// neither window slot while the seed came from `text`. Found on review,
+    /// one turn back from the reply seeding that closed the same hole.
+    #[test]
+    fn the_window_is_seeded_from_what_was_played_not_the_last_turn() {
+        let src = include_str!("mod.rs");
+        // `pump` keeps what it wrote.
+        let i = src
+            .find("\nasync fn pump(")
+            .expect("the streaming path still lives here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`pump` still has a closing brace at column zero")];
+        assert!(
+            body.contains("said.push_str("),
+            "`pump` no longer records what it played, so the window falls back \
+             to the final turn and interstitial narration echoes unguarded"
+        );
+        // And both doors seed from it rather than from the outcome's text.
+        // Anchored on the whole statement. Two traps, both hit on the way
+        // here: a bare fragment counts this test's own string literal (the
+        // third `include_str!` self-match in this file), and
+        // `let spoken = if want_stream` alone also matches the `Release`
+        // arm's unrelated report/acknowledge choice.
+        let seeds = src
+            .lines()
+            .filter(|l| {
+                l.trim_start()
+                    .starts_with("let spoken = if want_stream { &said }")
+            })
+            .count();
+        assert_eq!(
+            seeds, 2,
+            "a door seeds the echo window from the final turn again; both must \
+             use what was actually spoken on the streaming path"
+        );
+    }
 
     /// `finish_with` must *report* delivery, not assert it.
     ///
