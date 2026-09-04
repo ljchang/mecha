@@ -84,6 +84,20 @@ re-offer's tail names the new account. A spurious switch therefore costs one
 repetition and is **heard**. A silent wrong send is the failure this avoids,
 and it is avoided by readback rather than by parsing.
 
+**Which makes the readback a requirement on every overridable field, not a
+property the design gets for free.** As it stands `identity_tail` reads the
+`account` header and nothing else, so this argument is true of `account`
+alone: a `reply_all` override on a draft over `SPOKEN_UNPROMPTED_CHARS` would
+re-offer a headline, the taint line and the menu, with nothing naming the value
+that just changed. §4.1's loop bound inherits the same gap, since it also
+assumes the tail speaks what moved.
+
+So the rule, and it is a build requirement rather than an observation: **a
+field is not overridable by ear until the re-offer names its value.** Extending
+`identity_tail` to name whatever was overridden is part of this feature's work,
+not a follow-up — otherwise the first field added past `account` silently loses
+the property the whole design rests on. Found on review.
+
 ## 4. The design
 
 ### 4.1 Shape
@@ -167,11 +181,19 @@ Require a **non-empty** normalised form as well. Found on review.
 
 Fail closed, and **over the draft's whole spoken vocabulary rather than each
 field against the answer lists**. `mail_reply` has two overridable fields, so
-collisions are pairwise as well as against `parse_answer`: a server-declared
-account named `reply all` passes `parse_answer` cleanly and collides with
-§4.4's boolean pair, and neither field checked alone would see it. If any two
-tokens in a draft's spoken vocabulary collide — or any one of them parses as
-an answer — that **draft** gets no spoken override and the owner uses the page.
+collisions are pairwise as well as against `parse_answer`: an account named
+`reply all` would pass `parse_answer` cleanly and collide with §4.4's boolean
+pair, and neither field checked alone would see it. If any two tokens in a
+draft's spoken vocabulary collide — or any one of them parses as an answer —
+that **draft** gets no spoken override and the owner uses the page.
+
+(That instance is not live today, and the rule is not written for today.
+`item_account` declares a default only when exactly one account is configured,
+so `mail_reply.account` is either absent from `filled_defaults` — two or more
+accounts — or present with an empty alternative set. A second overridable
+field on one draft is a shape this design permits and the schema does not yet
+produce; the pairwise rule is what stops it arriving unnoticed. Corrected on
+review, which caught the example being wrong while the rule was right.)
 
 Per draft rather than per option, for the same reason: dropping only the
 colliding token leaves a set whose safety depends on which names a server
