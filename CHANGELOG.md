@@ -211,8 +211,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trial row — `--runs k` is the manifest's `repetitions`, so k rows share
   a condition hash and differ by repetition, as the hash's contract
   requires; `mecha exp status|export` read it; `-o` gains `experiment`. The scorecard
-  is unchanged. An eval under `--mcp-file` is not recorded and says so: its
-  fixture servers have no lever, and a trial row's condition hash would
+  is unchanged. An eval under `--mcp-file` or `--no-ask-user` is not
+  recorded and says so as a choice, not a failure: fixture servers and a
+  withheld tool have no lever, and a trial row's condition hash would
   call that eval bare.
 
 - **`mecha eval --ab-config` and `--ab-rules` are two-arm experiments.**

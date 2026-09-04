@@ -222,13 +222,23 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // the runner itself (the owner's ruling, 2026-09-04).
     let recorded = record_measurement(global, &args, &cases, &fixture);
     let name = match &recorded {
-        Ok((store, manifest)) => {
+        Ok(Some((store, manifest))) => {
             eprintln!(
                 "recorded as experiment `{}` ({})",
                 manifest.name,
                 store.root().display()
             );
             Some(manifest.name.clone())
+        }
+        // A deliberate skip reads as one: "nothing happened" and "nothing
+        // went wrong" are opposite findings, and the store-failed sentence
+        // below must stay alarming (found on review).
+        Ok(None) => {
+            eprintln!(
+                "mecha eval: not recorded as an experiment, by design: {}",
+                measurement_skip(args.mcp_file.is_some(), args.no_ask_user).unwrap_or("skipped")
+            );
+            None
         }
         Err(e) => {
             eprintln!(
@@ -240,7 +250,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     let (scorecard, graded) = run_arm(global, &args, &cases, &fixture, false, &[], "").await?;
 
-    if let Ok((store, manifest)) = &recorded {
+    if let Ok(Some((store, manifest))) = &recorded {
         let task_ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
         // One row per run: the planned row's `repetition` is the graded
         // run's `run` number, and a row with no run behind it (a case that
@@ -837,30 +847,24 @@ fn effective_overrides(global: &GlobalOpts) -> Result<Vec<String>> {
 /// share a condition hash and differ by repetition — the hash's contract
 /// ("the same hash was configured identically") holds, where one pass^k
 /// row per case would have carried the hash of a single run (found on
-/// review). An eval under `--mcp-file` is not recorded at all: its
-/// fixture servers have no lever to be named by, so the row's condition
-/// hash would call that eval bare (see below).
+/// review). An eval whose tool surface no lever can name is not recorded
+/// at all — `Ok(None)`, distinct from a store that failed — see
+/// [`measurement_skip`].
 fn record_measurement(
     global: &GlobalOpts,
     args: &Args,
     cases: &[EvalCase],
     fixture: &Path,
-) -> Result<(
-    mecha_core::experiment::ExperimentStore,
-    mecha_core::experiment::Manifest,
-)> {
+) -> Result<
+    Option<(
+        mecha_core::experiment::ExperimentStore,
+        mecha_core::experiment::Manifest,
+    )>,
+> {
     use mecha_core::experiment::{ExperimentStore, Manifest, Tasks};
-    // `--mcp-file` adds servers no lever names, and the trial row's
-    // `condition_hash` sees only levers, overrides, provider, model and
-    // seed — so a record of that eval would carry the hash of a bare one
-    // and break the hash's contract ("the same hash was configured
-    // identically"). The A/B refuses the flag for the same reason; the
-    // measurement is skipped and says so, and the scorecard still runs
-    // (found on review).
-    anyhow::ensure!(
-        args.mcp_file.is_none(),
-        "--mcp-file adds fixture servers no lever names, and the record's condition hash could not tell this eval from a bare one"
-    );
+    if measurement_skip(args.mcp_file.is_some(), args.no_ask_user).is_some() {
+        return Ok(None);
+    }
     let cfg = if global.global_config_only {
         mecha_core::config::Config::load_global()?
     } else {
@@ -887,7 +891,33 @@ fn record_measurement(
     );
     let store = ExperimentStore::open_default(&name)?;
     store.create_manifest(&manifest)?;
-    Ok((store, manifest))
+    Ok(Some((store, manifest)))
+}
+
+/// Why a plain eval is *not* recorded, when it is not. A trial row's
+/// `condition_hash` sees levers, overrides, provider, model and seed, and
+/// its contract is "the same hash was configured identically" — so an
+/// eval whose tool surface differs from bare in a way no lever names
+/// (fixture servers under `--mcp-file`; `ask_user` withheld under
+/// `--no-ask-user`, where a bare run has it present and declining) would
+/// write rows carrying a bare eval's hash. The A/B refuses `--mcp-file`
+/// outright and carries `--no-ask-user` on both arms, where it cancels;
+/// the measurement's rows are read across experiments, so both skip. A
+/// lever for the withheld tool is the truer record and waits on the
+/// principal, which is where `ask_user` first gets an answerer (found on
+/// review, twice).
+fn measurement_skip(mcp_file: bool, no_ask_user: bool) -> Option<&'static str> {
+    if mcp_file {
+        return Some(
+            "--mcp-file adds fixture servers no lever names, and the record's condition hash could not tell this eval from a bare one",
+        );
+    }
+    if no_ask_user {
+        return Some(
+            "--no-ask-user withholds a tool no lever names, and the record's condition hash could not tell this eval from a bare one",
+        );
+    }
+    None
 }
 
 /// The arm a scorecard measured. It names the provider and model that
@@ -1629,6 +1659,20 @@ mod tests {
         let arm = measurement_arm(&flagged, false, &cfg).unwrap();
         assert_eq!(arm.provider.as_deref(), Some("anthropic"));
         assert_eq!(arm.model.as_deref(), Some("flagged"));
+    }
+
+    /// The two evals whose surface no lever can name are skipped, and a
+    /// plain one is not.
+    #[test]
+    fn a_measurement_skips_exactly_the_surfaces_no_lever_names() {
+        assert!(measurement_skip(false, false).is_none());
+        assert!(measurement_skip(true, false)
+            .unwrap()
+            .contains("--mcp-file"));
+        assert!(measurement_skip(false, true)
+            .unwrap()
+            .contains("--no-ask-user"));
+        assert!(measurement_skip(true, true).unwrap().contains("--mcp-file"));
     }
 
     /// A plain eval under `--runs k` plans k rows per case — one per run,
