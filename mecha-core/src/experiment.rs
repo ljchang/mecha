@@ -736,6 +736,25 @@ pub fn child_invocation(
             }
         }
     }
+    // The other inline-secret surface: a search backend's key travels by
+    // its variable, never by value (found on review).
+    for backend in config.search.iter_mut() {
+        backend.api_key = None;
+        if let Some(env) = &backend.api_key_env {
+            passthrough.push(env.clone());
+        }
+    }
+    // An MCP server's `env` is where a token is written down, and the
+    // server cannot start without it — so it rides into the trial home only
+    // when the arm keeps MCP on; an arm with the lever off starts no server
+    // and carries none of it. When it does ride, it is the same secret in
+    // the same user's home one directory over, and `export` never reads
+    // the config file.
+    if levers_off.contains(&Lever::Mcp) {
+        for server in config.mcp.iter_mut() {
+            server.env.clear();
+        }
+    }
     let mut flags = Vec::new();
     for lever in levers_off {
         match lever {
@@ -1078,7 +1097,35 @@ rationale = "no notice, fewer turns"
             "the operator's forbid travels — refusing the lever must mean something"
         );
 
+        // The other secret surfaces: a search key travels by its variable;
+        // an MCP server's env rides only when the arm keeps MCP on.
+        real.search.push(crate::config::SearchBackendConfig {
+            kind: "exa".into(),
+            api_key: Some("s3".into()),
+            api_key_env: Some("EXA_KEY".into()),
+            ..Default::default()
+        });
+        real.mcp.push(crate::config::McpServerConfig {
+            name: "graph".into(),
+            env: [("TOKEN".to_string(), "t".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        });
+        let quiet = child_invocation(&real, &m.arms["quiet"], None).unwrap();
+        assert_eq!(quiet.config.search[0].api_key, None);
+        assert!(quiet.passthrough.iter().any(|v| v == "EXA_KEY"));
+        assert_eq!(
+            quiet.config.mcp[0].env.len(),
+            1,
+            "MCP on: the server needs its env"
+        );
+
         let bare = child_invocation(&real, &m.arms["bare"], None).unwrap();
+        assert!(
+            bare.config.mcp[0].env.is_empty(),
+            "MCP off: no server starts, no token rides"
+        );
         for flag in [
             "--no-mcp",
             "--no-learned-rules",

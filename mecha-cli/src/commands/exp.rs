@@ -116,6 +116,22 @@ fn cases_for(manifest: &Manifest) -> Result<Vec<mecha_core::eval::EvalCase>> {
             .collect()
     };
     anyhow::ensure!(!cases.is_empty(), "the manifest names no tasks");
+    // `eval::grade` is pure and never sees `expect.judge`; eval appends the
+    // judge's verdict afterwards, and this driver does not build one yet.
+    // A case whose only assertion is a rubric would then pass every arm
+    // unconditionally — a tie on every pair — with nothing on the row
+    // saying the rubric evaporated. Refused by name until the driver can
+    // grade it (found on review).
+    let judged: Vec<&str> = cases
+        .iter()
+        .filter(|c| c.expect.judge.is_some())
+        .map(|c| c.id.as_str())
+        .collect();
+    anyhow::ensure!(
+        judged.is_empty(),
+        "case(s) {} carry an `expect.judge` rubric, which `mecha exp` cannot grade yet; name cases with deterministic checks",
+        judged.join(", ")
+    );
     Ok(cases)
 }
 
@@ -362,7 +378,28 @@ async fn run_one(
 fn status(name: &str, json: bool) -> Result<()> {
     let store = ExperimentStore::open_default(name)?;
     let manifest = store.manifest()?;
-    let (trials, skipped) = store.trials()?;
+    // The plan, not the store alone: between `new` and the first `run` the
+    // store holds no rows, and an all-zero table reads the same as a design
+    // that calls for nothing (found on review). When the case file cannot
+    // be read the store's rows stand in, and the readout says so.
+    let (trials, skipped) = match cases_for(&manifest).and_then(|cases| {
+        let real = mecha_core::config::Config::load_global()?;
+        let (provider, model) = provider_and_model(&real)?;
+        let ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
+        store.plan(&manifest, &ids, &provider, &model)
+    }) {
+        Ok((planned, skipped)) => (
+            planned
+                .into_iter()
+                .map(|t| (t.id.clone(), t))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            skipped,
+        ),
+        Err(e) => {
+            eprintln!("mecha exp: the design's tasks could not be planned ({e:#}); showing the store's rows only");
+            store.trials()?
+        }
+    };
     let mut by_arm: std::collections::BTreeMap<&str, [usize; 5]> = Default::default();
     for arm in manifest.arms.keys() {
         by_arm.insert(arm.as_str(), [0; 5]);
