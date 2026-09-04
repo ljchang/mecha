@@ -3104,7 +3104,14 @@ comparison over a chosen set**, with the design written before the run.
   tasks never ran under and its success would have released the judge's
   hold on a treatment that did not occur (found on review); a skipped
   stage is never rerun, counts as broken, and stands for the failure it
-  follows — and a torn line is counted, never read as a stage that ran. A `running` line is appended *before* the spawn, so
+  follows — so in practice the in-run retry fires only when the driver
+  stopped between the failure and the next task, and a failure the
+  driver walked past is skipped on resume, which judges the same — and
+  a torn line is counted, never read as a stage that ran. A manifest is
+  written once; a hand-reordered `ids` under a resumed lifetime leaves
+  finished rows with the old order's positions and the walk with the
+  new one's, and `position` is not on the hash, so the record cannot
+  see it — the case-file caveat's twin. A `running` line is appended *before* the spawn, so
   a driver killed mid-stage leaves a record, the attempt number is burnt
   and the rerun's log is a new file; a `running` line nothing supersedes
   reads as interrupted. **`judge` and `export` read the ledger**: for a
@@ -3142,7 +3149,7 @@ comparison over a chosen set**, with the design written before the run.
   stage runs and a lever that changed nothing would still move the hash,
   and part of the row's condition (`condition_hash_with_stages`, whose
   `stages_off=` term appears only when a stage is off, so every hash
-  minted before stage levers existed keeps its value). Four are verbs the
+  minted before stage levers existed keeps its value). Five are verbs the
   driver does not run; `sensors_in_brief` is `[agent] sensors_in_brief`
   in the trial home's config — `diagnose::Evidence::without_sensors`
   withholds the homeostat's means and the guilt mean from the

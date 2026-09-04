@@ -91,7 +91,8 @@ pub struct Manifest {
     pub holdout_in: u64,
     /// A `lifetime`'s loop stages between tasks (Part II §14): after every
     /// task `reflect`, after every fifth `validate` then `learn --auto`
-    /// (validate measures before learn consumes), after every tenth
+    /// then `rules propose-retirements --apply` (validate measures before
+    /// learn consumes; the brake after), after every tenth
     /// `harness ruminate`, by default. Sequence and
     /// schedule live here, on the design, so the stage order a lifetime ran
     /// under is on the record and never in a script. A `single` manifest
