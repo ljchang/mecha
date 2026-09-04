@@ -364,7 +364,7 @@ impl RunConfig {
                 .to_string(),
             (Some(hash), None) => format!(
                 "learned rules: prefix block {hash} ({} rule id(s)); the mid-run set is \
-                 unknown (no outcome recorded)",
+                 unknown (no outcome recorded, or one from before it was kept)",
                 self.rule_ids.len()
             ),
             (Some(hash), Some(d)) => format!(

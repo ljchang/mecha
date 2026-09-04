@@ -2699,11 +2699,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Dropping ten lessons is `/learning`'s intended use, and must not read
-    /// as the provenance gate failing: "refused by the owner" and "held back
-    /// by the gate" are opposite findings with opposite remedies, and
-    /// conflating them would report a person's own decisions back to them as
-    /// a starved learner.
     /// The floor is per situation batch, as `learn` applies it: three
     /// clean reflections on three different focus tools do not meet it,
     /// and the finding names each batch. Fails on the per-domain count.
@@ -2738,6 +2733,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// Dropping ten lessons is `/learning`'s intended use, and must not read
+    /// as the provenance gate failing: "refused by the owner" and "held back
+    /// by the gate" are opposite findings with opposite remedies, and
+    /// conflating them would report a person's own decisions back to them as
+    /// a starved learner.
     #[test]
     fn an_owners_drop_is_not_a_provenance_exclusion() {
         let home = home("learning-dropped");
