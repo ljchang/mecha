@@ -134,7 +134,10 @@ MIN_SEGMENT_SECONDS = 0.3
 # one request and then barged in on the reply to it. Two seconds covers the
 # warm tail with room; every transcript here is finalized (`run_stt`), so on
 # the ordinary path the turn ends the moment the text lands and this only
-# bounds the wait when a segment yields no words at all.
+# bounds the wait when a segment yields no words at all. The cold 2.5s is
+# the first segment of a call, and that one is safe under any value: the
+# strategy holds no earlier text yet, so an expired net has nothing to end
+# the turn on and the turn waits for the transcript regardless.
 STT_TTFS_P99 = 2.0
 
 
@@ -700,6 +703,15 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
             raise RuntimeError(
                 "TranscriptStartedTurnStop: pipecat's TurnAnalyzerUserTurnStopStrategy "
                 "no longer keeps `_vad_stopped`; re-derive the override against this version"
+            )
+        # And the method it overrides must still be the one the controller
+        # calls: a rename there leaves the private in place, construction
+        # succeeds, and the override is simply never reached - the same
+        # quiet fallback from the other side.
+        if not any("handle_user_turn_started" in vars(c) for c in type(self).__mro__[1:]):
+            raise RuntimeError(
+                "TranscriptStartedTurnStop: pipecat no longer defines "
+                "`handle_user_turn_started` on the stop strategy; the override is unreachable"
             )
 
     async def handle_user_turn_started(self):
