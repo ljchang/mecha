@@ -319,6 +319,7 @@ async fn answer_and_resume(
         &prepared.config,
         &prepared.provider_name,
         &prepared.levers_off,
+        Some(&prepared.rules),
     )))?;
 
     let staged_before = staged_ids(&q.session_id);

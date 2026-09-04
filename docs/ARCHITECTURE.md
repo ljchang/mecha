@@ -433,6 +433,39 @@ so voice rules arriving later would arrive too late. Anything reconstructing
 before-arm — must use the same selection, or the ledger is keyed to a rule set
 no run ever had.
 
+**Within a domain, a rule loads where its scope matches the run** (built
+2026-09-04, `GOAL-SYSTEM-DESIGN.md` §17.3–17.4). A reflection records the
+`Situation` it was mined in — tool names from the registry, the trigger, the
+surface, the workspace; never a tool argument, never the reflector's
+`error_type`, because a key a model can author is a key an injection can
+set (`situation.rs`) — and `mecha learn` batches a domain's pool by focus
+tool (`batches_by_region`), one learner call per batch, with the region's
+rules rewritable and every other rule shown as immutable context. The
+harness assigns the new rules' `scope` from the keys the batch shared
+(`finalize_region_rules`); the learner never names one. At run start
+`prepare_tools` renders the block *after* the registry is complete, through
+`rules_carried_for`, and a scoped rule enters the prefix only when the run
+registers every tool the scope names — a lesson from editing `mail_send`
+drafts loads where `mail_send` is mounted and nowhere else. The one scope
+key today is the tool set: the surface is recorded but `prepare` does not
+know it (the front-end names the kind when it opens the session, after
+`prepare` returns), and scoping to a workspace before region-widening
+exists would pin nearly every rule to the one workspace most reflections
+come from. `Situation::scope` and `Situation::matches` are pinned together
+by a test so a key cannot join one without the other. The incident: 42 of
+45 reflections were `behavior`, and a lesson about `shell` refused in one
+run rode in every prompt as a universal rule. What is *not* built: mid-run
+delivery of a rule when its condition recurs (§17.4 *Delivery*, ruled
+off-by-default in §17.7 item 2 until the restart counters are read), and
+widening a rule's region over sub-regions that agree (§17.4
+*Consolidation*), so a rule stays as narrow as its batch until then. A
+consequence worth knowing: the store's view (`mecha rules`,
+`rules_prompt_block_for`) is now a set no single run has, which is why
+`validate` renders the measured block per probe from the replayed
+session's own `RunConfig::tools` and keys each ledger row to *that* hash
+and id list, and why `learn`'s gate hands the probe a renderer rather than
+two strings.
+
 **Distillation is not learning, and its provenance rule differs on purpose.**
 `mecha distill` (`distill.rs`) summarises each closed session into an episode
 staged to the knowledge graph through pkg's `kg_upsert` — evidence, not
@@ -2380,6 +2413,22 @@ The decisions that carry it, each a bug if undone:
   never say "absent" of something that ran, so the dispositions *The switch set* lists
   without a switch (predictive compaction, carried state, the appraiser's
   pass) join when their switch does.
+- **The run record names the rules it carried, in two halves.**
+  `RunConfig::rules_hash` and `rule_ids` are the prefix block's
+  `learning::rules_hash` and the learned rules in it, taken from the same
+  render in `prepare_tools` (`RulesCarried`) so the pair cannot disagree —
+  the `ValidationRecord` key, on the run; `RunStats::delivered` is the
+  mid-run half, `(rule_id, turn)` pointers the loop will write when it has
+  a delivery path (`GOAL-SYSTEM-DESIGN.md` §17.7 item 1, built 2026-09-04
+  with sprint item 3 as its merge condition). Once loading is scoped the
+  store cannot say what a past run saw, so the record has to. Three
+  readings and the loader keeps them apart: a hash with ids is what rode;
+  the hash of the empty string with no ids is *recorded and empty* (the
+  lever off, or no store — `RulesCarried::none`); no hash at all is a
+  record from before the field and reads as *unknown*, as does `delivered:
+  None` against this build's `Some([])`. `mecha replay` prints which
+  (`RunConfig::rules_arm_note`), and "unknown" must never print as
+  "nothing", the dash-is-never-zero shape one store over.
 - **A divergent episode is dropped, not scored.** Replay answers from the
   recording; once an arm structurally departs, its remaining stats describe a
   run against tool results nobody asked for. Dropping fails safe: thin

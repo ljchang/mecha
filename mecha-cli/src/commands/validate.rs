@@ -42,6 +42,7 @@ use mecha_core::learning::{
 };
 use mecha_core::message::{CompletionRequest, Message};
 use mecha_core::session::Session;
+use mecha_core::situation::Situation;
 use std::collections::BTreeMap;
 
 #[derive(clap::Args, Debug)]
@@ -98,11 +99,27 @@ impl RuleSurface {
         })
     }
 
-    /// Ids of the rules riding in the measured block — what a ledger row
-    /// charges its observation to. Rules from before identity existed have
-    /// none; they ride, but no tally can accumulate against them.
-    fn rule_ids(&self) -> Vec<String> {
-        self.flat.iter().filter_map(|(_, r)| r.id.clone()).collect()
+    /// Indices into `flat` of the rules a run in `run`'s situation carries
+    /// — the measured block for a probe over that run, and the bisection's
+    /// space. A rule scoped to a tool the run never registered is not in
+    /// the block, so it cannot be observed or convicted there.
+    fn carried(&self, run: &Situation) -> Vec<usize> {
+        self.flat
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, r))| r.scope.as_ref().is_none_or(|s| s.matches(run)))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Ids of the selected rules — what a ledger row charges its observation
+    /// to. Rules from before identity existed have none; they ride, but no
+    /// tally can accumulate against them.
+    fn rule_ids(&self, selected: &[usize]) -> Vec<String> {
+        selected
+            .iter()
+            .filter_map(|i| self.flat[*i].1.id.clone())
+            .collect()
     }
 
     /// Render the block a run would see if only the selected learned rules
@@ -141,8 +158,9 @@ async fn attribute_regression(
     model: &str,
     prep: &probe::ProbePrep,
     surface: &RuleSurface,
+    carried: &[usize],
 ) -> Result<Option<usize>> {
-    if surface.flat.is_empty() {
+    if carried.is_empty() {
         return Ok(None);
     }
     let fails = |selected: Vec<usize>| async move {
@@ -173,7 +191,7 @@ async fn attribute_regression(
 
     // The full block is a confirmed failure, so the culprit is in the full
     // set; each round keeps whichever half still fails.
-    let mut set: Vec<usize> = (0..surface.flat.len()).collect();
+    let mut set: Vec<usize> = carried.to_vec();
     while set.len() > 1 {
         let (a, b) = set.split_at(set.len() / 2);
         let (a, b) = (a.to_vec(), b.to_vec());
@@ -297,11 +315,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // What a run actually carries, not what the store holds: the ledger is
     // keyed to the rule set measured, so measuring a set no run has makes
     // every attribution point at the wrong thing.
-    let rules_block = store.rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)?;
-    let Some(rules_block) = rules_block else {
+    // The store's view answers only "is there anything to measure"; the
+    // block each probe measures is rendered for the situation of the session
+    // it replays, below, since a scoped rule rides only where its tool is.
+    if store
+        .rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)?
+        .is_none()
+    {
         println!("no rules to validate — run `mecha learn` first");
         return Ok(());
-    };
+    }
 
     let wanted_triggers: Vec<&str> = if args.trigger.is_empty() {
         vec![
@@ -379,12 +402,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // the block was rendered from this same state, and a mid-run rules change
     // would make rows describe a set that was never measured.
     let surface = RuleSurface::load(&store)?;
-    let block_hash = rules_hash(&rules_block);
-    let ledger_rule_ids = surface.rule_ids();
     let mut record = |r: &mecha_core::learning::Reflexion,
+                      carried: &[usize],
                       outcome: &str,
                       attributed: Option<String>|
      -> Result<()> {
+        // Keyed to the block *this* probe carried: with scoped loading the
+        // measured set is a function of the replayed run's situation, and a
+        // row that named the store's whole set would charge observations to
+        // rules that were not in the prompt.
+        let block = surface.block_with(carried).unwrap_or_default();
         // Append-only, no store lock: a validate run must never block the
         // reflect a closing session fires, and a single appended line needs
         // no read-modify-write.
@@ -392,8 +419,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             reflexion_id: r.id.clone(),
             trigger: r.trigger.clone(),
             domain: r.domain.clone(),
-            rules_hash: block_hash.clone(),
-            rule_ids: ledger_rule_ids.clone(),
+            rules_hash: rules_hash(&block),
+            rule_ids: surface.rule_ids(carried),
             outcome: outcome.into(),
             attributed_rule_id: attributed,
             model: model.clone(),
@@ -417,11 +444,21 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // The recorded system prompt, with any rules block of its era removed:
         // the baseline arm must be rules-free and the treatment arm must carry
         // exactly the current rules, not a mixture of generations.
-        let base_system = Session::run_configs(&path)?
-            .first()
+        let first_config = Session::run_configs(&path)?.into_iter().next();
+        let base_system = first_config
+            .as_ref()
             .and_then(|rc| rc.system_prompt.clone())
             .map(|s| strip_rules_block(&s))
             .unwrap_or_default();
+        // The situation the recorded run was in, from its own record. A
+        // session with no config recorded cannot say, and gets the standing
+        // rules only — the set every run carries — rather than a guess.
+        let run = first_config
+            .as_ref()
+            .map(|rc| Situation::of_run(&rc.tools, Some(&rc.workspace)))
+            .unwrap_or_default();
+        let carried = surface.carried(&run);
+        let rules_block = surface.block_with(&carried).unwrap_or_default();
         let with_rules = if base_system.is_empty() {
             rules_block.clone()
         } else {
@@ -439,6 +476,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     continue;
                 }
             };
+            // Rendered for the probe's own recorded config, which is the
+            // one the branch replays under (a later attach may differ).
+            let carried = surface.carried(&prep.situation());
+            let rules_block = surface.block_with(&carried).unwrap_or_default();
             let mut arms = Vec::new();
             for block in [None, Some(rules_block.as_str())] {
                 match probe::drive_arm(
@@ -490,7 +531,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             if matches!((baseline, with), (ProbeVerdict::Pass, ProbeVerdict::Fail))
                 && !args.no_attribute
             {
-                match attribute_regression(prepared, provider_cfg, &model, &prep, &surface).await? {
+                match attribute_regression(
+                    prepared,
+                    provider_cfg,
+                    &model,
+                    &prep,
+                    &surface,
+                    &carried,
+                )
+                .await?
+                {
                     Some(i) => {
                         let (domain, rule) = &surface.flat[i];
                         match &rule.id {
@@ -510,7 +560,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     None => println!("    no single rule attributable"),
                 }
             }
-            record(r, outcome_str(baseline, with), attributed)?;
+            record(r, &carried, outcome_str(baseline, with), attributed)?;
             continue;
         }
 
@@ -574,7 +624,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 r.id,
                 if i == 0 { "baseline" } else { "with-rules" }
             );
-            record(r, "inconclusive", None)?;
+            record(r, &carried, "inconclusive", None)?;
             inconclusive += 1;
             continue;
         }
@@ -620,7 +670,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         // Judge-graded, so no bisection: a followup regression is a prompt to
         // read two answers, not evidence that convicts one rule.
-        record(r, outcome, None)?;
+        record(r, &carried, outcome, None)?;
     }
 
     println!(
@@ -718,6 +768,7 @@ mod tests {
             edited_at: None,
             dropped_at: None,
             dropped_reason: None,
+            situation: None,
         }
     }
 
@@ -809,9 +860,11 @@ mod tests {
 
         let surface = RuleSurface::load(&store).unwrap();
         assert_eq!(surface.flat.len(), 3);
-        assert_eq!(surface.rule_ids(), vec!["r-a", "r-b", "r-c"]);
-
         let all: Vec<usize> = (0..surface.flat.len()).collect();
+        assert_eq!(surface.rule_ids(&all), vec!["r-a", "r-b", "r-c"]);
+        // Unscoped rules are carried by every run.
+        assert_eq!(surface.carried(&Situation::default()), all);
+
         assert_eq!(
             surface.block_with(&all).unwrap(),
             store.rules_prompt_block().unwrap().unwrap()
@@ -826,6 +879,31 @@ mod tests {
         // A subset carries exactly its members.
         let one = surface.block_with(&[1]).unwrap();
         assert!(one.contains("Learned B.") && !one.contains("Learned A."));
+
+        // A scoped rule is carried only by a run that registers its tool,
+        // and a ledger row for the other run must not name it.
+        let mut scoped = rule("Confirm before rm -rf.", Some("r-shell"));
+        scoped.scope = Some(Situation::of_run(&["shell".into()], None));
+        store
+            .write_learned_rules(
+                "behavior",
+                &[
+                    rule("Ask before deleting.", Some("r-a")),
+                    rule("Say what you did.", Some("r-b")),
+                    scoped,
+                ],
+            )
+            .unwrap();
+        let surface = RuleSurface::load(&store).unwrap();
+        let no_shell = surface.carried(&Situation::of_run(&["fs_read".into()], None));
+        assert_eq!(surface.rule_ids(&no_shell), vec!["r-a", "r-b", "r-c"]);
+        let with_shell = surface.carried(&Situation::of_run(&["shell".into()], None));
+        assert_eq!(
+            surface.rule_ids(&with_shell),
+            vec!["r-a", "r-b", "r-shell", "r-c"]
+        );
+        assert!(!surface.block_with(&no_shell).unwrap().contains("rm -rf"));
+        assert!(surface.block_with(&with_shell).unwrap().contains("rm -rf"));
 
         std::fs::remove_dir_all(store.root()).ok();
     }
@@ -851,7 +929,7 @@ mod tests {
             1,
             "retired rules are not on the surface"
         );
-        assert!(surface.rule_ids().is_empty());
+        assert!(surface.rule_ids(&[0]).is_empty());
         assert!(surface.block_with(&[0]).unwrap().contains("No id yet."));
         std::fs::remove_dir_all(store.root()).ok();
     }

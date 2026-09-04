@@ -135,6 +135,9 @@ fn show(store: &LearningStore, id: &str) -> Result<()> {
     let p = store.proposal(id)?;
     println!("proposal {} · {} · {}", p.id, p.domain, p.status);
     println!("created {}", p.created_at);
+    if let Some(scope) = &p.scope {
+        println!("situation: {}", scope.describe());
+    }
     if let Some(resolved) = &p.resolved_at {
         println!(
             "resolved {resolved}{}",
@@ -405,6 +408,7 @@ mod tests {
             edited_at: None,
             dropped_at: None,
             dropped_reason: None,
+            situation: None,
         }
     }
 
@@ -420,6 +424,7 @@ mod tests {
             created_at: "2026-08-23T00:00:00Z".into(),
             resolved_at: None,
             reason: None,
+            scope: None,
         };
         store.write_proposal(&p).unwrap();
         p
