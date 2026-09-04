@@ -2588,8 +2588,11 @@ against the run's registry (`rules_carried_for`), and `RunConfig::rules_hash`
 §17.4 built note:** mid-run delivery on a recurring condition (§17.7 item 2
 keeps it off by default until the null-step and restart counters are read),
 region widening and narrowing in consolidation, per-region validation
-budgets, the situation backfill for the 41 reflections mined before the
-field (§17.7 item 6), and surface and workspace as *scope* keys — both are
+budgets, the situation backfill (§17.7 item 6 — **built 2026-09-04 night
+as `mecha reflect --backfill-situations`, `feat/situation-backfill`;
+dry-run on the live store: 37 of 45 recomputable, 8 absent with reasons;
+the write is the owner's to run, after the binary is reinstalled**), and
+surface and workspace as *scope* keys — both are
 recorded, neither is matched, for the reasons in `situation.rs`'s module doc
 (the surface needs `prepare` to be told the session kind; the workspace
 waits on widening, or nearly every rule pins to one workspace). The twelve

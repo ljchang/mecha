@@ -444,7 +444,19 @@ scoped exactly to the region rewritable and every other rule shown as
 immutable context (`rewritable_in` is equality, not containment: a wider
 batch rewriting a narrower rule would widen it on no evidence). The
 harness assigns the new rules' `scope` from the keys the batch shared
-(`finalize_region_rules`); the learner never names one. At run start
+(`finalize_region_rules`); the learner never names one. **A reflection
+from before the field gets its situation back by recomputation, or stays
+without one and says why** (`mecha reflect --backfill-situations`,
+§17.7 item 6): `learning::backfill_situation` re-runs the deterministic
+extraction over the transcript and matches on the three things a
+reflection persists — session, trigger, intervention text — refusing a
+match when several fit with different tool windows; `set_situations`
+writes only where the field is absent and stamps
+`situation_recomputed_at`, so a situation recorded at mining is never
+overwritten and the pass is idempotent. Absent is honest and never a
+guess: the goal is not backfilled, and a reflection with no transcript (an
+outbox edit) or whose intervention a compaction has since removed keeps
+batching as standing. At run start
 `setup::build` renders the block after builtins, MCP servers and subagents
 have joined the registry (an earlier draft rendered before subagents
 existed, so a rule scoped to one could never match — found on review; the
