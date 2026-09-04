@@ -1630,12 +1630,17 @@ one person's mailbox rather than a public fact.
 ## What to do next
 
 - **Machine state as of 2026-09-04 ~05:00, verified from this lane:** the
-  shared checkout `~/Github/mecha` is **not on `main`** — it is on
-  `docs/goal-system-rulings` at `6e9d7f9`, which is `origin/main` (`6afd990`,
-  #154) plus two docs commits, clean. It has been on that branch since
-  before this session began, so the "on `main` at `b50eb24`" in the bullet
-  below was already a misread when written; the recipe's check still
-  applies, the answer is just a branch name. Three things merged to `main`
+  shared checkout `~/Github/mecha` is **not on `main`, and not a safe build
+  or deploy source until it is** — it is on `docs/goal-system-rulings` at
+  `6e9d7f9`, the *base of an unmerged PR stack* (#161, with #162 on top),
+  which is `origin/main` (`6afd990`, #154) plus two docs commits, clean. It
+  has been on that branch since before this session began, so the "on
+  `main` at `b50eb24`" in the bullet below was already a misread when
+  written. The question is not how stale it is; it is that anything built,
+  installed or run from that directory — the voice worker runs
+  `scripts/voice/worker.py` out of it — gets a feature branch's content
+  silently rather than an error (mecha-83's framing, verified by both
+  lanes). Put it back on `main` before the next deploy. Three things merged to `main`
   and **not deployed**: #159 (the handoff close), #153 and #154 — the last
   two are also **unrecorded in this document** (mecha-83's flag; their
   owners' entries are owed, this lane did not read their diffs). The
