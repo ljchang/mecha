@@ -680,9 +680,14 @@ async fn principal_call(
         let payload = serde_json::to_string(&input)?;
         let exchange = async move {
             use tokio::io::AsyncWriteExt;
-            let write = async {
+            let write = async move {
                 stdin.write_all(payload.as_bytes()).await?;
-                stdin.shutdown().await
+                stdin.shutdown().await?;
+                // Dropped here, not at the end of the exchange: the drop is
+                // what closes the pipe, and a principal reading its state
+                // to end-of-file waits for exactly that (found on smoke).
+                drop(stdin);
+                Ok::<(), std::io::Error>(())
             };
             let (written, output) = tokio::join!(write, child.wait_with_output());
             written.context("handing the principal its state")?;
