@@ -104,13 +104,22 @@ fn new(path: &Path) -> Result<()> {
     let store = ExperimentStore::open_default(&manifest.name)?;
     store.create(&text)?;
     println!(
-        "created {} — {} arms (control `{}`), kind {:?}",
+        "created {} — {} arms ({}), kind {:?}",
         store.root().display(),
         manifest.arms.len(),
-        manifest.control,
+        control_label(&manifest),
         manifest.kind
     );
     Ok(())
+}
+
+/// `control \`x\`` for a comparison, or what a measurement is.
+fn control_label(manifest: &Manifest) -> String {
+    manifest
+        .control
+        .as_deref()
+        .map(|c| format!("control `{c}`"))
+        .unwrap_or_else(|| "a measurement, no control".into())
 }
 
 /// The tasks a manifest names, as eval cases, in the case file's order.
@@ -477,8 +486,10 @@ fn status(name: &str, json: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{} ({:?}, control `{}`)",
-        manifest.name, manifest.kind, manifest.control
+        "{} ({:?}, {})",
+        manifest.name,
+        manifest.kind,
+        control_label(&manifest)
     );
     println!(
         "{:<20} {:>8} {:>8} {:>6} {:>7} {:>8}",
@@ -518,10 +529,15 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
         );
         return Ok(());
     }
-    println!(
-        "{} — each arm against `{}`",
-        manifest.name, manifest.control
-    );
+    let Some(control) = &manifest.control else {
+        println!(
+            "{} is a measurement — {} arm(s), no control, nothing to judge; `status` and `export` read it",
+            manifest.name,
+            manifest.arms.len()
+        );
+        return Ok(());
+    };
+    println!("{} — each arm against `{control}`", manifest.name);
     for v in &verdicts {
         let j = &v.judgement;
         println!(
