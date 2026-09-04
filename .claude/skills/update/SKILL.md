@@ -292,7 +292,10 @@ difference between a restart that matters and cargo-culting six of them.
 `factory-publish drain; mecha-mail bookings --account dartmouth;
 factory-publish polls sweep; mecha-mail polls --account dartmouth; mecha polls
 sweep` — a unit still on the two-verb line silently leaves every meeting poll
-at "invites 0/N" forever, with nothing in the repo to say why.
+at "invites 0/N" forever, with nothing in the repo to say why. And a pick card
+is a `calendar_create_event` draft: `mail__calendar_create_event` must be in
+`[outbox] tools` (it is, by the documented default) or `mecha polls sweep`
+refuses to stage one, per record, per tick.
 
 Verify — and take a startup line, never `is-active`, since a unit that
 crashes on its first request is active for a while first.

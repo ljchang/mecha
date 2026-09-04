@@ -795,7 +795,7 @@ impl Surface {
             store.record_error(&item.id, &output.content)?;
             bail!("the tool reported failure: {}", output.content);
         }
-        store.resolve(&item.id, "sent", None)?;
+        store.resolve_with_output(&item.id, "sent", None, Some(output.content.clone()))?;
         Ok(output.content.trim().to_string())
     }
 }
@@ -1123,6 +1123,7 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind, tool: &str) -> OutboxItem {
         OutboxItem {
+            output: None,
             author: Default::default(),
             filled_defaults: Vec::new(),
             call_id: None,

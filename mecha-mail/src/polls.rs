@@ -20,11 +20,13 @@
 //!   newer `factory-publish` adds), and a round trip through a typed struct
 //!   would drop them. Only the fields this half owns are set: `invites`,
 //!   `nudge_due`/`nudged_at`, `booked`, `conflict`.
-//! - **The ledger is the idempotency**, as it is for bookings: one line per
+//! - **The ledger is the idempotency for sends and bookings**: one line per
 //!   message sent or event made, appended *after* the provider accepted it,
 //!   and consulted *before* sending. A crash between the provider's answer
 //!   and the record write re-runs nothing — the ledger already says it went
-//!   — and the record catches up on the next tick.
+//!   — and [`reconcile`] brings the record up to date on the next tick. The
+//!   `conflict` line is audit only; the record's `conflict` field is what
+//!   stops the retry, and it self-heals if that write is lost.
 //! - **The invitation is a template the owner already reviewed.** The
 //!   subject and body ride in the record from the outbox card; this side
 //!   substitutes the person's own link and nothing else. No model composes
@@ -44,7 +46,7 @@ pub const DEFAULT_SUBJECT: &str = "When can you meet? — {title}";
 pub const DEFAULT_NUDGE: &str = "\
 A quick reminder — the poll for \"{title}\" closes {deadline_local}, and I don't have your answer yet:
 
-    {url}
+<{url}>
 
 It takes about ten seconds. Thank you!";
 
@@ -622,6 +624,19 @@ mod tests {
             ),
             "Pick a time: https://g/p/1"
         );
+    }
+
+    /// The body goes through a markdown renderer with no autolink extension:
+    /// an indented URL is a code block, an angle-bracketed one is a link.
+    #[test]
+    fn the_nudge_link_is_a_link_not_a_code_block() {
+        let r = record(json!({"deadline": "2030-01-31T22:00:00Z", "timezone": "UTC"}));
+        let body = render(DEFAULT_NUDGE, &r.vars(&r.people[0]));
+        assert!(body.contains("<https://g/p/1>"), "{body}");
+        assert!(!body.lines().any(|l| l.starts_with("    ")), "{body}");
+        let html = crate::google::server::markdown_to_html(&body);
+        assert!(html.contains("<a href=\"https://g/p/1\">"), "{html}");
+        assert!(!html.contains("<code>"), "{html}");
     }
 
     /// Only this half's fields are written, and everything else in the
