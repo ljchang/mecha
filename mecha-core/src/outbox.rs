@@ -1563,6 +1563,9 @@ mod tests {
             .unwrap();
         assert_eq!(staged.author, Author::Harness);
         assert_eq!(staged.kind, OutboxKind::Message, "reviewed as a message");
+        assert!(!staged.taint.trifecta_armed(), "the owner's records: clean");
+        assert_eq!(staged.session_id, None);
+        assert_eq!(staged.call_id, None);
         let mut sent = store.item(&staged.id).unwrap();
         sent.status = "sent".into();
         assert_eq!(sent.writing_outcome(), None, "unswapped");
