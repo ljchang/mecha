@@ -264,16 +264,11 @@ impl Manifest {
                 ..Arm::default()
             },
         );
-        for lever in shared_levers_on {
-            if !treatment.levers_on.contains(lever) {
-                treatment.levers_on.push(lever.clone());
-            }
-        }
         let own = std::mem::take(&mut treatment.overrides);
-        // Seeded from the delta alone — the treatment's own overrides before
-        // the machine's inherited knobs are merged in — so the promise is
-        // per delta and case set, not per machine configuration (found on
-        // review).
+        // Seeded from the delta alone — the treatment's own overrides and
+        // levers before anything shared is merged in — so the promise is per
+        // delta and case set, not per machine configuration or opt-in (found
+        // on review, twice: the knobs, then the levers).
         let split_seed = {
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for b in format!(
@@ -285,8 +280,16 @@ impl Manifest {
                 h ^= u64::from(b);
                 h = h.wrapping_mul(0x0000_0100_0000_01b3);
             }
-            h
+            // A TOML integer is 64-bit *signed*, and the manifest round-trips
+            // through TOML — so the seed lives in the bottom half of the
+            // range or it cannot be written down (found on review).
+            h & (u64::MAX >> 1)
         };
+        for lever in shared_levers_on {
+            if !treatment.levers_on.contains(lever) {
+                treatment.levers_on.push(lever.clone());
+            }
+        }
         let key_of = |s: &str| s.split_once('=').map(|(k, _)| k.trim().to_string());
         let mut merged: Vec<String> = shared_overrides
             .iter()
@@ -1502,6 +1505,42 @@ rationale = "no notice, fewer turns"
         )
         .unwrap();
         assert_eq!(m.arms["bare"].overrides, shared.to_vec());
+        // The seed is the delta's alone — shared knobs and shared levers
+        // leave it unchanged — and it fits a TOML integer, so the manifest
+        // it is written into can be read back.
+        let plain = mk("eval-ab-plain", m.arms["treatment"].clone(), &[]);
+        assert_eq!(
+            m.split_seed, plain.split_seed,
+            "shared knobs are not in the seed"
+        );
+        assert_eq!(
+            with_mcp.split_seed, a.split_seed,
+            "shared levers are not in the seed"
+        );
+        for delta in [
+            "max_turns=1",
+            "max_turns=2",
+            "effort=low",
+            "compact_at_tokens=9000",
+        ] {
+            let t = Arm {
+                preset: Some(Preset::Bare),
+                overrides: vec![delta.into()],
+                prediction: Some(Prediction {
+                    metric: ExpMetric::Failure,
+                    rationale: "x".into(),
+                }),
+                ..Arm::default()
+            };
+            let d = mk("eval-ab-seed", t, &[]);
+            assert!(d.split_seed <= i64::MAX as u64, "{delta}");
+            let text = toml::to_string_pretty(&d).unwrap();
+            assert_eq!(
+                Manifest::parse(&text).unwrap().split_seed,
+                d.split_seed,
+                "{delta}"
+            );
+        }
         assert_eq!(
             m.arms["treatment"].overrides,
             vec!["effort=high".to_string(), "max_turns=40".to_string()],
