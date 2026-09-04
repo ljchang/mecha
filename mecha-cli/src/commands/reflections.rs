@@ -242,6 +242,16 @@ fn show(store: &LearningStore, id: &str, as_json: bool) -> Result<()> {
     }
     println!("{}  ·  {}  ·  {}", r.id, r.domain, r.trigger);
     println!("session {}  ·  {}", r.session_id, r.created_at);
+    // Absent is said, never rendered as "everywhere": a reflection mined
+    // before the field batches as standing, and the roster should not make
+    // that look like a measured fact about where it happened.
+    println!(
+        "situation: {}",
+        r.situation
+            .as_ref()
+            .map(|s| s.describe())
+            .unwrap_or_else(|| "unknown (mined before it was recorded)".into())
+    );
     if let Some(at) = &r.edited_at {
         println!("edited by you {at}");
     }
@@ -341,6 +351,7 @@ mod tests {
             edited_at: None,
             dropped_at: None,
             dropped_reason: None,
+            situation: None,
         }
     }
 

@@ -1887,6 +1887,15 @@ async fn reflect(global: &GlobalOpts, account: Option<&str>, dry_run: bool) -> R
                         is_processed: false,
                         leap_run_id: None,
                         created_at: chrono::Utc::now().to_rfc3339(),
+                        // Known, and standing: the classifier pass has no
+                        // tools, so there is no focus to scope a rule to, and
+                        // the domain already keeps these out of every run.
+                        situation: Some(mecha_core::situation::Situation::recorded(
+                            &[],
+                            "correction",
+                            Some(mecha_core::session::SessionKind::Mail),
+                            None,
+                        )),
                         // **Honest, not convenient.** This lesson was argued
                         // from mail, so it is untrusted; `learnable()` admits
                         // it because triage rules reach only the classifier,

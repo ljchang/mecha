@@ -1588,6 +1588,7 @@ async fn work(
             &prepared.config,
             &prepared.provider_name,
             &prepared.levers_off,
+            Some(&prepared.rules),
         ),
     ))?;
 

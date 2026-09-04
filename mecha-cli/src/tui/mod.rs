@@ -326,6 +326,9 @@ struct Live {
     /// the fourth shape of it). A `/model` or `/mcp` switch rebuilds `Live`
     /// from a fresh `Prepared`, so this moves exactly when the agent does.
     levers_off: Vec<mecha_core::harness::Lever>,
+    /// What the running agent carries of the learning store, for the same
+    /// record and moving at the same moment as `levers_off`.
+    rules: mecha_core::learning::RulesCarried,
     /// Held for the lifetime of the session: dropping a client kills its
     /// server, so the *old* set must outlive the switch that replaced it only
     /// until the new one is up.
@@ -342,6 +345,7 @@ impl Live {
             todo: p.todo,
             skill: p.skill,
             levers_off: p.levers_off,
+            rules: p.rules,
             _mcp: p._mcp,
         }
     }
@@ -856,6 +860,7 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             &prepared.config,
             &prepared.provider_name,
             &prepared.levers_off,
+            Some(&prepared.rules),
         )))?;
         // Staged outbox items point back at the session that drafted them.
         if let Some(route) = &prepared.agent.context().outbox {
@@ -3129,7 +3134,13 @@ fn record_config(session: Option<&Session>, live: &Live, mode: PermissionMode) -
     // nothing, so a record computed from it would describe an agent that is
     // not running. `live.levers_off` is the value the running agent was
     // built with, and it is replaced exactly when the agent is.
-    let mut record = RunConfig::of(&live.agent, &cfg, &live.provider, &live.levers_off);
+    let mut record = RunConfig::of(
+        &live.agent,
+        &cfg,
+        &live.provider,
+        &live.levers_off,
+        Some(&live.rules),
+    );
     // The file cannot know about a `/mode` switch, and a replay that read the
     // file's mode would be reproducing permissions this session never ran under.
     record.permission_mode = mode;

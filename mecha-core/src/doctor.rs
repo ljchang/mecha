@@ -1787,8 +1787,14 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut total = 0usize;
     let mut excluded = 0usize;
     let mut newest_excluded: Option<DateTime<Utc>> = None;
-    // domain → clean unprocessed count.
-    let mut waiting: std::collections::BTreeMap<String, usize> = Default::default();
+    // domain → clean unprocessed reflections. Kept as records rather than
+    // a count because the floor `learn` applies is per *situation batch*
+    // within a domain, not per domain: three reflections on three focus
+    // tools read as a healthy pool by count while nothing is ever learned,
+    // which is the incident `LEARN_MIN_REFLECTIONS` exists for, one level
+    // down (found on review).
+    let mut waiting: std::collections::BTreeMap<String, Vec<crate::learning::Reflexion>> =
+        Default::default();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(r) = serde_json::from_str::<crate::learning::Reflexion>(line) else {
             // One torn line is not the archive; the counts below are still
@@ -1808,7 +1814,7 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         // that caused the starvation.
         if r.learnable() {
             if !r.is_processed {
-                *waiting.entry(r.domain.clone()).or_default() += 1;
+                waiting.entry(r.domain.clone()).or_default().push(r);
             }
         } else if r.dropped_at.is_none() {
             // `learnable()` checks the drop before it checks provenance, so
@@ -1833,7 +1839,17 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let floor = crate::learning::LEARN_MIN_REFLECTIONS;
     // Any domain at the floor means learn will consolidate on its next pass:
     // not starved, whatever the exclusion count says.
-    if waiting.values().any(|&n| n >= floor) {
+    // The same split `learn` makes: a batch of one situation reaches the
+    // floor, or nothing does.
+    let batches: Vec<(String, crate::situation::Situation, usize)> = waiting
+        .iter()
+        .flat_map(|(domain, rs)| {
+            crate::learning::batches_by_region(rs.clone())
+                .into_iter()
+                .map(move |(region, batch)| (domain.clone(), region, batch.len()))
+        })
+        .collect();
+    if batches.iter().any(|(_, _, n)| *n >= floor) {
         return out;
     }
     // **A loop that just ran is the opposite of starved**, and without this
@@ -1857,12 +1873,12 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         return out;
     }
 
-    let pool = if waiting.is_empty() {
+    let pool = if batches.is_empty() {
         "none clean and unprocessed".to_string()
     } else {
-        waiting
+        batches
             .iter()
-            .map(|(d, n)| format!("{d} {n}/{floor}"))
+            .map(|(d, region, n)| format!("{d} [{}] {n}/{floor}", region.describe()))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -1871,7 +1887,7 @@ fn check_learning(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         severity: Severity::Attention,
         summary: format!(
             "the rule learner is starved: {excluded} of {total} reflections excluded by \
-             origin, and no domain reaches the learn floor of {floor}"
+             origin, and no situation batch reaches the learn floor of {floor}"
         ),
         detail: format!(
             "reflect keeps mining and the provenance gate keeps excluding — the gate working \
@@ -2682,6 +2698,40 @@ mod tests {
         let findings = examine(&home, utc(NOW));
         assert!(of(&findings, "learning").is_empty(), "{findings:#?}");
 
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The floor is per situation batch, as `learn` applies it: three
+    /// clean reflections on three different focus tools do not meet it,
+    /// and the finding names each batch. Fails on the per-domain count.
+    #[test]
+    fn a_pool_split_across_situations_below_the_floor_is_still_starved() {
+        let home = home("learning-starved-regions");
+        let mut lines: Vec<String> = (0..12)
+            .map(|i| reflection_line(&format!("u{i}"), "untrusted", false, "2026-08-13T12:00:00Z"))
+            .collect();
+        for (i, tool) in ["shell", "fs_write", "http_fetch"].iter().enumerate() {
+            let mut v: serde_json::Value = serde_json::from_str(&reflection_line(
+                &format!("c{i}"),
+                "clean",
+                false,
+                "2026-08-05T00:00:00Z",
+            ))
+            .unwrap();
+            v["trigger"] = serde_json::json!("denial");
+            v["situation"] = serde_json::json!({ "tools": [tool], "trigger": "denial" });
+            lines.push(v.to_string());
+        }
+        write_reflections(&home, &lines);
+        let findings = examine(&home, utc(NOW));
+        let learning = of(&findings, "learning");
+        assert_eq!(learning.len(), 1, "{findings:#?}");
+        assert!(learning[0].summary.contains("no situation batch reaches"));
+        assert!(
+            learning[0].detail.contains("[shell] 1/3"),
+            "{}",
+            learning[0].detail
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
