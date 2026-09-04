@@ -32,6 +32,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::GlobalOpts;
@@ -108,14 +109,19 @@ pub struct PollRecord {
     pub poll_id: String,
     pub title: String,
     pub value: Value,
+    /// The lifecycle keys this process changed — the only ones `save`
+    /// writes, into the file as it is then. The other two verbs run on the
+    /// same timer and own the rest.
+    pub dirty: BTreeSet<&'static str>,
 }
 
 impl PollRecord {
     pub fn lifecycle(&self) -> &Value {
         &self.value["lifecycle"]
     }
-    fn lifecycle_mut(&mut self) -> &mut Value {
-        &mut self.value["lifecycle"]
+    fn set(&mut self, key: &'static str, value: Value) {
+        self.value["lifecycle"][key] = value;
+        self.dirty.insert(key);
     }
     /// The ranked candidates the sweep wrote, when the verdict is a pick.
     pub fn ranked(&self) -> Vec<Value> {
@@ -172,6 +178,7 @@ pub fn load(path: &Path) -> Result<Option<PollRecord>> {
         poll_id: value["poll_id"].as_str().unwrap_or_default().to_string(),
         title: value["title"].as_str().unwrap_or("Meeting").to_string(),
         value,
+        dirty: BTreeSet::new(),
     }))
 }
 
@@ -187,9 +194,29 @@ pub fn load_by_id(poll_id: &str) -> Result<PollRecord> {
     load(&path)?.ok_or_else(|| anyhow::anyhow!("no meeting poll `{poll_id}` on record"))
 }
 
+/// Write the keys this process changed into the record as it is now —
+/// re-read first, so the other verbs' writes since the load survive.
 pub fn save(record: &PollRecord) -> Result<()> {
+    if record.dirty.is_empty() {
+        return Ok(());
+    }
+    let mut current = match std::fs::read_to_string(&record.path) {
+        Ok(text) => serde_json::from_str::<Value>(&text).with_context(|| {
+            format!(
+                "{} changed under the sweep and is not JSON",
+                record.path.display()
+            )
+        })?,
+        Err(_) => record.value.clone(),
+    };
+    if !current["lifecycle"].is_object() {
+        current["lifecycle"] = json!({});
+    }
+    for key in &record.dirty {
+        current["lifecycle"][*key] = record.lifecycle()[*key].clone();
+    }
     let tmp = record.path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&record.value)?)?;
+    std::fs::write(&tmp, serde_json::to_string_pretty(&current)?)?;
     std::fs::rename(&tmp, &record.path)
         .with_context(|| format!("renaming into {}", record.path.display()))?;
     Ok(())
@@ -475,7 +502,7 @@ fn step(
             // box's enum answers, no model, and a release that says nothing
             // about drafting.
             let item = store.stage_by_harness(&tool, args)?;
-            record.lifecycle_mut()["pick_item"] = json!(item.id);
+            record.set("pick_item", json!(item.id));
             Ok(Some(format!(
                 "pick card staged as {} — release books the top candidate; `mecha polls pick {} <n>` or `p` in /polls swaps it",
                 item.id, record.poll_id
@@ -487,7 +514,7 @@ fn step(
                 None => {
                     // The card is gone (swept, deleted by hand): stage again
                     // next tick rather than wait on a ghost.
-                    record.lifecycle_mut()["pick_item"] = Value::Null;
+                    record.set("pick_item", Value::Null);
                     return Ok(Some(format!(
                         "pick card {item_id} is gone; will stage a new one"
                     )));
@@ -512,26 +539,33 @@ fn step(
                         (Ok(s), Ok(e)) => (e - s).num_minutes().max(0) as u64,
                         _ => 0,
                     };
-                    let life = record.lifecycle_mut();
-                    life["book"] = json!({"start": start, "end": end, "duration_minutes": minutes});
-                    life["booked"] = json!({
-                        "event_id": "",
-                        "account": item.args["account"].as_str().unwrap_or(""),
-                        "at": item.resolved_at.clone().unwrap_or_default(),
-                        "via": format!("outbox:{}", item.id),
-                    });
+                    record.set(
+                        "book",
+                        json!({"start": start, "end": end, "duration_minutes": minutes}),
+                    );
+                    record.set(
+                        "booked",
+                        json!({
+                            "event_id": "",
+                            "account": item.args["account"].as_str().unwrap_or(""),
+                            "at": item.resolved_at.clone().unwrap_or_default(),
+                            "via": format!("outbox:{}", item.id),
+                        }),
+                    );
                     Ok(Some(format!(
                         "pick released — booked {start}; the sweep closes the poll page next tick"
                     )))
                 }
                 "rejected" => {
-                    let life = record.lifecycle_mut();
-                    life["verdict"] = json!("no_time");
-                    life["resolution"] = json!(item
-                        .reason
-                        .as_deref()
-                        .filter(|r| !r.trim().is_empty())
-                        .unwrap_or("No time found"));
+                    record.set("verdict", json!("no_time"));
+                    record.set(
+                        "resolution",
+                        json!(item
+                            .reason
+                            .as_deref()
+                            .filter(|r| !r.trim().is_empty())
+                            .unwrap_or("No time found")),
+                    );
                     Ok(Some("pick rejected — closing as no time found".to_string()))
                 }
                 _ => Ok(None),
@@ -575,6 +609,7 @@ mod tests {
             path: PathBuf::from("/tmp/lab.json"),
             poll_id: "lab-20300128".into(),
             title: "Lab meeting".into(),
+            dirty: BTreeSet::new(),
             value: json!({
                 "poll_id": "lab-20300128",
                 "title": "Lab meeting",
@@ -730,6 +765,35 @@ mod tests {
         assert_eq!(problems.len(), 1);
         let (none, no_problems) = scan(&dir.path().join("absent")).unwrap();
         assert!(none.is_empty() && no_problems.is_empty());
+    }
+
+    /// `save` writes the keys this tick changed into the file as it is now:
+    /// what the mail half wrote after the load survives.
+    #[test]
+    fn save_merges_only_the_keys_this_tick_changed() {
+        let dir = Scratch::new();
+        let path = dir.path().join("lab.json");
+        let on_disk = json!({"poll_id": "lab", "title": "Lab", "participants": [], "lifecycle": {"verdict": "pick"}});
+        std::fs::write(&path, on_disk.to_string()).unwrap();
+        let mut mine = load(&path).unwrap().unwrap();
+        save(&mine).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            on_disk.to_string(),
+            "nothing dirty"
+        );
+
+        let mut theirs = on_disk.clone();
+        theirs["lifecycle"]["invites"] = json!({"Priya": "2030-01-28T12:00:00Z"});
+        std::fs::write(&path, theirs.to_string()).unwrap();
+        mine.set("pick_item", json!("ob1"));
+        save(&mine).unwrap();
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(after["lifecycle"]["pick_item"], "ob1");
+        assert_eq!(
+            after["lifecycle"]["invites"]["Priya"], "2030-01-28T12:00:00Z",
+            "theirs kept"
+        );
     }
 
     /// The tick against a real store: a pick stages one card and remembers

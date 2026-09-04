@@ -2072,10 +2072,14 @@ likely to trip over from outside:
   crates that are not `factory-publish` edit the record **through the JSON it
   came from**, never through a struct of their own, because a typed round
   trip drops whatever a newer writer added. Every field defaults on load.
-  Note what enforces the ownership: each verb writes back the *whole*
-  document it read, so the rule holds because the timer runs the three in
-  sequence on one shell line, not because the format prevents a clobber —
-  run two of them concurrently and the later write wins.
+  What enforces the ownership: each verb **re-reads the file at write time
+  and merges in only the keys it changed** (`OWNED` in `factory-publish`'s
+  `lifecycle::save`; a `dirty` set on the two `PollRecord`s). A snapshot
+  taken before a round of box calls or provider sends never writes another
+  verb's answers back over theirs — a lost `invites` entry was a second
+  invitation, a lost `booked` a second calendar event. The timer still runs
+  the three in sequence; the merge is what makes that a convenience rather
+  than the invariant.
 - **A pick card is nobody's draft.** It is staged through
   `OutboxStore::stage_by_harness` with `Author::Harness`, and
   `OutboxItem::writing_outcome` returns `None` for such an item — so a slot

@@ -66,6 +66,11 @@ pub struct PollRecord {
     pub duration_minutes: u32,
     pub people: Vec<Person>,
     pub value: Value,
+    /// The lifecycle keys this process changed — the only ones `save`
+    /// writes, into the file as it is *then*. The sweep and `mecha polls`
+    /// run on the same timer and own the rest; a snapshot taken before a
+    /// round of sends must not write their fields back over theirs.
+    pub dirty: BTreeSet<&'static str>,
 }
 
 impl PollRecord {
@@ -75,6 +80,11 @@ impl PollRecord {
 
     fn lifecycle_mut(&mut self) -> &mut Value {
         &mut self.value["lifecycle"]
+    }
+
+    fn set(&mut self, key: &'static str, value: Value) {
+        self.lifecycle_mut()[key] = value;
+        self.dirty.insert(key);
     }
 
     /// The account the record names, else the sweep's.
@@ -253,6 +263,7 @@ pub fn parse_record(path: &Path, value: Value) -> Result<Option<PollRecord>> {
         duration_minutes: value["duration_minutes"].as_u64().unwrap_or(0) as u32,
         people,
         value,
+        dirty: BTreeSet::new(),
     }))
 }
 
@@ -283,10 +294,31 @@ pub fn scan(dir: &Path) -> Result<(Vec<PollRecord>, Vec<String>)> {
     Ok((records, problems))
 }
 
-/// Write the record back, temp-sibling-and-rename.
+/// Write the keys this process changed back into the record as it is now —
+/// re-read first, so another verb's writes since the load survive — then
+/// temp-sibling-and-rename. Nothing dirty, nothing written.
 pub fn save(record: &PollRecord) -> Result<()> {
+    if record.dirty.is_empty() {
+        return Ok(());
+    }
+    let mut current = match std::fs::read_to_string(&record.path) {
+        Ok(text) => serde_json::from_str::<Value>(&text).with_context(|| {
+            format!(
+                "{} changed under the sweep and is not JSON",
+                record.path.display()
+            )
+        })?,
+        // Gone since the load: write what we have rather than lose the tick.
+        Err(_) => record.value.clone(),
+    };
+    if !current["lifecycle"].is_object() {
+        current["lifecycle"] = json!({});
+    }
+    for key in &record.dirty {
+        current["lifecycle"][*key] = record.lifecycle()[*key].clone();
+    }
     let tmp = record.path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&record.value)?)
+    std::fs::write(&tmp, serde_json::to_string_pretty(&current)?)
         .with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &record.path)
         .with_context(|| format!("renaming into {}", record.path.display()))?;
@@ -364,44 +396,52 @@ pub fn job_key(poll_id: &str, job: &Job) -> (String, String, String) {
 // Writing the outcome back into the record — only this half's fields.
 
 pub fn mark_invited(record: &mut PollRecord, name: &str, at: DateTime<Utc>) {
-    let life = record.lifecycle_mut();
-    if !life["invites"].is_object() {
-        life["invites"] = json!({});
+    let mut invites = record.lifecycle()["invites"].clone();
+    if !invites.is_object() {
+        invites = json!({});
     }
-    life["invites"][name] = json!(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    invites[name] = json!(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    record.set("invites", invites);
 }
 
 /// All nudges for a tick went: clear the queue and stamp it.
 pub fn mark_nudged(record: &mut PollRecord, at: DateTime<Utc>) {
-    let life = record.lifecycle_mut();
-    life["nudge_due"] = json!([]);
-    life["nudged_at"] = json!(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    record.set("nudge_due", json!([]));
+    record.set(
+        "nudged_at",
+        json!(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+    );
 }
 
 pub fn mark_booked(record: &mut PollRecord, event_id: &str, account: &str, at: DateTime<Utc>) {
-    record.lifecycle_mut()["booked"] = json!({
-        "event_id": event_id,
-        "account": account,
-        "at": at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    });
+    record.set(
+        "booked",
+        json!({
+            "event_id": event_id,
+            "account": account,
+            "at": at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        }),
+    );
 }
 
 /// The clean winner collides with something now on the owner's calendar:
 /// no event, and the verdict becomes the owner's pick with the collision
 /// named — the same fail-closed re-verify the bookings sweep runs.
 pub fn mark_conflict(record: &mut PollRecord, reason: &str) {
-    let life = record.lifecycle_mut();
-    life["conflict"] = json!(reason);
-    life["verdict"] = json!("pick");
-    if let Some(book) = life["book"].clone().as_object() {
-        life["ranked"] = json!([{
-            "start": book["start"],
-            "end": book["end"],
-            "duration_minutes": book["duration_minutes"],
-            "yes": 0, "if_needed": 0, "no": 0,
-            "feasible": true, "unanimous": true,
-            "reason": format!("everyone can — but {reason}"),
-        }]);
+    record.set("conflict", json!(reason));
+    record.set("verdict", json!("pick"));
+    if let Some(book) = record.lifecycle()["book"].clone().as_object() {
+        record.set(
+            "ranked",
+            json!([{
+                "start": book["start"],
+                "end": book["end"],
+                "duration_minutes": book["duration_minutes"],
+                "yes": 0, "if_needed": 0, "no": 0,
+                "feasible": true, "unanimous": true,
+                "reason": format!("everyone can — but {reason}"),
+            }]),
+        );
     }
 }
 
@@ -604,6 +644,47 @@ mod tests {
                 end: String::new()
             }
         )));
+    }
+
+    /// `save` writes the keys this process changed into the file as it is
+    /// now: a field the sweep wrote after the load survives, and nothing
+    /// dirty means nothing written.
+    #[test]
+    fn save_merges_only_the_keys_this_process_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lab.json");
+        let on_disk = json!({
+            "poll_id": "lab", "title": "Lab", "duration_minutes": 60,
+            "participants": [{"name": "Priya", "email": "p@e", "url": "u"}],
+            "lifecycle": {"invites": {"Priya": null}, "verdict": null},
+        });
+        std::fs::write(&path, on_disk.to_string()).unwrap();
+        let mut mine = parse_record(&path, on_disk.clone()).unwrap().unwrap();
+
+        // Nothing changed: the file is not touched.
+        save(&mine).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), on_disk.to_string());
+
+        // The sweep closes the poll under us; we send Priya her invitation.
+        let mut theirs = on_disk.clone();
+        theirs["lifecycle"]["verdict"] = json!("pick");
+        theirs["lifecycle"]["closed_at"] = json!("2030-01-30T12:00:00Z");
+        std::fs::write(&path, theirs.to_string()).unwrap();
+        let at = DateTime::parse_from_rfc3339("2030-01-28T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        mark_invited(&mut mine, "Priya", at);
+        save(&mine).unwrap();
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            after["lifecycle"]["invites"]["Priya"],
+            "2030-01-28T12:00:00Z"
+        );
+        assert_eq!(
+            after["lifecycle"]["verdict"], "pick",
+            "the sweep's write survives"
+        );
+        assert_eq!(after["lifecycle"]["closed_at"], "2030-01-30T12:00:00Z");
     }
 
     /// Records without a lifecycle — general polls, old ones — are not
