@@ -200,6 +200,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Every `mecha eval` scorecard is recorded as a one-arm experiment**
+  under `~/.mecha/experiments/eval-<stamp>/`: a manifest with no control
+  (a measurement — one or more arms, no prediction, nothing to judge) is
+  now a valid design, and eval writes one before its arm runs, carrying the
+  model and provider the flags name, the bare preset plus `--mcp`, the
+  machine's knobs, and a description naming what no lever can (the lifted
+  approval rules; `--mcp-file`'s servers). Each case lands as a trial row;
+  `mecha exp status|export` read it; `-o` gains `experiment`. The scorecard
+  is unchanged.
+
 - **`mecha eval --ab-config` and `--ab-rules` are two-arm experiments.**
   Each writes its design to `~/.mecha/experiments/eval-ab-<kind>-<stamp>/`
   before the arms run — a `bare` control and a `bare`-plus-delta treatment
