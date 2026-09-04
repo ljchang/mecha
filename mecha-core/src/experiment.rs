@@ -1036,6 +1036,16 @@ impl ExperimentStore {
         self.root.join("stages").join(format!("{lifetime}.jsonl"))
     }
 
+    /// The directory a stage runs *from*. Not the trial home: a verb that
+    /// builds a path jail from its cwd (`validate`'s probes replay tool
+    /// calls) refuses a workspace that contains the mecha home, and the
+    /// home is exactly what a stage's cwd would have been (found on the
+    /// first live lifetime). An empty directory beside the ledger — no
+    /// `mecha.toml` can layer over the arm from there either.
+    pub fn stage_workspace(&self, lifetime: &str) -> PathBuf {
+        self.root.join("stages").join(lifetime).join("workspace")
+    }
+
     /// Where a stage's stderr lands.
     pub fn stage_log(&self, lifetime: &str, after_position: u32, stage: StageLever) -> PathBuf {
         self.root

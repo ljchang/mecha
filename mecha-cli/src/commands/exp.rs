@@ -380,9 +380,10 @@ async fn run_lifetimes(
     Ok(ran)
 }
 
-/// One loop stage as a child `mecha` verb in the lifetime's home, with the
-/// run child's environment allowlist and the same session kind, its output
-/// on the store beside the ledger. Never an `Err`: a stage that failed is
+/// One loop stage as a child `mecha` verb against the lifetime's home, with
+/// the run child's environment allowlist and the same session kind, run
+/// from a scratch workspace beside the ledger (never from the home, which
+/// a path jail refuses to cover), its output on the store. Never an `Err`: a stage that failed is
 /// a ledger line saying so, and the lifetime goes on — the failure is part
 /// of what the next task started from.
 #[allow(clippy::too_many_arguments)]
@@ -432,8 +433,11 @@ async fn run_stage(
             repetition: after.repetition,
             condition_hash: after.condition_hash.clone(),
         };
+        let workspace = store.stage_workspace(lifetime);
+        std::fs::create_dir_all(&workspace)
+            .with_context(|| format!("creating {}", workspace.display()))?;
         let mut cmd = tokio::process::Command::new(mecha);
-        cmd.args(argv).current_dir(home);
+        cmd.args(argv).current_dir(&workspace);
         cmd.env_clear();
         for (k, v) in mecha_core::sandbox::Sandbox::child_env(passthrough) {
             cmd.env(k, v);
