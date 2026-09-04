@@ -306,6 +306,16 @@ sandbox = true
 network = false
 ```
 
+Two things about that `command` line, because a server that fails to spawn
+is reported once on stderr and skipped, never fatal — the `kg_*` tools are
+simply absent. A bare name resolves against the PATH of whatever started
+mecha, so a systemd unit needs `~/.cargo/bin` on its `Environment=PATH`
+(the shipped units carry it). And with `sandbox = true` the confinement
+binds the system directories and whatever `[sandbox] readable` lists, never
+your home directory — so a `cargo install`ed server is invisible inside it
+under either spelling until its directory is listed there, or the binary is
+placed on a path the sandbox binds.
+
 Tools are namespaced `<server>__<tool>` by default, so two servers can both
 expose a `search`. A server whose tools already carry their own namespace —
 [mecha-graph](https://github.com/ljchang/mecha-graph)'s `kg_*` family — can
