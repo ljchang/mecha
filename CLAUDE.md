@@ -173,6 +173,8 @@ charter.rs   the owner's standing priorities, ranked by file order — the owner
              edits from anywhere, no model ever authors a line
 guilt.rs     predicted error against another party's expectation, folded from
              *recorded* commitments only, never claimed ones
+reading.rs   a sensored charter line read against its store: four states kept
+             apart, never in a prompt, never a metric
 capture.rs   what a typed or spoken capture says about *when* — detected and
              reported, never resolved, and the name handed back untouched
 harness.rs   the self-improvement record: candidates, their judgements, and

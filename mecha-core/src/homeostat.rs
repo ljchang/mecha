@@ -107,15 +107,56 @@ pub struct Homeostat {
     /// the delta could not be read. Nothing consumes this yet either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guilt_after_relief: Option<f32>,
+    /// Each sensored charter line, read against its store as the run began
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §11.1's readings; [`crate::reading`]):
+    /// the line-specific form of the guilt above, one reading per line
+    /// instead of one number over three stores. Taken off the inherited
+    /// backlog for the same reason `anticipated_guilt` is — what waited on
+    /// the owner as the run began, not what the run left. The corpus kind
+    /// (`intervention_rate`) reads `Deferred` here; the surfaces read it.
+    ///
+    /// `None` when no reading was taken — a row from before the field, or a
+    /// charter that did not load — and `Some([])` when the charter carries
+    /// no sensor: absent and empty are different facts, on
+    /// `RunStats::delivered`'s shape. A row whose readings this binary
+    /// cannot parse (a kind or state a later one wrote) loads as `None`
+    /// rather than failing the record: a closed enum written to an
+    /// append-only store is a wire format.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::reading::lenient"
+    )]
+    pub charter: Option<Vec<crate::reading::LineReading>>,
 }
 
 impl Homeostat {
     /// Sample the conditions at the start of a run.
     pub fn at_start() -> Homeostat {
+        let backlog = Backlog::read();
+        // The charter is loaded here rather than handed in: it is global
+        // and read-only by construction (`charter.rs`), exactly as the
+        // backlog's stores are, and the reading is a fact about the machine
+        // — what waits on the owner against the owner's own numbers — that
+        // holds whether or not this run's prompt carried the charter. A
+        // charter that does not load records `None`: unknown, not
+        // sensorless.
+        let charter = crate::charter::Charter::default_path()
+            .ok()
+            .and_then(|p| crate::charter::Charter::load(&p).ok())
+            .map(|c| {
+                crate::reading::read_lines(
+                    &c,
+                    &backlog,
+                    &crate::reading::CorpusRate::NotScanned,
+                    Utc::now(),
+                )
+            });
         Homeostat {
             load_avg_1m: load_avg_1m(),
             mem_available_kb: mem_available_kb(),
-            backlog: Some(Backlog::read()),
+            backlog: Some(backlog),
+            charter,
             ..Homeostat::default()
         }
     }
@@ -200,9 +241,24 @@ mod tests {
             peak_context_pressure: Some(0.0687),
             anticipated_guilt: Some(0.0),
             guilt_after_relief: Some(0.0),
+            charter: Some(vec![crate::reading::LineReading {
+                line: "waits".into(),
+                kind: crate::charter::SensorKind::OutboxAge,
+                setpoint: "24h".into(),
+                reading: crate::reading::Reading::Nothing,
+            }]),
         };
         let json = serde_json::to_string(&h).unwrap();
         assert_eq!(serde_json::from_str::<Homeostat>(&json).unwrap(), h);
+
+        // A reading this binary cannot parse — a kind a later one added —
+        // costs the readings, never the row: the rest of the snapshot loads
+        // and `charter` reads as unknown.
+        let later = json.replace("\"outbox_age\"", "\"board_overdue\"");
+        assert_ne!(later, json);
+        let loaded: Homeostat = serde_json::from_str(&later).unwrap();
+        assert_eq!(loaded.charter, None);
+        assert_eq!(loaded.anticipated_guilt, Some(0.0));
 
         // Every field defaults, so a record written before this existed loads
         // as "nothing was sampled" rather than failing.

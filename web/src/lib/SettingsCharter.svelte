@@ -466,10 +466,15 @@
           <!-- Read-only here: the owner's own setpoint, in their spelling,
                kept across a save by `serialize`. Changing or adding one is
                the TOML editor's job — a form for it would be this page
-               proposing a number, and the current reading beside it is a
-               later phase (§11.1 containment 5). -->
+               proposing a number. The current reading beside it is §11.1
+               containment 5's first guard: a setpoint in the wrong unit
+               shows as always past it, here, where the owner is editing. -->
           <div class="sensor" title="an observable mecha reads from its own stores; runs that touch what it watches are attributed to this line — the reading never enters a prompt">
-            sensor · {line.sensor.kind} · setpoint {line.sensor.setpoint} · edit as TOML to change
+            sensor · {line.sensor.kind} · setpoint {line.sensor.setpoint}
+            {#if line.reading}
+              · <span class:over={line.reading.state === 'observed' && line.reading.over}>reading {line.reading.summary}</span>
+            {/if}
+            · edit as TOML to change
           </div>
         {/if}
       </div>
@@ -646,6 +651,9 @@
     font-size: 11px;
     color: var(--muted, #8a8f98);
     margin-top: 4px;
+  }
+  .sensor .over {
+    color: var(--warn, #e0a458);
   }
   .idbtn {
     font-family: var(--mono);
