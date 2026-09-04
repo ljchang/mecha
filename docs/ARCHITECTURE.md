@@ -2257,7 +2257,11 @@ prediction that was made *before* either was measured.
   the highest-ranked charter line a signed goal error of the session names
   (`appraisal::charter_rank`, `GOAL-SYSTEM-DESIGN.md` §11.1's consumer for
   rank: a signed error against the top line replays before one against
-  the fifth, an unranked episode after every ranked one, the id last), the
+  the fifth, an unranked episode after every ranked one, the id last; **only
+  a clean-origin appraisal ranks**, because the goal may be the session's
+  own `serves:` string, the charter's ids are in that session's prompt, and
+  the truncation after the sort makes the tiebreak decide membership of the
+  slice the gate reads — `mecha learn`'s provenance gate, applied), the
   rank read off the same transcript read as the trajectory against the
   stores `appraisal::Stores` loads once per draw — keeps the confirming
   slice uncorrelated with what selected the candidate. The rank is read off

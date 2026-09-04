@@ -3685,7 +3685,12 @@ charter with lines — and the second pass found the first cut of that
 guard folded an unreadable charter into an empty one, so a hand-edit that
 broke `charter.toml` turned the tiebreak off and recorded `ranked: 0`,
 "ran and ranked nothing", for "could not run"; `appraisal::Chartered`
-now answers three ways, and the draw records unknown for the first. The test builds three sessions with equal headroom whose
+now answers three ways, and the draw records unknown for the first. The
+fourth pass named the provenance gap: the goal a rank is read from may be
+the session's own `serves:` string, the charter's ids are in its prompt,
+and the draw truncates after the sort, so a tainted session naming the top
+line would have bought itself into the slice the gate reads; `charter_rank`
+now ranks only a clean-origin appraisal, the learning loop's own gate. The test builds three sessions with equal headroom whose
 ids sort one way and whose plans serve lines the other way, and asserts
 the selection is in the charter's order whichever the seed holds out — and
 that the id order, the old sort, would have reversed it. `candidate.rs`'s

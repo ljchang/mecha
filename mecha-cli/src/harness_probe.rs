@@ -651,7 +651,7 @@ mod tests {
 
         // Ids reversed against rank — the stamp leads the id, so the
         // planless session sorts first by id and last by the charter.
-        let make = |id: &str, serves: Option<&str>| {
+        let make = |id: &str, serves: Option<&str>, untrusted: bool| {
             let s = Session::create(
                 &dir,
                 SessionMeta {
@@ -701,6 +701,14 @@ mod tests {
                 Message::assistant(vec![Block::text("done")]),
             ])
             .unwrap();
+            // The taint checkpoint every front-end writes after a turn: the
+            // rank reads only a clean-origin appraisal, and a session with
+            // no checkpoint is unknown, which is never clean.
+            s.append(&Record::Taint(mecha_core::agent::Taint {
+                private: false,
+                untrusted,
+            }))
+            .unwrap();
             // Equal headroom on every metric, and one signed error each: a
             // declared check that did not pass, which carries the plan's
             // goal onto the error.
@@ -713,18 +721,23 @@ mod tests {
             }))
             .unwrap();
         };
-        make("20260101T000002-top", Some("charter:top"));
-        make("20260101T000001-fifth", Some("charter:fifth"));
-        make("20260101T000000-none", None);
+        make("20260101T000002-top", Some("charter:top"), false);
+        make("20260101T000001-fifth", Some("charter:fifth"), false);
+        make("20260101T000000-none", None, false);
+        // Names the top line from a session that carried untrusted content:
+        // its `serves:` is the model's own string under injection, so it
+        // ranks nothing and sorts with the planless one, by id.
+        make("20260101T000003-tainted", Some("charter:top"), true);
 
-        let d = draw_episodes(&dir, "m", Metric::Turns, 3, 3, 11, None).unwrap();
-        assert_eq!(d.selection.len() + d.holdout.len(), 3);
+        let d = draw_episodes(&dir, "m", Metric::Turns, 4, 4, 11, None).unwrap();
+        assert_eq!(d.selection.len() + d.holdout.len(), 4);
         let order: Vec<&str> = d.selection.iter().map(|p| p.id.as_str()).collect();
         // The charter's order, whichever one the seed held out.
         let expected = [
             "20260101T000002-top",
             "20260101T000001-fifth",
             "20260101T000000-none",
+            "20260101T000003-tainted",
         ];
         let mut cursor = 0;
         for id in &order {
@@ -734,11 +747,16 @@ mod tests {
                 .unwrap_or_else(|| panic!("selection out of charter order: {order:?}"));
             cursor += at + 1;
         }
-        assert_eq!(order.len(), 2, "{order:?}");
+        assert_eq!(order.len(), 3, "{order:?}");
         assert_eq!(
             d.ranked,
-            Some(order.iter().filter(|id| !id.ends_with("none")).count()),
-            "ranked counts the selected episodes whose error named a line"
+            Some(
+                order
+                    .iter()
+                    .filter(|id| id.ends_with("top") || id.ends_with("fifth"))
+                    .count()
+            ),
+            "ranked counts the selected episodes whose clean error named a line"
         );
 
         // A charter that does not load: the draw still happens, by headroom
@@ -749,8 +767,8 @@ mod tests {
             "[[line]]\nid = \"\"\ntext = \"x\"\n",
         )
         .unwrap();
-        let d = draw_episodes(&dir, "m", Metric::Turns, 3, 3, 11, None).unwrap();
-        assert_eq!(d.selection.len(), 2);
+        let d = draw_episodes(&dir, "m", Metric::Turns, 4, 4, 11, None).unwrap();
+        assert_eq!(d.selection.len(), 3);
         assert_eq!(d.ranked, None);
 
         // And the sort is not by id: the id order is the reverse of the

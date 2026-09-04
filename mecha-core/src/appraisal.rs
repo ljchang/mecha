@@ -881,8 +881,23 @@ impl SessionRecords<'_> {
 /// Only errors with a sign count: a zero-magnitude error against the top
 /// line is not a moment that carried information, which is what the
 /// priority is for. Pure — a function of the record and the charter, so it
-/// replays over the corpus and no model is near the draw.
+/// replays over the corpus and no model authors the *rank*.
+///
+/// **Only a clean-origin record ranks.** The goal on an error has two
+/// sources, and one is the model's own `serves: charter:<id>` string from
+/// the replayed session's plan; the charter is in that session's prompt,
+/// so its line ids are known to the model, and the draw truncates *after*
+/// the sort, so the tiebreak decides membership of the slice the gate
+/// reads, not only its order. A session that carried untrusted content
+/// and named the top line would buy itself into that slice. So the same
+/// gate `mecha learn` applies to a reflection applies here: an appraisal
+/// whose `origin` is not clean ranks nothing — the sensored-line
+/// attribution on it is harness-minted and is dropped with the rest,
+/// fail-closed, unknown never clean (found on review).
 pub fn charter_rank(appraisal: &Appraisal, charter: &crate::charter::Charter) -> Option<usize> {
+    if appraisal.origin != crate::learning::Origin::Clean {
+        return None;
+    }
     appraisal
         .errors
         .iter()
@@ -4367,6 +4382,11 @@ text = "Tell me the truth early."
         a.errors
             .push(err(Some(GoalRef::Charter("top".into())), 0.5));
         assert_eq!(charter_rank(&a, &charter), Some(0));
+        // A record from a tainted session ranks nothing, whatever its
+        // errors name: its `serves:` is the model's own string.
+        a.origin = crate::learning::Origin::Untrusted;
+        assert_eq!(charter_rank(&a, &charter), None);
+        a.origin = crate::learning::Origin::Clean;
         a.errors.clear();
         assert_eq!(charter_rank(&a, &charter), None);
         assert_eq!(charter.rank_of("fifth"), Some(1));
