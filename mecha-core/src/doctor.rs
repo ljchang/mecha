@@ -2394,6 +2394,7 @@ mod tests {
 
     fn pending_item(home: &Path, id: &str, created_at: &str, error: Option<&str>) {
         let item = OutboxItem {
+            author: Default::default(),
             filled_defaults: Vec::new(),
             call_id: None,
             id: id.to_string(),

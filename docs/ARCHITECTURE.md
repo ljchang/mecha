@@ -2072,6 +2072,16 @@ likely to trip over from outside:
   crates that are not `factory-publish` edit the record **through the JSON it
   came from**, never through a struct of their own, because a typed round
   trip drops whatever a newer writer added. Every field defaults on load.
+  Note what enforces the ownership: each verb writes back the *whole*
+  document it read, so the rule holds because the timer runs the three in
+  sequence on one shell line, not because the format prevents a clobber —
+  run two of them concurrently and the later write wins.
+- **A pick card is nobody's draft.** It is staged through
+  `OutboxStore::stage_by_harness` with `Author::Harness`, and
+  `OutboxItem::writing_outcome` returns `None` for such an item — so a slot
+  swapped by `p` is never mined as a writing correction and an unswapped
+  release is never counted as a model drafting well. `Author` defaults to
+  `Model` on load, which is what every item before the field was.
 - **No verb decides what another verb owns.** When a poll closes and what
   wins are the factory sweep's; whether a message goes is the record's
   (`invites[name]` is null); what a pick is loaded with is the owner's. A
