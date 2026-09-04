@@ -1470,6 +1470,7 @@ mod tests {
             elapsed_ms: 10,
             malformed_tool_args: 0,
             unknown_tools: 0,
+            tool_denied: 0,
             tool_errors: 0,
             tools_called: vec![],
             usage: Default::default(),
