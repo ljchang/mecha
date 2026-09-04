@@ -1254,6 +1254,10 @@ mod tests {
             // second model call, each decided by this machine's config.
             ("boredom", opts.no_boredom),
             ("compact validation", opts.no_compact_validate),
+            // The two dispositions that had no off position until the
+            // second half of the lever set gave them one.
+            ("predictive compaction", opts.no_predictive_compaction),
+            ("carried state", opts.no_carried_state),
         ] {
             assert!(
                 on,
@@ -1302,6 +1306,8 @@ mod tests {
         assert!(treatment.no_step_escalation);
         assert!(treatment.no_boredom);
         assert!(treatment.no_compact_validate);
+        assert!(treatment.no_predictive_compaction);
+        assert!(treatment.no_carried_state);
     }
 
     /// What eval forces and what a session record would say of the same

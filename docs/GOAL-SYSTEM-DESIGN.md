@@ -1957,15 +1957,18 @@ follow from facts in the tree and stand as written. None is built.
    and workspace from the transcript and `SessionMeta`, and writes
    `situation` with provenance *recomputed*. Unmatched reflections get no
    situation — absent, not zero. The goal field is never backfilled.
-7. **Split `Interrupted` before any weak evidence class.** `StopCause` has
-   one variant for a parked question (`ToolCtx::cancel`), an owner's
-   control-C, and a service restart. *Proposed:* `Parked`, `Stopped`,
-   `Shutdown`, lenient on read so old records stay unknown. Then: `Stopped`
-   followed by a new run in the same session is a redirect (medium
-   evidence); a session ending on `Stopped` or an unanswered turn is silence
-   (weak); `Parked` is no evidence. This is `APPRAISAL-RESEARCH.md` §3.3 and
-   is the prerequisite for grading goal revision on anything but the
-   owner's answer.
+7. **Split `Interrupted` before any weak evidence class.** *Built
+   2026-09-04:* `StopCause::{Parked, Stopped, Shutdown}`, with `Interrupted`
+   kept as the unknown-which value old records and a bare token cancel
+   still carry. The canceller says why through `agent::CancelReason` —
+   `ParkingAsker` parks, Ctrl-C / stop buttons / `tasks stop` / a trigger
+   cancelled by request stop, SIGTERM / a facade shutdown / a trigger's
+   wall-clock limit shut down. The appraisal reads `Stopped` per run from
+   `Transcript::outcomes` placed among the messages (`appraisal::stops_of`):
+   re-prompted is a redirect cited at the re-prompt, never resumed an
+   abandonment cited at the stop, both the owner's; `Parked`, `Shutdown` and
+   `Interrupted` sign nothing. The evidence-class grading above it (medium
+   for a redirect, weak for silence) is still to build on this.
 8. **The goal sentence stays home.** `distill` already redacts a goal to
    its kind before pkg. *Proposed:* pkg `meta` carries `{kind, id,
    serves_charter}`; the objective sentence stays in the goal store; the

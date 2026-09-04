@@ -114,9 +114,12 @@ impl OverrideKey {
 ///
 /// **A variant here is a switch that exists**, not a wish. A lever with no
 /// off position would make the record say "absent" of something that ran,
-/// which is the one lie a confound record must not tell; the dispositions
-/// *The switch set* lists without a switch today (predictive compaction, carried state,
-/// the appraiser's pass) join the set when their switch does.
+/// which is the one lie a confound record must not tell. Of the
+/// dispositions *The switch set* lists, the appraiser's pass is still
+/// absent here: it runs only under `mecha sessions appraise --appraise`,
+/// never inside a run, so there is nothing for a per-run lever to remove;
+/// and `sensors_in_brief` is a *stage* lever (a `ruminate` input), recorded
+/// on a trial's manifest rather than on a run, and waits for that store.
 ///
 /// Serialised by name — the same names [`Lever::as_str`] answers — because
 /// the record is an append-only wire format: a reader that meets a name it
@@ -168,6 +171,16 @@ pub enum Lever {
     Boredom,
     /// `--no-compact-validate`, or `[agent] compact_validate = false`.
     CompactValidate,
+    /// `--no-predictive-compaction`, or `[agent] predictive_compaction =
+    /// false`: the compaction *trigger* fires on the reported size only,
+    /// never on the forecast of the next request. The threshold stays, and
+    /// so do the predictor's other two uses — the per-turn tool-output
+    /// budget and the headroom forecast the model is shown. "No compaction
+    /// on the forecast", not "no forecast".
+    PredictiveCompaction,
+    /// `--no-carried-state`, or `[agent] carried_state = false`: a tool's
+    /// state (the plan) does not ride across a compaction.
+    CarriedState,
 }
 
 impl Lever {
@@ -181,7 +194,7 @@ impl Lever {
     /// on review). The test `all_names_every_variant_serde_knows` closes
     /// it from the derive: serde's unknown-variant error lists every
     /// variant, and the test asserts this array covers that list.
-    pub const ALL: [Lever; 13] = [
+    pub const ALL: [Lever; 15] = [
         Lever::Mcp,
         Lever::LearnedRules,
         Lever::Hooks,
@@ -195,6 +208,8 @@ impl Lever {
         Lever::ApprovalRules,
         Lever::Boredom,
         Lever::CompactValidate,
+        Lever::PredictiveCompaction,
+        Lever::CarriedState,
     ];
 
     pub fn parse(name: &str) -> Option<Lever> {
@@ -216,6 +231,8 @@ impl Lever {
             Lever::ApprovalRules => "approval_rules",
             Lever::Boredom => "boredom",
             Lever::CompactValidate => "compact_validate",
+            Lever::PredictiveCompaction => "predictive_compaction",
+            Lever::CarriedState => "carried_state",
         }
     }
 
@@ -968,7 +985,9 @@ mod tests {
                 | Lever::StepEscalation
                 | Lever::ApprovalRules
                 | Lever::Boredom
-                | Lever::CompactValidate => {}
+                | Lever::CompactValidate
+                | Lever::PredictiveCompaction
+                | Lever::CarriedState => {}
             }
         }
         let mut seen = std::collections::BTreeSet::new();

@@ -30,7 +30,6 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::Serialize;
 use tokio::sync::{broadcast, Mutex};
-use tokio_util::sync::CancellationToken;
 
 use mecha_core::agent::{Agent, AgentEvent, Conversation};
 use mecha_core::config::{Config, PermissionMode};
@@ -152,7 +151,9 @@ struct WebSession {
 }
 
 struct Live {
-    cancel: CancellationToken,
+    /// The handle, not a bare token: the page's stop button cancels *as
+    /// the owner*, and the outcome records `Stopped`.
+    cancel: mecha_core::agent::CancelHandle,
     queue: Arc<StdMutex<VecDeque<String>>>,
 }
 
@@ -1263,7 +1264,7 @@ enum TurnError {
 struct Started {
     events: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
     done: tokio::sync::oneshot::Receiver<Result<crate::voice::HostedAnswer, String>>,
-    cancel: CancellationToken,
+    cancel: mecha_core::agent::CancelHandle,
 }
 
 /// Start a turn on a session that is idle and still holds its conversation.
@@ -1355,7 +1356,7 @@ fn begin_turn(
         });
     }
 
-    let cancel = CancellationToken::new();
+    let cancel = mecha_core::agent::CancelHandle::new();
     let queue: Arc<StdMutex<VecDeque<String>>> = Arc::default();
     ws.live = Some(Live {
         cancel: cancel.clone(),
@@ -1395,7 +1396,10 @@ fn begin_turn(
             None => 40,
         });
     }
-    cx.cancel = Some(cancel.clone());
+    // Through the builder, not a field write: the handle's reason cell must
+    // be this run's own, and the shared agent context's must not be reused
+    // across runs.
+    cx = cx.with_cancel_handle(cancel.clone());
     cx.queued_input = Some(Arc::clone(&queue));
     // Whatever this session may not dispatch. Empty for an ordinary chat, so
     // the assignment costs nothing and there is one place it is applied.
@@ -1773,7 +1777,7 @@ impl crate::voice::SessionHost for VoiceHost {
                     if let Some(ws) = sessions.get_mut(key) {
                         ws.questions.drain();
                         if let Some(live) = &ws.live {
-                            live.cancel.cancel();
+                            live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                         }
                     }
                 } else if idle {
@@ -1825,7 +1829,7 @@ pub async fn cancel(
             // resolves as a machine refusal — and the token stops the rest.
             ws.questions.drain();
             if let Some(live) = &ws.live {
-                live.cancel.cancel();
+                live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
             }
             Json(serde_json::json!({ "cancelled": true })).into_response()
         }

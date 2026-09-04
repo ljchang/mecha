@@ -556,6 +556,24 @@ pub struct AgentConfig {
     /// share that posture; it now derives its threshold from the window,
     /// because its validator gave it a measurement this has not earned yet.)
     pub step_escalation: bool,
+    /// Fire the compaction *trigger* on the forecast of the next request,
+    /// not only on the size the last one reported. On by default. Off is a
+    /// lever for an experiment (`predictive_compaction`,
+    /// `docs/EXPERIMENT-DESIGN.md` Part II), and its scope is exactly the
+    /// trigger: the threshold stays, so a run never compacts *less* than the
+    /// reactive check would, only later; and the two other places the
+    /// predictor acts — the per-turn tool-output budget
+    /// (`affordable_output_bytes`, the other half of the cliff-to-gradient)
+    /// and the headroom forecast the model is shown — are deliberately left
+    /// on. A reader of `levers_off` should take this as "no compaction on
+    /// the forecast", never as "no forecast" (found on review).
+    pub predictive_compaction: bool,
+    /// Carry a tool's own state (the plan) verbatim across a compaction, in
+    /// the rebuilt head. On by default: the list the model keeps for itself
+    /// is exactly what a summariser is measured to drop. Off is a lever for
+    /// an experiment (`carried_state`): the summary still installs; the plan
+    /// just does not ride across it.
+    pub carried_state: bool,
 }
 
 impl Default for AgentConfig {
@@ -582,6 +600,8 @@ impl Default for AgentConfig {
             boredom: true,
             compact_validate: true,
             step_escalation: false,
+            predictive_compaction: true,
+            carried_state: true,
         }
     }
 }
@@ -1408,6 +1428,8 @@ struct AgentLayer {
     loop_guard: Option<bool>,
     boredom: Option<bool>,
     step_escalation: Option<bool>,
+    predictive_compaction: Option<bool>,
+    carried_state: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -1505,6 +1527,12 @@ impl ConfigLayer {
             }
             if let Some(v) = a.step_escalation {
                 t.step_escalation = v;
+            }
+            if let Some(v) = a.predictive_compaction {
+                t.predictive_compaction = v;
+            }
+            if let Some(v) = a.carried_state {
+                t.carried_state = v;
             }
             if a.timezone.is_some() {
                 t.timezone = a.timezone;

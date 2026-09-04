@@ -1088,8 +1088,10 @@ and the only one whose remedy is a person; and *failed* must never render as
 That second rule is why there is a seventh state — a transcript with no
 outcome record is a run that never got as far as saying how it went, and
 reporting it as either of the other two invents the one fact the card is
-about. `Interrupted` reads as finished and never as failed, on doctor's own
-rule for the same field: a person stopping a run is the system working.
+about. A cancellation reads as finished and never as failed, on doctor's own
+rule for the same field: `stopped` is a person, `parked` a question to the
+owner, `shutdown` the process, and the older `interrupted` did not say
+which — none is the harness ending the work.
 
 ## The unified queue — `/queues`
 
@@ -2394,7 +2396,7 @@ The decisions that carry it, each a bug if undone:
   measurement arm and the acceptance arm silently stop being comparable.
   `harness::Lever` is the on/off half beside it (`EXPERIMENT-DESIGN.md`
   Part II, *The switch set* — PR #156 until it lands):
-  the thirteen subsystems a run can carry structurally absent, each a switch
+  the fifteen subsystems a run can carry structurally absent, each a switch
   that exists today, recorded on `RunConfig::levers_off` in `Lever::ALL`'s
   order. `mecha eval`'s `force_reproducible` is `Lever::bare` thrown through
   `setup::switch_off` plus one explicit line for `ApprovalRules` — the lever
@@ -2405,7 +2407,7 @@ The decisions that carry it, each a bug if undone:
   for the record, so eval's bare arm and any recorded run's absences come
   from one definition — a test reads each through the other (eval itself
   writes no session, so the meeting point is the function, not a record).
-  **The record is the switch, never the effect**, for all thirteen alike:
+  **The record is the switch, never the effect**, for all fifteen alike:
   an empty rules store or a provider with no `context_window` leaves its
   lever on, and the realised surface is `tools` and `system_prompt` on the
   same record — an experiment pairs arms on the switch set and checks the
@@ -2425,9 +2427,11 @@ The decisions that carry it, each a bug if undone:
   list, because a lever dropped from `levers_off` reads as on; `None` is the
   same answer a transcript from before the field gives, and neither is
   "all on". A lever with no off position is not in the set: the record must
-  never say "absent" of something that ran, so the dispositions *The switch set* lists
-  without a switch (predictive compaction, carried state, the appraiser's
-  pass) join when their switch does.
+  never say "absent" of something that ran. Predictive compaction and
+  carried state got their switches (`[agent] predictive_compaction`,
+  `[agent] carried_state`, and the `--no-*` flags) and joined; the
+  appraiser's pass has no in-run site to remove, and `sensors_in_brief` is
+  a stage lever for a trial's manifest, not a run's record.
 - **The run record names the rules it carried, in two halves.**
   `RunConfig::rules_hash` and `rule_ids` are the prefix block's
   `learning::rules_hash` and the learned rules in it, taken from the same
@@ -2997,8 +3001,9 @@ recoverable from the finding's own name:
   fifth of its runs over a failed call, failing a quarter of its tool calls, or
   having a quarter of its runs cut short by a ceiling. Thresholds deliberately
   **high**, because rule-based evaluators are measured to under-report success
-  and a doctor that cries wolf stops being read; `Interrupted` excluded, since
-  a person pressing Ctrl-C is the system working and counting it would make an
+  and a doctor that cries wolf stops being read; the cancellations (`Stopped`,
+  `Parked`, `Shutdown`, the older `Interrupted`) excluded, since a person
+  pressing Ctrl-C is the system working and counting it would make an
   attentive user look like a problem; per model with a 20-run floor, since a
   blend across models describes neither and names the wrong one.
 

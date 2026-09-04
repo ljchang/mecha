@@ -341,6 +341,12 @@ impl Tool for Subagent {
             // the agent's own default has no token, which is exactly how this
             // used to wait out the whole child run.
             cancel: ctx.cancel.clone(),
+            // The parent's reason cell too, so a parent stopped by its owner
+            // records `Stopped` on the child it cancelled with it.
+            cancel_reason: ctx
+                .cancel_reason
+                .clone()
+                .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(None))),
             // The child has its own transcript, and its own config decides
             // when to summarise it.
             compact_at_tokens: None,
