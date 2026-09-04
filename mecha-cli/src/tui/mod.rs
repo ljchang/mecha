@@ -316,6 +316,16 @@ struct Live {
     /// and its tools wholesale, and a handle cached anywhere else would keep
     /// answering for the agent that was replaced.
     skill: Option<Arc<mecha_core::tool::skill::SkillTool>>,
+    /// The levers this agent was built with off, carried from `Prepared`
+    /// so every `config` record this session appends — at start, and after
+    /// `/mode`, which rebuilds nothing — names the same value. `/mode` used
+    /// to re-read `config.toml` and fold the flags into *that*, so editing
+    /// `boredom = false` in the file and then switching mode recorded the
+    /// lever off while the running agent kept issuing notices: "absent" of
+    /// something that ran, the record's one forbidden lie (found on review,
+    /// the fourth shape of it). A `/model` or `/mcp` switch rebuilds `Live`
+    /// from a fresh `Prepared`, so this moves exactly when the agent does.
+    levers_off: Vec<mecha_core::harness::Lever>,
     /// Held for the lifetime of the session: dropping a client kills its
     /// server, so the *old* set must outlive the switch that replaced it only
     /// until the new one is up.
@@ -331,6 +341,7 @@ impl Live {
             opts,
             todo: p.todo,
             skill: p.skill,
+            levers_off: p.levers_off,
             _mcp: p._mcp,
         }
     }
@@ -3113,15 +3124,12 @@ fn record_config(session: Option<&Session>, live: &Live, mode: PermissionMode) -
             .as_deref()
             .unwrap_or(std::path::Path::new(".")),
     )?;
-    // From the *current* opts, for the same reason they live on `Live`: a
-    // `/mcp off` mid-session is a lever thrown, and the record after it must
-    // say so. The file config is folded through the same function
-    // `prepare_tools` used before the agent was built, so the four config
-    // switches are read as the agent has them rather than as the file says.
-    let mut cfg = cfg;
-    crate::setup::fold_agent_switches(&mut cfg.agent, &live.opts);
-    let levers_off = crate::setup::levers_off(&live.opts, &cfg);
-    let mut record = RunConfig::of(&live.agent, &cfg, &live.provider, &levers_off);
+    // The levers come from `Live`, never from the file just loaded: the file
+    // may have changed since the agent was built, and `/mode` rebuilds
+    // nothing, so a record computed from it would describe an agent that is
+    // not running. `live.levers_off` is the value the running agent was
+    // built with, and it is replaced exactly when the agent is.
+    let mut record = RunConfig::of(&live.agent, &cfg, &live.provider, &live.levers_off);
     // The file cannot know about a `/mode` switch, and a replay that read the
     // file's mode would be reproducing permissions this session never ran under.
     record.permission_mode = mode;
