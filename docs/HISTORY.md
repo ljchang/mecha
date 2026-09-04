@@ -3660,6 +3660,28 @@ read a month overdue on the sensor and a day old to the doctor
 `created_at`). Not built then: the replay tiebreak, `board_overdue` and
 `cost`, and the reflection's "which line moved".
 
+**2026-09-04, night — the situation backfill: reflections mined before
+the field get one, recomputed from their transcripts, or stay without
+one and say why.** `GOAL-SYSTEM-DESIGN.md` §17.7 item 6
+(`feat/situation-backfill`). `mecha reflect --backfill-situations` reads
+each cited session once, runs `extract_interventions` over it, and
+`learning::backfill_situation` matches a reflection to its intervention
+by the three things a reflection persists — session, trigger and the
+intervention text, copied verbatim at mining — then recomputes
+`Situation::recorded` off the window, the session kind and the workspace,
+exactly as the miner would have. Two fits with different windows are
+`Ambiguous` and stay absent; two with the same window are one match. The
+write, `LearningStore::set_situations`, takes only reflections whose
+situation is still absent and stamps `situation_recomputed_at`, the
+provenance mark the design asks for, so a situation recorded at mining
+is never overwritten and the pass is free to run twice. No model. The
+dry run on the live store: 37 of 45 would recompute, 8 stay absent — six
+whose transcript no longer holds an intervention of that trigger and
+text (a compaction since, or an outbox edit with no transcript), two
+whose session is not in the store. The write itself was left to the
+owner: it changes which region batches the next `learn --auto` argues,
+and that is a store change worth a deliberate run.
+
 **2026-09-04, night — the replay tiebreak: line order decides what gets
 replayed among equals.** §11.1's last phase, built last as its own phasing
 asked, because it is the one consumer that changes what a replay

@@ -186,6 +186,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one whose signed error names the higher-ranked charter line is
   selected first, the count printed beside the draw's seed. The sensor's
   kind, setpoint and reading never enter a prompt and never feed a metric.
+- **`mecha reflect --backfill-situations`** — reflections mined before
+  the situation field get one, recomputed from their transcripts with no
+  model call: the tool window, surface and workspace the miner would have
+  recorded, matched by session, trigger and intervention text. A
+  reflection whose intervention cannot be found once in its transcript
+  stays without one and is listed with the reason; a situation recorded
+  at mining is never overwritten; `--dry-run` reports without writing.
+  The recomputation is stamped on the record (`situation_recomputed_at`).
 
 ### Fixed
 
