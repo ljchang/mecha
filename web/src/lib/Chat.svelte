@@ -118,6 +118,26 @@
     return flat.length > 72 ? `${flat.slice(0, 72)}…` : flat;
   }
 
+  // Which open chip a result or a refusal belongs to.
+  //
+  // By name, not merely "the last one still running". `Agent::run_tools`
+  // emits every `ToolCall` in one sequential loop, refuses inline, and only
+  // then runs the approved calls in a `join_all` — so a turn that refuses
+  // one call and runs another holds two pending chips at once, and the
+  // refusal's own result arrives *before* the approved call's. Matching by
+  // position alone put one call's answer under another call's arguments:
+  // a planning-phase turn calling `fs_read` then `fs_write` closed the
+  // `fs_write` chip on its refusal, then landed `fs_write`'s "not available
+  // while planning" on the still-pending `fs_read` row and dropped the real
+  // read result entirely.
+  //
+  // That mislabel was anonymous before this branch and is a confident one
+  // now that the chip carries the call, which is the failure this change
+  // exists to prevent arriving one layer above it.
+  function openCall(entries, name) {
+    return entries.findLast((e) => e.kind === 'tool' && e.pending && e.name === name);
+  }
+
   // A denial is the *end* of the call above it, not a second call.
   //
   // Three of the four denial paths in `Agent::run_tools` — the trifecta
@@ -135,9 +155,7 @@
   // path sees the recorded result and draws *one* chip for this call, so a
   // live view drawing two was the transcript contradicting itself.
   function resolveDenial(entries, ev) {
-    const open = entries.findLast(
-      (e) => e.kind === 'tool' && e.pending && e.name === ev.name
-    );
+    const open = openCall(entries, ev.name);
     if (!open) return false;
     open.pending = false;
     open.blocked = true;
@@ -281,7 +299,11 @@
           });
           break;
         case 'tool_result': {
-          const open = entries.findLast((e) => e.kind === 'tool' && e.pending);
+          // A result whose chip is already closed is dropped, not moved onto
+          // somebody else's row: the planning-phase refusal emits both
+          // `ToolDenied` and `ToolResult`, and the denial already wrote the
+          // reason where it belongs.
+          const open = openCall(entries, ev.name);
           if (open) {
             open.pending = false;
             open.is_error = ev.is_error;

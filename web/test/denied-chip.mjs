@@ -24,12 +24,18 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Chat.svelte'), 'utf8');
 
-const marker = '  function resolveDenial(entries, ev) {';
-const start = src.indexOf(marker);
-if (start < 0) throw new Error('Chat.svelte no longer defines resolveDenial');
-const end = '\n  }\n';
-const fnSrc = src.slice(start, src.indexOf(end, start) + end.length);
-const resolveDenial = new Function(`${fnSrc} return resolveDenial;`)();
+function readOut(marker) {
+  const start = src.indexOf(marker);
+  if (start < 0) throw new Error(`Chat.svelte no longer defines ${marker.trim()}`);
+  const end = '\n  }\n';
+  return src.slice(start, src.indexOf(end, start) + end.length);
+}
+
+const openCallSrc = readOut('  function openCall(entries, name) {');
+const denialSrc = readOut('  function resolveDenial(entries, ev) {');
+const [openCall, resolveDenial] = new Function(
+  `${openCallSrc}${denialSrc} return [openCall, resolveDenial];`
+)();
 
 let passed = 0;
 let failed = 0;
@@ -113,6 +119,51 @@ const call = (name) => ({ kind: 'tool', name, pending: true, draft: null, args: 
   const entries = [call('shell')];
   resolveDenial(entries, { name: 'shell' });
   is(entries[0].preview, '', 'a missing reason is empty, not the string "undefined"');
+}
+
+// The turn order `Agent::run_tools` actually produces, driven through both
+// handlers together — the interaction neither one shows on its own.
+//
+// The approval loop is sequential and emits every `ToolCall` before any
+// approved call runs (`join_all` comes after), so a planning-phase turn that
+// allows `fs_read` and refuses `fs_write` has two chips open at once. The
+// planning refusal is the one denial path that emits `ToolDenied` *and*
+// `ToolResult`, and that result arrives while `fs_read` is still pending.
+// Resolving by position put `fs_write`'s refusal under `fs_read`'s arguments
+// and dropped the real read result.
+{
+  const entries = [];
+  // `tool` events, both calls, before either result.
+  entries.push({ kind: 'tool', name: 'fs_read', pending: true, args: '{"path":"agent.rs"}' });
+  entries.push({ kind: 'tool', name: 'fs_write', pending: true, args: '{"path":"out.txt"}' });
+
+  // The refusal, inline in the same loop.
+  resolveDenial(entries, {
+    name: 'fs_write',
+    reason: '`fs_write` is not available while planning.',
+  });
+
+  // The refusal's own result, which the planning path emits too.
+  const strayTarget = openCall(entries, 'fs_write');
+  is(strayTarget, undefined, "the refused call's result finds no open chip and is dropped");
+
+  // Then the approved call's result, after join_all.
+  const readTarget = openCall(entries, 'fs_read');
+  is(readTarget === entries[0], true, 'the read result lands on the read');
+  readTarget.pending = false;
+  readTarget.preview = '80 lines';
+
+  is(entries.length, 2, 'the turn drew one chip per call');
+  is(
+    entries[0].preview,
+    '80 lines',
+    'and the read shows what it read, not the write refusal'
+  );
+  is(
+    entries[1].preview,
+    '`fs_write` is not available while planning.',
+    'while the refused write shows why it was refused'
+  );
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
