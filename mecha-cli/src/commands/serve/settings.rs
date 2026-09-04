@@ -65,7 +65,21 @@ fn request_stamp() -> String {
 
 /// The one shape both the GET and a successful save return, so the page
 /// never has to merge two descriptions of the same file.
-fn charter_state() -> Json<serde_json::Value> {
+///
+/// **Off the executor.** The readings beside each sensored line read the
+/// outbox, the question store and the front door, and — where a line
+/// carries `intervention_rate` — scan up to `doctor::RUNS_WINDOW`
+/// transcripts; `board.rs` argues the rule at a far smaller cost, and this
+/// handler used to run all of it inline (found on review). A join failure
+/// is reported as the page's error state rather than a panic.
+async fn charter_state() -> Json<serde_json::Value> {
+    match tokio::task::spawn_blocking(charter_state_blocking).await {
+        Ok(json) => json,
+        Err(e) => Json(serde_json::json!({ "error": format!("reading the charter: {e}") })),
+    }
+}
+
+fn charter_state_blocking() -> Json<serde_json::Value> {
     let path = match mecha_core::charter::Charter::default_path() {
         Ok(p) => p,
         Err(e) => {
@@ -112,7 +126,7 @@ fn charter_state() -> Json<serde_json::Value> {
 
 /// GET /api/settings/charter
 pub async fn charter(State(_state): St) -> Json<serde_json::Value> {
-    charter_state()
+    charter_state().await
 }
 
 #[derive(Deserialize)]
@@ -166,7 +180,7 @@ pub async fn charter_save(State(_state): St, Json(body): Json<CharterSave>) -> R
         let _ = std::fs::remove_file(&tmp);
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
     }
-    charter_state().into_response()
+    charter_state().await.into_response()
 }
 
 // ─── The learning store ──────────────────────────────────────────────────

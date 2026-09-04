@@ -1075,8 +1075,9 @@ charter is `Prose` class and cannot be cheaply A/B tested:
 > charter finding is the actual containment, and the `update` skill the fix.
 >
 > **The readings phase built 2026-09-04, later** (`feat/charter-readings`):
-> `reading.rs` reads each sensored line against its store as one of four
-> states — unread, deferred, nothing waiting, observed — with the observed
+> `reading.rs` reads each sensored line against its store as one of five
+> states — unread, deferred, nothing waiting, too few runs for a share,
+> observed — with the observed
 > value's `excess` past the setpoint as the line-specific guilt term,
 > asymptotic on `guilt.rs`'s lesson and with a zero setpoint refused at the
 > parser; it is recorded on the homeostat at every run's start from the

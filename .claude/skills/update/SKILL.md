@@ -167,6 +167,15 @@ hid behind (the two-repo paragraph earlier in this step). Check with
 `pgrep -af mecha-graph-mcp` and compare each process's start time to the
 binary's mtime.
 
+**The charter is a wire format across machines, and the parser only ever
+tightens.** A `[line.sensor]` table (2026-09-04) or a `setpoint = 0`
+(refused since the readings phase the same day) authored on the updated
+machine makes the *older* binary on the other one run with **no charter at
+all** — one stderr line the TUI's alternate screen covers, not a refusal —
+until it is updated too. Update both machines before editing the charter
+from either; `mecha doctor` on the stale one reports it as the emergency it
+is.
+
 ### 1b. The web app's assets
 
 `mecha serve` serves the UI from `[web] assets` in the live config, which

@@ -23,10 +23,11 @@
 //!   closed at the type.
 //! - **Unknown is never zero.** A store that could not be read is
 //!   [`Reading::Unread`]; a store this reader does not scan is
-//!   [`Reading::Deferred`]; nothing waiting is [`Reading::Nothing`]; and only
-//!   [`Reading::Observed`] carries a value. Four facts, kept apart, because
-//!   a finding that fires on an absence is the failure `backlog.rs` and
-//!   `guilt.rs` both state at length.
+//!   [`Reading::Deferred`]; nothing waiting is [`Reading::Nothing`]; too few
+//!   runs for a share is [`Reading::Sparse`]; and only [`Reading::Observed`]
+//!   carries a value. Five facts, kept apart, because a finding that fires
+//!   on an absence is the failure `backlog.rs` and `guilt.rs` both state at
+//!   length.
 //!
 //! ## Line-specific guilt, and why the term is asymptotic
 //!
@@ -123,6 +124,11 @@ pub enum Reading {
     /// [`Reading::Observed`] — "no draft is old" and "zero drafts wait" are
     /// the same store state read by two different kinds.
     Nothing,
+    /// The corpus kind over fewer runs than a share can be read from
+    /// (`doctor::RUNS_MIN`): a share of three runs is noise, and the doctor
+    /// refuses one, so the surface the owner judges a setpoint on must not
+    /// print one either (found on review). Says nothing either way.
+    Sparse { runs: usize },
     /// A value, against the setpoint.
     Observed {
         value: Observed,
@@ -140,7 +146,7 @@ impl Reading {
     /// rather than counting them on either side.
     pub fn over(&self) -> Option<bool> {
         match self {
-            Reading::Unread | Reading::Deferred => None,
+            Reading::Unread | Reading::Deferred | Reading::Sparse { .. } => None,
             Reading::Nothing => Some(false),
             Reading::Observed { over, .. } => Some(*over),
         }
@@ -150,7 +156,7 @@ impl Reading {
     /// zero where nothing waits, `None` where nothing is known.
     pub fn excess(&self) -> Option<f32> {
         match self {
-            Reading::Unread | Reading::Deferred => None,
+            Reading::Unread | Reading::Deferred | Reading::Sparse { .. } => None,
             Reading::Nothing => Some(0.0),
             Reading::Observed { excess, .. } => Some(*excess),
         }
@@ -185,6 +191,11 @@ impl LineReading {
                 SensorKind::InterventionRate => "no runs recorded yet".to_string(),
                 _ => "nothing waiting".to_string(),
             },
+            Reading::Sparse { runs } => format!(
+                "only {runs} run{} recorded, under the {}-run floor a share needs",
+                if *runs == 1 { "" } else { "s" },
+                crate::doctor::RUNS_MIN
+            ),
             Reading::Observed { value, over, .. } => {
                 let value = match value {
                     Observed::Seconds(s) => render_secs(*s),
@@ -285,6 +296,8 @@ pub enum CorpusRate {
     /// It read the store and found no runs in the window — nothing to have
     /// stepped into.
     Empty,
+    /// It read the store and found runs, but fewer than `doctor::RUNS_MIN`.
+    Sparse(usize),
     /// The share of runs in the window the owner stepped into.
     Share(f64),
 }
@@ -372,6 +385,7 @@ pub fn read_line(
             CorpusRate::NotScanned => Reading::Deferred,
             CorpusRate::Unreadable => Reading::Unread,
             CorpusRate::Empty => Reading::Nothing,
+            CorpusRate::Sparse(runs) => Reading::Sparse { runs: *runs },
             CorpusRate::Share(r) => observed(Observed::Rate(*r), sensor.setpoint),
         },
     };
@@ -397,7 +411,10 @@ pub fn read_line(
                 value: Observed::Rate(_),
                 ..
             }
-        ) | (_, Reading::Unread | Reading::Deferred | Reading::Nothing)
+        ) | (
+            _,
+            Reading::Unread | Reading::Deferred | Reading::Nothing | Reading::Sparse { .. }
+        )
     ));
     Some(LineReading {
         line: line.id.clone(),
@@ -437,19 +454,31 @@ fn wants_corpus(charter: &Charter) -> bool {
 /// home over the doctor's window — the one reader here that pays for a scan,
 /// which is why it is a separate call rather than part of [`read_lines`].
 pub fn corpus_rate() -> CorpusRate {
-    use crate::runlog::{Corpus, Scan};
     let Ok(home) = crate::work::mecha_home() else {
         return CorpusRate::Unreadable;
     };
-    let dir = home.join("sessions");
+    corpus_rate_in(&home.join("sessions"))
+}
+
+/// [`corpus_rate`] over a named session store, so a test can hand it a
+/// directory. Three ways to read as not-a-share, kept apart: a store that
+/// has never existed or holds no run is `Empty`; a store whose every
+/// transcript is torn is `Unreadable` — `Corpus::scan` returns `Ok` with
+/// `unreadable` counted and no rows for that, which is exactly the rot the
+/// doctor's own finding exists for, and reading it as "no runs" reported
+/// unknown as met (found on review); and fewer runs than the doctor's own
+/// floor is `Sparse`, because a share of three runs is noise there and is
+/// noise here.
+pub fn corpus_rate_in(dir: &std::path::Path) -> CorpusRate {
+    use crate::runlog::{Corpus, Scan};
     if !dir.is_dir() {
         // A machine that has never recorded a run has nothing to have
         // stepped into — empty, not unreadable, on `Backlog::read`'s rule
         // for a store that has never existed.
         return CorpusRate::Empty;
     }
-    match Corpus::scan(
-        &dir,
+    let corpus = match Corpus::scan(
+        dir,
         &Scan {
             max_sessions: Some(crate::doctor::RUNS_WINDOW),
             since: None,
@@ -459,11 +488,22 @@ pub fn corpus_rate() -> CorpusRate {
             include_experiments: crate::experiment::in_experiment_home(),
         },
     ) {
-        Ok(corpus) => match corpus.intervention_rate() {
-            Some(rate) => CorpusRate::Share(rate),
-            None => CorpusRate::Empty,
-        },
-        Err(_) => CorpusRate::Unreadable,
+        Ok(corpus) => corpus,
+        Err(_) => return CorpusRate::Unreadable,
+    };
+    if corpus.is_empty() {
+        return if corpus.unreadable > 0 {
+            CorpusRate::Unreadable
+        } else {
+            CorpusRate::Empty
+        };
+    }
+    if corpus.len() < crate::doctor::RUNS_MIN {
+        return CorpusRate::Sparse(corpus.len());
+    }
+    match corpus.intervention_rate() {
+        Some(rate) => CorpusRate::Share(rate),
+        None => CorpusRate::Empty,
     }
 }
 
@@ -618,6 +658,17 @@ mod tests {
         let empty = read_lines(&c, &backlog, &CorpusRate::Empty, now());
         assert_eq!(empty[0].reading, Reading::Nothing);
         assert_eq!(empty[0].summary(), "no runs recorded yet");
+        let sparse = read_lines(&c, &backlog, &CorpusRate::Sparse(2), now());
+        assert_eq!(sparse[0].reading, Reading::Sparse { runs: 2 });
+        assert_eq!(sparse[0].reading.over(), None);
+        assert_eq!(sparse[0].reading.excess(), None);
+        assert_eq!(
+            sparse[0].summary(),
+            format!(
+                "only 2 runs recorded, under the {}-run floor a share needs",
+                crate::doctor::RUNS_MIN
+            )
+        );
         let unreadable = read_lines(&c, &backlog, &CorpusRate::Unreadable, now());
         assert_eq!(unreadable[0].reading, Reading::Unread);
     }
@@ -701,6 +752,50 @@ mod tests {
         );
         assert_eq!(json[1]["reading"]["state"], "nothing");
         assert_eq!(json[1]["reading"]["summary"], "nothing waiting");
+    }
+
+    /// The three not-a-share readings of a store, told apart: never
+    /// existed, every transcript torn, and fewer runs than the floor. The
+    /// torn case is the one that read as "no runs" before — `Corpus::scan`
+    /// is `Ok` with the rot counted, not `Err`.
+    #[test]
+    fn a_torn_corpus_is_unreadable_and_a_thin_one_is_sparse_never_met() {
+        use crate::session::{Record, RunStats, Session, SessionMeta};
+        let root = std::env::temp_dir().join(format!(
+            "mecha-reading-corpus-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(corpus_rate_in(&root.join("never")), CorpusRate::Empty);
+
+        let torn = root.join("torn");
+        std::fs::create_dir_all(&torn).unwrap();
+        std::fs::write(torn.join("20260801T000000-x.jsonl"), "{not json\n").unwrap();
+        assert_eq!(corpus_rate_in(&torn), CorpusRate::Unreadable);
+
+        let thin = root.join("thin");
+        std::fs::create_dir_all(&thin).unwrap();
+        for i in 0..3 {
+            let s = Session::create(
+                &thin,
+                SessionMeta {
+                    id: format!("20260801T00000{i}-r"),
+                    created_at: now(),
+                    provider: "local".into(),
+                    model: "m".into(),
+                    workspace: std::path::PathBuf::from("/tmp"),
+                    title: None,
+                    kind: None,
+                },
+            )
+            .unwrap();
+            s.append(&Record::Outcome(RunStats::default())).unwrap();
+        }
+        assert_eq!(corpus_rate_in(&thin), CorpusRate::Sparse(3));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
