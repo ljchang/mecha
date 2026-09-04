@@ -1604,7 +1604,9 @@ nothing yet reads it for anything but rendering it into the prompt.
 
 Rulings from the owner, recorded with what each asks of the tree. **§17.1's
 gate and its prerequisite producers were built 2026-09-04** (§17.6 items 1
-and 2, one pull request); the rest is unbuilt. They follow a trace of
+and 2, one pull request), and **§17.3's `Situation`, §17.4's scoped loading
+and §17.7 item 1's run record followed the same day** (§17.6 item 3, a
+second pull request — see the built notes on each); the rest is unbuilt. They follow a trace of
 `appraisal.rs`, `goal.rs`, `charter.rs`,
 `homeostat.rs` and `learning.rs` on this date, which found: no relevance
 dimension anywhere; `appraisal.rs` with no reference to `crate::charter`;
@@ -1775,6 +1777,33 @@ scoped to a tool and a condition renders as one line on that tool's result
 the first time the condition recurs — §7.4's fast pre-action marker, one
 cheap lookup keyed on a recorded situation. Never by current valence.
 
+> **Built 2026-09-04, with one correction to the loading rule above.**
+> `Situation` is `situation.rs`; a reflection records it at mining
+> (`Reflexion::situation`), a rule carries the region it was learned for
+> (`Rule::scope`, assigned by `finalize_region_rules` from the batch's
+> shared keys, never by the learner), and `mecha learn` runs one learner
+> call per focus-tool batch (`batches_by_region`) with the region's rules
+> rewritable and the rest immutable context. The correction: a scoped rule
+> does ride in the prefix — of the runs whose registry matches its scope,
+> and no other (`rules_carried_for`, rendered after the registry is
+> complete). The block is composed once per run, so the prefix stays
+> stable within a run; what "never in the prefix" was protecting against,
+> every rule in every prompt, is what the match removes. Mid-run delivery
+> on a recurring condition is unbuilt and stays under §17.7 item 2's
+> off-by-default ruling. Also unbuilt: consolidation's widening and
+> narrowing, and per-region validation — `validate` renders per probe for
+> the replayed session's registry and keys the ledger row to that block,
+> which is the honest half of R2 and not the per-region budget. Two keys
+> are recorded and not yet scope keys, with the reasons in `situation.rs`:
+> the surface, because `prepare` does not know it, and the workspace,
+> because scoping to it before widening exists would pin nearly every rule
+> to the one workspace most reflections come from. `error_type` is not a
+> key at all: it is the reflector's label, and §17.3's rule is that a key
+> is what the harness knows structurally. Reflections mined before the
+> field carry no situation and batch as standing (§17.7 item 6's backfill
+> is not built); the twelve rules on this machine are unscoped and load
+> everywhere, as they did, until the standing batch rewrites them.
+
 ### 17.5 The validator these rulings are missing, and its template
 
 The tree validates at two tiers and neither is against a goal.
@@ -1835,6 +1864,17 @@ the data these produce.
    `trigger`, `error_type`, surface and workspace, plus a `scope` on `Rule`
    and the learner batched by region. No new model call. Exit: a rule
    learned from a denial on one tool is scoped to that tool.
+   *Built 2026-09-04* (`feat/situation-scope`), with the loader matching
+   scope at run start and §17.7 item 1's run record in the same pull
+   request — see the built note under §17.4 for what is in, what is
+   recorded but not yet matched, and why `error_type` is beside the
+   situation and not in it. The exit is
+   `a_denial_on_one_tool_learns_a_rule_scoped_to_that_tool`: a batch of
+   `shell` denials produces a rule scoped to `shell` that a run without
+   `shell` does not carry. The owner's ruling that prompted the loader
+   half, same day: *only the relevant rules should enrich a prompt* — the
+   classifier by domain as before, the drafter by its tool, a tool by its
+   name.
 4. **Measure the appraiser at scale** (`APPRAISAL-RESEARCH.md` §3.10):
    `--appraise` over the store, then keep or retire it. Zero build.
 5. **Execute the declared check** — the audit lane's; coordinate, do not
@@ -1862,6 +1902,13 @@ follow from facts in the tree and stand as written. None is built.
    — pointers only, the taint snapshot's shape. A run without the field
    replays with the prefix block and reports the scoped set as *unknown*,
    never empty. Lands with sprint item 3 or item 3 does not merge.
+   *Built 2026-09-04, with item 3:* `RunConfig::rules_hash` and `rule_ids`
+   from the one render in `prepare_tools` (`RulesCarried`), and
+   `RunStats::delivered` written `Some([])` by this build because the loop
+   delivers nothing mid-run yet; `mecha replay` prints the arm through
+   `RunConfig::rules_arm_note`, and a record from before either field
+   reads *unknown*. A live run on the day recorded twelve ids under one
+   hash.
 2. **Delivered is not applied.** *Ruled 2026-09-04:* two columns — `delivered`, a
    harness fact, and `followed`, trace-graded by the probe's structural
    verdict — and tenure moves only on graded outcomes; delivery is a

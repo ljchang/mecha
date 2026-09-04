@@ -228,6 +228,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     r.session_id = meta.id.clone();
                     r.origin = origin;
                     r.evidence = evidence;
+                    // Where it happened, from what the miner already held:
+                    // the tool window is registry names (it survives the
+                    // user-evidence-only view for the same reason), the
+                    // surface and workspace are the session record's. Set
+                    // here and not by the reflector, which saw prose.
+                    r.situation = Some(mecha_core::situation::Situation::recorded(
+                        &intervention.tools_before,
+                        intervention.trigger.as_str(),
+                        meta.kind,
+                        Some(&meta.workspace),
+                    ));
                     pending.push(r);
                 }
                 Ok(None) => {
@@ -291,6 +302,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     } else {
                         Origin::Clean
                     };
+                    // The drafting tool is the focus: a lesson from editing
+                    // a mail draft scopes to `mail_send` and loads only
+                    // where that tool is registered. The item records no
+                    // surface or workspace.
+                    r.situation = Some(mecha_core::situation::Situation::recorded(
+                        std::slice::from_ref(&item.tool),
+                        Trigger::Edit.as_str(),
+                        None,
+                        None,
+                    ));
                     store.append_reflexion(&r)?;
                     reflections_written += 1;
                     println!("· [edit] {}", r.reflexion_text);

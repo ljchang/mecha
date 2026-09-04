@@ -329,6 +329,51 @@ pub struct RunConfig {
         deserialize_with = "lenient_levers"
     )]
     pub levers_off: Option<Vec<crate::harness::Lever>>,
+
+    /// [`crate::learning::rules_hash`] of the learned-rules block this run's
+    /// prefix carried, and the learned rules in it by id — the pair the
+    /// validation ledger keys on, recorded at render time so the two cannot
+    /// disagree. Needed once loading is scoped (`docs/GOAL-SYSTEM-DESIGN.md`
+    /// §17.4, §17.7 item 1): the block is a function of the run's situation,
+    /// so the store's view no longer says what any one run saw. The text is
+    /// still in `system_prompt`; this is what lets a reader pair the run with
+    /// ledger rows without re-rendering it.
+    ///
+    /// `None` is a record from before the field, and reads as *unknown* —
+    /// never as "no rules". A run that carried no block records the hash of
+    /// the empty string and no ids: recorded and empty, which is a different
+    /// fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_ids: Vec<String>,
+}
+
+impl RunConfig {
+    /// What a replay can say about the learned rules this run carried, in
+    /// one line: the prefix half from this record, the mid-run half from the
+    /// outcome's `delivered`. Three states and the last is the one that
+    /// matters — a record from before either field existed replays with the
+    /// prefix block still in `system_prompt`, and its scoped set is
+    /// *unknown*, never empty (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 1).
+    pub fn rules_arm_note(&self, delivered: Option<&[Delivery]>) -> String {
+        match (&self.rules_hash, delivered) {
+            (None, _) => "learned rules: the prefix block as recorded in the system prompt; \
+                          which rules were delivered mid-run is unknown (recorded before \
+                          the run record kept it)"
+                .to_string(),
+            (Some(hash), None) => format!(
+                "learned rules: prefix block {hash} ({} rule id(s)); the mid-run set is \
+                 unknown (no outcome recorded)",
+                self.rule_ids.len()
+            ),
+            (Some(hash), Some(d)) => format!(
+                "learned rules: prefix block {hash} ({} rule id(s)), {} delivered mid-run",
+                self.rule_ids.len(),
+                d.len()
+            ),
+        }
+    }
 }
 
 impl Default for RunConfig {
@@ -357,6 +402,8 @@ impl Default for RunConfig {
             sandbox: "none".into(),
             sandbox_network: false,
             levers_off: None,
+            rules_hash: None,
+            rule_ids: Vec::new(),
         }
     }
 }
@@ -372,11 +419,21 @@ impl RunConfig {
     /// prompt), so the front-end that threw the switches hands them in.
     /// Recorded sorted into [`crate::harness::Lever::ALL`]'s order, whatever
     /// order the caller collected them in.
+    ///
+    /// `rules` is the other: which learned rules the front-end rendered into
+    /// the prompt is decided against the run's situation before the agent
+    /// exists, and the ids are not recoverable from the rendered text. The
+    /// front-end hands in what it rendered, or [`RulesCarried::none`] when
+    /// it rendered nothing; a caller that has no answer at all leaves the
+    /// record unknown, which is the fail-closed reading.
+    ///
+    /// [`RulesCarried::none`]: crate::learning::RulesCarried::none
     pub fn of(
         agent: &Agent,
         config: &Config,
         provider: &str,
         levers_off: &[crate::harness::Lever],
+        rules: Option<&crate::learning::RulesCarried>,
     ) -> Self {
         let levers_off = crate::harness::Lever::ALL
             .into_iter()
@@ -416,8 +473,17 @@ impl RunConfig {
             sandbox: config.sandbox.kind.as_str().to_string(),
             sandbox_network: config.sandbox.network,
             levers_off: Some(levers_off),
+            rules_hash: rules.map(|r| r.hash.clone()),
+            rule_ids: rules.map(|r| r.rule_ids.clone()).unwrap_or_default(),
         }
     }
+}
+
+/// One learned rule handed to the model mid-run: which, and on what turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Delivery {
+    pub rule_id: String,
+    pub turn: u32,
 }
 
 /// How a run went, in numbers a machine can compare across sessions.
@@ -506,6 +572,19 @@ pub struct RunStats {
     /// Of those, how many came back `revise_plan`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_escalations_revised: Option<u32>,
+    /// Learned rules the harness delivered *during* the run, by id and the
+    /// turn they landed on — the situational half of what the run carried,
+    /// beside the prefix half on `RunConfig::rules_hash`
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 1). Pointers only, the taint
+    /// snapshot's shape: never the rule text.
+    ///
+    /// `Some(vec![])` is a run that delivered nothing, which every run does
+    /// today — the loop has no delivery path yet (§17.7 item 2 ships it off
+    /// by default when it exists) — and the field is written so a replay can
+    /// tell that from `None`, a record from before the field, whose scoped
+    /// set is *unknown* and must never read as empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered: Option<Vec<Delivery>>,
     /// Declared post-condition checks the loop ran, and how many passed —
     /// counted off the trace by name (`step::CHECK_TRACE`), a refused check
     /// in neither. **No trace by that name is written yet** (the executor is
@@ -658,6 +737,13 @@ impl RunStats {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
+        self.delivered = match (self.delivered.take(), &other.delivered) {
+            (Some(mut a), Some(b)) => {
+                a.extend(b.iter().cloned());
+                Some(a)
+            }
+            (a, b) => a.or_else(|| b.clone()),
+        };
         self.taint.merge(other.taint);
     }
 
@@ -709,6 +795,10 @@ impl RunStats {
             boredom_notices: Some(o.boredom_notices),
             step_escalations_attempted: Some(o.step_escalations_attempted),
             step_escalations_revised: Some(o.step_escalations_revised),
+            // `Some(empty)`, and written by this build on purpose: the loop
+            // delivers no rule mid-run yet, and a record that says so is what
+            // keeps a later replay from reading the absence as unknown.
+            delivered: Some(Vec::new()),
             checks_declared: Some(
                 o.tool_calls
                     .iter()
@@ -1650,6 +1740,8 @@ mod homeostat_record_tests {
             ..Homeostat::default()
         });
         let stats = RunStats::from(&outcome);
+        // Nothing delivered mid-run, and recorded as such rather than unknown.
+        assert_eq!(stats.delivered, Some(Vec::new()));
         let h = stats.homeostat.expect("recorded");
         assert_eq!(h.load_avg_1m, Some(0.56));
         assert_eq!(h.backlog_delta.unwrap().outbox, Some(9));
@@ -3187,5 +3279,64 @@ mod tests {
             none_first.homeostat.unwrap().backlog_delta.unwrap().net(),
             Some(-1)
         );
+    }
+}
+
+#[cfg(test)]
+mod rules_arm_tests {
+    use super::*;
+
+    /// §17.7 item 1: a record from before the fields reads as *unknown*,
+    /// never as "no rules" — and a record that carried nothing says so.
+    #[test]
+    fn a_config_from_before_rules_hash_reads_unknown_and_never_empty() {
+        let old: RunConfig = serde_json::from_str(r#"{"mecha_version":"0"}"#).unwrap();
+        assert_eq!(old.rules_hash, None);
+        assert!(old.rule_ids.is_empty());
+        assert!(old.rules_arm_note(None).contains("unknown"));
+        assert!(!serde_json::to_string(&old).unwrap().contains("rules_hash"));
+
+        let none = crate::learning::RulesCarried::none();
+        let recorded = RunConfig {
+            rules_hash: Some(none.hash.clone()),
+            ..Default::default()
+        };
+        let note = recorded.rules_arm_note(Some(&[]));
+        assert!(note.contains(&none.hash));
+        assert!(note.contains("0 delivered"));
+        assert!(!note.contains("unknown"));
+        assert!(recorded.rules_arm_note(None).contains("unknown"));
+
+        let back: RunConfig =
+            serde_json::from_str(&serde_json::to_string(&recorded).unwrap()).unwrap();
+        assert_eq!(back.rules_hash, recorded.rules_hash);
+    }
+
+    /// A run from this build records `Some(empty)` for what it delivered
+    /// mid-run — nothing, and said — while an older outcome loads `None`.
+    /// Folding keeps the distinction: known + known concatenates, unknown
+    /// defers to known.
+    #[test]
+    fn delivered_is_recorded_empty_by_this_build_and_unknown_from_before() {
+        let old: RunStats = serde_json::from_str(r#"{"turns":1}"#).unwrap();
+        assert_eq!(old.delivered, None);
+        let d = |id: &str, turn: u32| Delivery {
+            rule_id: id.into(),
+            turn,
+        };
+        let mut a = RunStats {
+            delivered: Some(vec![d("r-1", 2)]),
+            ..Default::default()
+        };
+        a.merge(&RunStats {
+            delivered: Some(vec![d("r-2", 5)]),
+            ..Default::default()
+        });
+        assert_eq!(a.delivered, Some(vec![d("r-1", 2), d("r-2", 5)]));
+        let mut unknown = RunStats::default();
+        unknown.merge(&a);
+        assert_eq!(unknown.delivered.as_ref().map(Vec::len), Some(2));
+        let back: RunStats = serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();
+        assert_eq!(back.delivered, a.delivered);
     }
 }

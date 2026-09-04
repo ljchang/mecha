@@ -40,6 +40,7 @@
 //!   candidate; the [`Reflector`] decides, and is told to skip freely.
 
 use crate::message::{Block, Message, Role};
+use crate::situation::Situation;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -245,6 +246,16 @@ pub struct Reflexion {
     pub dropped_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dropped_reason: Option<String>,
+    /// Where the intervention happened, from the closed sets the miner
+    /// already held and dropped on write: the tool names around it, the
+    /// trigger, the surface and the workspace. What lets a lesson be scoped
+    /// to the tool it was learned on rather than loaded into every prompt
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §17.3). `None` on a record from before
+    /// the field: absent, never "everywhere" — a reflection whose situation
+    /// is unknown batches as standing and is said to be unknown wherever it
+    /// is shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub situation: Option<crate::situation::Situation>,
 }
 
 impl Reflexion {
@@ -439,6 +450,22 @@ pub struct Rule {
     /// the very evidence it exists to act on.
     #[serde(default, skip_serializing_if = "is_false")]
     pub probation: bool,
+    /// The region this rule applies in — the scope keys shared by the batch
+    /// of reflections it was learned from ([`batches_by_region`]), assigned
+    /// by the harness at consolidation and never by the learner. A rule
+    /// rides in a run's prefix only when its scope [`matches`] the run
+    /// ([`carried_in`]); a standing scope matches every run.
+    ///
+    /// `None` is a rule from before scoping existed, or one a rewrite
+    /// carried through unchanged: it loads everywhere, as every rule once
+    /// did, and is the standing region's to rewrite. Kept distinct from
+    /// `Some(standing)` because "learned from a batch with no focus" and
+    /// "predates the field" are different facts about the evidence, even
+    /// though the loader treats them alike.
+    ///
+    /// [`matches`]: crate::situation::Situation::matches
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::situation::Situation>,
 }
 
 impl Rule {
@@ -468,6 +495,7 @@ impl Default for Rule {
             // rule's leash, so defaulting it on would retire hand-written and
             // measured rules early.
             probation: false,
+            scope: None,
         }
     }
 }
@@ -536,6 +564,10 @@ pub fn finalize_rules(
                 // the D1 hedge evaporated within a session or two while
                 // staying printed and documented.
                 r.probation = prev.probation;
+                // The region a rule was learned in survives a restatement;
+                // `finalize_region_rules` assigns a scope only to text the
+                // store has never held.
+                r.scope = prev.scope.clone();
             }
             // Retirement survives a reworded re-derivation, which exact text
             // equality above does not catch. Checked only against *retired*
@@ -556,6 +588,7 @@ pub fn finalize_rules(
                     r.retired_reason = prev.retired_reason.clone();
                     r.id = prev.id.clone();
                     r.created_at = prev.created_at.clone();
+                    r.scope = prev.scope.clone();
                 }
             }
             if r.id.is_none() {
@@ -575,6 +608,119 @@ pub fn finalize_rules(
         }
     }
     out
+}
+
+/// Whether a rule is the learner's to rewrite when `region` is batched —
+/// its scope is within the region — or context it must leave alone. An
+/// unscoped rule (`scope: None`) is standing, so it is rewritable in the
+/// standing batch and context in every narrower one; that is how rules
+/// from before scoping migrate without a pass that guesses their region.
+pub fn rewritable_in(rule: &Rule, region: &Situation) -> bool {
+    rule.scope.clone().unwrap_or_default().within(region)
+}
+
+/// Consolidate one region's rewrite into the domain's whole set.
+///
+/// The learner is handed one region's rules to rewrite and everything else
+/// as immutable context, so its reply covers the region only. This finalises
+/// that reply against the *whole* domain — identity, the retired-text brake
+/// and retirement carry-forward are [`finalize_rules`]'s and run over every
+/// previous rule, so a lesson retired in one region cannot come back under
+/// another — then scopes each rule whose text the store has never held to
+/// `region`, and carries every active rule outside the region through
+/// untouched. A rule inside the region the learner omitted vanishes, as a
+/// whole-domain rewrite always let it.
+///
+/// **The scope is assigned here, never by the learner.** The region is the
+/// keys the batch's reflections share, computed by [`batches_by_region`]
+/// from the closed sets the miner recorded; a scope the model could name
+/// would be a scope an injection could widen.
+pub fn finalize_region_rules(
+    new_rules: Vec<Rule>,
+    previous: &[Rule],
+    region: &Situation,
+    batch_sources: &[String],
+    now: &str,
+) -> Vec<Rule> {
+    let known: HashSet<&str> = previous.iter().map(|p| p.text.as_str()).collect();
+    let mut out = finalize_rules(new_rules, previous, batch_sources, now);
+    for r in &mut out {
+        if r.scope.is_none() && !known.contains(r.text.as_str()) {
+            r.scope = Some(region.scope());
+        }
+    }
+    for prev in previous {
+        if prev.active() && !rewritable_in(prev, region) && !out.iter().any(|r| r.text == prev.text)
+        {
+            out.push(prev.clone());
+        }
+    }
+    out
+}
+
+/// Split a domain's pool into the batches the learner sees: one per focus
+/// tool ([`Situation::focus`]), in tool-name order, each paired with the
+/// scope its members share ([`Situation::region`]). Reflections with no
+/// focus — no tool in their window, or no situation recorded — form the
+/// standing batch, whose rules load everywhere.
+///
+/// Keyed on the focus alone rather than on every recorded key, because a
+/// pool of a few reflections a night split by surface and workspace as well
+/// would be batches of one; the region still narrows to whatever the batch
+/// happens to share, and widening across regions is the consolidation step
+/// §17.4 describes and this does not build.
+pub fn batches_by_region(reflexions: Vec<Reflexion>) -> Vec<(Situation, Vec<Reflexion>)> {
+    let mut by_focus: std::collections::BTreeMap<String, Vec<Reflexion>> = Default::default();
+    for r in reflexions {
+        let key = r
+            .situation
+            .as_ref()
+            .and_then(|s| s.focus())
+            .unwrap_or_default()
+            .to_string();
+        by_focus.entry(key).or_default().push(r);
+    }
+    by_focus
+        .into_values()
+        .map(|rs| {
+            let region = Situation::region(rs.iter().filter_map(|r| r.situation.as_ref())).scope();
+            (region, rs)
+        })
+        .collect()
+}
+
+/// The rules of `rules` a run in `run`'s situation carries: active, and
+/// scoped to a region the run is in. A user rule with no scope rides
+/// everywhere, as it always did.
+pub fn carried_in<'a>(rules: &'a [Rule], run: &'a Situation) -> impl Iterator<Item = &'a Rule> {
+    rules
+        .iter()
+        .filter(move |r| r.active() && r.scope.as_ref().is_none_or(|s| s.matches(run)))
+}
+
+/// What one run carries of the learning store, taken at the moment the
+/// block was rendered: the block, its [`rules_hash`], and the learned rules
+/// in it by id — the pair [`ValidationRecord`] keys on, so a run record
+/// cannot name a hash and a set that disagree. `block: None` renders
+/// nothing; `hash` is then of the empty string, which is *recorded and
+/// empty*, where a run record with no hash at all is *unknown*.
+#[derive(Debug, Clone, Default)]
+pub struct RulesCarried {
+    pub block: Option<String>,
+    pub hash: String,
+    pub rule_ids: Vec<String>,
+}
+
+impl RulesCarried {
+    /// A run that carries no rules block at all — the lever off, or no
+    /// store — recorded as such rather than left unknown.
+    pub fn none() -> RulesCarried {
+        RulesCarried {
+            block: None,
+            hash: rules_hash(""),
+            rule_ids: Vec::new(),
+        }
+    }
 }
 
 fn mint_rule_id() -> String {
@@ -890,6 +1036,44 @@ impl LearningStore {
         Ok(wrap_rules_block(parts))
     }
 
+    /// The block one run's system prompt gets, and what it carries — the
+    /// named domains' rules whose scope the run's situation matches
+    /// ([`carried_in`]). This is what `prepare` renders and what a probe
+    /// renders for the session it replays; [`Self::rules_prompt_block_for`]
+    /// is the store's view, which no single run has once rules are scoped.
+    pub fn rules_carried_for(&self, domains: &[&str], run: &Situation) -> Result<RulesCarried> {
+        self.rules_carried_with(domains, run, None)
+    }
+
+    /// [`Self::rules_carried_for`] with one domain's learned rules replaced
+    /// by `replace` — the treatment arm of a gate, rendered exactly as a run
+    /// in `run`'s situation would see the candidate set deployed, before
+    /// anything is written.
+    pub fn rules_carried_with(
+        &self,
+        domains: &[&str],
+        run: &Situation,
+        replace: Option<(&str, &[Rule])>,
+    ) -> Result<RulesCarried> {
+        let mut parts: Vec<String> = Vec::new();
+        let mut rule_ids: Vec<String> = Vec::new();
+        for domain in domains {
+            let user = self.user_rules(domain)?;
+            let learned = match replace {
+                Some((d, rules)) if d == *domain => rules.to_vec(),
+                _ => self.learned_rules(domain)?,
+            };
+            parts.extend(domain_rules_section_for(domain, &user, &learned, run));
+            rule_ids.extend(carried_in(&learned, run).filter_map(|r| r.id.clone()));
+        }
+        let block = wrap_rules_block(parts);
+        Ok(RulesCarried {
+            hash: rules_hash(block.as_deref().unwrap_or("")),
+            block,
+            rule_ids,
+        })
+    }
+
     /// Domains that hold active rules but ride in no run's prompt — the
     /// silent half of opt-in selection. Startup warns on these, the
     /// routed-name-matches-no-tool precedent: a user rule nobody reads is
@@ -1048,6 +1232,10 @@ pub struct Proposal {
     pub resolved_at: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    /// The region the batch was learned for — what the candidate's new rules
+    /// are scoped to. `None` on a proposal from before batching by region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::situation::Situation>,
 }
 
 impl LearningStore {
@@ -1974,6 +2162,9 @@ impl Reflector {
             edited_at: None,
             dropped_at: None,
             dropped_reason: None,
+            // The caller holds the session record and the intervention's tool
+            // window; the reflector saw prose and must not author a key.
+            situation: None,
         }))
     }
 }
@@ -2011,6 +2202,23 @@ pub fn domain_rules_section(domain: &str, user: &[Rule], learned: &[Rule]) -> Op
         .iter()
         .chain(learned.iter())
         .filter(|r| r.active())
+        .map(|r| format!("- {}", r.text))
+        .collect();
+    (!lines.is_empty()).then(|| format!("### {domain}\n{}", lines.join("\n")))
+}
+
+/// One domain's section as a run in `run`'s situation sees it: the rules
+/// [`carried_in`] that situation, user rules first. The store view above
+/// renders every active rule; a run gets only the ones scoped to where it
+/// is, which is the whole point of a scope.
+pub fn domain_rules_section_for(
+    domain: &str,
+    user: &[Rule],
+    learned: &[Rule],
+    run: &Situation,
+) -> Option<String> {
+    let lines: Vec<String> = carried_in(user, run)
+        .chain(carried_in(learned, run))
         .map(|r| format!("- {}", r.text))
         .collect();
     (!lines.is_empty()).then(|| format!("### {domain}\n{}", lines.join("\n")))
@@ -2309,9 +2517,18 @@ impl Learner {
     /// of harm" are opposite findings and collapsing them would retire the
     /// newest rules fastest — the ones that have had least chance to be
     /// probed.
+    ///
+    /// **One region at a time.** `reflexions` are one batch of
+    /// [`batches_by_region`] and `region` is the scope they share; the
+    /// learner rewrites only the rules [`rewritable_in`] that region and is
+    /// shown the rest as immutable context, so a lesson about `shell` is
+    /// argued against the `shell` rules and not against the whole domain.
+    /// The reply is the region's set; [`finalize_region_rules`] folds it
+    /// back into the domain's.
     pub async fn learn(
         &self,
         domain: &str,
+        region: &Situation,
         user_rules: &[Rule],
         learned_rules: &[Rule],
         reflexions: &[Reflexion],
@@ -2357,6 +2574,42 @@ impl Learner {
         // the same lesson cannot come back under new wording every pass.
         let (active, retired): (Vec<&Rule>, Vec<&Rule>) =
             learned_rules.iter().partition(|r| r.retired_at.is_none());
+        // Rules outside the region are context too: shown so the region's
+        // set does not restate them, immutable because the reply replaces
+        // only what is inside.
+        let (active, outside): (Vec<&Rule>, Vec<&Rule>) =
+            active.into_iter().partition(|r| rewritable_in(r, region));
+        let outside_section =
+            if outside.is_empty() {
+                String::new()
+            } else {
+                format!(
+                "## Learned rules for other situations (IMMUTABLE, context only — each applies \
+                 where its own tools are in play; never restate or contradict them)\n{}\n\n",
+                outside
+                    .iter()
+                    .map(|r| format!(
+                        "- [{}] {}",
+                        r.scope.as_ref().map(Situation::describe).unwrap_or_default(),
+                        r.text
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+            };
+        let situation_line = if region.is_standing() {
+            "Situation: everywhere — these rules ride in every run, so only a lesson that \
+             holds regardless of which tools are in play belongs here."
+                .to_string()
+        } else {
+            format!(
+                "Situation: {} — every reflection below was recorded with this tool in play, \
+                 and the rules you write are loaded only into runs that carry it. Scope them \
+                 to it; a lesson that would hold anywhere is still stated here, since this set \
+                 is where it was learned.",
+                region.describe()
+            )
+        };
         let retired_section = if retired.is_empty() {
             String::new()
         } else {
@@ -2379,12 +2632,14 @@ impl Learner {
         };
 
         let user = format!(
-            "Domain: {domain}\n\n\
+            "Domain: {domain}\n{situation_line}\n\n\
              ## User rules (IMMUTABLE, context only)\n{}\n\n\
              {retired_section}\
-             ## Current learned rules (to be rewritten, with their measured record)\n{}\n\n\
-             ## New reflections ({})\n{}\n\n\
-             Rewrite the learned rule set. Reply with the JSON object only.",
+             {outside_section}\
+             ## Current learned rules for this situation (to be rewritten, with their \
+             measured record)\n{}\n\n\
+             ## New reflections ({}), all from this situation\n{}\n\n\
+             Rewrite the learned rule set for this situation. Reply with the JSON object only.",
             render_rules(user_rules),
             render_active(&active, tallies),
             reflexions.len(),
@@ -2531,6 +2786,7 @@ mod tests {
             edited_at: None,
             dropped_at: None,
             dropped_reason: None,
+            situation: None,
         };
         assert!(r(Origin::Clean).learnable());
         // The attack this closes: one sentence from a hostile page surviving
@@ -2690,6 +2946,7 @@ mod tests {
             edited_at: None,
             dropped_at: None,
             dropped_reason: None,
+            situation: None,
         };
         store.append_reflexion(&r).unwrap();
         r
@@ -2895,6 +3152,7 @@ mod tests {
             edited_at: None,
             dropped_at: None,
             dropped_reason: None,
+            situation: None,
         };
         assert_eq!(
             r.provenance(),
@@ -3122,6 +3380,7 @@ mod tests {
             retired_at: None,
             retired_reason: None,
             probation: false,
+            scope: None,
         }
     }
 
@@ -3184,6 +3443,7 @@ mod tests {
             created_at: "2026-08-04T06:00:00Z".into(),
             resolved_at: None,
             reason: None,
+            scope: None,
         };
         store.write_proposal(&p).unwrap();
         assert_eq!(store.proposals().unwrap().len(), 1);
@@ -3219,6 +3479,7 @@ mod tests {
                     created_at: String::new(),
                     resolved_at: None,
                     reason: None,
+                    scope: None,
                 })
                 .unwrap();
         }
@@ -3296,6 +3557,7 @@ mod tests {
             edited_at: None,
             dropped_at: None,
             dropped_reason: None,
+            situation: None,
         };
         store.append_reflexion(&r).unwrap();
         let back = store.reflexions().unwrap();
@@ -3519,6 +3781,7 @@ mod tests {
                     edited_at: None,
                     dropped_at: None,
                     dropped_reason: None,
+                    situation: None,
                 })
                 .unwrap();
         }
@@ -3727,6 +3990,7 @@ mod tests {
             edited_at: None,
             dropped_at: None,
             dropped_reason: None,
+            situation: None,
         }
     }
 
@@ -4104,6 +4368,7 @@ mod tests {
                 edited_at: None,
                 dropped_at: None,
                 dropped_reason: None,
+                situation: None,
             };
             assert!(r.learnable());
         }
@@ -4449,5 +4714,251 @@ mod probation_tests {
         assert_eq!((rows.len(), skipped), (1, 1));
         assert_eq!(store.reflexions().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod situation_tests {
+    use super::*;
+    use crate::session::SessionKind;
+
+    fn refl(id: &str, tools: &[&str], trigger: &str) -> Reflexion {
+        Reflexion {
+            id: id.into(),
+            domain: "behavior".into(),
+            session_id: "s".into(),
+            trigger: trigger.into(),
+            context: "c".into(),
+            intervention: "i".into(),
+            reflexion_text: "t".into(),
+            error_type: None,
+            confidence: None,
+            is_processed: false,
+            leap_run_id: None,
+            created_at: "2026-09-04T00:00:00Z".into(),
+            origin: Origin::Clean,
+            evidence: Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
+            situation: Some(Situation::recorded(
+                &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                trigger,
+                Some(SessionKind::Tui),
+                None,
+            )),
+        }
+    }
+
+    fn rule(text: &str, id: &str, scope: Option<Situation>) -> Rule {
+        Rule {
+            text: text.into(),
+            id: Some(id.into()),
+            scope,
+            ..Default::default()
+        }
+    }
+
+    fn shell() -> Situation {
+        Situation::of_run(&["shell".into()], None)
+    }
+
+    fn run_with(tools: &[&str]) -> Situation {
+        Situation::of_run(
+            &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+            None,
+        )
+    }
+
+    /// §17.6 item 3's exit: a rule learned from a denial on one tool is
+    /// scoped to that tool, and rides only where that tool is registered.
+    /// Fails on the old path (`finalize_rules`, `domain_rules_section`),
+    /// where every rule had no scope and rendered into every prompt.
+    #[test]
+    fn a_denial_on_one_tool_learns_a_rule_scoped_to_that_tool() {
+        let pool = vec![
+            refl("a", &["fs_read", "shell"], "denial"),
+            refl("b", &[], "followup"),
+            refl("c", &["shell"], "denial"),
+        ];
+        let batches = batches_by_region(pool);
+        assert_eq!(batches.len(), 2);
+        let (standing, standing_batch) = &batches[0];
+        assert!(standing.is_standing());
+        assert_eq!(standing_batch.len(), 1);
+        let (region, batch) = &batches[1];
+        assert_eq!(region.tools, vec!["shell"]);
+        assert_eq!(batch.len(), 2);
+        // Scope keys only: the trigger the batch shared is not in the region.
+        assert_eq!(region.trigger, None);
+
+        let learned = parse_learner_reply(
+            r#"{"rules":[{"rule":"Ask before a destructive shell command.","confidence":0.9,"based_on_count":2}]}"#,
+        )
+        .unwrap();
+        let rules = finalize_region_rules(learned, &[], region, &["a".into(), "c".into()], "now");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].scope, Some(shell()));
+
+        assert_eq!(
+            carried_in(&rules, &run_with(&["fs_read", "shell"])).count(),
+            1
+        );
+        assert_eq!(carried_in(&rules, &run_with(&["fs_read"])).count(), 0);
+        assert!(
+            domain_rules_section_for("behavior", &[], &rules, &run_with(&["fs_read"])).is_none()
+        );
+        assert!(
+            domain_rules_section_for("behavior", &[], &rules, &run_with(&["shell"]))
+                .unwrap()
+                .contains("destructive shell")
+        );
+        // The store view still shows it: `mecha rules` lists every rule.
+        assert!(domain_rules_section("behavior", &[], &rules).is_some());
+    }
+
+    /// A region's rewrite replaces only that region: standing rules, other
+    /// regions' rules and retired rules come through untouched, and a rule
+    /// inside the region the learner omitted is gone.
+    #[test]
+    fn a_region_rewrite_carries_every_other_region_through() {
+        let previous = vec![
+            rule("Standing.", "r-standing", None),
+            rule("Old shell rule.", "r-shell", Some(shell())),
+            rule("Mail rule.", "r-mail", Some(run_with(&["mail_send"]))),
+            Rule {
+                retired_at: Some("earlier".into()),
+                ..rule("Retired shell rule.", "r-retired", Some(shell()))
+            },
+        ];
+        let reply = vec![Rule {
+            text: "New shell rule.".into(),
+            ..Default::default()
+        }];
+        let out = finalize_region_rules(reply, &previous, &shell(), &["x".into()], "now");
+        let texts: Vec<&str> = out.iter().map(|r| r.text.as_str()).collect();
+        assert!(texts.contains(&"New shell rule."));
+        assert!(
+            texts.contains(&"Standing."),
+            "standing rules are context, carried"
+        );
+        assert!(texts.contains(&"Mail rule."), "other regions are carried");
+        assert!(
+            texts.contains(&"Retired shell rule."),
+            "retirement survives"
+        );
+        assert!(
+            !texts.contains(&"Old shell rule."),
+            "omitted inside the region: gone"
+        );
+        let new = out.iter().find(|r| r.text == "New shell rule.").unwrap();
+        assert_eq!(new.scope, Some(shell()));
+        assert_eq!(new.sources, vec!["x"]);
+    }
+
+    /// The learner was told the standing rule is immutable; if it restates
+    /// it anyway, the restatement keeps the rule's identity and its scope —
+    /// a shell batch must not narrow a rule that applied everywhere.
+    #[test]
+    fn a_restated_rule_keeps_its_scope_and_identity() {
+        let previous = vec![rule("Standing.", "r-standing", None)];
+        let reply = vec![Rule {
+            text: "Standing.".into(),
+            ..Default::default()
+        }];
+        let out = finalize_region_rules(reply, &previous, &shell(), &["x".into()], "now");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id.as_deref(), Some("r-standing"));
+        assert_eq!(out[0].scope, None);
+    }
+
+    #[test]
+    fn rewritable_reads_an_unscoped_rule_as_standing() {
+        let legacy = rule("Legacy.", "r", None);
+        assert!(rewritable_in(&legacy, &Situation::default()));
+        assert!(!rewritable_in(&legacy, &shell()));
+        let scoped = rule("Shell.", "r", Some(shell()));
+        assert!(rewritable_in(&scoped, &shell()));
+        assert!(rewritable_in(&scoped, &Situation::default()));
+    }
+
+    /// A reflection mined before the field, or with no tool in its window,
+    /// batches as standing — never dropped, never guessed a region.
+    #[test]
+    fn a_reflection_without_a_situation_batches_as_standing() {
+        let mut legacy = refl("old", &[], "steer");
+        legacy.situation = None;
+        let batches = batches_by_region(vec![legacy, refl("new", &["shell"], "denial")]);
+        assert_eq!(batches.len(), 2);
+        assert!(batches[0].0.is_standing());
+        assert_eq!(batches[0].1[0].id, "old");
+    }
+
+    /// The pair a run record keeps: the block a run in this situation gets
+    /// and the ids in it, from one render. Two runs with different
+    /// registries carry different blocks, and the hash says so.
+    #[test]
+    fn what_a_run_carries_follows_its_registry() {
+        let dir = std::env::temp_dir()
+            .join("mecha-learning-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        let store = LearningStore::open(&dir).unwrap();
+        store
+            .write_learned_rules(
+                "behavior",
+                &[
+                    rule("Standing.", "r-standing", None),
+                    rule("Shell only.", "r-shell", Some(shell())),
+                ],
+            )
+            .unwrap();
+        let with = store
+            .rules_carried_for(&["behavior"], &run_with(&["shell"]))
+            .unwrap();
+        let without = store
+            .rules_carried_for(&["behavior"], &run_with(&["fs_read"]))
+            .unwrap();
+        assert_eq!(with.rule_ids, vec!["r-standing", "r-shell"]);
+        assert_eq!(without.rule_ids, vec!["r-standing"]);
+        assert_ne!(with.hash, without.hash);
+        assert!(with.block.as_deref().unwrap().contains("Shell only."));
+        assert!(!without.block.as_deref().unwrap().contains("Shell only."));
+        assert_eq!(with.hash, rules_hash(with.block.as_deref().unwrap()));
+        // The treatment arm of a gate: one domain's set replaced, rendered
+        // for the same situation.
+        let candidate = store
+            .rules_carried_with(
+                &["behavior"],
+                &run_with(&["shell"]),
+                Some(("behavior", &[rule("Candidate.", "r-new", Some(shell()))])),
+            )
+            .unwrap();
+        assert_eq!(candidate.rule_ids, vec!["r-new"]);
+        // Nothing carried is recorded, not unknown.
+        assert_eq!(RulesCarried::none().hash, rules_hash(""));
+        assert!(RulesCarried::none().block.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Records from before the fields load with them absent; records with
+    /// them round-trip.
+    #[test]
+    fn scope_and_situation_are_lenient_on_read_and_round_trip() {
+        let old: Rule = serde_json::from_str(r#"{"text":"t"}"#).unwrap();
+        assert_eq!(old.scope, None);
+        let old_r: Reflexion = serde_json::from_value(serde_json::json!({
+            "id":"r","domain":"behavior","session_id":"s","trigger":"steer","context":"c",
+            "intervention":"i","reflexion_text":"t","error_type":null,"confidence":null,
+            "created_at":"2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(old_r.situation, None);
+        let scoped = rule("Shell.", "r", Some(shell()));
+        let back: Rule = serde_json::from_str(&serde_json::to_string(&scoped).unwrap()).unwrap();
+        assert_eq!(back.scope, Some(shell()));
+        assert!(!serde_json::to_string(&old).unwrap().contains("scope"));
+        let r = refl("a", &["shell"], "denial");
+        let back: Reflexion = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back.situation, r.situation);
     }
 }

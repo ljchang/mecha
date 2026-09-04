@@ -18,8 +18,8 @@ use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
 use mecha_core::learning::{
-    budget_refuses, domain_rules_section, wrap_rules_block, LeapRun, Learner, LearningStore,
-    Proposal, Trigger, MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
+    batches_by_region, budget_refuses, LeapRun, Learner, LearningStore, Proposal, Trigger,
+    MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
 };
 use mecha_core::session::Session;
 use std::collections::BTreeMap;
@@ -288,34 +288,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     });
 
-    // A batch identical to one some proposal already argued — most likely a
-    // gate rejection whose reflections rightly returned to the pool — is not
-    // argued again until the pool changes. Without this, an unchanged pool
-    // means a fresh near-identical proposal (and its probe cost) every night.
-    // `--auto` needs the brake most: its `rejected_by_gate` arm leaves the
-    // reflections unprocessed, and `learn-live.sh` runs per *session*, so an
-    // unguarded identical batch re-pays a learner call plus a probe pair per
-    // steer/denial on every session close until the pool changes.
-    if args.propose || args.auto {
-        by_domain.retain(|domain, rs| {
-            let batch: std::collections::BTreeSet<&str> =
-                rs.iter().map(|r| r.id.as_str()).collect();
-            let argued = proposals.iter().any(|p| {
-                p.domain == *domain
-                    && p.reflexion_ids.len() == batch.len()
-                    && p.reflexion_ids.iter().all(|id| batch.contains(id.as_str()))
-            });
-            if argued {
-                println!(
-                    "{domain}: this exact batch of {} reflection(s) was already argued \
-                     (see `mecha proposals`); waiting for new reflections",
-                    batch.len()
-                );
-            }
-            !argued
-        });
-    }
-
     if by_domain.is_empty() {
         println!("nothing to learn from yet");
         return Ok(());
@@ -329,8 +301,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 rs.len(),
                 learned.len()
             );
-            for r in rs {
-                println!("  · {}", r.reflexion_text);
+            for (region, batch) in batches_by_region(rs.clone()) {
+                println!("  [{}]", region.describe());
+                for r in batch {
+                    println!("  · {}", r.reflexion_text);
+                }
             }
         }
         return Ok(());
@@ -360,271 +335,389 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     for (domain, reflexions) in &by_domain {
         let user_rules = store.user_rules(domain)?;
-        let learned_before = store.learned_rules(domain)?;
-
-        let Some(rules) = learner
-            .learn(domain, &user_rules, &learned_before, reflexions, &tallies)
-            .await?
-        else {
-            eprintln!("{domain}: the learner produced no usable rule set; nothing changed");
-            continue;
-        };
-
-        // Identity before anything persists or is measured: surviving rules
-        // keep their id and lineage, new ones are minted with this batch as
-        // provenance, retired rules are carried through untouched. The gate
-        // below measures exactly what acceptance would deploy.
-        let ids: Vec<String> = reflexions.iter().map(|r| r.id.clone()).collect();
-        let mut rules = mecha_core::learning::finalize_rules(
-            rules,
-            &learned_before,
-            &ids,
-            &chrono::Utc::now().to_rfc3339(),
-        );
-
-        // Retired rules stay in the file but never render, so they cost the
-        // budget nothing.
-        let rendered: usize = rules
-            .iter()
-            .filter(|r| r.active())
-            .map(|r| r.text.len() + 2)
-            .sum();
-        if rendered > RULES_CHAR_BUDGET {
-            eprintln!(
-                "{domain}: warning — the new rule set renders to {rendered} chars, over the \
-                 {RULES_CHAR_BUDGET} budget; kept, but the next pass should consolidate harder"
+        // One learner call per situation batch, not per domain: the rules
+        // it writes are scoped to the region the batch shares, and it is
+        // shown the domain's other rules as context it may not rewrite
+        // (`learning::batches_by_region`, `Learner::learn`).
+        for (region, reflexions) in batches_by_region(reflexions.clone()) {
+            let reflexions = &reflexions;
+            // A batch identical to one some proposal already argued — most
+            // likely a gate rejection whose reflections rightly returned to the
+            // pool — is not argued again until the pool changes. Without this,
+            // an unchanged pool means a fresh near-identical proposal (and its
+            // probe cost) every night. `--auto` needs the brake most: its
+            // `rejected_by_gate` arm leaves the reflections unprocessed, and
+            // `learn-live.sh` runs per *session*, so an unguarded identical
+            // batch re-pays a learner call plus a probe pair per steer/denial on
+            // every session close until the pool changes.
+            if (args.propose || args.auto) && already_argued(&proposals, domain, reflexions) {
+                println!(
+                    "{domain} [{}]: this exact batch of {} reflection(s) was already argued \
+                 (see `mecha proposals`); waiting for new reflections",
+                    region.describe(),
+                    reflexions.len()
+                );
+                continue;
+            }
+            // Read per batch, not per domain: the previous batch of this domain
+            // may have just written the set this one carries forward.
+            let learned_before = store.learned_rules(domain)?;
+            println!(
+                "{domain} [{}]: {} reflection(s)",
+                region.describe(),
+                reflexions.len()
             );
-        }
 
-        // The count cap is a refusal, not a warning: the always-loaded block
-        // may never grow past it, however the learner argued. The frames
-        // already say fifteen; this is the check that does not depend on the
-        // model listening. The batch stays unprocessed, so the reflections
-        // return to the next pass — which must merge or retire first.
-        let active_before = learned_before.iter().filter(|r| r.active()).count();
-        let active_after = rules.iter().filter(|r| r.active()).count();
-        if budget_refuses(active_before, active_after) {
-            eprintln!(
-                "{domain}: refused — {active_after} active rules is over the cap of \
-                 {MAX_ACTIVE_RULES_PER_DOMAIN} and no smaller than the current \
-                 {active_before}. Nothing changed; consolidate or retire before adding."
-            );
-            continue;
-        }
-
-        // ── the gate: measure the candidate, then dispose of it ──
-        if args.propose || args.auto {
-            let prepared = prepared.as_ref().expect("built under --propose/--auto");
-            let candidate_block = wrap_rules_block(
-                domain_rules_section(domain, &user_rules, &rules)
-                    .into_iter()
-                    .collect(),
-            );
-            // The before-arm of the counterfactual: the domains a probe
-            // exercising this one would carry, so the two arms differ in the
-            // candidate and nothing else.
-            let current_block = store
-                .rules_prompt_block_for(&mecha_core::learning::run_domains_including(domain))?;
-
-            let mut lines = Vec::new();
-            let (mut improved, mut regressed, mut unchanged, mut inconclusive) =
-                (0u32, 0u32, 0u32, 0u32);
-            let mut measured = 0u32;
-            // An allowlist, not an exclusion: only steers and denials have a
-            // replayable intervention point. Followups keep the judge path in
-            // `mecha validate`; edits (outbox) have no transcript at all.
-            for r in reflexions.iter().filter(|r| {
-                r.trigger == Trigger::Steer.as_str() || r.trigger == Trigger::Denial.as_str()
-            }) {
-                match probe::probe_reflection(
-                    prepared,
-                    provider_cfg,
-                    learner.model(),
-                    &sessions_dir,
-                    r,
-                    current_block.as_deref(),
-                    candidate_block.as_deref(),
+            let Some(rules) = learner
+                .learn(
+                    domain,
+                    &region,
+                    &user_rules,
+                    &learned_before,
+                    reflexions,
+                    &tallies,
                 )
                 .await?
-                {
-                    probe::ProbeResult::Skipped(why) => {
-                        lines.push(format!("{} [{}]: skipped — {why}", r.id, r.trigger));
-                    }
-                    probe::ProbeResult::Verdicts(b, t) => {
-                        // Counted only when the pair *graded* — `compare`
-                        // returns `None` on an inconclusive arm. A pair that
-                        // ran and concluded nothing is not evidence, and
-                        // counting it let an all-inconclusive batch reach
-                        // `dispose` as measured-clean and land unmarked on
-                        // zero actual verdicts — the exact conflation ("not
-                        // measured" read as "measured clean") probation
-                        // exists to prevent.
-                        match probe::compare(
-                            &b,
-                            &t,
-                            &mut improved,
-                            &mut regressed,
-                            &mut unchanged,
-                            &mut inconclusive,
-                        ) {
-                            Some(label) => {
-                                measured += 1;
-                                lines.push(format!("{} [{}]: {label}", r.id, r.trigger));
-                            }
-                            None => {
-                                lines.push(format!("{} [{}]: inconclusive", r.id, r.trigger));
+            else {
+                eprintln!("{domain}: the learner produced no usable rule set; nothing changed");
+                continue;
+            };
+
+            // Identity before anything persists or is measured: surviving rules
+            // keep their id and lineage, new ones are minted with this batch as
+            // provenance, retired rules are carried through untouched. The gate
+            // below measures exactly what acceptance would deploy.
+            let ids: Vec<String> = reflexions.iter().map(|r| r.id.clone()).collect();
+            let mut rules = mecha_core::learning::finalize_region_rules(
+                rules,
+                &learned_before,
+                &region,
+                &ids,
+                &chrono::Utc::now().to_rfc3339(),
+            );
+
+            // Retired rules stay in the file but never render, so they cost the
+            // budget nothing.
+            let rendered: usize = rules
+                .iter()
+                .filter(|r| r.active())
+                .map(|r| r.text.len() + 2)
+                .sum();
+            if rendered > RULES_CHAR_BUDGET {
+                eprintln!(
+                    "{domain}: warning — the new rule set renders to {rendered} chars, over the \
+                 {RULES_CHAR_BUDGET} budget; kept, but the next pass should consolidate harder"
+                );
+            }
+
+            // The count cap is a refusal, not a warning: the always-loaded block
+            // may never grow past it, however the learner argued. The frames
+            // already say fifteen; this is the check that does not depend on the
+            // model listening. The batch stays unprocessed, so the reflections
+            // return to the next pass — which must merge or retire first.
+            let active_before = learned_before.iter().filter(|r| r.active()).count();
+            let active_after = rules.iter().filter(|r| r.active()).count();
+            if budget_refuses(active_before, active_after) {
+                eprintln!(
+                    "{domain}: refused — {active_after} active rules is over the cap of \
+                 {MAX_ACTIVE_RULES_PER_DOMAIN} and no smaller than the current \
+                 {active_before}. Nothing changed; consolidate or retire before adding."
+                );
+                continue;
+            }
+
+            // ── the gate: measure the candidate, then dispose of it ──
+            if args.propose || args.auto {
+                let prepared = prepared.as_ref().expect("built under --propose/--auto");
+                // Both arms rendered for the situation of the session each probe
+                // replays — the domains a run exercising this one would carry,
+                // filtered to what that run's registry matches — so the two
+                // arms differ in the candidate and nothing else, and neither is
+                // a block no run has.
+                let arms = |run: &mecha_core::situation::Situation| -> Result<probe::Arms> {
+                    let domains = mecha_core::learning::run_domains_including(domain);
+                    let current = store.rules_carried_for(&domains, run)?.block;
+                    let candidate = store
+                        .rules_carried_with(&domains, run, Some((domain, &rules)))?
+                        .block;
+                    Ok((current, candidate))
+                };
+
+                let mut lines = Vec::new();
+                let (mut improved, mut regressed, mut unchanged, mut inconclusive) =
+                    (0u32, 0u32, 0u32, 0u32);
+                let mut measured = 0u32;
+                // An allowlist, not an exclusion: only steers and denials have a
+                // replayable intervention point. Followups keep the judge path in
+                // `mecha validate`; edits (outbox) have no transcript at all.
+                for r in reflexions.iter().filter(|r| {
+                    r.trigger == Trigger::Steer.as_str() || r.trigger == Trigger::Denial.as_str()
+                }) {
+                    match probe::probe_reflection(
+                        prepared,
+                        provider_cfg,
+                        learner.model(),
+                        &sessions_dir,
+                        r,
+                        &arms,
+                    )
+                    .await?
+                    {
+                        probe::ProbeResult::Skipped(why) => {
+                            lines.push(format!("{} [{}]: skipped — {why}", r.id, r.trigger));
+                        }
+                        probe::ProbeResult::Verdicts(b, t) => {
+                            // Counted only when the pair *graded* — `compare`
+                            // returns `None` on an inconclusive arm. A pair that
+                            // ran and concluded nothing is not evidence, and
+                            // counting it let an all-inconclusive batch reach
+                            // `dispose` as measured-clean and land unmarked on
+                            // zero actual verdicts — the exact conflation ("not
+                            // measured" read as "measured clean") probation
+                            // exists to prevent.
+                            match probe::compare(
+                                &b,
+                                &t,
+                                &mut improved,
+                                &mut regressed,
+                                &mut unchanged,
+                                &mut inconclusive,
+                            ) {
+                                Some(label) => {
+                                    measured += 1;
+                                    lines.push(format!("{} [{}]: {label}", r.id, r.trigger));
+                                }
+                                None => {
+                                    lines.push(format!("{} [{}]: inconclusive", r.id, r.trigger));
+                                }
                             }
                         }
                     }
                 }
-            }
-            lines.push(if measured == 0 && inconclusive > 0 {
-                // Ran and graded nothing is a different fact from had nothing
-                // to run — both land as probation, but the evidence must say
-                // which happened.
-                format!(
-                    "{inconclusive} probe pair(s) ran and none graded (inconclusive); \
+                lines.push(if measured == 0 && inconclusive > 0 {
+                    // Ran and graded nothing is a different fact from had nothing
+                    // to run — both land as probation, but the evidence must say
+                    // which happened.
+                    format!(
+                        "{inconclusive} probe pair(s) ran and none graded (inconclusive); \
                      review by reading"
-                )
-            } else if measured == 0 {
-                "no trace-gradeable reflections in this batch; review by reading".into()
-            } else {
-                format!(
-                    "candidate vs current rules, replayed on the batch's own interventions: \
+                    )
+                } else if measured == 0 {
+                    "no trace-gradeable reflections in this batch; review by reading".into()
+                } else {
+                    format!(
+                        "candidate vs current rules, replayed on the batch's own interventions: \
                      {improved} improved, {regressed} regressed, {unchanged} unchanged, \
                      {inconclusive} inconclusive"
-                )
-            });
-            let evidence = lines.join("\n");
+                    )
+                });
+                let evidence = lines.join("\n");
 
-            // A candidate that makes any probe worse than what is deployed
-            // is refused in both modes — recorded with its evidence, though,
-            // because a gate that leaves no trace teaches nobody anything.
-            //
-            // The three-way split under `--auto` is the D1 ruling made
-            // mechanical. `measured == 0` is not a near-miss to be argued
-            // about: it is the *common* case, because only steers and denials
-            // have a replayable intervention point at all. Treating it as a
-            // refusal would silently discard every batch of edits and
-            // followups; treating it as a pass would lose the distinction
-            // between "measured clean" and "not measured", which is the one
-            // thing probation exists to remember.
-            let Disposition { status, probation } = dispose(args.auto, regressed, measured);
-            if probation {
-                stamp_probation(&mut rules, &tallies);
-            }
-            let applied = status == "auto_applied" || status == "auto_applied_probation";
-            // The proposal is written whichever way this went. Under `--auto`
-            // nobody is going to read it as a decision — it is the audit
-            // trail, and it is the only record of *why* a rule set landed or
-            // did not, since the gate's probes never reach the validation
-            // ledger.
-            let proposal = Proposal {
-                id: Session::new_id(),
-                domain: domain.clone(),
-                status: status.into(),
-                reflexion_ids: ids.clone(),
-                rules_before: learned_before.clone(),
-                rules: rules.clone(),
-                evidence: evidence.clone(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-                // Resolved at birth when the gate decided: nothing is waiting
-                // on anyone, and leaving it `None` would make every auto pass
-                // read as pending review to `mecha proposals` and to doctor.
-                resolved_at: applied
-                    .then(|| chrono::Utc::now().to_rfc3339())
-                    .or_else(|| {
-                        (status == "rejected_by_gate").then(|| chrono::Utc::now().to_rfc3339())
-                    }),
-                reason: None,
-            };
-            store.write_proposal(&proposal)?;
-            println!(
-                "{domain}: proposal {} [{status}] — {} rule(s) from {} reflection(s)",
-                proposal.id,
-                proposal.rules.len(),
-                proposal.reflexion_ids.len()
-            );
-            println!("{evidence}");
-            if status == "pending" {
-                println!("review with `mecha proposals show {}`", proposal.id);
-            }
-
-            if applied {
-                let run = LeapRun {
-                    id: proposal.id.clone(),
-                    domain: domain.clone(),
-                    reflexions_processed: ids.len() as u32,
-                    rules_before: learned_before.len() as u32,
-                    rules_after: rules.len() as u32,
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                };
-                store.write_learned_rules(domain, &rules)?;
-                store.mark_reflexions_processed(&ids, &run.id)?;
-                store.append_run(&run)?;
-                for r in &rules {
-                    println!(
-                        "  - {}{}",
-                        r.text,
-                        if r.probation { "  [probation]" } else { "" }
-                    );
-                }
+                // A candidate that makes any probe worse than what is deployed
+                // is refused in both modes — recorded with its evidence, though,
+                // because a gate that leaves no trace teaches nobody anything.
+                //
+                // The three-way split under `--auto` is the D1 ruling made
+                // mechanical. `measured == 0` is not a near-miss to be argued
+                // about: it is the *common* case, because only steers and denials
+                // have a replayable intervention point at all. Treating it as a
+                // refusal would silently discard every batch of edits and
+                // followups; treating it as a pass would lose the distinction
+                // between "measured clean" and "not measured", which is the one
+                // thing probation exists to remember.
+                let Disposition { status, probation } = dispose(args.auto, regressed, measured);
                 if probation {
-                    println!(
-                        "  applied on probation: no reflection in this batch had a replayable \
+                    stamp_probation(&mut rules, &tallies);
+                }
+                let applied = status == "auto_applied" || status == "auto_applied_probation";
+                // The proposal is written whichever way this went. Under `--auto`
+                // nobody is going to read it as a decision — it is the audit
+                // trail, and it is the only record of *why* a rule set landed or
+                // did not, since the gate's probes never reach the validation
+                // ledger.
+                let proposal = Proposal {
+                    id: Session::new_id(),
+                    domain: domain.clone(),
+                    status: status.into(),
+                    reflexion_ids: ids.clone(),
+                    rules_before: learned_before.clone(),
+                    rules: rules.clone(),
+                    evidence: evidence.clone(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    // Resolved at birth when the gate decided: nothing is waiting
+                    // on anyone, and leaving it `None` would make every auto pass
+                    // read as pending review to `mecha proposals` and to doctor.
+                    resolved_at: applied
+                        .then(|| chrono::Utc::now().to_rfc3339())
+                        .or_else(|| {
+                            (status == "rejected_by_gate").then(|| chrono::Utc::now().to_rfc3339())
+                        }),
+                    reason: None,
+                    scope: Some(region.clone()),
+                };
+                store.write_proposal(&proposal)?;
+                println!(
+                    "{domain}: proposal {} [{status}] — {} rule(s) from {} reflection(s)",
+                    proposal.id,
+                    proposal.rules.len(),
+                    proposal.reflexion_ids.len()
+                );
+                println!("{evidence}");
+                if status == "pending" {
+                    println!("review with `mecha proposals show {}`", proposal.id);
+                }
+
+                if applied {
+                    let run = LeapRun {
+                        id: proposal.id.clone(),
+                        domain: domain.clone(),
+                        reflexions_processed: ids.len() as u32,
+                        rules_before: learned_before.len() as u32,
+                        rules_after: rules.len() as u32,
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                    };
+                    store.write_learned_rules(domain, &rules)?;
+                    store.mark_reflexions_processed(&ids, &run.id)?;
+                    store.append_run(&run)?;
+                    for r in &rules {
+                        println!(
+                            "  - {}{}",
+                            r.text,
+                            if r.probation { "  [probation]" } else { "" }
+                        );
+                    }
+                    if probation {
+                        println!(
+                            "  applied on probation: no reflection in this batch had a replayable \
                          intervention point, so the gate could not grade it. Retires at \
                          {} attributed regression(s) rather than {}.",
-                        mecha_core::learning::PROBATION_RETIRE_AT,
-                        mecha_core::learning::DEFAULT_RETIRE_AT,
-                    );
+                            mecha_core::learning::PROBATION_RETIRE_AT,
+                            mecha_core::learning::DEFAULT_RETIRE_AT,
+                        );
+                    }
                 }
+
+                store.commit(&format!(
+                    "{}[{domain}]: {} rule(s) from {} reflection(s), {status}",
+                    if applied { "learn" } else { "propose" },
+                    proposal.rules.len(),
+                    proposal.reflexion_ids.len()
+                ));
+                continue;
+            }
+
+            let run = LeapRun {
+                id: Session::new_id(),
+                domain: domain.clone(),
+                reflexions_processed: reflexions.len() as u32,
+                rules_before: learned_before.len() as u32,
+                rules_after: rules.len() as u32,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            };
+
+            store.write_learned_rules(domain, &rules)?;
+            store.mark_reflexions_processed(&ids, &run.id)?;
+            store.append_run(&run)?;
+
+            println!(
+                "{domain}: {} reflection(s) → {} rule(s) (was {})",
+                reflexions.len(),
+                run.rules_after,
+                run.rules_before
+            );
+            for r in &rules {
+                println!("  - {}", r.text);
             }
 
             store.commit(&format!(
-                "{}[{domain}]: {} rule(s) from {} reflection(s), {status}",
-                if applied { "learn" } else { "propose" },
-                proposal.rules.len(),
-                proposal.reflexion_ids.len()
+                "learn[{domain}]: {} reflection(s), {} → {} rule(s)",
+                reflexions.len(),
+                run.rules_before,
+                run.rules_after
             ));
-            continue;
         }
-
-        let run = LeapRun {
-            id: Session::new_id(),
-            domain: domain.clone(),
-            reflexions_processed: reflexions.len() as u32,
-            rules_before: learned_before.len() as u32,
-            rules_after: rules.len() as u32,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
-
-        store.write_learned_rules(domain, &rules)?;
-        store.mark_reflexions_processed(&ids, &run.id)?;
-        store.append_run(&run)?;
-
-        println!(
-            "{domain}: {} reflection(s) → {} rule(s) (was {})",
-            reflexions.len(),
-            run.rules_after,
-            run.rules_before
-        );
-        for r in &rules {
-            println!("  - {}", r.text);
-        }
-
-        store.commit(&format!(
-            "learn[{domain}]: {} reflection(s), {} → {} rule(s)",
-            reflexions.len(),
-            run.rules_before,
-            run.rules_after
-        ));
     }
     Ok(())
 }
 
+/// Whether a proposal already argued exactly this batch of reflections.
+fn already_argued(
+    proposals: &[mecha_core::learning::Proposal],
+    domain: &str,
+    batch: &[mecha_core::learning::Reflexion],
+) -> bool {
+    let ids: std::collections::BTreeSet<&str> = batch.iter().map(|r| r.id.as_str()).collect();
+    proposals.iter().any(|p| {
+        p.domain == domain
+            && p.reflexion_ids.len() == ids.len()
+            && p.reflexion_ids.iter().all(|id| ids.contains(id.as_str()))
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{dispose, hold_out, stamp_probation};
+    use super::{already_argued, dispose, hold_out, stamp_probation};
+
+    /// The brake compares one region's batch against the proposals, so a
+    /// shell batch already argued waits while a new standing batch in the
+    /// same domain still learns.
+    #[test]
+    fn the_argued_brake_is_per_batch_not_per_domain() {
+        use mecha_core::learning::{Proposal, Reflexion};
+        let refl = |id: &str| Reflexion {
+            id: id.into(),
+            domain: "behavior".into(),
+            session_id: "s".into(),
+            trigger: "denial".into(),
+            context: String::new(),
+            intervention: String::new(),
+            reflexion_text: String::new(),
+            error_type: None,
+            confidence: None,
+            is_processed: false,
+            leap_run_id: None,
+            created_at: String::new(),
+            origin: mecha_core::learning::Origin::Clean,
+            evidence: mecha_core::learning::Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
+            situation: None,
+        };
+        let argued = Proposal {
+            id: "p".into(),
+            domain: "behavior".into(),
+            status: "rejected_by_gate".into(),
+            reflexion_ids: vec!["a".into(), "b".into()],
+            rules_before: Vec::new(),
+            rules: Vec::new(),
+            evidence: String::new(),
+            created_at: String::new(),
+            resolved_at: None,
+            reason: None,
+            scope: None,
+        };
+        assert!(already_argued(
+            std::slice::from_ref(&argued),
+            "behavior",
+            &[refl("a"), refl("b")]
+        ));
+        assert!(!already_argued(
+            std::slice::from_ref(&argued),
+            "behavior",
+            &[refl("a")]
+        ));
+        assert!(!already_argued(
+            std::slice::from_ref(&argued),
+            "behavior",
+            &[refl("c")]
+        ));
+        assert!(!already_argued(
+            &[argued],
+            "writing",
+            &[refl("a"), refl("b")]
+        ));
+    }
 
     /// Probation marks what this pass could not grade — never a rule the
     /// ledger has already measured. A consolidation is a full replacement, so

@@ -965,6 +965,7 @@ async fn run_agent(
         &prepared.config,
         &prepared.provider_name,
         &prepared.levers_off,
+        Some(&prepared.rules),
     )))?;
     if let Some(route) = &prepared.agent.context().outbox {
         route.set_session_id(&session.meta.id);
