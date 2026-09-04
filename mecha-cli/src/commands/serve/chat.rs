@@ -404,6 +404,15 @@ pub enum WireEvent {
     /// tool byte.
     Tool {
         name: String,
+        /// The call's own id, so a result can find the row that made it.
+        ///
+        /// Names do not pair: `run_tools` emits every call before any of them
+        /// runs, and `join_all` preserves order, so two `fs_write` calls in
+        /// one turn have two rows open and their results come back in call
+        /// order. Pairing by name alone matched them in reverse — which was
+        /// an anonymous swap until this event carried the arguments, and a
+        /// confident mislabel afterwards.
+        id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         draft: Option<WireDraft>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -411,6 +420,8 @@ pub enum WireEvent {
     },
     ToolResult {
         name: String,
+        /// The id of the call this answers — see [`WireEvent::Tool::id`].
+        id: String,
         is_error: bool,
         /// The result's opening, capped — enough for a person to see what
         /// the model was just handed without the page holding a transcript
@@ -520,18 +531,22 @@ fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Option<WireEve
     match event {
         AgentEvent::TextDelta(text) => Some(WireEvent::Delta { text: text.clone() }),
         AgentEvent::QueuedInput(text) => Some(WireEvent::Queued { text: text.clone() }),
-        AgentEvent::ToolCall { name, input, .. } => Some(WireEvent::Tool {
+        AgentEvent::ToolCall {
+            id, name, input, ..
+        } => Some(WireEvent::Tool {
             name: name.clone(),
+            id: id.clone(),
             draft: WireDraft::of(input),
             args: Some(clip_args(input)),
         }),
         AgentEvent::ToolResult {
+            id,
             name,
             is_error,
             content,
-            ..
         } => Some(WireEvent::ToolResult {
             name: name.clone(),
+            id: id.clone(),
             is_error: *is_error,
             preview: result_preview(content),
         }),
@@ -2754,8 +2769,14 @@ mod wire_tests {
         )
         .unwrap();
         match wire {
-            WireEvent::Tool { name, draft, args } => {
+            WireEvent::Tool {
+                name,
+                id,
+                draft,
+                args,
+            } => {
                 assert_eq!(name, "fs_write");
+                assert_eq!(id, "t1", "a result pairs on this, never on the name");
                 let draft = draft.expect("a write has a shape");
                 assert_eq!(draft.body.as_deref(), Some("days = 3"));
                 assert_eq!(

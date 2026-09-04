@@ -31,7 +31,7 @@ function readOut(marker) {
   return src.slice(start, src.indexOf(end, start) + end.length);
 }
 
-const openCallSrc = readOut('  function openCall(entries, name) {');
+const openCallSrc = readOut('  function openCall(entries, ev) {');
 const denialSrc = readOut('  function resolveDenial(entries, ev) {');
 const [openCall, resolveDenial] = new Function(
   `${openCallSrc}${denialSrc} return [openCall, resolveDenial];`
@@ -52,7 +52,14 @@ function is(actual, expected, what) {
   }
 }
 
-const call = (name) => ({ kind: 'tool', name, pending: true, draft: null, args: '{}' });
+const call = (name, id = null) => ({
+  kind: 'tool',
+  name,
+  id,
+  pending: true,
+  draft: null,
+  args: '{}',
+});
 
 // The ordinary case: `Agent::run_tools` emits the call, then refuses it in the
 // same iteration, so the chip to close is the last pending one of that name.
@@ -121,6 +128,47 @@ const call = (name) => ({ kind: 'tool', name, pending: true, draft: null, args: 
   is(entries[0].preview, '', 'a missing reason is empty, not the string "undefined"');
 }
 
+// Two concurrent calls of one name: results come back in CALL order, because
+// `join_all` preserves it, so pairing by name alone matched them in reverse
+// and both rows closed showing the other one's output under their own
+// arguments. This is the PR's own motivating turn — two `fs_write`s — so it
+// is the case the change would have been most confidently wrong about.
+{
+  const entries = [call('fs_write', 't1'), call('fs_write', 't2')];
+  const first = openCall(entries, { id: 't1', name: 'fs_write' });
+  is(first === entries[0], true, "a.txt's result finds a.txt, not the later row");
+  const second = openCall(entries, { id: 't2', name: 'fs_write' });
+  is(second === entries[1], true, "and b.txt's finds b.txt");
+}
+
+// An id that matches nothing means the row is closed — the result is dropped,
+// never moved onto another row of the same name. This is the case a name
+// fallback on an unmatched id would get wrong: the refused write is closed,
+// and its result must not land on the write still running.
+{
+  const entries = [
+    { ...call('fs_write', 't1'), pending: false, blocked: true, preview: 'refused' },
+    call('fs_write', 't2'),
+  ];
+  is(
+    openCall(entries, { id: 't1', name: 'fs_write' }),
+    undefined,
+    'a closed row is not reopened, and its twin is not borrowed'
+  );
+  is(entries[1].pending, true, 'the other write is still running');
+}
+
+// A `web/dist` older than the binary serving it sends no id; the name path is
+// what it falls back to, which is what this page did before ids existed.
+{
+  const entries = [call('shell')];
+  is(
+    openCall(entries, { name: 'shell' }) === entries[0],
+    true,
+    'an event with no id still finds its call by name'
+  );
+}
+
 // The turn order `Agent::run_tools` actually produces, driven through both
 // handlers together — the interaction neither one shows on its own.
 //
@@ -134,8 +182,8 @@ const call = (name) => ({ kind: 'tool', name, pending: true, draft: null, args: 
 {
   const entries = [];
   // `tool` events, both calls, before either result.
-  entries.push({ kind: 'tool', name: 'fs_read', pending: true, args: '{"path":"agent.rs"}' });
-  entries.push({ kind: 'tool', name: 'fs_write', pending: true, args: '{"path":"out.txt"}' });
+  entries.push({ kind: 'tool', name: 'fs_read', id: 't1', pending: true, args: '{"path":"agent.rs"}' });
+  entries.push({ kind: 'tool', name: 'fs_write', id: 't2', pending: true, args: '{"path":"out.txt"}' });
 
   // The refusal, inline in the same loop.
   resolveDenial(entries, {
@@ -144,11 +192,11 @@ const call = (name) => ({ kind: 'tool', name, pending: true, draft: null, args: 
   });
 
   // The refusal's own result, which the planning path emits too.
-  const strayTarget = openCall(entries, 'fs_write');
+  const strayTarget = openCall(entries, { id: 't2', name: 'fs_write' });
   is(strayTarget, undefined, "the refused call's result finds no open chip and is dropped");
 
   // Then the approved call's result, after join_all.
-  const readTarget = openCall(entries, 'fs_read');
+  const readTarget = openCall(entries, { id: 't1', name: 'fs_read' });
   is(readTarget === entries[0], true, 'the read result lands on the read');
   readTarget.pending = false;
   readTarget.preview = '80 lines';
