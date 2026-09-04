@@ -370,7 +370,7 @@ async fn run_lifetimes(
                 }
             }
             for stage in stages_due(&manifest.schedule, position, &stages_off, &ledger) {
-                let attempt = ExperimentStore::next_attempt(&ledger, position, stage);
+                let attempt = ExperimentStore::next_attempt(&ledger, torn, position, stage);
                 let run = run_stage(
                     store,
                     mecha,
