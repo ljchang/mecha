@@ -2646,9 +2646,14 @@ when touching it:
   `None` through `reading::lenient` rather than failing the run record. The
   corpus kind (`intervention_rate`) is `Deferred` in a run — a scan of the
   session store is `guilt.rs`'s once-a-night budget, not a per-run one —
-  and `Corpus::intervention_rate` is a denial or a stop by request on the
-  run record, which under-counts (steers, corrected follow-ups and edited
-  drafts are not on it) rather than guesses.
+  and `Corpus::intervention_rate` is a stop by request on the run record
+  and nothing else, which under-counts (steers, corrected follow-ups and
+  edited drafts are not on it) rather than guesses. **Not `tool_denied`**:
+  it counts "a human or a policy refusing" — a `forbid` rule, a hook, the
+  interlock — so a machine with one routine policy rule would read as the
+  owner stepping into every run, and the doctor would say so in the second
+  person (found on review). Splitting the two on the record is a
+  wire-format addition nothing has needed yet.
 - **The doctor reads against the owner's number, and names the line.**
   `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
   requests) or the setpoint of the charter line whose sensor watches that
@@ -2678,7 +2683,11 @@ when touching it:
   same requests.** `frontdoor::WAITING_ON_OWNER` is the one list — a
   request awaiting triage, a draft review, or a person after triage drafted
   nothing — read by the doctor and by `Backlog::read_with_owner_requests`,
-  which hands `reading::Sources` the owner-facing depth beside the backlog.
+  which hands `reading::Sources` the owner-facing depth beside the backlog,
+  aged from `Record::arrived_at` — the drain's clock, the one the finding
+  uses — while the wide depth keeps `created_at` as every recorded row
+  has (a form stamped a month before the drain ingested it read a month
+  overdue on the sensor and a day old to the doctor; found on review).
   `Backlog::frontdoor` still counts every open request, as every recorded
   row always has; read against the sensor, a `needs_info` parked on the
   stranger for a week saturated a line no finding would ever name, and the

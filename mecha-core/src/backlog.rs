@@ -194,7 +194,9 @@ impl Backlog {
 
     /// The two front-door depths over a set of records: every request not
     /// yet closed (what `Backlog::frontdoor` has always counted, give-ups
-    /// included), and the requests waiting on the owner.
+    /// included, aged from `created_at` as every recorded row is), and the
+    /// requests waiting on the owner, aged from the clock the doctor's
+    /// stale-request finding uses (`Record::arrived_at`).
     fn frontdoor_depths(
         records: &[frontdoor::Record],
         sent: Option<&HashSet<&str>>,
@@ -210,10 +212,7 @@ impl Backlog {
         (
             Depth::of(open.len(), open.iter().map(|r| r.created_at.as_str()))
                 .given_up(Self::frontdoor_given_up(records, sent)),
-            Depth::of(
-                on_owner.len(),
-                on_owner.iter().map(|r| r.created_at.as_str()),
-            ),
+            Depth::of(on_owner.len(), on_owner.iter().map(|r| r.arrived_at())),
         )
     }
 
@@ -669,29 +668,51 @@ mod tests {
     /// read it (found on review).
     #[test]
     fn the_owner_facing_depth_excludes_a_request_parked_on_the_stranger() {
-        let record = |seq: i64, state: &str, created_at: &str| -> frontdoor::Record {
-            serde_json::from_value(serde_json::json!({
-                "seq": seq,
-                "type_id": "contact",
-                "state": state,
-                "created_at": created_at,
-                "drained_at": created_at,
-                "values": {},
-                "outbox": [],
-            }))
-            .unwrap()
-        };
+        let record =
+            |seq: i64, state: &str, created_at: &str, drained_at: &str| -> frontdoor::Record {
+                serde_json::from_value(serde_json::json!({
+                    "seq": seq,
+                    "type_id": "contact",
+                    "state": state,
+                    "created_at": created_at,
+                    "drained_at": drained_at,
+                    "values": {},
+                    "outbox": [],
+                }))
+                .unwrap()
+            };
         let records = vec![
-            record(1, frontdoor::NEEDS_INFO, "2026-08-01T00:00:00Z"),
-            record(2, frontdoor::EXTRACTED, "2026-08-10T00:00:00Z"),
-            record(3, frontdoor::CLOSED, "2026-07-01T00:00:00Z"),
+            record(
+                1,
+                frontdoor::NEEDS_INFO,
+                "2026-08-01T00:00:00Z",
+                "2026-08-01T00:00:00Z",
+            ),
+            // Sent a month before the drain ingested it: the owner-facing
+            // clock is the drain's, the wide depth's is the stranger's.
+            record(
+                2,
+                frontdoor::EXTRACTED,
+                "2026-08-10T00:00:00Z",
+                "2026-09-03T00:00:00Z",
+            ),
+            record(
+                3,
+                frontdoor::CLOSED,
+                "2026-07-01T00:00:00Z",
+                "2026-07-01T00:00:00Z",
+            ),
         ];
         let (open, on_owner) = Backlog::frontdoor_depths(&records, None);
         assert_eq!(open.waiting, 2);
         assert_eq!(open.oldest.as_deref(), Some("2026-08-01T00:00:00Z"));
         assert_eq!(on_owner.waiting, 1);
-        assert_eq!(on_owner.oldest.as_deref(), Some("2026-08-10T00:00:00Z"));
+        assert_eq!(on_owner.oldest.as_deref(), Some("2026-09-03T00:00:00Z"));
         assert_eq!(on_owner.given_up, 0);
+        // A drain stamp that does not parse falls back to the sender's.
+        let torn = vec![record(4, frontdoor::EXTRACTED, "2026-08-10T00:00:00Z", "")];
+        let (_, on_owner) = Backlog::frontdoor_depths(&torn, None);
+        assert_eq!(on_owner.oldest.as_deref(), Some("2026-08-10T00:00:00Z"));
     }
 
     /// A read creates nothing (found on review, which noted nothing

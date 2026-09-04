@@ -524,6 +524,24 @@ pub fn waiting_on_owner(state: &str) -> bool {
     WAITING_ON_OWNER.contains(&state)
 }
 
+impl Record {
+    /// The clock a request's wait is measured from: when it arrived here
+    /// (`drained_at`), falling back to when the stranger sent it when the
+    /// drain stamp does not parse. One clock for the doctor's stale-request
+    /// finding and the `request_closure` sensor — the sensor first aged
+    /// from `created_at`, so a form stamped a month before the drain
+    /// ingested it read as a month overdue on a line no finding would ever
+    /// name (found on review, the same defect as the state set one axis
+    /// over).
+    pub fn arrived_at(&self) -> &str {
+        if chrono::DateTime::parse_from_rfc3339(&self.drained_at).is_ok() {
+            &self.drained_at
+        } else {
+            &self.created_at
+        }
+    }
+}
+
 /// One state change, for a caller that wants to say what it did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transition {
