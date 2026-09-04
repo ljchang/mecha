@@ -245,6 +245,7 @@ pub fn summary(life: &Value) -> String {
         Some("pick") if !life["pick_item"].is_null() => "needs a pick — in the outbox".into(),
         Some("pick") => "needs a pick".into(),
         Some("no_time") => "no time found".into(),
+        Some("stalled") => "stalled — invitations never all sent".into(),
         Some(other) => other.to_string(),
         // No invitations on record is not "all sent": unknown is never done.
         None if total == 0 => "—".into(),
@@ -282,12 +283,14 @@ fn create_event_tool(cfg: &mecha_core::config::Config) -> Result<String> {
         })
 }
 
-fn open_store(cfg: &mecha_core::config::Config) -> Result<OutboxStore> {
-    let root = match cfg.outbox.dir.clone() {
-        Some(dir) => dir,
-        None => OutboxStore::default_root()?,
-    };
-    OutboxStore::open(root)
+/// The config for the routed name, and the store — the latter through
+/// `commands::outbox::open_store`, the one home for "which store", so this
+/// side can never stage into a directory the review does not read.
+fn cfg_and_store() -> Result<(mecha_core::config::Config, OutboxStore)> {
+    let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+    let cfg = mecha_core::config::Config::load(&cwd)?;
+    let store = crate::commands::outbox::open_store()?;
+    Ok((cfg, store))
 }
 
 /// "Tue 5 Feb, 1:00 PM–2:00 PM EST" for one ranked row, in the poll's zone.
@@ -449,9 +452,7 @@ pub fn loaded_index(record: &PollRecord, item: &OutboxItem) -> Option<usize> {
 /// Load the n-th ranked candidate (1-based) into the poll's pick card.
 /// Returns the slot as the reviewer will read it.
 pub fn pick(poll_id: &str, n: usize) -> Result<String> {
-    let cwd = std::env::current_dir().context("cannot determine the working directory")?;
-    let cfg = mecha_core::config::Config::load(&cwd)?;
-    let store = open_store(&cfg)?;
+    let (_cfg, store) = cfg_and_store()?;
     let record = load_by_id(poll_id)?;
     let Some(item_id) = record.lifecycle()["pick_item"].as_str() else {
         bail!(
@@ -478,9 +479,7 @@ pub fn pick(poll_id: &str, n: usize) -> Result<String> {
 
 /// Advance to the next candidate, wrapping — the `/polls` modal's `p` key.
 pub fn pick_next(poll_id: &str) -> Result<String> {
-    let cwd = std::env::current_dir().context("cannot determine the working directory")?;
-    let cfg = mecha_core::config::Config::load(&cwd)?;
-    let store = open_store(&cfg)?;
+    let (_cfg, store) = cfg_and_store()?;
     let record = load_by_id(poll_id)?;
     let Some(item_id) = record.lifecycle()["pick_item"].as_str() else {
         bail!("no pick card — {}", summary(record.lifecycle()));
@@ -496,9 +495,7 @@ pub fn pick_next(poll_id: &str) -> Result<String> {
 
 /// One tick: stage what needs a card, reconcile what has been decided.
 pub fn sweep() -> Result<Vec<String>> {
-    let cwd = std::env::current_dir().context("cannot determine the working directory")?;
-    let cfg = mecha_core::config::Config::load(&cwd)?;
-    let store = open_store(&cfg)?;
+    let (cfg, store) = cfg_and_store()?;
     // Held across the tick: adopt-then-stage is a read-modify-write over
     // the store, and two overlapping sweeps — the timer and a hand run —
     // would each see no card and each stage one, the second of which no
