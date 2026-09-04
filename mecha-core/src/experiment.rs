@@ -1417,8 +1417,10 @@ pub fn child_invocation(
 /// A trial home's own accepted harness overrides, relative to the home.
 pub const HOME_OVERRIDES: &str = "learning/harness/overrides.toml";
 
-/// Fold the home's *own* accepted overrides into the config the next task
-/// runs under. The child's loader applies `overrides.toml` beneath every
+/// Fold the home's *own* accepted overrides — what its stages accepted,
+/// never the machine's, which `seed_home` drops — into the config the
+/// next task runs under. A `lifetime`'s driver only: a single runs no
+/// stage and has nothing to fold. The child's loader applies `overrides.toml` beneath every
 /// file layer, and the rendered `config.toml` names every `[agent]` key,
 /// so without this a change `harness ruminate` accepted inside the home
 /// never reached a task — the one stage with an effect today measured as
@@ -1471,6 +1473,18 @@ pub fn seed_home(real: &Path, home: &Path) -> Result<()> {
         }
         copy_tree(&from, &to)
             .with_context(|| format!("seeding {} into {}", name, home.display()))?;
+    }
+    // The machine's own accepted overrides ride in `learning/`, and they
+    // are already in the rendered config at their real precedence —
+    // beneath the operator's file, where the loader puts them. A copy in
+    // the home would be folded *above* that file by `fold_home_overrides`,
+    // inverting the precedence for every arm under an unchanged hash
+    // (found on review). Dropped, so the home's file holds only what the
+    // home's own stages accept.
+    let seeded = home.join(HOME_OVERRIDES);
+    if seeded.exists() {
+        std::fs::remove_file(&seeded)
+            .with_context(|| format!("dropping the seeded {}", seeded.display()))?;
     }
     Ok(())
 }
@@ -2470,6 +2484,36 @@ rationale = "no rumination should fail more over the sequence"
             .config;
         fold_home_overrides(&mut plain, &home, &Arm::default()).unwrap();
         assert_eq!(plain.agent.max_turns, 30, "an unpinned key moves");
+        // The machine's own overrides never ride in: seeding drops the copy,
+        // and a key the operator pinned in the file keeps the file's value.
+        let fake_real = std::env::temp_dir().join(format!("mecha-exp-real-{}", std::process::id()));
+        let fresh = std::env::temp_dir().join(format!("mecha-exp-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&fake_real);
+        let _ = std::fs::remove_dir_all(&fresh);
+        std::fs::create_dir_all(fake_real.join("learning/harness")).unwrap();
+        std::fs::copy(&overrides, fake_real.join(HOME_OVERRIDES)).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+        seed_home(&fake_real, &fresh).unwrap();
+        assert!(
+            fresh.join("learning/harness").is_dir(),
+            "the harness store is seeded"
+        );
+        assert!(
+            !fresh.join(HOME_OVERRIDES).exists(),
+            "but not the machine's overrides"
+        );
+        let mut pinned = crate::config::Config::default();
+        pinned.agent.max_turns = 40; // what the operator's config.toml said
+        let mut cfg = child_invocation(&pinned, &Arm::default(), None)
+            .unwrap()
+            .config;
+        fold_home_overrides(&mut cfg, &fresh, &Arm::default()).unwrap();
+        assert_eq!(
+            cfg.agent.max_turns, 40,
+            "the file's pin survives a fresh home"
+        );
+        let _ = std::fs::remove_dir_all(&fake_real);
+        let _ = std::fs::remove_dir_all(&fresh);
         // A torn file is the task's error, never a silent nothing.
         std::fs::write(&overrides, "[[override]]\nkey = \"max_turns\"\n").unwrap();
         let e = format!(
