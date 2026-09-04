@@ -124,10 +124,19 @@ impl Situation {
     }
 
     /// The tool the record is *about* — the last one the trace touched.
-    /// `None` when that is a front-end tool ([`Self::FRONTEND_TOOLS`]): a
-    /// lesson from refusing `ask_user` is about asking, not about whatever
-    /// tool ran before it, and batches as standing.
+    /// `None`, batching as standing, in two cases: the last tool is a
+    /// front-end tool ([`Self::FRONTEND_TOOLS`]) — a lesson from refusing
+    /// `ask_user` is about asking, not about whatever tool ran before it —
+    /// or the trigger is a followup, whose window is stale by construction:
+    /// a followup is a later user turn carrying no tool results, so the
+    /// names beside it are from an earlier assistant turn, and "you are too
+    /// verbose" scoped to whatever ran last would be dark in every run
+    /// without that tool (found on review). The window stays recorded on
+    /// the reflection as the evidence the reflector was shown.
     pub fn focus(&self) -> Option<&str> {
+        if self.trigger.as_deref() == Some("followup") {
+            return None;
+        }
         self.tools
             .last()
             .map(String::as_str)
@@ -316,6 +325,10 @@ mod tests {
         assert_eq!(asked.scope().tools, vec!["shell"]);
         assert_eq!(asked.focus(), None, "a front-end focus batches as standing");
         assert_eq!(s(&["shell"]).focus(), Some("shell"));
+        // A followup's window is from an earlier turn: recorded, never a focus.
+        let followup = Situation::recorded(&["shell".into()], "followup", None, None);
+        assert_eq!(followup.tools, vec!["shell"]);
+        assert_eq!(followup.focus(), None);
         assert!(s(&["ask_user"]).scope().is_standing());
     }
 
