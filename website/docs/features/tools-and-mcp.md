@@ -302,22 +302,23 @@ command = "mecha-graph-mcp"            # or an absolute path to the binary
 prefix_tools = false                   # its kg_* tools carry their own namespace
 env_passthrough = ["MECHA_GRAPH_DB"]
 env = { MECHA_TZ = "America/New_York" }
-sandbox = true
-network = false
 ```
 
-Two things about that `command` line, because a server that fails to spawn
-is reported once on stderr and skipped, never fatal — the `kg_*` tools are
-simply absent. A bare name resolves against the PATH of whatever started
-mecha, so a systemd unit needs `~/.cargo/bin` on its `Environment=PATH`
-(the shipped units carry it). And with `sandbox = true` a bare name can
-never resolve: the confinement replaces `PATH` with the system directories
-outright (bwrap and landlock both), and binds only those directories plus
-whatever `[sandbox] readable` lists — never your home directory. So a
-`cargo install`ed server under `sandbox = true` needs **both** an absolute
-path in `command` *and* its directory in `[sandbox] readable`; listing the
-directory alone leaves the bare name unresolvable, and the absolute path
-alone points at a file the sandbox does not bind.
+Two things about that `command` line. A bare name resolves against the
+PATH of whatever started mecha, so a systemd unit needs `~/.cargo/bin` on
+its `Environment=PATH` (the shipped units carry it); what a failed spawn
+then does depends on the command — the front-ends and the corpus commands
+that go through the shared setup (`serve`, `slack`, `triggers`, `mail
+classify`, `frontdoor`, `validate`, `learn`) report it once on stderr and
+carry on with the `kg_*` tools simply absent, while `distill`,
+`corroborate`, `gossip` and `vet` connect directly and exit non-zero. And
+this server is deliberately **not** confined: `sandbox = true` replaces
+`PATH` with the system directories (so a bare name can never resolve
+there), binds nothing under your home directory unless `[sandbox]
+readable`/`writable` lists it, and the graph's store is
+`~/.mecha-graph/graph.db`, read-write — confining it would need an absolute
+`command`, its directory in `readable` and the store's in `writable`, which
+is most of the sandbox given away for a server that runs as you anyway.
 
 Tools are namespaced `<server>__<tool>` by default, so two servers can both
 expose a `search`. A server whose tools already carry their own namespace —

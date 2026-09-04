@@ -150,7 +150,8 @@ What those units do need is `~/.cargo/bin` on their `Environment=PATH`,
 because a bare `command = "mecha-graph-mcp"` resolves against the unit's
 PATH, and what a failed spawn does depends on the caller: everything that
 reaches `setup::prepare*` (`mail classify`, `frontdoor`, `serve`, `slack`,
-`triggers`, `reflect`, `learn`) skips the server with one stderr line and
+`triggers`, `validate`, `learn` — not `reflect`, which builds its provider
+from `Config::load` and spawns no MCP child) skips the server with one stderr line and
 carries on — the classifier or the front door would run a whole sweep with
 the `kg_*` tools absent and exit 0 — while the four direct-connect commands
 (`distill`, `corroborate`, `gossip`, `vet`) fail that step loudly with a
