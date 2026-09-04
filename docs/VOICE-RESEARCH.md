@@ -1110,8 +1110,11 @@ acted on, so a listener who says "send it" is asked once more and answers
 Three parts, each pinned by a test that fails without it:
 
 - `Pending` carries a **two-slot window** of what the speaker recently played,
-  seeded with the model's own reply. The reply and the offer are one stretch
-  out of the speaker — `completion` says the answer and then `say(" {offer}")`
+  seeded with the model's own reply. `RunOutcome::text` is only the *final* turn; `pump` streams every
+  `TextDelta` of every turn and the worker speaks all of them, and a draft can
+  only be staged by a tool call — so any run that produces an offer has
+  interstitial narration by construction. All of it, the reply and the offer,
+  is one stretch out of the speaker — `completion` says the answer and then `say(" {offer}")`
   with no pause — so the reply echoes exactly as the offer does, and the accept
   phrases it can carry are ones the offer never does: "go ahead", "do that",
   "confirm", "approve", "book it". Each was an unasked release until the reply
