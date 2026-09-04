@@ -150,10 +150,20 @@ six rounds of the worker's text filter already rejected.
 
 ### 4.3 The filter, which is the load-bearing part
 
-**A candidate override token is rejected if it parses as an answer.** Not "if
-it looks odd" — run it through `review_policy::parse_answer` and drop any
-option that returns anything but `NotAnAnswer`. An account named `"yes"`,
-`"ok"`, `"later"`, `"read"` or `"no"` must never enter the spoken vocabulary.
+**A candidate override token is rejected if it parses as an answer, *or if it
+normalises to nothing*.** Not "if it looks odd" — run it through
+`review_policy::parse_answer` and drop any option that returns anything but
+`NotAnAnswer`. An account named `"yes"`, `"ok"`, `"later"`, `"read"` or `"no"`
+must never enter the spoken vocabulary.
+
+The second half is not belt-and-braces, and `parse_answer` alone does not give
+it: it **returns `NotAnAnswer` for the empty string**, so an option that
+normalises away passes the filter and then matches every utterance that also
+normalises away. That is reachable — `normalise` keeps only alphabetic
+characters and whitespace, so an all-digit account name empties, as does a
+bare filler like `"so"` or `"thanks"`. §3's readback bounds the damage, but
+this is §2.2's hazard exactly, in the clause this section calls load-bearing.
+Require a **non-empty** normalised form as well. Found on review.
 
 Fail closed, and **over the draft's whole spoken vocabulary rather than each
 field against the answer lists**. `mail_reply` has two overridable fields, so
@@ -166,6 +176,15 @@ an answer — that **draft** gets no spoken override and the owner uses the page
 Per draft rather than per option, for the same reason: dropping only the
 colliding token leaves a set whose safety depends on which names a server
 happened to choose. Found on review, which had this as a per-field rule.
+
+**Checked once, over the full `enum` including the current value.** §4.1's
+"the value already set is never an alternative" makes the *offered* set change
+after every override — A→B turns `{B, C}` into `{A, C}` — so a collision
+between `A` and `C` is invisible to a check that ran against `{B, C}`. The
+decision has to be stable across re-offers, which means computing it over
+everything the field could ever offer, not over what it offers right now.
+Same reason as the paragraph above: safety must not depend on which state the
+draft happens to be in either.
 
 This wants the test shape `no_single_word_of_the_reask_is_an_answer` already
 uses — checked against the real phrase lists, not against a comment, because a
