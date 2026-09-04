@@ -2524,9 +2524,12 @@ and `web/dist`, whose settings page shows no reading until rebuilt (update
 skill surface 1b). **Still not measurable on this machine:** the live
 charter has seven lines and no sensor, so every reading surface is empty
 and the doctor's thresholds are the harness's constants until the owner
-adds one — the smoke was a scratch home. **Open from §11.1 now:** the replay
-tiebreak (last, because it changes what gets replayed), `board_overdue` and
-`cost` as kinds, and the reflection's "which line moved".
+adds one — the smoke was a scratch home. **The replay tiebreak followed the
+same night** (`feat/replay-tiebreak`, PR after #176; `appraisal::charter_rank`,
+`harness_probe::selection_order`, `Draw::ranked` printed beside the seed —
+`HISTORY.md` has it), so **open from §11.1 now:** `board_overdue` and
+`cost` as kinds, the reflection's "which line moved", and |goal error| as
+a replay priority in its own right (§8: the rank only breaks ties).
 
 **2026-09-04, later — §17.6 item 3 is built and merged as PR #168
 (`feat/situation-scope`, merged at `046ef0f` after thirteen review
@@ -2607,8 +2610,9 @@ and stop being true of the derivation when #162 merges** — they are kept as
 the measurement they were. **Open, in the order §17.6 sets** (item 3 is
 #168 above, its merge condition met in the same change): §11.1's later phases —
 the per-line readings, the line-specific guilt, the doctor's owner
-thresholds and the editor's reading are #176 above, leaving the replay
-tiebreak, and `board_overdue`/`cost` as kinds once a reader exists; item 4,
+thresholds, the editor's reading and the replay tiebreak are #176 and its
+follow-up above, leaving `board_overdue`/`cost` as kinds once a reader
+exists; item 4,
 measuring the appraiser at scale (zero build — and #160 has since reported
 169 of 169 "nothing further", so retire-or-refeed is the actual question);
 item 5, the audit lane's declared check. **The exit for item 1 is not

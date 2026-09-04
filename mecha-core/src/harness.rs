@@ -459,6 +459,22 @@ pub struct Measurement {
     pub holdout_episodes: Vec<String>,
     #[serde(default)]
     pub seed: u64,
+    /// How many of the selection the charter tiebreak ranked
+    /// (`GOAL-SYSTEM-DESIGN.md` §11.1; `harness_probe::selection_order`).
+    /// The seed and the corpus pin the holdout; the selection's order among
+    /// equal headroom is the rank, and the rank is read off the *present*
+    /// stores — the charter, and the outbox, question, front-door and
+    /// learning stores a session's errors are signed from — so the same
+    /// seed over the same session corpus can tie differently once a draft
+    /// is resolved or a line re-ranked. `episodes` keeps the resulting
+    /// order; this says whether the tiebreak had anything to decide, and
+    /// it used to live on a stderr line nobody keeps (found on review).
+    /// Counted over the selection **as drawn**, before divergence dropped
+    /// any episode, so it can exceed what `episodes` holds. `None` on a
+    /// record from before the field, or where the tiebreak could not run
+    /// because the charter did not load: unknown, not zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranked: Option<usize>,
     /// Sessions dropped because an arm left the recording — a divergent
     /// replay's stats describe a truncated run, and scoring one would let a
     /// behaviour-visible change be graded on the fraction it tracked.
@@ -600,6 +616,8 @@ pub struct Drawn {
     pub episodes: Vec<String>,
     pub holdout_episodes: Vec<String>,
     pub seed: u64,
+    /// See [`Measurement::ranked`].
+    pub ranked: Option<usize>,
     pub diverged: Vec<String>,
     /// See [`Measurement::replay_caveats`].
     pub replay_caveats: Vec<String>,
@@ -619,6 +637,7 @@ impl Measurement {
             episodes,
             holdout_episodes,
             seed,
+            ranked,
             diverged,
             replay_caveats,
             divergence_detail,
@@ -647,6 +666,7 @@ impl Measurement {
             episodes,
             holdout_episodes,
             seed,
+            ranked,
             diverged,
             replay_caveats,
             divergence_detail,
@@ -912,6 +932,47 @@ pub fn apply_overrides_file(cfg: &mut Config, path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    /// `ranked` is on the wire beside `seed` and `holdout_episodes`, and a
+    /// record from before it reads unknown, never zero.
+    #[test]
+    fn a_measurement_records_how_many_of_the_selection_the_tiebreak_ranked() {
+        use crate::candidate::{Disposition, Judgement, Tally};
+        let judgement = Judgement {
+            disposition: Disposition::Accept,
+            selection: Tally::default(),
+            holdout: Tally::default(),
+            work_baseline: 3,
+            work_candidate: 3,
+        };
+        let m = super::Measurement::record(
+            &judgement,
+            "m",
+            "2026-09-04T00:00:00Z".into(),
+            super::Drawn {
+                episodes: vec!["a".into(), "b".into()],
+                holdout_episodes: vec!["b".into()],
+                seed: 7,
+                ranked: Some(1),
+                diverged: vec![],
+                replay_caveats: vec![],
+                divergence_detail: vec![],
+                skipped: 0,
+            },
+        );
+        assert_eq!(m.ranked, Some(1));
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("\"ranked\":1"), "{json}");
+        let back: super::Measurement = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.ranked, Some(1));
+
+        // Before the field: the key is absent, and the reading is unknown.
+        let older = json.replace(",\"ranked\":1", "");
+        assert_ne!(older, json);
+        let back: super::Measurement = serde_json::from_str(&older).unwrap();
+        assert_eq!(back.ranked, None);
+        assert_eq!(back.seed, 7);
+    }
+
     use super::*;
 
     /// The serialised name and the parsed name are the same string for every
