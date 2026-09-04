@@ -1679,7 +1679,11 @@ one person's mailbox rather than a public fact.
   lanes). Put it back on `main` before the next deploy — the deploy step is
   **check the branch, then pull, then restart**, not "pull, then restart",
   and that ordering is the whole content of the voice-worker item below
-  (mecha-26). ~~Three things merged to `main`
+  (mecha-26). *Since resolved, 2026-09-04 afternoon:* #161 and #162 merged
+  at 09:45Z and 09:52Z, and the shared checkout is back on `main` (at
+  `6e606a9`, checked from this lane), so what remains there is ordinary lag
+  behind `origin/main` rather than a feature branch's content — the deploy
+  ordering above still holds, for the ordinary reason. ~~Three things merged to `main`
   and **not deployed**: #159 (the handoff close), #153 and #154~~ — #153 and
   #154 are still **unrecorded in this document** (mecha-83's flag; their
   owners' entries are owed, this lane did not read their diffs). ~~The
