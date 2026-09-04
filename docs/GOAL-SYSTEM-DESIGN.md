@@ -1098,6 +1098,23 @@ charter is `Prose` class and cannot be cheaply A/B tested:
 > reading for either needs the graph subprocess or a cost unit nobody has
 > chosen), and the reflection's "which line moved" — the reflector does not
 > read the homeostat.
+>
+> **The replay tiebreak built 2026-09-04, last, as designed**
+> (`feat/replay-tiebreak`): `appraisal::charter_rank` is the highest line a
+> session's *signed* errors name in the loaded charter (`Charter::rank_of`,
+> zero the top line; a task goal, a zero-magnitude error and a line since
+> removed rank nothing), `harness_probe::draw_episodes` orders the
+> selection by headroom, then that rank with unranked episodes after every
+> ranked one, then the id, and the measurement records how many of the
+> selection carried a rank (`Measurement::ranked`) beside the seed — the
+> rank is read off the charter and the stores as they stand at the draw,
+> which the seed and the corpus do not pin; and only a clean-origin
+> appraisal ranks, since the goal may be the session's own `serves:` and
+> the tiebreak decides membership of the selected slice. The holdout is
+> untouched: it
+> is drawn first and uniformly, and a priority may never reach it (§8.1).
+> |goal error| as a priority in its own right is still not this — the rank
+> breaks ties, `Metric::headroom` still decides.
 
 The owner ruled that a charter line may carry a **sensor**: an observable
 the harness reads from its own stores, with a setpoint the owner wrote. It

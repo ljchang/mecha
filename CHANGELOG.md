@@ -170,7 +170,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one positive a live surface can show; it is a global diff of the
   stores, disclosed as such. Charter sensors — owner-written observables
   on a charter line — are designed at `GOAL-SYSTEM-DESIGN.md` §11.1 under
-  seven containments and not built.
+  seven containments, and built in three steps: the `[line.sensor]` table
+  (five closed kinds, a setpoint typed by the kind, refused at load when
+  unknown or zero) and the attribution of a run to the line whose sensor
+  watches what its trace touched; then **readings** (`mecha_core::reading`)
+  — each sensored line read against its store as one of five states kept
+  apart (unread, deferred, nothing waiting, too few runs, observed with
+  how far past the setpoint), recorded on every run's homeostat, shown
+  beside the line on `mecha charter`, the TUI's `/charter` and the web
+  settings page, and read by `mecha doctor`, whose stuck-draft,
+  unanswered-question and stale-request findings now use the owner's
+  setpoint where a line names one and name the line, with a saturation
+  finding when a line has read past its setpoint on each of the last ten
+  runs; then the **replay tiebreak** — among episodes of equal headroom,
+  the one whose signed error names the higher-ranked charter line is
+  selected first, the count printed beside the draw's seed. The sensor's
+  kind, setpoint and reading never enter a prompt and never feed a metric.
 
 ### Fixed
 

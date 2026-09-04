@@ -2284,8 +2284,30 @@ prediction that was made *before* either was measured.
   wrong one once the pool is gathered by informativeness: hashing *one* pool
   partitions it into two slices that are both biased the same way, and the
   holdout stops being a check. Drawing the holdout uniformly from the whole
-  pool, then ordering the remainder by `Metric::headroom`, keeps the confirming
-  slice uncorrelated with what selected the candidate. The seed is chosen by
+  pool, then ordering the remainder by `Metric::headroom` — ties broken by
+  the highest-ranked charter line a signed goal error of the session names
+  (`appraisal::charter_rank`, `GOAL-SYSTEM-DESIGN.md` §11.1's consumer for
+  rank: a signed error against the top line replays before one against
+  the fifth, an unranked episode after every ranked one, the id last; **only
+  a clean-origin appraisal ranks**, because the goal may be the session's
+  own `serves:` string, the charter's ids are in that session's prompt, and
+  the truncation after the sort makes the tiebreak decide membership of the
+  slice the gate reads — `mecha learn`'s provenance gate, applied), the
+  rank read off the same transcript read as the trajectory against the
+  stores `appraisal::Stores` loads once per draw — keeps the confirming
+  slice uncorrelated with what selected the candidate. The rank is read off
+  inputs the seed and the corpus do not pin — the charter's order, and the
+  stores a session's errors are signed from as they stand at the draw, so a
+  resolved draft or a re-ranked line redraws the ties — which is why
+  `Measurement::ranked` records how many of the selection it ordered, beside
+  the seed and the holdout ids, and `harness show` prints it; a first cut
+  put it on a stderr line nobody keeps (found on review). The stores are
+  not read at all without a charter with lines, and `appraisal::Chartered`
+  keeps a charter that did not load apart from one with nothing to rank
+  against — the draw records `ranked: None` for the first and `Some(0)`
+  for the second, because a malformed `charter.toml` silently turning the
+  tiebreak off and recording "ranked nothing" was the two findings this
+  repo keeps apart, rendered identically (found on review). The seed is chosen by
   the caller and recorded on the measurement along with the holdout's episode
   ids, because the split now depends on the corpus as it stood at measurement
   time rather than on the ids alone — and a sample nobody can redraw is a
@@ -2614,7 +2636,8 @@ than refusing, because the cost is prefix bytes on every request.
 (`GOAL-SYSTEM-DESIGN.md` §11.1; parser, serialiser, template and the
 attribution join built 2026-09-04, the readings, the line-specific guilt,
 the doctor's owner thresholds and the editor's reading the same day —
-`reading.rs`; the replay tiebreak and `board_overdue`/`cost` not yet). `[line.sensor]` is `kind` from a **closed enum**
+`reading.rs`; the replay tiebreak the same evening, `harness_probe`'s
+`selection_order`; `board_overdue`/`cost` not yet). `[line.sensor]` is `kind` from a **closed enum**
 (`SensorKind`: `outbox_waiting`, `outbox_age`, `question_latency`,
 `request_closure`, `intervention_rate`) and a `setpoint` the kind types (a
 duration like `24h`, a count, a rate like `20%`) — an unknown kind or a

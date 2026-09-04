@@ -3657,8 +3657,46 @@ and the owner-facing request depth aged from `created_at` while the doctor
 ages from the drain's clock, so a form stamped a month before ingestion
 read a month overdue on the sensor and a day old to the doctor
 (`Record::arrived_at` is now the one clock, the wide depth keeping
-`created_at`). Not built: the replay tiebreak, `board_overdue` and `cost`,
-and the reflection's "which line moved".
+`created_at`). Not built then: the replay tiebreak, `board_overdue` and
+`cost`, and the reflection's "which line moved".
+
+**2026-09-04, night — the replay tiebreak: line order decides what gets
+replayed among equals.** §11.1's last phase, built last as its own phasing
+asked, because it is the one consumer that changes what a replay
+concludes. `appraisal::charter_rank` reads the highest charter line a
+session's *signed* errors name — the plan's `serves:` and the sensored-line
+attribution both land one on the errors — over the loaded charter's order
+(`Charter::rank_of`, line order's second consumer after
+`line_for_sensor`); `harness_probe::prepare_episode` computes it off the
+same transcript read as the trajectory against the stores
+`appraisal::Stores` loads once per draw, and `selection_order` sorts the
+selection by headroom, then rank with the unranked after every ranked
+episode, then id. The holdout is not touched — drawn first and uniformly,
+where a priority may never reach (§8.1). `Measurement::ranked` records
+how many of the selection the tiebreak ordered, beside the seed and the
+holdout ids, because the rank is read off inputs those two do not pin —
+the charter's order, and the outbox, question, front-door and learning
+stores a session's errors are signed from, as they stand at the draw — so
+the same seed over the same corpus can tie differently once a draft is
+resolved or a line re-ranked (the first cut printed the count on stderr
+and claimed the charter was the only unpinned input; the review named the
+stores). The stores are read once per draw and not at all without a
+charter with lines — and the second pass found the first cut of that
+guard folded an unreadable charter into an empty one, so a hand-edit that
+broke `charter.toml` turned the tiebreak off and recorded `ranked: 0`,
+"ran and ranked nothing", for "could not run"; `appraisal::Chartered`
+now answers three ways, and the draw records unknown for the first. The
+fourth pass named the provenance gap: the goal a rank is read from may be
+the session's own `serves:` string, the charter's ids are in its prompt,
+and the draw truncates after the sort, so a tainted session naming the top
+line would have bought itself into the slice the gate reads; `charter_rank`
+now ranks only a clean-origin appraisal, the learning loop's own gate. The test builds three sessions with equal headroom whose
+ids sort one way and whose plans serve lines the other way, and asserts
+the selection is in the charter's order whichever the seed holds out — and
+that the id order, the old sort, would have reversed it. `candidate.rs`'s
+note that |goal error| "joins headroom when the appraisal record exists"
+is corrected: the record's first consumer here is a tiebreak, and |goal
+error| as a priority in its own right is still to come.
 
 **2026-09-04, later — the goal system's second sprint PR: a reflection
 records where it was learned, a rule carries the region it applies in, and
