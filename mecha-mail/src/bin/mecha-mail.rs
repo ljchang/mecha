@@ -616,8 +616,15 @@ async fn polls(
                 continue;
             }
         };
-        let mut nudged_any = false;
+        let mut nudged: Vec<String> = Vec::new();
         let mut nudge_failed = false;
+        for name in pl::unresolvable_nudges(&record) {
+            eprintln!(
+                "{}: a nudge is queued for `{name}`, who is not on the record — not sent, \
+                 and kept in the queue",
+                record.poll_id
+            );
+        }
         for job in &jobs {
             let outcome: Result<()> = async {
                 match job {
@@ -664,7 +671,7 @@ async fn polls(
                             },
                         )?;
                         if is_nudge {
-                            nudged_any = true;
+                            nudged.push(person.name.clone());
                         } else {
                             pl::mark_invited(&mut record, &person.name, at);
                         }
@@ -771,10 +778,10 @@ async fn polls(
                 continue;
             }
         }
-        // The nudge queue clears only when every nudge went; a failed one
-        // stays due, and the ledger keeps the sent ones from repeating.
-        if nudged_any && !nudge_failed {
-            pl::mark_nudged(&mut record, now());
+        // The names that went leave the queue; a failed one stays due, and
+        // the ledger keeps the sent ones from repeating.
+        if !nudged.is_empty() && !nudge_failed {
+            pl::mark_nudged(&mut record, &nudged, now());
         }
         // A write that fails is this record's failure, counted like the
         // others; the ledger already holds what went, so the next tick

@@ -434,6 +434,16 @@ pub fn event_id_of(output: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The account the release landed on — "created in `work`:" — so both
+/// halves write the same `booked` shape; empty when the answer has none.
+pub fn account_of(output: &str) -> String {
+    output
+        .strip_prefix("created in `")
+        .and_then(|rest| rest.split_once('`'))
+        .map(|(account, _)| account.to_string())
+        .unwrap_or_default()
+}
+
 /// The line on a pick card that names its poll.
 pub fn poll_marker(poll_id: &str) -> String {
     format!("poll: {poll_id}")
@@ -492,6 +502,15 @@ pub fn pick(poll_id: &str, n: usize) -> Result<String> {
         item.status == "pending",
         "the pick card {item_id} is {}, not pending",
         item.status
+    );
+    // Belt and braces: `pick_item` is a field on a file three binaries
+    // write. Only a card this side staged is this side's to rewrite.
+    anyhow::ensure!(
+        item.author() == mecha_core::outbox::Author::Harness
+            && item.tool.rsplit("__").next() == Some("calendar_create_event"),
+        "outbox item {item_id} is not a pick card (`{}`, {})",
+        item.tool,
+        item.author
     );
     let args = repick(&record, &item.args, n - 1)?;
     store.update_args(item_id, args)?;
@@ -628,11 +647,15 @@ fn step(
                         "book",
                         json!({"start": start, "end": end, "duration_minutes": minutes}),
                     );
+                    let output = item.output.as_deref().unwrap_or("");
                     record.set(
                         "booked",
                         json!({
-                            "event_id": event_id_of(item.output.as_deref().unwrap_or("")),
-                            "account": item.args["account"].as_str().unwrap_or(""),
+                            "event_id": event_id_of(output),
+                            "account": match item.args["account"].as_str() {
+                                Some(pinned) => pinned.to_string(),
+                                None => account_of(output),
+                            },
                             "at": item.resolved_at.clone().unwrap_or_default(),
                             "via": format!("outbox:{}", item.id),
                         }),
@@ -967,6 +990,12 @@ mod tests {
         assert_eq!(life["booked"]["event_id"], "ev42");
         assert_eq!(life["booked"]["via"], format!("outbox:{item_id}"));
         assert_eq!(event_id_of("nothing here"), "", "no id is no id");
+        assert_eq!(
+            life["booked"]["account"], "work",
+            "the account the release landed on"
+        );
+        assert_eq!(account_of("created in `work`:\n{}"), "work");
+        assert_eq!(account_of("something else"), "");
         assert_eq!(life["a_field_from_the_future"], 1);
         assert!(
             step(&mut r, &store, &cfg).unwrap().is_none(),
