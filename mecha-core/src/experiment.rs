@@ -1508,7 +1508,22 @@ rationale = "no notice, fewer turns"
         // The seed is the delta's alone — shared knobs and shared levers
         // leave it unchanged — and it fits a TOML integer, so the manifest
         // it is written into can be read back.
-        let plain = mk("eval-ab-plain", m.arms["treatment"].clone(), &[]);
+        // The same delta with nothing shared: `m` merged the shared knobs
+        // into its treatment row, so the comparison arm is rebuilt from the
+        // delta rather than read back off `m`.
+        let plain = mk(
+            "eval-ab-plain",
+            Arm {
+                preset: Some(Preset::Bare),
+                overrides: vec!["max_turns=40".into()],
+                prediction: Some(Prediction {
+                    metric: ExpMetric::Failure,
+                    rationale: "x".into(),
+                }),
+                ..Arm::default()
+            },
+            &[],
+        );
         assert_eq!(
             m.split_seed, plain.split_seed,
             "shared knobs are not in the seed"
