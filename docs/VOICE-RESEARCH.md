@@ -1087,14 +1087,176 @@ energy floor. It reaches `completion` and hits `shared.confirmations.take`
 draft going out with nobody asked — the one action CLAUDE.md says must cross a
 human structurally.
 
-The span rule does not transplant, and that is the point rather than an
-oversight: "yes" is a span of the question too, so the naive check silences
-every real confirmation. What might work is the timing layer rather than the
-text — a confirmation arriving *while the offer is still playing or inside its
-tail* is not a person who waited for the question — but `over_speaker` is
-computed in the worker and the confirmation is parsed in the facade, so the
-signal does not currently reach the decision. That is the shape of the fix and
-it wants its own change.
+**Closed 2026-09-03, and not the way this section predicted.** The plan here
+was timing: a confirmation arriving while the offer is still playing is not a
+person who waited for the question. That still looks right, and it is still not
+what shipped — because the constant it needs cannot be derived. Estimating
+playback from the journal gives ~33 chars/s (≈400 wpm) because TTS *generation*
+runs ahead of playback and the `Generating TTS` intervals measure buffering,
+not speech. Setting a voice constant off the wrong population is the mistake
+this same document already records against the echo floor, so the timing layer
+waits for a real call to measure the tail against.
+
+What shipped needs no constant, and it came out of noticing why the span rule
+was rejected. "yes" is a span of the question, so a naive check silences every
+real confirmation — true. But `echoes_the_last_reply` takes **two** words
+(`MIN_SPAN_WORDS`), and every one-word accept is therefore immune: "yes",
+"ok", "sure", "yeah" cannot reach the gate at all, and they are what a person
+actually says. Only multi-word accepts collide, and for those the failure is
+made cheap rather than avoided — the question is **asked again** rather than
+acted on, so a listener who says "send it" is asked once more and answers
+"yes". One repetition, against a draft going out unasked.
+
+Three parts, each pinned by a test that fails without it:
+
+- `Pending` carries a **two-slot window** of what the speaker recently played,
+  seeded with the **tail** of everything spoken on the way to the offer —
+  capped at `SPOKEN_UNPROMPTED_CHARS`, reused rather than invented, because
+  its own docstring already puts it at about sixty-five words or twenty-five
+  seconds aloud. The bound matters as much as the seeding: `ours_coming_back`
+  matches any contiguous two-word span, so an unbounded seed makes false
+  positives scale with narration length, and a collision is not free — a
+  non-answer collision re-asks once, then `MAX_REASKS` pops the head and
+  discards the utterance. Two ordinary turns lost and the question closed,
+  against words that stopped playing minutes earlier. The first attempt at
+  this fix widened the seed to the whole run and overshot exactly that way.
+  `RunOutcome::text` is only the *final* turn; `pump` streams every
+  `TextDelta` of every turn and the worker speaks all of them, and a draft can
+  only be staged by a tool call — so any run that produces an offer has
+  interstitial narration by construction. All of it, the reply and the offer,
+  is one stretch out of the speaker — `completion` says the answer and then `say(" {offer}")`
+  with no pause — so the reply echoes exactly as the offer does, and the accept
+  phrases it can carry are ones the offer never does: "go ahead", "do that",
+  "confirm", "approve", "book it". Each was an unasked release until what the
+  speaker actually played was seeded in.
+
+  Nothing else could carry it: the offer goes out through `say` and joins no
+  conversation, so the anchor the other two doors use does not contain the
+  question. Two slots rather than one because the offer is still playing when
+  its first echo is caught, and a long offer reads the whole draft aloud — so
+  the *next* segment of that same playback must still be recognised. Not a log
+  either: a listener can ask for a re-read as often as they like. Both
+  transitions slide it and differ only in the counter, which is the second
+  version — the first made them opposites, one extending and one replacing,
+  and each was wrong in the direction the other was right.
+- The gate sits **ahead of `parse_answer`**, not inside the `Send` arm. A span
+  that does not parse was worse than one that does: `PassToModel` *drops* the
+  question, leaving a staged draft nobody is ever asked about again and handing
+  our own words to the model as a turn. Silent, both ways.
+- The re-ask is bounded at one, then the draft is left in the outbox. The
+  re-ask is spoken too, so an unbounded "say that again" is a loop with a send
+  at the end of it. Deferring terminates where the draft already is.
+
+  What `MAX_REASKS` bounds is *consecutive* echoes, not the interaction.
+  `ReadItOut` is ungated by design and goes through `after_saying`, which
+  resets the counter — so an echo transcribed as "read it out" is honoured and
+  clears the streak. No send follows: the `Send` arm is still gated, and a
+  re-read's own tail contains no "read it out". Written down because the
+  stronger reading of the sentence above is the tempting one.
+
+**The residual, stated in the direction that matters.** `MIN_SPAN_WORDS = 2`
+is written above as what keeps real answers alive — one-word accepts are
+immune, and they are what a person says. It is symmetric, and the other half
+is the reason the timing layer is still wanted: the offer contains *"Say yes
+to send it"*, so an echo transcribed as the bare word **"yes"** is also below
+the floor, also invisible to the gate, and releases the draft. Same
+consequence class as `"send it"`, and structurally out of reach of *any* span
+rule — a rule that caught it would silence every real confirmation. Only
+something that is not about the words can separate them, which is what
+arriving-while-the-offer-is-still-playing would be.
+
+Two doors behind this one, both found on review of the gate and both older
+than it.
+
+**A question was armed whether or not it was ever asked.** `offer_for_turn`
+set `shared.confirmations` unconditionally, while the offer is spoken only
+`if !disconnected`. A hang-up mid-stream cancels the run, which still returns
+`Ok`, so a draft staged before the cancel became the head of an armed
+`Pending` under a `confirm_key` that survives the reconnect — and the next
+bare "yes" released it. One word, immune to the span gate by design, so
+nothing downstream could catch it. Composing an offer is free now; arming it
+is a separate step and a promise that the question actually went out.
+
+**And the same ordering, one layer in.** `answer_completion`'s four arms armed
+the next question and *then* wrote the reply. `Say` and `Release` pop the head
+and re-arm on the following draft, whose question exists only inside a string
+not yet on the wire — so a socket dropping there left a question armed that
+nobody had been asked, under a `confirm_key` that survives the reconnect, and
+the next bare "yes" is one word and immune to the gate. Pre-existing; adding
+`next_question` to `report_release`'s `Err` branch is what newly routed the
+failed-release path through it. Every arm goes through `reply_then_arm` now,
+and `finish_with` reports whether the words reached the socket rather than
+assuming they did. Not arming on a failed write is safe everywhere: the
+question has already been taken from the store, so the draft simply waits in
+the outbox with nothing armed against it.
+
+**And the fix for that had its own ordering bug**, worth keeping because it is
+the same shape one layer up. The response head was opened at the top of
+`answer_completion`, before `react` had decided anything — but on
+`PassToModel` that function answers nothing and the caller goes on to the
+model, where `pump` writes its *own* head. A head opened first left `pump`
+writing a second one unframed into an already-open chunked body, so every
+spoken correction during an open offer would have arrived corrupt. `react` is
+pure; deciding before writing costs nothing. The rule that falls out of it:
+**a function that may decline to answer must not open the response.**
+
+**And the reply never reached the wire.** The SSE response head was written
+only inside `pump`, which runs a model — so `answer_completion`, which
+deliberately runs none, wrote a chunked body with no status line. "Sent.",
+"Left in your outbox." and the echo gate's own re-ask all went out that way.
+The direction was safe (the bounded re-ask keeps the draft), but the listener
+was never actually asked again. It had gone unnoticed because the path has
+never run: `journalctl --user -u mecha-voice-worker | grep "Say yes to send
+it"` returns nothing over thirty days, so no offer has yet played in a real
+call. The whole confirmation flow is deployed and unexercised, which is worth
+knowing before trusting any of it — and it is what the first voice call after
+the next deploy should exercise deliberately.
+
+Three things review found in the gate itself, and one older hole beside it.
+
+The first version gated **every** outcome, ahead of `parse_answer`, which was
+wrong in the dangerous direction: the offer recites the whole menu, so
+`"read it out"` and `"leave it"` are spans of it as much as `"send it"` is.
+That refused the verb the offer had just taught, on precisely the drafts too
+long to have been read aloud — and then asked *"was that a yes?"*, to which a
+bare `"yes"` is one word, immune, and releases a draft the listener asked to
+*hear*. Closing one bypass had opened another. `Later` and `ReadItOut` cause
+neither failure the gate exists for, so they are honoured however they parse;
+the gate covers `Send` and the non-answer case, the destructive one and the
+silent one.
+
+The re-ask's wording turns out to be load-bearing twice over. It must not name
+an accept phrase, because a one-word answer is invisible to the span rule by
+design — and `"sure"` is in `SEND_PHRASES`, so *"are you sure?"* would hand the
+bypass straight back. And it must not ask for a **repeat**, which the first
+wording did: complying means saying `"send it"` again, the same span, spending
+the budget and deferring. It asks for a decision instead, and
+`no_single_word_of_the_reask_is_an_answer` checks the first constraint against
+the real phrase lists rather than against a comment.
+
+The two `Pending` transitions are on the type, because each was got wrong once
+in a `match` arm in another module. They are **not** opposites, and the version
+that made them so is the one this replaced: `after_reask` extended `asked`
+while a since-deleted `after_reread` replaced it, and each was wrong in the
+direction the other was right — a re-read is reachable *from an echo*, so "the
+offer has finished playing" is false there too. Both call `sliding()` now, and
+differ only in the counter: `after_saying` resets it because something was
+answered, `after_reask` increments it because nothing was. The previous
+utterance survives in `asked_before` either way, which is what makes the
+distinction unnecessary.
+
+And one that predates all of it: `report_release`'s `Err` branch was the only
+reply omitting `next_question`, while `answer_completion` pops the head whatever
+the outcome. So a failed release with a second draft queued left the
+confirmation armed on a draft nobody had been offered, and the next `"yes"`
+released it unasked — no echo required.
+
+And the offer no longer *ends* by reciting the parser's accept list. That
+wording — *"Say yes to send it, or later to leave it in your outbox."* — put
+the most echo-prone words in the utterance exactly where echo is likeliest, and
+a clean two-word truncation of it is `"send it"`. The menu stays; the tail is
+now which account the message is going out from, which is the one fact a
+listener cannot re-read.
 
 The fall-through arm is *not* a hole, and it took two wrong fixes to learn why.
 `completion` falls through to the facade slot when `host.speak` returns
