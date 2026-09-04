@@ -68,6 +68,16 @@ pub struct Situation {
 }
 
 impl Situation {
+    /// Tools a front-end inserts into the registry *after* `setup::build`
+    /// has rendered the rules block — so no run registers them at the
+    /// moment a scope is matched, and a rule scoped to one could never
+    /// load while the roster printed it as loading. [`Situation::scope`]
+    /// drops them, [`Situation::focus`] does not batch on them, and
+    /// `LearningStore::unloadable_rules` warns at startup about a file that
+    /// names one anyway. The list is the closed set of such tools; the CLI
+    /// pins it against what its front-ends actually insert.
+    pub const FRONTEND_TOOLS: &[&str] = &["ask_user", "recall", "show_file"];
+
     /// The situation an intervention was recorded in.
     pub fn recorded(
         tools: &[String],
@@ -110,15 +120,32 @@ impl Situation {
     }
 
     /// The tool the record is *about* — the last one the trace touched.
+    /// `None` when that is a front-end tool ([`Self::FRONTEND_TOOLS`]): a
+    /// lesson from refusing `ask_user` is about asking, not about whatever
+    /// tool ran before it, and batches as standing.
     pub fn focus(&self) -> Option<&str> {
-        self.tools.last().map(String::as_str)
+        self.tools
+            .last()
+            .map(String::as_str)
+            .filter(|t| !Self::FRONTEND_TOOLS.contains(t))
     }
 
     /// The keys a run can be matched against at start. See the module doc
-    /// for why this is the tool set alone today.
+    /// for why this is the tool set alone today. Sorted, because a scope is
+    /// a set and two batches whose regions are the same tools in another
+    /// order must be the same region; and without the front-end tools,
+    /// which no run registers at match time.
     pub fn scope(&self) -> Situation {
+        let mut tools: Vec<String> = self
+            .tools
+            .iter()
+            .filter(|t| !Self::FRONTEND_TOOLS.contains(&t.as_str()))
+            .cloned()
+            .collect();
+        tools.sort();
+        tools.dedup();
         Situation {
-            tools: self.tools.clone(),
+            tools,
             trigger: None,
             surface: None,
             workspace: None,
@@ -271,6 +298,21 @@ mod tests {
             serde_json::from_str(r#"{"tools":["shell"],"surface":"hologram"}"#).unwrap();
         assert_eq!(newer.tools, vec!["shell"]);
         assert_eq!(newer.surface, None);
+    }
+
+    /// A scope is a set: order does not make two regions, and a tool no
+    /// run registers at match time is not a key.
+    #[test]
+    fn a_scope_is_sorted_and_names_no_front_end_tool() {
+        let a = s(&["shell", "fs_read"]).scope();
+        let b = s(&["fs_read", "shell"]).scope();
+        assert_eq!(a, b);
+        assert_eq!(a.tools, vec!["fs_read", "shell"]);
+        let asked = s(&["shell", "ask_user"]);
+        assert_eq!(asked.scope().tools, vec!["shell"]);
+        assert_eq!(asked.focus(), None, "a front-end focus batches as standing");
+        assert_eq!(s(&["shell"]).focus(), Some("shell"));
+        assert!(s(&["ask_user"]).scope().is_standing());
     }
 
     #[test]

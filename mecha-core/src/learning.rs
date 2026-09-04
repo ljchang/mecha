@@ -1080,6 +1080,34 @@ impl LearningStore {
         })
     }
 
+    /// Active rules in `domains` whose scope names a tool no run registers
+    /// when the block is rendered ([`Situation::FRONTEND_TOOLS`]) — rules
+    /// that can never load, `(domain, tool, text)`. `Situation::scope`
+    /// drops those names, so this reaches only a hand-edited or older
+    /// file; startup warns on it like an unrouted domain, because a rule
+    /// that cannot fire is indistinguishable from one being obeyed.
+    pub fn unloadable_rules(&self, domains: &[&str]) -> Result<Vec<(String, String, String)>> {
+        let mut out = Vec::new();
+        for domain in domains {
+            for rule in self
+                .user_rules(domain)?
+                .iter()
+                .chain(self.learned_rules(domain)?.iter())
+            {
+                if !rule.active() {
+                    continue;
+                }
+                let Some(scope) = &rule.scope else { continue };
+                for tool in &scope.tools {
+                    if Situation::FRONTEND_TOOLS.contains(&tool.as_str()) {
+                        out.push((domain.to_string(), tool.clone(), rule.text.clone()));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Domains that hold active rules but ride in no run's prompt — the
     /// silent half of opt-in selection. Startup warns on these, the
     /// routed-name-matches-no-tool precedent: a user rule nobody reads is
@@ -1850,6 +1878,9 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
     // clean-evidence path may carry names (a closed registry set) where it
     // must withhold the prose and arguments around them.
     let mut names_before: Vec<String> = Vec::new();
+    // The same window keyed by `tool_use_id`, so a denial can name the call
+    // it refused rather than the last call in the message.
+    let mut uses_before: Vec<(String, String)> = Vec::new();
     let mut seen_user_task = false;
     let mut last_assistant_text = String::new();
 
@@ -1863,16 +1894,19 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                     parts.push(truncate(&last_assistant_text, CONTEXT_BUDGET / 2));
                 }
                 let mut names: Vec<String> = Vec::new();
-                for (_, name, input) in message.tool_uses() {
+                let mut uses: Vec<(String, String)> = Vec::new();
+                for (id, name, input) in message.tool_uses() {
                     parts.push(format!("{name} {}", truncate(&input.to_string(), 120)));
                     if !names.contains(&name.to_string()) {
                         names.push(name.to_string());
                     }
+                    uses.push((id.to_string(), name.to_string()));
                 }
                 if !parts.is_empty() {
                     doing = truncate(&parts.join("\n"), CONTEXT_BUDGET);
                     if !names.is_empty() {
                         names_before = names;
+                        uses_before = uses;
                     }
                 }
             }
@@ -1882,11 +1916,29 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                 for block in &message.content {
                     match block {
                         Block::ToolResult {
-                            content, is_error, ..
+                            tool_use_id,
+                            content,
+                            is_error,
                         } => {
                             has_results = true;
                             if *is_error {
                                 if let Some(reason) = content.strip_prefix("Denied by the user:") {
+                                    // The refused call is the focus
+                                    // (`Situation::focus` reads the last
+                                    // name), and with parallel calls in
+                                    // one message the last name is
+                                    // whichever the model listed last —
+                                    // deny the first of two and the
+                                    // lesson filed under the other (found
+                                    // on review). The result's id says
+                                    // which one it was.
+                                    let mut tools_before = names_before.clone();
+                                    if let Some((_, denied)) =
+                                        uses_before.iter().find(|(id, _)| id == tool_use_id)
+                                    {
+                                        tools_before.retain(|n| n != denied);
+                                        tools_before.push(denied.clone());
+                                    }
                                     found.push((
                                         msg_idx,
                                         Intervention {
@@ -1895,7 +1947,7 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                                             text: reason.trim().to_string(),
                                             aftermath: String::new(),
                                             at: msg_idx,
-                                            tools_before: names_before.clone(),
+                                            tools_before,
                                             tools_after: Vec::new(),
                                         },
                                     ));
@@ -2838,6 +2890,37 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].trigger, Trigger::Denial);
         assert_eq!(found[0].text, "not that directory");
+    }
+
+    /// With two calls in one assistant message, the denied one is the
+    /// focus of the window whichever the model listed last. Fails on the
+    /// old extractor, which handed every denial the message's names in
+    /// block order.
+    #[test]
+    fn a_denial_among_parallel_calls_names_the_refused_tool_last() {
+        let messages = vec![
+            Message::user("clean up"),
+            Message::assistant(vec![
+                Block::ToolUse {
+                    id: "t1".into(),
+                    name: "shell".into(),
+                    input: json!({"cmd": "rm -rf build"}),
+                },
+                tool_use("t2"),
+            ]),
+            Message::tool_results(vec![
+                result("t1", "Denied by the user: not that directory", true),
+                result("t2", "hello", false),
+            ]),
+        ];
+        let found = extract_interventions(&messages);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].tools_before, vec!["fs_read", "shell"]);
+        assert_eq!(
+            crate::situation::Situation::recorded(&found[0].tools_before, "denial", None, None)
+                .focus(),
+            Some("shell")
+        );
     }
 
     #[test]

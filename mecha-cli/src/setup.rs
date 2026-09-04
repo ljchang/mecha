@@ -404,6 +404,18 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             // *run* carries: `triage` is read by the mail classifier's own
             // pass, so warning about it would be false, permanent, and — worse
             // — the place a genuinely unrouted domain would hide.
+            // Same shape one level down: a rule scoped to a tool the
+            // front-end inserts after this block is rendered can never
+            // load, and nothing but this line would say so.
+            for (domain, tool, text) in store
+                .unloadable_rules(mecha_core::learning::RUN_DOMAINS)
+                .unwrap_or_default()
+            {
+                eprintln!(
+                    "mecha: a `{domain}` rule is scoped to `{tool}`, which joins the registry \
+                     after the rules block is rendered — it can never load: {text}"
+                );
+            }
             let routed = mecha_core::learning::routed_domains();
             for domain in store.unrouted_domains(&routed).unwrap_or_default() {
                 eprintln!(
@@ -1830,6 +1842,24 @@ mod tests {
     /// the context, the threshold on the agent — and only one made the trip.
     /// Fails on the old `build_subagent`, which never called
     /// `with_context_window`.
+    /// Every tool a front-end inserts after `build` must be in
+    /// `Situation::FRONTEND_TOOLS`, or a rule can be scoped to it and never
+    /// load. `surface_only_registry` holds the two `setup` itself inserts;
+    /// the TUI's `show_file` is pinned by name.
+    #[test]
+    fn every_front_end_tool_is_excluded_from_scope() {
+        use mecha_core::tool::Tool;
+        for tool in super::surface_only_registry().iter() {
+            assert!(
+                mecha_core::situation::Situation::FRONTEND_TOOLS.contains(&tool.name()),
+                "{} is inserted after build and must be a front-end tool",
+                tool.name()
+            );
+        }
+        let show = crate::slack::show::ShowFileTool::new(1);
+        assert!(mecha_core::situation::Situation::FRONTEND_TOOLS.contains(&show.name()));
+    }
+
     #[test]
     fn a_subagent_inherits_the_window_its_compaction_threshold_derives_from() {
         let cfg = mecha_core::config::Config::default();

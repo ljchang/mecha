@@ -2431,7 +2431,7 @@ The decisions that carry it, each a bug if undone:
 - **The run record names the rules it carried, in two halves.**
   `RunConfig::rules_hash` and `rule_ids` are the prefix block's
   `learning::rules_hash` and the learned rules in it, taken from the same
-  render in `prepare_tools` (`RulesCarried`) so the pair cannot disagree —
+  render in `setup::build` (`RulesCarried`) so the pair cannot disagree —
   the `ValidationRecord` key, on the run; `RunStats::delivered` is the
   mid-run half, `(rule_id, turn)` pointers the loop will write when it has
   a delivery path (`GOAL-SYSTEM-DESIGN.md` §17.7 item 1, built 2026-09-04
