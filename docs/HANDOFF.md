@@ -2529,7 +2529,7 @@ temporary worktree at `origin/main` `58fc21a`, not from the shared
 checkout, which at 15:29Z was 44 commits behind `origin/main` with every
 version string reading current (mecha-83's count). The checkout is now
 on `main` at `58fc21a`, clean; its reflog shows it on
-`fix/selection-slice-power` from 15:33 to 15:37Z (mecha-26's lane, one
+`fix/selection-slice-power` from 15:33Z to 15:37Z (mecha-26's lane, one
 commit, moved back), which is the window one lane's read landed in — so
 the branch name was wrong for four minutes and the tree was right
 throughout, the inverse of 2026-09-03. The deploy did not depend on
@@ -2538,7 +2538,7 @@ that is the check to record. mecha-graph PR #6 merged the
 same hour and `mecha-graph` + `mecha-graph-mcp` were installed from
 mecha-graph main `7fa6a69` (the installed server's strings carry the new
 `about`/`entity` schema); `target/release/mecha-graph` rebuilt for the
-01:30 nightly, which execs that path. Restarted, each confirmed active
+01:30Z nightly, which execs that path. Restarted, each confirmed active
 from `systemctl --user` here: mecha-slack, mecha-triggers, mecha-drain
 (15:29:57Z), mecha-serve (15:31:47Z), mecha-voice-worker (15:37:37Z — the
 worker.py on disk hashes to `d818fa3`, identical to
@@ -2550,7 +2550,7 @@ path (production once served from a session worktree that was later
 cleaned), and that directory holds `index-NFyEeisJ.js` at 15:31Z; the
 repo's own `web/dist` still holds `index-cix-ATEa.js`, which is expected
 and is the trap the path exists to create — this lane looked there first.
-The musl bench binary is still 2026-09-03 11:00 (verified), so a
+The musl bench binary is still 2026-09-03 11:00Z (verified), so a
 scorecard run now measures old code. Reported by mecha-83 and not
 verified from this lane: factory client and droplet already 0.2.8. PR #6's review residue
 is mecha-graph issue #8.** What it built is in
