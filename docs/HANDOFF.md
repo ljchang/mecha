@@ -1629,6 +1629,42 @@ one person's mailbox rather than a public fact.
 
 ## What to do next
 
+- **Machine state as of 2026-09-04 10:04, verified surface by surface
+  (mecha-26).** `main` is `188b823`; the shared checkout `~/Github/mecha` is
+  **on `main` and clean**, fast-forwarded at 10:01:51 *before* the install, so
+  the hazard the 05:00 bullet below describes is discharged rather than
+  merely aged. #153, #154 and #158 are merged **and deployed**. The `update`
+  skill was run end to end: six surfaces checked, **five units restarted**
+  (`mecha-slack`, `mecha-triggers`, `mecha-drain`, `mecha-serve`,
+  `mecha-voice-worker`), each verified by its own startup line from a journal
+  window opened at the restart rather than by `is-active`. `mecha` reinstalled
+  from the shared checkout — note the *previous* install had come from
+  `.claude/worktrees/harness-review-fixes`, a worktree, which is the shape
+  this document keeps warning about. `web/dist` rebuilt and rsynced
+  (`index-cix-ATEa.js`); the served 8443 door returns 200 with that bundle and
+  a 304 carrying **both** validators, so the binary answering is post
+  tower-http 0.7. Stale-process sweep clean. Not restarted, deliberately:
+  `mecha-parakeet` — `scripts/voice/parakeet_server.py` is unchanged across
+  the whole range and a restart costs a model load. Not reinstalled:
+  `mecha-mail` — nothing under it changed and it has no `mecha-core`
+  dependency. Graph binaries, the benchmark musl build, the factory client
+  (0.2.8) and the droplet (0.2.8, active) all checked and current; the
+  sandbox image's toolchain matches the host.
+
+  **The installed binary was verified by what it can do, not by its mtime:**
+  `strings ~/.cargo/bin/mecha` finds all three of #158's new literals
+  (`"may have been my own echo"`, `"That one is from your"`, `"I keep hearing
+  myself"`). A version string would not have distinguished them.
+
+  **`scripts/voice/mecha-voice-worker.service` must not be synced onto the
+  installed unit.** The repo copy differs and is *supposed* to: it carries
+  placeholder origins (`https://YOUR-HOST.YOUR-TAILNET.ts.net`), being a
+  public template, while the installed unit has the real tailnet host.
+  Copying it over breaks the voice page's allowed-origins. #153's edits to
+  that file are operator documentation for the re-derivation recipe, not
+  deployable config. Recorded because "the repo and the installed unit
+  differ" otherwise reads as an oversight to whoever notices next.
+
 - **Machine state as of 2026-09-04 ~05:00, verified from this lane:** the
   shared checkout `~/Github/mecha` is **not on `main`, and not a safe build
   or deploy source until it is** — it is on `docs/goal-system-rulings` at
@@ -1643,14 +1679,15 @@ one person's mailbox rather than a public fact.
   lanes). Put it back on `main` before the next deploy — the deploy step is
   **check the branch, then pull, then restart**, not "pull, then restart",
   and that ordering is the whole content of the voice-worker item below
-  (mecha-26). Three things merged to `main`
-  and **not deployed**: #159 (the handoff close), #153 and #154 — the last
-  two are also **unrecorded in this document** (mecha-83's flag; their
-  owners' entries are owed, this lane did not read their diffs). The
+  (mecha-26). ~~Three things merged to `main`
+  and **not deployed**: #159 (the handoff close), #153 and #154~~ — #153 and
+  #154 are still **unrecorded in this document** (mecha-83's flag; their
+  owners' entries are owed, this lane did not read their diffs). ~~The
   `update` run is deliberately held until #158 merges, one deploy rather
   than two voice-worker restarts (mecha-26, relaying the owner's call);
   #153's echo-floor and #158's timing tail both wait on that one restart,
-  which needs the checkout pulled onto merged `main` *first*. And a finding
+  which needs the checkout pulled onto merged `main` *first*.~~ **Struck
+  2026-09-04 10:04: the deploy has run — see the bullet above this one.** And a finding
   from #158's lane for the first call after that deploy: `journalctl --user
   -u mecha-voice-worker | grep "Say yes to send it"` is empty over thirty
   days — the spoken outbox confirmation has never played in a real call,
@@ -1666,6 +1703,47 @@ one person's mailbox rather than a public fact.
   the check; the checkout is on `main` at `b50eb24` and clean as of ~18:15,
   so today nothing is owed — the item is the habit, not a repair. #153's
   echo-floor and #158's tail measurements both wait on that restart.
+- **Make one voice call, and stage a draft on purpose. It is owed three
+  times over.** The voice arc is deployed and three separate things are
+  waiting on the *same* call, which is why it is one item and not three:
+  (a) `ECHO_SEGMENT_RMS` wants re-deriving — #153 shipped the classification
+  method and deliberately **no number**, because the only sample predates the
+  2026-09-03 11:09 mic-meter repair and was measured with the browser's echo
+  canceller disarmed; (b) the confirmation door's **timing tail** is the one
+  constant #158 could not derive, and `VOICE-RESEARCH` records why it cannot
+  come from the existing journal (TTS generation runs ahead of playback, so
+  `Generating TTS` intervals measure buffering — ~33 chars/s, ≈400 wpm,
+  plainly wrong); (c) **the confirmation path has never run.** Thirty days of
+  journal contain no `"Say yes to send it"`, most likely because no draft was
+  ever staged during a voice turn. That is why a missing HTTP response head
+  on that path survived to be found in review rather than in use — so stage
+  one deliberately and listen to what happens. The recipe, both populations
+  and the `--user` that a system-unit spelling silently omits:
+  `journalctl --user -u mecha-voice-worker | grep -E
+  "_bot_(started|stopped)_speaking|parakeet( segment gated)?: duration"`
+  (mecha-26).
+
+- **Then the timing layer for the spoken confirmation** —
+  `docs/VOICE-RESEARCH.md`, designed and blocked only on that call's numbers.
+  It is the real fix for the residual #158 states in the direction that
+  matters: `MIN_SPAN_WORDS = 2` keeps one-word answers alive on purpose, and
+  the same rule makes a bare `"yes"` echoed off *"Say yes to send it"*
+  invisible to the gate. No span rule can separate those two without
+  silencing every real confirmation, which is precisely why the fix has to be
+  something other than the words.
+
+- **Then the spoken override** — issue #165, design in
+  `docs/SPOKEN-OVERRIDE-DESIGN.md` (PR #164), designed and not built.
+  Changing a harness-supplied parameter (`account`, `reply_all`) by ear at
+  review time: state the default, accept an override, re-offer so the new
+  value is read back. It closes the half of the owner's original
+  account-visibility request that #144 did not. Third in the order and not
+  first, because it adds one-word answers to the band the timing layer
+  exists to guard — though nothing in it can send, so it is not blocked, only
+  better done after. Two rulings are left open in §7 of that doc, one of
+  which changes what the appraisal corpus means and should be decided rather
+  than defaulted into.
+
 - **Three residues from #152's last review pass**, all in the shared-checkout
   recipe's presentation (HANDOFF §Machine state, dated, 2026-09-03), none
   behavioural: the tolerated dirty path `docs/README.md` is hard-coded in six
