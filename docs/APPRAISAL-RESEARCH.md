@@ -219,10 +219,14 @@ seven fields take exactly **two** distinct values: 145 briefs of "no errors,
 `neutral`, no goal, no homeostat" and 24 of "one negative error on the
 counter channel", otherwise identical. Part of that collapse is the
 store's, not the appraiser's: the reconstruction never synthesises the
-homeostat, so pressure and load read unknown on all 169 by construction,
-and `tool_denied`, `malformed_tool_args` and `blocked_sends` are pinned at
-zero, so no channel but `Counter` could appear. A live corpus would give
-the briefs more values. What survives untouched is the half the ruling
+homeostat, so pressure and load read unknown on all 169 by construction;
+`tool_denied`, `malformed_tool_args` and `blocked_sends` are pinned at
+zero, three `Counter` inputs fewer; and no channel but `Counter` could
+appear because the scratch store holds no drafts and no questions
+(`Edit`, `Commitment`), the homeostat is absent (`Setpoint`), an
+autonomous `--yes` run has no steering to mine (`Intervention`), and
+`Appraisal` is this pass's own output. A live corpus would give the
+briefs more values. What survives untouched is the half the ruling
 rests on: the evidence carries no stop cause and no transcript, so a pass
 and a fail that `completed` cleanly *with the same counters* are
 byte-identical to it there too, and so are a `max_turns` failure and the
