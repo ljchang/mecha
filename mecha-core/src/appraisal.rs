@@ -472,14 +472,28 @@ impl Affect {
 /// for it yet, and inventing one here would be the precedence-invention
 /// the module note refuses.
 ///
-/// **A positive says `Pride` only against the charter.** §6's row is
-/// "positive · self-agency · against a charter line, not a task": a task
-/// well done is deliberately not it, so a positive with a `Task` goal, no
-/// goal, or `Owner` agency reads `Neutral` here and shows on the valence.
+/// **A positive says `Pride` only for a delivery against the charter.**
+/// §6's row is "positive · self-agency · against a charter line, not a
+/// task": a task well done is deliberately not it, so a positive with a
+/// `Task` goal, no goal, or `Owner` agency reads `Neutral` here and shows
+/// on the valence. And *delivery* is load-bearing (found on review): every
+/// arm copies the run's named goal onto its positive, so gating on the goal
+/// alone let two channels that never meant "delivered against the line"
+/// earn the word — the queue-delta arm (`Cite::Setpoint`, a global level
+/// difference that credits a run for the owner emptying the outbox by hand,
+/// the false credit containment 6 names) and the quarantined appraiser
+/// (`Channel::Appraisal`, a model's own `strongly_positive`/`self` verdict,
+/// which would make `Pride` a self-report). So the arm is an allow-list on
+/// the pointer: a draft sent unchanged or a question answered and the work
+/// finished — the two items a run's own trace delivers — and nothing else.
+/// A future positive arm has to be added here to earn the word, which is
+/// the direction a label that must never be self-reported wants.
 fn label_of(e: &GoalError) -> Affect {
     if e.sign > 0.0 {
-        return match (&e.goal, e.agency) {
-            (Some(GoalRef::Charter(_)), Agency::Own) => Affect::Pride,
+        return match (&e.goal, e.agency, &e.cite) {
+            (Some(GoalRef::Charter(_)), Agency::Own, Cite::Draft(_) | Cite::Question(_)) => {
+                Affect::Pride
+            }
             _ => Affect::Neutral,
         };
     }
@@ -2099,8 +2113,11 @@ mod tests {
     /// and only the agent's own positive against a charter line earns one.
     #[test]
     fn a_task_well_done_is_not_pride_but_a_charter_line_served_is() {
+        // A delivery pointer: `Pride` is an allow-list on the cite, and the
+        // helper's default counter pointer is exactly what it refuses.
         let good = GoalError {
             channel: Channel::Edit,
+            cite: Cite::Draft("o1".into()),
             ..err(1.0, Agency::Own)
         };
         assert_eq!(affect_of(&appraisal(vec![good.clone()])), Affect::Neutral);
@@ -2124,6 +2141,19 @@ mod tests {
             ..line.clone()
         };
         assert_eq!(affect_of(&appraisal(vec![owners])), Affect::Neutral);
+
+        // Nor is a positive whose pointer is not a delivery — a counter or
+        // the queue delta — whatever goal it carries.
+        for cite in [
+            Cite::Counter("c".into()),
+            Cite::Setpoint("backlog_delta".into()),
+        ] {
+            let undelivered = GoalError {
+                cite,
+                ..line.clone()
+            };
+            assert_eq!(affect_of(&appraisal(vec![undelivered])), Affect::Neutral);
+        }
 
         // And the most negative error still decides when there is one:
         // pride never buries a negative in the same record.
@@ -3653,6 +3683,77 @@ text = "Tell me the truth early."
             "2026-09-04T00:00:00Z".into(),
         );
         assert_eq!(a.goals, vec![task]);
+    }
+
+    /// `Pride` is a *delivery* word (found on review): a run that named a
+    /// real charter line still earns nothing from the queue-delta arm — the
+    /// owner emptying the outbox by hand mid-run is a level difference, not
+    /// a delivery — nor from the quarantined appraiser's own
+    /// `strongly_positive`/`self` verdict, which is a self-report. Both
+    /// read `Pride` before the arm became an allow-list on the pointer.
+    #[test]
+    fn pride_needs_a_delivery_not_a_queue_delta_or_an_appraiser_verdict() {
+        let charter = charter_with_sensors();
+        let real = GoalRef::Charter("tell-the-truth-early".into());
+        let mut s = stats();
+        s.homeostat = Some(crate::homeostat::Homeostat {
+            backlog_delta: Some(crate::backlog::BacklogDelta {
+                outbox: Some(-1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let a = of_session(
+            "s1",
+            &s,
+            std::slice::from_ref(&real),
+            &[],
+            SessionRecords {
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        assert_eq!(a.errors.len(), 1, "the queue delta signed, and only it");
+        assert_eq!(a.errors[0].goal, Some(real.clone()));
+        assert_eq!(
+            a.label,
+            Affect::Neutral,
+            "a level difference is not a delivery"
+        );
+        assert_eq!(Valence::of(&a).compact(), "+0.5", "the number still shows");
+
+        let mut clean = of_session(
+            "s1",
+            &stats(),
+            std::slice::from_ref(&real),
+            &[],
+            SessionRecords {
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        apply_appraiser(
+            &mut clean,
+            AppraiserVerdict {
+                sign: Some(1.0),
+                agency: Agency::Own,
+                reasoning: None,
+            },
+        );
+        assert_eq!(
+            clean.errors.len(),
+            1,
+            "the appraiser's positive is on the record"
+        );
+        assert_eq!(
+            clean.label,
+            Affect::Neutral,
+            "a model's own verdict is not a delivery"
+        );
     }
 
     /// A run that named its own goal keeps it: the closure appraisal reads

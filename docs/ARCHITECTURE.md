@@ -2621,8 +2621,7 @@ pending draft, a follow-up, a Ctrl-C produce no error at all — and every
 error that exists is then named from its sign and agency alone, with a probe
 verdict *refining* the word rather than licensing it. So the free readout's
 label range is `Neutral`, `Distress` (the coarse word: a signed, attributed
-negative not yet split into regret or disappointment) and `Pride` (a positive
-against a sensored charter line); `Anger` is the appraiser's, and the probe
+negative not yet split into regret or disappointment) and `Pride` (a draft sent unchanged or a question answered, *delivered* against a charter line the loaded charter contains — never the queue delta or the appraiser's own positive, both of which copy the named goal onto a positive without delivering anything); `Anger` is the appraiser's, and the probe
 words stay the probe's. The incident: twenty-two owner-rejected drafts all
 read `Neutral` because `label_of` gated on the one dimension only a paid
 replay fills. Two consumers moved with the ungating and are the traps for the
