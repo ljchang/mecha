@@ -269,7 +269,7 @@ pub fn parse_answer(utterance: &str) -> SpokenAnswer {
 /// Punctuation goes because it is the transcriber's guess, not the speaker's
 /// — Parakeet writes "Yes." or "Yes!" from identical audio, and an answer
 /// that depended on which would be a coin flip.
-fn normalise(utterance: &str) -> String {
+pub(crate) fn normalise(utterance: &str) -> String {
     let mut words: Vec<String> = utterance
         .chars()
         .map(|c| {

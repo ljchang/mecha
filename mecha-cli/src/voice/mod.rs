@@ -288,6 +288,78 @@ mod echo_span_tests {
         );
     }
 
+    /// **Composing a question and arming it are two steps, and they were one.**
+    ///
+    /// `offer_for_turn` armed `shared.confirmations` whether or not the offer
+    /// was ever spoken, while the speaking sits behind `!disconnected`. A
+    /// hang-up mid-stream cancels the run, which still returns `Ok`, so a
+    /// draft staged before the cancel became the head of an armed `Pending`
+    /// under a `confirm_key` that survives the reconnect — and the next bare
+    /// "yes" released it. One word, immune to the span gate by design.
+    ///
+    /// The return type carries most of the guarantee now (an `Offer` the
+    /// caller must arm deliberately). What it cannot carry is "never arm
+    /// without having spoken", which is what these two read for. Needles
+    /// anchor on a real newline plus indentation, so the copies in this test
+    /// — escape sequences in the file, not newline bytes — cannot match.
+    #[test]
+    fn a_question_is_armed_only_once_it_has_been_asked() {
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn offer_for_turn(")
+            .expect("the offer is still composed here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`offer_for_turn` still has a closing brace at column zero")];
+        assert!(
+            !body.contains("confirmations"),
+            "`offer_for_turn` arms the question again, so a turn nobody heard \
+             leaves a live yes behind: {body:?}"
+        );
+
+        // And no call site arms without having just delivered something.
+        let lines: Vec<&str> = src.lines().collect();
+        let mut armed = 0;
+        for (n, line) in lines.iter().enumerate() {
+            if !line.trim_start().starts_with("arm_confirmation(") {
+                continue;
+            }
+            armed += 1;
+            let before = lines[n.saturating_sub(4)..n].join("\n");
+            // The *gate*, not merely a nearby `say`. Arming after a write
+            // whose result was discarded is the same bug one step narrower:
+            // a hang-up during the last delta leaves a live yes behind. Each
+            // of these names a value that is true only if the words went out.
+            assert!(
+                ["if say(stream", "if written.is_ok()", "if delivered"]
+                    .iter()
+                    .any(|gate| before.contains(gate)),
+                "line {} arms a confirmation without checking that it reached \
+                 the wire:\n{before}",
+                n + 1
+            );
+        }
+        assert!(
+            armed >= 2,
+            "the arming call sites have gone; both doors must still arm somewhere"
+        );
+
+        // And there is exactly one way to arm. Every site went through
+        // `confirmations.set` directly at some point in this branch's life,
+        // and each one had to be found separately; funnelling them through
+        // `arm_confirmation` is what makes the check above complete rather
+        // than a sample.
+        let sets = lines
+            .iter()
+            .filter(|l| l.trim_start().starts_with("shared.confirmations.set("))
+            .count();
+        assert_eq!(
+            sets, 1,
+            "a confirmation is armed somewhere other than `arm_confirmation`, \
+             so the delivery check above no longer covers every site"
+        );
+    }
+
     use super::echoes_the_last_reply;
 
     const OFFER: &str = "I can cancel it, delete it, or do it now — which would you like?";
@@ -992,6 +1064,71 @@ async fn take_slot(
 /// Shared by the facade's own slots and by a hosted conversation on
 /// purpose: what the worker hears must not depend on whose conversation
 /// answered it.
+/// What a streamed run put on the wire.
+///
+/// `said` is **everything the speaker played**, not the final turn's text.
+/// `RunOutcome::text` is the last assistant message; `pump` streams every
+/// `TextDelta` of every turn and the worker speaks all of them. A draft can
+/// only be staged by a tool call, so any run that produces an offer has
+/// interstitial narration by construction — and that narration is as
+/// echoable as the offer. Seeding the echo window from the final turn alone
+/// left `"go ahead"`, `"do it"`, `"send it"` and `"confirm"` spoken one turn
+/// back in neither window slot, which is the same unasked release the
+/// `preceded_by` seeding closes for the reply. Found on review.
+///
+/// **Bounded to a tail**, and that bound is the point. `recently_said` means
+/// what is still coming out of the speaker, not the transcript of the call —
+/// and `ours_coming_back` matches any contiguous two-word span, so an
+/// unbounded seed makes false positives scale with how much the model
+/// narrated. That is not a safe no-op: a collision on `NotAnAnswer` returns
+/// `NotConvinced`, and a second hits `MAX_REASKS` and returns `Say`, which
+/// pops the head and discards the utterance. Two ordinary turns swallowed and
+/// the question closed, against words that finished playing minutes ago.
+/// Found on review, after the previous pass widened the seed from the final
+/// turn to the whole run and overshot.
+///
+/// The cap is `SPOKEN_UNPROMPTED_CHARS`, reused rather than invented: it is
+/// this project's settled answer to "how much speech is a lot", and its own
+/// docstring puts it at about sixty-five words or twenty-five seconds aloud —
+/// which is the unit that matters here and comfortably longer than any
+/// residual echo.
+///
+/// Empty on the blocking path, where nothing streams and the single JSON
+/// body is the whole of what is spoken.
+#[derive(Default)]
+struct Streamed {
+    disconnected: bool,
+    said: String,
+}
+
+/// Drop the front of `s` until at most `cap` bytes remain, on a word boundary.
+///
+/// Pure and separate so the bound can be tested; `pump` applies it as it goes
+/// so a long run cannot accumulate without limit either.
+fn keep_tail(s: &mut String, cap: usize) {
+    // **Characters, not bytes.** `SPOKEN_UNPROMPTED_CHARS` is a character
+    // count everywhere else it is used, and trimming on `len()` made the
+    // window up to three times shorter than its docstring claims on
+    // non-ASCII speech — in the permissive direction, since narration that
+    // falls out of `asked_before` reaches `Send` ungated. Found on review,
+    // where the test's own `"— ".repeat(cap)` case demonstrated it instead
+    // of catching it.
+    let chars = s.chars().count();
+    if chars <= cap {
+        return;
+    }
+    let mut start = s
+        .char_indices()
+        .nth(chars - cap)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    // Forward to the next space, so the seed never begins mid-word.
+    if let Some(offset) = s[start..].find(' ') {
+        start += offset + 1;
+    }
+    s.drain(..start);
+}
+
 async fn pump(
     stream: &mut TcpStream,
     id: &str,
@@ -999,23 +1136,15 @@ async fn pump(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
     cancel: &CancellationToken,
     want_stream: bool,
-) -> bool {
+) -> Streamed {
     if !want_stream {
         while rx.recv().await.is_some() {}
-        return false;
+        return Streamed::default();
     }
-    let mut disconnected = false;
-    let head_bytes = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
-    if stream.write_all(head_bytes.as_bytes()).await.is_err() {
+    let mut said = String::new();
+    let mut disconnected = !open_sse(stream, id, model).await;
+    if disconnected {
         cancel.cancel();
-        disconnected = true;
-    }
-    if !disconnected {
-        let first = sse_chunk(id, model, json!({"role": "assistant"}), None);
-        if write_chunk(stream, first.as_bytes()).await.is_err() {
-            cancel.cancel();
-            disconnected = true;
-        }
     }
     let mut keepalive = tokio::time::interval(Duration::from_secs(5));
     keepalive.reset();
@@ -1023,6 +1152,17 @@ async fn pump(
         tokio::select! {
             ev = rx.recv() => match ev {
                 Some(AgentEvent::TextDelta(t)) if !disconnected => {
+                    // Kept because the speaker plays it: every delta of every
+                    // turn is spoken, not just the final one, and all of it
+                    // can echo. See `Streamed::said`.
+                    said.push_str(&t);
+                    // A memory bound, and deliberately in bytes: this one
+                    // is about how large the buffer may grow, not about how
+                    // much speech the window holds. The trim at return is
+                    // the one that decides the window.
+                    if said.len() > 4 * crate::review_policy::SPOKEN_UNPROMPTED_CHARS {
+                        keep_tail(&mut said, crate::review_policy::SPOKEN_UNPROMPTED_CHARS);
+                    }
                     let chunk = sse_chunk(id, model, json!({"content": t}), None);
                     if write_chunk(stream, chunk.as_bytes()).await.is_err() {
                         cancel.cancel();
@@ -1043,7 +1183,8 @@ async fn pump(
             }
         }
     }
-    disconnected
+    keep_tail(&mut said, crate::review_policy::SPOKEN_UNPROMPTED_CHARS);
+    Streamed { disconnected, said }
 }
 
 /// Close the SSE body. A failure must be *audible*: a clean "stop" after
@@ -1079,7 +1220,7 @@ async fn hosted_completion(
     confirm_key: &str,
     baseline: &Option<std::collections::HashSet<String>>,
 ) -> Result<()> {
-    let disconnected = pump(
+    let Streamed { disconnected, said } = pump(
         stream,
         id,
         &shared.model,
@@ -1121,17 +1262,26 @@ async fn hosted_completion(
         }
     }
     // The offer comes after the model's own words and only when the turn
-    // produced an answer: a run that failed has staged nothing worth
+    // produced an answer — and those words go *with* it, because they are
+    // one stretch out of the speaker and echo together: a run that failed has staged nothing worth
     // confirming, and asking about drafts on top of an error is a question
     // over the top of the thing that needs saying.
     let offer = match &answer {
-        Ok(_) => offer_for_turn(shared, confirm_key, baseline).await,
+        // Everything the speaker played, which on the streaming path is
+        // every turn's deltas and not just the last one's text. The blocking
+        // path speaks a single JSON body, so its reply *is* the final turn.
+        Ok(a) => {
+            let spoken = if want_stream { &said } else { &a.text };
+            offer_for_turn(shared, baseline, spoken).await
+        }
         Err(_) => None,
     };
     if want_stream {
         if !disconnected {
             if let Some(offer) = &offer {
-                say(stream, shared, id, &format!(" {offer}")).await;
+                if say(stream, shared, id, &format!(" {}", offer.speech)).await {
+                    arm_confirmation(shared, confirm_key, offer.pending.clone()).await;
+                }
             }
             finish_stream(
                 stream,
@@ -1146,10 +1296,10 @@ async fn hosted_completion(
     match answer {
         Ok(a) => {
             let content = match &offer {
-                Some(offer) => format!("{} {offer}", a.text),
+                Some(offer) => format!("{} {}", a.text, offer.speech),
                 None => a.text,
             };
-            write_json(
+            let written = write_json(
                 stream,
                 200,
                 &json!({
@@ -1168,7 +1318,15 @@ async fn hosted_completion(
                     },
                 }),
             )
-            .await
+            .await;
+            // Same rule as the streaming branch: the question is armed only
+            // if it was actually delivered.
+            if written.is_ok() {
+                if let Some(offer) = &offer {
+                    arm_confirmation(shared, confirm_key, offer.pending.clone()).await;
+                }
+            }
+            written
         }
         Err(e) => write_json(stream, 500, &json!({"error": e})).await,
     }
@@ -1198,25 +1356,72 @@ fn pending_outbox_ids(root: &std::path::Path) -> Option<std::collections::HashSe
 /// the other's copy simply finds the item already resolved.
 async fn offer_for_turn(
     shared: &Arc<Shared>,
-    confirm_key: &str,
     baseline: &Option<std::collections::HashSet<String>>,
-) -> Option<String> {
+    reply: &str,
+) -> Option<confirm::Offer> {
     let baseline = baseline.as_ref()?;
     let staged = crate::review_policy::staged_since(
         OutboxStore::open(&shared.outbox_root).ok()?.items().ok()?,
         baseline,
     );
-    let offer = confirm::compose_offer(&staged)?;
-    shared.confirmations.set(confirm_key, offer.pending).await;
-    Some(offer.speech)
+    confirm::compose_offer(&staged, reply)
+}
+
+/// Arm the question — **only once the offer has actually gone out.**
+///
+/// These were one step, and that was the defect: `offer_for_turn` armed
+/// `shared.confirmations` unconditionally while the offer is spoken only
+/// `if !disconnected`. A hang-up mid-stream cancels the run, which still
+/// returns `Ok`, so a draft staged before the cancel became the head of an
+/// armed `Pending` under a `confirm_key` that survives the reconnect — and
+/// the next bare "yes" released a draft nobody had been asked about. One
+/// word, immune to the span gate by design, so nothing downstream could
+/// catch it. The door immediately behind the one this branch closes; found
+/// on review.
+///
+/// So: composing is free, arming is a promise that a question was asked.
+async fn arm_confirmation(shared: &Arc<Shared>, confirm_key: &str, pending: confirm::Pending) {
+    shared.confirmations.set(confirm_key, pending).await;
+}
+
+/// The response head plus the opening `role` chunk, for an SSE reply.
+///
+/// **Extracted because one caller did not have it.** The head was written
+/// only inside `pump`, which runs a model — so `answer_completion`, which
+/// deliberately runs none, wrote a chunked body with no status line. Every
+/// harness-authored reply on the streaming path went out that way: "Sent.",
+/// "Left in your outbox.", and the echo gate's own re-ask. The bounded
+/// re-ask still keeps the draft, so the direction was safe, but the listener
+/// was never actually asked again. Found on review, and never noticed live
+/// because the journal shows the offer has not yet played in a real call.
+///
+/// Returns false if the socket is already gone.
+async fn open_sse(stream: &mut TcpStream, id: &str, model: &str) -> bool {
+    const HEAD: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
+    if stream.write_all(HEAD.as_bytes()).await.is_err() {
+        return false;
+    }
+    let first = sse_chunk(id, model, json!({"role": "assistant"}), None);
+    write_chunk(stream, first.as_bytes()).await.is_ok()
 }
 
 /// Say something the harness composed, on whichever channel this request
 /// wanted. One utterance, one place, so the streaming and blocking paths
 /// cannot word the same fact differently.
-async fn say(stream: &mut TcpStream, shared: &Arc<Shared>, id: &str, text: &str) {
-    let chunk = sse_chunk(id, &shared.model, json!({"content": text}), None);
-    let _ = write_chunk(stream, chunk.as_bytes()).await;
+async fn say(stream: &mut TcpStream, shared: &Arc<Shared>, id: &str, text: &str) -> bool {
+    say_on(stream, id, &shared.model, text).await
+}
+
+/// The same, without a `Shared` — so the wire format can be tested against a
+/// socket rather than asserted about.
+/// Returns whether the words reached the socket. **`arm_confirmation` gates
+/// on this**, not on the `disconnected` flag computed before the turn ran: a
+/// hang-up during the last delta leaves that flag stale, and arming on it is
+/// the same shape as the bug the compose/arm split was extracted to fix, one
+/// step narrower.
+async fn say_on(stream: &mut TcpStream, id: &str, model: &str, text: &str) -> bool {
+    let chunk = sse_chunk(id, model, json!({"content": text}), None);
+    write_chunk(stream, chunk.as_bytes()).await.is_ok()
 }
 
 /// Answer a spoken yes/later/read-it-out, without running a model turn.
@@ -1246,19 +1451,75 @@ async fn answer_completion(
         .queue
         .get(1)
         .and_then(|id| confirm::item_now(&shared.outbox_root, id));
-    match confirm::react(text, pending, head.as_ref(), next.as_ref()) {
-        confirm::Reaction::PassToModel => None,
+    // **Decided before anything is written.** `react` is pure, and the
+    // ordering is load-bearing: on `PassToModel` this function answers
+    // nothing and `completion` carries on to the model, where `pump` writes
+    // its own response head. A head opened up here first would leave `pump`
+    // writing a second one *unframed* into an already-open chunked body —
+    // so every spoken correction during an open offer would arrive corrupt.
+    // The first version of this fix did exactly that, which is the same
+    // class of defect the `open_sse` extraction was closing.
+    let reaction = confirm::react(text, pending, head.as_ref(), next.as_ref());
+    if matches!(reaction, confirm::Reaction::PassToModel) {
+        return None;
+    }
+    // Past here this function owns the response. Nothing below runs a model,
+    // so `pump` never runs either, and without this every word goes out as a
+    // body with no status line in front of it.
+    //
+    // A failed head write returns before the `match`, so an authorised
+    // `Release` does not happen. That is deliberate and it is the narrower
+    // rule than the one the `Release` arm states about its acknowledgement:
+    // a socket that dies *before a word can be said* leaves nobody to tell,
+    // and sending on a call that is already gone is the surprising outcome.
+    // A socket that dies mid-acknowledgement is different — the answer was
+    // heard and the work is already under way — and that arm says so.
+    if want_stream && !open_sse(stream, id, &shared.model).await {
+        return Some(Ok(()));
+    }
+    match reaction {
+        // Returned above, at the early bail. The arm stays so a new variant
+        // cannot be added without deciding which side of the response head it
+        // falls on — but `None` here is *exactly* the double-head bug the
+        // early return prevents, so reaching it must fail loudly rather than
+        // quietly reinstate it.
+        confirm::Reaction::PassToModel => {
+            unreachable!("`PassToModel` returns before the response head is opened")
+        }
         confirm::Reaction::Reread(said) => {
             // The head is still the open question: hearing it again is not
-            // answering it.
-            shared.confirmations.set(confirm_key, pending.clone()).await;
-            Some(finish_with(stream, shared, id, want_stream, &said).await)
+            // answering it. Every arm slides the window over what it is
+            // about to say — one rule, in one place, because a stale window
+            // is a span check against words nobody heard.
+            Some(
+                reply_then_arm(
+                    stream,
+                    shared,
+                    id,
+                    want_stream,
+                    &said,
+                    confirm_key,
+                    pending.after_saying(&said),
+                )
+                .await,
+            )
+        }
+        confirm::Reaction::NotConvinced(said) => {
+            // The head stays and the count goes up; `after_reask` owns both.
+            // It slides the window exactly as `after_saying` does — the two
+            // differ only in the counter, and an earlier design that made
+            // them opposites is what this replaced.
+            let rest = pending.after_reask(&said);
+            tracing::info!(
+                reasks = rest.reasks,
+                "spoken answer was a span of the question — asking again rather than acting"
+            );
+            Some(reply_then_arm(stream, shared, id, want_stream, &said, confirm_key, rest).await)
         }
         confirm::Reaction::Say(said) => {
-            let mut rest = pending.clone();
+            let mut rest = pending.after_saying(&said);
             rest.queue.pop_front();
-            shared.confirmations.set(confirm_key, rest).await;
-            Some(finish_with(stream, shared, id, want_stream, &said).await)
+            Some(reply_then_arm(stream, shared, id, want_stream, &said, confirm_key, rest).await)
         }
         confirm::Reaction::Release {
             acknowledge,
@@ -1268,21 +1529,60 @@ async fn answer_completion(
             // rebuilds a tool surface and can take seconds, and silence after
             // "yes" reads as the call having dropped.
             if want_stream {
-                say(stream, shared, id, &acknowledge).await;
+                // Discarded on purpose: the listener said yes, and a socket
+                // that dropped between the word and the work is not a reason
+                // to leave the draft unsent.
+                let _ = say(stream, shared, id, &acknowledge).await;
             }
             let outcome = confirm::release(&item).await;
-            let mut rest = pending.clone();
-            rest.queue.pop_front();
             let report = confirm::report_release(outcome, next.as_ref());
-            shared.confirmations.set(confirm_key, rest).await;
+            // The acknowledgement is spoken too, as its own chunk, so it
+            // belongs in the window like everything else we say.
+            let mut rest = pending.after_saying(&format!("{acknowledge} {report}"));
+            rest.queue.pop_front();
             let spoken = if want_stream {
                 report
             } else {
                 format!("{acknowledge} {report}")
             };
-            Some(finish_with(stream, shared, id, want_stream, &spoken).await)
+            Some(reply_then_arm(stream, shared, id, want_stream, &spoken, confirm_key, rest).await)
         }
     }
+}
+
+/// Say it, and arm the next question **only if it was actually said**.
+///
+/// The four arms of `answer_completion` armed first and wrote afterwards,
+/// which is the same defect the compose/arm split was extracted to fix, one
+/// layer in. `Say` and `Release` pop the head and re-arm on the *next* draft,
+/// whose question exists only inside the string not yet on the wire — so a
+/// socket dropping there left a question armed that nobody was asked, under a
+/// `confirm_key` that survives the reconnect, and the next bare "yes" is one
+/// word and immune to the span gate. Adding `next_question` to
+/// `report_release`'s `Err` branch newly routed the failed-release path
+/// through it, which is how a pre-existing ordering became this branch's
+/// problem. Found on review.
+///
+/// Not arming on a failed write is safe in every arm: the question was
+/// already taken from the store, so the draft simply waits in the outbox
+/// with nothing armed against it.
+#[allow(clippy::too_many_arguments)]
+async fn reply_then_arm(
+    stream: &mut TcpStream,
+    shared: &Arc<Shared>,
+    id: &str,
+    want_stream: bool,
+    text: &str,
+    confirm_key: &str,
+    pending: confirm::Pending,
+) -> Result<()> {
+    let delivered = finish_with(stream, shared, id, want_stream, text).await?;
+    if delivered {
+        arm_confirmation(shared, confirm_key, pending).await;
+    } else {
+        tracing::info!("the reply did not reach the socket, so no question is armed behind it");
+    }
+    Ok(())
 }
 
 /// Close out a harness-authored reply on whichever channel was asked for.
@@ -1292,11 +1592,11 @@ async fn finish_with(
     id: &str,
     want_stream: bool,
     text: &str,
-) -> Result<()> {
+) -> Result<bool> {
     if want_stream {
-        say(stream, shared, id, text).await;
+        let delivered = say(stream, shared, id, text).await;
         finish_stream(stream, id, &shared.model, None).await;
-        return Ok(());
+        return Ok(delivered);
     }
     write_json(
         stream,
@@ -1317,6 +1617,8 @@ async fn finish_with(
         }),
     )
     .await
+    // A blocking reply that wrote is delivered; the error case propagates.
+    .map(|()| true)
 }
 
 async fn completion(
@@ -1573,7 +1875,8 @@ async fn completion(
         (slot, outcome)
     });
 
-    let disconnected = pump(stream, &id, &shared.model, &mut rx, &cancel, want_stream).await;
+    let Streamed { disconnected, said } =
+        pump(stream, &id, &shared.model, &mut rx, &cancel, want_stream).await;
 
     let (mut slot, outcome) = match run.await {
         Ok(pair) => pair,
@@ -1646,14 +1949,19 @@ async fn completion(
     // Same rule as the hosted path: the drafts this turn staged are offered
     // after the answer, and only when there was one.
     let offer = match &outcome {
-        Ok(_) => offer_for_turn(shared, &confirm_key, &outbox_baseline).await,
+        Ok(o) => {
+            let spoken = if want_stream { &said } else { &o.text };
+            offer_for_turn(shared, &outbox_baseline, spoken).await
+        }
         Err(_) => None,
     };
 
     if want_stream {
         if !disconnected {
             if let Some(offer) = &offer {
-                say(stream, shared, &id, &format!(" {offer}")).await;
+                if say(stream, shared, &id, &format!(" {}", offer.speech)).await {
+                    arm_confirmation(shared, &confirm_key, offer.pending.clone()).await;
+                }
             }
             let failed = outcome.as_ref().err().map(|e| format!("{e:#}"));
             finish_stream(stream, &id, &shared.model, failed.as_deref()).await;
@@ -1662,10 +1970,10 @@ async fn completion(
         match &outcome {
             Ok(o) => {
                 let content = match &offer {
-                    Some(offer) => format!("{} {offer}", o.text),
+                    Some(offer) => format!("{} {}", o.text, offer.speech),
                     None => o.text.clone(),
                 };
-                let _ = write_json(
+                let written = write_json(
                     stream,
                     200,
                     &json!({
@@ -1685,6 +1993,11 @@ async fn completion(
                     }),
                 )
                 .await;
+                if written.is_ok() {
+                    if let Some(offer) = &offer {
+                        arm_confirmation(shared, &confirm_key, offer.pending.clone()).await;
+                    }
+                }
             }
             Err(e) => {
                 let _ = write_json(stream, 500, &json!({"error": e.to_string()})).await;
@@ -2014,5 +2327,241 @@ mod tests {
         let v: Value = serde_json::from_str(chunk.trim_start_matches("data: ").trim()).unwrap();
         assert_eq!(v["choices"][0]["delta"]["content"], "hi");
         assert!(v["choices"][0]["finish_reason"].is_null());
+    }
+}
+
+/// The bytes on the wire, over a real socket.
+///
+/// Every other test in this file stops at a `Reaction` or reads the source.
+/// This one exists because the defect it guards was invisible to both: the
+/// reply was correct, the arm was correct, and the response had no status
+/// line in front of it — so the listener heard nothing at all. Only the
+/// bytes could have said so.
+#[cfg(test)]
+mod the_reply_reaches_the_wire {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    /// The seed is a *tail*, and the bound is what keeps it from swallowing
+    /// ordinary turns.
+    ///
+    /// `ours_coming_back` matches any contiguous two-word span, so an
+    /// unbounded seed makes false positives scale with narration length —
+    /// and a collision is not free: `NotAnAnswer if ours` re-asks once, then
+    /// `MAX_REASKS` returns `Say`, which pops the head and discards the
+    /// utterance. Two real turns lost and the question closed, against words
+    /// that stopped playing long ago. Found on review of the previous fix,
+    /// which widened the seed from the final turn to the whole run.
+    #[test]
+    fn the_seed_is_a_tail_not_the_whole_call() {
+        let cap = crate::review_policy::SPOKEN_UNPROMPTED_CHARS;
+        let mut said = format!(
+            "{} and now the part that is still playing, send it along please",
+            "some narration from several turns ago that has long stopped playing ".repeat(20)
+        );
+        assert!(
+            said.len() > cap,
+            "the fixture is not long enough to be trimmed"
+        );
+        keep_tail(&mut said, cap);
+
+        assert!(
+            said.len() <= cap,
+            "the seed is not bounded: {} bytes",
+            said.len()
+        );
+        assert!(
+            said.contains("still playing, send it along"),
+            "the tail — the part that can actually echo — was dropped: {said:?}"
+        );
+        assert!(
+            !said.starts_with("some narration"),
+            "the front of the call is still in the window: {said:?}"
+        );
+        assert!(
+            !said.starts_with(' ') && !said.is_empty(),
+            "the seed begins mid-word: {said:?}"
+        );
+
+        // Short speech is untouched.
+        let mut short = "Sent. Anything else?".to_string();
+        keep_tail(&mut short, cap);
+        assert_eq!(short, "Sent. Anything else?");
+
+        // And the bound is in *characters*. Trimming on `len()` passes a
+        // byte assertion here while holding a third of the speech it
+        // promises — permissive, since what falls out of the window reaches
+        // `Send` ungated. This case used to demonstrate the bug rather than
+        // catch it.
+        let mut wide = "— ".repeat(cap);
+        keep_tail(&mut wide, cap);
+        assert!(
+            wide.chars().count() > cap / 2,
+            "the window holds {} characters of a {cap}-character budget, so \
+             multi-byte speech falls out of it early",
+            wide.chars().count()
+        );
+        assert!(wide.chars().count() <= cap);
+    }
+
+    /// The echo window is seeded from **everything spoken**, not the final
+    /// turn.
+    ///
+    /// `RunOutcome::text` is the last assistant message; `pump` streams every
+    /// `TextDelta` of every turn and the worker speaks all of them. A draft
+    /// can only be staged by a tool call, so a run that produces an offer has
+    /// interstitial narration by construction — spoken, echoable, and in
+    /// neither window slot while the seed came from `text`. Found on review,
+    /// one turn back from the reply seeding that closed the same hole.
+    #[test]
+    fn the_window_is_seeded_from_what_was_played_not_the_last_turn() {
+        let src = include_str!("mod.rs");
+        // `pump` keeps what it wrote.
+        let i = src
+            .find("\nasync fn pump(")
+            .expect("the streaming path still lives here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`pump` still has a closing brace at column zero")];
+        assert!(
+            body.contains("said.push_str("),
+            "`pump` no longer records what it played, so the window falls back \
+             to the final turn and interstitial narration echoes unguarded"
+        );
+        // Twice: once in the loop, which only bounds memory at twice the cap,
+        // and once at return, which is what actually makes the seed a tail.
+        // Dropping the second leaves every other test green while the window
+        // grows to double what `recently_said` promises.
+        assert_eq!(
+            body.matches("keep_tail(&mut said").count(),
+            2,
+            "`pump` trims in only one place; the loop bounds memory, the \
+             return bounds the window, and they are not the same guarantee"
+        );
+        // And both doors seed from it rather than from the outcome's text.
+        // Anchored on the whole statement. Two traps, both hit on the way
+        // here: a bare fragment counts this test's own string literal (the
+        // third `include_str!` self-match in this file), and
+        // `let spoken = if want_stream` alone also matches the `Release`
+        // arm's unrelated report/acknowledge choice.
+        let seeds = src
+            .lines()
+            .filter(|l| {
+                l.trim_start()
+                    .starts_with("let spoken = if want_stream { &said }")
+            })
+            .count();
+        assert_eq!(
+            seeds, 2,
+            "a door seeds the echo window from the final turn again; both must \
+             use what was actually spoken on the streaming path"
+        );
+    }
+
+    /// `finish_with` must *report* delivery, not assert it.
+    ///
+    /// `reply_then_arm` gates arming on that boolean, so a `finish_with` that
+    /// always returns true reinstates the whole defect while every other test
+    /// stays green — checked by mutation, which is how this test came to
+    /// exist. The streaming branch is the one that matters: `write_json` on
+    /// the blocking path already returns a `Result` that propagates.
+    #[test]
+    fn finish_with_reports_whether_the_words_went_out() {
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn finish_with(")
+            .expect("harness-authored replies still close out here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`finish_with` still has a closing brace at column zero")];
+        assert!(
+            body.contains("let delivered = say("),
+            "the streaming branch discards `say`'s result again: {body:?}"
+        );
+        assert!(
+            !body.contains("return Ok(true)"),
+            "the streaming branch claims delivery instead of measuring it: {body:?}"
+        );
+    }
+
+    /// The socket test above proves `open_sse` writes a head; it cannot
+    /// prove the caller that needed one calls it — deleting that line leaves
+    /// it green, which is the old behaviour exactly. Driving
+    /// `answer_completion` for real means standing up a `Shared`, so this
+    /// reads the source, bounded to the function, with the same limit the
+    /// other source-reading tests here state: it pins that the call is
+    /// written, not that it runs.
+    #[test]
+    fn answer_completion_opens_the_stream_before_it_says_anything() {
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn answer_completion(")
+            .expect("the harness-authored replies still live here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`answer_completion` still has a closing brace at column zero")];
+        let opened = body
+            .find("open_sse(")
+            .expect("no response head is opened, so every reply is a body with no status line");
+        for spoken in ["say(stream", "finish_with("] {
+            if let Some(said) = body.find(spoken) {
+                assert!(
+                    opened < said,
+                    "{spoken} runs before the response head is written"
+                );
+            }
+        }
+        // And the other side of it, which the first version got wrong: on
+        // `PassToModel` this function answers nothing and `completion` goes
+        // on to the model, where `pump` writes its own head. Opening one
+        // before that decision leaves `pump` writing a second head unframed
+        // into an already-open chunked body, so every spoken correction
+        // during an open offer arrives corrupt.
+        let bailed = body
+            .find("Reaction::PassToModel) {")
+            .expect("the fall-through to the model is no longer decided up front");
+        assert!(
+            bailed < opened,
+            "the response head is opened before the reaction is known, so a \
+             correction gets two heads and a corrupt body"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_harness_authored_reply_opens_a_real_response() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let opened = open_sse(&mut sock, "cmpl-test", "a-model").await;
+            assert!(opened, "the socket was live and the head did not go out");
+            say_on(&mut sock, "cmpl-test", "a-model", "Sent.").await;
+            finish_stream(&mut sock, "cmpl-test", "a-model", None).await;
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut got = Vec::new();
+        client.read_to_end(&mut got).await.unwrap();
+        server.await.unwrap();
+        let got = String::from_utf8_lossy(&got);
+
+        assert!(
+            got.starts_with("HTTP/1.1 200 OK\r\n"),
+            "no status line, so the client sees a malformed response and the \
+             listener is never asked: {:?}",
+            &got[..got.len().min(120)]
+        );
+        assert!(
+            got.contains("text/event-stream"),
+            "the head is not an SSE head: {got:?}"
+        );
+        assert!(
+            got.contains("Sent."),
+            "the reply itself never arrived: {got:?}"
+        );
+        assert!(
+            got.contains("[DONE]"),
+            "the stream was never closed: {got:?}"
+        );
     }
 }
