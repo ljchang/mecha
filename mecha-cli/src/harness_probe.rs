@@ -44,6 +44,14 @@ pub struct EpisodePrep {
     /// on the prep because the read that produced the trajectory had it in
     /// hand; asking for it separately is another walk of the same file.
     episode: Option<mecha_core::session::RunStats>,
+    /// The highest-ranked charter line a signed goal error of this session
+    /// names (`appraisal::charter_rank`), zero the top line — §11.1's replay
+    /// tiebreak, and the first thing the appraisal record has ever decided
+    /// about what gets replayed. `None` where nothing was appraised (the
+    /// caller passed no stores) or no signed error names a line the charter
+    /// holds. Computed off the same read as the trajectory, for the same
+    /// reason `episode` is.
+    charter_rank: Option<usize>,
     /// The compromise this replay is making, when it is making one — today,
     /// a session attached several times (a resume, or a mid-session
     /// `/provider`/`/mode` switch) replayed under its first config.
@@ -60,7 +68,18 @@ pub struct EpisodePrep {
 
 /// Load one session as a replayable episode. `Err(reason)` in the inner
 /// result is a skip — never evidence for either arm.
-pub fn prepare_episode(path: &Path, id: &str) -> Result<Result<EpisodePrep, String>> {
+///
+/// `appraise` — the loaded stores and the session's start — asks for the
+/// charter rank as well, off the same read; `None` leaves it unranked, for
+/// a caller that is not drawing.
+pub fn prepare_episode(
+    path: &Path,
+    id: &str,
+    appraise: Option<(
+        &mecha_core::appraisal::Stores,
+        chrono::DateTime<chrono::Utc>,
+    )>,
+) -> Result<Result<EpisodePrep, String>> {
     // One read. This runs over the whole pool — four times the wanted episode
     // count — every nightly, and `load` + `run_configs` + `episode_stats` were
     // three full reads and parses of the same file to answer questions one
@@ -97,13 +116,54 @@ pub fn prepare_episode(path: &Path, id: &str) -> Result<Result<EpisodePrep, Stri
             read.configs.len()
         )
     });
+    // The rank rides on the appraisal the sessions readout would build for
+    // this transcript, from the stores the caller loaded once: the plan's
+    // `serves:` and the sensored-line attribution both land a charter line
+    // on the errors, and `charter_rank` reads the highest. Only a charter
+    // with lines can rank anything, so an empty one skips the appraisal.
+    let charter_rank = appraise.and_then(|(stores, created_at)| {
+        let charter = stores.charter.as_ref().filter(|c| !c.is_empty())?;
+        let drafts = stores.drafts_of(id);
+        let built = mecha_core::appraisal::for_transcript(
+            &read,
+            id,
+            created_at.to_rfc3339(),
+            stores.records(&drafts),
+            None,
+        )?;
+        mecha_core::appraisal::charter_rank(&built.appraisal, charter)
+    });
     Ok(Ok(EpisodePrep {
         id: id.to_string(),
         trajectory,
         recorded,
         episode: read.episode,
         config_caveat,
+        charter_rank,
     }))
+}
+
+/// The selection's order, over (headroom, charter rank, id): what can
+/// discriminate first; among equals, the episode whose signed error names
+/// the higher-ranked charter line (`GOAL-SYSTEM-DESIGN.md` §11.1 — a signed
+/// error against the top line replays before one against the fifth), with
+/// an unranked episode after every ranked one; then the id, so the order is
+/// total and the seed is not a lie. Pure, because the old order — headroom
+/// then id — and this one agree on every episode but the tied ones, which
+/// is exactly the case a test has to construct.
+pub fn selection_order(
+    a: (f64, Option<usize>, &str),
+    b: (f64, Option<usize>, &str),
+) -> std::cmp::Ordering {
+    b.0.partial_cmp(&a.0)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| match (a.1, b.1) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        })
+        .then_with(|| a.2.cmp(b.2))
 }
 
 /// Newest-first replayable episodes for one model, up to `want`, from the
@@ -118,6 +178,11 @@ pub struct Draw {
     /// Printed, because a sample nobody can redraw is one nobody can check.
     pub seed: u64,
     pub skipped: usize,
+    /// How many of the selection carry a charter rank — printed beside the
+    /// seed, because the rank is the one input to the order that the seed
+    /// and the corpus do not pin: the charter is the owner's file, and a
+    /// re-ranked line redraws the ties.
+    pub ranked: usize,
 }
 
 /// How much wider than the draw the eligible pool has to be.
@@ -193,6 +258,10 @@ pub fn draw_episodes(
         workspace: workspace.map(std::path::Path::to_path_buf),
         ..Default::default()
     };
+    // The stores an appraisal reads, once for the whole pool — four store
+    // reads per draw rather than per episode. Only the charter rank comes
+    // of it here; see `EpisodePrep::charter_rank`.
+    let stores = mecha_core::appraisal::Stores::load();
     for (meta, path) in listed {
         if pool.len() >= pool_size {
             break;
@@ -220,7 +289,7 @@ pub fn draw_episodes(
         if !admission.admits(&meta) {
             continue;
         }
-        match prepare_episode(&path, &meta.id)? {
+        match prepare_episode(&path, &meta.id, Some((&stores, meta.created_at)))? {
             Ok(prep) => {
                 // Headroom off *every* outcome the session recorded, folded.
                 // `last_outcome` describes how the session ended, and an
@@ -262,13 +331,19 @@ pub fn draw_episodes(
     let (mut holdout, mut rest): (Vec<_>, Vec<_>) =
         pool.into_iter().partition(|(p, _)| held.contains(&p.id));
 
-    // Then the selection, by what can discriminate.
+    // Then the selection, by what can discriminate — and among equals, by
+    // the charter line the record names (§11.1's tiebreak).
     rest.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.id.cmp(&b.0.id))
+        selection_order(
+            (a.1, a.0.charter_rank, &a.0.id),
+            (b.1, b.0.charter_rank, &b.0.id),
+        )
     });
     rest.truncate(selection_n);
+    let ranked = rest
+        .iter()
+        .filter(|(p, _)| p.charter_rank.is_some())
+        .count();
 
     Ok(Draw {
         selection: rest.into_iter().map(|(p, _)| p).collect(),
@@ -278,6 +353,7 @@ pub fn draw_episodes(
             .collect(),
         seed,
         skipped,
+        ranked,
     })
 }
 /// What one arm of one episode produced.
@@ -519,6 +595,150 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The tiebreak alone, on tuples: equal headroom orders by rank, an
+    /// unranked episode after every ranked one, and the id last — and
+    /// headroom still outranks rank, so the tiebreak never promotes an
+    /// uninformative episode over an informative one.
+    #[test]
+    fn ties_in_headroom_break_on_the_charter_rank_then_the_id() {
+        use std::cmp::Ordering::*;
+        assert_eq!(selection_order((1.0, None, "z"), (0.5, Some(0), "a")), Less);
+        assert_eq!(
+            selection_order((0.5, Some(0), "z"), (0.5, Some(1), "a")),
+            Less
+        );
+        assert_eq!(selection_order((0.5, Some(3), "z"), (0.5, None, "a")), Less);
+        assert_eq!(selection_order((0.5, None, "a"), (0.5, None, "b")), Less);
+        assert_eq!(
+            selection_order((0.5, Some(2), "a"), (0.5, Some(2), "a")),
+            Equal
+        );
+    }
+
+    /// The draw end to end: three sessions with equal headroom whose ids
+    /// sort one way and whose plans name charter lines the other way. The
+    /// old order — headroom then id — selects them by id; this one by the
+    /// line the plan served, with the planless one last. Whichever the seed
+    /// holds out, the selection's order is the charter's.
+    #[test]
+    fn a_signed_error_against_the_top_line_replays_before_one_against_the_fifth() {
+        use mecha_core::message::{Block, Message};
+        use mecha_core::session::{Record, RunConfig, RunStats, Session, SessionMeta};
+
+        let home = crate::testenv::HomeGuard::new("probe-rank");
+        std::fs::write(
+            home.dir.join("charter.toml"),
+            "[[line]]\nid = \"top\"\ntext = \"First.\"\n\n[[line]]\nid = \"fifth\"\ntext = \"Later.\"\n",
+        )
+        .unwrap();
+        let dir = home.dir.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Ids reversed against rank — the stamp leads the id, so the
+        // planless session sorts first by id and last by the charter.
+        let make = |id: &str, serves: Option<&str>| {
+            let s = Session::create(
+                &dir,
+                SessionMeta {
+                    id: id.into(),
+                    created_at: chrono::Utc::now(),
+                    provider: "local".into(),
+                    model: "m".into(),
+                    workspace: std::path::PathBuf::from("/tmp"),
+                    title: None,
+                    kind: None,
+                },
+            )
+            .unwrap();
+            s.append(&Record::Config(RunConfig::default())).unwrap();
+            let mut calls = vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({}),
+            }];
+            let mut results = vec![Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+            }];
+            if let Some(serves) = serves {
+                calls.push(Block::ToolUse {
+                    id: "t2".into(),
+                    name: "todo".into(),
+                    input: serde_json::json!({
+                        "items": [{"content": "do it", "status": "completed"}],
+                        "serves": serves,
+                    }),
+                });
+                results.push(Block::ToolResult {
+                    tool_use_id: "t2".into(),
+                    content: "ok".into(),
+                    is_error: false,
+                });
+            }
+            s.append_messages(&[
+                Message::user("do the thing"),
+                Message::assistant(calls),
+                Message {
+                    role: mecha_core::message::Role::User,
+                    content: results,
+                },
+                Message::assistant(vec![Block::text("done")]),
+            ])
+            .unwrap();
+            // Equal headroom on every metric, and one signed error each: a
+            // declared check that did not pass, which carries the plan's
+            // goal onto the error.
+            s.append(&Record::Outcome(RunStats {
+                turns: 2,
+                tool_calls: 1,
+                checks_declared: Some(1),
+                checks_passed: Some(0),
+                ..Default::default()
+            }))
+            .unwrap();
+        };
+        make("20260101T000002-top", Some("charter:top"));
+        make("20260101T000001-fifth", Some("charter:fifth"));
+        make("20260101T000000-none", None);
+
+        let d = draw_episodes(&dir, "m", Metric::Turns, 3, 3, 11, None).unwrap();
+        assert_eq!(d.selection.len() + d.holdout.len(), 3);
+        let order: Vec<&str> = d.selection.iter().map(|p| p.id.as_str()).collect();
+        // The charter's order, whichever one the seed held out.
+        let expected = [
+            "20260101T000002-top",
+            "20260101T000001-fifth",
+            "20260101T000000-none",
+        ];
+        let mut cursor = 0;
+        for id in &order {
+            let at = expected[cursor..]
+                .iter()
+                .position(|e| e == id)
+                .unwrap_or_else(|| panic!("selection out of charter order: {order:?}"));
+            cursor += at + 1;
+        }
+        assert_eq!(order.len(), 2, "{order:?}");
+        assert_eq!(
+            d.ranked,
+            order.iter().filter(|id| !id.ends_with("none")).count(),
+            "ranked counts the selected episodes whose error named a line"
+        );
+
+        // And the sort is not by id: the id order is the reverse of the
+        // charter's, so an id-ordered selection of any two would differ.
+        let by_id: Vec<&str> = {
+            let mut v = order.clone();
+            v.sort();
+            v
+        };
+        assert_ne!(
+            order, by_id,
+            "the old order (by id) would have selected the reverse"
+        );
+    }
+
     /// A resumed session replays under its first config — the only choice a
     /// single whole-session drive can make — and the compromise must be said
     /// on the prep rather than read later as the replay machinery failing.
@@ -568,7 +788,9 @@ mod tests {
         resumed
             .append(&Record::Config(RunConfig::default()))
             .unwrap();
-        let prep = prepare_episode(&resumed.path, "multi").unwrap().unwrap();
+        let prep = prepare_episode(&resumed.path, "multi", None)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             prep.config_caveat.as_deref(),
             // "Attached", not "resumed": a mid-session `/provider` or
@@ -579,7 +801,9 @@ mod tests {
 
         let single = Session::create(&dir, meta("20260101T000001-single")).unwrap();
         turns(&single);
-        let prep = prepare_episode(&single.path, "single").unwrap().unwrap();
+        let prep = prepare_episode(&single.path, "single", None)
+            .unwrap()
+            .unwrap();
         assert_eq!(prep.config_caveat, None);
 
         std::fs::remove_dir_all(&dir).ok();
