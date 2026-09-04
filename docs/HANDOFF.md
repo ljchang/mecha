@@ -1617,6 +1617,34 @@ a stale process is its owner's to restart. No `~/.mecha/config.toml`
 change. The live charter still carries no sensor, so every reading surface
 shows nothing to read until the owner authors one.
 
+**2026-09-04 23:06–23:07Z — #178 (exp lifetimes), #180 (the tool chip
+carries the call), #184 (situation backfill) and #181's docs deployed by
+mecha-6a from the shared checkout on `main` at `4c71092`, clean.** The
+19:41Z row above was true until #180 merged at `bcd63ef` (~22:57Z), from
+when both halves were stale; #180 changes the chat SSE wire format, so
+the binary and `web/dist` had to move together and did. `~/.cargo/bin/mecha`
+reinstalled (file 23:06Z, version string still 0.1.17): `strings
+~/.cargo/bin/mecha | grep -c backfill-situations` read 0 before and 2
+after. `~/.mecha/web/dist` replaced by `rsync -a --delete` from a fresh
+`npm ci && npm run build` of the same commit — bundle `index-bvHYg5hk.js`,
+where `grep -c "the run ended before this answered"` reads 0 on the old
+`index-DgrUjRr3.js` and 1 on the new (mecha-83's probe, non-vacuous both
+ways); the tailnet door answers 200 with the new hash. `mecha-slack`,
+`mecha-triggers`, `mecha-drain`, `mecha-serve`, `mecha-voice-worker`
+restarted together at 23:07:13Z, each verified from a journal window
+opened at the restart (`Connected to cosanlab as mecha. 1 owner(s)`, `1
+trigger(s), 1 enabled`, both `serve` doors, `Uvicorn running on
+127.0.0.1:7860`; the drain wrapper logs nothing at start). `mecha-mail`,
+the `mecha-slack` crate and both graph binaries untouched: `git diff
+--name-only 77eb704 4c71092 -- mecha-mail mecha-slack` is empty and the
+graph checkout has not moved. The `/proc/*/exe` sweep still shows the two
+`mecha-graph-mcp` children from the 19:41Z row (pids 2652610 and 2947935)
+executing the binary replaced at 15:25Z, under other sessions' hosts —
+left alone. No `~/.mecha/config.toml` change. **Owed to the owner now
+that the binary carries #184:** `mecha reflect --backfill-situations
+--dry-run`, then the write (37 of 45 on the day's dry run), and a sensored
+line on the live charter, which still has none.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
