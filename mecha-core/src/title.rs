@@ -461,7 +461,11 @@ mod tests {
     fn a_run_the_owner_cut_off_is_not_named_yet() {
         use crate::agent::StopCause;
         // The next turn is already coming; the name would race it.
-        for cut in [StopCause::Interrupted, StopCause::Stopped, StopCause::Shutdown] {
+        for cut in [
+            StopCause::Interrupted,
+            StopCause::Stopped,
+            StopCause::Shutdown,
+        ] {
             assert!(!settled(cut), "{cut:?} is not a settled ending");
         }
         // The run ended on its own; the server is idle for a name.
