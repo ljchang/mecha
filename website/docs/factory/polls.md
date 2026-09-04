@@ -380,7 +380,7 @@ push carry the poll from here, and no model touches any of them:
 | `mecha polls sweep` | stages the pick card when there is judgment to make, and folds your decision back |
 
 `/polls` in the TUI and `mecha polls list` show one line per poll — *invites
-sent · 2 of 3 answered · closes Fri 5pm* — and `poll_status` answers "how's
+sent*, *needs a pick*, *booked* — and `poll_status` answers "how's
 the lab-meeting poll?" with the lifecycle beside the tally.
 
 **Decide.** The policy is *auto with guardrails*, and the numbers are yours

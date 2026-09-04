@@ -768,6 +768,30 @@ impl OutboxStore {
         }
         Ok(OutboxLock { _file: file })
     }
+
+    /// The same lock, or `None` at once if another process holds it. For
+    /// the callers that must not wait on a person: `outbox send` holds the
+    /// lock across its confirmation prompt and its network calls, so a
+    /// timer's sweep or a TUI keypress that took [`Self::lock`] would park
+    /// behind an unanswered question.
+    pub fn try_lock(&self) -> Result<Option<OutboxLock>> {
+        use std::os::unix::io::AsRawFd;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(".lock"))?;
+        // SAFETY: flock on an fd we own, held open by the returned guard.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let err = std::io::Error::last_os_error();
+            return if err.kind() == std::io::ErrorKind::WouldBlock {
+                Ok(None)
+            } else {
+                Err(err).context("locking the outbox")
+            };
+        }
+        Ok(Some(OutboxLock { _file: file }))
+    }
 }
 
 /// The shape of a store-minted id (`Session::new_id`: a timestamp, a hyphen,
@@ -1602,6 +1626,22 @@ mod tests {
     /// released as written or with its slot swapped, it says nothing about
     /// drafting — while the same item read by an older binary, or an older
     /// item read by this one, stays the model's draft it defaults to.
+    /// `try_lock` answers at once while another holder has the lock, and
+    /// takes it once they let go.
+    #[test]
+    fn try_lock_never_waits() {
+        let root = scratch("try-lock");
+        let store = OutboxStore::open(&root).unwrap();
+        let held = store.lock().unwrap();
+        assert!(
+            store.try_lock().unwrap().is_none(),
+            "held elsewhere: at once, none"
+        );
+        drop(held);
+        assert!(store.try_lock().unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_harness_staged_item_is_invisible_to_the_writing_miner() {
         let root = scratch("harness-author");
