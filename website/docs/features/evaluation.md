@@ -22,6 +22,14 @@ mecha eval --compare results/*.json
 The governing principle: **everything a model says about its own work is
 hearsay. Grade the artifact.**
 
+Every scorecard is also recorded as a one-arm
+[experiment](/docs/features/experiments) under
+`~/.mecha/experiments/eval-<stamp>/` — the model, the bare preset, the
+machine's knobs and each case as a trial row — so what a scorecard measured
+sits on the same store as every comparison, and `mecha exp status <name>`
+and `export` read it back. The scorecard is still what eval prints; `-o`
+names the experiment in `experiment`.
+
 ## The four kinds of check, in descending order of worth
 
 ### 1. Trace and substring checks

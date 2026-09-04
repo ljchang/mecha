@@ -179,6 +179,9 @@ fn apply_override(opts: &mut GlobalOpts, spec: &str) -> Result<()> {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Report {
+    /// The one-arm experiment this scorecard was recorded as, when it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    experiment: Option<String>,
     scorecard: Scorecard,
     cases: Vec<serde_json::Value>,
 }
@@ -210,12 +213,54 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         return ab_config(global, &args, &cases, &fixture).await;
     }
 
+    // A scorecard is a one-arm experiment, and is recorded as one before the
+    // arm runs: the model, the preset, the machine's knobs and the flag's
+    // opt-ins on a manifest, each case a trial row on the store — so the
+    // condition a scorecard measured sits beside every comparison's and
+    // `mecha exp status|export` read it. The scorecard is still what this
+    // prints. The one-arm record is the convergence's last step short of
+    // the runner itself (the owner's ruling, 2026-09-04).
+    let recorded = record_measurement(global, &args, &cases, &fixture);
+    let name = match &recorded {
+        Ok((store, manifest)) => {
+            eprintln!(
+                "recorded as experiment `{}` ({})",
+                manifest.name,
+                store.root().display()
+            );
+            Some(manifest.name.clone())
+        }
+        Err(e) => {
+            eprintln!(
+                "mecha eval: not recorded as an experiment ({e:#}); the scorecard still runs"
+            );
+            None
+        }
+    };
+
     let (scorecard, graded) = run_arm(global, &args, &cases, &fixture, false, &[], "").await?;
+
+    if let Ok((store, manifest)) = &recorded {
+        let task_ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
+        for planned in manifest.trials(&task_ids, &scorecard.provider, &scorecard.model) {
+            let runs: Vec<&GradedCase> = graded.iter().filter(|g| g.id == planned.task).collect();
+            if runs.is_empty() {
+                continue;
+            }
+            if let Err(e) = store.save_trial(&trial_of(&planned, &runs)) {
+                eprintln!(
+                    "mecha eval: trial `{}` could not be written: {e:#}",
+                    planned.id
+                );
+            }
+        }
+    }
 
     print_scorecard(&scorecard, &graded, args.failures);
 
     if let Some(path) = &args.out {
         let report = Report {
+            experiment: name,
             scorecard: scorecard.clone(),
             cases: graded
                 .iter()
@@ -709,6 +754,7 @@ async fn ab_experiment(
 
     if let Some(path) = &args.out {
         let report = |scorecard: &Scorecard, graded: &[GradedCase]| Report {
+            experiment: None,
             scorecard: scorecard.clone(),
             cases: graded
                 .iter()
@@ -776,6 +822,62 @@ fn effective_overrides(global: &GlobalOpts) -> Result<Vec<String>> {
         }
     }
     Ok(out)
+}
+
+/// A plain eval's record: a one-arm manifest, written before the arm runs.
+/// The arm is `bare` plus whatever eval opts back in (`--mcp`), carrying
+/// the model and provider the flags name and the knobs both a scorecard
+/// and an A/B inherit from this machine. `--mcp-file`'s servers have no
+/// lever to be named by, so the description says so rather than refusing
+/// — a scorecard under fixture servers is the documented way to run the
+/// graph case set, and a record that says what it could not express beats
+/// no record.
+fn record_measurement(
+    global: &GlobalOpts,
+    args: &Args,
+    cases: &[EvalCase],
+    fixture: &Path,
+) -> Result<(
+    mecha_core::experiment::ExperimentStore,
+    mecha_core::experiment::Manifest,
+)> {
+    use mecha_core::experiment::{Arm, ExperimentStore, Manifest, Preset, Tasks};
+    let arm = Arm {
+        preset: Some(Preset::Bare),
+        levers_on: if args.mcp {
+            vec!["mcp".into()]
+        } else {
+            Vec::new()
+        },
+        overrides: effective_overrides(global)?,
+        provider: global.provider.clone(),
+        model: global.model.clone(),
+        ..Arm::default()
+    };
+    let name = format!("eval-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+    let mut manifest = Manifest::one_arm(
+        &name,
+        "bare",
+        arm,
+        Tasks {
+            cases: args.cases.clone(),
+            fixture: fixture.to_path_buf(),
+            ids: cases.iter().map(|c| c.id.clone()).collect(),
+            tags: Vec::new(),
+        },
+        1,
+    )?;
+    manifest.description = format!(
+        "mecha eval scorecard; {} run(s) per case, scored pass^k; approval rules lifted (eval's fixture forcing, not expressible as a lever){}",
+        args.runs,
+        args.mcp_file
+            .as_ref()
+            .map(|p| format!("; fixture MCP servers from {} (not expressible as a lever)", p.display()))
+            .unwrap_or_default()
+    );
+    let store = ExperimentStore::open_default(&name)?;
+    store.create_manifest(&manifest)?;
+    Ok((store, manifest))
 }
 
 /// The experiment an A/B records as. A producer name, so lowercase, digits,

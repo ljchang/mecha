@@ -2973,6 +2973,14 @@ to know it.
 is the unit larger than a run that no other store had: a **designed
 comparison over a chosen set**, with the design written before the run.
 
+- **A manifest with no control is a measurement.** One arm or several,
+  none carrying a prediction, nothing for the gate to rule on; `judge`
+  returns nothing and says so. Every plain `mecha eval` records one — a
+  scorecard is a one-arm experiment — so the condition it measured (model,
+  preset, the machine's knobs) is on the store beside every comparison's,
+  which is the convergence's last step short of the runner: eval's A/B
+  flags are two-arm manifests, its scorecard a one-arm one, and the arms
+  still run in-process on eval's forcings.
 - **The manifest is the design, written once.** Arms, the control, each
   treatment arm's falsifiable prediction (its metric and rationale), the
   tasks (an eval case file and its fixture), the seeds, the split seed. `new`
