@@ -27,7 +27,6 @@ use mecha_slack::binding::{self, Binding, Credentials, Gate, SlackStore};
 use mecha_slack::envelope::{FileRef, Inbound, Interaction, SlackEvent};
 use mecha_slack::{blocks, chat, Slack, SocketMode, SocketOptions};
 use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::CancellationToken;
 
 use super::actions::{self, Action, ActionLedger, Executor};
 use super::approve::{self, Answer, Mode, SlackApprover};
@@ -43,7 +42,10 @@ const SEEN_EVENTS: usize = 512;
 
 /// A run in flight, and the handles that steer or stop it.
 struct Live {
-    cancel: CancellationToken,
+    /// The handle, not a bare token, so the stop button records `Stopped`
+    /// and a shutdown records `Shutdown` — the appraisal reads the first as
+    /// the owner's verdict and the second as nobody's.
+    cancel: mecha_core::agent::CancelHandle,
     queue: Arc<Mutex<VecDeque<String>>>,
     mode: Arc<Mutex<Mode>>,
     /// The run's unanswered-approval latch, shared with its `SlackApprover`.
@@ -264,7 +266,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
             _ = shutdown_signal() => {
                 println!("Stopping; in-flight runs cancel at their next safe point.");
                 for live in state.live.values() {
-                    live.cancel.cancel();
+                    live.cancel.cancel(mecha_core::agent::CancelReason::Shutdown);
                 }
                 break;
             }
@@ -774,7 +776,7 @@ impl State {
         };
 
         let mode = Arc::new(Mutex::new(Mode::parse(&record.mode).unwrap_or(Mode::Ask)));
-        let cancel = CancellationToken::new();
+        let cancel = mecha_core::agent::CancelHandle::new();
         let queue = Arc::new(Mutex::new(VecDeque::new()));
 
         // The per-thread half of the run. The approver rides here rather than
@@ -811,7 +813,9 @@ impl State {
             max_cost_usd: self.cfg.max_cost_usd,
             ..Budget::default()
         };
-        cx.cancel = Some(cancel.clone());
+        // Through the builder, not a field write: the handle's reason cell
+        // is this run's own.
+        cx = cx.with_cancel_handle(cancel.clone());
         cx.queued_input = Some(Arc::clone(&queue));
         // **Its own outbox route, carrying its own session id.** The agent's
         // route is one `Arc` shared by every thread, so stamping a session id
@@ -1741,7 +1745,7 @@ impl State {
             match action.action_id.as_str() {
                 "slack_stop" => {
                     if let Some(live) = self.live.get(&value) {
-                        live.cancel.cancel();
+                        live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                         // Cancelling alone does not reach a run parked in the
                         // approver; refusing its pending asks does.
                         self.refuse_pending_for(&value).await;

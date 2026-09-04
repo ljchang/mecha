@@ -341,15 +341,25 @@ build order was taken over the same mix.
 
 ### 3.3 Split `Interrupted` into what ended the run
 
-`StopCause::Parked` for a question put to the owner (`questions.rs`'s cancel
-is the one site), `Cancelled` for a person or a shutdown. A closed enum in
-an append-only store is a wire format, so old rows keep `Interrupted` and
-readers treat it as unknown-which. Then two new deterministic channels
-become honest: **cancelled and re-prompted in the same session** is an
-intervention (`Channel::Intervention`, `Agency::Owner`, `Cite::Turn` at the
-re-prompt), and **cancelled and never resumed** is the same with no
-aftermath — the abandonment signal the dialogue-feedback literature ranks
-highest (§6.2). A park is the mechanism working and stays out, as now.
+*Built 2026-09-04, three ways rather than two, on `GOAL-SYSTEM-DESIGN.md`
+§17.6 item 7's refinement:* `Parked` for a question put to the owner,
+`Stopped` for a person, `Shutdown` for the process or a wall-clock limit —
+because a service restart is not the owner's verdict and the appraisal
+needs that told apart. The canceller says which (`agent::CancelReason`,
+carried beside the token on `RunContext` and stamped onto `ToolCtx`); a
+bare token cancel still records `Interrupted`. A closed enum in an
+append-only store is a wire format, so old rows keep `Interrupted` and
+readers treat it as unknown-which. The two channels this makes honest:
+**stopped and re-prompted in the same session** is an intervention
+(`Channel::Intervention`, `Agency::Owner`, `Cite::Turn` at the re-prompt),
+and **stopped and never resumed** is the same with no aftermath — the
+abandonment signal the dialogue-feedback literature ranks highest (§6.2);
+both read per run from `Transcript::outcomes` placed among the messages
+(`appraisal::stops_of`), not off the folded stop cause, which is the last
+run's. A park is the mechanism working and stays out, as now; so does a
+shutdown. §1.7.2 measured the split's value on the kept Terminal-Bench
+trials before it was built: +0.08 AUROC on the stop-cause channel. A
+`duration_secs` landed on `RunStats` beside it, §1.7.4's largest counter.
 
 ### 3.4 Read the judged followups
 

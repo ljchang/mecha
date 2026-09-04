@@ -5,7 +5,7 @@
 //! work the agent had already done, and the user pressing Ctrl-C almost never
 //! wants that — they want to redirect.
 
-use mecha_core::agent::{Agent, AgentEvent, Conversation, RunContext, RunOutcome};
+use mecha_core::agent::{Agent, AgentEvent, CancelReason, Conversation, RunContext, RunOutcome};
 
 use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
@@ -46,23 +46,29 @@ pub async fn run_interruptible_watching(
 ) -> anyhow::Result<RunOutcome> {
     let token = CancellationToken::new();
     let cx = cx.clone().with_cancel(token.clone());
+    // Both watchers cancel *as a person*: Ctrl-C is the owner at the
+    // keyboard, and `stop()` is the owner's `tasks stop` read off the run
+    // marker. The outcome then records `Stopped`, which the appraisal reads
+    // as the owner's verdict; a bare token cancel would record the
+    // unknown-which `Interrupted`.
+    let handle = cx.cancel_handle().expect("with_cancel just set it");
 
     // Watch in a task rather than selecting on the run itself: selecting would
     // drop the run future on Ctrl-C, which throws away the very partial answer
     // cancellation exists to preserve. Cancel, then let the run wind itself up.
     let watcher = {
-        let token = token.clone();
+        let handle = handle.clone();
         tokio::spawn(async move {
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
                     if signal.is_ok() {
                         eprintln!("\n^C — stopping after the current step. Ctrl-C again to force.");
-                        token.cancel();
+                        handle.cancel(CancelReason::Stopped);
                     }
                 }
                 // The run finished on its own; stop listening so the next one
                 // gets a fresh handler.
-                _ = token.cancelled() => {}
+                _ = handle.cancelled() => {}
             }
         })
     };
@@ -71,15 +77,15 @@ pub async fn run_interruptible_watching(
     // the token is cancelled, however that happened, so a finished run leaves
     // no poller behind.
     let watcher2 = stop.map(|stop| {
-        let token = token.clone();
+        let handle = handle.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    _ = token.cancelled() => return,
+                    _ = handle.cancelled() => return,
                     _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
                         if stop() {
                             eprintln!("mecha: stop requested — finishing the current step");
-                            token.cancel();
+                            handle.cancel(CancelReason::Stopped);
                             return;
                         }
                     }

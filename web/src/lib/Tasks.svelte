@@ -303,9 +303,12 @@
     if (!t.session) return 'idle';
     const run = t.run;
     if (!run || !run.recorded) return 'unknown';
-    // `Interrupted` is a person stopping a run, which is the system working —
-    // never a failure, on doctor's own rule for the same field.
-    if (run.stop_cause === 'interrupted') return 'ready';
+    // A cancellation is never a failure, on doctor's own rule for the same
+    // field: `stopped` is a person, `parked` is a question to the owner,
+    // `shutdown` is the process, and `interrupted` is the older record that
+    // did not say which. (`cut_short` is false for all four anyway; named
+    // here so the rule is visible where it is applied.)
+    if (['interrupted', 'parked', 'stopped', 'shutdown'].includes(run.stop_cause)) return 'ready';
     if (run.cut_short || run.ended_on_failed_call) return 'failed';
     return 'ready';
   }

@@ -778,6 +778,14 @@ fn appraise_session(
     };
     let messages = &transcript.convo.messages;
     let interventions = mecha_core::learning::extract_interventions(messages);
+    // A delegated run the owner stopped (`tasks stop`) is the owner's
+    // verdict on it; placed among the messages the same way the corpus
+    // readout places it.
+    let stops = mecha_core::appraisal::stops_of(
+        &transcript.outcomes,
+        &transcript.outcome_positions,
+        messages,
+    );
     // Off the transcript already in hand — `Session::read` positions the
     // timeline in the same pass now, so the second full read this used to
     // pay is gone.
@@ -918,6 +926,7 @@ fn appraise_session(
             learning_unreadable,
             charter: charter.as_ref(),
             charter_unreadable,
+            stops: &stops,
         },
         end_taint,
         chrono::Utc::now().to_rfc3339(),
