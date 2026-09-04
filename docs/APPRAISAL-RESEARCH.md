@@ -197,7 +197,10 @@ validity gain a counter can offer.
 live corpus.** 169 of 169 `neutral`, reproducing §1.1 on a set where the
 truth is known — every signed error is `controllable: None`, and the label
 cannot leave `Neutral` without a probe. §3.1's ruling (report valence,
-keep the label as an overlay) stands; the label is not an instrument.
+keep the label as an overlay) stands; the label is not an instrument. (A
+measurement by mecha 0.1.17, taken 2026-09-03. PR #162 changes `label_of`
+so a negative no longer reads `Neutral`; under it the 24 signed sessions
+would read `distress` on a re-run, and 145 would still read `neutral`.)
 
 Caveats the numbers carry. The reconstruction is not the record: fields the
 loop counts at run time (`malformed_tool_args`, `tool_denied`,
