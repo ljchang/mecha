@@ -113,6 +113,13 @@ pub struct Arm {
     pub preset: Option<Preset>,
     #[serde(default)]
     pub levers_off: Vec<String>,
+    /// Levers turned back *on* after the preset — the add-one-to-bare
+    /// design (Part II §15: "only for a lever with a prior worth testing in
+    /// isolation"), and how `mecha eval --ab-rules` is spelled as an arm:
+    /// `bare` plus `learned_rules`. Applied after `levers_off`, so a name in
+    /// both is on; the `approval_rules` refusal applies here too.
+    #[serde(default)]
+    pub levers_on: Vec<String>,
     /// `KEY=VALUE` over `harness::OverrideKey`, validated at load.
     #[serde(default)]
     pub overrides: Vec<String>,
@@ -215,6 +222,62 @@ pub struct Tasks {
 }
 
 impl Manifest {
+    /// A two-arm design built by a front-end rather than written by hand —
+    /// how `mecha eval`'s `--ab-config` and `--ab-rules` are spelled as
+    /// experiments: the control is `bare` (what eval runs), the treatment
+    /// is the control plus one delta, predicting a lower failure cost. The
+    /// split seed is derived from the treatment's own description so a
+    /// rerun of the same A/B holds out the same tasks — the property the
+    /// hash-by-id holdout used to give eval — and nothing else about the
+    /// design is chosen after a trial ran. Validated like a parsed one —
+    /// `treatment_name` is a directory name, so the delta itself goes in
+    /// the prediction's rationale, not the name.
+    pub fn two_arm(
+        name: &str,
+        treatment_name: &str,
+        treatment: Arm,
+        tasks: Tasks,
+        holdout_in: u64,
+        repetitions: u32,
+    ) -> Result<Manifest> {
+        let mut arms = BTreeMap::new();
+        arms.insert(
+            "bare".to_string(),
+            Arm {
+                preset: Some(Preset::Bare),
+                ..Arm::default()
+            },
+        );
+        let split_seed = {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for b in format!(
+                "{}|{:?}|{:?}|{:?}",
+                treatment_name, treatment.levers_off, treatment.levers_on, treatment.overrides
+            )
+            .bytes()
+            {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            h
+        };
+        arms.insert(treatment_name.to_string(), treatment);
+        let m = Manifest {
+            name: name.to_string(),
+            description: String::new(),
+            kind: TrialKind::Single,
+            control: "bare".to_string(),
+            arms,
+            tasks,
+            seeds: Vec::new(),
+            repetitions,
+            split_seed,
+            holdout_in,
+        };
+        m.validate()?;
+        Ok(m)
+    }
+
     /// Parse and validate. Every rule the module doc names is enforced here
     /// and nowhere else, so a `Manifest` value is one that passed.
     pub fn parse(text: &str) -> Result<Manifest> {
@@ -321,7 +384,7 @@ impl Arm {
             Some(Preset::Bare) => Lever::bare(&[]),
             Some(Preset::Full) | None => Vec::new(),
         };
-        for name in &self.levers_off {
+        let parse = |name: &str| -> Result<Lever> {
             let lever = Lever::parse(name).with_context(|| {
                 format!(
                     "`{name}` is not a lever (the closed set: {})",
@@ -332,9 +395,19 @@ impl Arm {
                 lever != Lever::ApprovalRules,
                 "`approval_rules` cannot be a lever in an experiment: a forbid is the operator's standing word, and only mecha eval's fixture workspaces justify lifting it"
             );
-            off.push(lever);
+            Ok(lever)
+        };
+        for name in &self.levers_off {
+            off.push(parse(name)?);
         }
-        Ok(Lever::ALL.into_iter().filter(|l| off.contains(l)).collect())
+        let mut on = Vec::new();
+        for name in &self.levers_on {
+            on.push(parse(name)?);
+        }
+        Ok(Lever::ALL
+            .into_iter()
+            .filter(|l| off.contains(l) && !on.contains(l))
+            .collect())
     }
 }
 
@@ -421,6 +494,29 @@ pub struct Trial {
     pub stats: Option<RunStats>,
 }
 
+impl Trial {
+    /// A trial that finished in-process — how `mecha eval` files each arm's
+    /// case result as a row: graded, with the run's folded stats, and no
+    /// session (eval writes none).
+    pub fn finished(
+        planned: &Trial,
+        passed: bool,
+        checks: Vec<crate::eval::Check>,
+        stats: Option<RunStats>,
+    ) -> Trial {
+        let now = chrono::Utc::now().to_rfc3339();
+        Trial {
+            status: TrialStatus::Done,
+            started_at: Some(now.clone()),
+            finished_at: Some(now),
+            passed: Some(passed),
+            checks,
+            stats,
+            ..planned.clone()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrialStatus {
@@ -494,6 +590,12 @@ impl ExperimentStore {
         std::fs::create_dir_all(self.root.join("trials"))?;
         write_atomic(&self.manifest_path(), manifest_text.as_bytes())?;
         Ok(manifest)
+    }
+
+    /// [`Self::create`] for a design built in code (`Manifest::two_arm`).
+    pub fn create_manifest(&self, manifest: &Manifest) -> Result<()> {
+        let text = toml::to_string_pretty(manifest).context("rendering the manifest")?;
+        self.create(&text).map(|_| ())
     }
 
     pub fn manifest(&self) -> Result<Manifest> {
@@ -1248,6 +1350,102 @@ rationale = "no notice, fewer turns"
             inv.config.providers["local"].seed, None,
             "the seed pins the arm's provider only"
         );
+    }
+
+    /// `levers_on` after the preset: the add-one-to-bare design, and how
+    /// `--ab-rules` is spelled. The rules refusal reaches it too.
+    #[test]
+    fn levers_on_reopens_a_preset_and_the_rules_refusal_still_holds() {
+        let arm = Arm {
+            preset: Some(Preset::Bare),
+            levers_on: vec!["learned_rules".into()],
+            ..Arm::default()
+        };
+        let off = arm.resolve_levers().unwrap();
+        assert!(!off.contains(&Lever::LearnedRules));
+        assert!(!off.contains(&Lever::ApprovalRules), "never in a preset");
+        assert_eq!(off.len(), Lever::ALL.len() - 2);
+        let both = Arm {
+            levers_off: vec!["boredom".into()],
+            levers_on: vec!["boredom".into()],
+            ..Arm::default()
+        };
+        assert!(
+            both.resolve_levers().unwrap().is_empty(),
+            "on wins over off"
+        );
+        let bad = Arm {
+            levers_on: vec!["approval_rules".into()],
+            ..Arm::default()
+        };
+        assert!(bad.resolve_levers().is_err());
+    }
+
+    /// A front-end's two-arm design is a manifest like any other: valid,
+    /// stored, and its holdout draw fixed by the treatment's description so
+    /// a rerun holds out the same tasks.
+    #[test]
+    fn a_two_arm_design_is_a_manifest_with_a_stable_split() {
+        let tasks = Tasks {
+            cases: "eval/cases.jsonl".into(),
+            fixture: "eval/workspace".into(),
+            ids: Vec::new(),
+            tags: Vec::new(),
+        };
+        let treatment = Arm {
+            preset: Some(Preset::Bare),
+            overrides: vec!["max_turns=40".into()],
+            prediction: Some(Prediction {
+                metric: ExpMetric::Failure,
+                rationale: "--ab-config".into(),
+            }),
+            ..Arm::default()
+        };
+        let a = Manifest::two_arm(
+            "eval-ab",
+            "max_turns=40",
+            treatment.clone(),
+            tasks.clone(),
+            3,
+            1,
+        )
+        .unwrap();
+        let b = Manifest::two_arm(
+            "eval-ab-again",
+            "max_turns=40",
+            treatment,
+            tasks.clone(),
+            3,
+            1,
+        )
+        .unwrap();
+        assert_eq!(a.control, "bare");
+        assert_eq!(
+            a.split_seed, b.split_seed,
+            "the same delta draws the same holdout"
+        );
+        let other = Manifest::two_arm(
+            "eval-ab",
+            "treatment",
+            Arm {
+                preset: Some(Preset::Bare),
+                overrides: vec!["max_turns=50".into()],
+                prediction: Some(Prediction {
+                    metric: ExpMetric::Failure,
+                    rationale: "x".into(),
+                }),
+                ..Arm::default()
+            },
+            tasks,
+            3,
+            1,
+        )
+        .unwrap();
+        assert_ne!(a.split_seed, other.split_seed);
+        let text = toml::to_string_pretty(&a).unwrap();
+        let back = Manifest::parse(&text).unwrap();
+        assert_eq!(back.arms.len(), 2);
+        assert_eq!(back.arms["treatment"].overrides, vec!["max_turns=40"]);
     }
 
     #[test]

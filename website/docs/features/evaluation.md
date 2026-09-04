@@ -279,12 +279,23 @@ home per arm — are [`mecha exp`](/docs/features/experiments), a peer of eval
 that shares this page's case file, fixture and graders and holds the
 opposite thing fixed: the model, not the harness.
 
+`--ab-rules` is the same shape with `learned_rules` turned back on over the
+bare preset — the add-one-to-bare design — recorded under
+`eval-ab-rules-<stamp>` and judged the same way, with the per-case flips
+still printed.
+
 ## `--ab-config`: measuring a proposed change
 
 `--ab-config KEY=VALUE` runs the case set twice, differing only in the override,
-and judges the difference. It is the **content-sensitive arm of the
-[candidate gate](/docs/features/run-quality#the-gate)**: a case's cost is failing it, so a
-pass is a win and every guardrail in the gate applies unchanged.
+and judges the difference. It is a **two-arm [experiment](/docs/features/experiments)**:
+the design — a `bare` control and a `bare`-plus-override treatment predicting
+a lower failure cost — is written to `~/.mecha/experiments/eval-ab-config-<stamp>/`
+before either arm runs, each case is filed as a trial, and the verdict comes
+from the experiment gate; `mecha exp judge <name>` re-derives it. The arms
+still run in-process on eval's forcings. It is the **content-sensitive arm of
+the [candidate gate](/docs/features/run-quality#the-gate)**: a case's cost is
+failing it, so a pass is a win and every guardrail in the gate applies
+unchanged.
 
 ```bash
 mecha eval --ab-config max_turns=40 eval/cases.jsonl
@@ -315,9 +326,9 @@ inference.
 Four properties come from the gate rather than from this command:
 
 - **Paired by case, and split.** A case is scored on pass^k in both arms. One in
-  `--holdout-in` cases (default 3) is held out of selection by a hash of its id
-  — never at random, or a rerun grades against a different holdout and
-  "confirmed on unseen cases" stops meaning anything.
+  `--holdout-in` cases (default 3) is held out of selection by a draw seeded
+  from the override itself — never at random, or a rerun grades against a
+  different holdout and "confirmed on unseen cases" stops meaning anything.
 - **A case that ran in only one arm is dropped.** Missing is missing, not a tie.
 - **The work guardrail outranks the score.** Tool calls falling below 75% of the
   baseline rejects the change: passing more cases while attempting less is the
