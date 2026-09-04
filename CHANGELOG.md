@@ -13,9 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`[agent] predictive_compaction`, `[agent] carried_state`,
   `--no-predictive-compaction`, `--no-carried-state`). The two in-run
   dispositions the lever set could not name because nothing could switch
-  them off: compacting on the *forecast* of the next request (the threshold
-  stays — a lever removes a disposition above a structural check, never the
-  check), and a tool's state riding verbatim across a compaction. Both
+  them off: the compaction *trigger* firing on the forecast of the next
+  request (the threshold stays — a lever removes a disposition above a
+  structural check, never the check — and so do the predictor's other
+  uses, the per-turn tool-output budget and the headroom the model is
+  shown), and a tool's state riding verbatim across a compaction. Both
   ship on, both are recorded on `RunConfig::levers_off`, and `mecha eval`
   forces both off with the rest of the set. The appraiser's pass stays out
   of the set — it has no in-run site — and `sensors_in_brief` waits for the

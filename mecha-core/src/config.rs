@@ -556,13 +556,17 @@ pub struct AgentConfig {
     /// share that posture; it now derives its threshold from the window,
     /// because its validator gave it a measurement this has not earned yet.)
     pub step_escalation: bool,
-    /// Compact on the *forecast* of the next request, not only on the size
-    /// the last one reported. On by default — it is the whole of
-    /// `pressure.rs`, and the measured reason the reactive check stopped
-    /// dying on the turn that mattered. Off is a lever for an experiment
-    /// (`predictive_compaction`, `docs/EXPERIMENT-DESIGN.md` Part II): the
-    /// threshold stays, so a run never compacts *less* than the reactive
-    /// check would, only later.
+    /// Fire the compaction *trigger* on the forecast of the next request,
+    /// not only on the size the last one reported. On by default. Off is a
+    /// lever for an experiment (`predictive_compaction`,
+    /// `docs/EXPERIMENT-DESIGN.md` Part II), and its scope is exactly the
+    /// trigger: the threshold stays, so a run never compacts *less* than the
+    /// reactive check would, only later; and the two other places the
+    /// predictor acts — the per-turn tool-output budget
+    /// (`affordable_output_bytes`, the other half of the cliff-to-gradient)
+    /// and the headroom forecast the model is shown — are deliberately left
+    /// on. A reader of `levers_off` should take this as "no compaction on
+    /// the forecast", never as "no forecast" (found on review).
     pub predictive_compaction: bool,
     /// Carry a tool's own state (the plan) verbatim across a compaction, in
     /// the rebuilt head. On by default: the list the model keeps for itself
