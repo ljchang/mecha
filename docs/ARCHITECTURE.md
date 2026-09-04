@@ -2622,13 +2622,18 @@ when touching it:
   predicate `with_builtins` registers by) — the skills block's rule, one block
   over: a prompt naming a tool the surface lacks costs a turn on a call that
   can only fail.
-- **A reading is four facts, and only one of them is a number.**
+- **A reading is five facts, and only one of them is a number.**
   `reading::Reading` is `Unread` (the store could not be read), `Deferred`
   (this reader does not scan that store), `Nothing` (nothing waits — the
-  line is met by construction) or `Observed { value, over, excess }`; the
-  doctor's saturation streak and the guilt term read `over()` / `excess()`,
-  which answer `None` on the first two, so a finding cannot fire on an
-  absence. `excess` is `e / (e + setpoint)` over the overshoot — zero within
+  line is met by construction), `Sparse` (the corpus kind over fewer runs
+  than `doctor::RUNS_MIN` — the doctor refuses a share of three runs, so the
+  surface the owner judges a setpoint on must not print one) or `Observed {
+  value, over, excess }`; the doctor's saturation streak and the guilt term
+  read `over()` / `excess()`, which answer `None` on the first two and on
+  `Sparse`, so a finding cannot fire on an absence. And a torn corpus is
+  `Unread`, not `Nothing`: `Corpus::scan` is `Ok` with `unreadable` counted
+  and no rows for that, and the first cut read it as "no runs recorded"
+  (found on review). `excess` is `e / (e + setpoint)` over the overshoot — zero within
   the setpoint, half of maximal at twice it, never one — for the reason
   `guilt::AGE_HALF_AT_HOURS` carries: a term that reaches `1.0` erases the
   others and the corpus reads a constant. A zero setpoint is refused at the
@@ -2659,7 +2664,10 @@ when touching it:
   each sensor's reading beside its line through `reading::read_charter`,
   and the two JSON surfaces render one shape through `reading::lines_json`
   with `reading` a *sibling* of `sensor`, because `sensor`'s two keys are
-  what the web serialiser writes back on a save.
+  what the web serialiser writes back on a save. The web handler takes the
+  readings through `spawn_blocking`, on `board.rs`'s rule at a larger cost:
+  three store reads and, for the corpus kind, a 200-transcript scan, inside
+  an async handler that also holds the SSE streams (found on review).
 
 **`Affect` is a pure function of the record and there is deliberately no way to
 report one.** A model that reads a run and says "frustrated" is an

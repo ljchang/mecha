@@ -1358,7 +1358,7 @@ pub const RUNS_WINDOW: usize = 200;
 /// Twenty rather than the trigger check's ten, because these rates are
 /// population statistics across mixed work rather than one job doing the same
 /// thing every morning, and the noise is correspondingly higher.
-const RUNS_MIN: usize = 20;
+pub const RUNS_MIN: usize = 20;
 
 /// The share of runs finishing over a failed call that is worth saying out
 /// loud. Deliberately high: rule-based evaluators are measured to *under*
@@ -2282,9 +2282,10 @@ fn check_sensor_saturation(
                 ),
                 detail: format!(
                     "sensor `{}`: either what it watches has genuinely waited past {} that whole \
-                     time — the store's own finding names the item — or the setpoint is tighter \
-                     than the line means (an hour where you meant a day). A reading that is \
-                     always past its setpoint is the constant the sensor exists to replace",
+                     time — the store's own findings name the item, a stuck draft or one whose \
+                     release failed — or the setpoint is tighter than the line means (an hour \
+                     where you meant a day). A reading that is always past its setpoint is the \
+                     constant the sensor exists to replace",
                     sensor.kind.wire(),
                     sensor.setpoint_text
                 ),

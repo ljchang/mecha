@@ -3587,10 +3587,11 @@ new binary from the served page (a `304` naming its `ETag`, not a bare one).
 against its store, on every run record, on every owner surface, and in the
 doctor against the owner's own number.** `GOAL-SYSTEM-DESIGN.md` §11.1's
 readings phase (#176, `feat/charter-readings`, unmerged when written).
-`reading.rs` reads a line as one of four states kept apart — `Unread`
+`reading.rs` reads a line as one of five states kept apart — `Unread`
 (store unreadable), `Deferred` (this reader does not scan that store),
-`Nothing` (nothing waits; the line is met by construction) and `Observed
-{ value, over, excess }` — and `excess`, the overshoot over the overshoot
+`Nothing` (nothing waits; the line is met by construction), `Sparse` (the
+corpus kind under the doctor's twenty-run floor) and `Observed { value,
+over, excess }` — and `excess`, the overshoot over the overshoot
 plus the setpoint, is the line-specific guilt term §11.1 promised in place
 of `guilt.rs`'s one saturated number: zero within the setpoint, half of
 maximal at twice it, never one, on `AGE_HALF_AT_HOURS`'s lesson that a term
@@ -3623,8 +3624,18 @@ page's `reading.state` read null — caught by the test). Smoke: a scratch
 home with three sensored lines and two pending drafts read `3d 16h, past the
 24h setpoint` / `2 waiting, past the 1 setpoint` / `no runs recorded yet`
 on `mecha charter`, and `mecha doctor` raised the owner's 24h over its own
-48h and named the line. Not built: the replay tiebreak, `board_overdue` and
-`cost`, and the reflection's "which line moved".
+48h and named the line. The review's first pass found three things, all
+fixed on the branch: the web handler ran three store reads and a possible
+200-transcript scan inline on the executor (`spawn_blocking` now, on
+`board.rs`'s rule); a corpus whose every transcript is torn read as
+`Nothing` — `Corpus::scan` is `Ok` with the rot counted, not `Err`, so
+"unreadable" was only ever a failure to list the directory, and unknown was
+reported as met (`corpus_rate_in` now tells the three apart, with a test on
+a torn file); and the surface printed a share off any denominator while the
+doctor refused one under twenty runs, in the one place containment 5 wants
+the owner judging a setpoint (`Reading::Sparse`). Not built: the replay
+tiebreak, `board_overdue` and `cost`, and the reflection's "which line
+moved".
 
 **2026-09-04, later — the goal system's second sprint PR: a reflection
 records where it was learned, a rule carries the region it applies in, and
