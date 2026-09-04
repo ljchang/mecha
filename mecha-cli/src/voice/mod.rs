@@ -106,7 +106,7 @@ unless the user asks you to go deep.";
 pub struct HostedTurn {
     pub events: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
     pub done: tokio::sync::oneshot::Receiver<Result<HostedAnswer, String>>,
-    pub cancel: CancellationToken,
+    pub cancel: mecha_core::agent::CancelHandle,
 }
 
 /// A hosted run's outcome, in the currency this facade answers in.
@@ -455,7 +455,9 @@ struct Slot {
 /// a new request (or a hang-up) can barge in.
 enum SlotState {
     Idle(Box<Slot>),
-    Running(CancellationToken),
+    /// The run's handle: barge-in and a dropped connection cancel as the
+    /// person (`Stopped`), a facade shutdown as the process (`Shutdown`).
+    Running(mecha_core::agent::CancelHandle),
 }
 
 /// How the facade is mounted. Standalone (`Mount::default()`) is what
@@ -614,7 +616,7 @@ impl Facade {
             let slots = self.shared.slots.lock().await;
             for state in slots.values() {
                 if let SlotState::Running(tok) = state {
-                    tok.cancel();
+                    tok.cancel(mecha_core::agent::CancelReason::Shutdown);
                 }
             }
         }
@@ -996,13 +998,13 @@ async fn write_chunk(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()>
 async fn take_slot(
     shared: &Arc<Shared>,
     key: &str,
-) -> Result<Option<(Box<Slot>, CancellationToken)>> {
+) -> Result<Option<(Box<Slot>, mecha_core::agent::CancelHandle)>> {
     for _ in 0..200 {
         {
             let mut slots = shared.slots.lock().await;
             match slots.remove(key) {
                 None => {
-                    let token = CancellationToken::new();
+                    let token = mecha_core::agent::CancelHandle::new();
                     slots.insert(key.to_string(), SlotState::Running(token.clone()));
                     drop(slots);
                     let created = Session::create(
@@ -1045,7 +1047,7 @@ async fn take_slot(
                     }
                 }
                 Some(SlotState::Idle(slot)) => {
-                    let token = CancellationToken::new();
+                    let token = mecha_core::agent::CancelHandle::new();
                     slots.insert(key.to_string(), SlotState::Running(token.clone()));
                     return Ok(Some((slot, token)));
                 }
@@ -1054,7 +1056,7 @@ async fn take_slot(
                     // A tool call is never interrupted mid-call, so a long
                     // one can outlast this whole window — that is the
                     // Ok(None) the caller answers with a 503.
-                    tok.cancel();
+                    tok.cancel(mecha_core::agent::CancelReason::Stopped);
                     slots.insert(key.to_string(), SlotState::Running(tok));
                 }
             }
@@ -1141,7 +1143,7 @@ async fn pump(
     id: &str,
     model: &str,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
-    cancel: &CancellationToken,
+    cancel: &mecha_core::agent::CancelHandle,
     want_stream: bool,
 ) -> Streamed {
     if !want_stream {
@@ -1151,7 +1153,7 @@ async fn pump(
     let mut said = String::new();
     let mut disconnected = !open_sse(stream, id, model).await;
     if disconnected {
-        cancel.cancel();
+        cancel.cancel(mecha_core::agent::CancelReason::Stopped);
     }
     let mut keepalive = tokio::time::interval(Duration::from_secs(5));
     keepalive.reset();
@@ -1172,7 +1174,7 @@ async fn pump(
                     }
                     let chunk = sse_chunk(id, model, json!({"content": t}), None);
                     if write_chunk(stream, chunk.as_bytes()).await.is_err() {
-                        cancel.cancel();
+                        cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                         disconnected = true;
                     }
                 }
@@ -1184,7 +1186,7 @@ async fn pump(
             _ = keepalive.tick() => {
                 if !disconnected
                     && write_chunk(stream, b": ping\n\n").await.is_err() {
-                    cancel.cancel();
+                    cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                     disconnected = true;
                 }
             }
@@ -1750,7 +1752,9 @@ async fn completion(
     // From here the slot must always find its way back into the map, so
     // nothing below uses `?` until it has.
     let mut cx = (**shared.agent.context()).clone();
-    cx.cancel = Some(cancel.clone());
+    // Through the builder, not a field write: the slot's handle carries this
+    // run's own reason cell.
+    cx = cx.with_cancel_handle(cancel.clone());
     // The facade's own slot is the *second* door a spoken turn can take, and
     // it needs the same narrowing the hosted one got.
     //

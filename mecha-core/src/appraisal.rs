@@ -838,6 +838,12 @@ pub struct SessionRecords<'a> {
     pub frontdoor_unreadable: bool,
     pub reflexions: &'a [crate::learning::Reflexion],
     pub learning_unreadable: bool,
+    /// The runs a person stopped, placed among the messages — see [`Stop`]
+    /// and [`stops_of`]. From the transcript, not a store, but it rides
+    /// here because it is session-scoped the way the drafts are: a stop is
+    /// attributed to the session, and `of_session` is a function that does
+    /// not walk transcripts.
+    pub stops: &'a [Stop],
     /// The owner's charter, for the sensored-line attribution
     /// (`docs/GOAL-SYSTEM-DESIGN.md` §11.1): an error whose pointer is an
     /// item a sensored line watches is attributed to that line when the run
@@ -1057,9 +1063,15 @@ pub fn of_session(
             controllable: None,
             cite: Cite::Counter("stop_cause".into()),
         }),
-        // `Interrupted` is **not** an error, on doctor's rule for the same
-        // field: a person pressing Ctrl-C is the system working, and counting
-        // it would make an attentive owner look like a problem.
+        // The cancellations are **not** counter errors. `Parked` is the
+        // mechanism working; `Shutdown` is nobody's verdict — the process or
+        // a wall-clock limit ended a run that may have been fine; and the
+        // older `Interrupted` is unknown-which and reads as none of them
+        // (`docs/APPRAISAL-RESEARCH.md` §3.3). `Stopped` *is* the owner's
+        // verdict, and it is read below on the intervention channel from
+        // `records.stops`, per run and placed among the messages, rather
+        // than here off the folded stop cause — which is the *last* run's
+        // and would miss every stop the owner re-prompted past.
         _ => {}
     }
 
@@ -1143,6 +1155,48 @@ pub fn of_session(
             visible: false,
             controllable: None,
             cite: Cite::Turn(i.at),
+        });
+    }
+
+    // --- Intervention, from the stop cause: a person stopped the run ---
+    //
+    // §3.3's two channels, both `Agency::Owner` and both signed like a steer:
+    // **stopped and re-prompted in the same session** is a redirect, cited at
+    // the re-prompt; **stopped and never resumed** is the abandonment signal
+    // the dialogue-feedback literature ranks highest (§6.2), cited at the
+    // stop. A run that ended on a parked question, a shutdown, or the
+    // unknown-which `Interrupted` is not here: `stops_of` admits only
+    // `Stopped`.
+    //
+    // **Counted once.** A re-prompt pushed as its own message is the
+    // `Followup` the loop above skips, so the stop is its only reading. A
+    // re-prompt *folded* into the trailing tool-result message — the common
+    // shape, see `stops_of` — is a `Steer` the loop above already signed at
+    // that very index, so the stop yields to it: same owner act, one error,
+    // and the probe (which joins on `Cite::Turn`) sees one thing to probe
+    // (found on review). And two *stops* that resolve to one re-prompt —
+    // a delegated run stopped, resumed by the harness with no owner turn
+    // between, stopped again — are one owner act too, so the set grows as
+    // stops are signed rather than being fixed from the interventions
+    // (found on review, second pass).
+    let mut signed_at: std::collections::BTreeSet<usize> = interventions
+        .iter()
+        .filter(|i| i.trigger != crate::learning::Trigger::Followup)
+        .map(|i| i.at)
+        .collect();
+    for s in records.stops {
+        let cite = s.resumed_at.unwrap_or(s.at.saturating_sub(1));
+        if !signed_at.insert(cite) {
+            continue;
+        }
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Intervention,
+            sign: -1.0,
+            agency: Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: Cite::Turn(cite),
         });
     }
 
@@ -1460,6 +1514,83 @@ pub fn for_session(
     for_transcript(&transcript, session_id, created_at, records, goal)
 }
 
+/// A run a person stopped, placed among the messages: `at` is the message
+/// count when its outcome was written (so the run's last turn is `at - 1`),
+/// and `resumed_at` the index of the owner's next prompt in the same
+/// session, when there was one. Two readings, both the owner's
+/// (`docs/APPRAISAL-RESEARCH.md` §3.3): resumed is a redirect, not resumed
+/// is an abandonment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stop {
+    pub at: usize,
+    pub resumed_at: Option<usize>,
+}
+
+/// The stops in a transcript, from its per-run outcomes and their positions
+/// (`Transcript::outcomes` / `outcome_positions`). Only `StopCause::Stopped`
+/// qualifies: `Parked` is the mechanism working, `Shutdown` is nobody's
+/// verdict, and the older `Interrupted` is unknown-which and admitted as
+/// none of them. A stop whose position is `None` — recorded before a
+/// summarising compaction — is skipped rather than placed by guess.
+///
+/// **Where the re-prompt is.** The common stop lands during a tool call:
+/// the loop checks its token at the top of the turn, *after* the tool
+/// results were appended, so the transcript ends on a user message of
+/// results, and every front-end's next prompt is *folded into that
+/// message* (`agent::append_user_text`) rather than pushed after it. So
+/// the fold target, `at - 1`, is looked at first: owner text there is the
+/// re-prompt. Otherwise the re-prompt is the first user message at or
+/// after `at` with text of the owner's — harness voice (a nudge, a boredom
+/// notice, a delivery header) is skipped the way `extract_interventions`
+/// skips it, or the harness's own words would read as the owner coming
+/// back (found on review, both halves).
+pub fn stops_of(
+    outcomes: &[crate::session::RunStats],
+    positions: &[Option<usize>],
+    messages: &[crate::message::Message],
+) -> Vec<Stop> {
+    outcomes
+        .iter()
+        .zip(positions)
+        .filter(|(o, _)| o.stop_cause == Some(crate::agent::StopCause::Stopped))
+        .filter_map(|(_, at)| *at)
+        .map(|at| {
+            let folded = at
+                .checked_sub(1)
+                .and_then(|i| messages.get(i))
+                .is_some_and(|m| {
+                    m.role == crate::message::Role::User
+                        && m.content
+                            .iter()
+                            .any(|b| matches!(b, crate::message::Block::ToolResult { .. }))
+                        && owner_text(m)
+                });
+            let resumed_at = if folded {
+                Some(at - 1)
+            } else {
+                messages
+                    .iter()
+                    .enumerate()
+                    .skip(at)
+                    .find(|(_, m)| m.role == crate::message::Role::User && owner_text(m))
+                    .map(|(i, _)| i)
+            };
+            Stop { at, resumed_at }
+        })
+        .collect()
+}
+
+/// Does this message carry text a person typed — any text block that is not
+/// the harness's own voice?
+fn owner_text(m: &crate::message::Message) -> bool {
+    m.content.iter().any(|b| match b {
+        crate::message::Block::Text { text } => {
+            !text.trim().is_empty() && !crate::agent::is_harness_voice(text)
+        }
+        _ => false,
+    })
+}
+
 /// The same, for a caller that already read the transcript — `mecha
 /// distill`, which needs the messages again afterwards to render the
 /// distillation, used to pay four complete read-and-parse passes per session
@@ -1477,6 +1608,15 @@ pub fn for_transcript(
     let stats = transcript.episode.as_ref()?;
     let messages = &transcript.convo.messages;
     let interventions = crate::learning::extract_interventions(messages);
+    let stops = stops_of(
+        &transcript.outcomes,
+        &transcript.outcome_positions,
+        messages,
+    );
+    let records = SessionRecords {
+        stops: &stops,
+        ..records
+    };
     // Without a goal, `of_session` never has one to attribute anything to —
     // see the matching comment in `mecha sessions appraise` for why an
     // absent goal is recorded rather than guessed.
@@ -2507,6 +2647,9 @@ mod tests {
             StopCause::OutputTokenBudget,
             StopCause::CostBudget,
             StopCause::Interrupted,
+            StopCause::Parked,
+            StopCause::Stopped,
+            StopCause::Shutdown,
             StopCause::Loop,
             StopCause::NoOutput,
         ];
@@ -2517,6 +2660,9 @@ mod tests {
                 | StopCause::OutputTokenBudget
                 | StopCause::CostBudget
                 | StopCause::Interrupted
+                | StopCause::Parked
+                | StopCause::Stopped
+                | StopCause::Shutdown
                 | StopCause::Loop
                 | StopCause::NoOutput => {}
             }
@@ -2556,6 +2702,279 @@ mod tests {
     }
 
     // --- the assembler ---
+
+    fn said(text: &str) -> crate::message::Message {
+        crate::message::Message::assistant(vec![crate::message::Block::Text { text: text.into() }])
+    }
+
+    /// §3.3's first channel: a run the owner stopped and then re-prompted is
+    /// a redirect, cited at the re-prompt, on the intervention channel with
+    /// the owner's agency — and not counted twice, since the re-prompt is
+    /// the follow-up the intervention loop skips.
+    #[test]
+    fn a_stopped_run_reprompted_is_the_owners_redirect_at_the_reprompt() {
+        use crate::agent::StopCause;
+        use crate::message::Message;
+        let messages = vec![
+            Message::user("do the thing"),
+            said("starting…"),
+            Message::user("no — the other thing"),
+            said("done"),
+        ];
+        let mut stopped = stats();
+        stopped.stop_cause = Some(StopCause::Stopped);
+        let mut done = stats();
+        done.stop_cause = Some(StopCause::Completed);
+        // The first run ended after two messages; the second after four.
+        let stops = stops_of(&[stopped, done.clone()], &[Some(2), Some(4)], &messages);
+        assert_eq!(
+            stops,
+            vec![Stop {
+                at: 2,
+                resumed_at: Some(2)
+            }]
+        );
+
+        let a = of_session(
+            "s",
+            &done,
+            &[],
+            &[],
+            SessionRecords {
+                stops: &stops,
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "t".into(),
+        );
+        let stop_errors: Vec<_> = a
+            .errors
+            .iter()
+            .filter(|e| e.channel == Channel::Intervention)
+            .collect();
+        assert_eq!(stop_errors.len(), 1, "{:?}", a.errors);
+        let e = stop_errors[0];
+        assert_eq!(e.sign, -1.0);
+        assert_eq!(e.agency, Agency::Owner);
+        assert_eq!(e.cite, Cite::Turn(2), "cited at the re-prompt");
+        assert!(Valence::of(&a).negatives >= 1);
+    }
+
+    /// §3.3's second channel: stopped and never resumed is the abandonment
+    /// signal, cited at the stop.
+    #[test]
+    fn a_stopped_run_never_resumed_is_an_abandonment_at_the_stop() {
+        use crate::agent::StopCause;
+        use crate::message::Message;
+        let messages = vec![Message::user("do the thing"), said("starting…")];
+        let mut stopped = stats();
+        stopped.stop_cause = Some(StopCause::Stopped);
+        let stops = stops_of(std::slice::from_ref(&stopped), &[Some(2)], &messages);
+        assert_eq!(
+            stops,
+            vec![Stop {
+                at: 2,
+                resumed_at: None
+            }]
+        );
+        let a = of_session(
+            "s",
+            &stopped,
+            &[],
+            &[],
+            SessionRecords {
+                stops: &stops,
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "t".into(),
+        );
+        let e = a
+            .errors
+            .iter()
+            .find(|e| e.channel == Channel::Intervention)
+            .expect("the abandonment is signed");
+        assert_eq!(e.cite, Cite::Turn(1), "the run's last turn");
+        assert_eq!(e.agency, Agency::Owner);
+    }
+
+    /// The other three cancellations sign nothing: a park is the mechanism
+    /// working, a shutdown is nobody's verdict, and the older `Interrupted`
+    /// is unknown-which and must not be read as any of them. Asserted
+    /// through `stops_of` (which admits none) and through the counter arm
+    /// (which signs none), so both doors are checked.
+    #[test]
+    fn parked_shutdown_and_legacy_interrupted_sign_nothing() {
+        use crate::agent::StopCause;
+        use crate::message::Message;
+        let messages = vec![Message::user("go"), said("…")];
+        for cause in [
+            StopCause::Parked,
+            StopCause::Shutdown,
+            StopCause::Interrupted,
+        ] {
+            let mut s = stats();
+            s.stop_cause = Some(cause);
+            assert!(
+                stops_of(std::slice::from_ref(&s), &[Some(2)], &messages).is_empty(),
+                "{cause:?}"
+            );
+            let a = of_session(
+                "s",
+                &s,
+                &[],
+                &[],
+                SessionRecords::default(),
+                Some(crate::agent::Taint::default()),
+                "t".into(),
+            );
+            assert!(
+                a.errors.iter().all(|e| e.sign >= 0.0),
+                "{cause:?} must sign no negative: {:?}",
+                a.errors
+            );
+        }
+    }
+
+    /// The common stop shape (found on review): Ctrl-C during a tool call
+    /// leaves the transcript ending on the tool results, and the owner's
+    /// next prompt is *folded into that message*, where the extractor
+    /// already files it as a `Steer`. The stop must find the re-prompt at
+    /// `at - 1`, and `of_session` must count the owner's one act once —
+    /// the steer's error, not a second stop error at the same index.
+    #[test]
+    fn a_stop_during_a_tool_call_finds_the_folded_reprompt_and_counts_once() {
+        use crate::agent::StopCause;
+        use crate::message::{Block, Message};
+        let messages = vec![
+            Message::user("do the thing"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "t1".into(),
+                name: "shell".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }]),
+            Message::tool_results(vec![
+                Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "a b c".into(),
+                    is_error: false,
+                },
+                Block::text("no — the other thing"),
+            ]),
+            said("done"),
+        ];
+        let mut stopped = stats();
+        stopped.stop_cause = Some(StopCause::Stopped);
+        let stops = stops_of(std::slice::from_ref(&stopped), &[Some(3)], &messages);
+        assert_eq!(
+            stops,
+            vec![Stop {
+                at: 3,
+                resumed_at: Some(2)
+            }],
+            "folded, at `at - 1`"
+        );
+
+        let interventions = crate::learning::extract_interventions(&messages);
+        assert!(
+            interventions
+                .iter()
+                .any(|i| i.trigger == crate::learning::Trigger::Steer && i.at == 2),
+            "the extractor files the folded re-prompt as a steer: {interventions:?}"
+        );
+        let a = of_session(
+            "s",
+            &stopped,
+            &[],
+            &interventions,
+            SessionRecords {
+                stops: &stops,
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "t".into(),
+        );
+        let at_two: Vec<_> = a
+            .errors
+            .iter()
+            .filter(|e| e.channel == Channel::Intervention && e.cite == Cite::Turn(2))
+            .collect();
+        assert_eq!(at_two.len(), 1, "one owner act, one error: {:?}", a.errors);
+    }
+
+    /// Two stops with no owner turn between them share one re-prompt and
+    /// are one owner act: one error, not two (found on review, second
+    /// pass) — the delegated-run shape, stopped, resumed by the harness
+    /// under a delivery header, stopped again, then the owner types.
+    #[test]
+    fn two_stops_sharing_a_reprompt_sign_once() {
+        use crate::agent::StopCause;
+        use crate::message::Message;
+        let messages = vec![
+            Message::user("do the thing"),
+            said("starting…"),
+            Message::user(format!("{} someone", crate::mailbox::DELIVERY_STEM)),
+            said("resumed…"),
+            Message::user("enough — do the other thing"),
+        ];
+        let mut stopped = stats();
+        stopped.stop_cause = Some(StopCause::Stopped);
+        let stops = stops_of(
+            &[stopped.clone(), stopped.clone()],
+            &[Some(2), Some(4)],
+            &messages,
+        );
+        assert_eq!(stops.len(), 2);
+        assert!(stops.iter().all(|s| s.resumed_at == Some(4)), "{stops:?}");
+        let a = of_session(
+            "s",
+            &stopped,
+            &[],
+            &[],
+            SessionRecords {
+                stops: &stops,
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "t".into(),
+        );
+        let at_four = a
+            .errors
+            .iter()
+            .filter(|e| e.channel == Channel::Intervention && e.cite == Cite::Turn(4))
+            .count();
+        assert_eq!(at_four, 1, "{:?}", a.errors);
+    }
+
+    /// The harness's own words after a stop are not the owner coming back:
+    /// a nudge pushed as user text is skipped, the way the extractor skips
+    /// it, and the stop reads as an abandonment. And a stop recorded before
+    /// a summarising compaction has no place and is skipped, never cited
+    /// past the end of a list it was not recorded against.
+    #[test]
+    fn harness_voice_is_not_a_reprompt_and_an_unplaced_stop_is_skipped() {
+        use crate::agent::StopCause;
+        use crate::message::Message;
+        let messages = vec![
+            Message::user("go"),
+            said("…"),
+            Message::user(crate::agent::EMPTY_TURN_NUDGE),
+        ];
+        let mut stopped = stats();
+        stopped.stop_cause = Some(StopCause::Stopped);
+        assert_eq!(
+            stops_of(std::slice::from_ref(&stopped), &[Some(2)], &messages),
+            vec![Stop {
+                at: 2,
+                resumed_at: None
+            }],
+            "a nudge is the harness talking"
+        );
+        assert!(
+            stops_of(std::slice::from_ref(&stopped), &[None], &messages).is_empty(),
+            "no place, no stop"
+        );
+    }
 
     fn stats() -> crate::session::RunStats {
         crate::session::RunStats {
@@ -3194,6 +3613,7 @@ mod tests {
 
     fn bare_outcome() -> crate::agent::RunOutcome {
         crate::agent::RunOutcome {
+            duration_secs: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,

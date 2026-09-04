@@ -63,7 +63,7 @@ type RunResult = (Result<RunOutcome>, Conversation);
 /// What the agent is doing, and everything needed to steer or stop it.
 struct Running {
     handle: JoinHandle<RunResult>,
-    cancel: CancellationToken,
+    cancel: mecha_core::agent::CancelHandle,
     /// Where a mid-run line goes. Shared with the [`RunContext`] the task holds.
     queue: Arc<Mutex<VecDeque<String>>>,
     started: std::time::Instant,
@@ -2809,7 +2809,7 @@ fn on_key(
         KeyCode::Char('c') if ctrl => match &mut app.running {
             // Stop the run, not the process. The partial answer survives.
             Some(run) => {
-                run.cancel.cancel();
+                run.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                 run.cancelling = true;
             }
             None if app.quit_armed => app.should_quit = true,
@@ -3764,15 +3764,17 @@ fn submit(
     *events_tx = tx.clone();
     *events_rx = rx;
 
-    let cancel = CancellationToken::new();
     let queue = Arc::new(Mutex::new(VecDeque::new()));
     let cx = agent
         .context()
         .as_ref()
         .clone()
-        .with_cancel(cancel.clone())
+        .with_cancel(CancellationToken::new())
         .with_phase(app.phase)
         .with_queued_input(Arc::clone(&queue));
+    // The handle, not the bare token: Ctrl-C cancels *as the owner*, and the
+    // outcome records `Stopped` rather than the unknown-which `Interrupted`.
+    let cancel = cx.cancel_handle().expect("with_cancel just set it");
 
     // **Attached, one run's events go to two places.** The agent takes a single
     // sender, so the split is a task rather than a second subscription:
@@ -10022,7 +10024,7 @@ mod tests {
         let mut app = test_app();
         app.running = Some(Running {
             handle: tokio::spawn(async { std::future::pending::<RunResult>().await }),
-            cancel: CancellationToken::new(),
+            cancel: mecha_core::agent::CancelHandle::new(),
             queue: Arc::new(Mutex::new(VecDeque::new())),
             started: std::time::Instant::now(),
             cancelling: false,
