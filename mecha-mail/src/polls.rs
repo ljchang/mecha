@@ -314,7 +314,10 @@ pub fn save(record: &PollRecord) -> Result<()> {
             )
         })?,
         // Gone since the load: write what we have rather than lose the tick.
-        Err(_) => record.value.clone(),
+        // Any other failure to read is not a licence to write a snapshot
+        // over the other verbs' keys — the one thing the dirty set prevents.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => record.value.clone(),
+        Err(e) => return Err(e).with_context(|| format!("re-reading {}", record.path.display())),
     };
     if !current["lifecycle"].is_object() {
         current["lifecycle"] = json!({});

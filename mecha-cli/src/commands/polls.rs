@@ -207,7 +207,11 @@ pub fn save(record: &PollRecord) -> Result<()> {
                 record.path.display()
             )
         })?,
-        Err(_) => record.value.clone(),
+        // Gone since the load: write what we have rather than lose the tick.
+        // Any other failure to read is not a licence to write a snapshot
+        // over the other verbs' keys — the one thing the dirty set prevents.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => record.value.clone(),
+        Err(e) => return Err(e).with_context(|| format!("re-reading {}", record.path.display())),
     };
     if !current["lifecycle"].is_object() {
         current["lifecycle"] = json!({});
@@ -233,6 +237,9 @@ pub fn summary(life: &Value) -> String {
     let booked = !life["booked"].is_null();
     match life["verdict"].as_str() {
         Some("book") if booked => "booked".into(),
+        // A collision the mail half wrote down, waiting on the factory
+        // sweep to turn it into a pick: parked, and never a quiet "booking".
+        Some("book") if !life["conflict"].is_null() => "booking blocked — collision".into(),
         Some("book") => "booking".into(),
         Some("pick") if booked => "booked (your pick)".into(),
         Some("pick") if !life["pick_item"].is_null() => "needs a pick — in the outbox".into(),
@@ -357,6 +364,10 @@ pub fn pick_args(record: &PollRecord, index: usize) -> Result<Value> {
     if let Some(conflict) = life["conflict"].as_str() {
         description.push_str(&format!("\nNote: {conflict}.\n"));
     }
+    // The card's own name for its poll — what lets a tick that staged the
+    // card but never wrote `pick_item` find it again instead of staging a
+    // second one.
+    description.push_str(&format!("\n{}\n", poll_marker(&record.poll_id)));
     let mut args = json!({
         "title": record.title,
         "start_time": row["start"],
@@ -392,6 +403,27 @@ pub fn repick(record: &PollRecord, current: &Value, index: usize) -> Result<Valu
         args["description"] = fresh["description"].clone();
     }
     Ok(args)
+}
+
+/// The line on a pick card that names its poll.
+pub fn poll_marker(poll_id: &str) -> String {
+    format!("poll: {poll_id}")
+}
+
+/// A pending pick card for this poll already in the store — staged by a
+/// tick that then failed to write `pick_item` — or nothing. Without this
+/// the gap between `stage` and `save` orphaned a releasable calendar draft
+/// and the next tick staged a second, which is two events for one poll.
+fn adoptable_card(store: &OutboxStore, tool: &str, poll_id: &str) -> Result<Option<OutboxItem>> {
+    let marker = poll_marker(poll_id);
+    Ok(store.items()?.into_iter().find(|item| {
+        item.status == "pending"
+            && item.author == mecha_core::outbox::Author::Harness
+            && item.tool == tool
+            && item.args["description"]
+                .as_str()
+                .is_some_and(|d| d.lines().any(|l| l == marker))
+    }))
 }
 
 /// Which ranked candidate a draft currently holds, by its start.
@@ -501,6 +533,13 @@ fn step(
                 return Ok(None);
             }
             let tool = create_event_tool(cfg)?;
+            if let Some(orphan) = adoptable_card(store, &tool, &record.poll_id)? {
+                record.set("pick_item", json!(orphan.id));
+                return Ok(Some(format!(
+                    "adopted pick card {} staged by an earlier tick that could not write the record",
+                    orphan.id
+                )));
+            }
             let args = pick_args(record, 0)?;
             // The harness's own bookkeeping: the owner's records and the
             // box's enum answers, no model, and a release that says nothing
@@ -665,6 +704,10 @@ mod tests {
             "{description}"
         );
         assert!(description.contains("Never answered: Tal."));
+        assert!(
+            description.lines().any(|l| l == "poll: lab-20300128"),
+            "{description}"
+        );
 
         let err = pick_args(&r, 2).unwrap_err().to_string();
         assert!(err.contains("2 candidate(s), not 3"), "{err}");
@@ -749,6 +792,10 @@ mod tests {
             "needs a pick — in the outbox"
         );
         assert_eq!(summary(&json!({"verdict": "book"})), "booking");
+        assert_eq!(
+            summary(&json!({"verdict": "book", "conflict": "busy"})),
+            "booking blocked — collision"
+        );
         assert_eq!(summary(&json!({"verdict": "book", "booked": {}})), "booked");
         assert_eq!(summary(&json!({"verdict": "no_time"})), "no time found");
         assert_eq!(summary(&json!({"verdict": "closed"})), "closed");
@@ -859,6 +906,29 @@ mod tests {
         step(&mut r, &store, &cfg).unwrap().expect("resolved");
         assert_eq!(r.lifecycle()["verdict"], "no_time");
         assert_eq!(r.lifecycle()["resolution"], "Let's do it async");
+
+        // A tick that staged and lost the write: the next one adopts the
+        // card rather than staging a second.
+        let mut r = record(json!({"verdict": "pick", "ranked": ranked(), "timezone": "UTC"}));
+        step(&mut r, &store, &cfg).unwrap();
+        let staged = r.lifecycle()["pick_item"].as_str().unwrap().to_string();
+        let mut lost = record(json!({"verdict": "pick", "ranked": ranked(), "timezone": "UTC"}));
+        let line = step(&mut lost, &store, &cfg).unwrap().expect("adopted");
+        assert!(line.contains("adopted"), "{line}");
+        assert_eq!(lost.lifecycle()["pick_item"], staged);
+        let pending = store
+            .items()
+            .unwrap()
+            .into_iter()
+            .filter(|i| {
+                i.status == "pending"
+                    && i.args["description"]
+                        .as_str()
+                        .unwrap_or("")
+                        .contains("poll: lab-20300128")
+            })
+            .count();
+        assert_eq!(pending, 1, "one card for one poll");
 
         // Unrouted: refused, not staged somewhere nothing releases.
         let mut r = record(json!({"verdict": "pick", "ranked": ranked()}));
