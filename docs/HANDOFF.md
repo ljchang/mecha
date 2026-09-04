@@ -1649,10 +1649,17 @@ the `mecha-slack` crate and both graph binaries untouched: `git diff
 graph checkout has not moved. The `/proc/*/exe` sweep still shows the two
 `mecha-graph-mcp` children from the 19:41Z row (pids 2652610 and 2947935)
 executing the binary replaced at 15:25Z, under other sessions' hosts —
-left alone. No `~/.mecha/config.toml` change. **Owed to the owner now
-that the binary carries #184:** `mecha reflect --backfill-situations
---dry-run`, then the write (37 of 45 on the day's dry run), and a sensored
-line on the live charter, which still has none.
+left alone. No `~/.mecha/config.toml` change. **The owner ran the
+backfill at 23:12:30Z** on this binary: 37 of 45 reflections carry a
+recomputed situation, 8 stay absent (6 with no intervention of that
+trigger and text left in the transcript, 2 citing a session not in the
+store), committed in the learning store's own history as `5767dc4`
+(`reflect --backfill-situations: 37 situation(s) recomputed, 8 left
+absent`), and a second dry run reads `0 of 8` — verified from this lane by
+reading `reflections.jsonl` and the store's `git log`, not the printout
+(the pasted write output was missing two lines the store holds). The next
+`learn --auto` argues the region batches those situations put the 37 in.
+**Still owed:** a sensored line on the live charter, which has none.
 
 ## What the measurements say
 
@@ -2657,8 +2664,8 @@ keeps it off by default until the null-step and restart counters are read),
 region widening and narrowing in consolidation, per-region validation
 budgets, the situation backfill (§17.7 item 6 — **built 2026-09-04 night
 as `mecha reflect --backfill-situations`, `feat/situation-backfill`;
-dry-run on the live store: 37 of 45 recomputable, 8 absent with reasons;
-the write is the owner's to run, after the binary is reinstalled**), and
+the owner ran the write 2026-09-04 23:12Z: 37 of 45 recomputed, 8 absent
+with reasons, learning-store commit `5767dc4`**), and
 surface and workspace as *scope* keys — both are
 recorded, neither is matched, for the reasons in `situation.rs`'s module doc
 (the surface needs `prepare` to be told the session kind; the workspace
