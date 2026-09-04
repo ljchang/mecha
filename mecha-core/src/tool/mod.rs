@@ -902,8 +902,12 @@ impl DenialRule {
 }
 
 /// An approver that answers a scripted refusal ahead of the one beneath
-/// it, and hands every other call — and every escalation, consultation
-/// and permit — to that one unchanged. Strict at load: a denials file that
+/// it — on every path a call reaches an approver by: `approve`, the
+/// `permit` an approval rule's allow routes to, an escalation, a
+/// consultation — and hands every other call to that one unchanged.
+/// **A rule naming a read-only tool can never fire**: the loop consults
+/// no approver for a read-only call, so a refusal of `fs_read` or
+/// `http_fetch` is a rule the run never sees. Strict at load: a denials file that
 /// cannot be read stops the run, because a run that silently allowed what
 /// its owner scripted a refusal for would be measured as an owner who
 /// never refused.
@@ -959,8 +963,16 @@ impl Approver for FileDenyApprover {
         }
     }
 
+    /// The path a call takes when an approval rule already allows it —
+    /// the ordinary unattended posture, which every trial home carries.
+    /// A scripted refusal narrows and never widens, so it answers here
+    /// too; the first cut handed this path through, and a refusal never
+    /// fired under a rule that allowed the tool (found on review).
     async fn permit(&self, tool: &dyn Tool, input: &Value) -> Decision {
-        self.inner.permit(tool, input).await
+        match self.scripted(tool, input) {
+            Some(d) => d,
+            None => self.inner.permit(tool, input).await,
+        }
     }
 }
 
@@ -1260,6 +1272,13 @@ mod denial_tests {
             approver.approve(&Echo, &any).await,
             Decision::Deny("leave that alone".into())
         );
+        // The permit path — an approval rule's allow — refuses the same
+        // way, or the ordinary unattended posture never sees a refusal.
+        assert_eq!(
+            approver.permit(&Echo, &rm).await,
+            Decision::Deny("not on my machine".into())
+        );
+        assert_eq!(approver.permit(&Echo, &ls).await, Decision::Allow);
     }
 
     /// The file is strict: a rule with a key this build does not know, or

@@ -528,7 +528,11 @@ fn principal_done(
         r.stage == StageLever::Principal
             && r.after_position == position
             && r.point == Some(point)
-            && r.status == mecha_core::experiment::StageStatus::Done
+            && matches!(
+                r.status,
+                mecha_core::experiment::StageStatus::Done
+                    | mecha_core::experiment::StageStatus::Skipped
+            )
     })
 }
 
@@ -609,6 +613,14 @@ async fn principal_call(
         std::fs::create_dir_all(&workspace)?;
         if let Some(parent) = log.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+        // Before the call, not after its success: a principal that failed
+        // to answer must not leave the last position's refusals armed for
+        // this task — the failure is on the ledger, but the task would
+        // have run under a treatment nobody asked for (found on review).
+        if point == PrincipalPoint::BeforeTask {
+            mecha_core::experiment::write_denials(home, &[])
+                .context("clearing the last position's refusals")?;
         }
         let input = PrincipalInput {
             point,
