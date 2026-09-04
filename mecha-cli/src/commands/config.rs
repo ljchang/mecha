@@ -173,9 +173,9 @@ mark_untrusted_output = true
 # [[mcp]]
 # name = "graph"
 # command = "mecha-graph-mcp"   # or an absolute path: a service unit without
-#                                # ~/.cargo/bin on its PATH will not find the
-#                                # bare name, and a server that fails to spawn
-#                                # is skipped, not fatal — the tools just vanish
+#                               # ~/.cargo/bin on its PATH will not find the
+#                               # bare name, and a server that fails to spawn
+#                               # is skipped, not fatal — the tools just vanish
 # args = []
 # # Its kg_* tools carry their own namespace; skip the graph__ prefix.
 # prefix_tools = false
