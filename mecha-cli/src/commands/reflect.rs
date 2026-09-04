@@ -456,11 +456,12 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
                     format!("no session matching \"{}\"", r.session_id)
                 }
             })?;
-            let (meta, convo) = Session::load(path).map_err(|e| format!("{e:#}"))?;
+            let (meta, convo) =
+                Session::load(path).map_err(|e| format!("session unreadable: {e:#}"))?;
             Ok((meta, extract_interventions(&convo.messages)))
         });
         match read {
-            Err(why) => unmatched.push((r.id.clone(), format!("session unreadable: {why}"))),
+            Err(why) => unmatched.push((r.id.clone(), why.clone())),
             Ok((meta, interventions)) => match backfill_situation(r, interventions, meta) {
                 Backfilled::Matched(s) => updates.push((r.id.clone(), s)),
                 Backfilled::NoMatch => unmatched.push((
@@ -504,7 +505,7 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
         "{verb} {written} of {} situation(s); {} left absent, {} session(s) read{}",
         todo.len(),
         unmatched.len(),
-        by_session.len(),
+        by_session.values().filter(|r| r.is_ok()).count(),
         if unreadable_sessions > 0 {
             format!(", {unreadable_sessions} transcript(s) in the store unreadable")
         } else {
