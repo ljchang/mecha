@@ -64,7 +64,7 @@ An arm may name its `provider` (a key in your config's `[providers]` table)
 and `model`; absent, it runs against your default. Beyond that it may only
 vary the closed set: levers by name in `levers_off`, or turned back on
 after a preset in `levers_on` (`bare` plus `learned_rules` is the
-add-one-to-bare design; a name in both lists is on), knobs (the list is
+add-one-to-bare design; a name in both lists is on — the list of levers is
 `mecha_core::harness::Lever`), knobs as `KEY=VALUE` over the same override set
 `harness ruminate` uses, and a preset — `bare` is what eval runs, `full` is
 every lever on. An unknown lever name is a load error. The `approval_rules`
