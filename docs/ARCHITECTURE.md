@@ -3283,8 +3283,12 @@ comparison over a chosen set**, with the design written before the run.
   which is the point: inside a trial home the principal *is* the owner,
   and D12 is what keeps the same file from authoring the real owner's
   corrections. The approver is strict at load (an unreadable file stops
-  the run) and hands every unmatched call, escalation and consultation
-  to the approver beneath it. What the principal cannot do yet is close
+  the run), answers on every path a call reaches an approver by —
+  `approve`, the `permit` an allow rule routes to, escalation,
+  consultation; a read-only call reaches none, so a refusal of a
+  read-only tool never fires — hands every unmatched call to the
+  approver beneath it, and the file is cleared *before* each call so a
+  principal that failed to answer leaves no stale refusal armed. What the principal cannot do yet is close
   board tasks: the board is the graph's, over MCP, and a trial home has
   no graph — the closure channel waits on a fixture graph server.
 
