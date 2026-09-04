@@ -452,14 +452,14 @@ async fn measure(
 
     eprintln!(
         "\nmeasuring `{}` over {} selected + {} held-out episode(s) × 2 arms \
-         (seed {}, {} ranked by a charter line, {} unusable session(s) passed over)",
+         (seed {}, {}, {} unusable session(s) passed over)",
         change.spec(),
         draw.selection.len(),
         draw.holdout.len(),
         draw.seed,
         match draw.ranked {
-            Some(n) => format!("{n} of the selection"),
-            None => "none — the charter did not load".to_string(),
+            Some(n) => format!("{n} of the selection ranked by a charter line"),
+            None => "the charter did not load, so nothing was ranked".to_string(),
         },
         unusable
     );

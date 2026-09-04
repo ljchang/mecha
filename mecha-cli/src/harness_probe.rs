@@ -541,8 +541,11 @@ mod tests {
         use mecha_core::message::{Block, Message};
         use mecha_core::session::{Record, RunConfig, Session, SessionMeta};
 
-        let dir = std::env::temp_dir().join(format!("mecha-probe-ws-{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
+        // Under a scratch home: the draw reads the charter and, where it has
+        // lines, the stores, so a test without one would read the
+        // developer's real `~/.mecha` (found on review).
+        let home = crate::testenv::HomeGuard::new("probe-ws");
+        let dir = home.dir.join("sessions");
         std::fs::create_dir_all(&dir).unwrap();
         let replayable = |s: &Session| {
             s.append(&Record::Config(RunConfig::default())).unwrap();
