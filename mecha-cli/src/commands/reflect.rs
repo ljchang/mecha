@@ -49,7 +49,7 @@ pub struct Args {
     /// whose intervention cannot be found once in its transcript stays
     /// without one. Idempotent: a reflection that has a situation is never
     /// touched. `--dry-run` reports what would be written.
-    #[arg(long, conflicts_with = "remine_untrusted")]
+    #[arg(long, conflicts_with_all = ["remine_untrusted", "limit"])]
     pub backfill_situations: bool,
 }
 
@@ -418,7 +418,12 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
     // The store listed once — `Session::find` is a full scan of the
     // directory per call (found on review) — then one read per cited
     // session, shared by every reflection that cites it.
-    let paths: std::collections::HashMap<String, std::path::PathBuf> = Session::list(sessions_dir)?
+    // `list_counting`, not `list`: a transcript whose header cannot be read
+    // is absent from the map, and a reflection citing it must not read as
+    // citing a session that was deleted (found on review) — the count is
+    // carried into that reason and the summary line.
+    let (listed, unreadable_sessions) = Session::list_counting(sessions_dir)?;
+    let paths: std::collections::HashMap<String, std::path::PathBuf> = listed
         .into_iter()
         .map(|(meta, path)| (meta.id, path))
         .collect();
@@ -440,9 +445,17 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
             continue;
         }
         let read = by_session.entry(r.session_id.clone()).or_insert_with(|| {
-            let path = paths
-                .get(&r.session_id)
-                .ok_or_else(|| format!("no session matching \"{}\"", r.session_id))?;
+            let path = paths.get(&r.session_id).ok_or_else(|| {
+                if unreadable_sessions > 0 {
+                    format!(
+                        "no readable session matching \"{}\" — {unreadable_sessions} \
+                             transcript(s) in the store could not be read, and it may be one",
+                        r.session_id
+                    )
+                } else {
+                    format!("no session matching \"{}\"", r.session_id)
+                }
+            })?;
             let (meta, convo) = Session::load(path).map_err(|e| format!("{e:#}"))?;
             Ok((meta, extract_interventions(&convo.messages)))
         });
@@ -488,10 +501,15 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
         written
     };
     println!(
-        "{verb} {written} of {} situation(s); {} left absent, {} session(s) read",
+        "{verb} {written} of {} situation(s); {} left absent, {} session(s) read{}",
         todo.len(),
         unmatched.len(),
-        by_session.len()
+        by_session.len(),
+        if unreadable_sessions > 0 {
+            format!(", {unreadable_sessions} transcript(s) in the store unreadable")
+        } else {
+            String::new()
+        }
     );
     Ok(())
 }
