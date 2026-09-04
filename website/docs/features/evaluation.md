@@ -329,8 +329,8 @@ inference.
 Four properties come from the gate rather than from this command:
 
 - **Paired by case, and split.** A case is scored on pass^k in both arms. One in
-  `--holdout-in` cases (default 3) is held out of selection by a draw seeded
-  from the override itself — never at random, so the same override over the
+  `--holdout-in` cases (default 3), and never fewer than the gate's floor of
+  four, is held out of selection by a draw seeded from the override itself — never at random, so the same override over the
   same case set grades against the same holdout on a rerun. (Add a case to
   the file and the draw reshuffles: the promise is per case set, not per
   case id.)

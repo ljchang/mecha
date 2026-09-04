@@ -2990,8 +2990,11 @@ comparison over a chosen set**, with the design written before the run.
   **an arm varies the closed set and nothing else** (D5, D14): levers by
   name from `harness::Lever`, knobs by `KEY=VALUE` through
   `harness::parse_change`, a preset (`bare` is what `mecha eval` runs,
-  `full` is every lever on) applied first. An unknown lever name is a load
-  error, never a skipped line. `approval_rules` is refused outright: a
+  `full` is every lever on) applied first, and `levers_on` — levers turned
+  back on after the preset, the add-one-to-bare design, and how eval's
+  `--ab-rules` is spelled; a name in both lists is on. An unknown lever
+  name is a load error, never a skipped line. `approval_rules` is refused
+  outright, in `levers_on` as in `levers_off`: a
   `forbid` is the operator's standing word, and only eval's fixture
   workspaces justify lifting it.
 - **Isolation is the whole store** (D12). Every trial runs as a child
