@@ -264,6 +264,11 @@ pub struct OutboxItem {
 }
 
 impl OutboxItem {
+    /// Who wrote this draft. See [`Author`].
+    pub fn author(&self) -> Author {
+        Author::parse(&self.author)
+    }
+
     /// The pins the reviewer has **not** since changed.
     ///
     /// `filled_defaults` is written once, at staging; `update_args` rewrites
@@ -283,11 +288,6 @@ impl OutboxItem {
     /// no more evidence of that than one the harness pinned. Same field,
     /// opposite question — worth saying here, because "three consumers, two
     /// filter" reads like an oversight until you know which.
-    /// Who wrote this draft. See [`Author`].
-    pub fn author(&self) -> Author {
-        Author::parse(&self.author)
-    }
-
     pub fn unedited_defaults(&self) -> Vec<String> {
         self.filled_defaults
             .iter()

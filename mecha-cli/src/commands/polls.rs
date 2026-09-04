@@ -499,6 +499,12 @@ pub fn sweep() -> Result<Vec<String>> {
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
     let cfg = mecha_core::config::Config::load(&cwd)?;
     let store = open_store(&cfg)?;
+    // Held across the tick: adopt-then-stage is a read-modify-write over
+    // the store, and two overlapping sweeps — the timer and a hand run —
+    // would each see no card and each stage one, the second of which no
+    // later tick reconciles. `stage_by_harness` and `update_args` do not
+    // take the lock themselves.
+    let _lock = store.lock()?;
     let dir = records_dir()?;
     let (records, problems) = scan(&dir)?;
     let mut lines: Vec<String> = problems
