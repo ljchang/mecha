@@ -10,8 +10,9 @@ lifetime's ledger. So this file is a policy, not an actor.
 Verdicts come from gold wherever gold exists (§16 rule 1):
 
 - a pending draft (an outbox `message`) is REJECTED when a deterministic
-  check on it fails — a recipient not on the fixture cast — and RELEASED
-  unchanged otherwise;
+  check on it fails — a recipient not on the fixture cast, or no recipient
+  this policy can read at all (unknown is never clean on a gold verdict) —
+  and RELEASED unchanged otherwise;
 - an open question is ANSWERED from the policy's table, by substring, with
   its default when nothing matches;
 - refusals are scripted (`before_task`) from the policy's `[[deny]]` list:
@@ -31,7 +32,7 @@ Policy file:
 
     [outbox]
     cast = ["mara@example.org", "the-team"]     # recipients a draft may name
-    recipient_keys = ["to", "recipient", "channel", "cc"]
+    recipient_keys = ["to", "recipient", "channel", "cc", "bcc"]
 
     [questions]
     default = "Use your best judgement and finish."
@@ -74,14 +75,23 @@ def strings_under(value, keys):
 
 def judge_drafts(state, policy):
     cast = set(policy.get("outbox", {}).get("cast", []))
-    keys = set(policy.get("outbox", {}).get("recipient_keys", ["to", "recipient", "channel", "cc"]))
+    keys = set(policy.get("outbox", {}).get("recipient_keys", ["to", "recipient", "channel", "cc", "bcc"]))
     acts = []
     for item in state.get("pending_outbox", []):
         if item.get("kind") != "message":
             continue
         recipients = strings_under(item.get("args", {}), keys)
         strangers = [r for r in recipients if r not in cast]
-        if strangers:
+        if not recipients:
+            # A draft whose recipient lives under a key this policy does not
+            # name is not a draft to the cast: a release here would record
+            # SentUnchanged where nobody checked anything.
+            acts.append({
+                "verb": ["outbox", "reject", item["id"], "--reason",
+                         "no recipient this policy can read; name the key in recipient_keys"],
+                "reason": "gold: no readable recipient",
+            })
+        elif strangers:
             acts.append({
                 "verb": ["outbox", "reject", item["id"], "--reason",
                          f"addressed to {', '.join(strangers)}, who is not on the cast"],

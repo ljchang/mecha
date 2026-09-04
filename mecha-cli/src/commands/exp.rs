@@ -615,17 +615,17 @@ async fn principal_call(
         Ok(())
     };
     let outcome: Result<PrincipalOutput> = async {
-        std::fs::create_dir_all(&workspace)?;
-        if let Some(parent) = log.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        // Before the call, not after its success: a principal that failed
-        // to answer must not leave the last position's refusals armed for
+        // First, before anything else can fail: a principal that failed to
+        // answer must not leave the last position's refusals armed for
         // this task — the failure is on the ledger, but the task would
         // have run under a treatment nobody asked for (found on review).
         if point == PrincipalPoint::BeforeTask {
             mecha_core::experiment::write_denials(home, &[])
                 .context("clearing the last position's refusals")?;
+        }
+        std::fs::create_dir_all(&workspace)?;
+        if let Some(parent) = log.parent() {
+            std::fs::create_dir_all(parent)?;
         }
         let input = PrincipalInput {
             point,
@@ -1026,10 +1026,19 @@ async fn run_one(
         .stdout(std::process::Stdio::piped());
     // The principal's scripted refusals for this task, when it left any:
     // the child's approver answers them ahead of its own, as "Denied by
-    // the user" — the owner's word inside the trial home (D12).
+    // the user" — the owner's word inside the trial home (D12). Armed
+    // only under a manifest that has a principal — the file's existence
+    // is not the design, and a manifest whose principal was dropped would
+    // otherwise resume under the last position's refusals (found on
+    // review); with no principal the file is cleared once.
     let denials = mecha_core::experiment::denials_file(&home);
-    if denials.exists() {
-        cmd.env(mecha_core::tool::DENIALS_FILE_ENV, &denials);
+    if manifest.principal.is_some() {
+        if denials.exists() {
+            cmd.env(mecha_core::tool::DENIALS_FILE_ENV, &denials);
+        }
+    } else if denials.exists() {
+        mecha_core::experiment::write_denials(&home, &[])
+            .context("clearing refusals no principal scripted")?;
     }
     cmd.stderr(std::process::Stdio::piped());
     let output = cmd.output().await.context("spawning mecha run")?;
@@ -1515,6 +1524,18 @@ mod tests {
             longs.iter().any(|l| l.starts_with("--no-")),
             "the prefix rule covers something"
         );
+        // The other direction: every global option is accounted for —
+        // blocked, a `--no-` lever, or on the short list known harmless.
+        use mecha_core::experiment::{PRINCIPAL_BLOCKED_OPTIONS, PRINCIPAL_HARMLESS_OPTIONS};
+        for name in longs.iter().chain(shorts.iter()) {
+            let accounted = PRINCIPAL_BLOCKED_OPTIONS.contains(&name.as_str())
+                || PRINCIPAL_HARMLESS_OPTIONS.contains(&name.as_str())
+                || name.starts_with("--no-");
+            assert!(
+                accounted,
+                "global option `{name}` is neither blocked for a principal's verb nor listed as harmless"
+            );
+        }
     }
 
     /// A manifest's `ids` narrow the case file to the tasks it names, in the
