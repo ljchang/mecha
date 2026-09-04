@@ -2259,7 +2259,10 @@ prediction that was made *before* either was measured.
   ids, because the split now depends on the corpus as it stood at measurement
   time rather than on the ids alone — and a sample nobody can redraw is a
   sample nobody can check. `judge_with` still hash-splits for
-  `eval --ab-config`, where every case runs and the pool is already uniform.
+  `eval --ab-config`, where every case runs and the pool is already uniform
+  — and since eval's A/B became a two-arm experiment (`experiment::judge`),
+  that draw is the manifest's seeded uniform one, its seed derived from the
+  delta so a rerun holds out the same cases.
 - **The work guardrail outranks the score.** A change that improves its metric
   while tool calls fall below `WORK_FLOOR` is rejected, not ranked — "fewer
   errors" is trivially achieved by attempting less, which is the null run and

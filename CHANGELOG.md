@@ -200,6 +200,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`mecha eval --ab-config` and `--ab-rules` are two-arm experiments.**
+  Each writes its design to `~/.mecha/experiments/eval-ab-<kind>-<stamp>/`
+  before the arms run — a `bare` control and a `bare`-plus-delta treatment
+  (the override, or `learned_rules` turned back on: an arm's new
+  `levers_on`) predicting a lower failure cost — files each case as a
+  trial scored pass^k over `--runs`, and takes its verdict from
+  `experiment::judge`, so `mecha exp judge <name>` re-derives it. The arms
+  still run in-process on eval's forcings; the printed output keeps its
+  shape, the holdout is drawn by a seed derived from the delta rather
+  than a hash of the case id (a rerun still holds out the same cases),
+  and the JSON gains `experiment` and `pairs`.
+
 - **`mecha eval` now forces boredom and compact validation off**, with the
   rest of the lever set. Both are `[agent]` switches that ship on, so two
   machines with different config graded different runs — a boredom notice
