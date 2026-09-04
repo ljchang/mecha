@@ -122,23 +122,27 @@ fn control_label(manifest: &Manifest) -> String {
         .unwrap_or_else(|| "a measurement, no control".into())
 }
 
-/// The tasks a manifest names, as eval cases, in the case file's order.
+/// The tasks a manifest names, as eval cases — **in the manifest's order**
+/// when `ids` names them, the file's otherwise. For a lifetime the
+/// sequence *is* the design, and `position` on every row and the pairing
+/// in `judge` follow it; the first cut kept the file's order, so a
+/// manifest saying `["cross-file", "read-readme"]` walked them the other
+/// way round with the manifest still claiming the sequence it did not run
+/// (found on review). A single fans out over a set, so the same order
+/// costs it nothing.
 fn cases_for(manifest: &Manifest) -> Result<Vec<mecha_core::eval::EvalCase>> {
     let cases = crate::commands::eval::load_cases(&manifest.tasks.cases, &manifest.tasks.tags)?;
     let cases: Vec<_> = if manifest.tasks.ids.is_empty() {
         cases
     } else {
+        let mut ordered = Vec::with_capacity(manifest.tasks.ids.len());
         for id in &manifest.tasks.ids {
-            anyhow::ensure!(
-                cases.iter().any(|c| &c.id == id),
-                "task `{id}` is not in {}",
-                manifest.tasks.cases.display()
-            );
+            let case = cases.iter().find(|c| &c.id == id).with_context(|| {
+                format!("task `{id}` is not in {}", manifest.tasks.cases.display())
+            })?;
+            ordered.push(case.clone());
         }
-        cases
-            .into_iter()
-            .filter(|c| manifest.tasks.ids.contains(&c.id))
-            .collect()
+        ordered
     };
     anyhow::ensure!(!cases.is_empty(), "the manifest names no tasks");
     // `eval::grade` is pure and never sees `expect.judge`; eval appends the
@@ -953,8 +957,8 @@ mod tests {
     }
 
     /// A manifest's `ids` narrow the case file to the tasks it names, in the
-    /// file's order, and a name the file does not carry is a refusal rather
-    /// than a silently smaller experiment.
+    /// manifest's order, and a name the file does not carry is a refusal
+    /// rather than a silently smaller experiment.
     #[test]
     fn the_tasks_are_the_cases_the_manifest_names() {
         let dir = std::env::temp_dir().join(format!("mecha-exp-cli-{}", std::process::id()));
@@ -989,7 +993,11 @@ rationale = "r"
         );
         let m = Manifest::parse(&text).unwrap();
         let got: Vec<String> = cases_for(&m).unwrap().into_iter().map(|c| c.id).collect();
-        assert_eq!(got, vec!["b", "a"], "the file's order, not the manifest's");
+        assert_eq!(
+            got,
+            vec!["a", "b"],
+            "the manifest's order, not the file's: a lifetime's sequence is the design"
+        );
         let mut m2 = m.clone();
         m2.tasks.ids = vec!["nope".into()];
         assert!(cases_for(&m2).unwrap_err().to_string().contains("nope"));
