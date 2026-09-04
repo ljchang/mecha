@@ -221,7 +221,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // prints. The one-arm record is the convergence's last step short of
     // the runner itself (the owner's ruling, 2026-09-04).
     let recorded = record_measurement(global, &args, &cases, &fixture);
-    let name = match &recorded {
+    let mut name = match &recorded {
         Ok(Some((store, manifest))) => {
             eprintln!(
                 "recorded as experiment `{}` ({})",
@@ -254,7 +254,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let task_ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
         // One row per run: the planned row's `repetition` is the graded
         // run's `run` number, and a row with no run behind it (a case that
-        // never ran) is left pending rather than written empty.
+        // never ran) is left pending rather than written empty. Write
+        // failures are counted and said once, as the A/B says them — and
+        // a record no row reached is not named in the report, because
+        // `experiment` exists to point at a record, and a manifest over
+        // zero trials reads as "the eval never ran", the opposite of what
+        // happened (found on review).
+        let (mut saved, mut unsaved) = (0usize, 0usize);
         for planned in manifest.trials(&task_ids, &scorecard.provider, &scorecard.model) {
             let Some(run) = graded
                 .iter()
@@ -262,12 +268,29 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             else {
                 continue;
             };
-            if let Err(e) = store.save_trial(&trial_of(&planned, std::slice::from_ref(&run))) {
-                eprintln!(
-                    "mecha eval: trial `{}` could not be written: {e:#}",
-                    planned.id
-                );
+            match store.save_trial(&trial_of(&planned, std::slice::from_ref(&run))) {
+                Ok(()) => saved += 1,
+                Err(e) => {
+                    unsaved += 1;
+                    eprintln!(
+                        "mecha eval: trial `{}` could not be written: {e:#}",
+                        planned.id
+                    );
+                }
             }
+        }
+        if unsaved > 0 {
+            eprintln!(
+                "mecha eval: {unsaved} trial row(s) not on the store; `mecha exp status {}` will show them pending",
+                manifest.name
+            );
+        }
+        if saved == 0 && unsaved > 0 {
+            eprintln!(
+                "mecha eval: no trial row reached `{}`; the report will not name it",
+                manifest.name
+            );
+            name = None;
         }
     }
 
