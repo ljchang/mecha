@@ -120,28 +120,41 @@ fn edit() -> Result<()> {
 }
 
 fn show_lines(charter: &Charter) {
+    let readings = mecha_core::reading::read_charter(charter, chrono::Utc::now());
     for (i, line) in charter.lines().iter().enumerate() {
         println!(
             "  {}. {} — {}{}",
             i + 1,
             line.id,
             line.text,
-            sensor_suffix(line)
+            sensor_suffix(line, &readings)
         );
     }
 }
 
-/// `  · sensor outbox_age · setpoint 24h` on a line that carries one, empty
-/// otherwise. The owner's own setpoint spelling, never a reading — this
-/// command shows what the run's prompt would carry plus the one thing it
-/// deliberately does not (the sensor never enters a prompt).
-fn sensor_suffix(line: &mecha_core::charter::CharterLine) -> String {
+/// `  · sensor outbox_age · setpoint 24h · reading 3d 4h, past the 24h
+/// setpoint` on a line that carries one, empty otherwise. The owner's own
+/// setpoint spelling, and the sensor's current reading beside it — this is
+/// the one surface family that shows both things the prompt deliberately
+/// does not carry (`docs/GOAL-SYSTEM-DESIGN.md` §11.1, containments 2 and
+/// 5: the editor shows the reading, the model never sees it).
+fn sensor_suffix(
+    line: &mecha_core::charter::CharterLine,
+    readings: &[mecha_core::reading::LineReading],
+) -> String {
     match &line.sensor {
-        Some(s) => format!(
-            "  · sensor {} · setpoint {}",
-            s.kind.wire(),
-            s.setpoint_text
-        ),
+        Some(s) => {
+            let reading = readings
+                .iter()
+                .find(|r| r.line == line.id)
+                .map(|r| format!(" · reading {}", r.summary()))
+                .unwrap_or_default();
+            format!(
+                "  · sensor {} · setpoint {}{reading}",
+                s.kind.wire(),
+                s.setpoint_text
+            )
+        }
         None => String::new(),
     }
 }
@@ -181,6 +194,10 @@ fn show(json: bool) -> Result<()> {
         }
     };
 
+    // Read once for both renderings — the corpus kind pays for a scan of
+    // the session store, and only when a line asks for it.
+    let readings = mecha_core::reading::read_charter(&charter, chrono::Utc::now());
+
     if json {
         let out = serde_json::json!({
             "path": path,
@@ -191,21 +208,10 @@ fn show(json: bool) -> Result<()> {
             "exists": path.is_file(),
             "over_budget": charter.over_budget(),
             "char_count": charter.char_count(),
-            "lines": charter.lines().iter().map(|l| {
-                let mut line = serde_json::json!({
-                    "id": l.id,
-                    "text": l.text,
-                });
-                // Absent on a line without one, on the same shape the web
-                // settings endpoint serves.
-                if let Some(s) = &l.sensor {
-                    line["sensor"] = serde_json::json!({
-                        "kind": s.kind.wire(),
-                        "setpoint": s.setpoint_text,
-                    });
-                }
-                line
-            }).collect::<Vec<_>>(),
+            // The same shape the web settings endpoint serves, from the
+            // same function: `sensor` beside a sensored line, `reading`
+            // beside that.
+            "lines": mecha_core::reading::lines_json(&charter, &readings),
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
@@ -238,7 +244,7 @@ fn show(json: bool) -> Result<()> {
             i + 1,
             line.id,
             line.text,
-            sensor_suffix(line)
+            sensor_suffix(line, &readings)
         );
     }
     if charter.over_budget() {

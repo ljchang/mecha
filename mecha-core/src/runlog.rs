@@ -434,6 +434,24 @@ impl Corpus {
             .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
     }
 
+    /// The share of runs the owner stepped into — as the `intervention_rate`
+    /// charter sensor reads it (`GOAL-SYSTEM-DESIGN.md` §11.1).
+    ///
+    /// **Coarser than the learning store's four triggers, on purpose, and
+    /// the doc says which two it sees.** A `RunStats` row records a denial
+    /// (`tool_denied`) and a stop by request (`StopCause::Stopped` — Ctrl-C,
+    /// a stop button, `tasks stop`); it does not record a steer, a follow-up
+    /// the reflector judged a correction, or an edited draft, which live in
+    /// the transcript, the reflections and the outbox respectively and
+    /// reach the appraisal through `Cite::Turn` and `Cite::Reflexion`. A
+    /// reading over the corpus is what a charter setpoint can be compared
+    /// against on every surface without a mining pass, and it under-counts
+    /// rather than guesses. `None` over an empty corpus, like every rate
+    /// here.
+    pub fn intervention_rate(&self) -> Option<f64> {
+        self.rate_of(|r| r.stats.tool_denied > 0 || r.stats.stop_cause == Some(StopCause::Stopped))
+    }
+
     /// Average of `Homeostat::peak_context_pressure` over the rows that
     /// sensed it (`GOAL-SYSTEM-DESIGN.md` §4, feeding `diagnose::Evidence`).
     ///

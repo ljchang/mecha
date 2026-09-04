@@ -2575,8 +2575,9 @@ than refusing, because the cost is prefix bytes on every request.
 
 **A line may carry a sensor, and the sensor never reaches a prompt**
 (`GOAL-SYSTEM-DESIGN.md` §11.1; parser, serialiser, template and the
-attribution join built 2026-09-04, the readings and the doctor's owner
-thresholds not yet). `[line.sensor]` is `kind` from a **closed enum**
+attribution join built 2026-09-04, the readings, the line-specific guilt,
+the doctor's owner thresholds and the editor's reading the same day —
+`reading.rs`; the replay tiebreak and `board_overdue`/`cost` not yet). `[line.sensor]` is `kind` from a **closed enum**
 (`SensorKind`: `outbox_waiting`, `outbox_age`, `question_latency`,
 `request_closure`, `intervention_rate`) and a `setpoint` the kind types (a
 duration like `24h`, a count, a rate like `20%`) — an unknown kind or a
@@ -2621,6 +2622,44 @@ when touching it:
   predicate `with_builtins` registers by) — the skills block's rule, one block
   over: a prompt naming a tool the surface lacks costs a turn on a call that
   can only fail.
+- **A reading is four facts, and only one of them is a number.**
+  `reading::Reading` is `Unread` (the store could not be read), `Deferred`
+  (this reader does not scan that store), `Nothing` (nothing waits — the
+  line is met by construction) or `Observed { value, over, excess }`; the
+  doctor's saturation streak and the guilt term read `over()` / `excess()`,
+  which answer `None` on the first two, so a finding cannot fire on an
+  absence. `excess` is `e / (e + setpoint)` over the overshoot — zero within
+  the setpoint, half of maximal at twice it, never one — for the reason
+  `guilt::AGE_HALF_AT_HOURS` carries: a term that reaches `1.0` erases the
+  others and the corpus reads a constant. A zero setpoint is refused at the
+  parser, because nothing could ever be within it. **Recorded on
+  `Homeostat::charter` at the start of every run**, from the *inherited*
+  backlog like `anticipated_guilt` (the charter is loaded there, global and
+  read-only, whether or not the prompt carried it); `None` is a row from
+  before the field or a charter that did not load, `Some([])` a charter with
+  no sensor, and a row whose readings this binary cannot parse loads as
+  `None` through `reading::lenient` rather than failing the run record. The
+  corpus kind (`intervention_rate`) is `Deferred` in a run — a scan of the
+  session store is `guilt.rs`'s once-a-night budget, not a per-run one —
+  and `Corpus::intervention_rate` is a denial or a stop by request on the
+  run record, which under-counts (steers, corrected follow-ups and edited
+  drafts are not on it) rather than guesses.
+- **The doctor reads against the owner's number, and names the line.**
+  `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
+  requests) or the setpoint of the charter line whose sensor watches that
+  store, in the owner's own spelling, so the finding says which priority the
+  store is failing; the count and rate kinds have no constant to fall back
+  to and fire only where a line names one. **Saturation is containment 5's
+  second guard**: a line that has read past its setpoint on each of the last
+  `reading::SATURATED_AFTER_RUNS` informative rows — same line, same kind,
+  same setpoint spelling, so an edited setpoint starts a fresh streak — is a
+  finding that says both things it could mean, because doctor cannot tell a
+  real debt from an hour where the owner meant a day. The first guard is the
+  surfaces: `mecha charter`, the TUI detail and the web settings page show
+  each sensor's reading beside its line through `reading::read_charter`,
+  and the two JSON surfaces render one shape through `reading::lines_json`
+  with `reading` a *sibling* of `sensor`, because `sensor`'s two keys are
+  what the web serialiser writes back on a save.
 
 **`Affect` is a pure function of the record and there is deliberately no way to
 report one.** A model that reads a run and says "frustrated" is an

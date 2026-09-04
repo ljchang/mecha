@@ -81,21 +81,14 @@ fn charter_state() -> Json<serde_json::Value> {
             // `sensor` rides beside each line so the page's serialiser can
             // write it back on a save — the editor carries a sensor through
             // a re-rank, it does not compose one — as `{kind, setpoint}`
-            // with the owner's own setpoint spelling. Absent on a line
-            // without one.
-            "lines": charter.lines().iter().map(|l| {
-                let mut line = serde_json::json!({
-                    "id": l.id,
-                    "text": l.text,
-                });
-                if let Some(s) = &l.sensor {
-                    line["sensor"] = serde_json::json!({
-                        "kind": s.kind.wire(),
-                        "setpoint": s.setpoint_text,
-                    });
-                }
-                line
-            }).collect::<Vec<_>>(),
+            // with the owner's own setpoint spelling, and `reading` beside
+            // it is the sensor's current value for the page to show
+            // (§11.1, containment 5's first guard). Absent on a line
+            // without one. One function with `mecha charter --json`.
+            "lines": mecha_core::reading::lines_json(
+                &charter,
+                &mecha_core::reading::read_charter(&charter, chrono::Utc::now()),
+            ),
             "char_count": charter.char_count(),
             "over_budget": charter.over_budget(),
             "budget": mecha_core::charter::CHARTER_CHAR_BUDGET,

@@ -46,6 +46,10 @@ pub struct CharterModal {
     pub over_budget: bool,
     /// One line of feedback after an edit — saved, unchanged, or refused.
     pub status: Option<String>,
+    /// Each sensored line's current reading, taken at load — the detail
+    /// view shows it beside the sensor, on §11.1's rule that the editor
+    /// shows the reading and the prompt never carries it.
+    pub readings: Vec<mecha_core::reading::LineReading>,
 }
 
 impl CharterModal {
@@ -61,6 +65,10 @@ impl CharterModal {
                 detail_scroll: 0,
                 char_count: charter.char_count(),
                 over_budget: charter.over_budget(),
+                // Read at load, not at draw: the corpus kind scans the
+                // session store, once per open is fine and once per frame
+                // is not.
+                readings: mecha_core::reading::read_charter(&charter, chrono::Utc::now()),
                 path,
                 exists,
                 error: None,
@@ -77,6 +85,7 @@ impl CharterModal {
                 exists,
                 error: Some(format!("{e:#}")),
                 status: None,
+                readings: Vec::new(),
             },
         }
     }
@@ -280,6 +289,12 @@ impl CharterModal {
                 ),
                 Style::new().fg(Color::DarkGray),
             ));
+            if let Some(reading) = self.readings.iter().find(|r| r.line == line.id) {
+                body.push(Line::styled(
+                    format!("reading: {}", reading.summary()),
+                    Style::new().fg(Color::DarkGray),
+                ));
+            }
         }
         let area = super::centered(
             frame.area(),
@@ -332,6 +347,7 @@ mod tests {
             char_count: 100,
             over_budget: false,
             status: None,
+            readings: Vec::new(),
         }
     }
 

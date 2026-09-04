@@ -215,6 +215,16 @@ pub enum Setpoint {
     Rate(f64),
 }
 
+impl Setpoint {
+    fn is_zero(self) -> bool {
+        match self {
+            Setpoint::Duration(d) => d.is_zero(),
+            Setpoint::Count(n) => n == 0,
+            Setpoint::Rate(r) => r <= 0.0,
+        }
+    }
+}
+
 impl SensorKind {
     /// Every kind, for a surface that lists what an owner may pick from.
     pub const ALL: [SensorKind; 5] = [
@@ -260,12 +270,12 @@ impl SensorKind {
         if text.is_empty() {
             bail!("setpoint is empty");
         }
-        match self.unit() {
-            Unit::Duration => parse_duration(text).map(Setpoint::Duration),
+        let setpoint = match self.unit() {
+            Unit::Duration => parse_duration(text).map(Setpoint::Duration)?,
             Unit::Count => text
                 .parse::<u64>()
                 .map(Setpoint::Count)
-                .map_err(|_| anyhow::anyhow!("`{text}` is not a whole number")),
+                .map_err(|_| anyhow::anyhow!("`{text}` is not a whole number"))?,
             Unit::Rate => {
                 let (body, scale) = match text.strip_suffix('%') {
                     Some(pct) => (pct.trim(), 0.01),
@@ -278,9 +288,19 @@ impl SensorKind {
                 if !(0.0..=1.0).contains(&rate) {
                     bail!("`{text}` is not a share between 0 and 1");
                 }
-                Ok(Setpoint::Rate(rate))
+                Setpoint::Rate(rate)
             }
+        };
+        // A setpoint of zero is a line nothing could ever be within: one
+        // draft, one second, one intervention in a hundred runs all read as
+        // past it, and the reading is a constant on every run — the
+        // saturated number the sensor exists to replace (§11.1, containment
+        // 5). Refused here, where the error names the line, rather than
+        // reported later as a saturation the owner has to decode.
+        if setpoint.is_zero() {
+            bail!("`{text}` is a setpoint of zero, which every reading would be past");
         }
+        Ok(setpoint)
     }
 }
 
@@ -418,9 +438,10 @@ impl Charter {
             // the lower one can never be attributed anything. Refused naming
             // both, on the same principle as the duplicate id: an owner must
             // not write a sensor, believe it did something, and never find
-            // out (found on review). When the readings phase gives each line
-            // its own reading this becomes a real question again; today
-            // there is nothing for the second line to mean.
+            // out (found on review). The readings phase (`reading.rs`) did
+            // not change this: two lines of one kind would read the same
+            // store the same way, so the second still means nothing the
+            // first does not.
             if let Some(sensor) = &line.sensor {
                 if let Some(first) = kinds_seen.insert(sensor.kind, line.id.trim()) {
                     bail!(
@@ -505,6 +526,13 @@ impl Charter {
 
     pub fn lines(&self) -> &[CharterLine] {
         &self.lines
+    }
+
+    /// A charter from the file's own shape, validated — for a test in
+    /// another module that wants a sensored line without writing TOML.
+    #[cfg(test)]
+    pub(crate) fn from_raw_lines(lines: Vec<RawLine>) -> Result<Charter> {
+        Charter::validate(lines)
     }
 
     /// The highest-ranked line whose sensor watches one of `kinds`, or
@@ -826,6 +854,34 @@ setpoint = "high"
         assert!(format!("{e:#}").contains("between 0 and 1"), "{e:#}");
     }
 
+    /// A setpoint nothing could ever be within reads as past on every run —
+    /// the constant the sensor exists to replace (§11.1, containment 5) —
+    /// so it is refused where the error names the line, in every unit.
+    #[test]
+    fn a_zero_setpoint_is_refused_in_every_unit() {
+        for (kind, zero) in [
+            (SensorKind::OutboxWaiting, "0"),
+            (SensorKind::OutboxAge, "0s"),
+            (SensorKind::QuestionLatency, "0h"),
+            (SensorKind::InterventionRate, "0"),
+            (SensorKind::InterventionRate, "0%"),
+        ] {
+            let err = kind.parse_setpoint(zero).unwrap_err().to_string();
+            assert!(err.contains("setpoint of zero"), "{kind:?} {zero}: {err}");
+        }
+        let raw = r#"
+[[line]]
+id = "waits"
+text = "Keep what waits on me short."
+[line.sensor]
+kind = "outbox_waiting"
+setpoint = 0
+"#;
+        let err = format!("{:#}", Charter::parse(raw).unwrap_err());
+        assert!(err.contains("charter line `waits`"), "{err}");
+        assert!(err.contains("setpoint of zero"), "{err}");
+    }
+
     #[test]
     fn every_setpoint_unit_has_a_grammar() {
         assert_eq!(
@@ -837,8 +893,8 @@ setpoint = "high"
             Setpoint::Duration(std::time::Duration::from_secs(7 * 86_400))
         );
         assert_eq!(
-            SensorKind::OutboxWaiting.parse_setpoint("0").unwrap(),
-            Setpoint::Count(0)
+            SensorKind::OutboxWaiting.parse_setpoint("3").unwrap(),
+            Setpoint::Count(3)
         );
         assert_eq!(
             SensorKind::InterventionRate.parse_setpoint("20%").unwrap(),
