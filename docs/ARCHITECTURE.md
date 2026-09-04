@@ -2581,8 +2581,9 @@ than refusing, because the cost is prefix bytes on every request.
 
 **A line may carry a sensor, and the sensor never reaches a prompt**
 (`GOAL-SYSTEM-DESIGN.md` §11.1; parser, serialiser, template and the
-attribution join built 2026-09-04, the readings and the doctor's owner
-thresholds not yet). `[line.sensor]` is `kind` from a **closed enum**
+attribution join built 2026-09-04, the readings, the line-specific guilt,
+the doctor's owner thresholds and the editor's reading the same day —
+`reading.rs`; the replay tiebreak and `board_overdue`/`cost` not yet). `[line.sensor]` is `kind` from a **closed enum**
 (`SensorKind`: `outbox_waiting`, `outbox_age`, `question_latency`,
 `request_closure`, `intervention_rate`) and a `setpoint` the kind types (a
 duration like `24h`, a count, a rate like `20%`) — an unknown kind or a
@@ -2627,6 +2628,77 @@ when touching it:
   predicate `with_builtins` registers by) — the skills block's rule, one block
   over: a prompt naming a tool the surface lacks costs a turn on a call that
   can only fail.
+- **A reading is five facts, and only one of them is a number.**
+  `reading::Reading` is `Unread` (the store could not be read), `Deferred`
+  (this reader does not scan that store), `Nothing` (nothing waits — the
+  line is met by construction), `Sparse` (the corpus kind over fewer runs
+  than `doctor::RUNS_MIN` — the doctor refuses a share of three runs, so the
+  surface the owner judges a setpoint on must not print one) or `Observed {
+  value, over, excess }`; the doctor's saturation streak and the guilt term
+  read `over()` / `excess()`, which answer `None` on the first two and on
+  `Sparse`, so a finding cannot fire on an absence. And a torn corpus is
+  `Unread`, not `Nothing`: `Corpus::scan` is `Ok` with `unreadable` counted
+  and no rows for that, and the first cut read it as "no runs recorded"
+  (found on review). `excess` is `e / (e + setpoint)` over the overshoot — zero within
+  the setpoint, half of maximal at twice it, never one — for the reason
+  `guilt::AGE_HALF_AT_HOURS` carries: a term that reaches `1.0` erases the
+  others and the corpus reads a constant. A zero setpoint is refused at the
+  parser, because nothing could ever be within it. **Recorded on
+  `Homeostat::charter` at the start of every run**, from the *inherited*
+  backlog like `anticipated_guilt` (the charter is loaded there, global and
+  read-only, whether or not the prompt carried it); `None` is a row from
+  before the field or a charter that did not load, `Some([])` a charter with
+  no sensor, and a row whose readings this binary cannot parse loads as
+  `None` through `reading::lenient` rather than failing the run record. The
+  corpus kind (`intervention_rate`) is `Deferred` in a run — a scan of the
+  session store is `guilt.rs`'s once-a-night budget, not a per-run one —
+  and `Corpus::intervention_rate` is a stop by request on the run record
+  and nothing else, which under-counts (steers, corrected follow-ups and
+  edited drafts are not on it) rather than guesses. **Not `tool_denied`**:
+  it counts "a human or a policy refusing" — a `forbid` rule, a hook, the
+  interlock — so a machine with one routine policy rule would read as the
+  owner stepping into every run, and the doctor would say so in the second
+  person (found on review). Splitting the two on the record is a
+  wire-format addition nothing has needed yet.
+- **The doctor reads against the owner's number, and names the line.**
+  `doctor::Patience` is the harness constant (48h drafts, 24h questions, 72h
+  requests) or the setpoint of the charter line whose sensor watches that
+  store, in the owner's own spelling, so the finding says which priority the
+  store is failing; the count and rate kinds have no constant to fall back
+  to and fire only where a line names one. **Saturation is containment 5's
+  second guard**: a line that has read past its setpoint on each of the last
+  `reading::SATURATED_AFTER_RUNS` informative rows — same line, same kind,
+  same setpoint spelling, so an edited setpoint starts a fresh streak — is a
+  finding that says both things it could mean, because doctor cannot tell a
+  real debt from an hour where the owner meant a day. The first guard is the
+  surfaces: `mecha charter`, the TUI detail and the web settings page show
+  each sensor's reading beside its line through `reading::read_charter`,
+  and the two JSON surfaces render one shape through `reading::lines_json`
+  with `reading` a *sibling* of `sensor`, because `sensor`'s two keys are
+  what the web serialiser writes back on a save — and the page's rows come
+  from `charter-toml.js`'s `rows`, tested in `web/test/charter-rows.mjs`,
+  because the first cut rebuilt each row by hand and dropped `reading`,
+  leaving the browser the one surface of three with none (found on
+  review). The web handler takes the readings through `spawn_blocking`, on
+  `board.rs`'s rule at a larger cost — three store reads and, for the
+  corpus kind, a 200-transcript scan, inside an async handler that also
+  holds the SSE streams — and the TUI modal reads on its own thread with
+  `CharterModal::poll` moving the answer in on the tick, because inline it
+  froze the input line for the length of the scan (both found on review).
+- **The `request_closure` sensor and the stale-request finding measure the
+  same requests.** `frontdoor::WAITING_ON_OWNER` is the one list — a
+  request awaiting triage, a draft review, or a person after triage drafted
+  nothing — read by the doctor and by `Backlog::read_with_owner_requests`,
+  which hands `reading::Sources` the owner-facing depth beside the backlog,
+  aged from `Record::arrived_at` — the drain's clock, the one the finding
+  uses — while the wide depth keeps `created_at` as every recorded row
+  has (a form stamped a month before the drain ingested it read a month
+  overdue on the sensor and a day old to the doctor; found on review).
+  `Backlog::frontdoor` still counts every open request, as every recorded
+  row always has; read against the sensor, a `needs_info` parked on the
+  stranger for a week saturated a line no finding would ever name, and the
+  owner's only way out was to loosen a setpoint that was right (found on
+  review). The same reader is the seam `guilt.rs`'s module doc asked for.
 
 **`Affect` is a pure function of the record and there is deliberately no way to
 report one.** A model that reads a run and says "frustrated" is an

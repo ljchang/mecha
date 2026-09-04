@@ -434,6 +434,33 @@ impl Corpus {
             .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
     }
 
+    /// The share of runs the owner stepped into — as the `intervention_rate`
+    /// charter sensor reads it (`GOAL-SYSTEM-DESIGN.md` §11.1).
+    ///
+    /// **Coarser than the learning store's four triggers, on purpose, and
+    /// the doc says which one it sees.** A `RunStats` row records a stop by
+    /// request (`StopCause::Stopped` — Ctrl-C, a stop button, `tasks stop`)
+    /// and nothing else a person did: a steer, a follow-up the reflector
+    /// judged a correction and an edited draft live in the transcript, the
+    /// reflections and the outbox, and reach the appraisal through
+    /// `Cite::Turn` and `Cite::Reflexion`. **`tool_denied` is deliberately
+    /// not counted.** Its own doc says it counts "a human or a policy
+    /// refusing": a `forbid` rule, a `pre_tool` hook, the interlock and an
+    /// in-process guard all set it, so on a machine with one routine policy
+    /// rule it pins near one with nobody awake — and that would put machine
+    /// policy on the owner's side of a number the doctor reports as "you
+    /// stepped in", the split `CLAUDE.md` keeps in the type (`Deny` is
+    /// mined, `Blocked` never is). Found on review; the first cut counted
+    /// it. Separating the two on the record is a wire-format addition
+    /// (`Option<u32>`, unknown on an older row, like `context_overflows`)
+    /// that nothing has needed yet. So this under-counts rather than
+    /// guesses, and a reading over the corpus is still what a charter
+    /// setpoint can be compared against on every surface without a mining
+    /// pass. `None` over an empty corpus, like every rate here.
+    pub fn intervention_rate(&self) -> Option<f64> {
+        self.rate_of(|r| r.stats.stop_cause == Some(StopCause::Stopped))
+    }
+
     /// Average of `Homeostat::peak_context_pressure` over the rows that
     /// sensed it (`GOAL-SYSTEM-DESIGN.md` §4, feeding `diagnose::Evidence`).
     ///

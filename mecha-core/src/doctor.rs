@@ -95,12 +95,85 @@ impl Finding {
 }
 
 /// A pending draft older than this with no error has most likely been
-/// forgotten rather than deliberately parked.
+/// forgotten rather than deliberately parked — unless the owner's charter
+/// says otherwise; see [`Patience`].
 const STUCK_DRAFT_AFTER: chrono::Duration = chrono::Duration::hours(48);
 
 /// A frontdoor request waiting on the user for longer than this is the
 /// stranger-facing silence the front door exists to prevent.
 const STALE_REQUEST_AFTER: chrono::Duration = chrono::Duration::hours(72);
+
+/// How long a store check waits before it calls an item stuck — the
+/// harness's constant, or **the owner's own number** where a charter line
+/// carries a sensor on that store (`docs/GOAL-SYSTEM-DESIGN.md` §11.1: "where
+/// a line names a setpoint, the doctor reports against the owner's number").
+/// The finding then names the line, so the owner reads *which priority* the
+/// store is failing rather than a threshold nobody chose.
+#[derive(Debug, Clone, PartialEq)]
+struct Patience {
+    after: chrono::Duration,
+    /// As printed — `48h`, or the setpoint in the owner's own spelling.
+    text: String,
+    /// The charter line the number came from, when it is the owner's.
+    line: Option<String>,
+}
+
+impl Patience {
+    /// The owner's setpoint for `kind`, or the harness's `fallback`.
+    ///
+    /// A setpoint the charter typed as anything but a duration cannot reach
+    /// here — `SensorKind::unit` fixes it — so the fallback arm on a
+    /// non-duration is unreachable rather than a silent default.
+    fn for_kind(
+        charter: Option<&crate::charter::Charter>,
+        kind: crate::charter::SensorKind,
+        fallback: chrono::Duration,
+        fallback_text: &str,
+    ) -> Patience {
+        if let Some(line) = charter.and_then(|c| c.line_for_sensor(&[kind])) {
+            if let Some(sensor) = &line.sensor {
+                if let crate::charter::Setpoint::Duration(d) = sensor.setpoint {
+                    if let Ok(after) = chrono::Duration::from_std(d) {
+                        return Patience {
+                            after,
+                            text: sensor.setpoint_text.clone(),
+                            line: Some(line.id.clone()),
+                        };
+                    }
+                }
+            }
+        }
+        Patience {
+            after: fallback,
+            text: fallback_text.to_string(),
+            line: None,
+        }
+    }
+
+    /// `48h`, or ``24h (charter line `answer-what-waits-on-me`)``.
+    fn describe(&self) -> String {
+        match &self.line {
+            Some(id) => format!("{} (charter line `{id}`)", self.text),
+            None => self.text.clone(),
+        }
+    }
+}
+
+/// The owner's setpoint for `kind`, with the line that carries it — for the
+/// kinds whose reading is a count or a rate rather than an age, which the
+/// walkers compare against directly.
+fn owner_setpoint(
+    charter: Option<&crate::charter::Charter>,
+    kind: crate::charter::SensorKind,
+) -> Option<(crate::charter::Setpoint, String, String)> {
+    let line = charter?.line_for_sensor(&[kind])?;
+    let sensor = line.sensor.as_ref()?;
+    Some((
+        sensor.setpoint,
+        sensor.setpoint_text.clone(),
+        line.id.clone(),
+    ))
+}
 
 /// Examine every store under `home` and report what is wrong.
 ///
@@ -109,14 +182,20 @@ const STALE_REQUEST_AFTER: chrono::Duration = chrono::Duration::hours(72);
 /// appends a finding about the failure, and no check can stop another.
 pub fn examine(home: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     let mut findings = Vec::new();
+    // The owner's setpoints, read once for the store checks below. A charter
+    // that does not load is `check_charter`'s finding; the store checks then
+    // read against the harness's constants, as they did before there was a
+    // charter — never against a number nobody could parse.
+    let charter = crate::charter::Charter::load(&home.join("charter.toml")).ok();
+    let charter = charter.as_ref();
     findings.extend(check_mail(&home.join("mail")));
     findings.extend(check_legacy_mail(home));
-    findings.extend(check_outbox(&home.join("outbox"), now));
-    findings.extend(check_questions(&home.join("questions"), now));
-    findings.extend(check_frontdoor(&home.join("requests"), now));
+    findings.extend(check_outbox(&home.join("outbox"), now, charter));
+    findings.extend(check_questions(&home.join("questions"), now, charter));
+    findings.extend(check_frontdoor(&home.join("requests"), now, charter));
     findings.extend(check_triggers(&home.join("triggers"), now));
     findings.extend(check_charter(&home.join("charter.toml")));
-    findings.extend(check_runs(&home.join("sessions")));
+    findings.extend(check_runs(&home.join("sessions"), charter));
     findings.extend(check_harness(&home.join("learning").join("harness"), now));
     findings.extend(check_learning(&home.join("learning"), now));
     findings.extend(check_proposal_review(&home.join("learning"), now));
@@ -599,11 +678,21 @@ fn check_legacy_mail(home: &Path) -> Vec<Finding> {
 /// Read the outbox items directly — one JSON file per item, the store's own
 /// on-disk contract — so that examining the store never creates or re-chmods
 /// it the way [`crate::outbox::OutboxStore::open`] deliberately does.
-fn check_outbox(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+fn check_outbox(
+    root: &Path,
+    now: DateTime<Utc>,
+    charter: Option<&crate::charter::Charter>,
+) -> Vec<Finding> {
     let mut out = Vec::new();
     if !root.is_dir() {
         return out;
     }
+    let patience = Patience::for_kind(
+        charter,
+        crate::charter::SensorKind::OutboxAge,
+        STUCK_DRAFT_AFTER,
+        "48h",
+    );
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) => {
@@ -623,6 +712,7 @@ fn check_outbox(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
     };
 
     let mut stale: Vec<String> = Vec::new();
+    let mut pending: u64 = 0;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -657,6 +747,7 @@ fn check_outbox(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         if item.status != "pending" {
             continue;
         }
+        pending += 1;
         if let Some(error) = &item.error {
             out.push(Finding {
                 component: "outbox".to_string(),
@@ -668,7 +759,7 @@ fn check_outbox(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
                 ),
                 remedy: Some(review.clone()),
             });
-        } else if age_of(&item.created_at, now).is_some_and(|age| age > STUCK_DRAFT_AFTER) {
+        } else if age_of(&item.created_at, now).is_some_and(|age| age > patience.after) {
             stale.push(format!(
                 "{} · {} — staged {}",
                 item.id,
@@ -685,13 +776,35 @@ fn check_outbox(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             component: "outbox".to_string(),
             severity: Severity::Attention,
             summary: format!(
-                "{} draft{} pending for more than 48h",
+                "{} draft{} pending for more than {}",
                 stale.len(),
-                if stale.len() == 1 { "" } else { "s" }
+                if stale.len() == 1 { "" } else { "s" },
+                patience.describe()
             ),
             detail: stale.join("\n"),
-            remedy: Some(review),
+            remedy: Some(review.clone()),
         });
+    }
+    // The count kind has no harness constant to fall back to: how many
+    // drafts may wait is the owner's number or nobody's, so this fires only
+    // where a charter line names one.
+    if let Some((crate::charter::Setpoint::Count(max), text, line)) =
+        owner_setpoint(charter, crate::charter::SensorKind::OutboxWaiting)
+    {
+        if pending > max {
+            out.push(Finding {
+                component: "outbox".to_string(),
+                severity: Severity::Attention,
+                summary: format!(
+                    "{pending} drafts pending, past the {text} setpoint on charter line `{line}`"
+                ),
+                detail: format!(
+                    "the line says at most {text} should wait on you; {pending} do. Every one is \
+                     yours to release or reject — doctor never does either"
+                ),
+                remedy: Some(review),
+            });
+        }
     }
     out
 }
@@ -710,13 +823,23 @@ const UNANSWERED_QUESTION_AFTER: chrono::Duration = chrono::Duration::hours(24);
 
 /// Read the question records directly, for the reason [`check_outbox`] does:
 /// an examination that creates or re-chmods the store is measuring itself.
-fn check_questions(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+fn check_questions(
+    root: &Path,
+    now: DateTime<Utc>,
+    charter: Option<&crate::charter::Charter>,
+) -> Vec<Finding> {
     let mut out = Vec::new();
     if !root.is_dir() {
         // Never asked is not a problem, and must not read as one. A machine
         // that has delegated no tasks looks exactly like this.
         return out;
     }
+    let patience = Patience::for_kind(
+        charter,
+        crate::charter::SensorKind::QuestionLatency,
+        UNANSWERED_QUESTION_AFTER,
+        "24h",
+    );
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) => {
@@ -764,7 +887,7 @@ fn check_questions(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
         if !q.is_open() {
             continue;
         }
-        if age_of(&q.asked_at, now).is_some_and(|age| age > UNANSWERED_QUESTION_AFTER) {
+        if age_of(&q.asked_at, now).is_some_and(|age| age > patience.after) {
             stale.push(format!(
                 "{} · {} — asked {}",
                 crate::questions::QuestionStore::short(&q.id),
@@ -780,9 +903,10 @@ fn check_questions(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             component: "questions".to_string(),
             severity: Severity::Attention,
             summary: format!(
-                "{} question{} unanswered for more than 24h — {} run{} cannot continue",
+                "{} question{} unanswered for more than {} — {} run{} cannot continue",
                 stale.len(),
                 if stale.len() == 1 { "" } else { "s" },
+                patience.describe(),
                 stale.len(),
                 if stale.len() == 1 { "" } else { "s" }
             ),
@@ -804,24 +928,28 @@ fn check_questions(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
 
 // --- frontdoor --------------------------------------------------------------
 
-/// The states that mean a request is waiting on the user rather than on the
-/// requester: `extracted` awaits triage, `awaiting_me` awaits a draft review,
-/// and `triaged` is triage's "I drafted nothing — this needs a person":
-/// nothing ever re-triages it, so left alone it waits forever, invisibly.
-/// (`needs_info` waits on the stranger, and `drained` on the extraction pass.)
-const WAITING_ON_ME: [&str; 3] = [
-    crate::frontdoor::EXTRACTED,
-    crate::frontdoor::AWAITING_ME,
-    crate::frontdoor::TRIAGED,
-];
+/// The owner-facing request states — `frontdoor::WAITING_ON_OWNER`, one
+/// list shared with the `request_closure` sensor so the finding and the
+/// reading measure the same requests.
+const WAITING_ON_ME: [&str; 3] = crate::frontdoor::WAITING_ON_OWNER;
 
 /// Read the request records directly, for the same no-side-effects reason as
 /// the outbox — [`crate::frontdoor::Frontdoor::open`] creates the directory.
-fn check_frontdoor(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
+fn check_frontdoor(
+    root: &Path,
+    now: DateTime<Utc>,
+    charter: Option<&crate::charter::Charter>,
+) -> Vec<Finding> {
     let mut out = Vec::new();
     if !root.is_dir() {
         return out;
     }
+    let patience = Patience::for_kind(
+        charter,
+        crate::charter::SensorKind::RequestClosure,
+        STALE_REQUEST_AFTER,
+        "72h",
+    );
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) => {
@@ -881,7 +1009,7 @@ fn check_frontdoor(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
                 remedy: Some(list.clone()),
             });
         } else if WAITING_ON_ME.contains(&record.state.as_str())
-            && request_age(&record, now).is_some_and(|age| age > STALE_REQUEST_AFTER)
+            && request_age(&record, now).is_some_and(|age| age > patience.after)
         {
             stale.push((
                 record.seq,
@@ -903,9 +1031,10 @@ fn check_frontdoor(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
             component: "frontdoor".to_string(),
             severity: Severity::Attention,
             summary: format!(
-                "{} request{} waiting on you for more than 72h",
+                "{} request{} waiting on you for more than {}",
                 stale.len(),
-                if stale.len() == 1 { "" } else { "s" }
+                if stale.len() == 1 { "" } else { "s" },
+                patience.describe()
             ),
             detail: stale
                 .into_iter()
@@ -923,7 +1052,7 @@ fn check_frontdoor(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
 /// is unknown, and unknown never counts as stale — a doctor that guesses is
 /// worse than one that says nothing.
 fn request_age(record: &crate::frontdoor::Record, now: DateTime<Utc>) -> Option<chrono::Duration> {
-    age_of(&record.drained_at, now).or_else(|| age_of(&record.created_at, now))
+    age_of(record.arrived_at(), now)
 }
 
 // --- trigger health ---------------------------------------------------------
@@ -1216,14 +1345,14 @@ fn check_triggers(root: &Path, now: DateTime<Utc>) -> Vec<Finding> {
 /// a file read — so this is a budget, not a claim about relevance. Two hundred
 /// covers weeks of ordinary use and stays well inside "fast enough to run
 /// whenever you wonder".
-const RUNS_WINDOW: usize = 200;
+pub const RUNS_WINDOW: usize = 200;
 
 /// Below this many runs *for one model*, no rate is reported.
 ///
 /// Twenty rather than the trigger check's ten, because these rates are
 /// population statistics across mixed work rather than one job doing the same
 /// thing every morning, and the noise is correspondingly higher.
-const RUNS_MIN: usize = 20;
+pub const RUNS_MIN: usize = 20;
 
 /// The share of runs finishing over a failed call that is worth saying out
 /// loud. Deliberately high: rule-based evaluators are measured to *under*
@@ -1336,7 +1465,7 @@ fn check_charter(path: &Path) -> Vec<Finding> {
 /// the wrong model. Silent until there is enough of one model to say
 /// anything, which is the same rule as everywhere else here: unknown is not a
 /// finding.
-fn check_runs(sessions: &Path) -> Vec<Finding> {
+fn check_runs(sessions: &Path, charter: Option<&crate::charter::Charter>) -> Vec<Finding> {
     use crate::runlog::{Corpus, Scan};
 
     let mut out = Vec::new();
@@ -1422,6 +1551,11 @@ fn check_runs(sessions: &Path) -> Vec<Finding> {
                 needs_terminal: false,
             }),
         });
+    }
+
+    if let Some(charter) = charter {
+        out.extend(check_sensor_saturation(&corpus, charter));
+        out.extend(check_intervention_rate(&corpus, charter));
     }
 
     let remedy = |what: &str| {
@@ -2074,6 +2208,138 @@ fn age_of(stamp: &str, now: DateTime<Utc>) -> Option<chrono::Duration> {
     DateTime::parse_from_rfc3339(stamp)
         .ok()
         .map(|at| now - at.with_timezone(&Utc))
+}
+
+// --- charter sensors, read back off the recorded runs -----------------------
+
+/// A sensored line that has read past its setpoint on each of the last
+/// [`crate::reading::SATURATED_AFTER_RUNS`] recorded runs
+/// (`docs/GOAL-SYSTEM-DESIGN.md` §11.1, containment 5's second guard).
+///
+/// Either the debt is real — in which case the store's own finding above
+/// names the item — or the setpoint is tighter than the line means, and a
+/// reading that is always past its setpoint is the constant the sensor
+/// exists to replace. Doctor cannot tell which; it says both. The streak
+/// counts only rows that read the *same* sensor — same line, same kind,
+/// same setpoint spelling — so an edited setpoint starts a fresh streak,
+/// and skips rows whose reading says nothing either way (`Unread`,
+/// `Deferred`, or a row from before the field).
+fn check_sensor_saturation(
+    corpus: &crate::runlog::Corpus,
+    charter: &crate::charter::Charter,
+) -> Vec<Finding> {
+    use crate::reading::SATURATED_AFTER_RUNS;
+    let mut rows: Vec<&crate::runlog::RunRow> = corpus
+        .rows
+        .iter()
+        .filter(|r| {
+            r.stats
+                .homeostat
+                .as_ref()
+                .is_some_and(|h| h.charter.is_some())
+        })
+        .collect();
+    // Newest first. The corpus is session-newest-first with runs in order
+    // inside a session, which is not quite the same thing.
+    rows.sort_by(|a, b| b.started_at.cmp(&a.started_at).then(b.run.cmp(&a.run)));
+    let mut out = Vec::new();
+    for line in charter.lines() {
+        let Some(sensor) = &line.sensor else {
+            continue;
+        };
+        let streak: Vec<bool> = rows
+            .iter()
+            .filter_map(|r| {
+                r.stats
+                    .homeostat
+                    .as_ref()?
+                    .charter
+                    .as_ref()?
+                    .iter()
+                    .find(|lr| {
+                        lr.line == line.id
+                            && lr.kind == sensor.kind
+                            && lr.setpoint == sensor.setpoint_text
+                    })?
+                    .reading
+                    .over()
+            })
+            .take(SATURATED_AFTER_RUNS)
+            .collect();
+        if streak.len() == SATURATED_AFTER_RUNS && streak.iter().all(|over| *over) {
+            out.push(Finding {
+                component: "charter".to_string(),
+                severity: Severity::Attention,
+                summary: format!(
+                    "charter line `{}` has read past its {} setpoint on each of the last {} runs",
+                    line.id, sensor.setpoint_text, SATURATED_AFTER_RUNS
+                ),
+                detail: format!(
+                    "sensor `{}`: either what it watches has genuinely waited past {} that whole \
+                     time — the store's own findings name the item, a stuck draft or one whose \
+                     release failed — or the setpoint is tighter than the line means (an hour \
+                     where you meant a day). A reading that is always past its setpoint is the \
+                     constant the sensor exists to replace",
+                    sensor.kind.wire(),
+                    sensor.setpoint_text
+                ),
+                remedy: Some(Remedy {
+                    description: "see each sensor's current reading beside its line".to_string(),
+                    argv: vec!["mecha".to_string(), "charter".to_string()],
+                    needs_terminal: false,
+                }),
+            });
+        }
+    }
+    out
+}
+
+/// The `intervention_rate` kind, read off the corpus the run check already
+/// scanned and compared with the owner's setpoint — the one sensor kind
+/// whose store is the session store, so its finding lives with the run
+/// findings rather than with a store walker. Silent under [`RUNS_MIN`]
+/// rows, like every rate here: a share of three runs is noise.
+fn check_intervention_rate(
+    corpus: &crate::runlog::Corpus,
+    charter: &crate::charter::Charter,
+) -> Vec<Finding> {
+    let Some((crate::charter::Setpoint::Rate(max), text, line)) =
+        owner_setpoint(Some(charter), crate::charter::SensorKind::InterventionRate)
+    else {
+        return Vec::new();
+    };
+    if corpus.len() < RUNS_MIN {
+        return Vec::new();
+    }
+    let Some(rate) = corpus.intervention_rate() else {
+        return Vec::new();
+    };
+    if rate <= max {
+        return Vec::new();
+    }
+    vec![Finding {
+        component: "runs".to_string(),
+        severity: Severity::Attention,
+        summary: format!(
+            "you stepped into {:.0}% of the last {} runs, past the {text} setpoint on charter line `{line}`",
+            rate * 100.0,
+            corpus.len()
+        ),
+        detail: "counted as a stop by request on the run record — a denied call is not, \
+                 because the record cannot tell your no from a policy's; steers, corrected \
+                 follow-ups and edited drafts are not on it either, so this under-counts \
+                 rather than guesses"
+            .to_string(),
+        remedy: Some(Remedy {
+            description: "read what the owner has been stepping in on".to_string(),
+            argv: vec![
+                "mecha".to_string(),
+                "reflect".to_string(),
+                "--dry-run".to_string(),
+            ],
+            needs_terminal: false,
+        }),
+    }]
 }
 
 /// "49h ago", "3d ago", or the raw stamp when it does not parse.
@@ -3888,6 +4154,286 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&home);
     }
+    // --- the owner's setpoints (§11.1's readings phase) ---------------------
+
+    fn charter_with(dir: &Path, sensor_toml: &str) {
+        std::fs::write(
+            dir.join("charter.toml"),
+            format!(
+                "[[line]]\nid = \"waits\"\ntext = \"Keep what waits on me short.\"\n{sensor_toml}"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Where a charter line names a setpoint the doctor reads against the
+    /// owner's number and says which line; without one, the harness's 48h
+    /// stands — a 20-hour-old draft is stuck under the first and fine under
+    /// the second, which is what makes this fail on the old behaviour.
+    #[test]
+    fn a_stuck_draft_is_judged_against_the_owners_setpoint_where_a_line_names_one() {
+        let dir = home("outbox-owner-setpoint");
+        pending_item(&dir, "20260813-160000-aaa", "2026-08-13T16:00:00Z", None);
+
+        let none = examine(&dir, utc(NOW));
+        assert!(of(&none, "outbox").is_empty(), "{none:#?}");
+
+        charter_with(
+            &dir,
+            "[line.sensor]\nkind = \"outbox_age\"\nsetpoint = \"12h\"\n",
+        );
+        let findings = examine(&dir, utc(NOW));
+        let outbox = of(&findings, "outbox");
+        assert_eq!(outbox.len(), 1, "{findings:#?}");
+        assert_eq!(
+            outbox[0].summary,
+            "1 draft pending for more than 12h (charter line `waits`)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same rule on the other two stores: the question and the request
+    /// walkers read the owner's `question_latency` and `request_closure`.
+    #[test]
+    fn questions_and_requests_read_the_owners_setpoints_too() {
+        let dir = home("owner-setpoints-q-r");
+        // Six hours old: within the harness's 24h and 72h, past the owner's 1h.
+        question(&dir, "q-1", "2026-08-14T06:00:00Z", crate::questions::OPEN);
+        request(&dir, 7, "extracted", "2026-08-14T06:00:00Z");
+        let none = examine(&dir, utc(NOW));
+        assert!(of(&none, "questions").is_empty(), "{none:#?}");
+        assert!(of(&none, "frontdoor").is_empty(), "{none:#?}");
+
+        std::fs::write(
+            dir.join("charter.toml"),
+            "[[line]]\nid = \"answer\"\ntext = \"Answer fast.\"\n[line.sensor]\nkind = \"question_latency\"\nsetpoint = \"1h\"\n\n\
+             [[line]]\nid = \"close\"\ntext = \"Close requests.\"\n[line.sensor]\nkind = \"request_closure\"\nsetpoint = \"1h\"\n",
+        )
+        .unwrap();
+        let findings = examine(&dir, utc(NOW));
+        let q = of(&findings, "questions");
+        assert_eq!(q.len(), 1, "{findings:#?}");
+        assert!(
+            q[0].summary
+                .contains("more than 1h (charter line `answer`)"),
+            "{}",
+            q[0].summary
+        );
+        let r = of(&findings, "frontdoor");
+        assert_eq!(r.len(), 1, "{findings:#?}");
+        assert!(
+            r[0].summary.contains("more than 1h (charter line `close`)"),
+            "{}",
+            r[0].summary
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// How many drafts may wait has no harness constant behind it, so the
+    /// count finding exists only where the owner wrote a number.
+    #[test]
+    fn a_count_setpoint_fires_only_where_the_charter_names_one() {
+        let dir = home("outbox-count-setpoint");
+        pending_item(&dir, "20260814-110000-aaa", "2026-08-14T11:00:00Z", None);
+        pending_item(&dir, "20260814-110000-bbb", "2026-08-14T11:00:00Z", None);
+        assert!(of(&examine(&dir, utc(NOW)), "outbox").is_empty());
+
+        charter_with(
+            &dir,
+            "[line.sensor]\nkind = \"outbox_waiting\"\nsetpoint = 1\n",
+        );
+        let findings = examine(&dir, utc(NOW));
+        let outbox = of(&findings, "outbox");
+        assert_eq!(outbox.len(), 1, "{findings:#?}");
+        assert_eq!(
+            outbox[0].summary,
+            "2 drafts pending, past the 1 setpoint on charter line `waits`"
+        );
+        assert_eq!(outbox[0].severity, Severity::Attention);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One session per run, newest last, each recording the given readings.
+    fn runs_reading(dir: &Path, readings: Vec<Option<crate::reading::Reading>>) {
+        use crate::session::{Record, RunStats, Session, SessionMeta};
+        for (i, reading) in readings.into_iter().enumerate() {
+            let stamp = format!("2026-08-01T00:{:02}:00Z", i);
+            let s = Session::create(
+                dir,
+                SessionMeta {
+                    id: format!("20260801T00{i:02}00-r"),
+                    created_at: utc(&stamp),
+                    provider: "local".into(),
+                    model: "m".into(),
+                    workspace: std::path::PathBuf::from("/tmp"),
+                    title: None,
+                    kind: None,
+                },
+            )
+            .unwrap();
+            let charter = reading.map(|reading| {
+                vec![crate::reading::LineReading {
+                    line: "waits".into(),
+                    kind: crate::charter::SensorKind::OutboxAge,
+                    setpoint: "24h".into(),
+                    reading,
+                }]
+            });
+            s.append(&Record::Outcome(RunStats {
+                homeostat: Some(crate::homeostat::Homeostat {
+                    charter,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }))
+            .unwrap();
+        }
+    }
+
+    fn over() -> crate::reading::Reading {
+        crate::reading::Reading::Observed {
+            value: crate::reading::Observed::Seconds(200_000),
+            over: true,
+            excess: 0.5,
+        }
+    }
+
+    /// Containment 5's second guard: a sensor past its setpoint on each of
+    /// the last ten recorded runs is a finding. Nine is not; a row that
+    /// read nothing is skipped rather than counted on either side; and a
+    /// reading against a different setpoint spelling starts a fresh streak,
+    /// because the record kept the setpoint for exactly this.
+    #[test]
+    fn a_sensor_past_its_setpoint_on_ten_consecutive_runs_is_saturated() {
+        use crate::reading::{Reading, SATURATED_AFTER_RUNS};
+        let sensor = "[line.sensor]\nkind = \"outbox_age\"\nsetpoint = \"24h\"\n";
+
+        let dir = home("saturated-ten");
+        charter_with(&dir, sensor);
+        let mut readings: Vec<Option<Reading>> = vec![Some(over()); SATURATED_AFTER_RUNS];
+        // Unread rows in the middle say nothing either way.
+        readings.insert(3, Some(Reading::Unread));
+        readings.insert(5, None);
+        runs_reading(&dir.join("sessions"), readings);
+        let findings = examine(&dir, utc(NOW));
+        let charter = of(&findings, "charter");
+        assert_eq!(charter.len(), 1, "{findings:#?}");
+        assert_eq!(
+            charter[0].summary,
+            format!(
+                "charter line `waits` has read past its 24h setpoint on each of the last {} runs",
+                SATURATED_AFTER_RUNS
+            )
+        );
+        assert_eq!(
+            charter[0].remedy.as_ref().unwrap().argv,
+            vec!["mecha", "charter"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = home("saturated-nine");
+        charter_with(&dir, sensor);
+        runs_reading(
+            &dir.join("sessions"),
+            vec![Some(over()); SATURATED_AFTER_RUNS - 1],
+        );
+        assert!(of(&examine(&dir, utc(NOW)), "charter").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The newest run read nothing waiting: the streak is broken there.
+        let dir = home("saturated-met");
+        charter_with(&dir, sensor);
+        let mut readings: Vec<Option<Reading>> = vec![Some(over()); SATURATED_AFTER_RUNS];
+        readings.push(Some(Reading::Nothing));
+        runs_reading(&dir.join("sessions"), readings);
+        assert!(of(&examine(&dir, utc(NOW)), "charter").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The owner has since changed the setpoint: the recorded streak was
+        // against `24h`, the charter now says `48h`, nothing matches.
+        let dir = home("saturated-resp");
+        charter_with(
+            &dir,
+            "[line.sensor]\nkind = \"outbox_age\"\nsetpoint = \"48h\"\n",
+        );
+        runs_reading(
+            &dir.join("sessions"),
+            vec![Some(over()); SATURATED_AFTER_RUNS],
+        );
+        assert!(of(&examine(&dir, utc(NOW)), "charter").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The corpus kind, compared against the owner's rate over the run
+    /// check's own scan — and silent under the run floor, like every rate.
+    #[test]
+    fn the_intervention_rate_is_read_off_the_corpus_against_the_owners_share() {
+        use crate::agent::StopCause;
+        use crate::session::{Record, RunStats, Session, SessionMeta};
+        let write = |dir: &Path, n: usize| {
+            for i in 0..n {
+                let s = Session::create(
+                    &dir.join("sessions"),
+                    SessionMeta {
+                        id: format!("20260801T00{i:02}00-r"),
+                        created_at: utc(&format!("2026-08-01T00:{i:02}:00Z")),
+                        provider: "local".into(),
+                        model: "m".into(),
+                        workspace: std::path::PathBuf::from("/tmp"),
+                        title: None,
+                        kind: None,
+                    },
+                )
+                .unwrap();
+                // Every other run was stopped by request: a 50% share.
+                let cause = if i % 2 == 0 {
+                    StopCause::Stopped
+                } else {
+                    StopCause::Completed
+                };
+                s.append(&Record::Outcome(RunStats {
+                    stop_cause: Some(cause),
+                    ..Default::default()
+                }))
+                .unwrap();
+            }
+        };
+        let sensor = "[line.sensor]\nkind = \"intervention_rate\"\nsetpoint = \"20%\"\n";
+
+        let dir = home("intervention-rate");
+        charter_with(&dir, sensor);
+        write(&dir, RUNS_MIN);
+        let findings = examine(&dir, utc(NOW));
+        let runs: Vec<_> = of(&findings, "runs")
+            .into_iter()
+            .filter(|f| f.summary.contains("stepped into"))
+            .collect();
+        assert_eq!(runs.len(), 1, "{findings:#?}");
+        assert_eq!(
+            runs[0].summary,
+            format!(
+                "you stepped into 50% of the last {RUNS_MIN} runs, past the 20% setpoint on charter line `waits`"
+            )
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Under the floor: a share of a handful is noise.
+        let dir = home("intervention-rate-few");
+        charter_with(&dir, sensor);
+        write(&dir, RUNS_MIN - 1);
+        assert!(!of(&examine(&dir, utc(NOW)), "runs")
+            .iter()
+            .any(|f| f.summary.contains("stepped into")));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // No charter line: the rate is nobody's number, and nothing fires.
+        let dir = home("intervention-rate-no-line");
+        write(&dir, RUNS_MIN);
+        assert!(!of(&examine(&dir, utc(NOW)), "runs")
+            .iter()
+            .any(|f| f.summary.contains("stepped into")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
@@ -4072,7 +4618,7 @@ mod proposal_review_tests {
             SessionKind::Test,
             "2026-08-01T00:00:01Z",
         );
-        let findings = check_runs(&dir);
+        let findings = check_runs(&dir, None);
         assert!(
             findings
                 .iter()

@@ -1051,7 +1051,7 @@ charter is `Prose` class and cannot be cheaply A/B tested:
   well-formed version points the other way: *"tell the owner the truth early,
   especially when it disappoints."*
 
-### 11.1 Sensored lines — ruled 2026-09-02, designed here; the parser, serialiser, template and attribution join built 2026-09-04
+### 11.1 Sensored lines — ruled 2026-09-02, designed here; the parser, serialiser, template and attribution join built 2026-09-04, the readings, guilt, doctor thresholds and editor reading later that day
 
 > **Built 2026-09-04** (`feat/goal-ref-relevance`, §17.6's sprint items 1
 > and 2): the `[line.sensor]` table with `SensorKind` as a closed enum and
@@ -1073,6 +1073,31 @@ charter is `Prose` class and cannot be cheaply A/B tested:
 > binary the load error is not a startup refusal, because `setup.rs`
 > degrades to an un-chartered run with one stderr line; `mecha doctor`'s
 > charter finding is the actual containment, and the `update` skill the fix.
+>
+> **The readings phase built 2026-09-04, later** (`feat/charter-readings`):
+> `reading.rs` reads each sensored line against its store as one of five
+> states — unread, deferred, nothing waiting, too few runs for a share,
+> observed — with the observed
+> value's `excess` past the setpoint as the line-specific guilt term,
+> asymptotic on `guilt.rs`'s lesson and with a zero setpoint refused at the
+> parser; it is recorded on the homeostat at every run's start from the
+> inherited backlog (`Homeostat::charter`), shown beside the line on
+> `mecha charter`, the TUI detail and the web settings page (containment
+> 5's first guard), and read by the doctor: the stuck-draft, unanswered-
+> question and stale-request findings use the owner's setpoint where a line
+> names one and say which line, the count and rate kinds get findings only
+> where a line names one, and a line past its setpoint on each of the last
+> ten informative runs is reported as saturated (the second guard). The
+> `intervention_rate` kind reads the run corpus — a stop by request on the
+> run record and nothing else, since a denial there cannot tell a person's
+> no from a policy's, which under-counts the four learning triggers
+> rather than guessing — and is *deferred* inside a run, on `guilt.rs`'s
+> rule that a store scan is a nightly budget, not a per-run one. Still
+> unbuilt from this section: the replay tiebreak (the only consumer that
+> changes what gets replayed), `board_overdue` and `cost` as kinds (a
+> reading for either needs the graph subprocess or a cost unit nobody has
+> chosen), and the reflection's "which line moved" — the reflector does not
+> read the homeostat.
 
 The owner ruled that a charter line may carry a **sensor**: an observable
 the harness reads from its own stores, with a setpoint the owner wrote. It
