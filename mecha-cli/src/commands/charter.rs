@@ -131,7 +131,7 @@ fn show_lines(charter: &Charter) {
     }
 }
 
-/// ` · sensor outbox_age ≤ 24h` on a line that carries one, empty
+/// `  · sensor outbox_age · setpoint 24h` on a line that carries one, empty
 /// otherwise. The owner's own setpoint spelling, never a reading — this
 /// command shows what the run's prompt would carry plus the one thing it
 /// deliberately does not (the sensor never enters a prompt).
