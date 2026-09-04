@@ -172,6 +172,16 @@ mark_untrusted_output = true
 # MCP servers. Their tools appear as `<name>__<tool>`.
 # [[mcp]]
 # name = "graph"
-# command = "/path/to/pkg-mcp"
+# command = "mecha-graph-mcp"   # or an absolute path: a service unit without
+#                               # ~/.cargo/bin on its PATH will not find the
+#                               # bare name; front-ends then skip the server
+#                               # with one stderr line (the tools just vanish),
+#                               # distill/corroborate/gossip/vet exit non-zero.
+#                               # Not confined: `sandbox = true` replaces PATH
+#                               # with the system dirs and binds nothing under ~
+#                               # unless listed, and this server's store lives
+#                               # there, read-write.
 # args = []
+# # Its kg_* tools carry their own namespace; skip the graph__ prefix.
+# prefix_tools = false
 "#;
