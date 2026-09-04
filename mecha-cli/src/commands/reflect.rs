@@ -19,7 +19,7 @@ use mecha_core::learning::{
     Trigger,
 };
 use mecha_core::session::{Session, TaintTimeline};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -42,6 +42,15 @@ pub struct Args {
     /// is skipped, and clean-covered interventions are never re-mined.
     #[arg(long)]
     pub remine_untrusted: bool,
+
+    /// One-shot backfill: give the reflections mined before the situation
+    /// field a situation, recomputed from their transcripts — the tool
+    /// window, surface and workspace — with no model call. A reflection
+    /// whose intervention cannot be found once in its transcript stays
+    /// without one. Idempotent: a reflection that has a situation is never
+    /// touched. `--dry-run` reports what would be written.
+    #[arg(long, conflicts_with_all = ["remine_untrusted", "limit"])]
+    pub backfill_situations: bool,
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -50,6 +59,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         None => Session::default_dir()?,
     };
     let store = LearningStore::open(LearningStore::default_root()?)?;
+    if args.backfill_situations {
+        return backfill_situations(&store, &sessions_dir, args.dry_run);
+    }
     // The writer lock, taken *before* reading what has been mined — that read
     // is where the race lives now that a session_end hook fires a detached
     // reflect at every close: two closes in quick succession must not both
@@ -377,4 +389,128 @@ fn outbox_intervention(item: &mecha_core::outbox::OutboxItem) -> Intervention {
         tools_before: Vec::new(),
         tools_after: Vec::new(),
     }
+}
+
+/// `--backfill-situations`: `docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 6.
+///
+/// Deterministic end to end — `extract_interventions` over each transcript,
+/// the match on (session, trigger, intervention text), `Situation::recorded`
+/// off the window and the session header — so it costs no model and can be
+/// re-run. Each transcript is read once for all the reflections that cite
+/// it. A reflection is left without a situation, and said so, when its
+/// session cannot be found or read, when no intervention in the transcript
+/// carries its trigger and text (a compaction since mining, or an outbox
+/// edit with no transcript), or when several do with different windows;
+/// absent is the honest reading and the pass never picks one. The goal is
+/// never backfilled.
+fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool) -> Result<()> {
+    use mecha_core::learning::{backfill_situation, extract_interventions, Backfilled};
+    let _lock = if dry_run { None } else { Some(store.lock()?) };
+    let todo: Vec<_> = store
+        .reflexions()?
+        .into_iter()
+        .filter(|r| r.situation.is_none())
+        .collect();
+    if todo.is_empty() {
+        println!("every reflection carries a situation — nothing to backfill");
+        return Ok(());
+    }
+    // The store listed once — `Session::find` is a full scan of the
+    // directory per call (found on review) — then one read per cited
+    // session, shared by every reflection that cites it.
+    // `list_counting`, not `list`: a transcript whose header cannot be read
+    // is absent from the map, and a reflection citing it must not read as
+    // citing a session that was deleted (found on review) — the count is
+    // carried into that reason and the summary line.
+    let (listed, unreadable_sessions) = Session::list_counting(sessions_dir)?;
+    let paths: std::collections::HashMap<String, std::path::PathBuf> = listed
+        .into_iter()
+        .map(|(meta, path)| (meta.id, path))
+        .collect();
+    let mut by_session: std::collections::HashMap<
+        String,
+        Result<
+            (
+                mecha_core::session::SessionMeta,
+                Vec<mecha_core::learning::Intervention>,
+            ),
+            String,
+        >,
+    > = Default::default();
+    let mut updates: Vec<(String, mecha_core::situation::Situation)> = Vec::new();
+    let mut unmatched: Vec<(String, String)> = Vec::new();
+    for r in &todo {
+        if r.session_id.is_empty() {
+            unmatched.push((r.id.clone(), "no session recorded (an outbox edit)".into()));
+            continue;
+        }
+        let read = by_session.entry(r.session_id.clone()).or_insert_with(|| {
+            let path = paths.get(&r.session_id).ok_or_else(|| {
+                if unreadable_sessions > 0 {
+                    format!(
+                        "no readable session matching \"{}\" — {unreadable_sessions} \
+                             transcript(s) in the store could not be read, and it may be one",
+                        r.session_id
+                    )
+                } else {
+                    format!("no session matching \"{}\"", r.session_id)
+                }
+            })?;
+            let (meta, convo) =
+                Session::load(path).map_err(|e| format!("session unreadable: {e:#}"))?;
+            Ok((meta, extract_interventions(&convo.messages)))
+        });
+        match read {
+            Err(why) => unmatched.push((r.id.clone(), why.clone())),
+            Ok((meta, interventions)) => match backfill_situation(r, interventions, meta) {
+                Backfilled::Matched(s) => updates.push((r.id.clone(), s)),
+                Backfilled::NoMatch => unmatched.push((
+                    r.id.clone(),
+                    "no intervention with this trigger and text in the transcript".into(),
+                )),
+                Backfilled::Ambiguous(n) => {
+                    unmatched.push((r.id.clone(), format!("fits {n} different tool windows")))
+                }
+            },
+        }
+    }
+    for (id, s) in &updates {
+        println!("· {id} ← {}", s.describe());
+    }
+    for (id, why) in &unmatched {
+        println!("· {id} stays without a situation — {why}");
+    }
+    let verb = if dry_run {
+        "would recompute"
+    } else {
+        "recomputed"
+    };
+    let written = if dry_run {
+        updates.len()
+    } else {
+        let written = store.set_situations(&updates, &chrono::Utc::now().to_rfc3339())?;
+        // Committed on its own, like every batch pass over this store: the
+        // rewrite changes which region batches the next `learn --auto`
+        // argues, and left uncommitted it would ride into the next
+        // nightly's `reflect: 0 session(s)` commit (found on review).
+        if written > 0 {
+            store.commit(&format!(
+                "reflect --backfill-situations: {written} situation(s) recomputed, {} left absent",
+                unmatched.len()
+            ));
+        }
+        written
+    };
+    println!(
+        "{verb} {written} of {} situation(s); {} left absent, {} session(s) read{}",
+        todo.len(),
+        unmatched.len(),
+        by_session.values().filter(|r| r.is_ok()).count(),
+        if unreadable_sessions > 0 {
+            format!(", {unreadable_sessions} transcript(s) in the store unreadable")
+        } else {
+            String::new()
+        }
+    );
+    Ok(())
 }

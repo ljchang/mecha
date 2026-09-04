@@ -909,17 +909,51 @@ export const transcript = {
       kind: 'user',
       text: 'What needs me this morning? Draft what you can.',
     },
+    // A chip carries the call, not only its name: `draft` is the shaped
+    // view, `args` the exact bytes behind it, `preview` what came back. A
+    // reader who taps one on the docs site sees what an owner sees, which
+    // is the whole point of embedding the app rather than a screenshot.
     {
       kind: 'tool',
-      name: 'mail__mail_triage',
+      name: 'mail__mail_search',
       pending: false,
       is_error: false,
+      draft: {
+        headers: [['account', 'personal']],
+        body: null,
+        other: [
+          ['max_results', '20'],
+          ['query', 'is:unread newer_than:2d'],
+        ],
+      },
+      args: '{\n  "query": "is:unread newer_than:2d",\n  "account": "personal",\n  "max_results": 20\n}',
+      preview: `14 threads, newest first:
+
+  Tomas Lindqvist   Review request — manuscript 2026-0413
+  Hollis Barnett    Ostrander nomination closes Monday
+  Amara Osei        Cape Town seminar — Thursday or Friday?
+  … 11 more`,
     },
     {
       kind: 'tool',
       name: 'mail__calendar_list',
       pending: false,
       is_error: false,
+      draft: {
+        headers: [
+          ['start', '2026-08-29'],
+          ['end', '2026-09-19'],
+        ],
+        body: null,
+        other: [['account', 'personal']],
+      },
+      args: '{\n  "account": "personal",\n  "start": "2026-08-29",\n  "end": "2026-09-19"\n}',
+      preview: `4 events in 21 days:
+
+  Sep 08–Sep 12  Cape Town (travel)
+  Sep 15  10:00  lab meeting
+  Sep 16  14:00  Ostrander committee
+  Sep 18  09:30  dentist`,
     },
     {
       kind: 'assistant',
@@ -949,8 +983,39 @@ Amara Osei is waiting on Thursday-or-Friday for the Cape Town seminar. Your own 
 // stages instead of going out.
 export const script = [
   [120, { type: 'delta', text: 'Checking what you already told him.\n\n' }],
-  [420, { type: 'tool', name: 'recall' }],
-  [900, { type: 'tool_result', name: 'recall', is_error: false }],
+  [
+    420,
+    {
+      type: 'tool',
+      name: 'recall',
+      draft: {
+        headers: [],
+        body: null,
+        // Sorted, because the wire delivers `other` in BTreeMap order — a
+        // fixture written in schema order would demo an ordering the page
+        // never sees, and the digest is picked out of exactly this.
+        other: [
+          ['limit', '5'],
+          ['query', 'Tomas Lindqvist review commitment'],
+        ],
+      },
+      args: '{\n  "query": "Tomas Lindqvist review commitment",\n  "limit": 5\n}',
+    },
+  ],
+  [
+    900,
+    {
+      type: 'tool_result',
+      name: 'recall',
+      is_error: false,
+      preview: `2 episodes, closest first:
+
+  2024-11-04  reviewed for this journal; told Tomas afterwards
+              that you would take one a year
+  2026-02-17  declined a second review in the same quarter,
+              citing the same rule`,
+    },
+  ],
   [
     260,
     {
@@ -960,7 +1025,22 @@ export const script = [
   ],
   [340, { type: 'delta', text: 'you would take one a year. This is the first of 2026, so ' }],
   [340, { type: 'delta', text: 'accepting is consistent with what you said.\n\n' }],
-  [300, { type: 'tool', name: 'mail__mail_reply' }],
+  [
+    300,
+    {
+      type: 'tool',
+      name: 'mail__mail_reply',
+      draft: {
+        headers: [
+          ['to', 'tomas.lindqvist@example.org'],
+          ['subject', 'Re: Review request — manuscript 2026-0413'],
+        ],
+        body: 'Dear Tomas,\n\nYes — I can take this one. Three weeks from today puts my report with you on the 25th.\n\nBest,\nLuke',
+        other: [['account', 'personal']],
+      },
+      args: '{\n  "account": "personal",\n  "to": "tomas.lindqvist@example.org",\n  "subject": "Re: Review request — manuscript 2026-0413",\n  "body": "Dear Tomas,\\n\\nYes — I can take this one. …"\n}',
+    },
+  ],
   [
     900,
     {
@@ -968,7 +1048,15 @@ export const script = [
       text: 'mail__mail_reply is routed to the outbox — staged, not executed.',
     },
   ],
-  [80, { type: 'tool_result', name: 'mail__mail_reply', is_error: false }],
+  [
+    80,
+    {
+      type: 'tool_result',
+      name: 'mail__mail_reply',
+      is_error: false,
+      preview: 'staged as ob-4417 — nothing was sent',
+    },
+  ],
   [200, { type: 'staged', ids: ['ob-4417'] }],
   [400, { type: 'usage', prompt_tokens: 26402, context_window: 32768 }],
   [
