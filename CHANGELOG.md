@@ -207,8 +207,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider and model that ran (the flag, else the provider's configured
   model, else its default — the run's own resolution), the bare preset plus
   `--mcp`, the machine's knobs, and a description naming what no lever can
-  (the lifted approval rules). Each case lands as a trial row;
-  `mecha exp status|export` read it; `-o` gains `experiment`. The scorecard
+  (the lifted approval rules). Each run of each case lands as its own
+  trial row — `--runs k` is the manifest's `repetitions`, so k rows share
+  a condition hash and differ by repetition, as the hash's contract
+  requires; `mecha exp status|export` read it; `-o` gains `experiment`. The scorecard
   is unchanged. An eval under `--mcp-file` is not recorded and says so: its
   fixture servers have no lever, and a trial row's condition hash would
   call that eval bare.
