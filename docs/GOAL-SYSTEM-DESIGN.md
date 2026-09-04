@@ -1088,8 +1088,9 @@ charter is `Prose` class and cannot be cheaply A/B tested:
 > names one and say which line, the count and rate kinds get findings only
 > where a line names one, and a line past its setpoint on each of the last
 > ten informative runs is reported as saturated (the second guard). The
-> `intervention_rate` kind reads the run corpus — a denial or a stop by
-> request on the run record, which under-counts the four learning triggers
+> `intervention_rate` kind reads the run corpus — a stop by request on the
+> run record and nothing else, since a denial there cannot tell a person's
+> no from a policy's, which under-counts the four learning triggers
 > rather than guessing — and is *deferred* inside a run, on `guilt.rs`'s
 > rule that a store scan is a nightly budget, not a per-run one. Still
 > unbuilt from this section: the replay tiebreak (the only consumer that

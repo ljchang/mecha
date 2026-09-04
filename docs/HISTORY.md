@@ -3604,9 +3604,9 @@ that did not load and `Some([])` for a charter with no sensor, through
 `reading::lenient` so a kind a later binary adds costs the readings and not
 the run record; the corpus kind is `Deferred` in a run and read by the
 surfaces through `reading::corpus_rate`, with `Corpus::intervention_rate`
-defined as a denial or a stop by request on the run record — coarser than
-the learning store's four triggers, under-counting rather than guessing,
-and the doc says which two it sees. The doctor's `Patience` is the harness
+defined as a stop by request on the run record and nothing else — coarser
+than the learning store's four triggers, under-counting rather than
+guessing, and the doc says which one it sees. The doctor's `Patience` is the harness
 constant or the setpoint of the line whose sensor watches that store, in
 the owner's spelling, so the stuck-draft, unanswered-question and
 stale-request findings name the line (`1 draft pending for more than 12h
@@ -3647,9 +3647,18 @@ owner-facing states — a week-old `needs_info` parked on the stranger would
 have saturated a line no finding named, and the remedy pointed at the same
 unactionable reading (`frontdoor::WAITING_ON_OWNER` is now the one list,
 `Backlog::read_with_owner_requests` hands the reading the narrowed depth,
-and the wide depth stays what every recorded row has always held). Not
-built: the replay tiebreak, `board_overdue` and `cost`, and the
-reflection's "which line moved".
+and the wide depth stays what every recorded row has always held). The
+third pass found the two remaining ways the sensor and the finding could
+disagree: `tool_denied` counts a policy's refusal as well as a person's —
+`forbid`, a hook, the interlock, a guard — so one routine rule would have
+pinned "you stepped into every run" with nobody awake, and the rate now
+reads `StopCause::Stopped` alone until the record can tell the two apart;
+and the owner-facing request depth aged from `created_at` while the doctor
+ages from the drain's clock, so a form stamped a month before ingestion
+read a month overdue on the sensor and a day old to the doctor
+(`Record::arrived_at` is now the one clock, the wide depth keeping
+`created_at`). Not built: the replay tiebreak, `board_overdue` and `cost`,
+and the reflection's "which line moved".
 
 **2026-09-04, later — the goal system's second sprint PR: a reflection
 records where it was learned, a rule carries the region it applies in, and

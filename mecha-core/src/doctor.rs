@@ -1052,7 +1052,7 @@ fn check_frontdoor(
 /// is unknown, and unknown never counts as stale — a doctor that guesses is
 /// worse than one that says nothing.
 fn request_age(record: &crate::frontdoor::Record, now: DateTime<Utc>) -> Option<chrono::Duration> {
-    age_of(&record.drained_at, now).or_else(|| age_of(&record.created_at, now))
+    age_of(record.arrived_at(), now)
 }
 
 // --- trigger health ---------------------------------------------------------
@@ -2325,8 +2325,9 @@ fn check_intervention_rate(
             rate * 100.0,
             corpus.len()
         ),
-        detail: "counted as a denied tool call or a stop by request on the run record — steers, \
-                 corrected follow-ups and edited drafts are not on it, so this under-counts \
+        detail: "counted as a stop by request on the run record — a denied call is not, \
+                 because the record cannot tell your no from a policy's; steers, corrected \
+                 follow-ups and edited drafts are not on it either, so this under-counts \
                  rather than guesses"
             .to_string(),
         remedy: Some(Remedy {
