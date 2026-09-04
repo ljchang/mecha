@@ -138,12 +138,20 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
 
 **And that probe only proves the file.** Every host that spawned the
 server as its own child keeps the *old* process until it restarts — the
-`mecha` units in §2 that reach `setup::prepare*` do (`mecha-serve`,
-`mecha-slack`, `mecha-triggers`, `mecha-drain`; the voice worker runs
-`worker.py` under the Pipecat venv and spawns no MCP child), so does the
-timer-fired `mecha-mail-classify.service`, which §2's list does not
-restart, and so do Claude Code sessions (user-scope server `graph`) and
-the Hermes dashboard, which no step here restarts. After every install of
+long-running `mecha` units in §2 that reach `setup::prepare*` do
+(`mecha-serve`, `mecha-slack`, `mecha-triggers`, `mecha-drain`; the voice
+worker runs `worker.py` under the Pipecat venv and spawns no MCP child),
+and so do Claude Code sessions (user-scope server `graph`) and the Hermes
+dashboard, which no step here restarts. The timer-fired oneshots
+(`mecha-mail-classify`, `mecha-ruminate`, `mecha-frontdoor`) need nothing
+here, as §2 says: each firing execs a fresh `mecha` and a fresh server, and
+restarting one by hand does not refresh a process, it *runs the sweep*.
+What those units do need is `~/.cargo/bin` on their `Environment=PATH`,
+because a bare `command = "mecha-graph-mcp"` resolves against the unit's
+PATH and a spawn failure is skipped with one stderr line — `mecha
+ruminate`'s nightly `distill` would stage nothing and exit 0. Every shipped
+unit that execs `mecha`, directly or through a wrapper, now carries that
+line (`scripts/*.service`, `scripts/voice/*.service`). After every install of
 `mecha-graph-mcp`, either restart those hosts or accept that they run the
 previous build until their next start; nothing about a stale child
 announces itself, which is the same silence the removed `pkg-mcp` entry
