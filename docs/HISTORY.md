@@ -5269,6 +5269,31 @@ independently, arriving from the other direction: **a mechanism that fits the
 symptom is not yet evidence it caused it**, and the cheap test is almost
 always re-running one command against two starting points.
 
+- **2026-09-04 — a wall-clock claim with nothing behind it.** A lane told a
+  peer the shared checkout had been on its feature branch "between roughly
+  13:40 and 14:05". No command had produced a timestamp; the window was
+  invented, and it felt like a memory rather than an inference. The reflog
+  (`git reflog --date=iso`) said 15:33:01 to 15:37:18 — four minutes,
+  starting a hundred minutes after the window given — and the peer had read
+  `.git/HEAD` at 15:36, inside the real window, and pushed back rather than
+  accepting the account. **An assistant with no clock must never emit a
+  wall-clock claim it did not read from something**: cite the reflog, a
+  file mtime, a journal line, a unit's `ActiveEnterTimestamp`, or say that
+  elapsed time is unobservable from inside the turn. This is neither of the
+  two shapes already named — it is not grading a report instead of the
+  artifact, and not reading a property that answers a different question —
+  it is a measurement fabricated about one's own actions, in a domain where
+  the artifact exists only if you go and make one. The counter-technique
+  from the same hour is worth keeping beside it: **a branch name is a claim
+  about which file; the blob id is the file.** The voice worker was
+  restarted correctly *while* the checkout sat on the wrong branch, by
+  hashing `scripts/voice/worker.py` on disk against
+  `git rev-parse origin/main:scripts/voice/worker.py`, which needs nobody's
+  account to be true and also settles 2026-09-03's inverse (branch said
+  `main`, tree was stale). Past git it is the same rule as `/props` over
+  the config file and `sessions health --json` over a version string: ask
+  the thing that will actually run.
+
 ### Learning
 
 **2026-08-30 — the safeguard's release condition was satisfied by the
