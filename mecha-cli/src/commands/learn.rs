@@ -504,7 +504,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             eprintln!(
                 "{domain}: refused — {active_after} active rules is over the cap of \
                  {MAX_ACTIVE_RULES_PER_DOMAIN} and no smaller than the current \
-         {active_before}. Nothing changed; consolidate or retire before adding."
+                 {active_before}. Nothing changed; consolidate or retire before adding."
             );
             continue;
         }
@@ -599,7 +599,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 format!(
                     "candidate vs current rules, replayed on the batch's own interventions: \
                      {improved} improved, {regressed} regressed, {unchanged} unchanged, \
-             {inconclusive} inconclusive"
+                     {inconclusive} inconclusive"
                 )
             });
             let evidence = lines.join("\n");
@@ -681,7 +681,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     println!(
                         "  applied on probation: no reflection in this batch had a replayable \
                          intervention point, so the gate could not grade it. Retires at \
-                 {} attributed regression(s) rather than {}.",
+                         {} attributed regression(s) rather than {}.",
                         mecha_core::learning::PROBATION_RETIRE_AT,
                         mecha_core::learning::DEFAULT_RETIRE_AT,
                     );

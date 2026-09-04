@@ -4891,7 +4891,10 @@ mod situation_tests {
     fn a_denial_on_one_tool_learns_a_rule_scoped_to_that_tool() {
         let pool = vec![
             refl("a", &["fs_read", "shell"], "denial"),
-            refl("b", &[], "followup"),
+            // A followup carries the previous turn's window; it must batch
+            // as standing regardless (the old test used an empty window,
+            // which the extractor only produces before any tool has run).
+            refl("b", &["shell"], "followup"),
             refl("c", &["shell"], "denial"),
         ];
         let batches = batches_by_region(pool);
