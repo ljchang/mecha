@@ -341,6 +341,44 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // (`learning::batches_by_region`, `Learner::learn`).
         for (region, reflexions) in batches_by_region(reflexions.clone()) {
             let reflexions = &reflexions;
+            // The floor is per batch as well as per domain: the learner call
+            // moved inside the batch, and a domain floor alone let three
+            // reflections on three tools pass `--min 3` as three
+            // single-incident learner calls, each minting a scoped rule (and
+            // under `--auto` a probe pair) from one event — the permissive
+            // failure, found on review. A small region waits, unprocessed,
+            // until its own pool reaches the floor; the standing batch
+            // usually gets there first.
+            if reflexions.len() < args.min {
+                println!(
+                    "{domain} [{}]: {} reflection(s), below --min {}; waiting for more in \
+                     this situation",
+                    region.describe(),
+                    reflexions.len(),
+                    args.min
+                );
+                continue;
+            }
+            // One pending proposal per domain. Each batch proposes a
+            // whole-domain set from the same base, so two pending rows for a
+            // domain are alternatives: accepting one moves the rules under
+            // the other, and `accept`'s only way past that is `--force`, the
+            // lossy path. The later batches wait, unprocessed, behind the
+            // review (`--auto` resolves at birth and never parks here).
+            if args.propose && !args.auto {
+                let pending = store
+                    .proposals()?
+                    .iter()
+                    .any(|p| p.domain == *domain && p.status == "pending");
+                if pending {
+                    println!(
+                        "{domain} [{}]: a proposal for this domain is pending review; this \
+                         batch waits behind it (`mecha proposals`)",
+                        region.describe()
+                    );
+                    continue;
+                }
+            }
             // A batch identical to one some proposal already argued — most
             // likely a gate rejection whose reflections rightly returned to the
             // pool — is not argued again until the pool changes. Without this,
@@ -397,7 +435,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             );
 
             // Retired rules stay in the file but never render, so they cost the
-            // budget nothing.
+            // budget nothing. Summed over the whole domain's active set, which
+            // is now more than any one run carries — the same seam as the
+            // count cap, and the warning stays on the store-wide figure
+            // because that is the ceiling every run is under.
             let rendered: usize = rules
                 .iter()
                 .filter(|r| r.active())
@@ -447,6 +488,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 let (mut improved, mut regressed, mut unchanged, mut inconclusive) =
                     (0u32, 0u32, 0u32, 0u32);
                 let mut measured = 0u32;
+                let mut skipped = 0u32;
                 // An allowlist, not an exclusion: only steers and denials have a
                 // replayable intervention point. Followups keep the judge path in
                 // `mecha validate`; edits (outbox) have no transcript at all.
@@ -464,6 +506,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     .await?
                     {
                         probe::ProbeResult::Skipped(why) => {
+                            skipped += 1;
                             lines.push(format!("{} [{}]: skipped — {why}", r.id, r.trigger));
                         }
                         probe::ProbeResult::Verdicts(b, t) => {
@@ -502,6 +545,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         "{inconclusive} probe pair(s) ran and none graded (inconclusive); \
                      review by reading"
                     )
+                } else if measured == 0 && skipped > 0 {
+                    // Skipped is a third fact: the probe was possible and
+                    // declined — no rule scoped to that run, or a candidate
+                    // arm identical to the current one — which is not "had
+                    // nothing to run".
+                    format!("{skipped} probe(s) skipped and none ran; review by reading")
                 } else if measured == 0 {
                     "no trace-gradeable reflections in this batch; review by reading".into()
                 } else {

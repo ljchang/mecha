@@ -342,15 +342,13 @@ pub async fn drive_arm(
     }
 }
 
-/// Probe one steer/denial reflection by counterfactual replay.
-///
-/// `baseline_block` / `treatment_block` are rules blocks appended to the
-/// recorded system prompt (stripped of any rules block of its own era) —
-/// `None` means that arm runs rules-free.
-/// The (baseline, treatment) rules blocks a probe's two arms carry.
+/// The (baseline, treatment) rules blocks a probe's two arms carry — each
+/// appended to the recorded system prompt (stripped of any rules block of
+/// its own era); `None` means that arm runs rules-free.
 pub type Arms = (Option<String>, Option<String>);
 
-/// Drive both arms of a probe over `r`'s recorded session.
+/// Probe one steer/denial reflection by counterfactual replay: drive both
+/// arms over `r`'s recorded session.
 ///
 /// `arms` renders the (baseline, treatment) rules blocks **for the situation
 /// the recorded run was in** — the block a run carries is a function of its
