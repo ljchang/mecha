@@ -321,7 +321,7 @@ pub struct RunConfig {
     /// Recorded because nothing else says it: a run with no learned-rules
     /// block looks the same whether the store was empty or the lever was
     /// off, and an experiment that cannot tell those apart cannot pair its
-    /// arms (`docs/EXPERIMENT-DESIGN.md` §15). Computed from the switches
+    /// arms (`docs/EXPERIMENT-DESIGN.md` Part II (PR #156 until it lands), *The switch set*). Computed from the switches
     /// the front-end was built with, never inferred from the effects.
     #[serde(
         default,

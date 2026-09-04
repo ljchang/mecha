@@ -119,7 +119,8 @@ the probe's, and `of_session` does not read it.
 
 ### 1.7 Validity against an independent verdict (2026-09-03)
 
-Step 0 of `EXPERIMENT-DESIGN.md` §19: the readout joined to a verdict it
+Step 0 of `EXPERIMENT-DESIGN.md` Part II's build order (*What this changes
+in the build order*; PR #156 until it lands): the readout joined to a verdict it
 had no hand in. **The readout separates pass from fail only on the
 ceiling channel, and sees a fifth of the failures.** Over 169 kept
 Terminal-Bench trials (94 fail, 75 pass; four Harbor runs, mecha
@@ -128,7 +129,7 @@ Terminal-Bench trials (94 fail, 75 pass; four Harbor runs, mecha
 (bootstrap 95% CI 0.52–0.62), 75 of the 94 failures carry no signed error at
 all, and the label is `neutral` on all 169. The figures come from
 `scripts/appraisal-validity.py`, which is kept — unlike the scan behind the
-table above — because §19 wants this re-run on every corpus that has a
+table above — because that build order wants this re-run on every corpus that has a
 verdict. Read in three layers, because the first one is a finding on its
 own:
 
@@ -158,7 +159,7 @@ Five readings, and what each changes about what gets built next:
 signs a run negative it is three times as likely to have failed (20% of
 failures signed against 7% of passes), so nothing it says is wrong; it
 simply says nothing about 56 failures that `completed` under every ceiling
-with a clean final call. That is §17's "invisible to the counters" case
+with a clean final call. That is Part II's "invisible to the counters" case (*Datasets*)
 measured: **59% of failures in this dataset are that case**, and restricted
 to `completed` runs the readout is at chance (0.50). No counter reaches
 them by construction, so a consumer that ranks by |valence| — follow-up
@@ -211,7 +212,7 @@ excluded, none folded into a class. No trial had more than one session file;
 had one, the script takes the first by name and says how many times it did. Every run was `--yes`, one prompt, no
 owner, so the intervention, edit and commitment channels were structurally
 empty — this measures the counter channel and nothing else, which is also
-why §16's principal exists.
+why Part II's principal simulator exists.
 
 ---
 

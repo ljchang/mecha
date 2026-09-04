@@ -620,8 +620,9 @@ fn step_escalation_enabled(cfg_value: bool, no_step_escalation: bool) -> bool {
 /// a private re-fold here — because each answered from the flag whether or
 /// not this fold had run on the real config; found on review, twice.)
 /// The truth table over this function composed with `levers_off` is what
-/// pins the mapping, and the TUI's `record_config` folds a freshly loaded
-/// config through here before recording for the same reason.
+/// pins the mapping. The TUI's `record_config` does *not* fold: it records
+/// `Live::levers_off`, the value the running agent was built with, because
+/// the file may have moved since and `/mode` rebuilds nothing.
 pub(crate) fn fold_agent_switches(agent: &mut mecha_core::config::AgentConfig, opts: &GlobalOpts) {
     agent.step_escalation = step_escalation_enabled(agent.step_escalation, opts.no_step_escalation);
     agent.boredom = agent.boredom && !opts.no_boredom;

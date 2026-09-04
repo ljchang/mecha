@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Step 0 of the appraisal experiments: can the readout tell a failed run from a passed one?
 
-`docs/EXPERIMENT-DESIGN.md` §13 asks it as Q1 — is the instrument valid? —
-and §19 makes it the first thing to do, before any runner: a readout that
-cannot separate pass from fail cannot improve anything downstream. The
-dataset is §17's first entry, the kept Terminal-Bench sessions under
+`docs/EXPERIMENT-DESIGN.md` Part II (PR #156 until it lands) asks it as Q1 —
+is the instrument valid? — and its build order makes it the first thing to
+do, before any runner: a readout that cannot separate pass from fail cannot
+improve anything downstream. The dataset is the first entry of Part II's
+*Datasets* section, the kept Terminal-Bench sessions under
 `jobs/mecha-arm64-subset/<run>/<task>__<id>/agent/sessions/`, with Harbor's
 per-trial verdict beside each in `result.json`. No model is called and no
 harness code is written: this joins what `mecha sessions appraise` already
@@ -514,7 +515,7 @@ def main():
     print(f"- failures silent to the readout (no signed error): **{len(silent_fails)} of {len(fails)}**")
     print(
         f"- of those, runs that `completed` under budget with no failed final call: "
-        f"**{len(silent_completed_fails)}** — the case §17 says only a verdict can reach"
+        f"**{len(silent_completed_fails)}** — the case the design says only a verdict can reach"
     )
     print(f"- passes with a signed negative: {sum(1 for r in passes if r['readout']['signed'])} of {len(passes)}\n")
     print("| stop cause (reconstructed) | fail | pass |")

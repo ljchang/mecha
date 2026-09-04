@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **The lever set** (`mecha_core::harness::Lever`, `RunConfig::levers_off`;
-  `docs/EXPERIMENT-DESIGN.md` §15). The closed on/off half of the override
+  `docs/EXPERIMENT-DESIGN.md` Part II, *The switch set*, on PR #156). The
+  closed on/off half of the override
   set: thirteen subsystems a run can carry structurally absent — MCP,
   learned rules, hooks, the outbox, fallback, messages, skills, the charter,
   the `compact` tool, step escalation, approval rules, boredom and compact
