@@ -117,6 +117,103 @@ reflections the reflector judged to be corrections, each keyed by session id
 and provenance-gated. That is a *judged verdict* with the same standing as
 the probe's, and `of_session` does not read it.
 
+### 1.7 Validity against an independent verdict (2026-09-03)
+
+Step 0 of `EXPERIMENT-DESIGN.md` Part II's build order (*What this changes
+in the build order*; PR #156 until it lands): the readout joined to a verdict it
+had no hand in. **The readout separates pass from fail only on the
+ceiling channel, and sees a fifth of the failures.** Over 169 kept
+Terminal-Bench trials (94 fail, 75 pass; four Harbor runs, mecha
+0.1.0–0.1.3, `jobs/mecha-arm64-subset/`), `Valence::negative` from
+`of_session` has an AUROC of 0.57 against Harbor's test-script verdict
+(bootstrap 95% CI 0.52–0.62), 75 of the 94 failures carry no signed error at
+all, and the label is `neutral` on all 169. The figures come from
+`scripts/appraisal-validity.py`, which is kept — unlike the scan behind the
+table above — because that build order wants this re-run on every corpus that has a
+verdict. Read in three layers, because the first one is a finding on its
+own:
+
+| layer | what was read | result |
+|---|---|---|
+| the readout as shipped | `mecha sessions appraise --json` over the 172 transcripts verbatim | **appraised 0 of 172** — no session carries an `outcome` record; `Record::Outcome` landed in v0.1.7 (2026-08-19), after every one of these ran |
+| the counters, reconstructed | tool calls and errored results from the message blocks, compactions from `rewrite` records, turns and usage from `summary`, the stop cause from Harbor's exception record joined to the transcript's `max_turns` | consistent with Harbor's own record on every row: all 20 `AgentTimeoutError` trials are exactly the 20 transcripts with no `summary` |
+| `of_session` over the reconstruction | one synthesised `outcome` record appended per copy, the real CLI run over each | the rows below |
+
+| predictor (higher = worse) | n | AUROC | 95% CI | rate in fail | rate in pass |
+|---|---|---|---|---|---|
+| `Valence::negative` | 169 | 0.57 | 0.52–0.62 | 0.20 signed | 0.07 signed |
+| label ≠ `neutral` | 169 | 0.50 | — | 0.00 | 0.00 |
+| `Valence::negative`, `completed` runs only | 126 | 0.50 | 0.48–0.53 | 0.02 | 0.01 |
+| stop cause early, `interrupted` excluded (the readout's own rule) | 168 | 0.57 | 0.52–0.62 | 0.19 | 0.05 |
+| stop cause early, `interrupted` included | 168 | 0.65 | 0.59–0.71 | 0.39 | 0.08 |
+| stop cause `interrupted` alone (Harbor's timeout) | 169 | 0.58 | 0.54–0.63 | 0.19 | 0.03 |
+| `exhausted` (`max_turns`) | 169 | 0.55 | 0.51–0.59 | 0.14 | 0.04 |
+| `ended_on_failed_call` | 169 | 0.50 | 0.48–0.51 | 0.01 | 0.01 |
+| `tool_errors` | 169 | **0.40** | 0.32–0.49 | median 1 | median 3 |
+| `tool_calls` | 169 | 0.41 | 0.33–0.50 | — | — |
+| wall-clock seconds (Harbor's, not on any record) | 169 | **0.74** | 0.66–0.81 | median 861 s | median 180 s |
+
+Five readings, and what each changes about what gets built next:
+
+**1.7.1 The sign is right and the coverage is not.** Where the readout
+signs a run negative it is three times as likely to have failed (20% of
+failures signed against 7% of passes), so nothing it says is wrong; it
+simply says nothing about 56 failures that `completed` under every ceiling
+with a clean final call. That is Part II's "invisible to the counters" case (*Datasets*)
+measured: **59% of failures in this dataset are that case**, and restricted
+to `completed` runs the readout is at chance (0.50). No counter reaches
+them by construction, so a consumer that ranks by |valence| — follow-up
+staging, prioritised replay — spends on ceilings and never sees the
+majority. The one channel that could reach them is the appraiser (§3.10),
+and this is the set to measure its marginal yield on, before any lifetime.
+
+**1.7.2 `Interrupted` is the cheapest gain, and §3.3 is now measured.**
+Harbor's wall-clock kill records as `interrupted`, and `of_session` skips
+it on doctor's rule that an interrupt is an attentive owner. Here 18 of the
+20 interrupted runs failed. The pair is matched: the stop-cause predictor
+under the readout's own rule (every early cause it signs today, `interrupted`
+left out) sits at 0.57, and the same predictor with `interrupted` read as the
+ceiling it is sits at 0.65 — so the eight points are the split's own effect,
+not every unsigned cause folded in. The largest single move available to
+the readout, from a split the review already asked for.
+
+**1.7.3 A tool-error count is not a failure signal, and its sign is
+reversed.** Passing runs made *more* errored calls (median 3 against 1)
+and more calls altogether; the failing runs are the ones that touched the
+environment less. `of_session`'s refusal to count bare `tool_errors`
+(agency undetermined) was argued from attribution; the data says the
+count would have pointed the wrong way. The same holds for `tool_calls`
+and, weakly, for turns. Nothing about *activity* predicts failure here;
+only *stopping* does.
+
+**1.7.4 The best predictor is not on the record.** Wall-clock time
+discriminates at 0.74 and lives only in Harbor's `result.json`; `RunStats`
+carries tokens and turns but no duration, and the `Homeostat` records load
+and memory but not how long the run took. A failing run here takes nearly
+five times as long as a passing one, and the record cannot say so. A
+`duration_secs` on `RunStats` is a one-field change and the largest
+validity gain a counter can offer.
+
+**1.7.5 The label is degenerate on an independent verdict, not only on the
+live corpus.** 169 of 169 `neutral`, reproducing §1.1 on a set where the
+truth is known — every signed error is `controllable: None`, and the label
+cannot leave `Neutral` without a probe. §3.1's ruling (report valence,
+keep the label as an overlay) stands; the label is not an instrument. (A
+measurement by mecha 0.1.17, taken 2026-09-03. PR #162 changes `label_of`
+so a negative no longer reads `Neutral`; under it the 24 signed sessions
+would read `distress` on a re-run, and 145 would still read `neutral`.)
+
+Caveats the numbers carry. The reconstruction is not the record: fields the
+loop counts at run time (`malformed_tool_args`, `tool_denied`,
+`blocked_sends`, the homeostat, the boredom and escalation counters) are
+left at their defaults and named so, never estimated. Four trials have no
+`result.json`, ten no session file, three a session but no verdict; all are
+excluded, none folded into a class. No trial had more than one session file;
+had one, the script takes the first by name and says how many times it did. Every run was `--yes`, one prompt, no
+owner, so the intervention, edit and commitment channels were structurally
+empty — this measures the counter channel and nothing else, which is also
+why Part II's principal simulator exists.
+
 ---
 
 ## 2. What the code does well, and should keep

@@ -92,6 +92,27 @@ where
     Ok(v.and_then(|v| serde_json::from_value(v).ok()))
 }
 
+/// `RunConfig::levers_off`'s loader. The field is a list of a closed enum on
+/// an append-only store, so it is a wire format like `StopCause` — but the
+/// degradation is the whole list, never one entry of it. A lever this build
+/// does not know, dropped from `levers_off`, would read as *on*: a record
+/// that said "the appraiser's pass was absent" would say nothing at all. So
+/// one unknown name makes the recorded set `None` — unknown, the same
+/// answer a session from before the field existed gives — and a reader
+/// that partitions runs by lever puts it with those, not with "all on".
+fn lenient_levers<'de, D>(d: D) -> std::result::Result<Option<Vec<crate::harness::Lever>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let names = Option::<Vec<String>>::deserialize(d)?;
+    Ok(names.and_then(|names| {
+        names
+            .iter()
+            .map(|n| crate::harness::Lever::parse(n))
+            .collect::<Option<Vec<_>>>()
+    }))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 pub enum Record {
@@ -289,6 +310,25 @@ pub struct RunConfig {
     /// while still confining files.)
     pub sandbox: String,
     pub sandbox_network: bool,
+
+    /// Which of the closed lever set ([`crate::harness::Lever`]) this run
+    /// carried **off** — the subsystems structurally absent from it, in
+    /// `Lever::ALL`'s order. `Some(vec![])` is a run with every lever on;
+    /// `None` is a run that did not record the set (written before it
+    /// existed, or a name this build does not know — see
+    /// [`lenient_levers`]), which is *unknown* and never read as "all on".
+    ///
+    /// Recorded because nothing else says it: a run with no learned-rules
+    /// block looks the same whether the store was empty or the lever was
+    /// off, and an experiment that cannot tell those apart cannot pair its
+    /// arms (`docs/EXPERIMENT-DESIGN.md` Part II (PR #156 until it lands), *The switch set*). Computed from the switches
+    /// the front-end was built with, never inferred from the effects.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient_levers"
+    )]
+    pub levers_off: Option<Vec<crate::harness::Lever>>,
 }
 
 impl Default for RunConfig {
@@ -316,6 +356,7 @@ impl Default for RunConfig {
             trifecta: TrifectaPolicy::Block,
             sandbox: "none".into(),
             sandbox_network: false,
+            levers_off: None,
         }
     }
 }
@@ -324,7 +365,23 @@ impl RunConfig {
     /// Read it off the built agent rather than off the config file, so what is
     /// recorded is what is actually being sent — flags, layered TOML and
     /// defaults already resolved.
-    pub fn of(agent: &Agent, config: &Config, provider: &str) -> Self {
+    ///
+    /// `levers_off` is the one input the agent cannot answer for itself: a
+    /// subsystem that is absent leaves no trace to read off the built agent
+    /// (an empty rules store and a `--no-learned-rules` produce the same
+    /// prompt), so the front-end that threw the switches hands them in.
+    /// Recorded sorted into [`crate::harness::Lever::ALL`]'s order, whatever
+    /// order the caller collected them in.
+    pub fn of(
+        agent: &Agent,
+        config: &Config,
+        provider: &str,
+        levers_off: &[crate::harness::Lever],
+    ) -> Self {
+        let levers_off = crate::harness::Lever::ALL
+            .into_iter()
+            .filter(|l| levers_off.contains(l))
+            .collect();
         let cfg = agent.config();
         RunConfig {
             mecha_version: crate::VERSION.to_string(),
@@ -358,6 +415,7 @@ impl RunConfig {
             trifecta: config.security.trifecta,
             sandbox: config.sandbox.kind.as_str().to_string(),
             sandbox_network: config.sandbox.network,
+            levers_off: Some(levers_off),
         }
     }
 }
@@ -2050,6 +2108,47 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `levers_off` is a wire format, and its degradation is the whole list.
+    /// A lever this build does not know cannot be dropped from the set —
+    /// dropped reads as *on* — so the record reads `None`, the same answer a
+    /// transcript from before the field gives, and distinct from `Some([])`,
+    /// which is a run that recorded every lever on.
+    #[test]
+    fn an_unknown_lever_reads_the_recorded_set_as_unknown_not_as_shorter() {
+        use crate::harness::Lever;
+        let known: RunConfig =
+            serde_json::from_str(r#"{"levers_off":["compact_validate","mcp"]}"#).unwrap();
+        assert_eq!(
+            known.levers_off,
+            Some(vec![Lever::CompactValidate, Lever::Mcp]),
+            "read back in the order written — `of` is what sorts"
+        );
+        let all_on: RunConfig = serde_json::from_str(r#"{"levers_off":[]}"#).unwrap();
+        assert_eq!(all_on.levers_off, Some(vec![]));
+        let before: RunConfig = serde_json::from_str(r#"{"provider":"local"}"#).unwrap();
+        assert_eq!(
+            before.levers_off, None,
+            "a transcript from before the field"
+        );
+        let newer: RunConfig =
+            serde_json::from_str(r#"{"levers_off":["mcp","appraiser_pass"]}"#).unwrap();
+        assert_eq!(
+            newer.levers_off, None,
+            "one unknown name makes the whole set unknown, never [mcp]"
+        );
+        // And the field is absent on the wire when unknown, so a record
+        // written by this build never says `null` where an older reader
+        // expects nothing.
+        let wire = serde_json::to_string(&RunConfig::default()).unwrap();
+        assert!(!wire.contains("levers_off"), "{wire}");
+        let wire = serde_json::to_string(&RunConfig {
+            levers_off: Some(vec![Lever::Boredom]),
+            ..RunConfig::default()
+        })
+        .unwrap();
+        assert!(wire.contains(r#""levers_off":["boredom"]"#), "{wire}");
     }
 
     #[test]

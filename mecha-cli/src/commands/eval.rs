@@ -19,6 +19,7 @@ use anyhow::{Context, Result};
 use mecha_core::agent::{Budget, RunContext};
 use mecha_core::config::PermissionMode;
 use mecha_core::eval::{grade, stage_workspace, EvalCase, GradedCase, Judge, Scorecard};
+use mecha_core::harness::Lever;
 use mecha_core::tool::ask::AskUserTool;
 use mecha_core::tool::ModeApprover;
 use std::collections::HashMap;
@@ -1182,22 +1183,36 @@ async fn ab_config(
 /// list is complete cannot notice that one member of it was supposed to be a
 /// variable. A lever that lives *inside* the list cannot be lost while
 /// consolidating the list, so it lives here.
+///
+/// Since the lever set exists it is expressed over it: the bare arm is
+/// [`Lever::bare`] with the two opt-ins allowed, thrown through
+/// `setup::switch_off`, so this list and `setup::levers_off` — the function
+/// every front-end that writes a session record reads its
+/// `RunConfig::levers_off` from — cannot name different sets; the test
+/// `the_record_names_exactly_what_eval_forced` reads one through the other.
+/// (Eval itself writes no session: it drives `run_in` directly, so what it
+/// forced is on no record. The guarantee is that any run which *is*
+/// recorded names the same absences.) Two things stay spelled here. `--mcp` opts
+/// *in* by leaving the user's own `--no-mcp` alone rather than clearing it;
+/// and learned rules are set in both directions, because `run_arm` builds
+/// the treatment arm from the same `opts` it built the baseline from.
 fn force_reproducible(opts: &mut GlobalOpts, allow_mcp: bool, allow_learned_rules: bool) {
-    if !allow_mcp {
-        opts.no_mcp = true;
+    let mut allow = Vec::new();
+    if allow_mcp {
+        allow.push(Lever::Mcp);
+    }
+    if allow_learned_rules {
+        allow.push(Lever::LearnedRules);
+    }
+    for lever in Lever::bare(&allow) {
+        crate::setup::switch_off(opts, lever);
     }
     opts.no_learned_rules = !allow_learned_rules;
-    opts.no_hooks = true;
-    opts.no_outbox = true;
-    opts.no_fallback = true;
-    opts.no_messages = true;
-    opts.no_skills = true;
-    opts.no_charter = true;
-    opts.no_compact_tool = true;
-    opts.no_step_escalation = true;
-    // Approval rules come from this machine's config and change what a
-    // case's `shell` call does; a scorecard must not depend on them.
-    opts.no_rules = true;
+    // The one lever `bare` never throws, thrown here and nowhere else: a
+    // `forbid` in this box's rules file would score a case's `shell` call
+    // as `Blocked by policy:` here and not there, and eval's fixture
+    // workspaces are what make lifting the operator's word defensible.
+    crate::setup::switch_off(opts, Lever::ApprovalRules);
 }
 
 #[cfg(test)]
@@ -1234,6 +1249,11 @@ mod tests {
             // Same shape: a `forbid` in this box's rules file would score a
             // case's `shell` call as `Blocked by policy:` here and not there.
             ("approval rules", opts.no_rules),
+            // The two `[agent]` switches that ship *on*, missed until the
+            // lever set named them: a notice in the model's context and a
+            // second model call, each decided by this machine's config.
+            ("boredom", opts.no_boredom),
+            ("compact validation", opts.no_compact_validate),
         ] {
             assert!(
                 on,
@@ -1280,6 +1300,81 @@ mod tests {
         assert!(treatment.no_messages);
         assert!(treatment.no_compact_tool);
         assert!(treatment.no_step_escalation);
+        assert!(treatment.no_boredom);
+        assert!(treatment.no_compact_validate);
+    }
+
+    /// What eval forces and what a session record would say of the same
+    /// switches must be one set, read through each other:
+    /// `force_reproducible` throws switches, and `setup::levers_off` — the
+    /// function behind `RunConfig::levers_off` — reads them back. Eval
+    /// writes no session, so this is the only place the two meet; if they
+    /// disagreed, an experiment pairing its own recorded bare arm against
+    /// an eval scorecard would be comparing runs that name different
+    /// absences — the whole reason the design keeps one definition.
+    #[test]
+    fn the_record_names_exactly_what_eval_forced() {
+        // What `prepare_tools` hands `build`: this machine's defaults with
+        // the flags folded in. `levers_off` reads the folded config, never
+        // the flag, so the fold is part of what "eval forced" means.
+        let folded = |opts: &GlobalOpts| {
+            let mut cfg = mecha_core::config::Config::default();
+            crate::setup::fold_agent_switches(&mut cfg.agent, opts);
+            cfg
+        };
+        // Eval is the bare preset *plus* the operator's rules lifted — the
+        // one lever `Lever::bare` refuses to throw, so it is asserted here
+        // by name rather than folded into the preset.
+        let bare_plus_rules = |allow: &[Lever]| {
+            let mut v = Lever::bare(allow);
+            v.push(Lever::ApprovalRules);
+            Lever::ALL
+                .into_iter()
+                .filter(|l| v.contains(l))
+                .collect::<Vec<_>>()
+        };
+        let mut bare = GlobalOpts::default();
+        force_reproducible(&mut bare, false, false);
+        assert_eq!(
+            crate::setup::levers_off(&bare, &folded(&bare)),
+            bare_plus_rules(&[]),
+            "the bare arm records every lever off, the rules included"
+        );
+        assert_eq!(bare_plus_rules(&[]), Lever::ALL.to_vec());
+
+        let mut with_mcp = GlobalOpts::default();
+        force_reproducible(&mut with_mcp, true, false);
+        assert_eq!(
+            crate::setup::levers_off(&with_mcp, &folded(&with_mcp)),
+            bare_plus_rules(&[Lever::Mcp])
+        );
+
+        let mut with_rules = GlobalOpts::default();
+        force_reproducible(&mut with_rules, false, true);
+        assert_eq!(
+            crate::setup::levers_off(&with_rules, &folded(&with_rules)),
+            bare_plus_rules(&[Lever::LearnedRules])
+        );
+
+        // And the other direction: a switch thrown by hand reads as off.
+        for lever in Lever::ALL {
+            let mut one = GlobalOpts::default();
+            crate::setup::switch_off(&mut one, lever);
+            assert!(
+                crate::setup::levers_off(&one, &folded(&one)).contains(&lever),
+                "{lever:?} thrown through switch_off must read as off"
+            );
+        }
+
+        // And untouched opts record nothing off but what the config's own
+        // defaults leave off — the record is the switch, never the effect,
+        // so a provider without a context window changes `tools`, not this.
+        let untouched = GlobalOpts::default();
+        assert_eq!(
+            crate::setup::levers_off(&untouched, &folded(&untouched)),
+            vec![Lever::Messages, Lever::StepEscalation],
+            "messaging and step escalation are the two switches that ship off"
+        );
     }
 
     /// A scratch directory that cleans up after itself, so a failing test

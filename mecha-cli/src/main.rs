@@ -160,9 +160,28 @@ pub struct GlobalOpts {
     /// the silently-degrading-guard shape. Set only by `mecha eval`'s
     /// `force_reproducible`, because a scorecard must not vary with this
     /// machine's rules file — a `forbid` in `config.toml` would turn a case's
-    /// `shell` call into `Blocked by policy:` here and not elsewhere.
+    /// `shell` call into `Blocked by policy:` here and not elsewhere. Two
+    /// doors reach it: that function, and `setup::switch_off` for
+    /// `Lever::ApprovalRules` — which `Lever::bare` deliberately never
+    /// throws, so a preset cannot lift the rules; only eval's own explicit
+    /// line does.
     #[arg(skip)]
     pub no_rules: bool,
+
+    /// Don't issue the in-run boredom notice, even if `[agent] boredom` is
+    /// set — an opt-out for one of the two config switches that ship on
+    /// (`compact_validate` is the other). Forced by
+    /// `mecha eval`: the notice is a sentence in the model's context that
+    /// this machine's config decides, and a scorecard must not depend on it.
+    #[arg(long, global = true)]
+    pub no_boredom: bool,
+
+    /// Don't check a compaction summary for omissions, even if
+    /// `[agent] compact_validate` is set. Forced by `mecha eval` for the
+    /// same reason as `--no-boredom`: the check is a second model call that
+    /// this machine's config turns on.
+    #[arg(long, global = true)]
+    pub no_compact_validate: bool,
 
     /// Don't route any tools through the outbox — configured [outbox] tools
     /// execute directly under the usual gates instead of being staged.
