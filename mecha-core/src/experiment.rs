@@ -64,7 +64,14 @@ pub struct Manifest {
     pub kind: TrialKind,
     /// The arm every treatment arm is paired against. Must name an arm, and
     /// that arm carries no prediction: the control predicts nothing.
-    pub control: String,
+    ///
+    /// **`None` is a measurement, not a comparison**: one or more arms, none
+    /// carrying a prediction, nothing for the gate to rule on. Every plain
+    /// `mecha eval` records one — a scorecard is a one-arm experiment — and
+    /// a bake-off of several models is one with several arms, each read for
+    /// what it measured rather than paired against anything.
+    #[serde(default)]
+    pub control: Option<String>,
     pub arms: BTreeMap<String, Arm>,
     pub tasks: Tasks,
     /// Recorded per trial and set on the child's provider. Empty means one
@@ -303,13 +310,47 @@ impl Manifest {
             name: name.to_string(),
             description: String::new(),
             kind: TrialKind::Single,
-            control: "bare".to_string(),
+            control: Some("bare".to_string()),
             arms,
             tasks,
             seeds: Vec::new(),
             repetitions,
             split_seed,
             holdout_in,
+        };
+        m.validate()?;
+        Ok(m)
+    }
+
+    /// A measurement built by a front-end: one arm, no control, no
+    /// prediction — what a plain `mecha eval` is, recorded so a scorecard's
+    /// condition (model, preset, the machine's knobs) is on the store beside
+    /// every comparison's. The split seed is fixed at zero: nothing is
+    /// drawn from a measurement.
+    pub fn one_arm(
+        name: &str,
+        arm_name: &str,
+        arm: Arm,
+        tasks: Tasks,
+        repetitions: u32,
+    ) -> Result<Manifest> {
+        anyhow::ensure!(
+            arm.prediction.is_none(),
+            "a measurement's arm predicts nothing: there is no control to measure it against"
+        );
+        let mut arms = BTreeMap::new();
+        arms.insert(arm_name.to_string(), arm);
+        let m = Manifest {
+            name: name.to_string(),
+            description: String::new(),
+            kind: TrialKind::Single,
+            control: None,
+            arms,
+            tasks,
+            seeds: Vec::new(),
+            repetitions,
+            split_seed: 0,
+            holdout_in: 3,
         };
         m.validate()?;
         Ok(m)
@@ -334,15 +375,20 @@ impl Manifest {
         crate::work::valid_producer(&self.name)
             .context("the experiment name is a directory name and a producer name")?;
         anyhow::ensure!(
-            self.arms.contains_key(&self.control),
-            "control `{}` names no arm (arms: {})",
-            self.control,
-            self.arms.keys().cloned().collect::<Vec<_>>().join(", ")
+            !self.arms.is_empty(),
+            "an experiment needs at least one arm"
         );
-        anyhow::ensure!(
-            self.arms.len() >= 2,
-            "an experiment needs the control and at least one treatment arm"
-        );
+        if let Some(control) = &self.control {
+            anyhow::ensure!(
+                self.arms.contains_key(control),
+                "control `{control}` names no arm (arms: {})",
+                self.arms.keys().cloned().collect::<Vec<_>>().join(", ")
+            );
+            anyhow::ensure!(
+                self.arms.len() >= 2,
+                "a comparison needs the control and at least one treatment arm; leave `control` unset for a measurement"
+            );
+        }
         anyhow::ensure!(self.repetitions >= 1, "repetitions must be at least 1");
         anyhow::ensure!(self.holdout_in >= 2, "holdout_in must be at least 2");
         for (name, arm) in &self.arms {
@@ -354,16 +400,19 @@ impl Manifest {
                 crate::harness::parse_change(spec)
                     .with_context(|| format!("arm `{name}`, override `{spec}`"))?;
             }
-            if name == &self.control {
-                anyhow::ensure!(
+            match &self.control {
+                None => anyhow::ensure!(
+                    arm.prediction.is_none(),
+                    "arm `{name}` carries a prediction but the manifest names no control to measure it against; set `control`, or drop the prediction for a measurement"
+                ),
+                Some(c) if c == name => anyhow::ensure!(
                     arm.prediction.is_none(),
                     "the control arm `{name}` must not carry a prediction — it is what the others are measured against"
-                );
-            } else {
-                anyhow::ensure!(
+                ),
+                Some(_) => anyhow::ensure!(
                     arm.prediction.is_some(),
                     "treatment arm `{name}` carries no prediction; an arm that predicts nothing cannot be refuted (candidate.rs's rule, carried up a level)"
-                );
+                ),
             }
         }
         Ok(())
@@ -996,14 +1045,19 @@ struct TrialPair<'a> {
 /// cannot answer the metric drops its pair; an arm with no pairs is
 /// reported with none rather than omitted.
 pub fn judge(manifest: &Manifest, trials: &[Trial]) -> Vec<ArmJudgement> {
+    // A measurement has no control and nothing to judge: every arm is read
+    // for what it measured, never paired.
+    let Some(control_name) = &manifest.control else {
+        return Vec::new();
+    };
     let control: BTreeMap<String, &Trial> = trials
         .iter()
-        .filter(|t| t.arm == manifest.control && t.status == TrialStatus::Done)
+        .filter(|t| &t.arm == control_name && t.status == TrialStatus::Done)
         .map(|t| (episode_key(t), t))
         .collect();
     let mut out = Vec::new();
     for (name, arm) in &manifest.arms {
-        if name == &manifest.control {
+        if name == control_name {
             continue;
         }
         let Some(prediction) = &arm.prediction else {
@@ -1117,7 +1171,7 @@ rationale = "no notice, fewer turns"
     #[test]
     fn a_manifest_loads_and_enumerates_its_trials_in_a_stable_order() {
         let m = Manifest::parse(MANIFEST).unwrap();
-        assert_eq!(m.control, "full");
+        assert_eq!(m.control.as_deref(), Some("full"));
         assert_eq!(m.arms["bare"].resolve_levers().unwrap(), Lever::bare(&[]));
         assert_eq!(
             m.arms["quiet"].resolve_levers().unwrap(),
@@ -1389,6 +1443,61 @@ rationale = "no notice, fewer turns"
         );
     }
 
+    /// A manifest with no control is a measurement: one arm or several, none
+    /// predicting, nothing judged — what a scorecard is. A prediction with
+    /// no control to measure it against is refused, and so is a comparison
+    /// with one arm.
+    #[test]
+    fn a_manifest_without_a_control_is_a_measurement() {
+        let tasks = Tasks {
+            cases: "eval/cases.jsonl".into(),
+            fixture: "eval/workspace".into(),
+            ids: Vec::new(),
+            tags: Vec::new(),
+        };
+        let bare = Arm {
+            preset: Some(Preset::Bare),
+            model: Some("m".into()),
+            ..Arm::default()
+        };
+        let m = Manifest::one_arm("eval-x", "bare", bare.clone(), tasks.clone(), 1).unwrap();
+        assert_eq!(m.control, None);
+        assert!(judge(&m, &[]).is_empty(), "nothing to judge");
+        let text = toml::to_string_pretty(&m).unwrap();
+        let back = Manifest::parse(&text).unwrap();
+        assert_eq!(back.control, None);
+        assert_eq!(back.arms["bare"].model.as_deref(), Some("m"));
+
+        let predicted = Arm {
+            prediction: Some(Prediction {
+                metric: ExpMetric::Failure,
+                rationale: "x".into(),
+            }),
+            ..bare.clone()
+        };
+        assert!(Manifest::one_arm("eval-x", "bare", predicted, tasks.clone(), 1).is_err());
+
+        // Several models, no control: a bake-off, each arm read alone.
+        let text = MANIFEST
+            .replace("control = \"full\"\n", "")
+            .replace("[arms.bare.prediction]\nmetric = \"failure\"\nrationale = \"everything off should fail more\"\n", "")
+            .replace("[arms.quiet.prediction]\nmetric = \"turns\"\nrationale = \"no notice, fewer turns\"\n", "");
+        let bake = Manifest::parse(&text).unwrap();
+        assert_eq!(bake.control, None);
+        assert_eq!(bake.arms.len(), 3);
+        assert!(
+            judge(&bake, &[]).is_empty(),
+            "a bake-off judges nothing either"
+        );
+        // And a comparison still needs the control and a treatment arm: one
+        // arm *with* a control is the rule the refactor could have dropped.
+        let one = "name = \"eval-one\"\ncontrol = \"bare\"\nsplit_seed = 1\n\
+                   [arms.bare]\npreset = \"bare\"\n\
+                   [tasks]\ncases = \"eval/cases.jsonl\"\nfixture = \"eval/workspace\"\n";
+        let e = Manifest::parse(one).unwrap_err().to_string();
+        assert!(e.contains("leave `control` unset for a measurement"), "{e}");
+    }
+
     /// `levers_on` after the preset: the add-one-to-bare design, and how
     /// `--ab-rules` is spelled. The rules refusal reaches it too.
     #[test]
@@ -1444,7 +1553,7 @@ rationale = "no notice, fewer turns"
         };
         let a = mk("eval-ab", treatment.clone(), &[]);
         let b = mk("eval-ab-again", treatment.clone(), &[]);
-        assert_eq!(a.control, "bare");
+        assert_eq!(a.control.as_deref(), Some("bare"));
         assert_eq!(
             a.split_seed, b.split_seed,
             "the same delta draws the same holdout"

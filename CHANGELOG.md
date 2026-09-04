@@ -200,6 +200,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Every `mecha eval` scorecard is recorded as a one-arm experiment**
+  under `~/.mecha/experiments/eval-<stamp>/`: a manifest with no control
+  (a measurement — one or more arms, no prediction, nothing to judge) is
+  now a valid design, and eval writes one before its arm runs, carrying the
+  provider and model that ran (the flag, else the provider's configured
+  model, else its default — the run's own resolution), the bare preset plus
+  `--mcp`, the machine's knobs, and a description naming what no lever can
+  (the lifted approval rules). Each run of each case lands as its own
+  trial row — `--runs k` is the manifest's `repetitions`, so k rows share
+  a condition hash and differ by repetition, as the hash's contract
+  requires; `mecha exp status|export` read it; `-o` gains `experiment`. The scorecard
+  is unchanged. An eval under `--mcp-file` or `--no-ask-user` is not
+  recorded and says so as a choice, not a failure: fixture servers and a
+  withheld tool have no lever, and a trial row's condition hash would
+  call that eval bare.
+
 - **`mecha eval --ab-config` and `--ab-rules` are two-arm experiments.**
   Each writes its design to `~/.mecha/experiments/eval-ab-<kind>-<stamp>/`
   before the arms run — a `bare` control and a `bare`-plus-delta treatment

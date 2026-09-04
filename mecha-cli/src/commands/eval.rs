@@ -179,6 +179,9 @@ fn apply_override(opts: &mut GlobalOpts, spec: &str) -> Result<()> {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Report {
+    /// The one-arm experiment this scorecard was recorded as, when it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    experiment: Option<String>,
     scorecard: Scorecard,
     cases: Vec<serde_json::Value>,
 }
@@ -210,12 +213,92 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         return ab_config(global, &args, &cases, &fixture).await;
     }
 
+    // A scorecard is a one-arm experiment, and is recorded as one before the
+    // arm runs: the model, the preset, the machine's knobs and the flag's
+    // opt-ins on a manifest, each case a trial row on the store — so the
+    // condition a scorecard measured sits beside every comparison's and
+    // `mecha exp status|export` read it. The scorecard is still what this
+    // prints. The one-arm record is the convergence's last step short of
+    // the runner itself (the owner's ruling, 2026-09-04).
+    let recorded = record_measurement(global, &args, &cases, &fixture);
+    let mut name = match &recorded {
+        Ok(Some((store, manifest))) => {
+            eprintln!(
+                "recorded as experiment `{}` ({})",
+                manifest.name,
+                store.root().display()
+            );
+            Some(manifest.name.clone())
+        }
+        // A deliberate skip reads as one: "nothing happened" and "nothing
+        // went wrong" are opposite findings, and the store-failed sentence
+        // below must stay alarming (found on review).
+        Ok(None) => {
+            eprintln!(
+                "mecha eval: not recorded as an experiment, by design: {}",
+                measurement_skip(args.mcp_file.is_some(), args.no_ask_user).unwrap_or("skipped")
+            );
+            None
+        }
+        Err(e) => {
+            eprintln!(
+                "mecha eval: not recorded as an experiment ({e:#}); the scorecard still runs"
+            );
+            None
+        }
+    };
+
     let (scorecard, graded) = run_arm(global, &args, &cases, &fixture, false, &[], "").await?;
+
+    if let Ok(Some((store, manifest))) = &recorded {
+        let task_ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
+        // One row per run: the planned row's `repetition` is the graded
+        // run's `run` number, and a row with no run behind it (a case that
+        // never ran) is left pending rather than written empty. Write
+        // failures are counted and said once, as the A/B says them — and
+        // a record no row reached is not named in the report, because
+        // `experiment` exists to point at a record, and a manifest over
+        // zero trials reads as "the eval never ran", the opposite of what
+        // happened (found on review).
+        let (mut saved, mut unsaved) = (0usize, 0usize);
+        for planned in manifest.trials(&task_ids, &scorecard.provider, &scorecard.model) {
+            let Some(run) = graded
+                .iter()
+                .find(|g| g.id == planned.task && g.run == planned.repetition)
+            else {
+                continue;
+            };
+            match store.save_trial(&trial_of(&planned, std::slice::from_ref(&run))) {
+                Ok(()) => saved += 1,
+                Err(e) => {
+                    unsaved += 1;
+                    eprintln!(
+                        "mecha eval: trial `{}` could not be written: {e:#}",
+                        planned.id
+                    );
+                }
+            }
+        }
+        if unsaved > 0 {
+            eprintln!(
+                "mecha eval: {unsaved} trial row(s) not on the store; `mecha exp status {}` will show them pending",
+                manifest.name
+            );
+        }
+        if saved == 0 && unsaved > 0 {
+            eprintln!(
+                "mecha eval: no trial row reached `{}`; the report will not name it",
+                manifest.name
+            );
+            name = None;
+        }
+    }
 
     print_scorecard(&scorecard, &graded, args.failures);
 
     if let Some(path) = &args.out {
         let report = Report {
+            experiment: name,
             scorecard: scorecard.clone(),
             cases: graded
                 .iter()
@@ -563,7 +646,7 @@ async fn ab_experiment(
     // `GlobalOpts`, and `run_arm` carries them into both arms verbatim —
     // go on both records, or a control run at `--max-turns 60` is filed
     // as the default and hashes like one (found on review).
-    let shared_overrides = effective_overrides(global)?;
+    let shared_overrides = effective_overrides(global, "the A/B's design")?;
     let name = ab_name(kind, chrono::Utc::now());
     let mut manifest = Manifest::two_arm(
         &name,
@@ -709,6 +792,7 @@ async fn ab_experiment(
 
     if let Some(path) = &args.out {
         let report = |scorecard: &Scorecard, graded: &[GradedCase]| Report {
+            experiment: None,
             scorecard: scorecard.clone(),
             cases: graded
                 .iter()
@@ -747,7 +831,11 @@ async fn ab_experiment(
 /// under its floor is legal config) is dropped with a warning rather than
 /// refusing the A/B: it is being recorded, not proposed. An unset knob is
 /// not recorded — there is nothing to write.
-fn effective_overrides(global: &GlobalOpts) -> Result<Vec<String>> {
+/// `design` names the record the knob is missing from — "the A/B's
+/// design" or "the measurement's design" — because the one line that says
+/// a knob is absent from a condition hash must name the right record
+/// (found on review).
+fn effective_overrides(global: &GlobalOpts, design: &str) -> Result<Vec<String>> {
     let cfg = if global.global_config_only {
         mecha_core::config::Config::load_global()?
     } else {
@@ -771,11 +859,130 @@ fn effective_overrides(global: &GlobalOpts) -> Result<Vec<String>> {
         match mecha_core::harness::parse_change(&spec) {
             Ok(_) => out.push(spec),
             Err(e) => eprintln!(
-                "mecha eval: this machine's effective `{spec}` is not recorded on the A/B's design ({e:#}); both arms still run with it"
+                "mecha eval: this machine's effective `{spec}` is not recorded on {design} ({e:#}); the run still uses it"
             ),
         }
     }
     Ok(out)
+}
+
+/// A plain eval's record: a one-arm manifest, written before the arm runs.
+/// The arm is `bare` plus whatever eval opts back in (`--mcp`), carrying
+/// the provider and model that ran and the knobs both a scorecard and an
+/// A/B inherit from this machine. `--runs k` is the manifest's
+/// `repetitions`: each run of each case is its own trial row, so k rows
+/// share a condition hash and differ by repetition — the hash's contract
+/// ("the same hash was configured identically") holds, where one pass^k
+/// row per case would have carried the hash of a single run (found on
+/// review). An eval whose tool surface no lever can name is not recorded
+/// at all — `Ok(None)`, distinct from a store that failed — see
+/// [`measurement_skip`].
+fn record_measurement(
+    global: &GlobalOpts,
+    args: &Args,
+    cases: &[EvalCase],
+    fixture: &Path,
+) -> Result<
+    Option<(
+        mecha_core::experiment::ExperimentStore,
+        mecha_core::experiment::Manifest,
+    )>,
+> {
+    use mecha_core::experiment::{ExperimentStore, Manifest, Tasks};
+    if measurement_skip(args.mcp_file.is_some(), args.no_ask_user).is_some() {
+        return Ok(None);
+    }
+    let cfg = if global.global_config_only {
+        mecha_core::config::Config::load_global()?
+    } else {
+        let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+        mecha_core::config::Config::load(&cwd)?
+    };
+    let arm = measurement_arm(global, args.mcp, &cfg)?;
+    let name = eval_name(chrono::Utc::now());
+    let mut manifest = Manifest::one_arm(
+        &name,
+        "bare",
+        arm,
+        Tasks {
+            cases: args.cases.clone(),
+            fixture: fixture.to_path_buf(),
+            ids: cases.iter().map(|c| c.id.clone()).collect(),
+            tags: Vec::new(),
+        },
+        args.runs,
+    )?;
+    manifest.description = format!(
+        "mecha eval scorecard; {} run(s) per case, one trial row per run; approval rules lifted (eval's fixture forcing, not expressible as a lever)",
+        args.runs,
+    );
+    let store = ExperimentStore::open_default(&name)?;
+    store.create_manifest(&manifest)?;
+    Ok(Some((store, manifest)))
+}
+
+/// Why a plain eval is *not* recorded, when it is not. A trial row's
+/// `condition_hash` sees levers, overrides, provider, model and seed, and
+/// its contract is "the same hash was configured identically" — so an
+/// eval whose tool surface differs from bare in a way no lever names
+/// (fixture servers under `--mcp-file`; `ask_user` withheld under
+/// `--no-ask-user`, where a bare run has it present and declining) would
+/// write rows carrying a bare eval's hash. The A/B refuses `--mcp-file`
+/// outright and carries `--no-ask-user` on both arms, where it cancels;
+/// the measurement's rows are read across experiments, so both skip. A
+/// lever for the withheld tool is the truer record and waits on the
+/// principal, which is where `ask_user` first gets an answerer (found on
+/// review, twice).
+fn measurement_skip(mcp_file: bool, no_ask_user: bool) -> Option<&'static str> {
+    if mcp_file {
+        return Some(
+            "--mcp-file adds fixture servers no lever names, and the record's condition hash could not tell this eval from a bare one",
+        );
+    }
+    if no_ask_user {
+        return Some(
+            "--no-ask-user withholds a tool no lever names, and the record's condition hash could not tell this eval from a bare one",
+        );
+    }
+    None
+}
+
+/// The arm a scorecard measured. It names the provider and model that
+/// *ran*, resolved the way `setup::build` resolves them — the flag, else
+/// the provider's configured `model`, else the provider's own default —
+/// off the same config the run loads. Two earlier cuts stopped short (the
+/// flags alone, then the flags and the config) and each left the manifest
+/// silent about the one fact a scorecard exists to hold (found on review,
+/// twice).
+fn measurement_arm(
+    global: &GlobalOpts,
+    mcp: bool,
+    cfg: &mecha_core::config::Config,
+) -> Result<mecha_core::experiment::Arm> {
+    use mecha_core::experiment::{Arm, Preset};
+    let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
+    let model = match global.model.clone().or_else(|| provider_cfg.model.clone()) {
+        Some(m) => m,
+        None => mecha_core::provider::build(provider_cfg)?
+            .default_model()
+            .to_string(),
+    };
+    Ok(Arm {
+        preset: Some(Preset::Bare),
+        levers_on: if mcp { vec!["mcp".into()] } else { Vec::new() },
+        overrides: effective_overrides(global, "the measurement's design")?,
+        provider: Some(provider_name),
+        model: Some(model),
+        ..Arm::default()
+    })
+}
+
+/// The experiment a plain eval records as; same shape and same test as
+/// `ab_name`, because a bad stamp here is *quieter* than the A/B's was —
+/// `record_measurement`'s error is printed and the scorecard runs on, so
+/// every eval would silently record nothing.
+fn eval_name(now: chrono::DateTime<chrono::Utc>) -> String {
+    format!("eval-{}", now.format("%Y%m%d-%H%M%S"))
 }
 
 /// The experiment an A/B records as. A producer name, so lowercase, digits,
@@ -1433,6 +1640,119 @@ mod tests {
             assert!(name.starts_with(&format!("eval-ab-{kind}-")));
             mecha_core::experiment::ExperimentStore::open(std::env::temp_dir(), &name).unwrap();
         }
+        let name = eval_name(chrono::Utc::now());
+        mecha_core::work::valid_producer(&name).unwrap();
+        assert!(name.starts_with("eval-") && !name.starts_with("eval-ab-"));
+        mecha_core::experiment::ExperimentStore::open(std::env::temp_dir(), &name).unwrap();
+    }
+
+    /// The measurement's arm names the model that ran through every link
+    /// of `setup::build`'s chain: the flag, else the provider's configured
+    /// model, else the provider's own default — never `None`.
+    #[test]
+    fn the_measurement_names_the_model_that_ran_even_when_nothing_named_it() {
+        let mut cfg = mecha_core::config::Config::default();
+        cfg.providers.insert(
+            "box".into(),
+            mecha_core::config::ProviderConfig {
+                kind: "local".into(),
+                model: None,
+                api_key: Some("none".into()),
+                base_url: Some("http://127.0.0.1:1/v1".into()),
+                ..cfg.providers["anthropic"].clone()
+            },
+        );
+        cfg.default_provider = "box".into();
+        let builtin = mecha_core::provider::build(&cfg.providers["box"])
+            .unwrap()
+            .default_model()
+            .to_string();
+        let global = GlobalOpts::default();
+        let arm = measurement_arm(&global, false, &cfg).unwrap();
+        assert_eq!(arm.provider.as_deref(), Some("box"));
+        assert_eq!(arm.model.as_deref(), Some(builtin.as_str()));
+        assert!(arm.levers_on.is_empty());
+
+        cfg.providers.get_mut("box").unwrap().model = Some("configured".into());
+        let arm = measurement_arm(&global, true, &cfg).unwrap();
+        assert_eq!(arm.model.as_deref(), Some("configured"));
+        assert_eq!(arm.levers_on, vec!["mcp".to_string()]);
+
+        let flagged = GlobalOpts {
+            provider: Some("anthropic".into()),
+            model: Some("flagged".into()),
+            ..GlobalOpts::default()
+        };
+        let arm = measurement_arm(&flagged, false, &cfg).unwrap();
+        assert_eq!(arm.provider.as_deref(), Some("anthropic"));
+        assert_eq!(arm.model.as_deref(), Some("flagged"));
+    }
+
+    /// The two evals whose surface no lever can name are skipped, and a
+    /// plain one is not.
+    #[test]
+    fn a_measurement_skips_exactly_the_surfaces_no_lever_names() {
+        assert!(measurement_skip(false, false).is_none());
+        assert!(measurement_skip(true, false)
+            .unwrap()
+            .contains("--mcp-file"));
+        assert!(measurement_skip(false, true)
+            .unwrap()
+            .contains("--no-ask-user"));
+        assert!(measurement_skip(true, true).unwrap().contains("--mcp-file"));
+    }
+
+    /// A plain eval under `--runs k` plans k rows per case — one per run,
+    /// sharing the arm's hash and differing by repetition — and each row
+    /// is that run's in full, stop cause included, where the A/B's pass^k
+    /// fold leaves it unmeasured.
+    #[test]
+    fn a_measurement_writes_one_row_per_run() {
+        use mecha_core::experiment::{Arm, Manifest, Preset, Tasks};
+        let manifest = Manifest::one_arm(
+            "eval-t",
+            "bare",
+            Arm {
+                preset: Some(Preset::Bare),
+                ..Arm::default()
+            },
+            Tasks {
+                cases: "eval/cases.jsonl".into(),
+                fixture: "eval/workspace".into(),
+                ids: vec!["c".into()],
+                tags: Vec::new(),
+            },
+            3,
+        )
+        .unwrap();
+        let rows = manifest.trials(&["c".to_string()], "p", "m");
+        assert_eq!(
+            rows.iter().map(|t| t.repetition).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert!(rows
+            .iter()
+            .all(|t| t.condition_hash == rows[0].condition_hash));
+        let run: GradedCase = serde_json::from_value(serde_json::json!({
+            "id": "c", "run": 2, "passed": true, "tags": ["t"],
+            "checks": [{"name": "contains", "passed": true, "detail": ""}],
+            "turns": 4, "elapsed_ms": 500, "malformed_tool_args": 0,
+            "unknown_tools": 0, "tool_errors": 0, "tool_denied": 0, "tools_called": ["shell"],
+            "compactions": 0, "ended_on_failed_call": false, "blocked_sends": 0, "stop_cause": "completed", "usage_complete": true,
+            "usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            "error": null, "text": "x"
+        }))
+        .unwrap();
+        let planned = rows.iter().find(|t| t.repetition == run.run).unwrap();
+        let row = trial_of(planned, std::slice::from_ref(&&run));
+        assert_eq!(row.repetition, 2);
+        assert_eq!(row.passed, Some(true));
+        let stats = row.stats.unwrap();
+        assert_eq!(
+            stats.stop_cause,
+            Some(mecha_core::agent::StopCause::Completed)
+        );
+        assert_eq!(stats.turns, 4);
     }
 
     /// A case's runs fold into one trial row the way the old pairing scored
