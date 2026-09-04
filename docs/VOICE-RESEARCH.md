@@ -793,7 +793,15 @@ Three changes, none a threshold on the owner's speech:
   one pipecat private and refuses to start a call if that private is gone.
 - Every Parakeet transcript is emitted `finalized` — an offline transcriber
   has no interim to revise — which is what lets the turn end on the text
-  instead of on a timer after it.
+  instead of on a timer after it. Final for the *segment*, though, not the
+  turn: the stock strategy clears the flag only when the VAD next reports
+  speech, so a transcript landing after the owner has already resumed is
+  still "finalized" at the next VAD stop, and a `COMPLETE` there ends the
+  turn without that segment's words (review of #170 found the ordering; the
+  test written to refute it found this instead). The override counts the
+  segments still awaiting text and treats a transcript as final for the
+  turn only when none is outstanding; a segment the gate drops leaves one
+  outstanding and the turn falls to the safety net below.
 - `STT_TTFS_P99 = 2.0` replaces pipecat's streaming-STT default of 1.0, so the
   safety net cannot expire before a warm transcript; with finalized
   transcripts it only bounds the wait when a segment yields no words.

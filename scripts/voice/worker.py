@@ -686,39 +686,78 @@ class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
     COMPLETE ruling ends the turn as soon as the (finalized) transcript
     arrives; an INCOMPLETE one holds the turn open for smart-turn's own
     silence limit or the owner speaking again, which is what the analyzer
-    is for. Nothing else changes, and when the VAD *did* start the turn the
-    stock reset runs as before.
+    is for. When the VAD *did* start the turn the stock reset runs as before.
+
+    The same premise has a second edge, and it is counted rather than
+    timed. "Finalized" means final for the *segment*; the stock strategy
+    reads it as final for the turn and clears it only when the VAD next
+    reports speech. A transcript that lands after the owner has already
+    resumed is therefore still "finalized" at the next VAD stop, and a
+    COMPLETE there ends the turn on it - the new segment's own words arrive
+    as a fresh turn and barge in on the reply. Each VAD stop here is one
+    segment owed one transcript (or none, when the gate drops it), so the
+    override counts segments still awaiting text and treats the transcript
+    as final for the turn only when nothing is outstanding. A dropped
+    segment leaves the count at one and the turn falls to the STT safety
+    net (`STT_TTFS_P99`), which is that net doing its job.
     """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._refuse_if_pipecat_moved()
+        self._segments_awaiting_text = 0
+
+    async def _handle_vad_user_stopped_speaking(self, frame):
+        # A segment just ended and its words are not here yet, whatever an
+        # earlier transcript said about itself.
+        self._segments_awaiting_text += 1
+        self._transcript_finalized = False
+        await super()._handle_vad_user_stopped_speaking(frame)
+
+    async def _handle_transcription(self, frame):
+        self._segments_awaiting_text = max(0, self._segments_awaiting_text - 1)
+        if self._segments_awaiting_text:
+            # Another segment is still out; this text cannot close the turn.
+            frame.finalized = False
+        await super()._handle_transcription(frame)
+
+    async def handle_user_turn_stopped(self):
+        self._segments_awaiting_text = 0
+        await super().handle_user_turn_stopped()
 
     def _refuse_if_pipecat_moved(self):
         # The one private the override reads. A pipecat upgrade that renames
         # it would otherwise turn this back into the stock strategy without a
         # word - the silently-degrading guard - so it is a refusal to start
         # the call instead.
-        if not hasattr(self, "_vad_stopped"):
-            raise RuntimeError(
-                "TranscriptStartedTurnStop: pipecat's TurnAnalyzerUserTurnStopStrategy "
-                "no longer keeps `_vad_stopped`; re-derive the override against this version"
-            )
+        for private in ("_vad_stopped", "_transcript_finalized"):
+            if not hasattr(self, private):
+                raise RuntimeError(
+                    "TranscriptStartedTurnStop: pipecat's TurnAnalyzerUserTurnStopStrategy "
+                    f"no longer keeps `{private}`; re-derive the override against this version"
+                )
         # And the method it overrides must still be the one the controller
         # calls: a rename there leaves the private in place, construction
         # succeeds, and the override is simply never reached - the same
         # quiet fallback from the other side.
-        if not any("handle_user_turn_started" in vars(c) for c in type(self).__mro__[1:]):
-            raise RuntimeError(
-                "TranscriptStartedTurnStop: pipecat no longer defines "
-                "`handle_user_turn_started` on the stop strategy; the override is unreachable"
-            )
+        for method in (
+            "handle_user_turn_started",
+            "handle_user_turn_stopped",
+            "_handle_vad_user_stopped_speaking",
+            "_handle_transcription",
+        ):
+            if not any(method in vars(c) for c in type(self).__mro__[1:]):
+                raise RuntimeError(
+                    "TranscriptStartedTurnStop: pipecat no longer defines "
+                    f"`{method}` on the stop strategy; the override is unreachable"
+                )
 
     async def handle_user_turn_started(self):
         if self._vad_stopped:
             # The transcript that started this turn is the one the pending
             # stop is waiting for. Keep the ruling and the timer.
             return
+        self._segments_awaiting_text = 0
         await super().handle_user_turn_started()
 
 

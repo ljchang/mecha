@@ -166,10 +166,18 @@ pub fn due(owner_turns: usize, titled_at: usize) -> bool {
 /// and the conversation is idle for as long as a name takes.
 pub fn settled(stop: crate::agent::StopCause) -> bool {
     use crate::agent::StopCause;
-    !matches!(
-        stop,
-        StopCause::Interrupted | StopCause::Stopped | StopCause::Shutdown
-    )
+    // Exhaustive on purpose: a new ending has to choose a side here, rather
+    // than default into "name it" through a negated pattern.
+    match stop {
+        StopCause::Interrupted | StopCause::Stopped | StopCause::Shutdown => false,
+        StopCause::Completed
+        | StopCause::Parked
+        | StopCause::MaxTurns
+        | StopCause::OutputTokenBudget
+        | StopCause::CostBudget
+        | StopCause::Loop
+        | StopCause::NoOutput => true,
+    }
 }
 
 const SYSTEM: &str = "\
