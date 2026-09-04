@@ -1110,16 +1110,18 @@ acted on, so a listener who says "send it" is asked once more and answers
 Three parts, each pinned by a test that fails without it:
 
 - `Pending` carries a **two-slot window** of what the speaker recently played,
-  seeded with the model's own reply. `RunOutcome::text` is only the *final* turn; `pump` streams every
+  seeded with everything spoken on the way to the offer.
+  `RunOutcome::text` is only the *final* turn; `pump` streams every
   `TextDelta` of every turn and the worker speaks all of them, and a draft can
   only be staged by a tool call — so any run that produces an offer has
   interstitial narration by construction. All of it, the reply and the offer,
   is one stretch out of the speaker — `completion` says the answer and then `say(" {offer}")`
   with no pause — so the reply echoes exactly as the offer does, and the accept
   phrases it can carry are ones the offer never does: "go ahead", "do that",
-  "confirm", "approve", "book it". Each was an unasked release until the reply
-  was seeded in.
-  Nothing else could: the offer goes out through `say` and joins no
+  "confirm", "approve", "book it". Each was an unasked release until what the
+  speaker actually played was seeded in.
+
+  Nothing else could carry it: the offer goes out through `say` and joins no
   conversation, so the anchor the other two doors use does not contain the
   question. Two slots rather than one because the offer is still playing when
   its first echo is caught, and a long offer reads the whole draft aloud — so
@@ -1135,6 +1137,13 @@ Three parts, each pinned by a test that fails without it:
 - The re-ask is bounded at one, then the draft is left in the outbox. The
   re-ask is spoken too, so an unbounded "say that again" is a loop with a send
   at the end of it. Deferring terminates where the draft already is.
+
+  What `MAX_REASKS` bounds is *consecutive* echoes, not the interaction.
+  `ReadItOut` is ungated by design and goes through `after_saying`, which
+  resets the counter — so an echo transcribed as "read it out" is honoured and
+  clears the streak. No send follows: the `Send` arm is still gated, and a
+  re-read's own tail contains no "read it out". Written down because the
+  stronger reading of the sentence above is the tempting one.
 
 **The residual, stated in the direction that matters.** `MIN_SPAN_WORDS = 2`
 is written above as what keeps real answers alive — one-word accepts are
