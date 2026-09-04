@@ -1110,7 +1110,16 @@ acted on, so a listener who says "send it" is asked once more and answers
 Three parts, each pinned by a test that fails without it:
 
 - `Pending` carries a **two-slot window** of what the speaker recently played,
-  seeded with everything spoken on the way to the offer.
+  seeded with the **tail** of everything spoken on the way to the offer —
+  capped at `SPOKEN_UNPROMPTED_CHARS`, reused rather than invented, because
+  its own docstring already puts it at about sixty-five words or twenty-five
+  seconds aloud. The bound matters as much as the seeding: `ours_coming_back`
+  matches any contiguous two-word span, so an unbounded seed makes false
+  positives scale with narration length, and a collision is not free — a
+  non-answer collision re-asks once, then `MAX_REASKS` pops the head and
+  discards the utterance. Two ordinary turns lost and the question closed,
+  against words that stopped playing minutes earlier. The first attempt at
+  this fix widened the seed to the whole run and overshot exactly that way.
   `RunOutcome::text` is only the *final* turn; `pump` streams every
   `TextDelta` of every turn and the worker speaks all of them, and a draft can
   only be staged by a tool call — so any run that produces an offer has

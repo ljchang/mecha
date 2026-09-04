@@ -420,8 +420,7 @@ pub fn react(
     // `Later` and `ReadItOut` cause neither failure this gate exists for:
     // one leaves the draft where it already is, the other re-reads the
     // question and keeps it open. They are honoured however they parse.
-    let ours = ours_coming_back(utterance, pending);
-    let reask = |pending: &Pending| {
+    let reask = || {
         // The draft can leave the store between the question and the answer,
         // and then there is nothing to ask again *about*. Both branches
         // check it now; only the exhausted one did, which meant the ordinary
@@ -466,7 +465,7 @@ pub fn react(
         // reach `PassToModel`, which *drops* the question — leaving a staged
         // draft nobody is asked about again and handing our own words to the
         // model as a turn.
-        SpokenAnswer::NotAnAnswer if ours => reask(pending),
+        SpokenAnswer::NotAnAnswer if ours_coming_back(utterance, pending) => reask(),
         SpokenAnswer::NotAnAnswer => Reaction::PassToModel,
         SpokenAnswer::Later => {
             Reaction::Say(format!("Left in your outbox.{}", next_question(next)))
@@ -491,7 +490,7 @@ pub fn react(
                 next_question(next)
             )),
         },
-        SpokenAnswer::Send if ours => reask(pending),
+        SpokenAnswer::Send if ours_coming_back(utterance, pending) => reask(),
         SpokenAnswer::Send => match head {
             Some(_) => Reaction::Release {
                 acknowledge: "Sending it now.".into(),

@@ -1076,12 +1076,48 @@ async fn take_slot(
 /// back in neither window slot, which is the same unasked release the
 /// `preceded_by` seeding closes for the reply. Found on review.
 ///
+/// **Bounded to a tail**, and that bound is the point. `recently_said` means
+/// what is still coming out of the speaker, not the transcript of the call —
+/// and `ours_coming_back` matches any contiguous two-word span, so an
+/// unbounded seed makes false positives scale with how much the model
+/// narrated. That is not a safe no-op: a collision on `NotAnAnswer` returns
+/// `NotConvinced`, and a second hits `MAX_REASKS` and returns `Say`, which
+/// pops the head and discards the utterance. Two ordinary turns swallowed and
+/// the question closed, against words that finished playing minutes ago.
+/// Found on review, after the previous pass widened the seed from the final
+/// turn to the whole run and overshot.
+///
+/// The cap is `SPOKEN_UNPROMPTED_CHARS`, reused rather than invented: it is
+/// this project's settled answer to "how much speech is a lot", and its own
+/// docstring puts it at about sixty-five words or twenty-five seconds aloud —
+/// which is the unit that matters here and comfortably longer than any
+/// residual echo.
+///
 /// Empty on the blocking path, where nothing streams and the single JSON
 /// body is the whole of what is spoken.
 #[derive(Default)]
 struct Streamed {
     disconnected: bool,
     said: String,
+}
+
+/// Drop the front of `s` until at most `cap` bytes remain, on a word boundary.
+///
+/// Pure and separate so the bound can be tested; `pump` applies it as it goes
+/// so a long run cannot accumulate without limit either.
+fn keep_tail(s: &mut String, cap: usize) {
+    if s.len() <= cap {
+        return;
+    }
+    let mut start = s.len() - cap;
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    // Forward to the next space, so the seed never begins mid-word.
+    if let Some(offset) = s[start..].find(' ') {
+        start += offset + 1;
+    }
+    s.drain(..start);
 }
 
 async fn pump(
@@ -1111,6 +1147,11 @@ async fn pump(
                     // turn is spoken, not just the final one, and all of it
                     // can echo. See `Streamed::said`.
                     said.push_str(&t);
+                    // Twice the cap before trimming: bounded memory without
+                    // a drain on every token.
+                    if said.len() > 2 * crate::review_policy::SPOKEN_UNPROMPTED_CHARS {
+                        keep_tail(&mut said, crate::review_policy::SPOKEN_UNPROMPTED_CHARS);
+                    }
                     let chunk = sse_chunk(id, model, json!({"content": t}), None);
                     if write_chunk(stream, chunk.as_bytes()).await.is_err() {
                         cancel.cancel();
@@ -1131,6 +1172,7 @@ async fn pump(
             }
         }
     }
+    keep_tail(&mut said, crate::review_policy::SPOKEN_UNPROMPTED_CHARS);
     Streamed { disconnected, said }
 }
 
@@ -1417,9 +1459,14 @@ async fn answer_completion(
         return Some(Ok(()));
     }
     match reaction {
-        // Returned above; the arm is here so a new variant cannot be added
-        // without deciding which side of the response head it falls on.
-        confirm::Reaction::PassToModel => None,
+        // Returned above, at the early bail. The arm stays so a new variant
+        // cannot be added without deciding which side of the response head it
+        // falls on — but `None` here is *exactly* the double-head bug the
+        // early return prevents, so reaching it must fail loudly rather than
+        // quietly reinstate it.
+        confirm::Reaction::PassToModel => {
+            unreachable!("`PassToModel` returns before the response head is opened")
+        }
         confirm::Reaction::Reread(said) => {
             // The head is still the open question: hearing it again is not
             // answering it. Every arm slides the window over what it is
@@ -2276,6 +2323,56 @@ mod the_reply_reaches_the_wire {
     use super::*;
     use tokio::io::AsyncReadExt;
 
+    /// The seed is a *tail*, and the bound is what keeps it from swallowing
+    /// ordinary turns.
+    ///
+    /// `ours_coming_back` matches any contiguous two-word span, so an
+    /// unbounded seed makes false positives scale with narration length —
+    /// and a collision is not free: `NotAnAnswer if ours` re-asks once, then
+    /// `MAX_REASKS` returns `Say`, which pops the head and discards the
+    /// utterance. Two real turns lost and the question closed, against words
+    /// that stopped playing long ago. Found on review of the previous fix,
+    /// which widened the seed from the final turn to the whole run.
+    #[test]
+    fn the_seed_is_a_tail_not_the_whole_call() {
+        let cap = crate::review_policy::SPOKEN_UNPROMPTED_CHARS;
+        let mut said = format!(
+            "{} and now the part that is still playing, send it along please",
+            "some narration from several turns ago that has long stopped playing ".repeat(20)
+        );
+        assert!(
+            said.len() > cap,
+            "the fixture is not long enough to be trimmed"
+        );
+        keep_tail(&mut said, cap);
+
+        assert!(
+            said.len() <= cap,
+            "the seed is not bounded: {} bytes",
+            said.len()
+        );
+        assert!(
+            said.contains("still playing, send it along"),
+            "the tail — the part that can actually echo — was dropped: {said:?}"
+        );
+        assert!(
+            !said.starts_with("some narration"),
+            "the front of the call is still in the window: {said:?}"
+        );
+        assert!(
+            !said.starts_with(' ') && !said.is_empty(),
+            "the seed begins mid-word: {said:?}"
+        );
+
+        // Short speech is untouched, and multi-byte text does not panic.
+        let mut short = "Sent. Anything else?".to_string();
+        keep_tail(&mut short, cap);
+        assert_eq!(short, "Sent. Anything else?");
+        let mut wide = "— ".repeat(cap);
+        keep_tail(&mut wide, cap);
+        assert!(wide.len() <= cap);
+    }
+
     /// The echo window is seeded from **everything spoken**, not the final
     /// turn.
     ///
@@ -2299,6 +2396,16 @@ mod the_reply_reaches_the_wire {
             body.contains("said.push_str("),
             "`pump` no longer records what it played, so the window falls back \
              to the final turn and interstitial narration echoes unguarded"
+        );
+        // Twice: once in the loop, which only bounds memory at twice the cap,
+        // and once at return, which is what actually makes the seed a tail.
+        // Dropping the second leaves every other test green while the window
+        // grows to double what `recently_said` promises.
+        assert_eq!(
+            body.matches("keep_tail(&mut said").count(),
+            2,
+            "`pump` trims in only one place; the loop bounds memory, the \
+             return bounds the window, and they are not the same guarantee"
         );
         // And both doors seed from it rather than from the outcome's text.
         // Anchored on the whole statement. Two traps, both hit on the way
