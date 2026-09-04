@@ -1576,3 +1576,297 @@ nothing yet reads it for anything but rendering it into the prompt.
 - **Two status vocabularies and the `Evidence` name collision** (§1). Not
   this design's to fix, but this design is what makes them expensive: an
   aggregator over value has to know both.
+
+---
+
+## 17. Ruled 2026-09-03: relevance, the charter, and Situation as the second join
+
+Rulings from the owner, recorded with what each asks of the tree. None is
+built. They follow a trace of `appraisal.rs`, `goal.rs`, `charter.rs`,
+`homeostat.rs` and `learning.rs` on this date, which found: no relevance
+dimension anywhere; `appraisal.rs` with no reference to `crate::charter`;
+`GoalRef::Charter` with no producer on an ordinary run
+(`charter::prompt_block` deliberately asks for none); `goal.rs` a pointer
+with no store, lifecycle or confidence; the appraiser's brief numbers-only,
+retrieving nothing; the thirty-day corpus with **zero sessions naming a
+goal**; and the learning store holding 45 reflections (42 `behavior`) and
+12 active rules in one domain, none retired, every one in every prompt.
+
+### 17.1 The gate is relevance, not controllability
+
+> **An appraisal's first check is whether the outcome bears on a live
+> goal. The label derives from sign and agency. Controllability refines a
+> label when a replay has filled it and is never a precondition for one.**
+
+Incident: `label_of` gives an owner- or self-caused negative error no word
+until `controllable` is filled, and `controllable` is filled only by a paid
+replay — so 22 rejected drafts, the largest owner verdict in the store, all
+read `Neutral`. `APPRAISAL-RESEARCH.md` §3.1 built the `Valence` readout on
+2026-09-02 and left the label gated; this ruling ungates it. It was built
+the other way for a reason worth keeping in view: §6's table separates
+regret from disappointment on controllability alone, and a label without it
+was a guess. The ruling accepts a coarser word — a signed, attributed error
+that is not yet regret or disappointment — over no word.
+
+**Sensor readings and counterfactual verdicts are read relative to the goal
+they bear on, or not at all.** A homeostat scalar with no goal is a machine
+statistic; a steer verdict with no goal says a trajectory diverged, not that
+anything improved. `steer_verdict` gains a second reading — the signed error
+on the cited goal's *structurally computable* channels between the recorded
+and the replayed trajectory. Where the channel is an owner verdict the replay
+cannot compute it and the verdict stays "consequential", as §5.3 states.
+
+**Prerequisite.** Relevance is undefined without a goal. The ruling binds
+the three producers of a goal reference: sensored lines by id (§11.1), the
+confirmed goal (§17.3), and `serves:` on ordinary runs —
+`charter::prompt_block` asks for a charter cite, model-authored, lenient
+from a record, redacted to kind by `distill` as today.
+
+### 17.2 The charter is appraised, and policies are learned against it
+
+> **Every goal record, reflection and learned rule cites the charter line
+> it serves. The periodic moment (§5.4, third row) aggregates signed errors
+> per line, in rank order, into a per-line valence. A rule's tenure is
+> measured on its line's owner-verdict channels.**
+
+Incident: the charter is rendered into the prefix and nothing is measured
+against it; `Pride` is unreachable because closure against a line is
+unbuilt. The owner's words: generating policies with respect to the charter
+is what makes it a governor and not a preamble.
+
+What does not move: no model authors or edits a line (§11); a sensor never
+feeds a `candidate::Metric` (§11.1, containment 1); affect is a priority
+function, never an objective (§8.3). The reconciliation with §8.3 is narrow
+and load-bearing: **a rule may be accepted or retired on a charter line's
+error only where the sign is owner-authored** — a draft sent unchanged, a
+question answered, a request closed, a task the owner marked done (§5.2's
+channels), the channels immune to reward hacking by construction. Counters
+and sensors order what gets examined; the owner's verdict decides whether a
+policy stands.
+
+### 17.3 Situation is the second join type; goal is its confirmable, signed field
+
+`GoalRef` is the one type every record can cite (§2). It answers *what this
+serves*. Nothing answers *where this happened*, and that absence is why a
+lesson learned about `shell` refused in a non-interactive run is stored as a
+universal behaviour rule and loaded into every prompt.
+
+> **A `Situation` is the closed-set description of where a record was
+> made, cited by episodes, reflections, rules, the retrieval query, the
+> validation region and the replay need estimate. Its keys are only what
+> the harness knows structurally. A goal is one of its fields.**
+
+Keys, each from a closed set the harness already holds: tool names (the
+registry; the extractor already computes `tools_before`/`tools_after` and
+the reflection drops them on write), `trigger` and `error_type` (already on
+the reflection), surface (chat, TUI, Slack, triage, delegated task),
+workspace, tier, plan stage (the status transitions `Tracked` already
+marks), a homeostat *band* (context pressure, backlog delta — **never
+valence**, §15), and the goal reference with its charter line. Never a tool
+argument, never prose: names come from the closed set and survive
+`Intervention::user_evidence_only`; arguments are model-authored.
+
+`Situation` can be persisted now from fields already in flight and is
+useful with the goal field empty. That is the practical reframing of the
+owner's proposal (*Latent Goal Inference, Goal Error Tracking, and Episodic
+Learning*, 2026-09-03, external to `docs/`): episodic indexing, reflection
+retrieval and consolidation are the situation mechanism, and the goal is
+its richest key.
+
+**The goal is the one field that is not merely a key**, on three counts,
+and each is machinery the other keys never need:
+
+- **It carries the sign.** The other keys locate a situation; none makes an
+  outcome good or bad. Relevance reads the situation; congruence reads the
+  goal. Retrieval needs the first; appraisal needs both.
+- **It is inferred, and it is the one key the owner can confirm.** Every
+  other key is observed and cannot be wrong. The goal is a hypothesis.
+  **The confirmation is a question, not a gate.** `TASK-AGENT-DESIGN.md`
+  D12's pause-on-the-todo-list was superseded 2026-08-26 and is not to be
+  built: small models collapse under plan-first, this model calls `todo`
+  only when the user turn asks, and the reviewable object, if one is ever
+  built, is a *document separate from the todo list*. What survives is
+  D12's best argument — a question at plan time is the cheapest in the
+  run, before a tool call and before taint is armed. So: on a run above a
+  cost threshold the seed asks **one sentence, on the user turn** — *I
+  take the goal to be X, serving line Y; confirm or correct* — through
+  `questions.rs` on a task run (a question ends the run, never parks it,
+  D13) and inline in chat. The answer mints the goal record: the owner's
+  own words, arming no taint, like the charter. Before the answer the
+  hypothesis is prose and reaches nothing but the owner's screen. Whether
+  a reviewable goal document is worth building is decided by the count
+  D12's replacement already names — delegations that ended *ready for
+  review* and were dropped or reworked — not by this section.
+- **It is the path from the charter to a run.** A charter line reaches an
+  ordinary run only through the goal that serves it.
+
+**Uncertainty is a check-in trigger.** The harness carries a distance
+between the current hypothesis and the *anchor* — the last confirmed goal —
+and asks again when distance × remaining work exceeds the cost of asking.
+Monotone under §7.3: uncertainty may add a question and never remove one,
+so a manipulated uncertainty degrades to over-asking. Every answer is the one
+label the agent did not author. Two drifts, told apart by who moved: the
+owner's evidence moving is a transition (re-ask); the plan's items no longer
+tracing to the anchor while the evidence has not moved is scope creep, the
+harness's own, computable from the plan with no model call.
+
+Records live beside the appraisal store on its conventions; the board stays
+the only medium-tier store (§2.1); the plan still rehydrates from the
+transcript (D14/D15); nothing here rides in the prefix (§4.3) — the goal
+line rides in the carried block as `serves:` already does.
+
+### 17.4 Memory is scoped by Situation, and abstraction is region widening
+
+> **A rule cites the Situation region it applies in. Standing rules —
+> those citing a charter line and nothing narrower — ride in the prefix as
+> today. Every other rule is delivered at the moment its region matches,
+> through a tool result or the carried block, and never in the prefix.**
+
+Incident: `rules_prompt_block_for` renders every enabled rule in
+`RUN_DOMAINS` into every prompt; the only scoping key is the domain, and 42
+of 45 reflections are `behavior`. At the cap that is 75 rules on every
+request, and `MEMORY-RESEARCH.md`'s finding is that the cost is not the
+bytes: a near-miss rule in every prompt is the semantically-similar-but-wrong
+distractor the literature measures as the worst kind.
+
+**Consolidation.** `learn` today renders a whole domain's reflections into
+one prompt and generalises by wording. Under this ruling the learner is fed
+batches clustered by Situation; a rule is proposed for a region; it
+**widens by dropping a key only when the same lesson has support in more
+than one sub-region**, and `validate` then probes it in each sub-region it
+widened over. A rule that fails in one sub-region **narrows** rather than
+retires. The ladder episode → reflection → rule → heuristic is thereby
+defined: each step is a wider region with evidence across the sub-regions
+it covers.
+
+**Validation.** The ledger is keyed to a hash of the rule set; scoped
+loading means many sets, so the ledger is keyed per rule per region
+(`MEMORY-RESEARCH.md` R2), and the replay budget goes to sessions inside
+the region rather than a recency window most of which never reaches the
+rule's condition. That is what turns "does the block help on average" into
+"does this lesson help here", and it is the effectiveness gain, not the
+context saving.
+
+**Delivery.** The harness sees every tool call before dispatch; a rule
+scoped to a tool and a condition renders as one line on that tool's result
+the first time the condition recurs — §7.4's fast pre-action marker, one
+cheap lookup keyed on a recorded situation. Never by current valence.
+
+### 17.5 The validator these rulings are missing, and its template
+
+The tree validates at two tiers and neither is against a goal.
+`step::appraise` validates a completed step against the *plan*:
+deterministic reading of the span, a quarantined call only on ambiguity
+(`EscalationReason`), a plan action as output. `mecha validate` validates
+the learned *rules* against owner interventions, trace-graded, with a
+per-rule ledger. Nothing validates the plan against the goal, the goal
+against the owner, or a rule against a charter line — which is why a run can
+land every step and serve nothing.
+
+The step validator is the template: deterministic first — every item and
+action names a goal node and the node traces to the anchor, no model — a
+model call only on whether a correctly traced item is *relevant* to the
+confirmed objective, and a plan action as output: accept, revise the plan,
+or ask (§17.3's trigger, arriving through the door built for it).
+
+`TodoItem::expect`, `check` and `expect_calls` are the prediction half of a
+prediction-error loop and, by their own docstrings, nothing executes the
+check, reads the forecast, or scores the expectation. Executing the check is
+the audit lane's (`AUDIT-RESEARCH.md` §3.11); it needs none of this section
+and gives `step::appraise` its first real prediction error.
+
+### 17.6 The next sprint
+
+Chosen for what unblocks measurement, contains no model where it can, and
+repairs something partially built. Everything else in this section waits on
+the data these produce.
+
+1. **Producers for the goal reference** (§17.1's prerequisite): the charter
+   prompt block asks for a `serves:` cite on ordinary runs; §11.1's parser,
+   serialiser and template test as one change; the attribution join in
+   `of_session`. Exit: "sessions naming a goal" leaves zero.
+2. **The relevance gate** in `label_of` and `Readout`: label from sign and
+   agency, controllability as refinement. Pure, unit-tested, no model. Exit:
+   the 22 rejected drafts carry a word.
+3. **`Situation` persisted on the reflection**, from `tools_before`,
+   `trigger`, `error_type`, surface and workspace, plus a `scope` on `Rule`
+   and the learner batched by region. No new model call. Exit: a rule
+   learned from a denial on one tool is scoped to that tool.
+4. **Measure the appraiser at scale** (`APPRAISAL-RESEARCH.md` §3.10):
+   `--appraise` over the store, then keep or retire it. Zero build.
+5. **Execute the declared check** — the audit lane's; coordinate, do not
+   duplicate.
+
+Not this sprint: the goal question and check-in (needs 1 and a goal
+record), the per-line periodic aggregate (pure, but shows nothing until 1
+accumulates), per-region validation (needs 3), the goal-relative steer
+verdict and blind replay (last, because they change what a replay
+concludes).
+
+### 17.7 Open on 2026-09-03, worked through 2026-09-04
+
+Eight decisions §17.3–17.6 leave open. Each is stated with the fact in the
+tree it turns on and its resolution. Items 2 and 3 decide what the owner
+sees mid-run and were **ruled by the owner on 2026-09-04**; the other six
+follow from facts in the tree and stand as written. None is built.
+
+1. **A run records what it loaded.** `ValidationRecord` keys on
+   `rules_hash` of the rendered block plus `rule_ids`; `SessionMeta` carries
+   provider, model, workspace and kind, and nothing about rules. Once
+   loading is situational (§17.4) a replay cannot reconstruct the arm.
+   *Proposed:* the run record carries the prefix block's `rules_hash` and a
+   `delivered` list of `(rule_id, turn)` written by the harness at delivery
+   — pointers only, the taint snapshot's shape. A run without the field
+   replays with the prefix block and reports the scoped set as *unknown*,
+   never empty. Lands with sprint item 3 or item 3 does not merge.
+2. **Delivered is not applied.** *Ruled 2026-09-04:* two columns — `delivered`, a
+   harness fact, and `followed`, trace-graded by the probe's structural
+   verdict — and tenure moves only on graded outcomes; delivery is a
+   denominator. The delivery line is templated (*a lesson from a previous
+   run applies here: …*), ships **off by default** on `step_escalation`'s
+   posture, and the null-step and restart counters are read before it is
+   turned on: the tree's own evidence is that a nudge makes a model restart
+   work it had done.
+3. **The ask, by surface — ruled 2026-09-04.** `ask_user` is registered only by a front-end
+   that owns a human; a task run's question goes through the question store
+   and ends the run (D13); an unattended run is told what to do and approves
+   everything. No numeric threshold in v1, three structural cases. A delegated task run folds the goal sentence **into the one
+   question the seed already asks first** — no second run-ending question.
+   Chat and TUI *state* the goal sentence and ask only when the seed cannot
+   put it in one sentence. Unattended and trigger runs never ask; the
+   assumed goal rides in the note on the artifact they stage, and the
+   owner's acceptance of that artifact is the confirmation — an
+   owner-verdict channel that already exists.
+4. **Distance is structural.** *Proposed:* distance from the anchor is 1 if
+   the goal's kind or id changed; otherwise the fraction of open plan items
+   whose `serves` does not trace to the anchor, plus a term for turns since
+   the last confirmation. A kind or id change re-asks; a fraction above one
+   half logs a drift event. No embedding model in a run, ever (§4.3, §4.5).
+5. **The persistent tier is the board's project.** `tasks` already takes
+   `project: Option<String>`, a parent node the graph holds. *Proposed:*
+   `GoalRef::Project(node_id)` as a fourth kind, a pointer like `Task`,
+   lenient from records like the rest. Tiers read charter → project → task
+   → step. The proposal's persistent user goal is a project node; its
+   closure appraisal is the owner closing its last task. No new store.
+6. **Backfill Situation, never the goal.** `reflect` re-runs
+   `extract_interventions` over transcripts deterministically; a
+   `Reflexion` persists `session_id`, `trigger` and the intervention text
+   but not the message index. *Proposed:* a one-off pass matches each
+   reflection to its intervention by those three, recomputes tools, surface
+   and workspace from the transcript and `SessionMeta`, and writes
+   `situation` with provenance *recomputed*. Unmatched reflections get no
+   situation — absent, not zero. The goal field is never backfilled.
+7. **Split `Interrupted` before any weak evidence class.** `StopCause` has
+   one variant for a parked question (`ToolCtx::cancel`), an owner's
+   control-C, and a service restart. *Proposed:* `Parked`, `Stopped`,
+   `Shutdown`, lenient on read so old records stay unknown. Then: `Stopped`
+   followed by a new run in the same session is a redirect (medium
+   evidence); a session ending on `Stopped` or an unanswered turn is silence
+   (weak); `Parked` is no evidence. This is `APPRAISAL-RESEARCH.md` §3.3 and
+   is the prerequisite for grading goal revision on anything but the
+   owner's answer.
+8. **The goal sentence stays home.** `distill` already redacts a goal to
+   its kind before pkg. *Proposed:* pkg `meta` carries `{kind, id,
+   serves_charter}`; the objective sentence stays in the goal store; the
+   situation index joins on the id. The charter's rule, one record over:
+   owner text never leaves the stores mecha itself writes.
