@@ -544,8 +544,7 @@ async fn ab_experiment(
         "--holdout-in must be at least 2, or every episode is held out and \
          nothing selects"
     );
-    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S");
-    let name = format!("eval-ab-{kind}-{stamp}");
+    let name = ab_name(kind, chrono::Utc::now());
     let mut manifest = Manifest::two_arm(
         &name,
         "treatment",
@@ -682,6 +681,14 @@ async fn ab_experiment(
         eprintln!("\nwrote {}", path.display());
     }
     Ok(())
+}
+
+/// The experiment an A/B records as. A producer name, so lowercase, digits,
+/// `-` and `_` only — the first cut stamped `%Y%m%dT%H%M%S`, whose `T`
+/// failed `valid_producer` and killed every A/B before an arm ran (found
+/// on review); the test below validates the exact string this builds.
+fn ab_name(kind: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    format!("eval-ab-{kind}-{}", now.format("%Y%m%d-%H%M%S"))
 }
 
 /// One case's graded runs as a trial row: pass^k over the runs, the checks
@@ -1296,6 +1303,19 @@ mod tests {
         assert!(!with_mcp.no_mcp, "--mcp is opt-in, not overridden");
         assert!(with_mcp.no_compact_tool, "and it opts into nothing else");
         assert!(with_mcp.no_step_escalation, "including this one");
+    }
+
+    /// The name an A/B records under is the name the store accepts — checked
+    /// on the exact string the CLI builds, since the two-arm tests build
+    /// their own names and the first cut's stamp failed the producer rule.
+    #[test]
+    fn the_ab_experiment_name_is_a_valid_producer_name() {
+        for kind in ["config", "rules"] {
+            let name = ab_name(kind, chrono::Utc::now());
+            mecha_core::work::valid_producer(&name).unwrap();
+            assert!(name.starts_with(&format!("eval-ab-{kind}-")));
+            mecha_core::experiment::ExperimentStore::open(std::env::temp_dir(), &name).unwrap();
+        }
     }
 
     /// A case's runs fold into one trial row the way the old pairing scored
