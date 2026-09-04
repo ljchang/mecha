@@ -58,6 +58,140 @@
   // chosen launch voice, barge-in) replaces this when the speech servers
   // land; until then it is the fail-to-a-lesser-mode shape, and marked so.
 
+  // Which argument names a call, most specific first.
+  //
+  // `DraftView` is a *shape*, not a ranking: it lifts addressing into
+  // `headers` and prose into `body`, and everything else falls through to
+  // `other` in `serde_json::Map` order — which is `BTreeMap` order, because
+  // `preserve_order` is off. So `other` arrives sorted by key, and the first
+  // entry is the alphabetically first argument rather than the one a reader
+  // would recognise the call by: `fs_read {path, offset, limit}` leads with
+  // `limit`, `web_search {query, limit}` leads with `limit`. Two reads of
+  // different files with the same limit are the same row twice, which is the
+  // bug this chip exists to fix, wearing a confident label.
+  //
+  // Ranking here rather than in `DraftView` keeps that type a shape for
+  // every one of its readers. Checked by `web/test/tool-digest.mjs`.
+  const DIGEST_FIELDS = ['path', 'command', 'query', 'url', 'pattern', 'task', 'name', 'id'];
+
+  // Header arguments that name the *store* rather than the call. `account`
+  // is a `HEADER_FIELDS` member, so on every item-scoped mail and calendar
+  // tool — `mail_get_thread {thread_id, account}`, `mail_reply`,
+  // `mail_triage`, `calendar_delete_event` — it is the only header present
+  // and would win outright, labelling three different threads `personal`.
+  // It is required whenever several accounts are configured, so that is the
+  // ordinary case here, not a corner: the argument shared by every call in
+  // the turn is the one argument that cannot tell two of them apart. Kept as
+  // a last resort below, because naming the account still beats naming
+  // nothing.
+  const SHARED_FIELDS = ['account'];
+
+  // A bare number or boolean never says *which* call this was — it says how
+  // much, how deep, how many. Values reach the page already rendered to
+  // strings, so the type is gone and the shape is all that is left to go on.
+  const QUANTITY = /^(-?\d+(\.\d+)?|true|false|null)$/;
+
+  // One line saying *which* call this was, for the closed chip.
+  //
+  // Addressing first, minus the shared scope — `DraftView` ordered `headers`
+  // for a reader already. Then a known identifying argument, then anything
+  // ending in `_id`, then any argument that is not a bare quantity, and only
+  // then the first one there is: an unanticipated tool still gets a label,
+  // which is the fallback `other` has always been. Display only; the whole
+  // call is one tap below, and nothing here decides anything.
+  function toolDigest(draft) {
+    if (!draft) return '';
+    const other = draft.other ?? [];
+    const headers = draft.headers ?? [];
+    const pair =
+      headers.find(([name]) => !SHARED_FIELDS.includes(name)) ??
+      DIGEST_FIELDS.map((k) => other.find(([name]) => name === k)).find(Boolean) ??
+      other.find(([name]) => name.endsWith('_id')) ??
+      other.find(([, value]) => !QUANTITY.test(String(value).trim())) ??
+      other[0] ??
+      headers[0];
+    return oneLine(pair ? pair[1] : (draft.body ?? ''));
+  }
+
+  function oneLine(text) {
+    const flat = String(text).replace(/\s+/g, ' ').trim();
+    return flat.length > 72 ? `${flat.slice(0, 72)}…` : flat;
+  }
+
+  // Which open chip a result or a refusal belongs to.
+  //
+  // **By id where there is one.** `Agent::run_tools` emits every `ToolCall`
+  // in one sequential loop and only then runs the approved calls in a
+  // `join_all`, which preserves order — so a turn holds several rows open at
+  // once and their results come back in *call* order. Neither position nor
+  // name pairs them: two `fs_write` calls in a turn got each other's output,
+  // and a turn that refuses one call and runs another landed the refusal on
+  // the row still running. Both were anonymous swaps until this row carried
+  // the arguments, and confident mislabels afterwards — the failure this
+  // change exists to prevent, arriving one layer above it.
+  //
+  // An id that matches nothing means the row is already closed, so the
+  // result is dropped rather than moved onto somebody else's: the
+  // planning-phase refusal emits `ToolDenied` *and* `ToolResult`, and the
+  // denial already wrote the reason where it belongs.
+  //
+  // The name path is for events that genuinely have no id — `ToolDenied`
+  // carries none — and for a `web/dist` older than the binary serving it,
+  // which is the compatibility rule this file already follows elsewhere.
+  function openCall(entries, ev) {
+    const matches =
+      ev.id == null ? (e) => e.name === ev.name : (e) => e.id === ev.id;
+    return entries.findLast((e) => e.kind === 'tool' && e.pending && matches(e));
+  }
+
+  // A refusal that also produced a result.
+  //
+  // The planning-phase path is the one denial that emits both, and the two
+  // strings are not the same string. `ToolDenied` carries the label —
+  // literally `"planning phase"` — while `ToolResult` carries the sentence
+  // the model was actually handed: "`fs_write` is not available while
+  // planning. Work out what to do and say so; leave the phase to carry it
+  // out." The label arrives first and closes the row; the sentence is the
+  // one worth reading, and it is what the row showed before one chip per
+  // call was the rule.
+  //
+  // **By id only.** This is the one place a result may touch an
+  // already-closed row, so it has to be the row that call opened and no
+  // other — matching any looser would put one call's refusal onto another
+  // call's row, which is the swap the id exists to stop.
+  function fillRefusal(entries, ev) {
+    if (ev.id == null || !ev.preview) return false;
+    const row = entries.findLast((e) => e.kind === 'tool' && e.blocked && e.id === ev.id);
+    if (!row) return false;
+    row.preview = ev.preview;
+    return true;
+  }
+
+  // A denial is the *end* of the call above it, not a second call.
+  //
+  // Three of the four denial paths in `Agent::run_tools` — the trifecta
+  // interlock, a `pre_tool` hook deny, and the approver — emit `ToolDenied`
+  // and write the tool-result block straight into `results[i]` with no
+  // `AgentEvent::ToolResult` behind it. (Only the planning-phase refusal
+  // emits both.) So nothing else will ever resolve the chip the `tool` event
+  // opened: pushing a second entry left the first one `pending` for the rest
+  // of the session. That was an inert row before the call carried `args`;
+  // now the row is a working disclosure, and opening it asserted "still
+  // running" over a call the interlock had already refused — the harness
+  // rendering its own guard's refusal as work in flight.
+  //
+  // It also settles a disagreement between the two renderings: the reload
+  // path sees the recorded result and draws *one* chip for this call, so a
+  // live view drawing two was the transcript contradicting itself.
+  function resolveDenial(entries, ev) {
+    const open = openCall(entries, ev);
+    if (!open) return false;
+    open.pending = false;
+    open.blocked = true;
+    open.preview = ev.reason ?? '';
+    return true;
+  }
+
   function pushEntry(entry) {
     flushStreaming();
     entries.push(entry);
@@ -182,10 +316,25 @@
           running = true;
           break;
         case 'tool':
-          pushEntry({ kind: 'tool', name: ev.name, pending: true });
+          // `draft` and `args` arrive with the call, so a run in flight is
+          // as readable as one being re-read — the chip can say which file
+          // it is writing while it writes it.
+          pushEntry({
+            kind: 'tool',
+            name: ev.name,
+            id: ev.id ?? null,
+            draft: ev.draft ?? null,
+            args: ev.args ?? null,
+            pending: true,
+          });
           break;
         case 'tool_result': {
-          const open = entries.findLast((e) => e.kind === 'tool' && e.pending);
+          // A result whose chip is already closed is dropped, not moved onto
+          // somebody else's row: the planning-phase refusal emits both
+          // `ToolDenied` and `ToolResult`, and the denial already wrote the
+          // reason where it belongs.
+          const open = openCall(entries, ev);
+          if (!open) fillRefusal(entries, ev);
           if (open) {
             open.pending = false;
             open.is_error = ev.is_error;
@@ -199,7 +348,17 @@
           break;
         }
         case 'denied':
-          pushEntry({ kind: 'tool', name: ev.name, blocked: true, pending: false });
+          // The fallback stays: a refusal with no call above it is still a
+          // refusal, and dropping it would be the quietest failure here.
+          if (!resolveDenial(entries, ev)) {
+            pushEntry({
+              kind: 'tool',
+              name: ev.name,
+              blocked: true,
+              pending: false,
+              preview: ev.reason ?? '',
+            });
+          }
           break;
         case 'usage':
           usage = { prompt: ev.prompt_tokens, window: ev.context_window };
@@ -275,8 +434,15 @@
           }
           sawAffectThisRun = false;
           if (!ev.ok && ev.error) pushEntry({ kind: 'notice', text: ev.error });
+          // The backstop for a call whose result never arrived: a
+          // cancelled run, a dropped stream, a turn that ended mid-flight.
+          // Marked rather than merely closed — "nothing came back" and "we
+          // stopped listening" are different findings, and closing the row
+          // silently would file the second under the first. Before this row
+          // carried the call that distinction had nowhere to show; now the
+          // row opens, and it must not answer for a call that never did.
           entries = entries.map((e) =>
-            e.kind === 'tool' && e.pending ? { ...e, pending: false } : e
+            e.kind === 'tool' && e.pending ? { ...e, pending: false, unfinished: true } : e
           );
           break;
       }
@@ -905,24 +1071,74 @@
       {:else if entry.kind === 'assistant'}
         <div class="answer">{entry.text}</div>
       {:else if entry.kind === 'tool'}
-        <!-- The chip names the call; the tap shows what came back — the
-             tool's own words, capped server-side. Rendered as TEXT only
-             (Svelte escapes interpolation): tool results carry third-party
-             content, and this page must display it, never interpret it. -->
+        <!-- The chip names the call and says which one it was; the tap opens
+             the whole of it — what it was called with, then what came back,
+             both capped server-side. The chevron is the affordance, so it
+             turns: a disclosure arrow that never moves is what made this row
+             look inert. Rendered as TEXT only (Svelte escapes interpolation):
+             results carry third-party content and an MCP call's arguments can
+             echo it, so this page displays them, never interprets them. -->
+        {@const digest = toolDigest(entry.draft)}
+        {@const detail = !!(entry.draft || entry.args || entry.preview)}
         <div class="tool" class:err={entry.is_error} class:blocked={entry.blocked}>
-          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
-          <span>{entry.name}</span>
+          <button
+            class="toolhead"
+            disabled={!detail}
+            aria-expanded={detail ? entry.open === true : undefined}
+            onclick={() => (entry.open = !entry.open)}
+          >
+            <svg class="toolchev" class:down={entry.open} viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
+            <span class="toolname">{entry.name}</span>
+            {#if digest}<span class="tooldigest">{digest}</span>{/if}
+          </button>
           {#if entry.pending}<span class="tool-state">running…</span>
-          {:else if entry.blocked}<span class="tool-state">blocked (read-only)</span>
+          {:else if entry.blocked}<span class="tool-state">blocked</span>
           {:else if entry.is_error}<span class="tool-state">failed</span>{/if}
-          {#if entry.preview}
-            <button class="tool-open" onclick={() => (entry.open = !entry.open)}>
-              {entry.open ? 'hide' : 'output'}
-            </button>
-          {/if}
         </div>
-        {#if entry.open && entry.preview}
-          <pre class="toolout">{entry.preview}</pre>
+        {#if entry.open}
+          <div class="toolpanel">
+            {#if entry.draft}
+              {#each entry.draft.headers as [k, v]}
+                <div class="tfield"><span class="tkey">{k.replace(/_/g, ' ')}</span><span>{v}</span></div>
+              {/each}
+              {#if entry.draft.body}<pre class="tbody">{entry.draft.body}</pre>{/if}
+              <!-- After the body and never behind the toggle, for the reason
+                   the approval card gives: `shell` has no header or body
+                   field at all, so hiding `other` renders an empty panel
+                   over `rm -rf build`. -->
+              {#each entry.draft.other as [k, v]}
+                <div class="tfield"><span class="tkey">{k.replace(/_/g, ' ')}</span><span>{v}</span></div>
+              {/each}
+              {#if entry.args}
+                <button class="qmore" onclick={() => (entry.rawOpen = !entry.rawOpen)}>
+                  {entry.rawOpen ? 'less' : 'the whole call'}
+                </button>
+                {#if entry.rawOpen}<pre class="toolout">{entry.args}</pre>{/if}
+              {/if}
+            {:else if entry.args}
+              <pre class="toolout">{entry.args}</pre>
+            {/if}
+            <!-- "still running", "the run ended first", "answered nothing"
+                 and "answered this" are four different readings, and an
+                 absent block would collapse the first three into the last. -->
+            <!-- A refusal is not an answer. The reload path cannot tell the
+                 two apart — it sees only `is_error` on the recorded result —
+                 so the live view is the more precise of the two here, not a
+                 second opinion about the same fact. -->
+            {#if entry.blocked && entry.preview}
+              <div class="tsep">refused with</div>
+              <pre class="toolout">{entry.preview}</pre>
+            {:else if entry.preview}
+              <div class="tsep">{entry.is_error ? 'failed with' : 'answered'}</div>
+              <pre class="toolout">{entry.preview}</pre>
+            {:else if entry.pending}
+              <div class="tsep">still running</div>
+            {:else if entry.unfinished}
+              <div class="tsep">the run ended before this answered</div>
+            {:else if !entry.blocked}
+              <div class="tsep">answered with nothing</div>
+            {/if}
+          </div>
         {/if}
       {:else if entry.kind === 'notice'}
         <div class="notice">{entry.text}</div>
@@ -1542,6 +1758,22 @@
     flex-direction: column;
     gap: 12px;
   }
+  /* A column flex container hands out *negative* free space too, and a
+     child that is itself a scroll container has an automatic minimum size of
+     zero rather than a content-sized one — so it is the one kind of child
+     this column can crush. `.toolout` used to sit here directly: measured at
+     700x400 on the shape this file had before, a 37px result rendered 28px
+     high, which is a line of output cut through the middle on exactly the
+     transcripts long enough to want reading.
+
+     It is nested a level down now, under a panel with visible overflow, so
+     the squeeze has no way in — but the next `pre` or scroll box someone
+     drops straight into the transcript would land right back on it, and it
+     would look like a rendering glitch rather than a layout rule.
+     `.drawer-scroll` carries the same line for the same reason. */
+  .transcript > * {
+    flex-shrink: 0;
+  }
   .bubble {
     align-self: flex-end;
     max-width: 82%;
@@ -1580,8 +1812,86 @@
   .tool svg {
     color: var(--accent-700);
   }
-  .tool-open { background: none; border: none; color: var(--accent-400); font-family: var(--mono); font-size: 10px; cursor: pointer; padding: 2px 6px; min-height: 24px; }
-  .toolout { font-family: var(--mono); font-size: 11px; color: var(--text-muted); line-height: 1.5; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 10px 12px; margin: 2px 0 4px 18px; max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .toolhead {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    padding: 2px 0;
+    min-height: 28px;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .toolhead:disabled {
+    cursor: default;
+  }
+  .toolchev {
+    color: var(--accent-700);
+    flex-shrink: 0;
+    transition: transform 120ms ease;
+  }
+  .toolchev.down {
+    transform: rotate(90deg);
+  }
+  .toolname {
+    flex-shrink: 0;
+  }
+  /* Which call this was, on the closed chip. Truncated rather than wrapped:
+     the chip is one line, and a long path is recognised by its end as much
+     as its start — so the box scrolls it under the ellipsis rather than
+     growing. */
+  .tooldigest {
+    color: var(--accent-700);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .toolpanel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: -6px 0 0 18px;
+  }
+  .tfield {
+    display: flex;
+    gap: 10px;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+  .tkey {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    flex: 0 0 84px;
+    padding-top: 3px;
+  }
+  .tbody {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text);
+    background: var(--void);
+    border: 1px solid var(--accent-900);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    max-height: 40vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .tsep {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+  .toolout { font-family: var(--mono); font-size: 11px; color: var(--text-muted); line-height: 1.5; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); padding: 10px 12px; margin: 0; max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
   .tool-state {
     font-size: 11px;
     color: var(--accent-700);
