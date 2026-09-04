@@ -800,8 +800,14 @@ Three changes, none a threshold on the owner's speech:
   turn without that segment's words (review of #170 found the ordering; the
   test written to refute it found this instead). The override counts the
   segments still awaiting text and treats a transcript as final for the
-  turn only when none is outstanding; a segment the gate drops leaves one
-  outstanding and the turn falls to the safety net below.
+  turn only when none is outstanding. A segment the gate or the echo
+  filter drops yields no transcript, so the STT says so with a
+  `SegmentDroppedFrame` and it is counted off the same way — `SegmentedSTT`
+  runs the transcriber exactly once per VAD stop, which makes the count
+  exact rather than a guess. That matters on speakers: every bot sentence
+  is a dropped segment with no turn open, and a count that drifted there
+  would put every owner turn onto the safety net (the third review pass's
+  finding, and the reason the frame exists).
 - `STT_TTFS_P99 = 2.0` replaces pipecat's streaming-STT default of 1.0, so the
   safety net cannot expire before a warm transcript; with finalized
   transcripts it only bounds the wait when a segment yields no words.

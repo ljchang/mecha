@@ -41,7 +41,12 @@ except ImportError as e:  # pragma: no cover - the whole point is to be loud
 
 from openai.types.audio import Transcription  # noqa: E402
 
-from worker import STT_TTFS_P99, ParakeetSTT, TranscriptStartedTurnStop  # noqa: E402
+from worker import (  # noqa: E402
+    STT_TTFS_P99,
+    ParakeetSTT,
+    SegmentDroppedFrame,
+    TranscriptStartedTurnStop,
+)
 
 # Pipecat's own default (`DEFAULT_TTFS_P99`), which is what the worker ran
 # with until STT_TTFS_P99 existed. The "old behaviour" cases use it so the
@@ -115,6 +120,10 @@ class Call:
         await self.strategy.process_frame(
             TranscriptionFrame(text, "owner", "now", finalized=True)
         )
+
+    async def dropped(self):
+        """What the STT says about a segment the gate or echo filter ate."""
+        await self.strategy.process_frame(SegmentDroppedFrame())
 
     async def close(self):
         await self.strategy.cleanup()
@@ -241,6 +250,69 @@ class TranscriptStartedTurns(unittest.TestCase):
         _, early, _ = run(scenario(TurnAnalyzerUserTurnStopStrategy))
         self.assertTrue(early, "the stock strategy no longer shows the fault this guards")
 
+    def test_echo_between_turns_leaves_nothing_outstanding(self):
+        """On speakers every bot sentence is a VAD segment the gate or the
+        echo filter drops, with no turn open. The owner's next transcript
+        must still close its turn on its own COMPLETE, not on the safety
+        net 1.8 s later."""
+
+        async def scenario():
+            call = Call(
+                TranscriptStartedTurnStop,
+                [EndOfTurnState.INCOMPLETE] * 3 + [EndOfTurnState.COMPLETE],
+                STT_TTFS_P99,
+            )
+            await call.start()
+            for _ in range(3):  # the bot's reply, heard by the mic
+                await call.speaks()
+                await call.stops_speaking()
+                await call.dropped()
+            await call.speaks()
+            await call.stops_speaking()
+            await call.turn_starts()
+            t0 = time.monotonic()
+            await call.transcript("What's next on my list?")
+            await asyncio.sleep(0.3)
+            lag = [t - t0 for t in call.stopped]
+            await call.close()
+            return lag
+
+        lag = run(scenario())
+        self.assertEqual(len(lag), 1, "the owner's turn did not end on its transcript")
+        self.assertLess(lag[0], 0.2)
+
+    def test_a_dropped_tail_ends_a_complete_turn_at_once(self):
+        """Mid-turn: "add it to my to-dos" then a breath the gate drops,
+        which is where smart-turn says COMPLETE. The words are all in;
+        the turn ends when the STT says the breath was nothing."""
+
+        async def scenario():
+            call = Call(
+                TranscriptStartedTurnStop,
+                [EndOfTurnState.INCOMPLETE, EndOfTurnState.COMPLETE],
+                STT_TTFS_P99,
+            )
+            await call.start()
+            await call.speaks()
+            await call.stops_speaking()
+            await call.turn_starts()
+            await call.transcript("Okay. I just need you to add it to my to do's.")
+            await call.speaks()
+            await call.stops_speaking()
+            await asyncio.sleep(0.05)
+            before_drop = bool(call.stopped)
+            t0 = time.monotonic()
+            await call.dropped()
+            await asyncio.sleep(0.05)
+            lag = [t - t0 for t in call.stopped]
+            await call.close()
+            return before_drop, lag
+
+        before_drop, lag = run(scenario())
+        self.assertFalse(before_drop, "ended before the STT reported on the last segment")
+        self.assertEqual(len(lag), 1)
+        self.assertLess(lag[0], 0.1)
+
     def test_a_kept_ruling_does_not_outlive_its_turn(self):
         """The override skips the stock reset at turn *start* when a VAD stop
         is pending. The reset at turn *end* is untouched, so turn N+1 must
@@ -311,6 +383,24 @@ class Transcripts(unittest.TestCase):
         texts = [f for f in frames if isinstance(f, TranscriptionFrame)]
         self.assertEqual(len(texts), 1)
         self.assertTrue(texts[0].finalized)
+        self.assertFalse(any(isinstance(f, SegmentDroppedFrame) for f in frames))
+
+    def test_a_segment_with_no_words_says_so(self):
+        """The base service emits nothing for empty text; the turn logic
+        needs the segment accounted for either way."""
+        stt = ParakeetSTT(api_key="unused", base_url="http://127.0.0.1:1/v1")
+
+        async def fake(audio):
+            return Transcription(text="")
+
+        stt._transcribe = fake
+
+        async def scenario():
+            return [f async for f in stt.run_stt(b"wav")]
+
+        frames = run(scenario())
+        self.assertFalse(any(isinstance(f, TranscriptionFrame) for f in frames))
+        self.assertEqual(sum(isinstance(f, SegmentDroppedFrame) for f in frames), 1)
 
     def test_the_stt_wait_reaches_the_pipeline(self):
         """Not the constructor argument - the frame the service broadcasts
