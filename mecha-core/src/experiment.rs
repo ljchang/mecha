@@ -1485,9 +1485,17 @@ rationale = "no notice, fewer turns"
         let bake = Manifest::parse(&text).unwrap();
         assert_eq!(bake.control, None);
         assert_eq!(bake.arms.len(), 3);
-        // And a comparison still needs two arms and a named control.
-        let one = MANIFEST.replace("[arms.bare]", "[arms.unused]");
-        assert!(Manifest::parse(&one).is_err() || Manifest::parse(&one).unwrap().arms.len() >= 2);
+        assert!(
+            judge(&bake, &[]).is_empty(),
+            "a bake-off judges nothing either"
+        );
+        // And a comparison still needs the control and a treatment arm: one
+        // arm *with* a control is the rule the refactor could have dropped.
+        let one = "name = \"eval-one\"\ncontrol = \"bare\"\nsplit_seed = 1\n\
+                   [arms.bare]\npreset = \"bare\"\n\
+                   [tasks]\ncases = \"eval/cases.jsonl\"\nfixture = \"eval/workspace\"\n";
+        let e = Manifest::parse(one).unwrap_err().to_string();
+        assert!(e.contains("leave `control` unset for a measurement"), "{e}");
     }
 
     /// `levers_on` after the preset: the add-one-to-bare design, and how

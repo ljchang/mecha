@@ -842,6 +842,19 @@ fn record_measurement(
     mecha_core::experiment::Manifest,
 )> {
     use mecha_core::experiment::{Arm, ExperimentStore, Manifest, Preset, Tasks};
+    // The arm names the model that *ran*, not only the flag: resolved the
+    // way `setup::build` resolves it — the flag, else the config's default
+    // provider and its model — off the same config the arms load. A record
+    // that carried `None` for the ordinary eval said nothing about the one
+    // fact a scorecard exists to hold (found on review).
+    let cfg = if global.global_config_only {
+        mecha_core::config::Config::load_global()?
+    } else {
+        let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+        mecha_core::config::Config::load(&cwd)?
+    };
+    let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
+    let model = global.model.clone().or_else(|| provider_cfg.model.clone());
     let arm = Arm {
         preset: Some(Preset::Bare),
         levers_on: if args.mcp {
@@ -850,8 +863,8 @@ fn record_measurement(
             Vec::new()
         },
         overrides: effective_overrides(global)?,
-        provider: global.provider.clone(),
-        model: global.model.clone(),
+        provider: Some(provider_name),
+        model,
         ..Arm::default()
     };
     let name = format!("eval-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
