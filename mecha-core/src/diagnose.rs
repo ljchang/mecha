@@ -315,11 +315,6 @@ impl Evidence {
         }
     }
 
-    /// Render the brief the model is handed.
-    ///
-    /// A rate with no denominator prints as `unknown`, never as zero: "nothing
-    /// went wrong" and "nothing happened" are different, and a diagnostician
-    /// told the second reads it as the first.
     /// The brief with the sensors withheld — the homeostat's pressure means
     /// and the guilt sensor set to `None`, which the renderer already reads
     /// as "no row sensed it" and says nothing for. `[agent]
@@ -334,6 +329,11 @@ impl Evidence {
         self
     }
 
+    /// Render the brief the model is handed.
+    ///
+    /// A rate with no denominator prints as `unknown`, never as zero: "nothing
+    /// went wrong" and "nothing happened" are different, and a diagnostician
+    /// told the second reads it as the first.
     pub fn brief(&self) -> String {
         let pct = |r: Option<f64>| match r {
             Some(r) => format!("{:.1}%", r * 100.0),
