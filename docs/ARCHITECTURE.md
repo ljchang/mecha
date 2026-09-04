@@ -2072,14 +2072,19 @@ likely to trip over from outside:
   crates that are not `factory-publish` edit the record **through the JSON it
   came from**, never through a struct of their own, because a typed round
   trip drops whatever a newer writer added. Every field defaults on load.
-  What enforces the ownership: each verb **re-reads the file at write time
-  and merges in only the keys it changed** (`OWNED` in `factory-publish`'s
-  `lifecycle::save`; a `dirty` set on the two `PollRecord`s). A snapshot
-  taken before a round of box calls or provider sends never writes another
-  verb's answers back over theirs — a lost `invites` entry was a second
-  invitation, a lost `booked` a second calendar event. The timer still runs
-  the three in sequence; the merge is what makes that a convenience rather
-  than the invariant.
+  **The invariant is the sequence**: the timer runs the three verbs one
+  after another on one `ExecStart` line, and each verb's tick is a whole
+  read-modify-write with no lock held across it. Defence in depth, for the
+  hand run that overlaps the timer: each verb **re-reads the file at write
+  time and merges in only the keys it changed** (`OWNED` in
+  `factory-publish`'s `lifecycle::save`; a `dirty` set on the two
+  `PollRecord`s), so a snapshot taken before a round of box calls or
+  provider sends does not write another verb's answers back over theirs —
+  a lost `invites` entry was a second invitation, a lost `booked` a second
+  calendar event. The merge narrows *which* keys are written, not the
+  window; a rename landing between one verb's re-read and its own rename
+  can still lose that verb's key, and the ledger and `adoptable_card` are
+  what repair it.
 - **The two halves find `~/.mecha` differently.** `mecha polls` resolves the
   records through `work::mecha_home()`, which honours `MECHA_HOME`;
   `mecha-mail polls` uses `dirs::home_dir()`, as every store in that crate
