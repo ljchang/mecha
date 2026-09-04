@@ -105,6 +105,7 @@ mod tests {
             id: "s1".into(),
             session_id: "s1".into(),
             goals: Vec::new(),
+            attributed: Vec::new(),
             state: None,
             errors: Vec::new(),
             label: Affect::Neutral,

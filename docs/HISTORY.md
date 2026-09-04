@@ -3604,10 +3604,11 @@ sensor through a save (`charter-toml.js`, pinned by the shared web-editor
 sample and `check-charter-toml.mjs`), the template's commented example, and
 the attribution join in `appraisal::of_session` — `sensor_kinds_for` maps
 each `Cite` to the store its pointer names, the highest-ranked line with a
-sensor on it is attributed where the run named no goal, and the queue delta
-maps to nothing (containment 6). `sessions appraise` prints how many
-sessions cite a charter line beside whether the charter carries a sensor at
-all. Item 2, the gate: `label_of` names every negative from sign and
+sensor on it is attributed where the run named no goal, onto the error and
+into `Appraisal::attributed` — kept apart from `goals`, so the `serves:` ask
+and the attribution stay separately measurable — and the queue delta maps
+to nothing (containment 6). `sessions appraise` prints named, attributed and
+either-way counts beside whether the charter carries a sensor at all. Item 2, the gate: `label_of` names every negative from sign and
 agency — `Affect::Distress`, OCC's undifferentiated well-being emotion,
 where a private `Own`/`Owner` negative used to read `Neutral` until a paid
 replay filled `controllable`; a probe refines it to regret or

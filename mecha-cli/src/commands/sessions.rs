@@ -802,10 +802,14 @@ async fn appraise(
     // counter did not survive its merge). Derived here so the next honest
     // read costs a flag, not an archaeology pass.
     let mut named_a_goal = 0usize;
-    // Of those, how many cite a charter line — the model's own `serves:
-    // charter:<id>`, or the sensored-line attribution in `of_session`; the
-    // record does not say which, and does not need to: both are the
-    // charter reference §17.1 makes the gate's prerequisite.
+    // The two producers this sprint shipped, counted apart so each stays
+    // measurable (found on review — folded into one, the `serves:` ask
+    // could produce nothing and the readout would still go green on
+    // attribution): `named_a_goal` is what the plan said, `attributed` is
+    // what a sensored line gave a goal-less error, and
+    // `cite_a_charter_line` is either producer yielding a charter reference
+    // — the prerequisite §17.1 puts on the gate.
+    let mut attributed_by_sensor = 0usize;
     let mut cite_a_charter_line = 0usize;
     // The dimensional readout, summed: how many sessions the record has
     // anything signed to say about, and how much either way. This is the
@@ -817,8 +821,12 @@ async fn appraise(
         if !a.goals.is_empty() {
             named_a_goal += 1;
         }
+        if !a.attributed.is_empty() {
+            attributed_by_sensor += 1;
+        }
         if a.goals
             .iter()
+            .chain(a.attributed.iter())
             .any(|g| matches!(g, mecha_core::goal::GoalRef::Charter(_)))
         {
             cite_a_charter_line += 1;
@@ -852,6 +860,7 @@ async fn appraise(
                 "sessions_unreadable": sessions_unreadable,
                 "tests_hidden": tests_hidden,
                 "named_a_goal": named_a_goal,
+                "attributed_by_sensor": attributed_by_sensor,
                 "cite_a_charter_line": cite_a_charter_line,
                 // The charter was consulted for attribution: `false` means
                 // it did not load, and every session's reading is partial
@@ -991,8 +1000,8 @@ async fn appraise(
     // a zero beside a charter with no sensored line is not a finding about
     // the sessions.
     println!(
-        "  {named_a_goal} of {} named a goal (`serves:`, or a sensored charter line); \
-         {cite_a_charter_line} cite a charter line{}",
+        "  {named_a_goal} of {} named a goal (`serves:`); {attributed_by_sensor} attributed \
+         to a charter line by a sensor; {cite_a_charter_line} cite a charter line either way{}",
         appraisals.len(),
         match (&charter, charter_unreadable) {
             (_, true) => " — charter did not load, attribution off",

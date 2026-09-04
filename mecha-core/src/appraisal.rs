@@ -282,9 +282,26 @@ pub enum Cite {
 pub struct Appraisal {
     pub id: String,
     pub session_id: String,
-    /// What was live.
+    /// What the run *named*: the plan's `serves:`, or the goal a caller
+    /// already knew (the closure appraisal's task). Never filled by the
+    /// harness — that is `attributed`'s — so "how many sessions named a
+    /// goal" stays the `serves:` coverage number it was.
     #[serde(default, deserialize_with = "crate::goal::de_lenient_vec")]
     pub goals: Vec<GoalRef>,
+    /// Charter lines the sensored-line attribution in [`of_session`] gave
+    /// this run's errors (§11.1) — a store the run's own trace touched,
+    /// joined by id to the line whose sensor watches it, with no plan and
+    /// no `serves:`. Kept apart from `goals` on purpose (found on review):
+    /// folding them together made the corpus readout unable to tell the
+    /// `serves:` ask from the attribution it ships beside, so item 1's own
+    /// exit criterion could go green on attribution alone. Absent on the
+    /// wire when empty; an older record reads as nothing attributed.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::goal::de_lenient_vec"
+    )]
+    pub attributed: Vec<GoalRef>,
     /// Conditions at the time. An outcome is not interpretable without the
     /// state it happened in — a run that failed under a saturated machine and
     /// one that failed on an idle one are the same row otherwise.
@@ -1366,19 +1383,22 @@ pub fn of_session(
     // with a sensor on that store — with no `serves:` and no plan. Only
     // where the run named no goal of its own: a delegated task run's
     // errors stay against its task, because the closure appraisal reads
-    // them by that goal. A line so attributed joins `goals` — it *was* live,
-    // the charter always is — so the corpus's "named a goal" question and
-    // frustration's per-goal repetition both see it. `goal.is_none()` per
-    // error rather than once for the run, so a future arm that fills its
-    // own goal is left alone.
-    let mut goals = goals;
+    // them by that goal. A line so attributed goes on the error and into
+    // `attributed`, never into `goals`: `goals` is what the run *named*,
+    // and the corpus readout counts the two apart so the `serves:` ask and
+    // the attribution — the two producers this sprint ships — each stay
+    // measurable (found on review). Frustration's per-goal repetition reads
+    // `e.goal`, so it sees the attributed line either way. `goal.is_none()`
+    // per error rather than once for the run, so a future arm that fills
+    // its own goal is left alone.
+    let mut attributed: Vec<GoalRef> = Vec::new();
     if let Some(charter) = records.charter {
         for e in errors.iter_mut().filter(|e| e.goal.is_none()) {
             let kinds = sensor_kinds_for(&e.cite);
             if let Some(line) = charter.line_for_sensor(kinds) {
                 let goal = GoalRef::Charter(line.id.clone());
-                if !goals.contains(&goal) {
-                    goals.push(goal.clone());
+                if !attributed.contains(&goal) {
+                    attributed.push(goal.clone());
                 }
                 e.goal = Some(goal);
             }
@@ -1389,6 +1409,7 @@ pub fn of_session(
         id: session_id.to_string(),
         session_id: session_id.to_string(),
         goals,
+        attributed,
         state: stats.homeostat.clone(),
         errors,
         label: Affect::Neutral,
@@ -2091,6 +2112,7 @@ mod tests {
             id: "a1".into(),
             session_id: "s1".into(),
             goals: Vec::new(),
+            attributed: Vec::new(),
             state: None,
             errors,
             label: Affect::Neutral,
@@ -3570,7 +3592,8 @@ text = "Tell me the truth early."
             Some(line.clone()),
             "rank decides between two outbox lines"
         );
-        assert_eq!(a.goals, vec![line]);
+        assert_eq!(a.attributed, vec![line]);
+        assert!(a.goals.is_empty(), "attribution is not naming");
         assert_eq!(a.label, Affect::Distress);
         assert!(!a.partial);
     }
@@ -3649,7 +3672,11 @@ text = "Tell me the truth early."
         );
         // The fabricated reference is gone; the sensored line then
         // attributes the draft, which is the charter's own reference.
-        assert_eq!(a.goals, vec![GoalRef::Charter("answer-what-waits".into())]);
+        assert!(a.goals.is_empty());
+        assert_eq!(
+            a.attributed,
+            vec![GoalRef::Charter("answer-what-waits".into())]
+        );
 
         // A line the charter does contain, named by the plan, is kept —
         // the `serves:` producer works when it tells the truth.
@@ -3828,8 +3855,9 @@ text = "Tell me the truth early."
             None,
             "a counter names the run's own record, not a store a line watches"
         );
+        assert!(a.goals.is_empty());
         assert_eq!(
-            a.goals,
+            a.attributed,
             vec![GoalRef::Charter("answer-my-questions".into())]
         );
     }
@@ -3859,6 +3887,7 @@ text = "Tell me the truth early."
             );
             assert_eq!(a.errors[0].goal, None);
             assert!(a.goals.is_empty());
+            assert!(a.attributed.is_empty());
             assert!(!a.partial);
         }
         let a = of_session(
