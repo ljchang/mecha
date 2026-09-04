@@ -454,6 +454,11 @@ impl Evidence {
                     (Some(_), Some(at)) => {
                         format!(" — compaction fires at {}", pct(Some(at)))
                     }
+                    // The threshold is a config reading, not a sensor's:
+                    // it must survive `without_sensors`, or the ablation
+                    // arm differs from the control by more than the
+                    // sensors (found on review).
+                    (None, Some(at)) => format!(" — compaction fires at {}", pct(Some(at))),
                     _ => String::new(),
                 };
                 if note.is_empty() {
@@ -1410,6 +1415,16 @@ rationale: the threshold is too low";
         );
         assert!(e.brief().contains("avg anticipated guilt: 0.10"));
         assert!(e.brief().contains("context pressure: avg peak 40.0%"));
+        // The common threshold, below the window: the reading needs no peak.
+        let mut usual = e.clone();
+        usual.compact_at_fraction = Some(0.66);
+        let full = usual.brief();
+        assert!(full.contains("compaction fires at 66.0%"), "{full}");
+        let quiet = usual.without_sensors().brief();
+        assert!(
+            quiet.contains("compaction fires at 66.0%") && !quiet.contains("context pressure"),
+            "the threshold survives the ablation:\n{quiet}"
+        );
     }
 
     #[test]

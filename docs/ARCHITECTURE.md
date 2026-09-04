@@ -3118,8 +3118,11 @@ comparison over a chosen set**, with the design written before the run.
   `config.toml` names every `[agent]` key, so `fold_home_overrides` folds
   the home's own accepted overrides into the next task's config over the
   arm's rendering — the arm's pinned keys still win, being the design;
-  `seed_home` drops the machine's own `overrides.toml` from the seeded
-  copy, since its values already sit in the rendered config beneath the
+  the fold hands back the keys it moved and the driver treats them as
+  the arm's pins, so a case's own `max_turns` or `compact_at_tokens`
+  flag — which beats the rendered config — never overrides what the
+  loop accepted; `seed_home` drops the machine's own `overrides.toml`
+  from the seeded copy, since its values already sit in the rendered config beneath the
   operator's file where the loader puts them, so the home's file holds
   only what the home's stages accepted, and a single never folds —
   or `ruminate`, the one stage with an effect today, would have measured
