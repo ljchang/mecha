@@ -101,9 +101,9 @@ The "land public first" rule for a change spanning the two repos has no
 code case left: its worked example — `--min-sources` on the public binary
 and `nightly-mecha.sh` as the private caller passing it — collapsed when
 the caller moved public, and nothing that runs now lives on the private
-side. What still spans the split is the roster (`~/.mecha-graph/
-denylist.txt` and the `PUBLIC_DENYLIST` secret, read by the public repo's
-`.githooks/pre-push` and `denylist.yml`) and the operator docs, neither of
+side. What still spans the split is the roster
+(`~/.mecha-graph/denylist.txt` and the `PUBLIC_DENYLIST` secret, read by the
+public repo's `.githooks/pre-push` and `denylist.yml`) and the operator docs, neither of
 which gates a binary; the reflex that survives is that a public-side hook
 which reads a roster must be able to read it before a roster edit relies
 on it.
@@ -135,6 +135,16 @@ graph server answers from the *installed* path:
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   | ~/.cargo/bin/mecha-graph-mcp | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["result"]["tools"]), "tools")'
 ```
+
+**And that probe only proves the file.** Every host that spawned the
+server as its own child keeps the *old* process until it restarts — the
+five units in §2 do, and so do Claude Code sessions (user-scope server
+`graph`) and the Hermes dashboard, which no step here restarts. After
+every install of `mecha-graph-mcp`, either restart those hosts or accept
+that they run the previous build until their next start; nothing about a
+stale child announces itself, which is the same silence the removed
+`pkg-mcp` entry hid behind (§0). Check with `pgrep -af mecha-graph-mcp`
+and compare each process's start time to the binary's mtime.
 
 ### 1b. The web app's assets
 

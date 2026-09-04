@@ -1657,8 +1657,9 @@ one person's mailbox rather than a public fact.
   most likely because no draft was ever staged during a voice turn; stage
   one on purpose. Nothing was installed or restarted by this lane. **Later
   the same morning (~10:00), the owner ruled that nothing calls `pkg` any
-  more:** the 01:30 crontab line now runs `~/Github/mecha-graph/scripts/
-  nightly.sh` (backup at `~/.mecha-graph/crontab.bak.20260904`), Claude
+  more:** the 01:30 crontab line now runs
+  `~/Github/mecha-graph/scripts/nightly.sh` (backup at
+  `~/.mecha-graph/crontab.bak.20260904`), Claude
   Code's user-scope MCP server is `graph` on `~/.cargo/bin/mecha-graph-mcp`
   (the `pkg` entry on the private repo's stale binary and empty
   `~/pkg/graph.db` is gone; `~/.claude.json.bak.20260904-pkg` is the
