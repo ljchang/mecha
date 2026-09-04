@@ -1681,15 +1681,18 @@ one person's mailbox rather than a public fact.
   and that ordering is the whole content of the voice-worker item below
   (mecha-26). *Since resolved, 2026-09-04 afternoon:* #161 and #162 merged
   at 09:45Z and 09:52Z; the checkout was on `main` at `6e606a9` when this
-  lane looked at ~13:00 (44 behind `origin/main` by 15:29, mecha-83's
-  count), and by 15:45 sat at `58fc21a` — `origin/main`'s tip — on a branch
-  named `fix/selection-slice-power` for four minutes (reflog 15:33–15:37,
+  lane looked, earlier in the session (unclocked; the reading was
+  `6e606a9`, and elapsed time is not observable from inside a turn), 44
+  behind `origin/main` at 15:29Z by mecha-83's count, and after the
+  deploy sat at `58fc21a` — `origin/main`'s tip — on a branch named
+  `fix/selection-slice-power` for four minutes (reflog 15:33–15:37Z,
   mecha-26's lane), then back on `main` at `58fc21a`, clean, where it is
-  now. The 15:29 deploy built from a temporary worktree at `origin/main`
+  now. The 15:29Z deploy built from a temporary worktree at `origin/main`
   for exactly this reason, and the voice worker was restarted only after
-  the worker file's blob id matched `origin/main`'s. The ordering above
-  still holds; the check that settles it is the blob id of the file the
-  unit runs, never the branch name. ~~Three things merged to `main`
+  the worker file's blob id matched `origin/main`'s (times UTC, from the
+  reflog and `systemctl`). The ordering above still holds; the check that
+  settles it is the blob id of the file the unit runs, never the branch
+  name. ~~Three things merged to `main`
   and **not deployed**: #159 (the handoff close), #153 and #154~~ — #153 and
   #154 are still **unrecorded in this document** (mecha-83's flag; their
   owners' entries are owed, this lane did not read their diffs). ~~The
@@ -2506,17 +2509,27 @@ the mechanism and every decision. What it left standing:
 (`feat/situation-scope`, merged at `046ef0f` after thirteen review
 passes — eleven rounds of findings, then two clean at the bar), with
 §17.7 item 1's run record in the same change because it was the merge
-condition. **Deployed 2026-09-04 15:29–15:37 by mecha-83, verified from
-this lane by asking the artifacts:** `strings ~/.cargo/bin/mecha` now holds
-`duration_secs` (#167), `learned rules: prefix block` (#168) and
-`predictive_compaction` (#169), where the same probe at ~14:30 held none —
-the version string read 0.1.17 both times and cannot tell builds apart,
-which is why the probe is a literal and not a version. Built from a
+condition. **Deployed 2026-09-04 15:29–15:37Z by mecha-83 (all times in
+this block UTC, from `systemctl --user show -p ActiveEnterTimestamp`,
+which prints its zone, or the reflog and file mtimes, which print local
+time on a box that runs UTC), verified from this lane by asking the
+artifacts:** `strings ~/.cargo/bin/mecha` now holds `duration_secs`
+(#167), `learned rules: prefix block` (#168) and `predictive_compaction`
+(#169), where the same probe run by this lane *before* mecha-83's install
+held none — an ordinal claim, needing no clock — and the version string
+read 0.1.17 both times and cannot tell builds apart, which is why the
+probe is a literal and not a version. `mecha-mail` was reinstalled by
+the same run, by the skill's second `cargo install` line, from sources
+unchanged in the range — its crate had no commits between `6e606a9` and
+`58fc21a`, and it has no `mecha-core` dependency at all, so no literal
+could distinguish the build and none is claimed; the file date (15:29Z,
+the same minute as `mecha`) is consistent with the account and is not a
+proof of it. Built from a
 temporary worktree at `origin/main` `58fc21a`, not from the shared
-checkout, which at 15:29 was 44 commits behind `origin/main` with every
+checkout, which at 15:29Z was 44 commits behind `origin/main` with every
 version string reading current (mecha-83's count). The checkout is now
 on `main` at `58fc21a`, clean; its reflog shows it on
-`fix/selection-slice-power` from 15:33 to 15:37 (mecha-26's lane, one
+`fix/selection-slice-power` from 15:33Z to 15:37Z (mecha-26's lane, one
 commit, moved back), which is the window one lane's read landed in — so
 the branch name was wrong for four minutes and the tree was right
 throughout, the inverse of 2026-09-03. The deploy did not depend on
@@ -2525,19 +2538,19 @@ that is the check to record. mecha-graph PR #6 merged the
 same hour and `mecha-graph` + `mecha-graph-mcp` were installed from
 mecha-graph main `7fa6a69` (the installed server's strings carry the new
 `about`/`entity` schema); `target/release/mecha-graph` rebuilt for the
-01:30 nightly, which execs that path. Restarted, each confirmed active
+01:30Z nightly, which execs that path. Restarted, each confirmed active
 from `systemctl --user` here: mecha-slack, mecha-triggers, mecha-drain
-(15:29:57), mecha-serve (15:31:47), mecha-voice-worker (15:37:37 — the
+(15:29:57Z), mecha-serve (15:31:47Z), mecha-voice-worker (15:37:37Z — the
 worker.py on disk hashes to `d818fa3`, identical to
 `origin/main:scripts/voice/worker.py`, so the +174-line worker is what
 runs). Not restarted, correctly: mecha-parakeet (active since
 2026-08-24; `parakeet_server.py` unchanged). The web dist rebuilt and deployed — verified: `[web] assets` in
 `~/.mecha/config.toml` is `~/.mecha/web/dist`, deliberately not a repo
 path (production once served from a session worktree that was later
-cleaned), and that directory holds `index-NFyEeisJ.js` at 15:31; the
+cleaned), and that directory holds `index-NFyEeisJ.js` at 15:31Z; the
 repo's own `web/dist` still holds `index-cix-ATEa.js`, which is expected
 and is the trap the path exists to create — this lane looked there first.
-The musl bench binary is still 2026-09-03 11:00 (verified), so a
+The musl bench binary is still 2026-09-03 11:00Z (verified), so a
 scorecard run now measures old code. Reported by mecha-83 and not
 verified from this lane: factory client and droplet already 0.2.8. PR #6's review residue
 is mecha-graph issue #8.** What it built is in
