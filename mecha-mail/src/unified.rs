@@ -960,6 +960,14 @@ impl MailTools {
             .map(|p| p[0].name.clone())
     }
 
+    /// The account a plain message leaves from — the *mail* default, as every
+    /// other send in this crate resolves it, which may differ from the
+    /// calendar's.
+    pub fn send_account_name(&self, account: Option<&str>) -> Result<String, String> {
+        self.pick(account, Mode::Create(Surface::Mail))
+            .map(|p| p[0].name.clone())
+    }
+
     /// Create one event with typed arguments — the bookings handler's
     /// path, beside the tool's. Same account resolution (the default, or
     /// instructions to ask), same token machinery. With an attendee, the

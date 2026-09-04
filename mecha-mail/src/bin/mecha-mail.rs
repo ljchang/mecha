@@ -608,10 +608,31 @@ async fn polls(
             .account()
             .map(str::to_string)
             .or_else(|| account.clone());
-        let from = match tools.create_account_name(named.as_deref()) {
-            Ok(name) => name,
-            Err(e) => {
-                eprintln!("{}: no account to send from — {e}", record.poll_id);
+        // Two defaults, resolved only when a job needs each: a message leaves
+        // from the mail default like every other send in this crate, the
+        // event lands on the calendar default like every other booking — and
+        // a record with only invitations owed must not fail over an unset
+        // calendar default.
+        let needs_mail = jobs.iter().any(|j| !matches!(j, pl::Job::Book { .. }));
+        let needs_calendar = jobs.iter().any(|j| matches!(j, pl::Job::Book { .. }));
+        let resolve = |what: &str, r: Result<String, String>| match r {
+            Ok(name) => Ok(name),
+            Err(e) => Err(format!("no account to {what} from — {e}")),
+        };
+        let mail_from = if needs_mail {
+            resolve("send", tools.send_account_name(named.as_deref()))
+        } else {
+            Ok(String::new())
+        };
+        let calendar_from = if needs_calendar {
+            resolve("book", tools.create_account_name(named.as_deref()))
+        } else {
+            Ok(String::new())
+        };
+        let (mail_from, calendar_from) = match (mail_from, calendar_from) {
+            (Ok(m), Ok(c)) => (m, c),
+            (Err(e), _) | (_, Err(e)) => {
+                eprintln!("{}: {e}", record.poll_id);
                 failures += 1;
                 continue;
             }
@@ -655,7 +676,7 @@ async fn polls(
                             person.name
                         );
                         tools
-                            .send_mail_quiet(&from, &person.email, &subject, &body)
+                            .send_mail_quiet(&mail_from, &person.email, &subject, &body)
                             .await
                             .map_err(|e| anyhow::anyhow!(e))?;
                         let at = now();
@@ -666,7 +687,7 @@ async fn polls(
                                 name: person.name.clone(),
                                 action: if is_nudge { "nudged" } else { "invited" }.into(),
                                 event_id: String::new(),
-                                account: from.clone(),
+                                account: mail_from.clone(),
                                 at: stamp(at),
                             },
                         )?;
@@ -676,7 +697,7 @@ async fn polls(
                             pl::mark_invited(&mut record, &person.name, at);
                         }
                         println!(
-                            "✉ {}: {} {} <{}> from `{from}`",
+                            "✉ {}: {} {} <{}> from `{mail_from}`",
                             record.poll_id,
                             if is_nudge { "nudged" } else { "invited" },
                             person.name,
@@ -720,7 +741,7 @@ async fn polls(
                                     name: String::new(),
                                     action: "conflict".into(),
                                     event_id: String::new(),
-                                    account: from.clone(),
+                                    account: calendar_from.clone(),
                                     at: stamp(now()),
                                 },
                             )?;
@@ -735,7 +756,7 @@ async fn polls(
                             record.people.iter().map(|p| p.email.clone()).collect();
                         let (account_name, event_id) = tools
                             .create_event_with_attendees(
-                                Some(&from),
+                                Some(&calendar_from),
                                 &title,
                                 &description,
                                 start,
