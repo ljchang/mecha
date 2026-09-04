@@ -138,13 +138,18 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
 
 **And that probe only proves the file.** Every host that spawned the
 server as its own child keeps the *old* process until it restarts — the
-five units in §2 do, and so do Claude Code sessions (user-scope server
-`graph`) and the Hermes dashboard, which no step here restarts. After
-every install of `mecha-graph-mcp`, either restart those hosts or accept
-that they run the previous build until their next start; nothing about a
-stale child announces itself, which is the same silence the removed
-`pkg-mcp` entry hid behind (§0). Check with `pgrep -af mecha-graph-mcp`
-and compare each process's start time to the binary's mtime.
+`mecha` units in §2 that reach `setup::prepare*` do (`mecha-serve`,
+`mecha-slack`, `mecha-triggers`, `mecha-drain`; the voice worker runs
+`worker.py` under the Pipecat venv and spawns no MCP child), so does the
+timer-fired `mecha-mail-classify.service`, which §2's list does not
+restart, and so do Claude Code sessions (user-scope server `graph`) and
+the Hermes dashboard, which no step here restarts. After every install of
+`mecha-graph-mcp`, either restart those hosts or accept that they run the
+previous build until their next start; nothing about a stale child
+announces itself, which is the same silence the removed `pkg-mcp` entry
+hid behind (the two-repo paragraph earlier in this step). Check with
+`pgrep -af mecha-graph-mcp` and compare each process's start time to the
+binary's mtime.
 
 ### 1b. The web app's assets
 
