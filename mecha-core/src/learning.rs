@@ -655,9 +655,14 @@ pub fn finalize_region_rules(
             r.scope = Some(region.scope());
         }
     }
+    // Everything outside the region comes through as it was — active,
+    // hand-disabled, or retired (the last already carried by
+    // `finalize_rules`, so the text check keeps it from doubling). A
+    // disabled rule is neither active nor retired and fell through both
+    // filters, which deleted an owner's `enabled = false` the moment any
+    // other region learned (found on review).
     for prev in previous {
-        if prev.active() && !rewritable_in(prev, region) && !out.iter().any(|r| r.text == prev.text)
-        {
+        if !rewritable_in(prev, region) && !out.iter().any(|r| r.text == prev.text) {
             out.push(prev.clone());
         }
     }
@@ -4946,6 +4951,14 @@ mod situation_tests {
                 retired_at: Some("earlier".into()),
                 ..rule("Retired shell rule.", "r-retired", Some(shell()))
             },
+            Rule {
+                enabled: false,
+                ..rule(
+                    "Disabled mail rule.",
+                    "r-off",
+                    Some(run_with(&["mail_send"])),
+                )
+            },
         ];
         let reply = vec![Rule {
             text: "New shell rule.".into(),
@@ -4963,6 +4976,11 @@ mod situation_tests {
             texts.contains(&"Retired shell rule."),
             "retirement survives"
         );
+        assert!(
+            texts.contains(&"Disabled mail rule."),
+            "an owner's enabled = false outside the region survives"
+        );
+        assert_eq!(out.len(), 5, "nothing doubled");
         assert!(
             !texts.contains(&"Old shell rule."),
             "omitted inside the region: gone"
