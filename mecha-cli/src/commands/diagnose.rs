@@ -227,7 +227,16 @@ pub fn evidence_for(model: &str, slice: &Corpus, history: Vec<String>) -> Eviden
     }
     evidence.history = history;
     evidence.compact_at_fraction = compact_at_fraction(slice);
-    evidence
+    // The stage lever: a trial home whose config withholds the sensors gets
+    // a brief without them. Unknown config reads as the default (on).
+    let sensors = mecha_core::config::Config::load_global()
+        .map(|c| c.agent.sensors_in_brief)
+        .unwrap_or(true);
+    if sensors {
+        evidence
+    } else {
+        evidence.without_sensors()
+    }
 }
 
 /// The fraction of the context window at which compaction fires for the runs

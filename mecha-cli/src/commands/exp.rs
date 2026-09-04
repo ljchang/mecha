@@ -178,11 +178,6 @@ fn provider_and_model(cfg: &mecha_core::config::Config) -> Result<(String, Strin
 async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
     let store = ExperimentStore::open_default(name)?;
     let manifest = store.manifest()?;
-    anyhow::ensure!(
-        manifest.kind == TrialKind::Single,
-        "`{name}` is a {:?} experiment; only `single` trials run today (the lifetime driver is the next step)",
-        manifest.kind
-    );
     let cases = cases_for(&manifest)?;
     let real = mecha_core::config::Config::load_global()?;
     let (provider, model) = provider_and_model(&real)?;
@@ -205,26 +200,56 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
         limit.map(|l| format!(" (limit {l})")).unwrap_or_default()
     );
     if dry_run {
+        if manifest.kind == TrialKind::Lifetime {
+            let s = &manifest.schedule;
+            println!(
+                "schedule: reflect every {} · learn every {} · validate every {} · ruminate every {} (0 = never)",
+                s.reflect, s.learn, s.validate, s.ruminate
+            );
+        }
         for t in &todo {
             println!(
-                "{}  arm={} task={} seed={} rep={} hash={}",
+                "{}  arm={} task={} seed={} rep={}{} hash={}",
                 t.id,
                 t.arm,
                 t.task,
                 t.seed.map(|s| s.to_string()).unwrap_or_else(|| "-".into()),
                 t.repetition,
+                t.position.map(|p| format!(" pos={p}")).unwrap_or_default(),
                 t.condition_hash
             );
         }
         return Ok(());
     }
     let mecha = std::env::current_exe().context("locating this binary")?;
+    let ran = match manifest.kind {
+        TrialKind::Single => {
+            run_single_trials(&store, &manifest, &mecha, &real, &cases, &todo, limit).await?
+        }
+        TrialKind::Lifetime => {
+            run_lifetimes(&store, &manifest, &mecha, &real, &cases, &planned, limit).await?
+        }
+    };
+    eprintln!("mecha exp `{name}`: {ran} trial(s) run this invocation");
+    Ok(())
+}
+
+/// The `single` driver: each pending row is one child run in its arm's home.
+async fn run_single_trials(
+    store: &ExperimentStore,
+    manifest: &Manifest,
+    mecha: &Path,
+    real: &mecha_core::config::Config,
+    cases: &[mecha_core::eval::EvalCase],
+    todo: &[&Trial],
+    limit: Option<usize>,
+) -> Result<usize> {
     let mut ran = 0usize;
     for planned_trial in todo {
         if limit.is_some_and(|l| ran >= l) {
             break;
         }
-        let mut trial = planned_trial.clone();
+        let mut trial = (*planned_trial).clone();
         let case = cases
             .iter()
             .find(|c| c.id == trial.task)
@@ -232,7 +257,8 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
         let arm = &manifest.arms[&trial.arm];
         ran += 1;
         eprintln!("· {} ({ran})", trial.id);
-        match run_one(&store, &manifest, &mecha, &real, arm, case, &mut trial).await {
+        let home = store.arm_home(&trial.arm)?;
+        match run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await {
             Ok(()) => {}
             Err(e) => {
                 trial.status = TrialStatus::Failed;
@@ -243,13 +269,218 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
         }
         store.save_trial(&trial)?;
     }
-    eprintln!("mecha exp `{name}`: {ran} trial(s) run this invocation");
-    Ok(())
+    Ok(ran)
+}
+
+/// The `lifetime` driver (Part II §14): one home per arm × seed ×
+/// repetition, the sequence walked in position order, and after each task
+/// the stages the schedule makes due — minus the arm's stage levers off,
+/// minus what the ledger already shows done — run as child `mecha` verbs
+/// in that home, sequentially, so a stage never contends with a task for
+/// the model server's seats (§18). Resume is the store: a finished row is
+/// not rerun, a stage the ledger lacks after a finished position runs
+/// before the next task, and a lifetime whose sequence reaches a row this
+/// build cannot read stops there rather than running the rest on a broken
+/// history. `--limit` counts task runs; the stages due after the last
+/// task run still run, because they belong to that position.
+async fn run_lifetimes(
+    store: &ExperimentStore,
+    manifest: &Manifest,
+    mecha: &Path,
+    real: &mecha_core::config::Config,
+    cases: &[mecha_core::eval::EvalCase],
+    planned: &[Trial],
+    limit: Option<usize>,
+) -> Result<usize> {
+    use mecha_core::experiment::stages_due;
+    // Rows are contiguous per lifetime and in position order as planned;
+    // grouped here without reordering so the walk is the design's.
+    let mut lifetimes: Vec<(String, Vec<&Trial>)> = Vec::new();
+    for t in planned {
+        let Some(id) = &t.lifetime else {
+            anyhow::bail!(
+                "row `{}` carries no lifetime; the plan is not a lifetime's",
+                t.id
+            );
+        };
+        match lifetimes.last_mut() {
+            Some((last, rows)) if last == id => rows.push(t),
+            _ => lifetimes.push((id.clone(), vec![t])),
+        }
+    }
+    let mut ran = 0usize;
+    for (lifetime, rows) in lifetimes {
+        let first = rows[0];
+        let arm = &manifest.arms[&first.arm];
+        let stages_off = arm.resolve_stages()?;
+        let home = store.lifetime_home(&lifetime)?;
+        let (mut ledger, torn) = store.stage_runs(&lifetime)?;
+        if torn > 0 {
+            eprintln!(
+                "mecha exp: {torn} line(s) of `{lifetime}`'s stage ledger could not be read and are counted, not rerun"
+            );
+        }
+        let passthrough =
+            mecha_core::experiment::child_invocation(real, arm, first.seed)?.passthrough;
+        for planned_trial in rows {
+            let position = planned_trial
+                .position
+                .context("a lifetime row without a position")?;
+            let mut trial = planned_trial.clone();
+            match trial.status {
+                TrialStatus::Pending | TrialStatus::Running => {
+                    if limit.is_some_and(|l| ran >= l) {
+                        return Ok(ran);
+                    }
+                    let case = cases
+                        .iter()
+                        .find(|c| c.id == trial.task)
+                        .expect("planned from these cases");
+                    ran += 1;
+                    eprintln!("· {} ({ran}) · {lifetime} position {position}", trial.id);
+                    match run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await
+                    {
+                        Ok(()) => {}
+                        Err(e) => {
+                            trial.status = TrialStatus::Failed;
+                            trial.error = Some(format!("{e:#}"));
+                            trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
+                            eprintln!("  failed: {e:#}");
+                        }
+                    }
+                    store.save_trial(&trial)?;
+                }
+                TrialStatus::Done | TrialStatus::Failed => {}
+                TrialStatus::Unknown => {
+                    eprintln!(
+                        "mecha exp: `{lifetime}` stops at position {position}: row `{}` is in a state this build does not know",
+                        trial.id
+                    );
+                    break;
+                }
+            }
+            for stage in stages_due(&manifest.schedule, position, &stages_off, &ledger) {
+                let run = run_stage(
+                    store,
+                    mecha,
+                    &home,
+                    &passthrough,
+                    manifest,
+                    &trial,
+                    &lifetime,
+                    stage,
+                    position,
+                )
+                .await;
+                store.record_stage(&run)?;
+                ledger.push(run);
+            }
+        }
+    }
+    Ok(ran)
+}
+
+/// One loop stage as a child `mecha` verb in the lifetime's home, with the
+/// run child's environment allowlist and the same session kind, its output
+/// on the store beside the ledger. Never an `Err`: a stage that failed is
+/// a ledger line saying so, and the lifetime goes on — the failure is part
+/// of what the next task started from.
+#[allow(clippy::too_many_arguments)]
+async fn run_stage(
+    store: &ExperimentStore,
+    mecha: &Path,
+    home: &Path,
+    passthrough: &[String],
+    manifest: &Manifest,
+    after: &Trial,
+    lifetime: &str,
+    stage: mecha_core::experiment::StageLever,
+    position: u32,
+) -> mecha_core::experiment::StageRun {
+    use mecha_core::experiment::{StageRun, StageStatus};
+    let started = std::time::Instant::now();
+    let started_at = chrono::Utc::now().to_rfc3339();
+    let log = store.stage_log(lifetime, position, stage);
+    let mut run = StageRun {
+        lifetime: lifetime.to_string(),
+        arm: after.arm.clone(),
+        stage,
+        after_position: position,
+        started_at,
+        finished_at: String::new(),
+        status: StageStatus::Failed,
+        exit_code: None,
+        error: None,
+    };
+    let outcome: Result<std::process::ExitStatus> = async {
+        let argv = stage
+            .argv()
+            .context("a config-switch lever is not a stage to run")?;
+        if let Some(parent) = log.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let out =
+            std::fs::File::create(&log).with_context(|| format!("creating {}", log.display()))?;
+        let err = out.try_clone()?;
+        let reference = ExperimentRef {
+            exp_id: manifest.name.clone(),
+            trial_id: lifetime.to_string(),
+            arm: after.arm.clone(),
+            actor: lifetime.to_string(),
+            role: Some(format!("stage:{}", stage.as_str())),
+            task: format!("stage:{}", stage.as_str()),
+            repetition: after.repetition,
+            condition_hash: after.condition_hash.clone(),
+        };
+        let mut cmd = tokio::process::Command::new(mecha);
+        cmd.args(argv).current_dir(home);
+        cmd.env_clear();
+        for (k, v) in mecha_core::sandbox::Sandbox::child_env(passthrough) {
+            cmd.env(k, v);
+        }
+        cmd.env("MECHA_HOME", home)
+            .env(mecha_core::session::SESSION_KIND_ENV, "experiment")
+            .env(EXPERIMENT_REF_ENV, serde_json::to_string(&reference)?)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(out))
+            .stderr(std::process::Stdio::from(err));
+        cmd.status()
+            .await
+            .with_context(|| format!("spawning mecha {}", argv.join(" ")))
+    }
+    .await;
+    match outcome {
+        Ok(status) if status.success() => {
+            run.status = StageStatus::Done;
+            run.exit_code = status.code();
+        }
+        Ok(status) => {
+            run.exit_code = status.code();
+            run.error = Some(format!(
+                "exit {}; its output is at {}",
+                status,
+                log.display()
+            ));
+        }
+        Err(e) => run.error = Some(format!("{e:#}")),
+    }
+    run.finished_at = chrono::Utc::now().to_rfc3339();
+    eprintln!(
+        "  ↳ {} · {} · {}s",
+        stage.as_str(),
+        match run.status {
+            StageStatus::Done => "ok",
+            _ => "FAILED",
+        },
+        started.elapsed().as_secs()
+    );
+    run
 }
 
 /// One trial: the arm's home and config, a fresh workspace, the child, the
 /// grade, the stats. Everything the trial learned is on its row when this
 /// returns; a failure anywhere is the row's `error`, never a missing row.
+#[allow(clippy::too_many_arguments)]
 async fn run_one(
     store: &ExperimentStore,
     manifest: &Manifest,
@@ -257,16 +488,17 @@ async fn run_one(
     real: &mecha_core::config::Config,
     arm: &mecha_core::experiment::Arm,
     case: &mecha_core::eval::EvalCase,
+    home: &Path,
     trial: &mut Trial,
 ) -> Result<()> {
     let prompt = match &case.prompt {
         Prompt::One(p) => p.clone(),
         Prompt::Many(_) => anyhow::bail!(
-            "case `{}` is multi-turn; `exp single` drives one prompt per trial today",
+            "case `{}` is multi-turn; `exp` drives one prompt per trial today",
             case.id
         ),
     };
-    let home = store.arm_home(&trial.arm)?;
+    let home = home.to_path_buf();
     let ChildInvocation {
         config,
         flags,
@@ -461,6 +693,9 @@ fn status(name: &str, json: bool) -> Result<()> {
             }
         }
     }
+    // A lifetime's readout is the trajectory, not the count: each home's
+    // sequence by position, and what its stage ledger says ran.
+    let lifetimes = lifetime_readout(&store, &trials)?;
     if json {
         let rows: Vec<_> = by_arm
             .iter()
@@ -473,6 +708,21 @@ fn status(name: &str, json: bool) -> Result<()> {
                 })
             })
             .collect();
+        let lifetimes: Vec<_> = lifetimes
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "id": l.id,
+                    "arm": l.arm,
+                    "positions": l.positions.iter().map(|(p, t)| serde_json::json!({
+                        "position": p, "task": t.task, "status": t.status, "passed": t.passed,
+                    })).collect::<Vec<_>>(),
+                    "stages_done": l.stages_done,
+                    "stages_failed": l.stages_failed,
+                    "unreadable_stage_lines": l.torn,
+                })
+            })
+            .collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -480,6 +730,7 @@ fn status(name: &str, json: bool) -> Result<()> {
                 "kind": manifest.kind,
                 "control": manifest.control,
                 "arms": rows,
+                "lifetimes": lifetimes,
                 "unreadable_trials": skipped,
             }))?
         );
@@ -508,7 +759,89 @@ fn status(name: &str, json: bool) -> Result<()> {
     if skipped > 0 {
         println!("{skipped} trial file(s) unreadable");
     }
+    if !lifetimes.is_empty() {
+        println!(
+            "\n{:<32} {:<24} {:>7} {:>7}",
+            "lifetime", "positions", "stages", "failed"
+        );
+        for l in &lifetimes {
+            let marks: String = l
+                .positions
+                .iter()
+                .map(|(_, t)| match (t.status, t.passed) {
+                    (TrialStatus::Done, Some(true)) => '✓',
+                    (TrialStatus::Done, _) => '✗',
+                    (TrialStatus::Failed, _) => '!',
+                    (TrialStatus::Running, _) => '~',
+                    (TrialStatus::Pending, _) => '·',
+                    (TrialStatus::Unknown, _) => '?',
+                })
+                .collect();
+            println!(
+                "{:<32} {:<24} {:>7} {:>7}{}",
+                l.id,
+                marks,
+                l.stages_done,
+                l.stages_failed,
+                if l.torn > 0 {
+                    format!("  ({} ledger line(s) unreadable)", l.torn)
+                } else {
+                    String::new()
+                }
+            );
+        }
+        println!("(✓ pass · ✗ fail · ! errored · ~ running · · pending)");
+    }
     Ok(())
+}
+
+/// One lifetime's sequence and ledger, for `status`.
+struct LifetimeReadout {
+    id: String,
+    arm: String,
+    positions: Vec<(u32, Trial)>,
+    stages_done: usize,
+    stages_failed: usize,
+    torn: usize,
+}
+
+fn lifetime_readout(
+    store: &ExperimentStore,
+    trials: &std::collections::BTreeMap<String, Trial>,
+) -> Result<Vec<LifetimeReadout>> {
+    use mecha_core::experiment::StageStatus;
+    let mut by_id: std::collections::BTreeMap<String, LifetimeReadout> = Default::default();
+    for t in trials.values() {
+        let (Some(id), Some(pos)) = (&t.lifetime, t.position) else {
+            continue;
+        };
+        by_id
+            .entry(id.clone())
+            .or_insert_with(|| LifetimeReadout {
+                id: id.clone(),
+                arm: t.arm.clone(),
+                positions: Vec::new(),
+                stages_done: 0,
+                stages_failed: 0,
+                torn: 0,
+            })
+            .positions
+            .push((pos, t.clone()));
+    }
+    let mut out: Vec<LifetimeReadout> = by_id.into_values().collect();
+    for l in &mut out {
+        l.positions.sort_by_key(|(p, _)| *p);
+        let (runs, torn) = store.stage_runs(&l.id)?;
+        l.torn = torn;
+        for r in runs {
+            match r.status {
+                StageStatus::Done => l.stages_done += 1,
+                StageStatus::Failed => l.stages_failed += 1,
+                StageStatus::Unknown => {}
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn judge_cmd(name: &str, json: bool) -> Result<()> {

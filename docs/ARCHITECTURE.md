@@ -3068,9 +3068,46 @@ comparison over a chosen set**, with the design written before the run.
   counted, never read as pending.
 - **Resume is the store.** A trial found `running` at start crashed with
   its runner and is rerun; a finished one never is; an unknown status is
-  neither rerun nor judged. Only `single` trials run today; a `lifetime`
-  manifest loads and `run` refuses it by name — the design can be written
-  ahead of its driver.
+  neither rerun nor judged.
+- **A lifetime is one home per arm × seed × repetition, walked in
+  order** (Part II §14, D12 again). The unit that can measure the loop's
+  consumers is the sequence, so `trials()` plans a `lifetime` manifest's
+  rows contiguous and positioned (`Trial::position`, `Trial::lifetime` =
+  `lifetime_id`), the driver runs each in `lifetime_home`, and after each
+  task runs the stages the manifest's `[schedule]` makes due — `reflect`,
+  `learn --auto`, `validate`, `harness ruminate`, in that order because
+  each reads what the one before wrote — as child `mecha` verbs in that
+  home, on the run child's environment allowlist and session kind,
+  **sequentially and never beside a task**: the stages are model calls on
+  the same server, and an arm whose `learn` contended with its tasks for
+  seats would differ in wall clock for a reason that is not the treatment
+  (§18). Each stage run is a line on the lifetime's **stage ledger**
+  (`ExperimentStore::record_stage`, `stages/<lifetime>.jsonl`) with its
+  exit status; the ledger is what says a stage ran, the manifest only
+  what was scheduled, and `stages_due` is the schedule minus the arm's
+  stage levers minus the ledger's done lines — so a resumed driver runs
+  the stage a crash fell between before the next task, a failed stage is
+  due again as a second line, and a torn line is counted, never read as
+  a stage that ran. A lifetime that reaches a row this build cannot read
+  stops there rather than running the rest on a broken history.
+- **Stage levers are a second closed set** (`experiment::StageLever`:
+  `reflect`, `learn`, `validate`, `ruminate`, `sensors_in_brief`), named
+  off per arm in `stages_off`, refused on a `single` manifest where no
+  stage runs and a lever that changed nothing would still move the hash,
+  and part of the row's condition (`condition_hash_with_stages`, whose
+  `stages_off=` term appears only when a stage is off, so every hash
+  minted before stage levers existed keeps its value). Four are verbs the
+  driver does not run; `sensors_in_brief` is `[agent] sensors_in_brief`
+  in the trial home's config — `diagnose::Evidence::without_sensors`
+  withholds the homeostat's means and the guilt mean from the
+  diagnostician's brief, the sensors' only reader, so withholding them is
+  the whole ablation — and the counters stay, because a lever removes a
+  disposition, never the record. The stages the design names and nothing
+  has built (`followup_staging`, `prioritised_replay`) are not levers: a
+  lever must be a switch that exists. What a lifetime can show today has
+  a ceiling: every `learning::Trigger` but the unfired `Mismatch` is an
+  owner's act, so a sequence run with no principal mines nothing, and
+  `ruminate` is the one stage with an effect until the principal lands.
 
 ## The doctor
 

@@ -112,7 +112,72 @@ confirmed on the holdout, under the work guardrail. A trial with no grade or
 no stats drops its pair rather than counting as zero. Below the gate's floors
 the verdict is *propose*, and says so.
 
-Only `single` trials run today — one run per arm × task × seed × repetition.
-A `lifetime` manifest (an ordered task sequence sharing one home, with the
-learning loop's stages scheduled between tasks) loads and is refused by name
-until its driver lands.
+## Lifetimes
+
+A `single` trial is one run per arm × task × seed × repetition, which is the
+shape that answers "does this disposition help inside a run". Everything the
+appraisal loop *does* acts across runs — reflections become rules in the next
+run's prefix, run counters become config overrides — so the unit that can
+measure it is a **lifetime**: an ordered task sequence sharing one home, with
+the loop's stages run between tasks.
+
+```toml
+name = "loop"
+kind = "lifetime"
+control = "full"
+split_seed = 11
+seeds = [1, 2]
+repetitions = 1
+
+[schedule]            # every N tasks; 0 = never. This is the default.
+reflect = 1
+learn = 5
+validate = 5
+ruminate = 10
+
+[tasks]
+cases = "eval/cases.jsonl"
+fixture = "eval/workspace"
+ids = ["hello", "files-read", "files-write", "shell-ls"]   # the sequence, in order
+
+[arms.full]
+preset = "full"
+
+[arms.deaf]
+preset = "full"
+stages_off = ["ruminate", "sensors_in_brief"]
+[arms.deaf.prediction]
+metric = "failure"
+rationale = "without rumination the loop cannot move a knob, so failures do not fall over the sequence"
+```
+
+Each lifetime — one per arm × seed × repetition — gets its own home under the
+experiment directory, seeded like an arm's. The driver walks the sequence in
+order: after each task it runs the stages the schedule makes due, as child
+`mecha` verbs in that home (`reflect`, `learn --auto`, `validate`,
+`harness ruminate`), one after another and never beside a task, and writes
+each to the lifetime's **stage ledger** (`stages/<lifetime>.jsonl`) with its
+exit status and where its output went. The ledger is what says a stage ran;
+the manifest says only what was scheduled. Resume reads both: a finished task
+is not rerun, and a stage the ledger lacks after a finished position runs
+before the next task starts.
+
+**Stage levers** are a second closed set, beside the per-run levers, and a
+lifetime's arm may name them off in `stages_off`: `reflect`, `learn`,
+`validate`, `ruminate`, and `sensors_in_brief` — the last is not a stage but
+the switch (`[agent] sensors_in_brief`) that hands the homeostat's and guilt's
+readings to the diagnostician's brief, which is those sensors' only reader.
+A `single` manifest refuses them. Stage levers off are part of a row's
+condition hash; an arm with every stage on hashes as its single-trial twin.
+
+`status` shows each lifetime's sequence by position (`✓ ✗ ! ~ ·`) with its
+stage counts; `judge` pairs positions across arms as it pairs tasks, since the
+sequence is shared. Read the trajectory, not the mean: a loop that learns has
+a slope.
+
+One limit worth knowing before spending a night on it: every reflection
+trigger today is an owner's act — a steer, a denial, a follow-up, an edited
+draft. A lifetime run without anyone answering produces none, so `reflect` and
+`learn` are exercised but mine nothing; `harness ruminate`, which reads run
+counters, is the one stage with an effect until the principal (the owner's
+simulator) lands.
