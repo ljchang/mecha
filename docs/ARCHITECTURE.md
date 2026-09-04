@@ -2325,7 +2325,8 @@ The decisions that carry it, each a bug if undone:
   knobs `eval --ab-config` accepts, and eval's `apply_override` now delegates
   to `harness::parse_change` — a second spelling of the set is how the
   measurement arm and the acceptance arm silently stop being comparable.
-  `harness::Lever` is the on/off half beside it (`EXPERIMENT-DESIGN.md` §15):
+  `harness::Lever` is the on/off half beside it (`EXPERIMENT-DESIGN.md`
+  Part II, *The switch set* — PR #156 until it lands):
   the thirteen subsystems a run can carry structurally absent, each a switch
   that exists today, recorded on `RunConfig::levers_off` in `Lever::ALL`'s
   order. `mecha eval`'s `force_reproducible` is `Lever::bare` thrown through
@@ -2344,8 +2345,9 @@ The decisions that carry it, each a bug if undone:
   surface from those fields (one variant briefly recorded its effect, and
   the field then meant two things; found on review). Four switches also
   live in config (`[agent] step_escalation|boredom|compact_validate`,
-  `[messages] enabled` — the last folded because a missing mailbox leaves
-  no trace in either surface field), and for those `levers_off` reads the
+  `[messages] enabled` — the last folded because it is a switch of the same
+  shape, not for want of a trace: `message_send` in `tools` shows it too),
+  and for those `levers_off` reads the
   *folded config the agent was built from*, never the flag: two earlier
   shapes answered from the flag and let `prepare_tools`' fold be deleted
   with the record still saying "absent" of a notice the agent went on
@@ -2356,7 +2358,7 @@ The decisions that carry it, each a bug if undone:
   list, because a lever dropped from `levers_off` reads as on; `None` is the
   same answer a transcript from before the field gives, and neither is
   "all on". A lever with no off position is not in the set: the record must
-  never say "absent" of something that ran, so the dispositions §15 lists
+  never say "absent" of something that ran, so the dispositions *The switch set* lists
   without a switch (predictive compaction, carried state, the appraiser's
   pass) join when their switch does.
 - **A divergent episode is dropped, not scored.** Replay answers from the

@@ -1311,7 +1311,7 @@ mod tests {
     /// writes no session, so this is the only place the two meet; if they
     /// disagreed, an experiment pairing its own recorded bare arm against
     /// an eval scorecard would be comparing runs that name different
-    /// absences — D14's whole reason for one definition.
+    /// absences — the whole reason the design keeps one definition.
     #[test]
     fn the_record_names_exactly_what_eval_forced() {
         // What `prepare_tools` hands `build`: this machine's defaults with

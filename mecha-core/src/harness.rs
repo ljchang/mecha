@@ -94,7 +94,8 @@ impl OverrideKey {
 ///
 /// An ablation here is a subsystem that is *structurally absent* from a run:
 /// chosen by a switch, recorded on `RunConfig::levers_off`, never a sentence
-/// in a prompt (`docs/EXPERIMENT-DESIGN.md` §15, D14). **The record is the
+/// in a prompt (`docs/EXPERIMENT-DESIGN.md` Part II (PR #156 until it lands), *The switch set* and its
+/// decision that one closed set of levers sits beside the knobs). **The record is the
 /// switch, not the effect**, for every variant alike: `levers_off` says
 /// which switches the run was built with thrown, and the realised surface —
 /// whether a charter block or a rules block actually reached the prompt,
@@ -114,7 +115,7 @@ impl OverrideKey {
 /// **A variant here is a switch that exists**, not a wish. A lever with no
 /// off position would make the record say "absent" of something that ran,
 /// which is the one lie a confound record must not tell; the dispositions
-/// §15 lists without a switch today (predictive compaction, carried state,
+/// *The switch set* lists without a switch today (predictive compaction, carried state,
 /// the appraiser's pass) join the set when their switch does.
 ///
 /// Serialised by name — the same names [`Lever::as_str`] answers — because
@@ -144,10 +145,10 @@ pub enum Lever {
     /// arms does not assume the record covers them.
     Fallback,
     /// `--no-messages`, or `[messages] enabled = false`: no mailbox is
-    /// attached. The config half is folded in because, unlike an MCP tool
-    /// or a charter block, a missing mailbox leaves no trace in `tools` or
-    /// `system_prompt` — the route lives on `ToolCtx` — so the record is the
-    /// only field that can say (found on review).
+    /// attached. The config half is folded in because it is a config
+    /// *switch*, the same shape as the three `[agent]` ones — not because
+    /// the surface cannot show it: `message_send` is registered in the same
+    /// block as the route, so `tools` does say (found on review, both ways).
     Messages,
     /// `--no-skills`: the level-1 skill block is not built.
     Skills,
@@ -911,7 +912,7 @@ mod tests {
         assert_eq!(
             Lever::parse("appraisal"),
             None,
-            "the readout is not a lever (§15)"
+            "the readout is not a lever (Part II, *The switch set*)"
         );
         assert_eq!(Lever::parse("MCP"), None, "names are exact");
     }
