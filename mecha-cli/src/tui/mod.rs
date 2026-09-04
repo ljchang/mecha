@@ -3115,7 +3115,11 @@ fn record_config(session: Option<&Session>, live: &Live, mode: PermissionMode) -
     )?;
     // From the *current* opts, for the same reason they live on `Live`: a
     // `/mcp off` mid-session is a lever thrown, and the record after it must
-    // say so.
+    // say so. The file config is folded through the same function
+    // `prepare_tools` used before the agent was built, so the four config
+    // switches are read as the agent has them rather than as the file says.
+    let mut cfg = cfg;
+    crate::setup::fold_agent_switches(&mut cfg.agent, &live.opts);
     let levers_off = crate::setup::levers_off(&live.opts, &cfg);
     let mut record = RunConfig::of(&live.agent, &cfg, &live.provider, &levers_off);
     // The file cannot know about a `/mode` switch, and a replay that read the

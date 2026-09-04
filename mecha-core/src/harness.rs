@@ -137,8 +137,17 @@ pub enum Lever {
     /// `--no-outbox`: `[outbox] tools` execute unstaged.
     Outbox,
     /// `--no-fallback`: a provider failure is not retried against a fallback.
+    /// A provider whose `fallbacks` list is empty has none to retry against
+    /// either, and that is not recorded here — a list's emptiness is not a
+    /// switch; the same holds for empty `[[hook]]` and `[outbox] tools`
+    /// lists. Known blind spots of this field, named so a reader pairing
+    /// arms does not assume the record covers them.
     Fallback,
-    /// `--no-messages`: no mailbox is attached.
+    /// `--no-messages`, or `[messages] enabled = false`: no mailbox is
+    /// attached. The config half is folded in because, unlike an MCP tool
+    /// or a charter block, a missing mailbox leaves no trace in `tools` or
+    /// `system_prompt` — the route lives on `ToolCtx` — so the record is the
+    /// only field that can say (found on review).
     Messages,
     /// `--no-skills`: the level-1 skill block is not built.
     Skills,
@@ -162,9 +171,15 @@ pub enum Lever {
 
 impl Lever {
     /// Every lever, in a stable order — the order `levers_off` is recorded
-    /// in, so two records with the same set compare byte-for-byte. The
-    /// exhaustive `match` in `as_str` is what makes a fourteenth a compile
-    /// error here rather than a lever the record can never name.
+    /// in, so two records with the same set compare byte-for-byte.
+    /// **Membership here is not compiler-enforced**: `as_str`'s exhaustive
+    /// match forces a fourteenth variant to be *named*, and nothing forces
+    /// it into this array, whose length is typed by hand — and a lever
+    /// missing from `ALL` can never be recorded, is dropped by
+    /// `RunConfig::of`, and silently leaves `mecha eval`'s bare arm (found
+    /// on review). The test `all_names_every_variant_serde_knows` closes
+    /// it from the derive: serde's unknown-variant error lists every
+    /// variant, and the test asserts this array covers that list.
     pub const ALL: [Lever; 13] = [
         Lever::Mcp,
         Lever::LearnedRules,
@@ -899,6 +914,37 @@ mod tests {
             "the readout is not a lever (§15)"
         );
         assert_eq!(Lever::parse("MCP"), None, "names are exact");
+    }
+
+    /// `ALL` must list every variant, and the compiler does not check that:
+    /// the exhaustive matches force a new variant to be *named*, not
+    /// *listed*, and a lever absent from `ALL` can never be recorded or
+    /// forced. Serde's unknown-variant error names every variant the
+    /// derive knows, so the derive maintains the reference list for free.
+    #[test]
+    fn all_names_every_variant_serde_knows() {
+        let err = serde_json::from_str::<Lever>("\"no_such_lever\"")
+            .unwrap_err()
+            .to_string();
+        // `unknown variant `no_such_lever`, expected one of `mcp`, `learned_rules`, …`
+        let listed: std::collections::BTreeSet<&str> = err
+            .split("expected one of ")
+            .nth(1)
+            .expect("serde names the variants")
+            // `… `compact_validate` at line 1 column 15`: the position is
+            // serde_json's, not a variant.
+            .split(" at line")
+            .next()
+            .unwrap()
+            .split(',')
+            .map(|s| s.trim().trim_matches(|c| c == '`' || c == ' ' || c == '.'))
+            .filter(|s| !s.is_empty())
+            .collect();
+        let all: std::collections::BTreeSet<&str> = Lever::ALL.iter().map(|l| l.as_str()).collect();
+        assert_eq!(
+            listed, all,
+            "a variant serde knows is missing from ALL, or ALL names a ghost"
+        );
     }
 
     /// `ALL` is the closed set: exhaustive over the enum, no duplicates, and
