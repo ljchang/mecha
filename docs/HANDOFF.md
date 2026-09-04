@@ -2456,9 +2456,15 @@ the mechanism and every decision. What it left standing:
 **2026-09-04, later — §17.6 item 3 is built and merged as PR #168
 (`feat/situation-scope`, merged at `046ef0f` after twelve review passes,
 the last clean at the bar), with §17.7 item 1's run record in the same
-change because it was the merge condition. Not yet deployed: the
-installed binary is behind main by several lanes, and the next `update`
-run takes them all.** What it built is in
+change because it was the merge condition. Not yet deployed, and the
+staleness is two rows, not one: the installed `mecha` (built from
+`188b823` on 2026-09-04 morning) is behind main by #167/#168/#169 and the
+next `update` run takes them all; the installed `mecha-graph` and
+`mecha-graph-mcp` are the 2026-09-02 build and are *deliberately* not
+updated — mecha-graph PR #6 is open and uninstalled, so running the
+`update` skill's graph `cargo install` lines would ship an unmerged
+branch. Run the mecha lines only (mecha-83's row, verified against the
+binaries' dates and the PR's state, not its build).** What it built is in
 `HISTORY.md` under this date: `situation.rs`, the situation on every new
 reflection, `scope` on `Rule` assigned by the harness from the batch's shared
 keys, one learner call per focus-tool batch, the loader matching scope
