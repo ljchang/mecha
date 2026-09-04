@@ -1750,7 +1750,16 @@ pub fn judge(
         let control_stages = health_of(control_name);
         let mut judgement = judgement;
         let broken = stages.broken() + control_stages.broken() + unreadable_stage_lines;
-        if broken > 0 && judgement.disposition == crate::candidate::Disposition::Accept {
+        // Both directions: a treatment not known to have occurred can no
+        // more be refuted than confirmed, and a confident reject over two
+        // arms that both failed to ruminate would read as evidence against
+        // it (found on review).
+        if broken > 0
+            && matches!(
+                judgement.disposition,
+                crate::candidate::Disposition::Accept | crate::candidate::Disposition::Reject(_)
+            )
+        {
             judgement.disposition = crate::candidate::Disposition::Propose(format!(
                 "{broken} stage line(s) failed, interrupted, unreadable, or in a status this build cannot read across this arm's and the control's lifetimes; the treatment is not known to have run as designed"
             ));
@@ -2678,10 +2687,20 @@ rationale = "no rumination should fail more over the sequence"
         let held = judge(&m, &trials, std::slice::from_ref(&failed), 0);
         let bare_held = held.iter().find(|v| v.arm == "bare").unwrap();
         assert_eq!(bare_held.stages.failed, 1);
-        assert_ne!(
-            bare_held.judgement.disposition,
-            crate::candidate::Disposition::Accept,
-            "never accepted over a stage that did not run: {:?}",
+        assert!(
+            matches!(
+                bare.judgement.disposition,
+                crate::candidate::Disposition::Reject(_)
+            ),
+            "the clean verdict is a reject (bare fails more): {:?}",
+            bare.judgement.disposition
+        );
+        assert!(
+            matches!(
+                bare_held.judgement.disposition,
+                crate::candidate::Disposition::Propose(_)
+            ),
+            "neither accepted nor rejected over a stage that did not run: {:?}",
             bare_held.judgement.disposition
         );
         // Unknown is never clean, and a torn line holds every verdict.
@@ -2690,17 +2709,17 @@ rationale = "no rumination should fail more over the sequence"
         let held = judge(&m, &trials, &[odd], 0);
         let v = held.iter().find(|v| v.arm == "bare").unwrap();
         assert_eq!((v.stages.unknown, v.stages.broken()), (1, 1));
-        assert_ne!(
+        assert!(matches!(
             v.judgement.disposition,
-            crate::candidate::Disposition::Accept
-        );
+            crate::candidate::Disposition::Propose(_)
+        ));
         let held = judge(&m, &trials, &[], 1);
         let v = held.iter().find(|v| v.arm == "bare").unwrap();
         assert_eq!(v.unreadable_stage_lines, 1);
-        assert_ne!(
+        assert!(matches!(
             v.judgement.disposition,
-            crate::candidate::Disposition::Accept
-        );
+            crate::candidate::Disposition::Propose(_)
+        ));
         assert_eq!(
             bare_held.judgement.selection, bare.judgement.selection,
             "the tallies are untouched"
