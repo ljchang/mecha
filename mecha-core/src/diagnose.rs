@@ -194,6 +194,11 @@ pub struct Evidence {
     /// treating a rise in both as two corroborating signals is seeing one
     /// cause twice.
     pub mean_anticipated_guilt: Option<f64>,
+    /// The sensors were withheld from this brief (`without_sensors`): the
+    /// pressure and guilt lines are *omitted*, never rendered as the
+    /// no-data sentinel, because "unknown (no denominator)" is a claim
+    /// about the corpus and the lever has no business making one.
+    pub sensors_withheld: bool,
     /// Calls a human or a policy refused, and sends the interlock refused.
     ///
     /// Reported beside the error rate rather than folded into it, because the
@@ -279,6 +284,7 @@ impl Evidence {
             // an unknown threshold must not become a confident sentence.
             compact_at_fraction: None,
             mean_anticipated_guilt: corpus.mean_anticipated_guilt(),
+            sensors_withheld: false,
             workspaces: {
                 let mut w: Vec<(String, usize)> = corpus
                     .by_workspace()
@@ -315,6 +321,23 @@ impl Evidence {
         }
     }
 
+    /// The brief with the sensors withheld — the homeostat's pressure means
+    /// and the guilt sensor dropped, and their lines **omitted** from the
+    /// rendering rather than printed as `unknown (no denominator)`, which
+    /// is the brief's word for "no row sensed it" and would tell the
+    /// diagnostician something false about a corpus that did (found on
+    /// review). `[agent] sensors_in_brief = false`, a lifetime experiment's
+    /// stage lever: the sensors' only reader is this brief, so this is the
+    /// whole ablation. The counters (overflows, stop causes, tool errors)
+    /// are the record, not sensors, and stay.
+    pub fn without_sensors(mut self) -> Evidence {
+        self.mean_peak_context_pressure = None;
+        self.max_peak_context_pressure = None;
+        self.mean_anticipated_guilt = None;
+        self.sensors_withheld = true;
+        self
+    }
+
     /// Render the brief the model is handed.
     ///
     /// A rate with no denominator prints as `unknown`, never as zero: "nothing
@@ -331,7 +354,7 @@ impl Evidence {
              refused by a person or a policy: {} · sends refused by the interlock: {} \
              (the last two are the harness working, not failing)\n\
              finished on a failed call: {} ({})\ncompactions: {}\nstop causes: {}\n\
-             context pressure: avg peak {} · highest peak {}{}\n\
+             context pressure: avg peak {} · highest peak {}\n{}\
              avg anticipated guilt: {} \
              (guilt is computed partly from pressure — a rise in both is not two \
              independent findings)\n",
@@ -357,79 +380,116 @@ impl Evidence {
             // `compactions: 0` is not evidence that compaction is off or
             // broken; it is what a corpus that never reached the threshold
             // looks like, and saying so is cheaper than a wrong proposal.
-            match (self.max_peak_context_pressure, self.compact_at_fraction) {
-                // A threshold at or above the whole window can never be
-                // reached before the provider refuses the request, so it is
-                // not headroom — it is compaction effectively switched off,
-                // which is the opposite reading. Reachable without a person:
-                // `compact_at_tokens` is in the auto-accepted override set
-                // and is only validated as `>= 1000`.
-                (_, Some(at)) if at >= 1.0 => format!(
-                    " — compaction is set to fire at {} of the window, which is at or past \
+            // Its own line, so `without_sensors` can withhold the two peaks
+            // without taking this reading with them: it reads off the
+            // counters and the threshold, and an arm that lost it would
+            // differ from the control by more than the sensors (found on
+            // review). A peak-dependent arm simply does not fire when the
+            // peak is withheld.
+            {
+                let note = match (self.max_peak_context_pressure, self.compact_at_fraction) {
+                    // A threshold at or above the whole window can never be
+                    // reached before the provider refuses the request, so it is
+                    // not headroom — it is compaction effectively switched off,
+                    // which is the opposite reading. Reachable without a person:
+                    // `compact_at_tokens` is in the auto-accepted override set
+                    // and is only validated as `>= 1000`.
+                    (_, Some(at)) if at >= 1.0 => format!(
+                        " — compaction is set to fire at {} of the window, which is at or past \
                      the window itself: it cannot fire before the request overflows",
-                    pct(Some(at))
-                ),
-                // **Gated on `compactions == 0`, not on pressure alone.**
-                // A run can compact without ever reporting a peak above the
-                // threshold: the overflow-recovery arm counts a compaction
-                // after a request that already 400'd, and a failed request is
-                // never priced, so no peak is recorded for it. Ungated, this
-                // arm would render "`compactions: 0` above means never
-                // needed" directly beneath a line reading `compactions: 6` —
-                // a self-contradicting sentence in the one place this exists
-                // to stop the diagnostician inventing one.
-                // **"points", not "%".** `at - max` is a difference of two
-                // fractions, so rendering it through `pct` and calling it
-                // "42.7% below" invites the relative reading (42.7% of 66%
-                // ≈ 28 points). In the one sentence whose whole job is to
-                // stop a model misreading a number, the label has to be
-                // unambiguous.
-                // Overflows are known to have happened: whatever pressure
-                // reported, the window was hit. Never reassurance.
-                (_, Some(at)) if self.context_overflows.is_some_and(|n| n > 0) => format!(
-                    " — compaction fires at {}, and {} context overflow(s) are recorded: the \
-                     window WAS reached, whatever the peaks above say (an overflowing request \
-                     400s and is never priced, so it contributes no peak)",
-                    pct(Some(at)),
-                    self.context_overflows.unwrap_or(0)
-                ),
-                (Some(max), Some(at)) if max < at && self.compactions == 0 => format!(
-                    " — compaction fires at {}, and the highest any run reached is {:.1} \
+                        pct(Some(at))
+                    ),
+                    // **Gated on `compactions == 0`, not on pressure alone.**
+                    // A run can compact without ever reporting a peak above the
+                    // threshold: the overflow-recovery arm counts a compaction
+                    // after a request that already 400'd, and a failed request is
+                    // never priced, so no peak is recorded for it. Ungated, this
+                    // arm would render "`compactions: 0` above means never
+                    // needed" directly beneath a line reading `compactions: 6` —
+                    // a self-contradicting sentence in the one place this exists
+                    // to stop the diagnostician inventing one.
+                    // **"points", not "%".** `at - max` is a difference of two
+                    // fractions, so rendering it through `pct` and calling it
+                    // "42.7% below" invites the relative reading (42.7% of 66%
+                    // ≈ 28 points). In the one sentence whose whole job is to
+                    // stop a model misreading a number, the label has to be
+                    // unambiguous.
+                    // Overflows are known to have happened: whatever pressure
+                    // reported, the window was hit. Never reassurance.
+                    (_, Some(at)) if self.context_overflows.is_some_and(|n| n > 0) => format!(
+                        " — compaction fires at {}, and {} context overflow(s) are recorded: the \
+                     window WAS reached{} (an overflowing request 400s and is never priced, \
+                     so it contributes no peak)",
+                        pct(Some(at)),
+                        self.context_overflows.unwrap_or(0),
+                        // No cross-reference to a line the ablation removed:
+                        // the withheld brief has no peaks above (found on
+                        // review).
+                        if self.sensors_withheld {
+                            ""
+                        } else {
+                            ", whatever the peaks above say"
+                        }
+                    ),
+                    (Some(max), Some(at)) if max < at && self.compactions == 0 => format!(
+                        " — compaction fires at {}, and the highest any run reached is {:.1} \
                      points below it, so `compactions: 0` above means never needed, NOT \
                      disabled or broken{}",
-                    pct(Some(at)),
-                    (at - max) * 100.0,
-                    match self.context_overflows {
-                        Some(_) => " (and no run overflowed)",
-                        // Said, not assumed. The claim is about pressure and
-                        // compactions; overflows are a third counter, and a
-                        // corpus predating the sensor cannot answer for them.
-                        None =>
-                            " (no run recorded whether it overflowed, so that axis is \
+                        pct(Some(at)),
+                        (at - max) * 100.0,
+                        match self.context_overflows {
+                            Some(_) => " (and no run overflowed)",
+                            // Said, not assumed. The claim is about pressure and
+                            // compactions; overflows are a third counter, and a
+                            // corpus predating the sensor cannot answer for them.
+                            None =>
+                                " (no run recorded whether it overflowed, so that axis is \
                                  unchecked)",
-                    }
-                ),
-                // Compactions happened while the reported peak stayed under
-                // the threshold. Not reassurance — that combination is
-                // itself the finding, and pointing at it beats hiding it.
-                (Some(max), Some(at)) if max < at => format!(
-                    " — compaction fires at {}, which no run's reported peak reached, yet \
+                        }
+                    ),
+                    // Compactions happened while the reported peak stayed under
+                    // the threshold. Not reassurance — that combination is
+                    // itself the finding, and pointing at it beats hiding it.
+                    (Some(max), Some(at)) if max < at => format!(
+                        " — compaction fires at {}, which no run's reported peak reached, yet \
                      {} compaction(s) happened: they did not come from reported pressure \
                      (overflow recovery and an explicitly requested compaction both count \
                      here), so read the count as a finding rather than as a threshold \
                      being crossed",
-                    pct(Some(at)),
-                    self.compactions
-                ),
-                (Some(_), Some(at)) => {
-                    format!(" — compaction fires at {}", pct(Some(at)))
+                        pct(Some(at)),
+                        self.compactions
+                    ),
+                    (Some(_), Some(at)) => {
+                        format!(" — compaction fires at {}", pct(Some(at)))
+                    }
+                    // The threshold is a config reading, not a sensor's:
+                    // it must survive `without_sensors`, or the ablation
+                    // arm differs from the control by more than the
+                    // sensors (found on review).
+                    (None, Some(at)) => format!(" — compaction fires at {}", pct(Some(at))),
+                    _ => String::new(),
+                };
+                if note.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}\n", note.trim_start_matches(" — "))
                 }
-                _ => String::new(),
             },
             self.mean_anticipated_guilt
                 .map(|g| format!("{g:.2}"))
                 .unwrap_or_else(|| "unknown (no denominator)".into()),
         );
+        if self.sensors_withheld {
+            // Withheld by omission: the two sensor lines leave the brief
+            // whole, so the diagnostician reads less, never something else.
+            out = out
+                .lines()
+                .filter(|l| {
+                    !l.starts_with("context pressure:") && !l.starts_with("avg anticipated guilt:")
+                })
+                .map(|l| format!("{l}\n"))
+                .collect();
+        }
         if !self.metrics.is_empty() {
             out.push_str(
                 "\nwhat each metric you may predict currently costs — a metric no run has \
@@ -1330,6 +1390,54 @@ rationale: the threshold is too low";
         let brief = evidence.brief();
         assert!(brief.contains("unknown (no denominator)"), "{brief}");
         assert!(!brief.contains("0.0%"), "{brief}");
+    }
+
+    /// `without_sensors` removes exactly the sensors — the homeostat's
+    /// pressure means and the guilt mean — and keeps every counter, so the
+    /// brief under the lever says less, never something different.
+    #[test]
+    fn without_sensors_clears_the_sensor_means_and_keeps_the_counters() {
+        let mut e = Evidence::of("m", &Corpus::default());
+        e.mean_peak_context_pressure = Some(0.4);
+        e.max_peak_context_pressure = Some(0.9);
+        e.mean_anticipated_guilt = Some(0.1);
+        e.context_overflows = Some(2);
+        e.tool_errors = 7;
+        e.compact_at_fraction = Some(1.2);
+        e.compactions = 0;
+        let quiet = e.clone().without_sensors();
+        assert_eq!(quiet.mean_peak_context_pressure, None);
+        assert_eq!(quiet.max_peak_context_pressure, None);
+        assert_eq!(quiet.mean_anticipated_guilt, None);
+        assert_eq!(quiet.context_overflows, Some(2));
+        assert_eq!(quiet.tool_errors, 7);
+        let quiet_brief = quiet.brief();
+        assert!(
+            !quiet_brief.contains("context pressure") && !quiet_brief.contains("anticipated guilt"),
+            "withheld by omission, never as the no-data sentinel:\n{quiet_brief}"
+        );
+        assert!(quiet_brief.contains("compactions: "), "the counters stay");
+        assert!(
+            quiet_brief.contains("cannot fire before the request overflows"),
+            "the compaction reading is a counter's, not a sensor's, and stays:\n{quiet_brief}"
+        );
+        assert!(e.brief().contains("avg anticipated guilt: 0.10"));
+        assert!(e.brief().contains("context pressure: avg peak 40.0%"));
+        // The common threshold, below the window: the reading needs no peak.
+        let mut usual = e.clone();
+        usual.compact_at_fraction = Some(0.66);
+        let full = usual.brief();
+        assert!(full.contains("compaction fires at 66.0%"), "{full}");
+        let quiet = usual.without_sensors().brief();
+        assert!(
+            quiet.contains("compaction fires at 66.0%") && !quiet.contains("context pressure"),
+            "the threshold survives the ablation:\n{quiet}"
+        );
+        assert!(
+            quiet.contains("2 context overflow(s) are recorded") && !quiet.contains("peaks above"),
+            "the overflow reading stays, without pointing at a line that is gone:\n{quiet}"
+        );
+        assert!(full.contains("whatever the peaks above say"));
     }
 
     #[test]

@@ -57,9 +57,9 @@ pub struct Manifest {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    /// `single` or `lifetime` (Part II §14). Only `single` runs today; a
-    /// `lifetime` manifest loads — the design is the design — and `run`
-    /// refuses it by name, so the manifest can be written ahead of the driver.
+    /// `single` or `lifetime` (Part II §14): one run per arm × task × seed
+    /// × repetition, or one home per arm × seed × repetition walked through
+    /// the task sequence with the loop's stages between (`schedule`).
     #[serde(default)]
     pub kind: TrialKind,
     /// The arm every treatment arm is paired against. Must name an arm, and
@@ -89,6 +89,165 @@ pub struct Manifest {
     /// `candidate::MIN_HOLDOUT_PAIRS`.
     #[serde(default = "three")]
     pub holdout_in: u64,
+    /// A `lifetime`'s loop stages between tasks (Part II §14): after every
+    /// task `reflect`, after every fifth `validate` then `learn --auto`
+    /// then `rules propose-retirements --apply` (validate measures before
+    /// learn consumes; the brake after), after every tenth
+    /// `harness ruminate`, by default. Sequence and
+    /// schedule live here, on the design, so the stage order a lifetime ran
+    /// under is on the record and never in a script. A `single` manifest
+    /// carries none.
+    #[serde(default)]
+    pub schedule: Schedule,
+}
+
+/// How often each loop stage runs between a lifetime's tasks: every N
+/// tasks, 0 for never. Stages due after one position run in the nightly's
+/// order (`scripts/ruminate.sh`) — reflect, **validate, then learn**,
+/// ruminate — because `learn` marks reflections processed and `validate
+/// --unprocessed-only` is the measurement that must see them first, or
+/// the rules are graded on their own training data. The first cut ran
+/// learn before validate and would have measured a loop that does not
+/// ship (found on review).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Schedule {
+    #[serde(default = "one")]
+    pub reflect: u32,
+    #[serde(default = "five")]
+    pub learn: u32,
+    #[serde(default = "five")]
+    pub validate: u32,
+    /// `rules propose-retirements --apply`: the nightly's one brake on
+    /// rules that go live as they are derived. Runs after `learn`, as the
+    /// nightly does; a loop that installed rules and never retired a
+    /// harmful one would be more permissive than the one that ships, in
+    /// the direction that flatters the `learn` arm (found on review).
+    #[serde(default = "five")]
+    pub retire: u32,
+    #[serde(default = "ten")]
+    pub ruminate: u32,
+}
+
+fn five() -> u32 {
+    5
+}
+fn ten() -> u32 {
+    10
+}
+
+impl Default for Schedule {
+    fn default() -> Self {
+        Schedule {
+            reflect: 1,
+            learn: 5,
+            validate: 5,
+            retire: 5,
+            ruminate: 10,
+        }
+    }
+}
+
+impl Schedule {
+    /// The stages due after the task at `position` (1-based), in run order.
+    pub fn due_after(&self, position: u32) -> Vec<StageLever> {
+        let every = |n: u32| n > 0 && position.is_multiple_of(n);
+        let mut out = Vec::new();
+        if every(self.reflect) {
+            out.push(StageLever::Reflect);
+        }
+        if every(self.validate) {
+            out.push(StageLever::Validate);
+        }
+        if every(self.learn) {
+            out.push(StageLever::Learn);
+        }
+        if every(self.retire) {
+            out.push(StageLever::Retire);
+        }
+        if every(self.ruminate) {
+            out.push(StageLever::Ruminate);
+        }
+        out
+    }
+}
+
+/// The loop-stage levers, `lifetime` only (Part II §15's second table): a
+/// closed set beside `harness::Lever`, each a stage the runner would run
+/// between tasks and does not when the arm names it off. Four are verbs;
+/// `sensors_in_brief` is `[agent] sensors_in_brief` in the trial home's
+/// config — the homeostat's and guilt's entry into the diagnostician's
+/// brief, which is the sensors' only reader. The stages the design names
+/// and nothing has built (`followup_staging`, `prioritised_replay`) are not
+/// here: a lever must be a switch that exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageLever {
+    Reflect,
+    Learn,
+    Validate,
+    Ruminate,
+    /// `rules propose-retirements --apply`; see `Schedule::retire`.
+    Retire,
+    SensorsInBrief,
+    /// A stage this build cannot name, read off a ledger written by a
+    /// build that has one — the closed-enum-on-an-append-only-store rule:
+    /// the line reads as a stage run this build cannot name, never as a
+    /// torn line. Not in `ALL`, never parsed from a manifest, runs nothing.
+    #[serde(other)]
+    Unknown,
+}
+
+impl StageLever {
+    pub const ALL: [StageLever; 6] = [
+        StageLever::Reflect,
+        StageLever::Learn,
+        StageLever::Validate,
+        StageLever::Ruminate,
+        StageLever::Retire,
+        StageLever::SensorsInBrief,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StageLever::Reflect => "reflect",
+            StageLever::Learn => "learn",
+            StageLever::Validate => "validate",
+            StageLever::Ruminate => "ruminate",
+            StageLever::Retire => "retire",
+            StageLever::SensorsInBrief => "sensors_in_brief",
+            StageLever::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<StageLever> {
+        StageLever::ALL.into_iter().find(|l| l.as_str() == name)
+    }
+
+    pub fn names() -> String {
+        StageLever::ALL
+            .iter()
+            .map(|l| l.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The `mecha` verb a stage runs as, in the trial home — **the
+    /// nightly's own argv** (`scripts/ruminate.sh`), so what a lifetime
+    /// measures is the loop that ships: `validate --unprocessed-only` is
+    /// the held-out measurement, `learn --holdout 0.25 --auto` keeps a
+    /// quarter of reflections unseen for the next one. `None` for the
+    /// lever that is a config switch rather than a stage.
+    pub fn argv(self) -> Option<&'static [&'static str]> {
+        match self {
+            StageLever::Reflect => Some(&["reflect"]),
+            StageLever::Learn => Some(&["learn", "--holdout", "0.25", "--auto"]),
+            StageLever::Validate => Some(&["validate", "--unprocessed-only"]),
+            StageLever::Ruminate => Some(&["harness", "ruminate"]),
+            StageLever::Retire => Some(&["rules", "propose-retirements", "--apply"]),
+            StageLever::SensorsInBrief | StageLever::Unknown => None,
+        }
+    }
 }
 
 fn one() -> u32 {
@@ -140,6 +299,12 @@ pub struct Arm {
     /// The model id, overriding the provider's default.
     #[serde(default)]
     pub model: Option<String>,
+    /// Loop stages this arm does *not* run between tasks, by
+    /// [`StageLever`] name — a `lifetime` manifest only; a `single` one
+    /// refuses them at load, since no stage ever runs there and a lever
+    /// that changes nothing would still move the hash.
+    #[serde(default)]
+    pub stages_off: Vec<String>,
     #[serde(default)]
     pub prediction: Option<Prediction>,
 }
@@ -317,6 +482,7 @@ impl Manifest {
             repetitions,
             split_seed,
             holdout_in,
+            schedule: Schedule::default(),
         };
         m.validate()?;
         Ok(m)
@@ -351,6 +517,7 @@ impl Manifest {
             repetitions,
             split_seed: 0,
             holdout_in: 3,
+            schedule: Schedule::default(),
         };
         m.validate()?;
         Ok(m)
@@ -391,11 +558,54 @@ impl Manifest {
         }
         anyhow::ensure!(self.repetitions >= 1, "repetitions must be at least 1");
         anyhow::ensure!(self.holdout_in >= 2, "holdout_in must be at least 2");
+        // Both kinds: `ids` names each case once. For a lifetime the
+        // positions are the tasks; for a single, `cases_for` walks `ids` in
+        // order and a repeated id would plan two rows with one trial id —
+        // one overwriting the other on the store (found on review).
+        let mut seen = std::collections::BTreeSet::new();
+        for id in &self.tasks.ids {
+            anyhow::ensure!(
+                seen.insert(id),
+                "task `{id}` appears twice in `ids`; name each task once"
+            );
+        }
+        // The same collision one field over: a seed twice mints two rows
+        // with one trial id, and two lifetimes in one home and one ledger
+        // (found on review).
+        let mut seen_seeds = std::collections::BTreeSet::new();
+        for s in &self.seeds {
+            anyhow::ensure!(
+                seen_seeds.insert(s),
+                "seed `{s}` appears twice in `seeds`; name each seed once"
+            );
+        }
+        match self.kind {
+            TrialKind::Single => anyhow::ensure!(
+                self.schedule == Schedule::default(),
+                "a `[schedule]` is a lifetime's; a single trial runs no stage between tasks"
+            ),
+            // The sequence is the design, and the case file is not: a
+            // lifetime that fell back to the file's order kept each
+            // finished row's stored position while a changed file moved
+            // the walk under it, and nothing on the record said so (found
+            // on review).
+            TrialKind::Lifetime => anyhow::ensure!(
+                !self.tasks.ids.is_empty(),
+                "a `lifetime` names its sequence in `[tasks] ids`; the case file's order is not a design"
+            ),
+        }
         for (name, arm) in &self.arms {
             crate::work::valid_producer(name)
                 .with_context(|| format!("arm `{name}` is a directory name"))?;
             arm.resolve_levers()
                 .with_context(|| format!("arm `{name}`"))?;
+            let stages = arm
+                .resolve_stages()
+                .with_context(|| format!("arm `{name}`"))?;
+            anyhow::ensure!(
+                self.kind == TrialKind::Lifetime || stages.is_empty(),
+                "arm `{name}` names stage lever(s) off, but this is a `single` experiment and no stage runs between its trials"
+            );
             for spec in &arm.overrides {
                 crate::harness::parse_change(spec)
                     .with_context(|| format!("arm `{name}`, override `{spec}`"))?;
@@ -431,34 +641,67 @@ impl Manifest {
         let mut out = Vec::new();
         for (arm_name, arm) in &self.arms {
             let resolved = arm.resolve_levers().expect("validated at load");
+            let stages = arm.resolve_stages().expect("validated at load");
             let provider = arm.provider.as_deref().unwrap_or(provider);
             let model = arm.model.as_deref().unwrap_or(model);
-            for task in task_ids {
-                for seed in &seeds {
-                    for rep in 1..=self.repetitions {
-                        let condition_hash =
-                            condition_hash(&resolved, &arm.overrides, provider, model, *seed);
-                        out.push(Trial {
-                            id: trial_id(arm_name, task, *seed, rep),
-                            arm: arm_name.clone(),
-                            task: task.clone(),
-                            seed: *seed,
-                            repetition: rep,
-                            condition_hash,
-                            status: TrialStatus::Pending,
-                            session_id: None,
-                            started_at: None,
-                            finished_at: None,
-                            error: None,
-                            passed: None,
-                            checks: Vec::new(),
-                            stats: None,
-                        });
+            let row = |task: &String, seed: Option<u64>, rep: u32, position: Option<u32>| Trial {
+                id: trial_id(arm_name, task, seed, rep),
+                arm: arm_name.clone(),
+                task: task.clone(),
+                seed,
+                repetition: rep,
+                condition_hash: condition_hash_with_stages(
+                    &resolved,
+                    &arm.overrides,
+                    provider,
+                    model,
+                    seed,
+                    &stages,
+                ),
+                status: TrialStatus::Pending,
+                session_id: None,
+                started_at: None,
+                finished_at: None,
+                error: None,
+                passed: None,
+                checks: Vec::new(),
+                stats: None,
+                position,
+                lifetime: position.map(|_| lifetime_id(arm_name, seed, rep)),
+            };
+            match self.kind {
+                TrialKind::Single => {
+                    for task in task_ids {
+                        for seed in &seeds {
+                            for rep in 1..=self.repetitions {
+                                out.push(row(task, *seed, rep, None));
+                            }
+                        }
+                    }
+                }
+                // One home per (arm × seed × repetition), the sequence in
+                // order inside it: a lifetime's rows are contiguous and
+                // positioned, so a driver walks them as written.
+                TrialKind::Lifetime => {
+                    for seed in &seeds {
+                        for rep in 1..=self.repetitions {
+                            for (i, task) in task_ids.iter().enumerate() {
+                                out.push(row(task, *seed, rep, Some(i as u32 + 1)));
+                            }
+                        }
                     }
                 }
             }
         }
         out
+    }
+}
+
+/// The home id of one lifetime: an arm, a seed, a repetition.
+pub fn lifetime_id(arm: &str, seed: Option<u64>, rep: u32) -> String {
+    match seed {
+        Some(s) => format!("{arm}__s{s}__r{rep}"),
+        None => format!("{arm}__r{rep}"),
     }
 }
 
@@ -495,6 +738,25 @@ impl Arm {
             .filter(|l| off.contains(l) && !on.contains(l))
             .collect())
     }
+
+    /// The stage levers this arm carries off, in `StageLever::ALL`'s order.
+    /// An unknown name is the load error, never a skipped line.
+    pub fn resolve_stages(&self) -> Result<Vec<StageLever>> {
+        let mut off = Vec::new();
+        for name in &self.stages_off {
+            let lever = StageLever::parse(name).with_context(|| {
+                format!(
+                    "`{name}` is not a stage lever (the closed set: {})",
+                    StageLever::names()
+                )
+            })?;
+            off.push(lever);
+        }
+        Ok(StageLever::ALL
+            .into_iter()
+            .filter(|l| off.contains(l))
+            .collect())
+    }
 }
 
 fn trial_id(arm: &str, task: &str, seed: Option<u64>, rep: u32) -> String {
@@ -526,9 +788,26 @@ pub fn condition_hash(
     model: &str,
     seed: Option<u64>,
 ) -> String {
+    condition_hash_with_stages(levers_off, overrides, provider, model, seed, &[])
+}
+
+/// [`condition_hash`] for a lifetime's row: the stage levers off are part
+/// of the condition a row ran under, since a stage between tasks changes
+/// what the next task starts from. The `stages_off=` term is appended
+/// only when a stage is off, so every hash minted before stage levers
+/// existed — every `single` row and every eval's — keeps its value, and a
+/// lifetime arm with every stage on hashes as its single-trial twin.
+pub fn condition_hash_with_stages(
+    levers_off: &[Lever],
+    overrides: &[String],
+    provider: &str,
+    model: &str,
+    seed: Option<u64>,
+    stages_off: &[StageLever],
+) -> String {
     let mut overrides: Vec<&str> = overrides.iter().map(String::as_str).collect();
     overrides.sort_unstable();
-    let canonical = format!(
+    let mut canonical = format!(
         "levers_off={}|overrides={}|provider={provider}|model={model}|seed={}",
         levers_off
             .iter()
@@ -538,6 +817,16 @@ pub fn condition_hash(
         overrides.join(","),
         seed.map(|s| s.to_string()).unwrap_or_default()
     );
+    if !stages_off.is_empty() {
+        canonical.push_str("|stages_off=");
+        canonical.push_str(
+            &stages_off
+                .iter()
+                .map(|l| l.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in canonical.bytes() {
         h ^= u64::from(b);
@@ -578,6 +867,13 @@ pub struct Trial {
     /// The child run's folded outcome, read off its session in the trial home.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stats: Option<RunStats>,
+    /// A lifetime's rows only: this task's 1-based place in the sequence,
+    /// and the home id (`lifetime_id`) the row ran in. `None` on a single
+    /// trial's row and on every row written before lifetimes existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime: Option<String>,
 }
 
 impl Trial {
@@ -749,7 +1045,19 @@ impl ExperimentStore {
     /// The isolated home one arm's trials run in (D12). Created with the
     /// marker, and **refused if it is, or contains, the real home**.
     pub fn arm_home(&self, arm: &str) -> Result<PathBuf> {
-        let home = self.root.join("homes").join(arm);
+        self.home_at(arm)
+    }
+
+    /// The isolated home one *lifetime* runs in — one per arm × seed ×
+    /// repetition (`lifetime_id`), because a lifetime's whole point is what
+    /// its stages leave in the store for the next task, and two lifetimes
+    /// sharing a home would learn from each other.
+    pub fn lifetime_home(&self, lifetime: &str) -> Result<PathBuf> {
+        self.home_at(lifetime)
+    }
+
+    fn home_at(&self, name: &str) -> Result<PathBuf> {
+        let home = self.root.join("homes").join(name);
         let real = crate::work::mecha_home()?;
         refuse_unsafe_home(&home, &real)?;
         let fresh = !home.join(HOME_MARKER).exists();
@@ -767,6 +1075,272 @@ impl ExperimentStore {
     pub fn workspace_for(&self, trial_id: &str) -> PathBuf {
         self.root.join("trials").join(trial_id).join("workspace")
     }
+
+    /// One lifetime's stage ledger: `stages/<lifetime>.jsonl`, appended per
+    /// stage run. The ledger is what says a stage ran — the manifest says
+    /// only what was scheduled — and what a resumed driver reads to run a
+    /// stage the crash fell between.
+    pub fn stage_ledger(&self, lifetime: &str) -> PathBuf {
+        self.root.join("stages").join(format!("{lifetime}.jsonl"))
+    }
+
+    /// The directory a stage runs *from*. Not the trial home: a verb that
+    /// builds a path jail from its cwd (`validate`'s probes replay tool
+    /// calls) refuses a workspace that contains the mecha home, and the
+    /// home is exactly what a stage's cwd would have been (found on the
+    /// first live lifetime). An empty directory beside the ledger — no
+    /// `mecha.toml` can layer over the arm from there either.
+    pub fn stage_workspace(&self, lifetime: &str) -> PathBuf {
+        self.root.join("stages").join(lifetime).join("workspace")
+    }
+
+    /// Where a stage's output lands. Keyed by attempt as well: the ledger
+    /// keeps a failed stage's line and the rerun's as two lines, so the
+    /// logs must be two files, or the failed line points at the rerun's
+    /// output (found on review).
+    pub fn stage_log(
+        &self,
+        lifetime: &str,
+        after_position: u32,
+        stage: StageLever,
+        attempt: u32,
+    ) -> PathBuf {
+        self.root.join("stages").join(lifetime).join(format!(
+            "{after_position:03}-{}-a{attempt}.log",
+            stage.as_str()
+        ))
+    }
+
+    /// The attempt number the next run of `stage` after `position` gets:
+    /// one more than the ledger holds for that pair, **plus every torn
+    /// line** — a line that did not parse may have been this pair's, and
+    /// an attempt number reused would truncate the log the suffix exists
+    /// to keep (found on review). Monotonic, not dense: a torn line on
+    /// another pair skips a number here, which costs nothing.
+    pub fn next_attempt(ledger: &[StageRun], torn: usize, position: u32, stage: StageLever) -> u32 {
+        ledger
+            .iter()
+            .filter(|r| r.after_position == position && r.stage == stage)
+            .count() as u32
+            + torn as u32
+            + 1
+    }
+
+    pub fn record_stage(&self, run: &StageRun) -> Result<()> {
+        use std::io::Write;
+        let path = self.stage_ledger(&run.lifetime);
+        std::fs::create_dir_all(path.parent().expect("under the root"))?;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        let mut line = serde_json::to_string(run)?;
+        line.push('\n');
+        f.write_all(line.as_bytes())?;
+        Ok(())
+    }
+
+    /// Every lifetime's stage runs on this store, and the torn-line count
+    /// across them — what `judge` and `export` read, since for a lifetime
+    /// the ledger is the evidence that a treatment occurred.
+    pub fn all_stage_runs(&self) -> Result<(Vec<StageRun>, usize)> {
+        let dir = self.root.join("stages");
+        let (mut out, mut torn) = (Vec::new(), 0);
+        if !dir.exists() {
+            return Ok((out, torn));
+        }
+        let mut names: Vec<String> = std::fs::read_dir(&dir)?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.strip_suffix(".jsonl").map(str::to_string)
+            })
+            .collect();
+        names.sort();
+        for lifetime in names {
+            let (runs, t) = self.stage_runs(&lifetime)?;
+            out.extend(runs);
+            torn += t;
+        }
+        Ok((out, torn))
+    }
+
+    /// The stage runs on one lifetime's ledger, in order, and the count of
+    /// lines that did not parse — a torn line is a finding, not a stage
+    /// that never ran.
+    pub fn stage_runs(&self, lifetime: &str) -> Result<(Vec<StageRun>, usize)> {
+        let path = self.stage_ledger(lifetime);
+        if !path.exists() {
+            return Ok((Vec::new(), 0));
+        }
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let mut out = Vec::new();
+        let mut skipped = 0;
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str::<StageRun>(line) {
+                Ok(r) => out.push(r),
+                Err(_) => skipped += 1,
+            }
+        }
+        Ok((out, skipped))
+    }
+}
+
+/// One stage run between a lifetime's tasks, on the ledger.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageRun {
+    pub lifetime: String,
+    pub arm: String,
+    pub stage: StageLever,
+    /// The position whose task ran just before this stage.
+    pub after_position: u32,
+    /// Which attempt this is for the (position, stage) pair; the running
+    /// line and its terminal line share one. Rows written before the
+    /// field existed read as attempt 1.
+    #[serde(default = "one")]
+    pub attempt: u32,
+    pub started_at: String,
+    pub finished_at: String,
+    pub status: StageStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageStatus {
+    /// Appended *before* the child is spawned, so a driver killed
+    /// mid-stage leaves a line: the attempt number is burnt and the rerun
+    /// cannot truncate the interrupted attempt's log. A `running` line no
+    /// terminal line supersedes (same position, stage and attempt) reads
+    /// as an interrupted stage (found on review).
+    Running,
+    Done,
+    Failed,
+    /// Due, but a later position had already finished when the driver came
+    /// back to it: a stage that ran now would act on sessions its tasks
+    /// never ran under — causally inert, and a success that would have
+    /// released the judge's hold on a treatment that did not occur (found
+    /// on review). Terminal: never rerun, counted as broken, and it
+    /// supersedes the failure it stands for so the count is not doubled.
+    Skipped,
+    /// A status this build does not know: counted neither done nor failed,
+    /// and **due again** (`stages_due` reruns anything not `done`), because
+    /// a status this build cannot read is not proof the stage finished.
+    #[serde(other)]
+    Unknown,
+}
+
+/// How a set of stage runs went — one lifetime's, or every lifetime of an
+/// arm's. `interrupted` is a `running` line no terminal line supersedes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct StageHealth {
+    pub done: usize,
+    pub failed: usize,
+    pub interrupted: usize,
+    /// Due stages the driver could no longer run in sequence.
+    pub skipped: usize,
+    pub unknown: usize,
+}
+
+impl StageHealth {
+    /// A stage not known to have run as designed: failed, interrupted, or
+    /// in a status this build cannot read — unknown is never clean. A
+    /// failed or unknown line a later `done` line supersedes for the same
+    /// stage is not counted: `stages_due` reruns a failed stage, and the
+    /// rerun's success is the ledger saying it ran (found on review —
+    /// without this, one transient failure held every verdict at propose
+    /// forever).
+    pub fn broken(&self) -> usize {
+        self.failed + self.interrupted + self.skipped + self.unknown
+    }
+}
+
+pub fn stage_health(runs: &[StageRun]) -> StageHealth {
+    let mut h = StageHealth::default();
+    // A later attempt that settled the pair — ran, or was recorded skipped
+    // out of sequence — stands for every earlier line of it.
+    let later_settled = |r: &StageRun| {
+        runs.iter().any(|t| {
+            matches!(t.status, StageStatus::Done | StageStatus::Skipped)
+                && t.lifetime == r.lifetime
+                && t.after_position == r.after_position
+                && t.stage == r.stage
+                && t.attempt > r.attempt
+        })
+    };
+    for r in runs {
+        match r.status {
+            StageStatus::Done => h.done += 1,
+            StageStatus::Skipped => h.skipped += 1,
+            StageStatus::Failed => {
+                if !later_settled(r) {
+                    h.failed += 1;
+                }
+            }
+            StageStatus::Unknown => {
+                if !later_settled(r) {
+                    h.unknown += 1;
+                }
+            }
+            StageStatus::Running => {
+                // Its own terminal line, or a later attempt's success: the
+                // rerun always takes a higher attempt number, so without
+                // the second clause one interrupt pinned every verdict at
+                // propose forever (found on review).
+                let superseded = runs.iter().any(|t| {
+                    t.status != StageStatus::Running
+                        && t.lifetime == r.lifetime
+                        && t.after_position == r.after_position
+                        && t.stage == r.stage
+                        && t.attempt == r.attempt
+                }) || later_settled(r);
+                if !superseded {
+                    h.interrupted += 1;
+                }
+            }
+        }
+    }
+    h
+}
+
+/// The stages still due after `position`: the schedule's, minus the arm's
+/// levers off, minus those the ledger already shows done after that
+/// position. A failed stage is due again — the ledger keeps the failure,
+/// and the rerun is a second line, never an overwrite.
+pub fn stages_due(
+    schedule: &Schedule,
+    position: u32,
+    stages_off: &[StageLever],
+    ledger: &[StageRun],
+) -> Vec<StageLever> {
+    schedule
+        .due_after(position)
+        .into_iter()
+        .filter(|s| !stages_off.contains(s))
+        .filter(|s| {
+            !ledger.iter().any(|r| {
+                r.after_position == position
+                    && r.stage == *s
+                    && matches!(r.status, StageStatus::Done | StageStatus::Skipped)
+            })
+        })
+        .collect()
+}
+
+/// Whether a stage due after `position` can still run in sequence: it
+/// cannot once any later position of the lifetime has finished (done or
+/// failed), because what it would act on is no longer what the next task
+/// started from. The driver records such a stage `skipped` instead.
+pub fn out_of_sequence<'a>(position: u32, rows: impl IntoIterator<Item = &'a Trial>) -> bool {
+    rows.into_iter().any(|t| {
+        t.position.is_some_and(|p| p > position)
+            && matches!(t.status, TrialStatus::Done | TrialStatus::Failed)
+    })
 }
 
 /// D12's refusal, and `setup`'s rule for a workspace applied to the store:
@@ -970,11 +1544,64 @@ pub fn child_invocation(
         let change = crate::harness::parse_change(spec)?;
         change.apply_to_agent(&mut config.agent)?;
     }
+    // The one stage lever that is a config switch rather than a verb: it
+    // rides in the trial home's config, where `harness ruminate` reads it.
+    if arm.resolve_stages()?.contains(&StageLever::SensorsInBrief) {
+        config.agent.sensors_in_brief = false;
+    }
     Ok(ChildInvocation {
         config,
         flags,
         passthrough,
     })
+}
+
+/// A trial home's own accepted harness overrides, relative to the home.
+pub const HOME_OVERRIDES: &str = "learning/harness/overrides.toml";
+
+/// Fold the home's *own* accepted overrides — what its stages accepted,
+/// never the machine's, which `seed_home` drops — into the config the
+/// next task runs under. A `lifetime`'s driver only: a single runs no
+/// stage and has nothing to fold. The child's loader applies `overrides.toml` beneath every
+/// file layer, and the rendered `config.toml` names every `[agent]` key,
+/// so without this a change `harness ruminate` accepted inside the home
+/// never reached a task — the one stage with an effect today measured as
+/// nothing, with the ledger saying it ran (found on review). The arm's own
+/// `overrides` are re-applied last: they are the design, and a lifetime
+/// whose loop could move the treatment key would drift off its hash.
+pub fn fold_home_overrides(
+    config: &mut crate::config::Config,
+    home: &Path,
+    arm: &Arm,
+) -> Result<Vec<String>> {
+    // Strict, unlike the child's own loader: there a knob that fails to
+    // apply must not stop every run from starting, but here the fold *is*
+    // what makes a stage measurable, and a torn file applying nothing
+    // would read as "rumination had no effect" with the ledger saying it
+    // ran (found on review). The task's row carries the error instead.
+    // Returns the keys the home's file moved: a key the loop moved is the
+    // treatment for the next task exactly as an arm's pin is, and the
+    // driver must not let a case's own ceiling flag override it — a flag
+    // beats the rendered config, and 37 of the shipped cases carry one
+    // (found on review).
+    let mut moved = Vec::new();
+    let path = home.join(HOME_OVERRIDES);
+    if path.exists() {
+        let root = path.parent().expect("under the home");
+        let accepted = crate::harness::HarnessStore::open(root)?
+            .overrides()
+            .context("the trial home's accepted overrides could not be read, and the next task would have run without what a stage accepted")?;
+        for ov in accepted {
+            crate::harness::parse_change(&format!("{}={}", ov.key, ov.value))
+                .with_context(|| format!("accepted override `{}` in {}", ov.key, path.display()))?
+                .apply_to_agent(&mut config.agent)?;
+            moved.push(ov.key);
+        }
+    }
+    for spec in &arm.overrides {
+        crate::harness::parse_change(spec)?.apply_to_agent(&mut config.agent)?;
+    }
+    Ok(moved)
 }
 
 /// The stores a lever left *on* reads: the learning store (rules and
@@ -995,6 +1622,18 @@ pub fn seed_home(real: &Path, home: &Path) -> Result<()> {
         }
         copy_tree(&from, &to)
             .with_context(|| format!("seeding {} into {}", name, home.display()))?;
+    }
+    // The machine's own accepted overrides ride in `learning/`, and they
+    // are already in the rendered config at their real precedence —
+    // beneath the operator's file, where the loader puts them. A copy in
+    // the home would be folded *above* that file by `fold_home_overrides`,
+    // inverting the precedence for every arm under an unchanged hash
+    // (found on review). Dropped, so the home's file holds only what the
+    // home's own stages accept.
+    let seeded = home.join(HOME_OVERRIDES);
+    if seeded.exists() {
+        std::fs::remove_file(&seeded)
+            .with_context(|| format!("dropping the seeded {}", seeded.display()))?;
     }
     Ok(())
 }
@@ -1026,6 +1665,19 @@ pub struct ArmJudgement {
     pub selection: usize,
     pub holdout: usize,
     pub judgement: Judgement,
+    /// The treatment arm's and the control's stage runs, over every
+    /// lifetime of each. Zero everywhere on a `single`. A broken stage on
+    /// either side holds the verdict at *propose*: the ledger is the
+    /// evidence that the treatment occurred, and a stage that failed or
+    /// was interrupted is a treatment not known to have run as designed —
+    /// the rule "a trial that cannot answer the metric drops its pair
+    /// rather than counting as zero", one level up (found on review).
+    pub stages: StageHealth,
+    pub control_stages: StageHealth,
+    /// Ledger lines on the store that did not parse. A torn line has no
+    /// arm, so it holds every verdict: a line that could not be read is
+    /// not evidence the stage ran as designed.
+    pub unreadable_stage_lines: usize,
 }
 
 /// A finished control trial and the treatment trial on the same episode.
@@ -1044,7 +1696,16 @@ struct TrialPair<'a> {
 /// same way twice), and judge each arm through the gate. A trial that
 /// cannot answer the metric drops its pair; an arm with no pairs is
 /// reported with none rather than omitted.
-pub fn judge(manifest: &Manifest, trials: &[Trial]) -> Vec<ArmJudgement> {
+pub fn judge(
+    manifest: &Manifest,
+    trials: &[Trial],
+    stages: &[StageRun],
+    unreadable_stage_lines: usize,
+) -> Vec<ArmJudgement> {
+    let health_of = |arm: &str| {
+        let own: Vec<StageRun> = stages.iter().filter(|r| r.arm == arm).cloned().collect();
+        stage_health(&own)
+    };
     // A measurement has no control and nothing to judge: every arm is read
     // for what it measured, never paired.
     let Some(control_name) = &manifest.control else {
@@ -1115,6 +1776,24 @@ pub fn judge(manifest: &Manifest, trials: &[Trial]) -> Vec<ArmJudgement> {
                 )
             },
         );
+        let stages = health_of(name);
+        let control_stages = health_of(control_name);
+        let mut judgement = judgement;
+        let broken = stages.broken() + control_stages.broken() + unreadable_stage_lines;
+        // Both directions: a treatment not known to have occurred can no
+        // more be refuted than confirmed, and a confident reject over two
+        // arms that both failed to ruminate would read as evidence against
+        // it (found on review).
+        if broken > 0
+            && matches!(
+                judgement.disposition,
+                crate::candidate::Disposition::Accept | crate::candidate::Disposition::Reject(_)
+            )
+        {
+            judgement.disposition = crate::candidate::Disposition::Propose(format!(
+                "{broken} stage line(s) failed, interrupted, unreadable, or in a status this build cannot read across this arm's and the control's lifetimes; the treatment is not known to have run as designed"
+            ));
+        }
         out.push(ArmJudgement {
             arm: name.clone(),
             metric,
@@ -1122,6 +1801,9 @@ pub fn judge(manifest: &Manifest, trials: &[Trial]) -> Vec<ArmJudgement> {
             selection: selection.len(),
             holdout: holdout.len(),
             judgement,
+            stages,
+            control_stages,
+            unreadable_stage_lines,
         });
     }
     out
@@ -1462,7 +2144,7 @@ rationale = "no notice, fewer turns"
         };
         let m = Manifest::one_arm("eval-x", "bare", bare.clone(), tasks.clone(), 1).unwrap();
         assert_eq!(m.control, None);
-        assert!(judge(&m, &[]).is_empty(), "nothing to judge");
+        assert!(judge(&m, &[], &[], 0).is_empty(), "nothing to judge");
         let text = toml::to_string_pretty(&m).unwrap();
         let back = Manifest::parse(&text).unwrap();
         assert_eq!(back.control, None);
@@ -1486,7 +2168,7 @@ rationale = "no notice, fewer turns"
         assert_eq!(bake.control, None);
         assert_eq!(bake.arms.len(), 3);
         assert!(
-            judge(&bake, &[]).is_empty(),
+            judge(&bake, &[], &[], 0).is_empty(),
             "a bake-off judges nothing either"
         );
         // And a comparison still needs the control and a treatment arm: one
@@ -1706,7 +2388,519 @@ rationale = "no notice, fewer turns"
                 tool_calls: 3,
                 ..RunStats::default()
             }),
+            position: None,
+            lifetime: None,
         }
+    }
+
+    /// A lifetime plans one home per arm × seed × repetition and walks the
+    /// sequence in order inside it: rows carry their position and home,
+    /// share the arm's hash, and the stage levers off move the hash while
+    /// an arm with every stage on hashes as its single-trial twin.
+    #[test]
+    fn a_lifetime_plans_one_home_per_arm_seed_and_repetition_in_sequence_order() {
+        let text = r#"
+name = "life"
+kind = "lifetime"
+control = "full"
+split_seed = 3
+seeds = [1, 2]
+repetitions = 2
+[schedule]
+reflect = 1
+learn = 2
+validate = 2
+ruminate = 0
+[tasks]
+cases = "eval/cases.jsonl"
+fixture = "eval/workspace"
+ids = ["b", "a", "c"]
+[arms.full]
+preset = "full"
+[arms.deaf]
+stages_off = ["ruminate", "sensors_in_brief"]
+[arms.deaf.prediction]
+metric = "failure"
+rationale = "no rumination should fail more over the sequence"
+"#;
+        let m = Manifest::parse(text).unwrap();
+        assert_eq!(m.kind, TrialKind::Lifetime);
+        let ids: Vec<String> = ["b", "a", "c"].iter().map(|s| s.to_string()).collect();
+        let rows = m.trials(&ids, "p", "m");
+        assert_eq!(rows.len(), 2 * 2 * 2 * 3);
+        let deaf: Vec<&Trial> = rows.iter().filter(|t| t.arm == "deaf").collect();
+        assert_eq!(
+            deaf.iter()
+                .take(3)
+                .map(|t| (t.position, t.task.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(Some(1), "b"), (Some(2), "a"), (Some(3), "c")]
+        );
+        assert_eq!(deaf[0].lifetime.as_deref(), Some("deaf__s1__r1"));
+        assert_eq!(deaf[3].lifetime.as_deref(), Some("deaf__s1__r2"));
+        assert_eq!(deaf[6].lifetime.as_deref(), Some("deaf__s2__r1"));
+        assert!(deaf[..3]
+            .iter()
+            .all(|t| t.condition_hash == deaf[0].condition_hash));
+        // The stage levers are on the hash, in the closed set's order.
+        let full = rows
+            .iter()
+            .find(|t| t.arm == "full" && t.seed == Some(1))
+            .unwrap();
+        assert_ne!(full.condition_hash, deaf[0].condition_hash);
+        assert_eq!(
+            m.arms["deaf"].resolve_stages().unwrap(),
+            vec![StageLever::Ruminate, StageLever::SensorsInBrief]
+        );
+        assert_eq!(
+            condition_hash(&[], &[], "p", "m", Some(1)),
+            condition_hash_with_stages(&[], &[], "p", "m", Some(1), &[]),
+            "every stage on hashes as the single-trial twin"
+        );
+        // The schedule says what is due after a position, in run order.
+        assert_eq!(m.schedule.due_after(1), vec![StageLever::Reflect]);
+        assert_eq!(
+            m.schedule.due_after(2),
+            vec![StageLever::Reflect, StageLever::Validate, StageLever::Learn],
+            "validate measures before learn consumes — the nightly's order"
+        );
+        assert!(
+            !m.schedule.due_after(4).contains(&StageLever::Ruminate),
+            "0 is never"
+        );
+        assert_eq!(
+            Schedule::default().due_after(10),
+            vec![
+                StageLever::Reflect,
+                StageLever::Validate,
+                StageLever::Learn,
+                StageLever::Retire,
+                StageLever::Ruminate
+            ],
+            "the design's default: every, fifth, fifth, fifth, tenth — the nightly's order"
+        );
+    }
+
+    /// The lifetime-only rules refuse at load: a stage lever or a schedule
+    /// on a single, an unknown stage name, a task twice in the sequence.
+    #[test]
+    fn the_lifetime_rules_are_enforced_at_load() {
+        let single = MANIFEST.replace("[arms.full]", "[arms.full]\nstages_off = [\"learn\"]");
+        let e = Manifest::parse(&single).unwrap_err().to_string();
+        assert!(e.contains("`single` experiment"), "{e}");
+        let scheduled = MANIFEST.replace("[tasks]", "[schedule]\nreflect = 0\n[tasks]");
+        let e = Manifest::parse(&scheduled).unwrap_err().to_string();
+        assert!(e.contains("is a lifetime's"), "{e}");
+        let unknown = MANIFEST
+            .replace(
+                "control = \"full\"",
+                "kind = \"lifetime\"\ncontrol = \"full\"",
+            )
+            .replace(
+                "fixture = \"eval/workspace\"",
+                "fixture = \"eval/workspace\"\nids = [\"a\"]",
+            )
+            .replace(
+                "[arms.full]",
+                "[arms.full]\nstages_off = [\"followup_staging\"]",
+            );
+        let unnamed = MANIFEST.replace(
+            "control = \"full\"",
+            "kind = \"lifetime\"\ncontrol = \"full\"",
+        );
+        let e = Manifest::parse(&unnamed).unwrap_err().to_string();
+        assert!(e.contains("names its sequence"), "{e}");
+        let sixth: StageLever = serde_json::from_str("\"followup_staging\"").unwrap();
+        assert_eq!(
+            sixth,
+            StageLever::Unknown,
+            "a ledger's stage this build cannot name"
+        );
+        assert_eq!(sixth.argv(), None);
+        assert!(!StageLever::ALL.contains(&StageLever::Unknown));
+        let e = format!("{:#}", Manifest::parse(&unknown).unwrap_err());
+        assert!(
+            e.contains("not a stage lever") && e.contains("sensors_in_brief"),
+            "{e}"
+        );
+        let seeds = MANIFEST.replace("seeds = [1, 2]", "seeds = [1, 1]");
+        let e = Manifest::parse(&seeds).unwrap_err().to_string();
+        assert!(e.contains("seed `1` appears twice"), "{e}");
+        for kind in ["single", "lifetime"] {
+            let twice = MANIFEST
+                .replace(
+                    "control = \"full\"",
+                    &format!("kind = \"{kind}\"\ncontrol = \"full\""),
+                )
+                .replace(
+                    "fixture = \"eval/workspace\"",
+                    "fixture = \"eval/workspace\"\nids = [\"a\", \"a\"]",
+                );
+            let e = Manifest::parse(&twice).unwrap_err().to_string();
+            assert!(e.contains("appears twice"), "{kind}: {e}");
+        }
+        for name in StageLever::ALL {
+            assert_eq!(StageLever::parse(name.as_str()), Some(name));
+            let wire: StageLever = serde_json::from_str(&format!("\"{}\"", name.as_str())).unwrap();
+            assert_eq!(wire, name, "the wire name is the lever's name");
+        }
+        assert_eq!(StageLever::SensorsInBrief.argv(), None);
+        assert_eq!(
+            StageLever::Learn.argv(),
+            Some(&["learn", "--holdout", "0.25", "--auto"][..])
+        );
+        assert_eq!(
+            StageLever::Validate.argv(),
+            Some(&["validate", "--unprocessed-only"][..]),
+            "the held-out measurement, as the nightly runs it"
+        );
+        assert_eq!(
+            StageLever::Retire.argv(),
+            Some(&["rules", "propose-retirements", "--apply"][..]),
+            "the brake, as the nightly runs it"
+        );
+    }
+
+    /// The ledger says what ran: due stages are the schedule's minus the
+    /// arm's levers minus the lines already done after that position, a
+    /// failed stage is due again, and a torn line is a finding.
+    #[test]
+    fn the_stage_ledger_decides_what_is_still_due() {
+        let dir = std::env::temp_dir().join(format!("mecha-exp-ledger-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = ExperimentStore::open(&dir, "life").unwrap();
+        let run = |stage: StageLever, after: u32, status: StageStatus| StageRun {
+            lifetime: "full__r1".into(),
+            arm: "full".into(),
+            stage,
+            after_position: after,
+            attempt: 1,
+            started_at: "t0".into(),
+            finished_at: "t1".into(),
+            status,
+            exit_code: Some(0),
+            error: None,
+        };
+        store
+            .record_stage(&run(StageLever::Reflect, 2, StageStatus::Done))
+            .unwrap();
+        store
+            .record_stage(&run(StageLever::Learn, 2, StageStatus::Failed))
+            .unwrap();
+        let (ledger, torn) = store.stage_runs("full__r1").unwrap();
+        assert_eq!((ledger.len(), torn), (2, 0));
+        let schedule = Schedule {
+            reflect: 1,
+            learn: 2,
+            validate: 2,
+            retire: 0,
+            ruminate: 0,
+        };
+        assert_eq!(
+            stages_due(&schedule, 2, &[StageLever::Validate], &ledger),
+            vec![StageLever::Learn],
+            "reflect done, learn failed so due again, validate off, ruminate never"
+        );
+        assert_eq!(
+            stages_due(&schedule, 1, &[], &ledger),
+            vec![StageLever::Reflect]
+        );
+        assert!(stages_due(&schedule, 2, &StageLever::ALL, &ledger).is_empty());
+        let (_, none) = store.stage_runs("nobody").unwrap();
+        assert_eq!(none, 0);
+        // A torn line and an unknown status are findings, never stages done.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(store.stage_ledger("full__r1"))
+            .unwrap();
+        writeln!(f, "{{not json").unwrap();
+        writeln!(
+            f,
+            "{}",
+            serde_json::to_string(&run(StageLever::Reflect, 3, StageStatus::Done))
+                .unwrap()
+                .replace("\"done\"", "\"paused\"")
+        )
+        .unwrap();
+        let (ledger, torn) = store.stage_runs("full__r1").unwrap();
+        assert_eq!((ledger.len(), torn), (3, 1));
+        assert_eq!(ledger[2].status, StageStatus::Unknown);
+        assert_eq!(
+            stages_due(&schedule, 3, &[], &ledger),
+            vec![StageLever::Reflect]
+        );
+        assert!(store
+            .stage_log("full__r1", 3, StageLever::Reflect, 2)
+            .ends_with("full__r1/003-reflect-a2.log"));
+        assert_eq!(
+            ExperimentStore::next_attempt(&ledger, 0, 2, StageLever::Learn),
+            2,
+            "one failed learn on the ledger: the rerun is attempt 2"
+        );
+        assert_eq!(
+            ExperimentStore::next_attempt(&ledger, 0, 9, StageLever::Learn),
+            1
+        );
+        assert_eq!(
+            ExperimentStore::next_attempt(&ledger, 1, 9, StageLever::Learn),
+            2,
+            "a torn line may have been this pair's: never reuse its number"
+        );
+        // A running line no terminal line supersedes is an interrupted
+        // stage; one a terminal line supersedes is that terminal line's.
+        let mut running = run(StageLever::Ruminate, 4, StageStatus::Running);
+        running.attempt = 3;
+        store.record_stage(&running).unwrap();
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        let h = stage_health(&ledger);
+        assert_eq!(
+            (h.done, h.failed, h.interrupted, h.unknown),
+            (1, 1, 1, 1),
+            "reflect done, learn failed, the running ruminate interrupted, the paused line unknown: {h:?}"
+        );
+        assert_eq!(
+            ExperimentStore::next_attempt(&ledger, 0, 4, StageLever::Ruminate),
+            2,
+            "the running line burns its attempt"
+        );
+        let mut settled = run(StageLever::Ruminate, 4, StageStatus::Done);
+        settled.attempt = 3;
+        store.record_stage(&settled).unwrap();
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        let h = stage_health(&ledger);
+        assert_eq!((h.done, h.interrupted), (2, 0), "{h:?}");
+        // The failed learn's rerun succeeds: the failure is superseded and
+        // the stage is known to have run.
+        assert_eq!(h.failed, 1);
+        let mut learned = run(StageLever::Learn, 2, StageStatus::Done);
+        learned.attempt = 2;
+        store.record_stage(&learned).unwrap();
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        let h = stage_health(&ledger);
+        assert_eq!((h.done, h.failed), (3, 0), "{h:?}");
+        // An interrupted stage whose rerun succeeds on the next attempt is
+        // that success, not an interruption forever.
+        let mut cut = run(StageLever::Validate, 5, StageStatus::Running);
+        cut.attempt = 1;
+        store.record_stage(&cut).unwrap();
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        assert_eq!(stage_health(&ledger).interrupted, 1);
+        let next = ExperimentStore::next_attempt(&ledger, 0, 5, StageLever::Validate);
+        assert_eq!(next, 2, "the interrupted attempt is burnt");
+        for status in [StageStatus::Running, StageStatus::Done] {
+            let mut again = run(StageLever::Validate, 5, status);
+            again.attempt = next;
+            store.record_stage(&again).unwrap();
+        }
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        let h = stage_health(&ledger);
+        assert_eq!((h.interrupted, h.done), (0, 4), "{h:?}");
+        // A stage the driver could no longer run in sequence: recorded
+        // skipped, never due again, broken, and standing for its failure.
+        store
+            .record_stage(&run(StageLever::Reflect, 6, StageStatus::Failed))
+            .unwrap();
+        let mut skipped = run(StageLever::Reflect, 6, StageStatus::Skipped);
+        skipped.attempt = 2;
+        store.record_stage(&skipped).unwrap();
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        let h = stage_health(&ledger);
+        assert_eq!(
+            (h.skipped, h.failed, h.broken()),
+            (1, 0, 2),
+            "the skip stands for its failure; the paused line at 3 is the other broken one: {h:?}"
+        );
+        assert!(
+            !stages_due(&schedule, 6, &[], &ledger).contains(&StageLever::Reflect),
+            "a skipped stage is never due again"
+        );
+        let mut rows = vec![done("full", "a", 1, true, 3), done("full", "b", 1, true, 3)];
+        rows[0].position = Some(6);
+        rows[1].position = Some(7);
+        assert!(
+            out_of_sequence(6, &rows),
+            "position 7 finished: a stage after 6 is out of sequence"
+        );
+        rows[1].status = TrialStatus::Pending;
+        assert!(
+            !out_of_sequence(6, &rows),
+            "nothing later finished: still in sequence"
+        );
+        assert!(!out_of_sequence(7, &rows));
+        assert_eq!(
+            stages_due(&schedule, 2, &[], &ledger),
+            vec![StageLever::Validate],
+            "learn is done now; validate never ran after 2 and is still due"
+        );
+        let (all, torn) = store.all_stage_runs().unwrap();
+        assert_eq!((all.len(), torn), (ledger.len(), 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A broken stage on either side of a comparison holds the verdict at
+    /// propose: a treatment whose stages failed is not known to have run.
+    #[test]
+    fn a_broken_stage_holds_the_verdict_at_propose() {
+        let m = Manifest::parse(MANIFEST).unwrap();
+        let mut trials = Vec::new();
+        for i in 0..12u64 {
+            trials.push(done("full", &format!("t{i}"), 1, true, 10));
+            trials.push(done("bare", &format!("t{i}"), 1, false, 10));
+        }
+        let clean = judge(&m, &trials, &[], 0);
+        let bare = clean.iter().find(|v| v.arm == "bare").unwrap();
+        assert_eq!(bare.stages, StageHealth::default());
+        let failed = StageRun {
+            lifetime: "bare__s1__r1".into(),
+            arm: "bare".into(),
+            stage: StageLever::Ruminate,
+            after_position: 10,
+            attempt: 1,
+            started_at: "t0".into(),
+            finished_at: "t1".into(),
+            status: StageStatus::Failed,
+            exit_code: Some(1),
+            error: None,
+        };
+        let held = judge(&m, &trials, std::slice::from_ref(&failed), 0);
+        let bare_held = held.iter().find(|v| v.arm == "bare").unwrap();
+        assert_eq!(bare_held.stages.failed, 1);
+        assert!(
+            matches!(
+                bare.judgement.disposition,
+                crate::candidate::Disposition::Reject(_)
+            ),
+            "the clean verdict is a reject (bare fails more): {:?}",
+            bare.judgement.disposition
+        );
+        assert!(
+            matches!(
+                bare_held.judgement.disposition,
+                crate::candidate::Disposition::Propose(_)
+            ),
+            "neither accepted nor rejected over a stage that did not run: {:?}",
+            bare_held.judgement.disposition
+        );
+        // Unknown is never clean, and a torn line holds every verdict.
+        let mut odd = failed.clone();
+        odd.status = StageStatus::Unknown;
+        let held = judge(&m, &trials, &[odd], 0);
+        let v = held.iter().find(|v| v.arm == "bare").unwrap();
+        assert_eq!((v.stages.unknown, v.stages.broken()), (1, 1));
+        assert!(matches!(
+            v.judgement.disposition,
+            crate::candidate::Disposition::Propose(_)
+        ));
+        let held = judge(&m, &trials, &[], 1);
+        let v = held.iter().find(|v| v.arm == "bare").unwrap();
+        assert_eq!(v.unreadable_stage_lines, 1);
+        assert!(matches!(
+            v.judgement.disposition,
+            crate::candidate::Disposition::Propose(_)
+        ));
+        assert_eq!(
+            bare_held.judgement.selection, bare.judgement.selection,
+            "the tallies are untouched"
+        );
+    }
+
+    /// What a stage accepted inside the home reaches the next task: the
+    /// home's `overrides.toml` folds into the rendered config over the
+    /// arm's rendering, and the arm's own pinned keys still win.
+    #[test]
+    fn the_homes_accepted_overrides_reach_the_next_task_and_the_arms_pins_win() {
+        let home = std::env::temp_dir().join(format!("mecha-exp-fold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let overrides = home.join(HOME_OVERRIDES);
+        std::fs::create_dir_all(overrides.parent().unwrap()).unwrap();
+        std::fs::write(
+            &overrides,
+            "[[override]]\nkey = \"max_turns\"\nvalue = \"30\"\ncandidate = \"c1\"\naccepted_at = \"2026-09-04T00:00:00Z\"\n\
+             [[override]]\nkey = \"compact_at_tokens\"\nvalue = \"24000\"\ncandidate = \"c2\"\naccepted_at = \"2026-09-04T00:00:00Z\"\n",
+        )
+        .unwrap();
+        let real = crate::config::Config::default();
+        let arm = Arm {
+            overrides: vec!["max_turns=20".into()],
+            ..Arm::default()
+        };
+        let mut config = child_invocation(&real, &arm, None).unwrap().config;
+        assert_eq!(config.agent.max_turns, 20, "the arm's rendering");
+        let moved = fold_home_overrides(&mut config, &home, &arm).unwrap();
+        assert_eq!(
+            moved,
+            vec!["max_turns".to_string(), "compact_at_tokens".to_string()],
+            "the keys the home's loop moved, for the driver to treat as pins"
+        );
+        assert_eq!(config.agent.max_turns, 20, "the arm pins the treatment key");
+        assert_eq!(
+            config.agent.compact_at_tokens,
+            Some(24000),
+            "what ruminate accepted in this home reaches the next task"
+        );
+        let mut plain = child_invocation(&real, &Arm::default(), None)
+            .unwrap()
+            .config;
+        fold_home_overrides(&mut plain, &home, &Arm::default()).unwrap();
+        assert_eq!(plain.agent.max_turns, 30, "an unpinned key moves");
+        // The machine's own overrides never ride in: seeding drops the copy,
+        // and a key the operator pinned in the file keeps the file's value.
+        let fake_real = std::env::temp_dir().join(format!("mecha-exp-real-{}", std::process::id()));
+        let fresh = std::env::temp_dir().join(format!("mecha-exp-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&fake_real);
+        let _ = std::fs::remove_dir_all(&fresh);
+        std::fs::create_dir_all(fake_real.join("learning/harness")).unwrap();
+        std::fs::copy(&overrides, fake_real.join(HOME_OVERRIDES)).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+        seed_home(&fake_real, &fresh).unwrap();
+        assert!(
+            fresh.join("learning/harness").is_dir(),
+            "the harness store is seeded"
+        );
+        assert!(
+            !fresh.join(HOME_OVERRIDES).exists(),
+            "but not the machine's overrides"
+        );
+        let mut pinned = crate::config::Config::default();
+        pinned.agent.max_turns = 40; // what the operator's config.toml said
+        let mut cfg = child_invocation(&pinned, &Arm::default(), None)
+            .unwrap()
+            .config;
+        fold_home_overrides(&mut cfg, &fresh, &Arm::default()).unwrap();
+        assert_eq!(
+            cfg.agent.max_turns, 40,
+            "the file's pin survives a fresh home"
+        );
+        let _ = std::fs::remove_dir_all(&fake_real);
+        let _ = std::fs::remove_dir_all(&fresh);
+        // A torn file is the task's error, never a silent nothing.
+        std::fs::write(&overrides, "[[override]]\nkey = \"max_turns\"\n").unwrap();
+        let e = format!(
+            "{:#}",
+            fold_home_overrides(&mut plain, &home, &Arm::default()).unwrap_err()
+        );
+        assert!(e.contains("could not be read"), "{e}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The one stage lever that is a switch rides into the trial home's
+    /// config, and only when the arm names it.
+    #[test]
+    fn sensors_in_brief_off_rides_in_the_childs_config() {
+        let real = crate::config::Config::default();
+        let mut arm = Arm::default();
+        assert!(
+            child_invocation(&real, &arm, None)
+                .unwrap()
+                .config
+                .agent
+                .sensors_in_brief
+        );
+        arm.stages_off = vec!["sensors_in_brief".into()];
+        let child = child_invocation(&real, &arm, None).unwrap();
+        assert!(!child.config.agent.sensors_in_brief);
+        assert!(child.flags.is_empty(), "a switch, not a flag");
     }
 
     /// The gate over arm sets: each treatment arm paired with the control by
@@ -1729,7 +2923,7 @@ rationale = "no notice, fewer turns"
         }
         // One quiet trial never got stats: its pair drops.
         trials.iter_mut().find(|t| t.arm == "quiet").unwrap().stats = None;
-        let verdicts = judge(&m, &trials);
+        let verdicts = judge(&m, &trials, &[], 0);
         assert_eq!(verdicts.len(), 2);
         let bare = verdicts.iter().find(|v| v.arm == "bare").unwrap();
         assert_eq!(bare.metric, ExpMetric::Failure);
@@ -1755,7 +2949,7 @@ rationale = "no notice, fewer turns"
             quiet.judgement.disposition
         );
         // Deterministic: the same manifest draws the same holdout.
-        let again = judge(&m, &trials);
+        let again = judge(&m, &trials, &[], 0);
         assert_eq!(again[0].holdout, verdicts[0].holdout);
         assert_eq!(
             again[0].judgement.holdout.wins,

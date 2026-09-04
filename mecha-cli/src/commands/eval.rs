@@ -730,7 +730,7 @@ async fn ab_experiment(
             "mecha eval: {unsaved} trial row(s) not on the store; the verdict below is from memory and `mecha exp judge {name}` will not reproduce it"
         );
     }
-    let verdicts = mecha_core::experiment::judge(&manifest, &trials);
+    let verdicts = mecha_core::experiment::judge(&manifest, &trials, &[], 0);
     let verdict = verdicts
         .into_iter()
         .find(|v| v.arm == "treatment")
@@ -1786,6 +1786,8 @@ mod tests {
             passed: None,
             checks: Vec::new(),
             stats: None,
+            position: None,
+            lifetime: None,
         };
         let runs = [graded(1, true, 3), graded(2, false, 5)];
         let t = trial_of(&planned, &runs.iter().collect::<Vec<_>>());
