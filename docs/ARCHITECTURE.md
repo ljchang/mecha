@@ -2344,6 +2344,42 @@ The decisions that carry it, each a bug if undone:
   knobs `eval --ab-config` accepts, and eval's `apply_override` now delegates
   to `harness::parse_change` — a second spelling of the set is how the
   measurement arm and the acceptance arm silently stop being comparable.
+  `harness::Lever` is the on/off half beside it (`EXPERIMENT-DESIGN.md`
+  Part II, *The switch set* — PR #156 until it lands):
+  the thirteen subsystems a run can carry structurally absent, each a switch
+  that exists today, recorded on `RunConfig::levers_off` in `Lever::ALL`'s
+  order. `mecha eval`'s `force_reproducible` is `Lever::bare` thrown through
+  `setup::switch_off` plus one explicit line for `ApprovalRules` — the lever
+  `bare` never throws, because a `forbid` is the operator's standing word
+  and a preset must not become "unguarded" by definition; eval's fixture
+  workspaces are what justify lifting it there — and `setup::levers_off`
+  reads the same switches back
+  for the record, so eval's bare arm and any recorded run's absences come
+  from one definition — a test reads each through the other (eval itself
+  writes no session, so the meeting point is the function, not a record).
+  **The record is the switch, never the effect**, for all thirteen alike:
+  an empty rules store or a provider with no `context_window` leaves its
+  lever on, and the realised surface is `tools` and `system_prompt` on the
+  same record — an experiment pairs arms on the switch set and checks the
+  surface from those fields (one variant briefly recorded its effect, and
+  the field then meant two things; found on review). Four switches also
+  live in config (`[agent] step_escalation|boredom|compact_validate`,
+  `[messages] enabled` — the last folded because it is a switch of the same
+  shape, not for want of a trace: `message_send` in `tools` shows it too),
+  and for those `levers_off` reads the
+  *folded config the agent was built from*, never the flag: two earlier
+  shapes answered from the flag and let `prepare_tools`' fold be deleted
+  with the record still saying "absent" of a notice the agent went on
+  issuing, every test green. Empty lists (`fallbacks`, `[[hook]]`,
+  `[outbox] tools`) are not switches and are not recorded — named blind
+  spots. The record's loader
+  degrades the *whole* list to `None` on an unknown name, never to a shorter
+  list, because a lever dropped from `levers_off` reads as on; `None` is the
+  same answer a transcript from before the field gives, and neither is
+  "all on". A lever with no off position is not in the set: the record must
+  never say "absent" of something that ran, so the dispositions *The switch set* lists
+  without a switch (predictive compaction, carried state, the appraiser's
+  pass) join when their switch does.
 - **A divergent episode is dropped, not scored.** Replay answers from the
   recording; once an arm structurally departs, its remaining stats describe a
   run against tool results nobody asked for. Dropping fails safe: thin

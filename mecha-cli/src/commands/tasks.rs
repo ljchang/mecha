@@ -1578,6 +1578,7 @@ async fn work(
             &prepared.agent,
             &prepared.config,
             &prepared.provider_name,
+            &prepared.levers_off,
         ),
     ))?;
 

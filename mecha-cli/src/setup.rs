@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use mecha_core::agent::Agent;
 use mecha_core::config::SearchBackendConfig;
 use mecha_core::config::{Config, PermissionMode};
+use mecha_core::harness::Lever;
 use mecha_core::mcp::{self, McpClient};
 use mecha_core::search::{Exa, SearchBackend, SearchChain, Searxng, Tavily, WebSearch};
 use mecha_core::subagent::{Subagent, SubagentProfile};
@@ -40,6 +41,10 @@ pub struct Prepared {
     pub mailbox: Option<Arc<mecha_core::mailbox::MailboxRoute>>,
     /// Held for the lifetime of the run: dropping a client kills its server.
     pub _mcp: Vec<Arc<McpClient>>,
+    /// Which levers this run carries off, for `RunConfig::levers_off` —
+    /// computed here, once, from the switches the agent was built with, so
+    /// every front-end records the same answer for the same flags.
+    pub levers_off: Vec<Lever>,
 }
 
 /// Everything except the model connection. Split out so `mecha tools` can list
@@ -456,18 +461,91 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         agent.set_mailbox(Arc::clone(mb));
     }
 
+    let levers_off = levers_off(opts, &cfg);
     Ok(Prepared {
         agent,
         provider_name,
         model,
         workspace: tools.workspace,
         config: cfg,
+        levers_off,
         sandbox: tools.sandbox,
         todo: tools.todo,
         skill: tools.skill,
         mailbox: tools.mailbox,
         _mcp: tools._mcp,
     })
+}
+
+/// Which levers ([`Lever`]) a run built from `opts` over `cfg` carries
+/// **off** — the value `RunConfig::levers_off` records.
+///
+/// A pure function of the *switches*, never of what a store held or what
+/// the built agent ended up with: an empty rules store leaves `LearnedRules`
+/// on, because the lever was not thrown, and a provider with no
+/// `context_window` leaves `CompactTool` on for the same reason — the
+/// realised surface is `RunConfig::tools` and `system_prompt`'s to say, on
+/// the same record, and `Lever`'s docs say which field answers which
+/// question. (One variant briefly recorded its effect instead, and the field
+/// then meant two things a reader could not tell apart; found on review.)
+///
+/// **`cfg` must be the config the agent was built from, after
+/// [`fold_agent_switches`] has run on it** — `build` passes the very value
+/// `Agent::new` took its `AgentConfig` from. The four switches that live in
+/// config (`[agent] step_escalation|boredom|compact_validate`,
+/// `[messages] enabled`) are read straight off it, never re-folded from the
+/// flag here: an earlier version folded a private copy, which made the
+/// record independent of whether `prepare_tools` had folded the real one —
+/// delete that fold and the agent ran with boredom on while the record said
+/// off, with every test green (found on review). Reading the agent's own
+/// config makes that record impossible: whatever the fold did or did not
+/// do, the record names the value the agent runs with. Paired with
+/// [`switch_off`], and tested against it: forcing a lever off through one
+/// must read as off through the other, or `mecha eval`'s bare arm and the
+/// record's would name different sets.
+pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
+    let agent = &cfg.agent;
+    Lever::ALL
+        .into_iter()
+        .filter(|lever| match lever {
+            Lever::Mcp => opts.no_mcp,
+            Lever::LearnedRules => opts.no_learned_rules,
+            Lever::Hooks => opts.no_hooks,
+            Lever::Outbox => opts.no_outbox,
+            Lever::Fallback => opts.no_fallback,
+            Lever::Messages => opts.no_messages || !cfg.messages.enabled,
+            Lever::Skills => opts.no_skills,
+            Lever::Charter => opts.no_charter,
+            Lever::CompactTool => opts.no_compact_tool,
+            Lever::StepEscalation => !agent.step_escalation,
+            Lever::ApprovalRules => opts.no_rules,
+            Lever::Boredom => !agent.boredom,
+            Lever::CompactValidate => !agent.compact_validate,
+        })
+        .collect()
+}
+
+/// Throw one lever's switch on `opts`. The only place a [`Lever`] is mapped
+/// to its flag in the *off* direction, so `mecha eval`'s bare arm and an
+/// experiment's are built by the same hand. The `ApprovalRules` arm is the
+/// second door onto `no_rules` (its doc names both); `Lever::bare` never
+/// hands that lever in, so reaching it takes a caller naming it.
+pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
+    match lever {
+        Lever::Mcp => opts.no_mcp = true,
+        Lever::LearnedRules => opts.no_learned_rules = true,
+        Lever::Hooks => opts.no_hooks = true,
+        Lever::Outbox => opts.no_outbox = true,
+        Lever::Fallback => opts.no_fallback = true,
+        Lever::Messages => opts.no_messages = true,
+        Lever::Skills => opts.no_skills = true,
+        Lever::Charter => opts.no_charter = true,
+        Lever::CompactTool => opts.no_compact_tool = true,
+        Lever::StepEscalation => opts.no_step_escalation = true,
+        Lever::ApprovalRules => opts.no_rules = true,
+        Lever::Boredom => opts.no_boredom = true,
+        Lever::CompactValidate => opts.no_compact_validate = true,
+    }
 }
 
 /// Which of `wanted` an active `--tool` allowlist leaves out.
@@ -533,6 +611,24 @@ fn step_escalation_enabled(cfg_value: bool, no_step_escalation: bool) -> bool {
     cfg_value && !no_step_escalation
 }
 
+/// The three `[agent]` switches a `--no-*` flag may narrow and never widen,
+/// folded in one place, on the config the agent is then built from.
+/// [`levers_off`] does **not** call this: it reads the folded config the
+/// caller hands it, so the record is the agent's own value rather than a
+/// second reading of the flag. (Two earlier shapes both let the record
+/// diverge from the agent with every test green — an OR over the flag, then
+/// a private re-fold here — because each answered from the flag whether or
+/// not this fold had run on the real config; found on review, twice.)
+/// The truth table over this function composed with `levers_off` is what
+/// pins the mapping. The TUI's `record_config` does *not* fold: it records
+/// `Live::levers_off`, the value the running agent was built with, because
+/// the file may have moved since and `/mode` rebuilds nothing.
+pub(crate) fn fold_agent_switches(agent: &mut mecha_core::config::AgentConfig, opts: &GlobalOpts) {
+    agent.step_escalation = step_escalation_enabled(agent.step_escalation, opts.no_step_escalation);
+    agent.boredom = agent.boredom && !opts.no_boredom;
+    agent.compact_validate = agent.compact_validate && !opts.no_compact_validate;
+}
+
 /// The `ToolCtx` shape `compact_requested` already established: presence is
 /// the enablement. See [`step_escalation_enabled`] for why this is its own
 /// function rather than an inline `.then(...)` at the call site.
@@ -567,8 +663,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
     if opts.compact_at.is_some() {
         cfg.agent.compact_at_tokens = opts.compact_at;
     }
-    cfg.agent.step_escalation =
-        step_escalation_enabled(cfg.agent.step_escalation, opts.no_step_escalation);
+    fold_agent_switches(&mut cfg.agent, opts);
     if opts.no_thinking {
         cfg.agent.thinking = false;
         // Disabling thinking above `high` effort is rejected by the API. The
@@ -1557,8 +1652,99 @@ mod surface_only_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_subagent, excluded_by_allowlist, step_escalation_enabled, step_escalation_slot,
+        build_subagent, excluded_by_allowlist, fold_agent_switches, levers_off,
+        step_escalation_enabled, step_escalation_slot,
     };
+    use crate::GlobalOpts;
+    use mecha_core::config::Config;
+    use mecha_core::harness::Lever;
+
+    /// The review finding this pins, twice over: `--no-boredom` and
+    /// `--no-compact-validate` are made real by one fold, and the record
+    /// must be that fold's *output on the agent's own config* — not a
+    /// reading of the flag (the first shape) and not a private re-fold (the
+    /// second), both of which let the fold be deleted from `prepare_tools`
+    /// with the record still saying "absent" of a notice the agent went on
+    /// issuing. Every combination of config value and flag, for all three
+    /// switches, through the fold and then through `levers_off` on the
+    /// folded config; and the negative: on an *unfolded* config the record
+    /// follows the config, not the flag, which is exactly the property that
+    /// makes a missing fold visible in the record instead of hidden by it.
+    #[test]
+    fn the_record_is_the_folded_config_and_never_the_flag() {
+        for cfg_value in [false, true] {
+            for no_flag in [false, true] {
+                let mut cfg = Config::default();
+                cfg.agent.step_escalation = cfg_value;
+                cfg.agent.boredom = cfg_value;
+                cfg.agent.compact_validate = cfg_value;
+                let opts = GlobalOpts {
+                    no_step_escalation: no_flag,
+                    no_boredom: no_flag,
+                    no_compact_validate: no_flag,
+                    ..GlobalOpts::default()
+                };
+                let three = [
+                    Lever::StepEscalation,
+                    Lever::Boredom,
+                    Lever::CompactValidate,
+                ];
+
+                // Unfolded: the record says what the config says, flag or no
+                // flag. This is the assertion that fails on both earlier shapes.
+                let unfolded = levers_off(&opts, &cfg);
+                for lever in three {
+                    assert_eq!(
+                        unfolded.contains(&lever),
+                        !cfg_value,
+                        "{lever:?} on an unfolded config must follow the config: cfg={cfg_value} flag={no_flag}"
+                    );
+                }
+
+                // Folded, as `prepare_tools` does before `build` records: the
+                // mapping, and the record equal to it.
+                fold_agent_switches(&mut cfg.agent, &opts);
+                let expect = cfg_value && !no_flag;
+                assert_eq!(
+                    cfg.agent.step_escalation, expect,
+                    "cfg={cfg_value} flag={no_flag}"
+                );
+                assert_eq!(cfg.agent.boredom, expect, "cfg={cfg_value} flag={no_flag}");
+                assert_eq!(
+                    cfg.agent.compact_validate, expect,
+                    "cfg={cfg_value} flag={no_flag}"
+                );
+                let folded = levers_off(&opts, &cfg);
+                for lever in three {
+                    assert_eq!(
+                        folded.contains(&lever),
+                        !expect,
+                        "{lever:?} recorded off must equal the fold's off: cfg={cfg_value} flag={no_flag}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `[messages] enabled = false` is a run with no mailbox, and nothing in
+    /// `tools` or `system_prompt` can say so — the route lives on `ToolCtx`
+    /// — so it is the one config switch outside `[agent]` the record folds.
+    #[test]
+    fn a_disabled_mailbox_records_the_messages_lever_off() {
+        let mut cfg = Config::default();
+        cfg.messages.enabled = false;
+        assert!(levers_off(&GlobalOpts::default(), &cfg).contains(&Lever::Messages));
+        cfg.messages.enabled = true;
+        assert!(!levers_off(&GlobalOpts::default(), &cfg).contains(&Lever::Messages));
+        let no = GlobalOpts {
+            no_messages: true,
+            ..GlobalOpts::default()
+        };
+        assert!(
+            levers_off(&no, &cfg).contains(&Lever::Messages),
+            "the flag still narrows"
+        );
+    }
 
     /// The review finding this pins: `cfg.agent.step_escalation` is read
     /// nowhere but `build`'s `ToolCtx` construction, so nothing else would
