@@ -217,9 +217,29 @@ pub const PRINCIPAL_VERBS: [&[&str]; 8] = [
 ];
 
 pub fn allowed_verb(verb: &[String]) -> bool {
-    PRINCIPAL_VERBS
+    let head_allowed = PRINCIPAL_VERBS
         .iter()
-        .any(|lead| verb.len() >= lead.len() && lead.iter().zip(verb).all(|(a, b)| a == b))
+        .any(|lead| verb.len() >= lead.len() && lead.iter().zip(verb).all(|(a, b)| a == b));
+    // The rest of the argv is the verb's own, except the global options
+    // that would move the store, the model or the levers under the driver:
+    // those are the driver's to set, and the driver sets them last.
+    let moves_the_run = verb.iter().any(|a| {
+        let name = a.split('=').next().unwrap_or(a);
+        matches!(
+            name,
+            "--workspace"
+                | "-w"
+                | "--provider"
+                | "-p"
+                | "--model"
+                | "-m"
+                | "--effort"
+                | "--config"
+                | "--global-config-only"
+                | "--tools"
+        ) || name.starts_with("--no-")
+    });
+    head_allowed && !moves_the_run
 }
 
 /// How often each loop stage runs between a lifetime's tasks: every N
@@ -3040,6 +3060,22 @@ rationale = "no rumination should fail more over the sequence"
             "a leading word alone is not a verb"
         );
         assert!(!allowed_verb(&[]));
+        assert!(
+            !allowed_verb(&v("outbox approve ob-1 --workspace /tmp")),
+            "the workspace is the driver's"
+        );
+        assert!(!allowed_verb(&v(
+            "tasks set t-1 --status done --provider other"
+        )));
+        assert!(!allowed_verb(&v("questions answer q-1 --model=x yes")));
+        assert!(
+            !allowed_verb(&v("tasks set t-1 --no-learned-rules")),
+            "levers are the arm's"
+        );
+        assert!(
+            allowed_verb(&v("outbox approve ob-1 -y")),
+            "a verb's own flag is fine"
+        );
         // The answer's shape, strict.
         let out: PrincipalOutput = serde_json::from_str(
             r#"{"acts":[{"verb":["outbox","reject","ob-1","--reason","wrong date"],"reason":"gold: the date is not the meeting's"}],"deny":[{"tool":"shell","input_contains":"rm -rf","reason":"no"}]}"#,
