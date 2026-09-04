@@ -41,7 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lifetime's stage ledger (`stages/<lifetime>.jsonl`) with its exit
   status. Resume reads the rows and the ledger: a finished task is not
   rerun, a missing stage runs before the next task, a failed one is due
-  again with its own log. What a stage accepts inside the home — a
+  again with its own log, and an interrupted one leaves a `running` line
+  that burns its attempt. `judge` and `export` read the ledger: a failed
+  or interrupted stage on either side holds an arm's verdict at
+  *propose*, and the export carries every stage line. What a stage accepts inside the home — a
   `ruminate` override — reaches the next task under the arm's pinned
   keys. Rows gain `position` and `lifetime`; `status` shows each
   lifetime's sequence by position with its stage counts. New with it: the

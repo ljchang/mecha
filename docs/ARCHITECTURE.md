@@ -3097,7 +3097,16 @@ comparison over a chosen set**, with the design written before the run.
   stage levers minus the ledger's done lines — so a resumed driver runs
   the stage a crash fell between before the next task, a failed stage is
   due again as a second line, and a torn line is counted, never read as
-  a stage that ran. A lifetime that reaches a row this build cannot read
+  a stage that ran. A `running` line is appended *before* the spawn, so
+  a driver killed mid-stage leaves a record, the attempt number is burnt
+  and the rerun's log is a new file; a `running` line nothing supersedes
+  reads as interrupted. **`judge` and `export` read the ledger**: for a
+  lifetime it is the evidence that the treatment occurred, so each arm's
+  verdict carries its stage health and the control's, a failed or
+  interrupted stage on either side holds the verdict at *propose*
+  (a trial that cannot answer the metric drops its pair; a stage that
+  did not run cannot claim its effect), and the export carries every
+  stage line. A lifetime that reaches a row this build cannot read
   stops there rather than running the rest on a broken history. **What a
   stage accepted reaches the next task**: the child's loader applies a
   home's `overrides.toml` beneath every file layer and the rendered
