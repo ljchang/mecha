@@ -432,6 +432,11 @@ def main():
     ap.add_argument("--appraise", action="store_true", help="also drive the quarantined appraiser once per session (paid; ~15 s each)")
     ap.add_argument("--base-url", default="http://127.0.0.1:8080", help="the local server the appraiser runs against")
     args = ap.parse_args()
+    # The readout runs with the scratch home as cwd, and a relative executable
+    # would be resolved against *that* — `--mecha target/release/mecha` would
+    # die naming a path nobody typed. Resolve it here, before any cwd changes.
+    if os.sep in args.mecha:
+        args.mecha = str(pathlib.Path(args.mecha).resolve())
 
     if not args.jobs.is_dir():
         sys.exit(f"{args.jobs} is not a directory (it is gitignored; run against the checkout that holds it)")
@@ -500,7 +505,10 @@ def main():
                 # higher = worse. `None` when the pass failed (a malformed
                 # reply twice), which is "not answered", never "nothing".
                 "sign": None if tally["failed"] or sign is None else -sign,
-                "negative_with_appraiser": paid["valence"]["negative"],
+                # `None` on a failed pass, like `sign`: the appraiser never
+                # ran `apply_appraiser`, so the valence here would be the free
+                # readout's own number filed as "the appraiser added zero".
+                "negative_with_appraiser": None if tally["failed"] else paid["valence"]["negative"],
                 "reasoning": paid.get("reasoning"),
             }
         rows.append(
