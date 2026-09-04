@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Two more levers: `predictive_compaction` and `carried_state`**
+  (`[agent] predictive_compaction`, `[agent] carried_state`,
+  `--no-predictive-compaction`, `--no-carried-state`). The two in-run
+  dispositions the lever set could not name because nothing could switch
+  them off: compacting on the *forecast* of the next request (the threshold
+  stays — a lever removes a disposition above a structural check, never the
+  check), and a tool's state riding verbatim across a compaction. Both
+  ship on, both are recorded on `RunConfig::levers_off`, and `mecha eval`
+  forces both off with the rest of the set. The appraiser's pass stays out
+  of the set — it has no in-run site — and `sensors_in_brief` waits for the
+  trial manifest, being a stage lever rather than a run's.
+
 - **A cancelled run records what ended it.** `StopCause` gains `Parked`
   (a question put to the owner), `Stopped` (a person: Ctrl-C, a stop
   button, `tasks stop`, a trigger cancelled by request) and `Shutdown`

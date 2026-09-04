@@ -1802,7 +1802,12 @@ impl Agent {
                 }
                 if !compaction_gave_up
                     && !loop_detected
-                    && (asked || pressure.over(limit, crate::pressure::message_bytes(messages)))
+                    && (asked
+                        || pressure.over_by(
+                            limit,
+                            crate::pressure::message_bytes(messages),
+                            self.cfg.predictive_compaction,
+                        ))
                 {
                     // Taken now that it is being acted on. Inside the
                     // guard, so a request the run could not serve is still
@@ -1893,7 +1898,13 @@ impl Agent {
                     // happen is worse than no tool: the model plans against it.
                     // Monotonicity is unaffected — this can only ever *add* a
                     // summary, never delay the harness's own.
-                    if !asked && !pressure.over(limit, crate::pressure::message_bytes(messages)) {
+                    if !asked
+                        && !pressure.over_by(
+                            limit,
+                            crate::pressure::message_bytes(messages),
+                            self.cfg.predictive_compaction,
+                        )
+                    {
                         tracing::debug!("the free passes freed enough; no summary this turn");
                     } else {
                         match self.compact(cx, messages, &events).await {
@@ -2616,8 +2627,15 @@ impl Agent {
         }
 
         // Asked at install time, not before the summariser ran: a tool's state
-        // is whatever it is *now*, and now is after the round trip.
-        let carried = self.registry.carried_state(&cx.tools);
+        // is whatever it is *now*, and now is after the round trip. The
+        // `carried_state` lever removes the carry — the summary still
+        // installs, the plan just does not ride across it — which is the arm
+        // that measures what the carry is worth.
+        let carried = if self.cfg.carried_state {
+            self.registry.carried_state(&cx.tools)
+        } else {
+            Vec::new()
+        };
         let carried: Vec<(&str, &str)> = carried
             .iter()
             .map(|state| (state.label.as_str(), state.body.as_str()))
@@ -6171,6 +6189,70 @@ mod tests {
     /// So the reactive check declines to act on the one turn where acting was
     /// the whole game, and finds out by being refused. Graded on
     /// `context_overflows`, which is what that counter is for.
+    /// The `predictive_compaction` lever, measured as a pair on one fixture:
+    /// with the forecast on, no request is ever sent at or over the
+    /// threshold, because the free passes ran on the prediction before the
+    /// request that would have crossed it; with it off, the loop learns the
+    /// transcript is over only from the report — *after* sending a request
+    /// that is over — and shrinks on the next turn. The threshold itself
+    /// still fires in both arms, which is the lever's contract: it removes
+    /// the disposition above the check, never the check. Fails on the old
+    /// shape, where the prediction had no off position and the second arm
+    /// could not exist.
+    #[tokio::test]
+    async fn the_predictive_compaction_lever_is_the_difference_between_before_and_after() {
+        let run = |predictive: bool| async move {
+            let call = |id: &str| {
+                assistant(
+                    vec![Block::ToolUse {
+                        id: id.into(),
+                        name: "bulk".into(),
+                        input: json!({"n": 100_000}),
+                    }],
+                    StopReason::ToolUse,
+                )
+            };
+            let cfg = AgentConfig {
+                compact_at_tokens: Some(40_000),
+                predictive_compaction: predictive,
+                ..AgentConfig::default()
+            };
+            let provider = SizedProvider::new(
+                None,
+                vec![
+                    call("t1"),
+                    call("t2"),
+                    call("t3"),
+                    assistant(vec![Block::text("done")], StopReason::EndTurn),
+                ],
+            );
+            let agent = sized_agent(&provider, cfg);
+            let mut convo = Conversation::from(vec![Message::user("go")]);
+            let outcome = agent.run(&mut convo, None).await.unwrap();
+            assert_eq!(outcome.text, "done");
+            let sizes: Vec<u64> = provider
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(t, _)| *t)
+                .collect();
+            sizes
+        };
+        let with = run(true).await;
+        let without = run(false).await;
+        assert!(
+            with.iter().all(|t| *t < 40_000),
+            "with the forecast, nothing is sent over the threshold: {with:?}"
+        );
+        assert!(
+            without.iter().any(|t| *t >= 40_000),
+            "without it, the loop finds out by sending one: {without:?}"
+        );
+        // And both arms still shrink: the check stayed.
+        assert!(without.last().unwrap() < &40_000, "{without:?}");
+    }
+
     #[tokio::test]
     async fn a_turns_results_no_longer_take_the_next_request_over_the_window() {
         let call = |id: &str| {
@@ -7530,6 +7612,64 @@ mod tests {
     /// Before this, the model saw its own plan only through the echo in the
     /// last `todo` result, which made the whole mechanism conditional on the
     /// transcript never getting long.
+    /// The `carried_state` lever: the same fixture with the carry off
+    /// compacts the list away and does not put it back — the head has no
+    /// carried block. Fails on the old shape, where the carry was
+    /// unconditional and nothing could switch it off to measure it.
+    #[tokio::test]
+    async fn the_carried_state_lever_leaves_the_list_behind() {
+        let todo = Arc::new(crate::tool::todo::TodoTool::new());
+        let mut turns = vec![assistant(
+            vec![
+                Block::text("planning"),
+                Block::ToolUse {
+                    id: "todo1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [
+                        {"content": "fix the port", "status": "in_progress"},
+                        {"content": "run the tests", "status": "pending"}
+                    ]}),
+                },
+            ],
+            StopReason::ToolUse,
+        )];
+        for i in 0..10 {
+            turns.push(assistant(
+                vec![
+                    Block::text(format!("step {i}")),
+                    Block::ToolUse {
+                        id: format!("t{i}"),
+                        name: "echo".into(),
+                        input: json!({"value": "x"}),
+                    },
+                ],
+                StopReason::ToolUse,
+            ));
+        }
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(EchoTool), todo.clone()],
+            PermissionMode::Allow,
+        );
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.max_turns = 6;
+        agent.cfg.force_final_answer = false;
+        agent.cfg.compact_validate = false;
+        agent.cfg.carried_state = false;
+
+        let mut convo = Conversation::user("the original task");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert!(outcome.compactions >= 1, "the fixture must compact");
+        let head = convo.messages[0].text();
+        assert!(
+            !head.contains(crate::compact::CARRIED_HEADER),
+            "the carry is off, so no carried block: {head}"
+        );
+        assert!(!head.contains("fix the port"), "{head}");
+    }
+
     #[tokio::test]
     async fn the_task_list_survives_a_compaction() {
         let todo = Arc::new(crate::tool::todo::TodoTool::new());
