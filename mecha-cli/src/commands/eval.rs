@@ -841,33 +841,26 @@ fn record_measurement(
     mecha_core::experiment::ExperimentStore,
     mecha_core::experiment::Manifest,
 )> {
-    use mecha_core::experiment::{Arm, ExperimentStore, Manifest, Preset, Tasks};
-    // The arm names the model that *ran*, not only the flag: resolved the
-    // way `setup::build` resolves it — the flag, else the config's default
-    // provider and its model — off the same config the arms load. A record
-    // that carried `None` for the ordinary eval said nothing about the one
-    // fact a scorecard exists to hold (found on review).
+    use mecha_core::experiment::{ExperimentStore, Manifest, Tasks};
+    // `--mcp-file` adds servers no lever names, and the trial row's
+    // `condition_hash` sees only levers, overrides, provider, model and
+    // seed — so a record of that eval would carry the hash of a bare one
+    // and break the hash's contract ("the same hash was configured
+    // identically"). The A/B refuses the flag for the same reason; the
+    // measurement is skipped and says so, and the scorecard still runs
+    // (found on review).
+    anyhow::ensure!(
+        args.mcp_file.is_none(),
+        "--mcp-file adds fixture servers no lever names, and the record's condition hash could not tell this eval from a bare one"
+    );
     let cfg = if global.global_config_only {
         mecha_core::config::Config::load_global()?
     } else {
         let cwd = std::env::current_dir().context("cannot determine the working directory")?;
         mecha_core::config::Config::load(&cwd)?
     };
-    let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
-    let model = global.model.clone().or_else(|| provider_cfg.model.clone());
-    let arm = Arm {
-        preset: Some(Preset::Bare),
-        levers_on: if args.mcp {
-            vec!["mcp".into()]
-        } else {
-            Vec::new()
-        },
-        overrides: effective_overrides(global)?,
-        provider: Some(provider_name),
-        model,
-        ..Arm::default()
-    };
-    let name = format!("eval-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+    let arm = measurement_arm(global, args.mcp, &cfg)?;
+    let name = eval_name(chrono::Utc::now());
     let mut manifest = Manifest::one_arm(
         &name,
         "bare",
@@ -881,16 +874,50 @@ fn record_measurement(
         1,
     )?;
     manifest.description = format!(
-        "mecha eval scorecard; {} run(s) per case, scored pass^k; approval rules lifted (eval's fixture forcing, not expressible as a lever){}",
+        "mecha eval scorecard; {} run(s) per case, scored pass^k; approval rules lifted (eval's fixture forcing, not expressible as a lever)",
         args.runs,
-        args.mcp_file
-            .as_ref()
-            .map(|p| format!("; fixture MCP servers from {} (not expressible as a lever)", p.display()))
-            .unwrap_or_default()
     );
     let store = ExperimentStore::open_default(&name)?;
     store.create_manifest(&manifest)?;
     Ok((store, manifest))
+}
+
+/// The arm a scorecard measured. It names the provider and model that
+/// *ran*, resolved the way `setup::build` resolves them — the flag, else
+/// the provider's configured `model`, else the provider's own default —
+/// off the same config the run loads. Two earlier cuts stopped short (the
+/// flags alone, then the flags and the config) and each left the manifest
+/// silent about the one fact a scorecard exists to hold (found on review,
+/// twice).
+fn measurement_arm(
+    global: &GlobalOpts,
+    mcp: bool,
+    cfg: &mecha_core::config::Config,
+) -> Result<mecha_core::experiment::Arm> {
+    use mecha_core::experiment::{Arm, Preset};
+    let (provider_name, provider_cfg) = cfg.provider(global.provider.as_deref())?;
+    let model = match global.model.clone().or_else(|| provider_cfg.model.clone()) {
+        Some(m) => m,
+        None => mecha_core::provider::build(provider_cfg)?
+            .default_model()
+            .to_string(),
+    };
+    Ok(Arm {
+        preset: Some(Preset::Bare),
+        levers_on: if mcp { vec!["mcp".into()] } else { Vec::new() },
+        overrides: effective_overrides(global)?,
+        provider: Some(provider_name),
+        model: Some(model),
+        ..Arm::default()
+    })
+}
+
+/// The experiment a plain eval records as; same shape and same test as
+/// `ab_name`, because a bad stamp here is *quieter* than the A/B's was —
+/// `record_measurement`'s error is printed and the scorecard runs on, so
+/// every eval would silently record nothing.
+fn eval_name(now: chrono::DateTime<chrono::Utc>) -> String {
+    format!("eval-{}", now.format("%Y%m%d-%H%M%S"))
 }
 
 /// The experiment an A/B records as. A producer name, so lowercase, digits,
@@ -1548,6 +1575,52 @@ mod tests {
             assert!(name.starts_with(&format!("eval-ab-{kind}-")));
             mecha_core::experiment::ExperimentStore::open(std::env::temp_dir(), &name).unwrap();
         }
+        let name = eval_name(chrono::Utc::now());
+        mecha_core::work::valid_producer(&name).unwrap();
+        assert!(name.starts_with("eval-") && !name.starts_with("eval-ab-"));
+        mecha_core::experiment::ExperimentStore::open(std::env::temp_dir(), &name).unwrap();
+    }
+
+    /// The measurement's arm names the model that ran through every link
+    /// of `setup::build`'s chain: the flag, else the provider's configured
+    /// model, else the provider's own default — never `None`.
+    #[test]
+    fn the_measurement_names_the_model_that_ran_even_when_nothing_named_it() {
+        let mut cfg = mecha_core::config::Config::default();
+        cfg.providers.insert(
+            "box".into(),
+            mecha_core::config::ProviderConfig {
+                kind: "local".into(),
+                model: None,
+                api_key: Some("none".into()),
+                base_url: Some("http://127.0.0.1:1/v1".into()),
+                ..cfg.providers["anthropic"].clone()
+            },
+        );
+        cfg.default_provider = "box".into();
+        let builtin = mecha_core::provider::build(&cfg.providers["box"])
+            .unwrap()
+            .default_model()
+            .to_string();
+        let global = GlobalOpts::default();
+        let arm = measurement_arm(&global, false, &cfg).unwrap();
+        assert_eq!(arm.provider.as_deref(), Some("box"));
+        assert_eq!(arm.model.as_deref(), Some(builtin.as_str()));
+        assert!(arm.levers_on.is_empty());
+
+        cfg.providers.get_mut("box").unwrap().model = Some("configured".into());
+        let arm = measurement_arm(&global, true, &cfg).unwrap();
+        assert_eq!(arm.model.as_deref(), Some("configured"));
+        assert_eq!(arm.levers_on, vec!["mcp".to_string()]);
+
+        let flagged = GlobalOpts {
+            provider: Some("anthropic".into()),
+            model: Some("flagged".into()),
+            ..GlobalOpts::default()
+        };
+        let arm = measurement_arm(&flagged, false, &cfg).unwrap();
+        assert_eq!(arm.provider.as_deref(), Some("anthropic"));
+        assert_eq!(arm.model.as_deref(), Some("flagged"));
     }
 
     /// A case's runs fold into one trial row the way the old pairing scored
