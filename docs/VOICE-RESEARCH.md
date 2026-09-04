@@ -755,6 +755,87 @@ Verified both directions: synthetic noise at rms 0.0122 — matching the
 0.0124 that interrupted the real call — starts no turn and yields no
 transcript, while a spoken question still transcribes and is answered.
 
+**The first fragment of every turn was ended by a timer, not by
+smart-turn — 2026-09-04.** First call after the echo work, on speakers, and
+the owner's report was "it didn't let me finish talking" and "sluggish". The
+journal named the mechanism in two lines: `User started speaking (strategy:
+TranscriptionUserTurnStartStrategy)` followed **+0.80 s** later, every time,
+by `inference triggered (strategy: TurnAnalyzerUserTurnStopStrategy)` — with
+smart-turn having logged `INCOMPLETE` on that very segment a moment before.
+"add a couple", "My next to do is I need to" and "Okay. I just need you to
+add it to my to do's." each went to the model alone, and the model answered
+each fragment ("I'm listening — what's your next to-do?").
+
+The cause is the decision above meeting an assumption pipecat never states.
+Its stop strategy resets itself when a turn starts, on the premise that the
+VAD opened the turn *before* the user stopped. Here the transcript opens it,
+and Parakeet is offline, so the transcript lands after the VAD stop and after
+smart-turn has ruled — and the reset throws that ruling away. The transcript
+then takes the strategy's "no VAD stop was received" branch: turn assumed
+complete, timer of `ttfs_p99_latency − stop_secs` = 1.0 − 0.2 = **0.8 s**.
+Only the first segment of a turn is affected; once the turn exists, later
+segments take the normal path, which is why "que" waited smart-turn's full
+3 s and why the 2026-09-01 call never showed it — the owner resumed within
+the window each time. Dictating to-dos, with a think between phrases, crossed
+it. The same premise had a second edge: the STT safety net is anchored to the
+*end of speech*, and warm Parakeet answers 0.5–0.9 s after it, so a
+`COMPLETE` could arrive with the deadline already spent and end the turn on
+the **previous** segment's text — "Master thesis draft?" was dropped from
+one request and then opened a new turn that barged in on the reply to it.
+
+Three changes, none a threshold on the owner's speech:
+
+- `TranscriptStartedTurnStop` subclasses the stock strategy and keeps a VAD
+  stop already in hand across a transcript-driven turn start. A `COMPLETE`
+  ruling ends the turn the moment the transcript lands; an `INCOMPLETE` one
+  holds it for smart-turn's own silence limit or the owner speaking again.
+  When the VAD did open the turn, the stock reset runs as before. It reads
+  one pipecat private and refuses to start a call if that private is gone.
+- Every Parakeet transcript is emitted `finalized` — an offline transcriber
+  has no interim to revise — which is what lets the turn end on the text
+  instead of on a timer after it. Final for the *segment*, though, not the
+  turn: the stock strategy clears the flag only when the VAD next reports
+  speech, so a transcript landing after the owner has already resumed is
+  still "finalized" at the next VAD stop, and a `COMPLETE` there ends the
+  turn without that segment's words (review of #170 found the ordering; the
+  test written to refute it found this instead). The override counts the
+  segments still awaiting text and treats a transcript as final for the
+  turn only when none is outstanding. A segment the gate or the echo
+  filter drops yields no transcript, so the STT says so with a
+  `SegmentDroppedFrame` and it is counted off the same way — `SegmentedSTT`
+  runs the transcriber exactly once per VAD stop, which makes the count
+  exact rather than a guess. That matters on speakers: every bot sentence
+  is a dropped segment with no turn open, and a count that drifted there
+  would put every owner turn onto the safety net (the third review pass's
+  finding, and the reason the frame exists).
+- `STT_TTFS_P99 = 2.0` replaces pipecat's streaming-STT default of 1.0, so the
+  safety net cannot expire before a warm transcript; with finalized
+  transcripts it only bounds the wait when a segment yields no words.
+
+`scripts/voice/test_turn_stop.py` replays the three turns against a scripted
+analyzer and a real clock, and asserts the stock strategy still shows the
+fault, so the test is not vacuous. It needs pipecat, runs in the worker venv,
+and refuses to pass without it.
+
+**Two things the same call showed that are not the worker's.** The session
+title pass (`title::summarise`) fired on the first run of the call — a run a
+barge-in had *cancelled* — and thought for ~1,100 tokens over 18 s on
+llama-server beside the retry: generation fell from 60–77 t/s to 30 t/s and
+Chatterbox from ~100 to ~55 it/s for as long as it ran. `title::settled` now
+withholds the name from a run the owner cut off; the threshold is spent on the
+turn that finishes. And the owner's speech measured a **third** of the
+2026-09-01 level (median segment RMS 0.019 against 0.061), which is the
+mic-meter change above doing its job — the canceller and gain control are
+armed now — and is the number the `ECHO_SEGMENT_RMS` derivation has to
+re-measure against; no echo segment appeared in four minutes on speakers,
+and the one `over_speaker=True` transcript ("by Monday.") was the owner
+talking over the bot. Not regressions, for the record: TTS answered every
+request at 0.9–3.5 s a sentence and per-turn model latency matched
+2026-09-01 turn for turn; the sluggishness was the cancel-and-retry chain each
+premature turn end started, with llama-server re-evaluating the 14k-token
+prefix (5–7 s) whenever the retry landed in a slot whose cache held something
+else.
+
 **On speakers, the microphone still heard the reply — three layers,
 2026-09-02.** Reported from a real call without headphones: the mic takes the
 bot's own voice as the owner talking. Every existing defence was in place and

@@ -22,20 +22,28 @@ The three legs are env-configurable base URLs (D6):
 
 import os
 import uuid
+from dataclasses import dataclass
 
 import httpx
 from openai.types.audio import Transcription
 
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    DataFrame,
+    TranscriptionFrame,
     VADUserStartedSpeakingFrame,
 )
 from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
     TranscriptionUserTurnStartStrategy,
 )
+from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
+    TurnAnalyzerUserTurnStopStrategy,
+)
+from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -116,6 +124,24 @@ AFFECT_CFG_WEIGHT_DELTA = -0.05
 # silence 0.000; the gate sits in the gap.
 MIN_SEGMENT_RMS = 0.010
 MIN_SEGMENT_SECONDS = 0.3
+
+# How long after the owner stops speaking the turn logic will wait for
+# Parakeet before deciding the transcript is not coming. Pipecat's default
+# (`DEFAULT_TTFS_P99`, 1.0s) is a streaming-STT number and was short for this
+# pipeline: the wait is anchored to the end of speech, so the 0.2s VAD window,
+# the segment hand-off, the smart-turn inference and the STT request all
+# spend it, and warm Parakeet answers 0.5-0.9s after speech ends (2.5s cold,
+# 2026-09-04 12:55 UTC). When it expired first, smart-turn's COMPLETE fired
+# the turn on the *previous* segment's text and this segment's transcript
+# arrived as a new turn - which is how "Master thesis draft?" was dropped from
+# one request and then barged in on the reply to it. Two seconds covers the
+# warm tail with room; every transcript here is finalized (`run_stt`), so on
+# the ordinary path the turn ends the moment the text lands and this only
+# bounds the wait when a segment yields no words at all. The cold 2.5s is
+# the first segment of a call, and that one is safe under any value: the
+# strategy holds no earlier text yet, so an expired net has nothing to end
+# the turn on and the turn waits for the transcript regardless.
+STT_TTFS_P99 = 2.0
 
 
 # The echo defence: a phone or a laptop on speaker hears its own TTS, and
@@ -216,6 +242,17 @@ def _new_echo_window() -> BotSpeech:
     return BotSpeech()
 
 
+@dataclass
+class SegmentDroppedFrame(DataFrame):
+    """A VAD segment that will yield no transcript - the gate or the echo
+    filter dropped it, or the transcriber failed. `SegmentedSTTService`
+    runs the transcriber exactly once per VAD stop, so every stop ends in
+    either a `TranscriptionFrame` or one of these, and the turn logic can
+    count them against each other rather than guess. A data frame, not a
+    system frame, so it keeps its place in the queue behind the transcripts
+    ahead of it."""
+
+
 class SegmentGatedSTT(BaseWhisperSTTService):
     """The energy/duration gate every segment passes before any model sees
     it. Split out from the transcriber because it is a property of the
@@ -235,6 +272,7 @@ class SegmentGatedSTT(BaseWhisperSTTService):
     that and would put the window in the wrong place."""
 
     def __init__(self, **kwargs):
+        kwargs.setdefault("ttfs_p99_latency", STT_TTFS_P99)
         super().__init__(**kwargs)
         # This connection's own echo window. `run_bot` hands the same object
         # to the TTS, which writes what it speaks into it.
@@ -258,6 +296,24 @@ class SegmentGatedSTT(BaseWhisperSTTService):
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
             self._bot_audible_until = _time.monotonic()
+
+    async def run_stt(self, audio: bytes):
+        # Every transcript from an offline transcriber is the final word on
+        # its segment: there is no interim it revises. Saying so lets the
+        # turn logic end the turn the moment the text arrives instead of
+        # waiting out the STT safety net (`STT_TTFS_P99`) on top of it, and
+        # it is what makes a smart-turn COMPLETE wait for *this* segment's
+        # text rather than settle for the previous one's.
+        transcribed = False
+        async for frame in super().run_stt(audio):
+            if isinstance(frame, TranscriptionFrame):
+                frame.finalized = True
+                transcribed = True
+            yield frame
+        if not transcribed:
+            # The base emits nothing for empty text; the turn logic still
+            # needs to hear that this segment is accounted for.
+            yield SegmentDroppedFrame()
 
     def take_segment_start(self) -> float | None:
         """The start of the segment being transcribed, **consumed**.
@@ -627,6 +683,121 @@ class LocalTTS(OpenAITTSService):
             yield ErrorFrame(error=f"TTS failed: {e}")
 
 
+class TranscriptStartedTurnStop(TurnAnalyzerUserTurnStopStrategy):
+    """Pipecat's smart-turn stop strategy, with one assumption removed: that
+    a user turn starts *before* the VAD reports the user stopped.
+
+    That holds when the VAD starts turns. Here the transcript does (the VAD
+    was dropped from the start list on purpose - see `run_bot`), and
+    Parakeet is offline, so the transcript lands after the VAD stop and
+    after smart-turn has already ruled on the segment. The stock strategy
+    then resets itself at the turn start, which throws that ruling away,
+    and the next transcript takes its "no VAD stop was received" branch: the
+    turn is assumed complete and a timer of `ttfs_p99_latency - stop_secs`
+    ends it. With the defaults that was **0.8s after the first transcript of
+    every turn**, whatever smart-turn had said - the model's INCOMPLETE on
+    "add a couple", "My next to do is I need to" and "Okay. I just need you
+    to add it to my to do's." was overruled by a timer each time
+    (2026-09-04 12:55 UTC; the signature is `User started speaking` followed
+    +0.80s by `inference triggered`). Later segments of the same turn were
+    fine, because by then the turn existed.
+
+    So: a turn that starts with a VAD stop already in hand keeps it. A
+    COMPLETE ruling ends the turn as soon as the (finalized) transcript
+    arrives; an INCOMPLETE one holds the turn open for smart-turn's own
+    silence limit or the owner speaking again, which is what the analyzer
+    is for. When the VAD *did* start the turn the stock reset runs as before.
+
+    The same premise has a second edge, and it is counted rather than
+    timed. "Finalized" means final for the *segment*; the stock strategy
+    reads it as final for the turn and clears it only when the VAD next
+    reports speech. A transcript that lands after the owner has already
+    resumed is therefore still "finalized" at the next VAD stop, and a
+    COMPLETE there ends the turn on it - the new segment's own words arrive
+    as a fresh turn and barge in on the reply. Each VAD stop here is one
+    segment owed one transcript (or none, when the gate drops it), so the
+    override counts segments still awaiting text and treats the transcript
+    as final for the turn only when nothing is outstanding. A dropped
+    segment says so (`SegmentDroppedFrame`, from the STT) and is counted
+    off the same way, so echo and breaths between turns - every bot
+    sentence on speakers - leave nothing outstanding when the owner's next
+    transcript opens a turn. The STT safety net (`STT_TTFS_P99`) is left
+    for a transcript that never comes at all.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._refuse_if_pipecat_moved()
+        self._segments_awaiting_text = 0
+
+    async def _handle_vad_user_stopped_speaking(self, frame):
+        # A segment just ended and its words are not here yet, whatever an
+        # earlier transcript said about itself.
+        self._segments_awaiting_text += 1
+        self._transcript_finalized = False
+        await super()._handle_vad_user_stopped_speaking(frame)
+
+    async def _handle_transcription(self, frame):
+        self._segments_awaiting_text = max(0, self._segments_awaiting_text - 1)
+        if self._segments_awaiting_text:
+            # Another segment is still out; this text cannot close the turn.
+            frame.finalized = False
+        await super()._handle_transcription(frame)
+
+    async def process_frame(self, frame):
+        if isinstance(frame, SegmentDroppedFrame):
+            self._segments_awaiting_text = max(0, self._segments_awaiting_text - 1)
+            if not self._segments_awaiting_text and self._text:
+                # The last words heard are, after all, the last words: a
+                # COMPLETE waiting on this segment can end the turn now
+                # rather than at the safety net.
+                self._transcript_finalized = True
+                await self._maybe_trigger_user_turn_stopped()
+            return ProcessFrameResult.CONTINUE
+        return await super().process_frame(frame)
+
+    async def handle_user_turn_stopped(self):
+        self._segments_awaiting_text = 0
+        await super().handle_user_turn_stopped()
+
+    def _refuse_if_pipecat_moved(self):
+        # The one private the override reads. A pipecat upgrade that renames
+        # it would otherwise turn this back into the stock strategy without a
+        # word - the silently-degrading guard - so it is a refusal to start
+        # the call instead.
+        for private in ("_vad_stopped", "_transcript_finalized", "_text"):
+            if not hasattr(self, private):
+                raise RuntimeError(
+                    "TranscriptStartedTurnStop: pipecat's TurnAnalyzerUserTurnStopStrategy "
+                    f"no longer keeps `{private}`; re-derive the override against this version"
+                )
+        # And the method it overrides must still be the one the controller
+        # calls: a rename there leaves the private in place, construction
+        # succeeds, and the override is simply never reached - the same
+        # quiet fallback from the other side.
+        for method in (
+            "handle_user_turn_started",
+            "handle_user_turn_stopped",
+            "_handle_vad_user_stopped_speaking",
+            "_handle_transcription",
+            "_maybe_trigger_user_turn_stopped",
+            "process_frame",
+        ):
+            if not any(method in vars(c) for c in type(self).__mro__[1:]):
+                raise RuntimeError(
+                    "TranscriptStartedTurnStop: pipecat no longer defines "
+                    f"`{method}` on the stop strategy; the override is unreachable"
+                )
+
+    async def handle_user_turn_started(self):
+        if self._vad_stopped:
+            # The transcript that started this turn is the one the pending
+            # stop is waiting for. Keep the ruling and the timer.
+            return
+        self._segments_awaiting_text = 0
+        await super().handle_user_turn_started()
+
+
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     stt = ParakeetSTT(api_key="unused", base_url=STT_URL)
     tts = LocalTTS(
@@ -733,6 +904,9 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             vad_analyzer=SileroVADAnalyzer(params=VADParams(start_secs=0.3)),
             user_turn_strategies=UserTurnStrategies(
                 start=[TranscriptionUserTurnStartStrategy(use_interim=False)],
+                # Pipecat's default stop strategy and analyzer, with the
+                # transcript-started turn handled - the class explains.
+                stop=[TranscriptStartedTurnStop(turn_analyzer=LocalSmartTurnAnalyzerV3())],
             ),
         ),
     )

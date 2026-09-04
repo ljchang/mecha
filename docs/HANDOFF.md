@@ -1716,22 +1716,28 @@ one person's mailbox rather than a public fact.
   the check; the checkout is on `main` at `b50eb24` and clean as of ~18:15,
   so today nothing is owed — the item is the habit, not a repair. #153's
   echo-floor and #158's tail measurements both wait on that restart.
-- **Make one voice call, and stage a draft on purpose. It is owed three
-  times over.** The voice arc is deployed and three separate things are
-  waiting on the *same* call, which is why it is one item and not three:
-  (a) `ECHO_SEGMENT_RMS` wants re-deriving — #153 shipped the classification
-  method and deliberately **no number**, because the only sample predates the
-  2026-09-03 11:09 mic-meter repair and was measured with the browser's echo
-  canceller disarmed; (b) the confirmation door's **timing tail** is the one
-  constant #158 could not derive, and `VOICE-RESEARCH` records why it cannot
-  come from the existing journal (TTS generation runs ahead of playback, so
-  `Generating TTS` intervals measure buffering — ~33 chars/s, ≈400 wpm,
-  plainly wrong); (c) **the confirmation path has never run.** Thirty days of
-  journal contain no `"Say yes to send it"`, most likely because no draft was
-  ever staged during a voice turn. That is why a missing HTTP response head
-  on that path survived to be found in review rather than in use — so stage
-  one deliberately and listen to what happens. The recipe, both populations
-  and the `--user` that a system-unit spelling silently omits:
+- **The voice call was made (2026-09-04 12:55 UTC, on speakers) and it
+  found a different fault first.** The owner's report — "didn't let me
+  finish talking", "sluggish" — was pipecat ending the *first fragment of
+  every turn* 0.8 s after its transcript, whatever smart-turn had said:
+  the transcript-started turn (2026-08-25's fix) resets the stock stop
+  strategy after the VAD stop it was waiting for. `VOICE-RESEARCH.md` §7
+  (2026-09-04) has the mechanism, the journal signature (`User started
+  speaking` then `inference triggered` **+0.80 s**), and the fix:
+  `TranscriptStartedTurnStop` + finalized transcripts + `STT_TTFS_P99` in
+  `worker.py`, and `title::settled` so the session-title pass no longer
+  thinks for 18 s beside the retry of a run a barge-in cancelled. **Needs
+  the worker restarted and `mecha` reinstalled** — checkout on `main`
+  first, as below. The next call should show no fixed-lag pairs in the
+  journal — neither `+0.80 s` nor `+1.80 s`, the latter being what the
+  fault would look like if the safety net were ending turns instead. Of the three things that call was owed: (a) `ECHO_SEGMENT_RMS`
+  still has no number — no echo segment appeared in four minutes on
+  speakers (the canceller is armed now), and owner speech measured a third
+  of the 2026-09-01 level (median RMS 0.019 vs 0.061), which is the figure
+  a floor would have to sit under; (b) the timing tail is still unmeasured
+  and (c) the confirmation door has still never run, because no draft was
+  staged. Stage one on purpose, on the next call. The recipe, both
+  populations and the `--user` that a system-unit spelling silently omits:
   `journalctl --user -u mecha-voice-worker | grep -E
   "_bot_(started|stopped)_speaking|parakeet( segment gated)?: duration"`
   (mecha-26).
