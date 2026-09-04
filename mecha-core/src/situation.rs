@@ -109,7 +109,11 @@ impl Situation {
     /// was matched against — a rule scoped to one of them would never load.
     /// None of them is a tool a reflection's window names today, and the
     /// gap is recorded here rather than closed, since closing it means
-    /// telling `prepare` what the front-end will add.
+    /// telling `prepare` what the front-end will add. The subtractive
+    /// mirror exists too: a delegated task run withholds `kg_task_update`
+    /// after the block is rendered, so a rule scoped to it rides in a run
+    /// that no longer registers it — over-inclusive, costing prefix bytes
+    /// and a rule the model cannot act on, never a rule that cannot load.
     pub fn of_run(tools: &[String], workspace: Option<&Path>) -> Situation {
         Situation {
             tools: tools.to_vec(),

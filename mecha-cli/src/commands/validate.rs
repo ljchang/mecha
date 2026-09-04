@@ -467,19 +467,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             .map(|rc| Situation::of_run(&rc.tools, Some(&rc.workspace)))
             .unwrap_or_default();
         let carried = surface.carried(&run);
-        // Nothing carried is nothing to measure: both arms would be
-        // byte-identical and grade as "unchanged", which the summary counts
-        // as a verdict — the measured-clean-versus-not-measured conflation
-        // one function over (found on review). The row is not written.
-        if carried.is_empty() {
+        // A block that renders nothing is nothing to measure: both arms
+        // would be byte-identical and grade as "unchanged", which the
+        // summary counts as a verdict — the measured-clean-versus-not-
+        // measured conflation one function over (found on review). The
+        // predicate is the rendered block, not `carried`: user rules ride
+        // in every block regardless of selection, so a domain with user
+        // rules and nothing scoped to this run still has an arm to measure
+        // (found on the next review). The row is not written.
+        let Some(rules_block) = surface.block_with(&carried) else {
             eprintln!(
-                "· {}: no active rule is scoped to this session's situation; skipping",
+                "· {}: no rule rides in this session's situation; skipping",
                 r.id
             );
             skipped += 1;
             continue;
-        }
-        let rules_block = surface.block_with(&carried).unwrap_or_default();
+        };
         let with_rules = if base_system.is_empty() {
             rules_block.clone()
         } else {
@@ -500,15 +503,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // Rendered for the probe's own recorded config, which is the
             // one the branch replays under (a later attach may differ).
             let carried = surface.carried(&prep.situation());
-            if carried.is_empty() {
+            let Some(rules_block) = surface.block_with(&carried) else {
                 eprintln!(
-                    "· {}: no active rule is scoped to the recorded run's situation; skipping",
+                    "· {}: no rule rides in the recorded run's situation; skipping",
                     r.id
                 );
                 skipped += 1;
                 continue;
-            }
-            let rules_block = surface.block_with(&carried).unwrap_or_default();
+            };
             let mut arms = Vec::new();
             for block in [None, Some(rules_block.as_str())] {
                 match probe::drive_arm(
