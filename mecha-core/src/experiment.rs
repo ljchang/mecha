@@ -223,7 +223,7 @@ pub const PRINCIPAL_VERBS: [&[&str]; 8] = [
 /// approvals under the driver, in long and short form. Every `--no-*`
 /// lever flag is refused by prefix. `mecha-cli` tests that each of these
 /// is a global option it really defines.
-pub const PRINCIPAL_BLOCKED_OPTIONS: [&str; 18] = [
+pub const PRINCIPAL_BLOCKED_OPTIONS: [&str; 19] = [
     "--workspace",
     "-w",
     "--provider",
@@ -241,8 +241,17 @@ pub const PRINCIPAL_BLOCKED_OPTIONS: [&str; 18] = [
     "--read-only",
     "--max-turns",
     "--max-output-tokens",
+    "--max-cost",
     "--compact-at",
 ];
+
+/// The global options a principal's verb *may* carry: the ones that move
+/// nothing about the run. `mecha-cli` walks every global option and fails
+/// on one that is neither here, blocked, nor a `--no-` lever — the
+/// direction a blocklist test has to face, or the next global option
+/// lands unblocked (found on review).
+pub const PRINCIPAL_HARMLESS_OPTIONS: [&str; 6] =
+    ["--verbose", "-v", "--help", "-h", "--version", "-V"];
 
 pub fn allowed_verb(verb: &[String]) -> bool {
     let head_allowed = PRINCIPAL_VERBS
@@ -3122,6 +3131,10 @@ rationale = "no rumination should fail more over the sequence"
         );
         assert!(!allowed_verb(&v("tasks set t-1 -mx")));
         assert!(!allowed_verb(&v("tasks set t-1 --no-mcp-server graph")));
+        assert!(
+            !allowed_verb(&v("questions answer q-1 --max-cost 999 fine")),
+            "a ceiling the resumed run would honour"
+        );
         // The answer's shape, strict.
         let out: PrincipalOutput = serde_json::from_str(
             r#"{"acts":[{"verb":["outbox","reject","ob-1","--reason","wrong date"],"reason":"gold: the date is not the meeting's"}],"deny":[{"tool":"shell","input_contains":"rm -rf","reason":"no"}]}"#,
