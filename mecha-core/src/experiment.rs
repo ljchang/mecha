@@ -216,28 +216,54 @@ pub const PRINCIPAL_VERBS: [&[&str]; 8] = [
     &["questions", "abandon"],
 ];
 
+/// The global options a principal's verb may not carry, **as the CLI
+/// spells them** (the first cut named a field, `--tools`, and the real
+/// flag `--tool` passed; found on review): everything that moves the
+/// store, the model, the run's ceilings, the tool surface or the
+/// approvals under the driver, in long and short form. Every `--no-*`
+/// lever flag is refused by prefix. `mecha-cli` tests that each of these
+/// is a global option it really defines.
+pub const PRINCIPAL_BLOCKED_OPTIONS: [&str; 18] = [
+    "--workspace",
+    "-w",
+    "--provider",
+    "-p",
+    "--model",
+    "-m",
+    "--effort",
+    "-e",
+    "--system",
+    "-s",
+    "--tool",
+    "--skill",
+    "--yes",
+    "-y",
+    "--read-only",
+    "--max-turns",
+    "--max-output-tokens",
+    "--compact-at",
+];
+
 pub fn allowed_verb(verb: &[String]) -> bool {
     let head_allowed = PRINCIPAL_VERBS
         .iter()
         .any(|lead| verb.len() >= lead.len() && lead.iter().zip(verb).all(|(a, b)| a == b));
-    // The rest of the argv is the verb's own, except the global options
-    // that would move the store, the model or the levers under the driver:
-    // those are the driver's to set, and the driver sets them last.
+    // `outbox approve` owns a `-y`/`--yes` of its own (release without the
+    // review prompt); everywhere else the spelling is the global
+    // auto-approval, which would widen a resumed run.
+    let approve = verb.starts_with(&["outbox".to_string(), "approve".to_string()]);
     let moves_the_run = verb.iter().any(|a| {
         let name = a.split('=').next().unwrap_or(a);
-        matches!(
-            name,
-            "--workspace"
-                | "-w"
-                | "--provider"
-                | "-p"
-                | "--model"
-                | "-m"
-                | "--effort"
-                | "--config"
-                | "--global-config-only"
-                | "--tools"
-        ) || name.starts_with("--no-")
+        // A short option with its value attached (`-w/tmp`, `-mx`).
+        let name = if name.starts_with('-') && !name.starts_with("--") && name.len() > 2 {
+            &name[..2]
+        } else {
+            name
+        };
+        if approve && (name == "-y" || name == "--yes") {
+            return false;
+        }
+        PRINCIPAL_BLOCKED_OPTIONS.contains(&name) || name.starts_with("--no-")
     });
     head_allowed && !moves_the_run
 }
@@ -3074,8 +3100,28 @@ rationale = "no rumination should fail more over the sequence"
         );
         assert!(
             allowed_verb(&v("outbox approve ob-1 -y")),
-            "a verb's own flag is fine"
+            "approve's own -y is fine"
         );
+        assert!(allowed_verb(&v("outbox approve ob-1 --yes")));
+        assert!(
+            !allowed_verb(&v("questions answer q-1 --yes fine")),
+            "elsewhere -y widens"
+        );
+        assert!(
+            !allowed_verb(&v("questions answer q-1 --tool fs_read fine")),
+            "the real flag"
+        );
+        assert!(!allowed_verb(&v("questions answer q-1 --skill s fine")));
+        assert!(
+            !allowed_verb(&v("questions answer q-1 -e high fine")),
+            "the short effort"
+        );
+        assert!(
+            !allowed_verb(&v("tasks set t-1 -w/tmp/x")),
+            "an attached short value"
+        );
+        assert!(!allowed_verb(&v("tasks set t-1 -mx")));
+        assert!(!allowed_verb(&v("tasks set t-1 --no-mcp-server graph")));
         // The answer's shape, strict.
         let out: PrincipalOutput = serde_json::from_str(
             r#"{"acts":[{"verb":["outbox","reject","ob-1","--reason","wrong date"],"reason":"gold: the date is not the meeting's"}],"deny":[{"tool":"shell","input_contains":"rm -rf","reason":"no"}]}"#,

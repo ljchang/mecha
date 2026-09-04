@@ -3263,10 +3263,18 @@ comparison over a chosen set**, with the design written before the run.
   on stdin (`PrincipalInput`: the case, the graded row after the task,
   the home's pending outbox items and open questions) and answers with
   `PrincipalOutput`: the owner's verbs to run and the refusals to script.
-  The principal is pure; **the driver runs each verb as a child `mecha`
+  The principal executable runs with the base environment only — no
+  provider or search key reaches it, on the rule `connect` keeps for MCP
+  servers; the `mecha` children that run its verbs get the run child's
+  allowlist. The principal is pure; **the driver runs each verb as a child `mecha`
   against the trial home, from the closed set `PRINCIPAL_VERBS`**
   (`tasks set|steer|stop`, `outbox approve|reject|edit`,
-  `questions answer|abandon` — never a session, a reflection or a rule)
+  `questions answer|abandon` — never a session, a reflection or a rule;
+  a verb may not carry the global options that move the store, the
+  model, the ceilings, the tool surface or the approvals,
+  `PRINCIPAL_BLOCKED_OPTIONS`, named as the CLI spells them and tested
+  against it) with the driver's own options *before* the subcommand,
+  where a trailing-argument verb like `tasks steer` cannot swallow them,
   and records the call and every act with its exit status on the
   lifetime's ledger as a `principal` line, so the record is the driver's
   and `stage_health` holds the verdict over a principal that could not
