@@ -174,13 +174,13 @@ mark_untrusted_output = true
 # name = "graph"
 # command = "mecha-graph-mcp"   # or an absolute path: a service unit without
 #                               # ~/.cargo/bin on its PATH will not find the
-#                               # bare name, and a server that fails to spawn
-#                               # is skipped, not fatal — the tools just vanish.
-#                               # With `sandbox = true` use an absolute path AND
-#                               # list its directory in [sandbox] readable: the
-#                               # confinement replaces PATH with the system dirs,
-#                               # so a bare name never resolves there, and binds
-#                               # nothing under ~ unless listed.
+#                               # bare name; front-ends then skip the server
+#                               # with one stderr line (the tools just vanish),
+#                               # distill/corroborate/gossip/vet exit non-zero.
+#                               # Not confined: `sandbox = true` replaces PATH
+#                               # with the system dirs and binds nothing under ~
+#                               # unless listed, and this server's store lives
+#                               # there, read-write.
 # args = []
 # # Its kg_* tools carry their own namespace; skip the graph__ prefix.
 # prefix_tools = false
