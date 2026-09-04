@@ -920,6 +920,15 @@ pub struct Stores {
 impl Stores {
     /// Read the default stores under the mecha home.
     pub fn load() -> Stores {
+        let (charter, charter_unreadable) = load_charter();
+        let mut stores = Stores::load_without_charter();
+        stores.charter = charter;
+        stores.charter_unreadable = charter_unreadable;
+        stores
+    }
+
+    /// The four stores, with the charter left absent for the caller to set.
+    fn load_without_charter() -> Stores {
         let (drafts, outbox_unreadable) = match crate::outbox::OutboxStore::open_existing_default()
         {
             None => (Vec::new(), false),
@@ -952,7 +961,6 @@ impl Stores {
                     Err(_) => (Vec::new(), true),
                 },
             };
-        let (charter, charter_unreadable) = load_charter();
         Stores {
             drafts,
             outbox_unreadable,
@@ -962,9 +970,24 @@ impl Stores {
             frontdoor_unreadable,
             reflexions,
             learning_unreadable,
-            charter,
-            charter_unreadable,
+            charter: None,
+            charter_unreadable: false,
         }
+    }
+
+    /// [`Stores::load`], only where the charter has a line to rank against
+    /// — the rule `charter_rank` applies, applied before the cost rather
+    /// than after it: a fresh install or a charter with no lines paid four
+    /// store reads per draw to compute nothing (found on review). The
+    /// charter is read once either way, so a charter that does not load
+    /// costs one file read and no stores.
+    pub fn load_if_chartered() -> Option<Stores> {
+        let (charter, charter_unreadable) = load_charter();
+        let charter = charter.filter(|c| !c.is_empty())?;
+        let mut stores = Stores::load_without_charter();
+        stores.charter = Some(charter);
+        stores.charter_unreadable = charter_unreadable;
+        Some(stores)
     }
 
     /// One session's drafts — the outbox is the one store an appraisal

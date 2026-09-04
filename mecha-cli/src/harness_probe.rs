@@ -178,9 +178,11 @@ pub struct Draw {
     /// Printed, because a sample nobody can redraw is one nobody can check.
     pub seed: u64,
     pub skipped: usize,
-    /// How many of the selection carry a charter rank — printed beside the
-    /// seed, because the rank is the one input to the order that the seed
-    /// and the corpus do not pin: the charter is the owner's file, and a
+    /// How many of the selection carry a charter rank — recorded on the
+    /// measurement beside the seed (`Measurement::ranked`), because the
+    /// rank is read off inputs the seed and the corpus do not pin: the
+    /// charter, whose order is the rank, and the stores a session's errors
+    /// are signed from as they stand at the draw. A resolved draft or a
     /// re-ranked line redraws the ties.
     pub ranked: usize,
 }
@@ -259,9 +261,10 @@ pub fn draw_episodes(
         ..Default::default()
     };
     // The stores an appraisal reads, once for the whole pool — four store
-    // reads per draw rather than per episode. Only the charter rank comes
-    // of it here; see `EpisodePrep::charter_rank`.
-    let stores = mecha_core::appraisal::Stores::load();
+    // reads per draw rather than per episode, and none at all without a
+    // charter, since only a charter with lines can rank anything. Only the
+    // charter rank comes of it here; see `EpisodePrep::charter_rank`.
+    let stores = mecha_core::appraisal::Stores::load_if_chartered();
     for (meta, path) in listed {
         if pool.len() >= pool_size {
             break;
@@ -289,7 +292,11 @@ pub fn draw_episodes(
         if !admission.admits(&meta) {
             continue;
         }
-        match prepare_episode(&path, &meta.id, Some((&stores, meta.created_at)))? {
+        match prepare_episode(
+            &path,
+            &meta.id,
+            stores.as_ref().map(|s| (s, meta.created_at)),
+        )? {
             Ok(prep) => {
                 // Headroom off *every* outcome the session recorded, folded.
                 // `last_outcome` describes how the session ended, and an
