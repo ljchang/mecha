@@ -1811,8 +1811,11 @@ the data these produce.
    *Built 2026-09-04, with item 2 in one pull request by the owner's
    ruling.* The block asks only when `todo` is in the surface
    (`prompt_block_for`), `todo`'s schema documents `charter:<id>`, and
-   `sessions appraise` now prints how many sessions cite a charter line
-   beside whether the charter carries a sensor at all — the exit is
+   `sessions appraise` now prints how many sessions named a goal, how many
+   were attributed to a charter line by a sensor (`Appraisal::attributed`,
+   kept apart from `goals` so this exit measures the ask and not the
+   attribution beside it), and how many cite a line either way, beside
+   whether the charter carries a sensor at all — the exit is
    measured against a live charter with a sensored line, not against this
    machine's, which had none on the day.
 2. **The relevance gate** in `label_of` and `Readout`: label from sign and

@@ -2650,6 +2650,7 @@ mod tests {
             id: "s1".into(),
             session_id: "s1".into(),
             goals: vec![mecha_core::goal::GoalRef::Task("task-1a2b3c4d".into())],
+            attributed: Vec::new(),
             state: None,
             errors: Vec::new(),
             label,
