@@ -164,7 +164,10 @@ each to the lifetime's **stage ledger** (`stages/<lifetime>.jsonl`) with its
 exit status and where its output went. The ledger is what says a stage ran;
 the manifest says only what was scheduled. Resume reads both: a finished task
 is not rerun, and a stage the ledger lacks after a finished position runs
-before the next task starts.
+before the next task starts — but only while no later position has finished;
+past that it is recorded as skipped out of sequence, which holds the verdict,
+since a stage run after later tasks would act on sessions those tasks never
+ran under.
 
 **Stage levers** are a second closed set, beside the per-run levers, and a
 lifetime's arm may name them off in `stages_off`: `reflect`, `learn`,
