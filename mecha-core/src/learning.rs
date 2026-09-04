@@ -1565,10 +1565,32 @@ impl LearningStore {
         updates: &[(String, crate::situation::Situation)],
         recomputed_at: &str,
     ) -> Result<usize> {
+        // Decide before writing. `rewrite_reflexions` re-serialises the
+        // whole file whatever its closure did, and a re-serialisation is
+        // not identity — a lenient field (`Situation::surface`) that this
+        // build could not name is written back as absent — so a pass with
+        // nothing to apply must not touch the file at all, or the
+        // advertised free second run is a lossy, uncommitted rewrite
+        // (found on review).
+        let applicable: Vec<&(String, crate::situation::Situation)> = {
+            let absent: std::collections::HashSet<String> = self
+                .reflexions()?
+                .into_iter()
+                .filter(|r| r.situation.is_none())
+                .map(|r| r.id)
+                .collect();
+            updates
+                .iter()
+                .filter(|(id, _)| absent.contains(id))
+                .collect()
+        };
+        if applicable.is_empty() {
+            return Ok(0);
+        }
         let mut written = 0usize;
         self.rewrite_reflexions(|all| {
             for r in all.iter_mut().filter(|r| r.situation.is_none()) {
-                if let Some((_, s)) = updates.iter().find(|(id, _)| *id == r.id) {
+                if let Some((_, s)) = applicable.iter().find(|(id, _)| *id == r.id) {
                     r.situation = Some(s.clone());
                     r.situation_recomputed_at = Some(recomputed_at.to_string());
                     written += 1;
@@ -5329,8 +5351,15 @@ mod situation_tests {
             "recorded at mining, never overwritten"
         );
         assert_eq!(m.situation_recomputed_at, None);
-        // A second pass finds nothing absent.
+        // A second pass finds nothing absent — and does not touch the file:
+        // a rewrite is not identity, so "free" has to mean byte-identical.
+        let file = dir.join("reflections.jsonl");
+        let before = std::fs::read(&file).unwrap();
+        let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
         assert_eq!(store.set_situations(&updates, "later").unwrap(), 0);
+        assert_eq!(store.set_situations(&[], "later").unwrap(), 0);
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), mtime);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
