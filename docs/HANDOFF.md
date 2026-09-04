@@ -1629,6 +1629,25 @@ one person's mailbox rather than a public fact.
 
 ## What to do next
 
+- **Machine state as of 2026-09-04 ~05:00, verified from this lane:** the
+  shared checkout `~/Github/mecha` is **not on `main`** — it is on
+  `docs/goal-system-rulings` at `6e9d7f9`, which is `origin/main` (`6afd990`,
+  #154) plus two docs commits, clean. It has been on that branch since
+  before this session began, so the "on `main` at `b50eb24`" in the bullet
+  below was already a misread when written; the recipe's check still
+  applies, the answer is just a branch name. Three things merged to `main`
+  and **not deployed**: #159 (the handoff close), #153 and #154 — the last
+  two are also **unrecorded in this document** (mecha-83's flag; their
+  owners' entries are owed, this lane did not read their diffs). The
+  `update` run is deliberately held until #158 merges, one deploy rather
+  than two voice-worker restarts (mecha-26, relaying the owner's call);
+  #153's echo-floor and #158's timing tail both wait on that one restart,
+  which needs the checkout pulled onto merged `main` *first*. And a finding
+  from #158's lane for the first call after that deploy: `journalctl --user
+  -u mecha-voice-worker | grep "Say yes to send it"` is empty over thirty
+  days — the spoken outbox confirmation has never played in a real call,
+  most likely because no draft was ever staged during a voice turn; stage
+  one on purpose. Nothing was installed or restarted by this lane.
 - **When #153 and #158 merge, restart `mecha-voice-worker` — and check the
   shared checkout first, every time.** The unit's `WorkingDirectory` is
   `~/Github/mecha` and its `ExecStart` runs `scripts/voice/worker.py` from
@@ -2333,7 +2352,36 @@ the mechanism and every decision. What it left standing:
   live recognizer sees it — otherwise a bad nightly write takes `:8992` down
   and voice goes deaf with no error text anywhere.
 
-### The goal system — rungs 0–10 all shipped, out of build order; rung 10's charter-driven labelling is what's left, and rung 9's review-queue salience is unverified from this branch
+### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first sprint is a PR, and rung 9's review-queue salience is unverified from this branch
+
+**2026-09-04 — the owner's rulings of 2026-09-03 are recorded (§17, PR #161)
+and §17.6's first sprint is built as #162, stacked on it; both unmerged.**
+What #162 built is in `HISTORY.md` under this date: sensored charter lines
+(five kinds, each with a reader), the `serves: charter:<id>` ask on the
+prompt block, the attribution join in `of_session`, and the relevance gate —
+`Affect::Distress` on every free-readout negative, `Pride` for a delivery
+against a charter line the loaded charter contains. **Paragraphs below that
+say the label is `Neutral` on every session, that `Pride` is genuinely
+unbuilt, or that no session names a goal are true of the corpus as measured
+and stop being true of the derivation when #162 merges** — they are kept as
+the measurement they were. **Open, in the order §17.6 sets:** item 3
+(`Situation` persisted on the reflection, `scope` on `Rule`, the learner
+batched by region), which **does not merge without the run record carrying
+`rules_hash` and a `delivered` list** (§17.7 item 1); §11.1's later phases —
+the per-line readings, the line-specific guilt, the doctor's owner
+thresholds, the editor showing a reading beside the line, the replay
+tiebreak, and `board_overdue`/`cost` as kinds once a reader exists; item 4,
+measuring the appraiser at scale (zero build — and #160 has since reported
+169 of 169 "nothing further", so retire-or-refeed is the actual question);
+item 5, the audit lane's declared check. **The exit for item 1 is not
+measurable on this machine yet**: the live charter has seven lines and no
+sensor, so `sessions appraise` will print "no charter line carries a
+sensor" beside a zero until the owner adds one — and an older binary on the
+other machine would then run *un-chartered*, not refuse, until updated
+(`mecha doctor` reports it). #157's `APPRAISAL-RESEARCH.md` §1.7 "label
+neutral on 169 of 169" was measured by 0.1.17 and would read `distress` on
+the 24 signed sessions under #162 — expected, not a conflict (mecha-2d's
+check).
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the authority and carries a status header
 saying which rungs shipped. The arc's premise, which is what makes the rest
