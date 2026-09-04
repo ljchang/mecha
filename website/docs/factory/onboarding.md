@@ -127,7 +127,7 @@ tools = [
 ]
 publish_tools = [
   "factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish",
-  "factory__poll_create", "factory__poll_meeting_create", "factory__type_push",
+  "factory__type_push",
 ]
 ```
 

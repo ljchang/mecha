@@ -2059,6 +2059,37 @@ not in `tools` warns on every start, like a routed name that matches nothing,
 because it means the tool executes unstaged while config reads as though it were
 under review.
 
+## The meeting poll lifecycle
+
+`docs/MEETING-POLL-UX-DESIGN.md` is the authority; the invariants a session is
+likely to trip over from outside:
+
+- **The record is the seam, and each verb writes only its own fields.**
+  `~/.mecha/factory/polls/<id>.json` carries a `lifecycle` block that three
+  timer verbs consume in turn — `factory-publish polls sweep` (observe, nudge,
+  close, verdict), `mecha-mail polls` (invitations, nudge, the booking),
+  `mecha polls sweep` (the pick card, and the decision folded back). The two
+  crates that are not `factory-publish` edit the record **through the JSON it
+  came from**, never through a struct of their own, because a typed round
+  trip drops whatever a newer writer added. Every field defaults on load.
+- **No verb decides what another verb owns.** When a poll closes and what
+  wins are the factory sweep's; whether a message goes is the record's
+  (`invites[name]` is null); what a pick is loaded with is the owner's. A
+  crash between a provider's answer and the record write is repaired by the
+  ledger (`~/.mecha/mail/polls.jsonl`), consulted before every send.
+- **The freebusy is the pipeline's, not a file the model wrote.** `slots
+  push` records what it saw, policy included, and `create_meeting` reads that
+  when handed nothing — which is what makes an outbox-routed create, executed
+  hours after it was staged, possible at all. The hour-old refusal is
+  unchanged and now names `mecha-slots.timer`.
+- **No mode books over a silent participant**, and an unrecognised
+  `auto_book` reads as `manual`. The pick is a real `calendar_create_event`
+  draft through the normal route; `mecha polls` refuses to stage one when
+  that tool is not outbox-routed, rather than staging a draft nothing
+  releases.
+- **The poll creates are `Message`-kind**, not publications (ruling 6 in the
+  design doc): the reviewable object is a letter in the owner's name.
+
 ## The work directory
 
 `~/.mecha/work/<producer>/` (`work.rs`, `mecha work`) is where a run's generated

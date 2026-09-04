@@ -7,9 +7,16 @@ experience — what the owner types, what they review, and what happens
 while they are not looking — and the lifecycle that has to exist for the
 experience to be true.*
 
-> **Status: ruled 2026-09-04, phase 1 in progress.** §6 records the six
-> rulings; §7 is the build order. Everything in §2 is measured against the
-> tree at `mecha` 5e85ce5 and `mecha-factory` fdfbb7b.
+> **Status: ruled and built 2026-09-04 — phases 1–3 on
+> `feat/meeting-poll-ux` (mecha) and `feat/meeting-poll-lifecycle`
+> (mecha-factory); deploy owed.** §6 records the six rulings; §7 is the build
+> order. Everything in §2 is measured against the tree at `mecha` 5e85ce5 and
+> `mecha-factory` fdfbb7b, before the build. Two things the build settled
+> beyond the text: a clean winner is **re-verified against live freebusy**
+> before the event is made, and a collision flips the verdict to a pick with
+> the reason (`conflict`); and the reconciled `booked` for a pick carries
+> `via: outbox:<id>` rather than an event id, because the outbox does not
+> record a release's output.
 
 ## 0. The one-sentence shape
 

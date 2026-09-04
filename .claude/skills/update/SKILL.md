@@ -284,7 +284,12 @@ until it finishes.
 
 **The timer-driven units need nothing.** `mecha-frontdoor`, `mecha-ruminate`
 and `mecha-slots` are `.timer`-fired and exec fresh on each firing, so they
-pick up a new binary by themselves. Knowing which list a unit is on is the
+pick up a new binary by themselves. One exception in kind, not in restart:
+`mecha-slots.service`'s second `ExecStart` is the poll lifecycle's timer line
+and must read `factory-publish drain; mecha-mail bookings --account dartmouth;
+factory-publish polls sweep; mecha-mail polls --account dartmouth; mecha polls
+sweep` — a unit still on the two-verb line silently leaves every meeting poll
+at "invites 0/N" forever, with nothing in the repo to say why. Knowing which list a unit is on is the
 difference between a restart that matters and cargo-culting six of them.
 
 Verify — and take a startup line, never `is-active`, since a unit that
