@@ -464,7 +464,7 @@ pub fn reconcile(record: &mut PollRecord, entries: &[LedgerEntry]) -> bool {
             .all(|name| nudged.iter().any(|e| &e.name == name))
         {
             if let Some(at) = nudged.iter().filter_map(|e| stamp(&e.at)).max() {
-                mark_nudged(record, at);
+                mark_nudged(record, &due, at);
                 changed = true;
             }
         }
@@ -493,13 +493,41 @@ pub fn mark_invited(record: &mut PollRecord, name: &str, at: DateTime<Utc>) {
     record.set("invites", invites);
 }
 
-/// All nudges for a tick went: clear the queue and stamp it.
-pub fn mark_nudged(record: &mut PollRecord, at: DateTime<Utc>) {
-    record.set("nudge_due", json!([]));
+/// The nudges that went: those names leave the queue and the tick is
+/// stamped. A queued name that was *not* sent — one this record cannot
+/// resolve to a person — stays, so someone else's successful nudge never
+/// drops it silently.
+pub fn mark_nudged(record: &mut PollRecord, sent: &[String], at: DateTime<Utc>) {
+    let remaining: Vec<Value> = record.lifecycle()["nudge_due"]
+        .as_array()
+        .map(|d| {
+            d.iter()
+                .filter(|v| v.as_str().is_some_and(|n| !sent.iter().any(|s| s == n)))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    record.set("nudge_due", json!(remaining));
     record.set(
         "nudged_at",
         json!(at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
     );
+}
+
+/// Names the sweep queued for a nudge that this record cannot resolve to a
+/// person — a finding for the tick to print, since `jobs_due` is pure and
+/// cannot.
+pub fn unresolvable_nudges(record: &PollRecord) -> Vec<String> {
+    record.lifecycle()["nudge_due"]
+        .as_array()
+        .map(|d| {
+            d.iter()
+                .filter_map(Value::as_str)
+                .filter(|n| !record.people.iter().any(|p| p.name == *n))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn mark_booked(record: &mut PollRecord, event_id: &str, account: &str, at: DateTime<Utc>) {
@@ -670,7 +698,7 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         mark_invited(&mut r, "Priya", at);
-        mark_nudged(&mut r, at);
+        mark_nudged(&mut r, &["Tal".to_string()], at);
         mark_booked(&mut r, "ev1", "work", at);
         let life = r.lifecycle();
         assert_eq!(life["invites"]["Priya"], "2030-01-28T12:00:00Z");
@@ -753,6 +781,20 @@ mod tests {
             .all(|j| matches!(j, Job::Invite(p) if p.name == "Tal")));
         // Idempotent: a second pass changes nothing.
         assert!(!reconcile(&mut r, &entries));
+    }
+
+    /// A queued name nobody on the record answers to is reported, and it
+    /// survives someone else's nudge going out.
+    #[test]
+    fn an_unresolvable_nudge_is_a_finding_and_is_not_dropped() {
+        let mut r = record(json!({
+            "invites": {"Priya": "x", "Tal": "x"},
+            "nudge_due": ["Tal", "Nobody"],
+        }));
+        assert_eq!(unresolvable_nudges(&r), vec!["Nobody".to_string()]);
+        assert_eq!(jobs_due(&r).len(), 1, "only Tal can be nudged");
+        mark_nudged(&mut r, &["Tal".to_string()], Utc::now());
+        assert_eq!(r.lifecycle()["nudge_due"], json!(["Nobody"]));
     }
 
     /// The ledger key is what stops a re-send: one invitation per person per

@@ -2108,7 +2108,11 @@ likely to trip over from outside:
   `OutboxItem::writing_outcome` returns `None` for such an item — so a slot
   swapped by `p` is never mined as a writing correction and an unswapped
   release is never counted as a model drafting well. `Author` defaults to
-  `Model` on load, which is what every item before the field was.
+  `Model` on load, which is what every item before the field was. The same
+  field keeps the card out of `review_policy::staged_since`, so a card the
+  timer stages while a TUI run is in flight is never one of that run's
+  drafts — under `/review auto` it would otherwise have been released with
+  `--yes`, the meeting booked with no card drawn.
 - **No verb decides what another verb owns.** When a poll closes and what
   wins are the factory sweep's; whether a message goes is the record's
   (`invites[name]` is null); what a pick is loaded with is the owner's. A
