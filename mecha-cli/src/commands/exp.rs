@@ -25,6 +25,22 @@ use mecha_core::experiment::{
 };
 use std::path::{Path, PathBuf};
 
+/// How long a case's `expect.verify` command may run in the trial's
+/// workspace. Eval's own default; a verify that needs longer is a case
+/// that needs a smaller check.
+const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Does this arm move `key` through an override? An arm that does is the
+/// treatment for that knob, and a case's own value for it must not be
+/// passed as a flag over the arm's config.
+fn arm_moves(arm: &mecha_core::experiment::Arm, key: &str) -> bool {
+    arm.overrides.iter().any(|o| {
+        o.split_once('=')
+            .map(|(k, _)| k.trim() == key)
+            .unwrap_or(false)
+    })
+}
+
 #[derive(clap::Args, Debug)]
 pub struct Args {
     #[command(subcommand)]
@@ -288,16 +304,20 @@ async fn run_one(
     for f in &flags {
         cmd.arg(f);
     }
-    // A case's own turn ceiling is part of the task, and eval applies it —
-    // unless the arm moves `max_turns`, in which case the arm is the
-    // treatment and wins; `--max-turns` would otherwise override the arm's
-    // config unconditionally.
-    let arm_moves_turns = arm
-        .overrides
-        .iter()
-        .any(|o| o.trim_start().starts_with("max_turns"));
-    if let Some(n) = case.max_turns.filter(|_| !arm_moves_turns) {
+    // A case's own turn ceiling and compaction threshold are part of the
+    // task, and eval applies both — unless the arm moves the same knob, in
+    // which case the arm is the treatment and wins; the flag would otherwise
+    // override the arm's config unconditionally. A compaction case that did
+    // not get its threshold graded the harness rather than the arm (found on
+    // review).
+    if let Some(n) = case.max_turns.filter(|_| !arm_moves(arm, "max_turns")) {
         cmd.arg("--max-turns").arg(n.to_string());
+    }
+    if let Some(n) = case
+        .compact_at_tokens
+        .filter(|_| !arm_moves(arm, "compact_at_tokens"))
+    {
+        cmd.arg("--compact-at").arg(n.to_string());
     }
     cmd.arg(&prompt);
     // **An allowlist, not a denylist.** The child's whole store is the arm's
@@ -349,7 +369,17 @@ async fn run_one(
         .and_then(|s| s.as_str())
         .map(str::to_string);
 
-    let graded = mecha_core::eval::grade(case, &result);
+    let mut graded = mecha_core::eval::grade(case, &result);
+    // What the run left behind, checked the way eval checks it: `grade` is
+    // pure and never sees `expect.verify`, and a codegen case whose only
+    // assertion is the verify command would otherwise pass every arm with
+    // zero checks — the same evaporation `expect.judge` is refused for
+    // (found on review). The staged workspace is this trial's own.
+    if let Some(command) = &case.expect.verify {
+        graded.add_check(
+            mecha_core::eval::verify_workspace(command, &workspace, VERIFY_TIMEOUT).await,
+        );
+    }
     trial.passed = Some(graded.passed);
     trial.checks = graded.checks;
     trial.stats = match &trial.session_id {
@@ -552,6 +582,22 @@ fn export(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A case's own knob is passed to the child unless the arm moves that
+    /// knob — then the arm is the treatment and wins.
+    #[test]
+    fn an_arm_that_moves_a_knob_wins_over_the_case() {
+        let mut arm = mecha_core::experiment::Arm::default();
+        assert!(!arm_moves(&arm, "max_turns"));
+        arm.overrides = vec!["max_turns=20".into(), " compact_at_tokens = 5000".into()];
+        assert!(arm_moves(&arm, "max_turns"));
+        assert!(arm_moves(&arm, "compact_at_tokens"));
+        assert!(!arm_moves(&arm, "max_output_tokens"));
+        assert!(
+            !arm_moves(&arm, "max_turns_extra"),
+            "the whole key, not a prefix"
+        );
+    }
 
     /// A manifest's `ids` narrow the case file to the tasks it names, in the
     /// file's order, and a name the file does not carry is a refusal rather

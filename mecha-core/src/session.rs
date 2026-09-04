@@ -3284,9 +3284,16 @@ mod tests {
     /// the (ignored) probe below through the test binary itself with the
     /// variable set, and grades the exit status.
     #[test]
-    fn the_test_override_narrows_to_test_and_never_widens_to_anything_else() {
+    fn the_env_override_narrows_to_test_or_experiment_and_never_widens_to_anything_else() {
         let exe = std::env::current_exe().unwrap();
-        for (value, expect) in [("test", "test"), ("web", "run"), ("", "run")] {
+        for (value, expect) in [
+            ("test", "test"),
+            // The second and last value an environment may set: what
+            // `mecha exp` marks its child runs with (D13).
+            ("experiment", "experiment"),
+            ("web", "run"),
+            ("", "run"),
+        ] {
             let out = std::process::Command::new(&exe)
                 .args([
                     "kind_override_probe",
