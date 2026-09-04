@@ -217,10 +217,17 @@ whether a goal was named, and the homeostat's context pressure and load —
 and never the stop cause or the transcript. Over these 169 sessions those
 seven fields take exactly **two** distinct values: 145 briefs of "no errors,
 `neutral`, no goal, no homeostat" and 24 of "one negative error on the
-counter channel", otherwise identical. A pass and a fail that `completed`
-cleanly are byte-identical to it, and so are a `max_turns` failure and the
-three `max_turns` passes. A model reasoning over counts cannot separate what
-the counts do not. The ruling §3.10 asked for
+counter channel", otherwise identical. Part of that collapse is the
+store's, not the appraiser's: the reconstruction never synthesises the
+homeostat, so pressure and load read unknown on all 169 by construction,
+and `tool_denied`, `malformed_tool_args` and `blocked_sends` are pinned at
+zero, so no channel but `Counter` could appear. A live corpus would give
+the briefs more values. What survives untouched is the half the ruling
+rests on: the evidence carries no stop cause and no transcript, so a pass
+and a fail that `completed` cleanly *with the same counters* are
+byte-identical to it there too, and so are a `max_turns` failure and the
+three `max_turns` passes. A model reasoning over counts cannot separate
+what the counts do not. The ruling §3.10 asked for
 follows: retire the pass as it stands, or give it the one structured input
 that differs between a clean pass and a clean fail — the plan's step list
 with statuses, or the run's final answer against its task — on step
@@ -491,7 +498,10 @@ retired, or given one more structured input (the plan's step list with
 statuses, the model's own prior output, on step escalation's precedent).
 
 *Measured 2026-09-03, §1.7.6: 169 of 169 "nothing further", against a known
-verdict, at 0.50. The yield is zero, not near it. Retire, or re-feed.*
+verdict, at 0.50 — over the synthesised Terminal-Bench store (§1.7's
+caveats: the homeostat and three counters are absent by construction), not
+the live one, which has no verdict to measure against. The yield is zero,
+not near it. Retire, or re-feed.*
 
 ### 3.11 Two small corrections
 
