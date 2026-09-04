@@ -2266,8 +2266,13 @@ prediction that was made *before* either was measured.
   resolved draft or a re-ranked line redraws the ties — which is why
   `Measurement::ranked` records how many of the selection it ordered, beside
   the seed and the holdout ids, and `harness show` prints it; a first cut
-  put it on a stderr line nobody keeps (found on review). And the stores are
-  not read at all without a charter with lines (`Stores::load_if_chartered`). The seed is chosen by
+  put it on a stderr line nobody keeps (found on review). The stores are
+  not read at all without a charter with lines, and `appraisal::Chartered`
+  keeps a charter that did not load apart from one with nothing to rank
+  against — the draw records `ranked: None` for the first and `Some(0)`
+  for the second, because a malformed `charter.toml` silently turning the
+  tiebreak off and recording "ranked nothing" was the two findings this
+  repo keeps apart, rendered identically (found on review). The seed is chosen by
   the caller and recorded on the measurement along with the holdout's episode
   ids, because the split now depends on the corpus as it stood at measurement
   time rather than on the ids alone — and a sample nobody can redraw is a

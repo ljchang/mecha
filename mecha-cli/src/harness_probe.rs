@@ -178,13 +178,15 @@ pub struct Draw {
     /// Printed, because a sample nobody can redraw is one nobody can check.
     pub seed: u64,
     pub skipped: usize,
-    /// How many of the selection carry a charter rank — recorded on the
-    /// measurement beside the seed (`Measurement::ranked`), because the
-    /// rank is read off inputs the seed and the corpus do not pin: the
+    /// How many of the selection, as drawn, carry a charter rank — recorded
+    /// on the measurement beside the seed (`Measurement::ranked`), because
+    /// the rank is read off inputs the seed and the corpus do not pin: the
     /// charter, whose order is the rank, and the stores a session's errors
     /// are signed from as they stand at the draw. A resolved draft or a
-    /// re-ranked line redraws the ties.
-    pub ranked: usize,
+    /// re-ranked line redraws the ties. `None` when the tiebreak could not
+    /// run — the charter did not load — which is not the same finding as a
+    /// charter with nothing to rank against, a true zero (found on review).
+    pub ranked: Option<usize>,
 }
 
 /// How much wider than the draw the eligible pool has to be.
@@ -264,7 +266,8 @@ pub fn draw_episodes(
     // reads per draw rather than per episode, and none at all without a
     // charter, since only a charter with lines can rank anything. Only the
     // charter rank comes of it here; see `EpisodePrep::charter_rank`.
-    let stores = mecha_core::appraisal::Stores::load_if_chartered();
+    let chartered = mecha_core::appraisal::Stores::load_if_chartered();
+    let stores = chartered.stores();
     for (meta, path) in listed {
         if pool.len() >= pool_size {
             break;
@@ -292,11 +295,7 @@ pub fn draw_episodes(
         if !admission.admits(&meta) {
             continue;
         }
-        match prepare_episode(
-            &path,
-            &meta.id,
-            stores.as_ref().map(|s| (s, meta.created_at)),
-        )? {
+        match prepare_episode(&path, &meta.id, stores.map(|s| (s, meta.created_at)))? {
             Ok(prep) => {
                 // Headroom off *every* outcome the session recorded, folded.
                 // `last_outcome` describes how the session ended, and an
@@ -347,10 +346,16 @@ pub fn draw_episodes(
         )
     });
     rest.truncate(selection_n);
-    let ranked = rest
-        .iter()
-        .filter(|(p, _)| p.charter_rank.is_some())
-        .count();
+    // Unknown where the tiebreak could not run, a count — zero included —
+    // where it did.
+    let ranked = match chartered {
+        mecha_core::appraisal::Chartered::Unreadable => None,
+        _ => Some(
+            rest.iter()
+                .filter(|(p, _)| p.charter_rank.is_some())
+                .count(),
+        ),
+    };
 
     Ok(Draw {
         selection: rest.into_iter().map(|(p, _)| p).collect(),
@@ -729,9 +734,21 @@ mod tests {
         assert_eq!(order.len(), 2, "{order:?}");
         assert_eq!(
             d.ranked,
-            order.iter().filter(|id| !id.ends_with("none")).count(),
+            Some(order.iter().filter(|id| !id.ends_with("none")).count()),
             "ranked counts the selected episodes whose error named a line"
         );
+
+        // A charter that does not load: the draw still happens, by headroom
+        // then id, and the record says the tiebreak could not run — never
+        // that it ran and ranked nothing.
+        std::fs::write(
+            home.dir.join("charter.toml"),
+            "[[line]]\nid = \"\"\ntext = \"x\"\n",
+        )
+        .unwrap();
+        let d = draw_episodes(&dir, "m", Metric::Turns, 3, 3, 11, None).unwrap();
+        assert_eq!(d.selection.len(), 2);
+        assert_eq!(d.ranked, None);
 
         // And the sort is not by id: the id order is the reverse of the
         // charter's, so an id-ordered selection of any two would differ.
