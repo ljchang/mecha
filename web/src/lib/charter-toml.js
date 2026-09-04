@@ -128,6 +128,23 @@ export function splitHeader(src) {
 /// A starting point for a new line's id, derived from text the owner typed.
 /// Derived once on creation and never re-derived: `GoalRef::Charter` carries
 /// an id and no rank, so re-slugging would break recorded references.
+/// The editor's rows from the server's `lines` — one place, so a field the
+/// server adds beside `sensor` is carried or dropped on purpose rather than
+/// by which literal someone last edited. `sensor` is copied down to its two
+/// keys because `serialize` writes it back; `reading` is carried for display
+/// and is never serialised (the first cut rebuilt the row without it, and the
+/// settings page was the one surface of three showing no reading — found on
+/// review). `nextUid` hands each row its editor-local key.
+export function rows(lines, nextUid) {
+  return (lines ?? []).map((l) => ({
+    uid: nextUid(),
+    id: l.id,
+    text: l.text,
+    sensor: l.sensor ? { kind: l.sensor.kind, setpoint: l.sensor.setpoint } : null,
+    reading: l.reading ?? null,
+  }));
+}
+
 export const slugify = (t) =>
   String(t)
     .toLowerCase()

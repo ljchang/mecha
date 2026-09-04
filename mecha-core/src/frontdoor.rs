@@ -508,6 +508,22 @@ pub const NEEDS_INFO: &str = "needs_info";
 pub const ANSWERED: &str = "answered";
 pub const CLOSED: &str = "closed";
 
+/// The states in which a request waits on the **owner** rather than on the
+/// requester or on the harness: `extracted` awaits triage, `awaiting_me` a
+/// draft review, and `triaged` is triage's "I drafted nothing — this needs a
+/// person", which nothing re-triages. `needs_info` waits on the stranger,
+/// `drained` on the extraction pass, `answered` and `closed` on nobody.
+/// One list, read by the doctor's stale-request finding and by the
+/// `request_closure` charter sensor, so the two cannot disagree about which
+/// requests a setpoint is measured over (found on review: the sensor read
+/// every open request and a week-old `needs_info` saturated a line no
+/// finding would ever name).
+pub const WAITING_ON_OWNER: [&str; 3] = [EXTRACTED, AWAITING_ME, TRIAGED];
+
+pub fn waiting_on_owner(state: &str) -> bool {
+    WAITING_ON_OWNER.contains(&state)
+}
+
 /// One state change, for a caller that wants to say what it did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transition {

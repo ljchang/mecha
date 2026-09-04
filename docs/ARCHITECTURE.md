@@ -2664,10 +2664,26 @@ when touching it:
   each sensor's reading beside its line through `reading::read_charter`,
   and the two JSON surfaces render one shape through `reading::lines_json`
   with `reading` a *sibling* of `sensor`, because `sensor`'s two keys are
-  what the web serialiser writes back on a save. The web handler takes the
-  readings through `spawn_blocking`, on `board.rs`'s rule at a larger cost:
-  three store reads and, for the corpus kind, a 200-transcript scan, inside
-  an async handler that also holds the SSE streams (found on review).
+  what the web serialiser writes back on a save — and the page's rows come
+  from `charter-toml.js`'s `rows`, tested in `web/test/charter-rows.mjs`,
+  because the first cut rebuilt each row by hand and dropped `reading`,
+  leaving the browser the one surface of three with none (found on
+  review). The web handler takes the readings through `spawn_blocking`, on
+  `board.rs`'s rule at a larger cost — three store reads and, for the
+  corpus kind, a 200-transcript scan, inside an async handler that also
+  holds the SSE streams — and the TUI modal reads on its own thread with
+  `CharterModal::poll` moving the answer in on the tick, because inline it
+  froze the input line for the length of the scan (both found on review).
+- **The `request_closure` sensor and the stale-request finding measure the
+  same requests.** `frontdoor::WAITING_ON_OWNER` is the one list — a
+  request awaiting triage, a draft review, or a person after triage drafted
+  nothing — read by the doctor and by `Backlog::read_with_owner_requests`,
+  which hands `reading::Sources` the owner-facing depth beside the backlog.
+  `Backlog::frontdoor` still counts every open request, as every recorded
+  row always has; read against the sensor, a `needs_info` parked on the
+  stranger for a week saturated a line no finding would ever name, and the
+  owner's only way out was to loosen a setpoint that was right (found on
+  review). The same reader is the seam `guilt.rs`'s module doc asked for.
 
 **`Affect` is a pure function of the record and there is deliberately no way to
 report one.** A model that reads a run and says "frustrated" is an

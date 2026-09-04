@@ -3633,9 +3633,23 @@ fixed on the branch: the web handler ran three store reads and a possible
 reported as met (`corpus_rate_in` now tells the three apart, with a test on
 a torn file); and the surface printed a share off any denominator while the
 doctor refused one under twenty runs, in the one place containment 5 wants
-the owner judging a setpoint (`Reading::Sparse`). Not built: the replay
-tiebreak, `board_overdue` and `cost`, and the reflection's "which line
-moved".
+the owner judging a setpoint (`Reading::Sparse`). The second pass found
+three more, fixed the same way: the settings page rebuilt each row by hand
+in `hydrate` and dropped `reading`, so the browser was the one surface of
+three showing none while its payload carried one (`charter-toml.js`'s
+`rows`, with `web/test/charter-rows.mjs` pinning that `sensor` keeps its
+two keys and `reading` never reaches the file); the TUI's `/charter` ran
+the same read inline on the draw thread the web fix had just moved off the
+executor (a thread and `CharterModal::poll` on the tick, `Readings::Lost`
+when the thread dies); and `request_closure` read `Backlog::frontdoor`,
+every open request, where the doctor's finding reads only the three
+owner-facing states — a week-old `needs_info` parked on the stranger would
+have saturated a line no finding named, and the remedy pointed at the same
+unactionable reading (`frontdoor::WAITING_ON_OWNER` is now the one list,
+`Backlog::read_with_owner_requests` hands the reading the narrowed depth,
+and the wide depth stays what every recorded row has always held). Not
+built: the replay tiebreak, `board_overdue` and `cost`, and the
+reflection's "which line moved".
 
 **2026-09-04, later — the goal system's second sprint PR: a reflection
 records where it was learned, a rule carries the region it applies in, and

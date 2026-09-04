@@ -133,7 +133,7 @@ pub struct Homeostat {
 impl Homeostat {
     /// Sample the conditions at the start of a run.
     pub fn at_start() -> Homeostat {
-        let backlog = Backlog::read();
+        let (backlog, requests_on_owner) = Backlog::read_with_owner_requests();
         // The charter is loaded here rather than handed in: it is global
         // and read-only by construction (`charter.rs`), exactly as the
         // backlog's stores are, and the reading is a fact about the machine
@@ -147,8 +147,11 @@ impl Homeostat {
             .map(|c| {
                 crate::reading::read_lines(
                     &c,
-                    &backlog,
-                    &crate::reading::CorpusRate::NotScanned,
+                    &crate::reading::Sources {
+                        backlog: &backlog,
+                        requests_on_owner,
+                        corpus: crate::reading::CorpusRate::NotScanned,
+                    },
                     Utc::now(),
                 )
             });
