@@ -99,9 +99,13 @@ impl Metric {
     /// exists today. PER samples by |TD error| because a surprising transition
     /// carries the most information; here the same argument is made with
     /// headroom, because the appraisal record that would supply a goal error
-    /// is not built yet. When it is, |goal error| joins this rather than
-    /// replacing it — a run can be uninformative about a metric and still be
-    /// the most instructive thing that happened all week.
+    /// was not built when this was. It is now, and its first consumer here
+    /// is a *tiebreak*, not a replacement: `harness_probe::draw_episodes`
+    /// orders equal headroom by the highest-ranked charter line a signed
+    /// error names (`GOAL-SYSTEM-DESIGN.md` §11.1), and |goal error| as a
+    /// priority in its own right is still to come — a run can be
+    /// uninformative about a metric and still be the most instructive thing
+    /// that happened all week.
     ///
     /// **It is only ever a priority, never a score.** Drawing the *selection*
     /// slice this way is safe precisely because selection only picks; the

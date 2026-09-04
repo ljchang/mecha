@@ -552,6 +552,18 @@ impl Charter {
             .find(|l| l.sensor.as_ref().is_some_and(|s| kinds.contains(&s.kind)))
     }
 
+    /// A line's rank: its index in file order, zero highest. `None` for an
+    /// id the charter does not contain — a `serves: charter:<id>` is the
+    /// model's own string, and a rank for a line that does not exist would
+    /// be a rank for nothing. The second consumer line order has ever had
+    /// (`line_for_sensor` was the first): §11.1's replay tiebreak, where a
+    /// signed error against the top line replays before one against the
+    /// fifth.
+    pub fn rank_of(&self, id: &str) -> Option<usize> {
+        let id = id.trim();
+        self.lines.iter().position(|l| l.id == id)
+    }
+
     /// Does any line carry a sensor? A surface that says "attributed by
     /// sensor" reads this first, so a charter with none is reported as
     /// having none rather than as attributing nothing.
