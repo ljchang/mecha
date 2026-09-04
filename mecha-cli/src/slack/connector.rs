@@ -184,6 +184,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
     let model = prepared.model.clone();
     let prepared_config = prepared.config.clone();
     let levers_off = prepared.levers_off.clone();
+    let rules = prepared.rules.clone();
     let agent = Arc::new(prepared.agent);
 
     let (inbound_tx, mut inbound_rx) = mpsc::channel(64);
@@ -221,6 +222,7 @@ pub async fn run(global: &GlobalOpts) -> Result<()> {
         model,
         config: prepared_config,
         levers_off,
+        rules,
         approval_tx,
         completion_tx,
     };
@@ -399,6 +401,8 @@ struct State {
     config: mecha_core::config::Config,
     /// For `RunConfig::levers_off`, carried from `Prepared`.
     levers_off: Vec<mecha_core::harness::Lever>,
+    /// For `RunConfig::rules_hash`, carried the same way.
+    rules: mecha_core::learning::RulesCarried,
     approval_tx: mpsc::Sender<approve::Request>,
     completion_tx: mpsc::Sender<Completion>,
 }
@@ -1198,6 +1202,7 @@ impl State {
             &self.config,
             &self.provider,
             &self.levers_off,
+            Some(&self.rules),
         )));
         if let Ok(Some(mut r)) = self.threads.get(&record.key) {
             r.session_id = Some(session.meta.id.clone());

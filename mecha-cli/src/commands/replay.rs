@@ -67,6 +67,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             configs.len()
         );
     }
+    // Which learned rules the run carried is part of the arm being replayed,
+    // and once loading is scoped the store cannot answer for a past run.
+    let delivered = Session::read(&path)
+        .ok()
+        .and_then(|t| t.episode)
+        .and_then(|e| e.delivered);
+    eprintln!("note: {}", recorded.rules_arm_note(delivered.as_deref()));
 
     let trajectory = extract(&convo.messages);
     if trajectory.turns.is_empty() {

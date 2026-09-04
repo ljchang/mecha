@@ -765,6 +765,7 @@ mod tests {
             blocked_sends: 0,
             compactions: 1,
             taint: Taint::default(),
+            delivered: None,
         }
     }
 

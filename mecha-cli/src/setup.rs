@@ -23,7 +23,13 @@ pub struct Prepared {
     pub model: String,
     pub workspace: PathBuf,
     /// The resolved config, for commands that need to build a *second*
-    /// connection — `eval` and its judge model.
+    /// connection — `eval` and its judge model. **`config.agent` does not
+    /// carry the learned-rules block; `agent` does.** `build` appends the
+    /// block to a private clone of the agent config (the registry it is
+    /// matched against exists only there), so a caller that builds another
+    /// agent from this field starts without rules — every current one
+    /// (`probe`, `harness_probe`, `replay`) overwrites `system_prompt` from
+    /// a recorded config anyway.
     pub config: Config,
     /// The active sandbox, for surfaces that describe what `shell` actually
     /// is — the TUI's /tools modal. The tools themselves already hold it.
@@ -45,6 +51,12 @@ pub struct Prepared {
     /// computed here, once, from the switches the agent was built with, so
     /// every front-end records the same answer for the same flags.
     pub levers_off: Vec<Lever>,
+    /// The learned-rules block this run carries and the ids in it, as
+    /// rendered against the run's registry in `build` — what
+    /// `RunConfig::rules_hash` and `rule_ids` record. `RulesCarried::none()`
+    /// when the lever is off or there is no store: recorded and empty, not
+    /// unknown.
+    pub rules: mecha_core::learning::RulesCarried,
 }
 
 /// Everything except the model connection. Split out so `mecha tools` can list
@@ -355,12 +367,94 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // the model can close tasks around `mecha tasks set`.
     crate::closure_guard::verify(&registry)?;
 
+    // Learned rules ride at the end of the system prompt — still inside the
+    // cached prefix, and they only change at consolidation time. Read-only:
+    // an agent that has learned nothing yet must not create state by starting.
+    //
+    // Rendered *here*, after the subagents above joined the registry and
+    // before the agent is built, because which rules a run carries is
+    // decided against the run's registry — a rule scoped to `shell` loads
+    // only where `shell` is registered (`learning::carried_in`), and MCP
+    // tools and subagents are part of that answer. An earlier draft rendered
+    // at the end of `prepare_tools`, before subagents existed, so a rule
+    // scoped to a subagent tool could never match (found on review). What
+    // is still inserted later is the front-end's own tools — `ask_user`,
+    // recall, the TUI's — after `prepare` returns and before `RunConfig::of`
+    // reads the registry; a rule scoped to one of those would never match,
+    // and `Situation::of_run`'s doc says so. Nothing else touches the system
+    // prompt after this point, so the block stays last. What was rendered is
+    // kept for `RunConfig`, whose `rules_hash` and `rule_ids` are this pair;
+    // a record that named a hash and a set from two different moments would
+    // be a record of nothing.
+    // The agent's config with the block appended; `cfg` itself stays as
+    // loaded, since `provider_cfg` above still borrows it.
+    let mut agent_cfg = cfg.agent.clone();
+    let mut rules = mecha_core::learning::RulesCarried::none();
+    if !opts.no_learned_rules {
+        if let Some(store) = mecha_core::learning::LearningStore::open_existing_default() {
+            // The cap's warning half (the gate in `mecha learn` is the
+            // refusal half): a domain over budget degrades every run this
+            // block rides in, so it is said where the run starts — the
+            // routed-name-matches-no-tool precedent.
+            for (domain, n) in store.over_budget_domains().unwrap_or_default() {
+                eprintln!(
+                    "mecha: learned rules for `{domain}` number {n}, over the cap of {} — \
+                     adherence degrades; `mecha learn` will consolidate before it may add",
+                    mecha_core::learning::MAX_ACTIVE_RULES_PER_DOMAIN
+                );
+            }
+            // A domain holding rules that ride in no prompt is silent by
+            // construction — same shape as a routed outbox name matching no
+            // tool, and said at the same moment for the same reason.
+            // Measured against every domain something loads, not just what a
+            // *run* carries: `triage` is read by the mail classifier's own
+            // pass, so warning about it would be false, permanent, and — worse
+            // — the place a genuinely unrouted domain would hide.
+            // Same shape one level down: a rule scoped to a tool the
+            // front-end inserts after this block is rendered can never
+            // load, and nothing but this line would say so.
+            for (domain, tool, text) in store
+                .unloadable_rules(mecha_core::learning::RUN_DOMAINS)
+                .unwrap_or_default()
+            {
+                eprintln!(
+                    "mecha: a `{domain}` rule is scoped to `{tool}`, which joins the registry \
+                     after the rules block is rendered — it can never load: {text}"
+                );
+            }
+            let routed = mecha_core::learning::routed_domains();
+            for domain in store.unrouted_domains(&routed).unwrap_or_default() {
+                eprintln!(
+                    "mecha: rules for `{domain}` are never loaded — nothing carries that \
+                     domain, so they cannot fire. Check the filename, or route it."
+                );
+            }
+            let situation = mecha_core::situation::Situation::of_run(
+                &registry
+                    .iter()
+                    .map(|t| t.name().to_string())
+                    .collect::<Vec<_>>(),
+                Some(&tools.workspace),
+            );
+            rules = store.rules_carried_for(mecha_core::learning::RUN_DOMAINS, &situation)?;
+            if let Some(block) = rules.block.clone() {
+                let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
+                agent_cfg.system_prompt = Some(if base.is_empty() {
+                    block
+                } else {
+                    format!("{base}\n\n{block}")
+                });
+                agent_cfg.system_prompt_file = None;
+            }
+        }
+    }
+
     let mut agent = Agent::new(
         provider,
         registry,
         tools.approver,
         ctx,
-        cfg.agent.clone(),
+        agent_cfg,
         Some(model.clone()),
     )?
     .with_pricing(provider_cfg.pricing())
@@ -469,6 +563,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         workspace: tools.workspace,
         config: cfg,
         levers_off,
+        rules,
         sandbox: tools.sandbox,
         todo: tools.todo,
         skill: tools.skill,
@@ -891,47 +986,6 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
         }
     }
 
-    // Learned rules ride at the end of the system prompt — still inside the
-    // cached prefix, and they only change at consolidation time. Read-only:
-    // an agent that has learned nothing yet must not create state by starting.
-    if !opts.no_learned_rules {
-        if let Some(store) = mecha_core::learning::LearningStore::open_existing_default() {
-            // The cap's warning half (the gate in `mecha learn` is the
-            // refusal half): a domain over budget degrades every run this
-            // block rides in, so it is said where the run starts — the
-            // routed-name-matches-no-tool precedent.
-            for (domain, n) in store.over_budget_domains().unwrap_or_default() {
-                eprintln!(
-                    "mecha: learned rules for `{domain}` number {n}, over the cap of {} — \
-                     adherence degrades; `mecha learn` will consolidate before it may add",
-                    mecha_core::learning::MAX_ACTIVE_RULES_PER_DOMAIN
-                );
-            }
-            // A domain holding rules that ride in no prompt is silent by
-            // construction — same shape as a routed outbox name matching no
-            // tool, and said at the same moment for the same reason.
-            // Measured against every domain something loads, not just what a
-            // *run* carries: `triage` is read by the mail classifier's own
-            // pass, so warning about it would be false, permanent, and — worse
-            // — the place a genuinely unrouted domain would hide.
-            let routed = mecha_core::learning::routed_domains();
-            for domain in store.unrouted_domains(&routed).unwrap_or_default() {
-                eprintln!(
-                    "mecha: rules for `{domain}` are never loaded — nothing carries that \
-                     domain, so they cannot fire. Check the filename, or route it."
-                );
-            }
-            if let Some(block) = store.rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)? {
-                let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
-                cfg.agent.system_prompt = Some(if base.is_empty() {
-                    block
-                } else {
-                    format!("{base}\n\n{block}")
-                });
-                cfg.agent.system_prompt_file = None;
-            }
-        }
-    }
     if !opts.tools.is_empty() {
         cfg.tools.enabled = opts.tools.clone();
     }
@@ -1796,6 +1850,24 @@ mod tests {
             "--no-step-escalation must win even when config turns it on"
         );
         assert!(step_escalation_enabled(true, false));
+    }
+
+    /// Every tool a front-end inserts after `build` must be in
+    /// `Situation::FRONTEND_TOOLS`, or a rule can be scoped to it and never
+    /// load. `surface_only_registry` holds the two `setup` itself inserts;
+    /// the TUI's `show_file` is pinned by name.
+    #[test]
+    fn every_front_end_tool_is_excluded_from_scope() {
+        use mecha_core::tool::Tool;
+        for tool in super::surface_only_registry().iter() {
+            assert!(
+                mecha_core::situation::Situation::FRONTEND_TOOLS.contains(&tool.name()),
+                "{} is inserted after build and must be a front-end tool",
+                tool.name()
+            );
+        }
+        let show = crate::slack::show::ShowFileTool::new(1);
+        assert!(mecha_core::situation::Situation::FRONTEND_TOOLS.contains(&show.name()));
     }
 
     /// **A child that cannot compact must not be handed the button for it.**
