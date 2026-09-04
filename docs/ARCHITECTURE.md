@@ -2978,8 +2978,9 @@ comparison over a chosen set**, with the design written before the run.
   returns nothing and says so. Every plain `mecha eval` records one — a
   scorecard is a one-arm experiment — so the condition it measured (model,
   preset, the machine's knobs) is on the store beside every comparison's
-  (`--mcp-file` excepted: a fixture server has no lever, and a
-  `condition_hash` that called that eval bare would break its contract),
+  (`--mcp-file` and `--no-ask-user` excepted: a fixture server and a
+  withheld tool have no lever, and a `condition_hash` that called that
+  eval bare would break its contract),
   which is the convergence's last step short of the runner: eval's A/B
   flags are two-arm manifests, its scorecard a one-arm one, and the arms
   still run in-process on eval's forcings.
