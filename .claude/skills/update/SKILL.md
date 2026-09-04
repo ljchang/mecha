@@ -58,9 +58,12 @@ the public checkout was a generated artifact — `git archive HEAD` from
 `~/Github/personalized_knowledge_graph` minus an exclusion list, through a
 gate that *deletes* the tree it refuses — and this file said in bold that
 `~/Github/mecha-graph` was not a source. It is the source now. Work happens
-there; the private repo keeps only the ten files the export used to strip
-(the gold eval sets derived from real episodes, the operator docs, and the
-roster tooling) and is no longer where code is written.
+there; the private repo keeps only its notes — `HANDOFF`, `RESEARCH_LOOP`,
+`OPERATIONS` — and the roster tooling, and is no longer where code is
+written. The gold eval sets are **not** there either: they moved to
+`~/.mecha-graph/eval/` (0600), resolved by `eval::gold_path_from`, and
+private PR #5 (2026-09-02) removed `eval/gold*.jsonl` and
+`scripts/nightly-mecha.sh` from that checkout outright.
 
 What made that safe was moving the gate rather than dropping it. The public
 repo carries `.githooks/pre-push` and `.github/workflows/denylist.yml`, both
@@ -88,17 +91,22 @@ error — was removed), and Hermes's `mcp_servers.pkg` entry, repointed the
 same morning. A host app keeps its old server process until it restarts:
 Claude Code sessions and the Hermes dashboard started before the change are
 still holding the private binary, and restart to pick up the new one. The
-private repo keeps only the gold eval sets, the operator docs and the
-roster tooling, and nothing on this machine executes from it. This
-paragraph used to say the 08:00 line ran the private copy of
-`nightly-mecha.sh` "by design"; that was already false when the crontab was
-read on 2026-09-04, and the 01:30 line was the last one moved.
+private repo keeps only its notes and the roster tooling (above), and
+nothing on this machine executes from it. This paragraph used to say the
+08:00 line ran the private copy of `nightly-mecha.sh` "by design"; that
+copy has not existed since private PR #5 on 2026-09-02, and the 01:30 line
+was the last one moved.
 
-A change spanning the two must land **public first**. The gossip cooldown
-arc is the worked example: `--min-sources` is a flag on the public binary
-and `nightly-mecha.sh` is the private caller that passes it, so landing the
-private half first gives the nightly a flag the installed binary does not
-have.
+The "land public first" rule for a change spanning the two repos has no
+code case left: its worked example — `--min-sources` on the public binary
+and `nightly-mecha.sh` as the private caller passing it — collapsed when
+the caller moved public, and nothing that runs now lives on the private
+side. What still spans the split is the roster (`~/.mecha-graph/
+denylist.txt` and the `PUBLIC_DENYLIST` secret, read by the public repo's
+`.githooks/pre-push` and `denylist.yml`) and the operator docs, neither of
+which gates a binary; the reflex that survives is that a public-side hook
+which reads a roster must be able to read it before a roster edit relies
+on it.
 
 ```bash
 cargo install --path mecha-graph     --locked --force   # mecha-graph (CLI)
