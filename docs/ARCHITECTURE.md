@@ -445,7 +445,11 @@ immutable context (`rewritable_in` is equality, not containment: a wider
 batch rewriting a narrower rule would widen it on no evidence). The
 harness assigns the new rules' `scope` from the keys the batch shared
 (`finalize_region_rules`); the learner never names one. At run start
-`prepare_tools` renders the block *after* the registry is complete, through
+`setup::build` renders the block after builtins, MCP servers and subagents
+have joined the registry (an earlier draft rendered before subagents
+existed, so a rule scoped to one could never match — found on review; the
+front-end's own tools, `ask_user` and the TUI's, still join later and are
+not scope targets, as `Situation::of_run` says), through
 `rules_carried_for`, and a scoped rule enters the prefix only when the run
 registers every tool the scope names — a lesson from editing `mail_send`
 drafts loads where `mail_send` is mounted and nowhere else. The one scope
@@ -464,9 +468,18 @@ widening a rule's region over sub-regions that agree (§17.4
 consequence worth knowing: the store's view (`mecha rules`,
 `rules_prompt_block_for`) is now a set no single run has, which is why
 `validate` renders the measured block per probe from the replayed
-session's own `RunConfig::tools` and keys each ledger row to *that* hash
-and id list, and why `learn`'s gate hands the probe a renderer rather than
-two strings.
+session's own `RunConfig::tools` — over `RUN_DOMAINS` only, never the
+whole store, or a `triage` rule would ride in front of a tool-having probe
+that `Reflexion::learnable`'s exemption promises it never reaches — and
+keys each ledger row to *that* hash and id list, skipping a probe whose
+carried set is empty rather than grading two identical arms as
+"unchanged"; and why `learn`'s gate hands the probe a renderer rather
+than two strings, with the same skip when the candidate changes nothing in
+the recorded run's situation. One seam left as it was:
+`MAX_ACTIVE_RULES_PER_DOMAIN` and `budget_refuses` are still domain-wide
+while each learner call sees one region, so on a domain with several
+regions a batch can be refused against a total it could not see — fail-safe
+(the batch returns to the pool), but the steady state to watch for.
 
 **Distillation is not learning, and its provenance rule differs on purpose.**
 `mecha distill` (`distill.rs`) summarises each closed session into an episode
