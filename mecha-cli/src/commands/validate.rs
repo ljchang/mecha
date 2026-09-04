@@ -453,42 +453,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // The recorded system prompt, with any rules block of its era removed:
         // the baseline arm must be rules-free and the treatment arm must carry
         // exactly the current rules, not a mixture of generations.
-        let first_config = Session::run_configs(&path)?.into_iter().next();
-        let base_system = first_config
-            .as_ref()
-            .and_then(|rc| rc.system_prompt.clone())
-            .map(|s| strip_rules_block(&s))
-            .unwrap_or_default();
-        // The situation the recorded run was in, from its own record. A
-        // session with no config recorded cannot say, and gets the standing
-        // rules only — the set every run carries — rather than a guess.
-        let run = first_config
-            .as_ref()
-            .map(|rc| Situation::of_run(&rc.tools, Some(&rc.workspace)))
-            .unwrap_or_default();
-        let carried = surface.carried(&run);
-        // A block that renders nothing is nothing to measure: both arms
-        // would be byte-identical and grade as "unchanged", which the
-        // summary counts as a verdict — the measured-clean-versus-not-
-        // measured conflation one function over (found on review). The
-        // predicate is the rendered block, not `carried`: user rules ride
-        // in every block regardless of selection, so a domain with user
-        // rules and nothing scoped to this run still has an arm to measure
-        // (found on the next review). The row is not written.
-        let Some(rules_block) = surface.block_with(&carried) else {
-            eprintln!(
-                "· {}: no rule rides in this session's situation; skipping",
-                r.id
-            );
-            skipped += 1;
-            continue;
-        };
-        let with_rules = if base_system.is_empty() {
-            rules_block.clone()
-        } else {
-            format!("{base_system}\n\n{rules_block}")
-        };
-
         // ── steers and denials: replay the prefix, grade the trace ──
         if r.trigger != Trigger::Followup.as_str() {
             let prepared = prepared.as_ref().expect("built because needs_replay");
@@ -596,6 +560,49 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
 
         // ── followups: re-ask the corrective turn, judge both answers ──
+        let first_config = Session::run_configs(&path)?.into_iter().next();
+        let base_system = first_config
+            .as_ref()
+            .and_then(|rc| rc.system_prompt.clone())
+            .map(|s| strip_rules_block(&s))
+            .unwrap_or_default();
+        // The situation the recorded run was in, from its own record. A
+        // session with no config recorded cannot say, and gets the standing
+        // rules only — the set every run carries — rather than a guess.
+        let run = first_config
+            .as_ref()
+            .map(|rc| Situation::of_run(&rc.tools, Some(&rc.workspace)))
+            .unwrap_or_default();
+        // The situation a followup is judged in is the session's first
+        // config's — the judge path re-asks the corrective turn under the
+        // recorded prompt and has no branch to replay. The steer/denial
+        // path above rendered its own block for `prep.situation()`, the
+        // config covering the intervention; an earlier draft gated both
+        // paths on this one and skipped replays for a reason drawn from a
+        // situation the replay never used (found on review).
+        let carried = surface.carried(&run);
+        // A block that renders nothing is nothing to measure: both arms
+        // would be byte-identical and grade as "unchanged", which the
+        // summary counts as a verdict — the measured-clean-versus-not-
+        // measured conflation one function over (found on review). The
+        // predicate is the rendered block, not `carried`: user rules ride
+        // in every block regardless of selection, so a domain with user
+        // rules and nothing scoped to this run still has an arm to measure
+        // (found on the next review). The row is not written.
+        let Some(rules_block) = surface.block_with(&carried) else {
+            eprintln!(
+                "· {}: no rule rides in this session's situation; skipping",
+                r.id
+            );
+            skipped += 1;
+            continue;
+        };
+        let with_rules = if base_system.is_empty() {
+            rules_block.clone()
+        } else {
+            format!("{base_system}\n\n{rules_block}")
+        };
+
         let Some(idx) = locate_followup(&convo.messages, &r.intervention) else {
             eprintln!(
                 "· {}: could not locate the intervention turn; skipping",

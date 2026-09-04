@@ -338,11 +338,25 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // the other, and `accept`'s only way past that is `--force`, the
             // lossy path. The later batches wait, unprocessed, behind the
             // review (`--auto` resolves at birth and never parks here).
+            if (args.propose || args.auto) && already_argued(&proposals, domain, reflexions) {
+                println!(
+                    "{domain} [{}]: this exact batch of {} reflection(s) was already argued \
+                     (see `mecha proposals`); waiting for new reflections",
+                    region.describe(),
+                    reflexions.len()
+                );
+                continue;
+            }
             if args.propose && !args.auto {
                 // Pending in the store, or admitted earlier in this very
                 // pass: every admitted batch under `--propose` writes a
                 // proposal, so the second of a domain would be the
-                // alternative this check exists to prevent.
+                // alternative this check exists to prevent. After the
+                // argued brake, not before: a batch the brake turns away
+                // must not claim the slot, or a `rejected_by_gate` batch
+                // (whose reflections stay unprocessed, so the brake stays
+                // true) starves every other region of its domain for good
+                // (found on review).
                 let pending = proposals
                     .iter()
                     .any(|p| p.domain == *domain && p.status == "pending")
@@ -365,15 +379,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // `learn-live.sh` runs per *session*, so an unguarded identical
             // batch re-pays a learner call plus a probe pair per steer/denial on
             // every session close until the pool changes.
-            if (args.propose || args.auto) && already_argued(&proposals, domain, reflexions) {
-                println!(
-                    "{domain} [{}]: this exact batch of {} reflection(s) was already argued \
-                 (see `mecha proposals`); waiting for new reflections",
-                    region.describe(),
-                    reflexions.len()
-                );
-                continue;
-            }
             batches.push((domain.clone(), region, reflexions.clone()));
         }
     }
@@ -473,7 +478,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if rendered > RULES_CHAR_BUDGET {
             eprintln!(
                 "{domain}: warning — the new rule set renders to {rendered} chars, over the \
-         {RULES_CHAR_BUDGET} budget; kept, but the next pass should consolidate harder"
+                 {RULES_CHAR_BUDGET} budget; kept, but the next pass should consolidate harder"
             );
         }
 
@@ -487,7 +492,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if budget_refuses(active_before, active_after) {
             eprintln!(
                 "{domain}: refused — {active_after} active rules is over the cap of \
-         {MAX_ACTIVE_RULES_PER_DOMAIN} and no smaller than the current \
+                 {MAX_ACTIVE_RULES_PER_DOMAIN} and no smaller than the current \
          {active_before}. Nothing changed; consolidate or retire before adding."
             );
             continue;
@@ -569,7 +574,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // which happened.
                 format!(
                     "{inconclusive} probe pair(s) ran and none graded (inconclusive); \
-             review by reading"
+                     review by reading"
                 )
             } else if measured == 0 && skipped > 0 {
                 // Skipped is a third fact: the probe was possible and
@@ -582,7 +587,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             } else {
                 format!(
                     "candidate vs current rules, replayed on the batch's own interventions: \
-             {improved} improved, {regressed} regressed, {unchanged} unchanged, \
+                     {improved} improved, {regressed} regressed, {unchanged} unchanged, \
              {inconclusive} inconclusive"
                 )
             });
@@ -664,7 +669,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 if probation {
                     println!(
                         "  applied on probation: no reflection in this batch had a replayable \
-                 intervention point, so the gate could not grade it. Retires at \
+                         intervention point, so the gate could not grade it. Retires at \
                  {} attributed regression(s) rather than {}.",
                         mecha_core::learning::PROBATION_RETIRE_AT,
                         mecha_core::learning::DEFAULT_RETIRE_AT,
