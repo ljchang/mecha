@@ -137,6 +137,11 @@ pub enum PrincipalPoint {
     /// principal judges what the run left — drafts, questions — and closes
     /// what gold closes.
     AfterTask,
+    /// A point this build cannot name, read off a ledger a later build
+    /// wrote: the line stays readable and the pair keeps its own identity
+    /// in `stage_health`. Never constructed here, never called at.
+    #[serde(other)]
+    Unknown,
 }
 
 impl PrincipalPoint {
@@ -144,6 +149,7 @@ impl PrincipalPoint {
         match self {
             PrincipalPoint::BeforeTask => "before_task",
             PrincipalPoint::AfterTask => "after_task",
+            PrincipalPoint::Unknown => "unknown",
         }
     }
 }
@@ -194,10 +200,12 @@ pub struct PrincipalAct {
     #[serde(default)]
     pub reason: String,
     /// Filled by the driver after it ran the verb: the exit code, and
-    /// whether it succeeded. Absent on the principal's answer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// whether it succeeded. Never read from the principal's answer — a
+    /// verb that never ran must not carry an exit code the principal
+    /// claimed (found on review).
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
 }
 
@@ -263,13 +271,18 @@ pub fn allowed_verb(verb: &[String]) -> bool {
     let approve = verb.starts_with(&["outbox".to_string(), "approve".to_string()]);
     let moves_the_run = verb.iter().any(|a| {
         let name = a.split('=').next().unwrap_or(a);
-        // A short option with its value attached (`-w/tmp`, `-mx`).
-        let name = if name.starts_with('-') && !name.starts_with("--") && name.len() > 2 {
-            &name[..2]
-        } else {
-            name
-        };
-        if approve && (name == "-y" || name == "--yes") {
+        // A short group: clap stacks flags (`-vw /tmp`) and lets the last
+        // take the value, so every letter is an option — checking the
+        // first alone read `-vw` as a harmless `-v` (found on review). Any
+        // blocked letter anywhere in the group refuses the group; refusing
+        // more than clap would parse narrows, never widens.
+        if let Some(letters) = name.strip_prefix('-').filter(|s| !s.starts_with('-')) {
+            return letters.chars().any(|c| {
+                let opt = format!("-{c}");
+                !(approve && opt == "-y") && PRINCIPAL_BLOCKED_OPTIONS.contains(&opt.as_str())
+            });
+        }
+        if approve && name == "--yes" {
             return false;
         }
         PRINCIPAL_BLOCKED_OPTIONS.contains(&name) || name.starts_with("--no-")
@@ -3130,6 +3143,15 @@ rationale = "no rumination should fail more over the sequence"
             "an attached short value"
         );
         assert!(!allowed_verb(&v("tasks set t-1 -mx")));
+        assert!(
+            !allowed_verb(&v("tasks set t-1 -vw /tmp/x")),
+            "a stacked short group"
+        );
+        assert!(!allowed_verb(&v("questions answer q-1 -vy fine")));
+        assert!(
+            allowed_verb(&v("tasks set t-1 --status done -v")),
+            "verbose alone is fine"
+        );
         assert!(!allowed_verb(&v("tasks set t-1 --no-mcp-server graph")));
         assert!(
             !allowed_verb(&v("questions answer q-1 --max-cost 999 fine")),
@@ -3207,6 +3229,22 @@ rationale = "no rumination should fail more over the sequence"
         let wire: StageLever = serde_json::from_str("\"principal\"").unwrap();
         assert_eq!(wire, StageLever::Principal);
         assert_eq!(PrincipalPoint::AfterTask.as_str(), "after_task");
+        let later: PrincipalPoint = serde_json::from_str("\"mid_task\"").unwrap();
+        assert_eq!(
+            later,
+            PrincipalPoint::Unknown,
+            "a point a later build names"
+        );
+        assert!(
+            serde_json::from_str::<PrincipalAct>(
+                r#"{"verb":["outbox","approve","x","-y"],"exit_code":0,"ok":true}"#,
+            )
+            .is_err(),
+            "an exit code is the driver's alone; a principal that claims one is off the contract"
+        );
+        let plain: PrincipalAct =
+            serde_json::from_str(r#"{"verb":["outbox","approve","x","-y"]}"#).unwrap();
+        assert_eq!((plain.exit_code, plain.ok), (None, None));
     }
 
     /// What a stage accepted inside the home reaches the next task: the
