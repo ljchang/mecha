@@ -2491,7 +2491,13 @@ when touching it:
   attributes a goal-less error to the highest-ranked line watching that
   store. The queue-delta arm maps to nothing: a level difference credits a
   run for the owner clearing the outbox by hand. A run that named its own
-  goal keeps it. This is the first consumer line order has ever had.
+  goal keeps it — **if the loaded charter contains the line**: a `serves:
+  charter:<id>` is the model's own string, `GoalRef::from_str` constrains
+  only the kind word, and unchecked it derived `Pride` from `charter:no-
+  such-line` plus one clean send on a machine with no charter (found on
+  review). Absent, unreadable or not consulted, the reference is dropped
+  before any error is built. This is the first consumer line order has ever
+  had.
 - **The block asks for `serves: charter:<id>` only when `todo` is in the
   surface** (`prompt_block_for`, asked of `ToolsConfig::registers`, the same
   predicate `with_builtins` registers by) — the skills block's rule, one block

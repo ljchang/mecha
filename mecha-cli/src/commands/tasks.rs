@@ -2798,11 +2798,19 @@ mod tests {
         // a verdict and no residue are the ones that must not stage.
         for label in mecha_core::appraisal::Affect::ALL {
             let stages = worth_a_follow_up("done", &appraisal(label));
-            let verdict_only = matches!(
+            // A verdict with nothing to put on a board, or a positive
+            // word: neither stages. `Pride` has a producer since §11.1's
+            // attribution, and a follow-up for a run that served a line
+            // well would override the owner's acceptance one sign over
+            // (found on review).
+            let no_residue = matches!(
                 label,
-                mecha_core::appraisal::Affect::Neutral | mecha_core::appraisal::Affect::Distress
+                mecha_core::appraisal::Affect::Neutral
+                    | mecha_core::appraisal::Affect::Distress
+                    | mecha_core::appraisal::Affect::Pride
+                    | mecha_core::appraisal::Affect::Excitement
             );
-            assert_eq!(stages, !verdict_only, "{label:?}");
+            assert_eq!(stages, !no_residue, "{label:?}");
         }
     }
 
