@@ -1195,6 +1195,16 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
                 mode: cfg.tools.permission_mode,
             })
         };
+    // A scripted refusal ahead of whatever answers otherwise: the
+    // principal's denial channel in a trial home, or an operator's own
+    // scripted refusals. Strict — an unreadable file stops the run.
+    let approver: Arc<dyn Approver> = match std::env::var(mecha_core::tool::DENIALS_FILE_ENV) {
+        Ok(path) if !path.is_empty() => Arc::new(
+            mecha_core::tool::FileDenyApprover::load(std::path::Path::new(&path), approver)
+                .context("the denials file this run was started with")?,
+        ),
+        _ => approver,
+    };
 
     // An MCP server may legitimately shadow `todo` (registered after the
     // built-ins, deliberately). The handle would then be live but frozen —

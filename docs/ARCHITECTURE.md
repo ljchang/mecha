@@ -3255,10 +3255,38 @@ comparison over a chosen set**, with the design written before the run.
   counters stay, because a lever removes a
   disposition, never the record. The stages the design names and nothing
   has built (`followup_staging`, `prioritised_replay`) are not levers: a
-  lever must be a switch that exists. What a lifetime can show today has
-  a ceiling: every `learning::Trigger` but the unfired `Mismatch` is an
-  owner's act, so a sequence run with no principal mines nothing, and
-  `ruminate` is the one stage with an effect until the principal lands.
+  lever must be a switch that exists.
+- **The principal is an executable under a contract, and the driver runs
+  its verbs** (Part II §16, §21.1; the owner's ruling 2026-09-04: the
+  contract, not a subcommand). A lifetime manifest's `[principal]
+  command` is called before and after every task with the trial's state
+  on stdin (`PrincipalInput`: the case, the graded row after the task,
+  the home's pending outbox items and open questions) and answers with
+  `PrincipalOutput`: the owner's verbs to run and the refusals to script.
+  The principal is pure; **the driver runs each verb as a child `mecha`
+  against the trial home, from the closed set `PRINCIPAL_VERBS`**
+  (`tasks set|steer|stop`, `outbox approve|reject|edit`,
+  `questions answer|abandon` — never a session, a reflection or a rule)
+  and records the call and every act with its exit status on the
+  lifetime's ledger as a `principal` line, so the record is the driver's
+  and `stage_health` holds the verdict over a principal that could not
+  act. Verdicts come from gold wherever gold exists
+  (`scripts/principal-gold.py`: a draft to a recipient off the cast is
+  rejected, otherwise released; a question is answered from a table),
+  and the model-driven principal is a later version with its variance
+  recorded. **The denial channel** is the one owner act with no headless
+  path, and it is the one new mechanism: the principal's `deny` rules
+  are written to the home's `principal/denials.toml` before the task and
+  the run child is started with `MECHA_DENIALS_FILE` naming it, where
+  `tool::FileDenyApprover` answers a matching call with
+  `Decision::Deny(reason)` — "Denied by the user", mined as a correction,
+  which is the point: inside a trial home the principal *is* the owner,
+  and D12 is what keeps the same file from authoring the real owner's
+  corrections. The approver is strict at load (an unreadable file stops
+  the run) and hands every unmatched call, escalation and consultation
+  to the approver beneath it. What the principal cannot do yet is close
+  board tasks: the board is the graph's, over MCP, and a trial home has
+  no graph — the closure channel waits on a fixture graph server.
 
 ## The doctor
 

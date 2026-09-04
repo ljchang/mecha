@@ -99,6 +99,127 @@ pub struct Manifest {
     /// carries none.
     #[serde(default)]
     pub schedule: Schedule,
+    /// A `lifetime`'s principal (Part II §16, §21.1): an executable the
+    /// driver calls before and after each task with the trial's state on
+    /// stdin, answering with the owner's verbs to run and the refusals to
+    /// script. The driver runs the verbs — through `mecha` against the
+    /// trial home, from a closed set — and records every act on the
+    /// lifetime's ledger, so the principal is pure and the record is the
+    /// driver's. A `single` refuses one.
+    #[serde(default)]
+    pub principal: Option<Principal>,
+}
+
+/// The principal's contract, on `hooks.rs`'s shape: a command at a
+/// lifecycle point, JSON in and out, fail-closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Principal {
+    /// The executable and its arguments. Runs from the lifetime's scratch
+    /// workspace with the run child's environment allowlist, so name it by
+    /// an absolute path or a command on `PATH`.
+    pub command: Vec<String>,
+    #[serde(default = "principal_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn principal_timeout() -> u64 {
+    600
+}
+
+/// Where in a position the principal is being asked to act.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrincipalPoint {
+    /// Before the task's run: the principal may script refusals for it.
+    BeforeTask,
+    /// After the task ran and was graded, before the loop's stages: the
+    /// principal judges what the run left — drafts, questions — and closes
+    /// what gold closes.
+    AfterTask,
+}
+
+impl PrincipalPoint {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PrincipalPoint::BeforeTask => "before_task",
+            PrincipalPoint::AfterTask => "after_task",
+        }
+    }
+}
+
+/// What the driver hands the principal on stdin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrincipalInput {
+    pub point: PrincipalPoint,
+    pub experiment: String,
+    pub lifetime: String,
+    pub arm: String,
+    pub position: u32,
+    pub home: PathBuf,
+    pub workspace: PathBuf,
+    /// The eval case at this position, whole: its prompt, its
+    /// expectations (a `verify` command is gold), its tags.
+    pub case: crate::eval::EvalCase,
+    /// After the task: the graded row. `None` before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial: Option<Trial>,
+    /// What the run left staged in the trial home's outbox, still pending.
+    #[serde(default)]
+    pub pending_outbox: Vec<crate::outbox::OutboxItem>,
+    /// Questions the run parked and nobody has answered.
+    #[serde(default)]
+    pub open_questions: Vec<crate::questions::Question>,
+}
+
+/// What the principal answers with.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrincipalOutput {
+    /// The owner's verbs to run, as `mecha` argv after the binary — from
+    /// the closed set `allowed_verb` names, in order.
+    #[serde(default)]
+    pub acts: Vec<PrincipalAct>,
+    /// Refusals to script for the task about to run (`before_task`):
+    /// written to the trial home's denials file, which the run child's
+    /// approver reads ahead of its own answer.
+    #[serde(default)]
+    pub deny: Vec<crate::tool::DenialRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PrincipalAct {
+    pub verb: Vec<String>,
+    #[serde(default)]
+    pub reason: String,
+    /// Filled by the driver after it ran the verb: the exit code, and
+    /// whether it succeeded. Absent on the principal's answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+}
+
+/// The owner's verbs a principal may run, by their leading words — the
+/// channels §16 names, and nothing that writes a session, a reflection or
+/// a rule. A verb outside the set is the principal's error, recorded and
+/// never run.
+pub const PRINCIPAL_VERBS: [&[&str]; 8] = [
+    &["tasks", "set"],
+    &["tasks", "steer"],
+    &["tasks", "stop"],
+    &["outbox", "approve"],
+    &["outbox", "reject"],
+    &["outbox", "edit"],
+    &["questions", "answer"],
+    &["questions", "abandon"],
+];
+
+pub fn allowed_verb(verb: &[String]) -> bool {
+    PRINCIPAL_VERBS
+        .iter()
+        .any(|lead| verb.len() >= lead.len() && lead.iter().zip(verb).all(|(a, b)| a == b))
 }
 
 /// How often each loop stage runs between a lifetime's tasks: every N
@@ -190,6 +311,12 @@ pub enum StageLever {
     /// `rules propose-retirements --apply`; see `Schedule::retire`.
     Retire,
     SensorsInBrief,
+    /// Not a lever: the principal's call at a position, on the same ledger
+    /// so `stage_health` and the judge's hold read it like a stage — a
+    /// principal that failed to act is a treatment not known to have
+    /// occurred. Not in `ALL`, never named in a manifest, runs no verb of
+    /// its own.
+    Principal,
     /// A stage this build cannot name, read off a ledger written by a
     /// build that has one — the closed-enum-on-an-append-only-store rule:
     /// the line reads as a stage run this build cannot name, never as a
@@ -215,6 +342,7 @@ impl StageLever {
             StageLever::Validate => "validate",
             StageLever::Ruminate => "ruminate",
             StageLever::Retire => "retire",
+            StageLever::Principal => "principal",
             StageLever::SensorsInBrief => "sensors_in_brief",
             StageLever::Unknown => "unknown",
         }
@@ -245,7 +373,7 @@ impl StageLever {
             StageLever::Validate => Some(&["validate", "--unprocessed-only"]),
             StageLever::Ruminate => Some(&["harness", "ruminate"]),
             StageLever::Retire => Some(&["rules", "propose-retirements", "--apply"]),
-            StageLever::SensorsInBrief | StageLever::Unknown => None,
+            StageLever::SensorsInBrief | StageLever::Principal | StageLever::Unknown => None,
         }
     }
 }
@@ -483,6 +611,7 @@ impl Manifest {
             split_seed,
             holdout_in,
             schedule: Schedule::default(),
+            principal: None,
         };
         m.validate()?;
         Ok(m)
@@ -518,6 +647,7 @@ impl Manifest {
             split_seed: 0,
             holdout_in: 3,
             schedule: Schedule::default(),
+            principal: None,
         };
         m.validate()?;
         Ok(m)
@@ -580,19 +710,37 @@ impl Manifest {
             );
         }
         match self.kind {
-            TrialKind::Single => anyhow::ensure!(
-                self.schedule == Schedule::default(),
-                "a `[schedule]` is a lifetime's; a single trial runs no stage between tasks"
-            ),
+            TrialKind::Single => {
+                anyhow::ensure!(
+                    self.schedule == Schedule::default(),
+                    "a `[schedule]` is a lifetime's; a single trial runs no stage between tasks"
+                );
+                anyhow::ensure!(
+                    self.principal.is_none(),
+                    "a `[principal]` is a lifetime's; a single trial has no position for one to act at"
+                );
+            }
             // The sequence is the design, and the case file is not: a
             // lifetime that fell back to the file's order kept each
             // finished row's stored position while a changed file moved
             // the walk under it, and nothing on the record said so (found
             // on review).
-            TrialKind::Lifetime => anyhow::ensure!(
-                !self.tasks.ids.is_empty(),
-                "a `lifetime` names its sequence in `[tasks] ids`; the case file's order is not a design"
-            ),
+            TrialKind::Lifetime => {
+                anyhow::ensure!(
+                    !self.tasks.ids.is_empty(),
+                    "a `lifetime` names its sequence in `[tasks] ids`; the case file's order is not a design"
+                );
+                if let Some(p) = &self.principal {
+                    anyhow::ensure!(
+                        !p.command.is_empty(),
+                        "`[principal] command` names no executable"
+                    );
+                    anyhow::ensure!(
+                        p.timeout_secs > 0,
+                        "`[principal] timeout_secs` must be positive"
+                    );
+                }
+            }
         }
         for (name, arm) in &self.arms {
             crate::work::valid_producer(name)
@@ -1208,6 +1356,12 @@ pub struct StageRun {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// A principal line only: which point it was called at, and the verbs
+    /// it asked for, each with how the driver's run of it went.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<PrincipalPoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acts: Vec<PrincipalAct>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1558,6 +1712,30 @@ pub fn child_invocation(
 
 /// A trial home's own accepted harness overrides, relative to the home.
 pub const HOME_OVERRIDES: &str = "learning/harness/overrides.toml";
+
+/// The principal's scripted refusals for the task about to run, in the
+/// trial home; the run child reads it through `tool::DENIALS_FILE_ENV`.
+pub fn denials_file(home: &Path) -> PathBuf {
+    home.join("principal").join("denials.toml")
+}
+
+/// Write the refusals the principal scripted, or remove the file when it
+/// scripted none — a stale file would refuse the next task on the last
+/// one's word.
+pub fn write_denials(home: &Path, rules: &[crate::tool::DenialRule]) -> Result<()> {
+    let path = denials_file(home);
+    if rules.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        }
+        return Ok(());
+    }
+    std::fs::create_dir_all(path.parent().expect("under the home"))?;
+    let file = crate::tool::DenialsFile {
+        rules: rules.to_vec(),
+    };
+    write_atomic(&path, toml::to_string_pretty(&file)?.as_bytes())
+}
 
 /// Fold the home's *own* accepted overrides — what its stages accepted,
 /// never the machine's, which `seed_home` drops — into the config the
@@ -2580,6 +2758,8 @@ rationale = "no rumination should fail more over the sequence"
             status,
             exit_code: Some(0),
             error: None,
+            point: None,
+            acts: Vec::new(),
         };
         store
             .record_stage(&run(StageLever::Reflect, 2, StageStatus::Done))
@@ -2762,6 +2942,8 @@ rationale = "no rumination should fail more over the sequence"
             status: StageStatus::Failed,
             exit_code: Some(1),
             error: None,
+            point: None,
+            acts: Vec::new(),
         };
         let held = judge(&m, &trials, std::slice::from_ref(&failed), 0);
         let bare_held = held.iter().find(|v| v.arm == "bare").unwrap();
@@ -2803,6 +2985,94 @@ rationale = "no rumination should fail more over the sequence"
             bare_held.judgement.selection, bare.judgement.selection,
             "the tallies are untouched"
         );
+    }
+
+    /// The principal's contract: a `[principal]` is a lifetime's, its
+    /// command is named, the closed verb set admits the owner's channels
+    /// and nothing else, its answer parses strictly, and the refusals it
+    /// scripts land in the home's denials file and clear on an empty list.
+    #[test]
+    fn the_principal_contract_is_closed_and_the_denials_file_follows_it() {
+        let single = MANIFEST.replace("[tasks]", "[principal]\ncommand = [\"/bin/true\"]\n[tasks]");
+        let e = Manifest::parse(&single).unwrap_err().to_string();
+        assert!(e.contains("a `[principal]` is a lifetime's"), "{e}");
+        let life = MANIFEST
+            .replace(
+                "control = \"full\"",
+                "kind = \"lifetime\"\ncontrol = \"full\"",
+            )
+            .replace(
+                "fixture = \"eval/workspace\"",
+                "fixture = \"eval/workspace\"\nids = [\"a\"]",
+            )
+            .replace(
+                "[tasks]",
+                "[principal]\ncommand = [\"/usr/bin/env\", \"python3\", \"/x/gold.py\"]\n[tasks]",
+            );
+        let m = Manifest::parse(&life).unwrap();
+        let p = m.principal.unwrap();
+        assert_eq!(p.command[1], "python3");
+        assert_eq!(p.timeout_secs, 600, "the default");
+        let empty = life.replace(
+            "command = [\"/usr/bin/env\", \"python3\", \"/x/gold.py\"]",
+            "command = []",
+        );
+        assert!(Manifest::parse(&empty).is_err(), "no executable");
+        // The verb set.
+        let v = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert!(allowed_verb(&v("outbox approve ob-1 --yes")));
+        assert!(allowed_verb(&v(
+            "questions answer q-1 --unattended yes please"
+        )));
+        assert!(allowed_verb(&v("tasks set t-1 --status done")));
+        assert!(
+            !allowed_verb(&v("run do something")),
+            "never a session of its own"
+        );
+        assert!(!allowed_verb(&v("learn --auto")), "never a rule");
+        assert!(
+            !allowed_verb(&v("outbox")),
+            "a leading word alone is not a verb"
+        );
+        assert!(!allowed_verb(&[]));
+        // The answer's shape, strict.
+        let out: PrincipalOutput = serde_json::from_str(
+            r#"{"acts":[{"verb":["outbox","reject","ob-1","--reason","wrong date"],"reason":"gold: the date is not the meeting's"}],"deny":[{"tool":"shell","input_contains":"rm -rf","reason":"no"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(out.acts.len(), 1);
+        assert_eq!(out.deny[0].tool, "shell");
+        assert!(
+            serde_json::from_str::<PrincipalOutput>(r#"{"acts":[],"sessions":[]}"#).is_err(),
+            "an unknown key is the principal's error"
+        );
+        // The denials file.
+        let home = std::env::temp_dir().join(format!("mecha-exp-deny-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        write_denials(&home, &out.deny).unwrap();
+        let text = std::fs::read_to_string(denials_file(&home)).unwrap();
+        assert!(
+            text.contains("[[deny]]") && text.contains("rm -rf"),
+            "{text}"
+        );
+        write_denials(&home, &[]).unwrap();
+        assert!(
+            !denials_file(&home).exists(),
+            "an empty list clears the file"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+        // The ledger's stage for it is not a lever.
+        assert!(!StageLever::ALL.contains(&StageLever::Principal));
+        assert_eq!(
+            StageLever::parse("principal"),
+            None,
+            "never named in a manifest"
+        );
+        assert_eq!(StageLever::Principal.argv(), None);
+        let wire: StageLever = serde_json::from_str("\"principal\"").unwrap();
+        assert_eq!(wire, StageLever::Principal);
+        assert_eq!(PrincipalPoint::AfterTask.as_str(), "after_task");
     }
 
     /// What a stage accepted inside the home reaches the next task: the

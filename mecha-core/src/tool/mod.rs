@@ -764,7 +764,7 @@ fn safe_name(s: &str) -> String {
 /// spoke. It is the same mistake as mining a publish's changed path as a voice
 /// correction, and it was live in `ModeApprover` until a Slack approver needed
 /// to express "nobody answered" and found there was no way to.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Allow,
     /// A human said no. The reason is passed to the model so it can pick
@@ -860,6 +860,108 @@ pub trait Approver: Send + Sync {
 /// Answers from the configured [`PermissionMode`] without asking anyone.
 pub struct ModeApprover {
     pub mode: PermissionMode,
+}
+
+/// The environment variable naming a denials file for this run. Set by
+/// `mecha exp`'s lifetime driver for a task the principal wants to refuse
+/// calls in; an operator may set it to script their own refusals. Not in
+/// `Sandbox::child_env`'s base set — a driver passes it on purpose.
+pub const DENIALS_FILE_ENV: &str = "MECHA_DENIALS_FILE";
+
+/// One scripted refusal: a tool by name (`*` for any), optionally only
+/// when the call's input contains a string, and the reason the person
+/// gives. Rendered as `Decision::Deny`, which the loop prints as
+/// "Denied by the user: " and the learning miner reads as a correction —
+/// that is the point: the principal *is* the owner inside a trial home
+/// (Part II §16, the one channel with no headless path), and D12 is what
+/// keeps the same file from authoring the real owner's corrections.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DenialRule {
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_contains: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DenialsFile {
+    #[serde(default, rename = "deny")]
+    pub rules: Vec<DenialRule>,
+}
+
+impl DenialRule {
+    pub fn matches(&self, tool: &str, input: &Value) -> bool {
+        (self.tool == "*" || self.tool == tool)
+            && self
+                .input_contains
+                .as_deref()
+                .is_none_or(|needle| input.to_string().contains(needle))
+    }
+}
+
+/// An approver that answers a scripted refusal ahead of the one beneath
+/// it, and hands every other call — and every escalation, consultation
+/// and permit — to that one unchanged. Strict at load: a denials file that
+/// cannot be read stops the run, because a run that silently allowed what
+/// its owner scripted a refusal for would be measured as an owner who
+/// never refused.
+pub struct FileDenyApprover {
+    rules: Vec<DenialRule>,
+    inner: Arc<dyn Approver>,
+}
+
+impl FileDenyApprover {
+    pub fn load(path: &Path, inner: Arc<dyn Approver>) -> Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("reading the denials file {}: {e}", path.display()))?;
+        let file: DenialsFile = toml::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("parsing the denials file {}: {e}", path.display()))?;
+        Ok(FileDenyApprover {
+            rules: file.rules,
+            inner,
+        })
+    }
+
+    pub fn with_rules(rules: Vec<DenialRule>, inner: Arc<dyn Approver>) -> Self {
+        FileDenyApprover { rules, inner }
+    }
+
+    fn scripted(&self, tool: &dyn Tool, input: &Value) -> Option<Decision> {
+        self.rules
+            .iter()
+            .find(|r| r.matches(tool.name(), input))
+            .map(|r| Decision::Deny(r.reason.clone()))
+    }
+}
+
+#[async_trait]
+impl Approver for FileDenyApprover {
+    async fn approve(&self, tool: &dyn Tool, input: &Value) -> Decision {
+        match self.scripted(tool, input) {
+            Some(d) => d,
+            None => self.inner.approve(tool, input).await,
+        }
+    }
+
+    async fn escalate(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        match self.scripted(tool, input) {
+            Some(d) => d,
+            None => self.inner.escalate(tool, input, why).await,
+        }
+    }
+
+    async fn consult(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        match self.scripted(tool, input) {
+            Some(d) => d,
+            None => self.inner.consult(tool, input, why).await,
+        }
+    }
+
+    async fn permit(&self, tool: &dyn Tool, input: &Value) -> Decision {
+        self.inner.permit(tool, input).await
+    }
 }
 
 #[async_trait]
@@ -1094,6 +1196,105 @@ impl Registry {
             }
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod denial_tests {
+    use super::*;
+
+    struct Echo;
+    #[async_trait]
+    impl Tool for Echo {
+        fn name(&self) -> &str {
+            "shell"
+        }
+        fn description(&self) -> &str {
+            "t"
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            anyhow::bail!("never called")
+        }
+    }
+
+    /// A scripted refusal is the person's `Deny`, with their reason; a
+    /// call no rule names goes to the approver beneath; and the
+    /// escalation path refuses the same way, since the person's word
+    /// covers a call policy would have asked about too.
+    #[tokio::test]
+    async fn a_scripted_refusal_is_a_deny_and_everything_else_falls_through() {
+        let inner: Arc<dyn Approver> = Arc::new(ModeApprover {
+            mode: PermissionMode::Allow,
+        });
+        let approver = FileDenyApprover::with_rules(
+            vec![
+                DenialRule {
+                    tool: "shell".into(),
+                    input_contains: Some("rm -rf".into()),
+                    reason: "not on my machine".into(),
+                },
+                DenialRule {
+                    tool: "*".into(),
+                    input_contains: Some("secrets".into()),
+                    reason: "leave that alone".into(),
+                },
+            ],
+            inner,
+        );
+        let rm = serde_json::json!({"command": "rm -rf /tmp/x"});
+        assert_eq!(
+            approver.approve(&Echo, &rm).await,
+            Decision::Deny("not on my machine".into())
+        );
+        assert_eq!(
+            approver.escalate(&Echo, &rm, "why").await,
+            Decision::Deny("not on my machine".into())
+        );
+        let ls = serde_json::json!({"command": "ls"});
+        assert_eq!(approver.approve(&Echo, &ls).await, Decision::Allow);
+        let any = serde_json::json!({"path": "/home/me/secrets.txt"});
+        assert_eq!(
+            approver.approve(&Echo, &any).await,
+            Decision::Deny("leave that alone".into())
+        );
+    }
+
+    /// The file is strict: a rule with a key this build does not know, or
+    /// a file that is not TOML, stops the run rather than allowing what an
+    /// owner scripted a refusal for.
+    #[test]
+    fn the_denials_file_is_strict() {
+        let dir = std::env::temp_dir().join(format!("mecha-denials-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("denials.toml");
+        let inner: Arc<dyn Approver> = Arc::new(ModeApprover {
+            mode: PermissionMode::Allow,
+        });
+        std::fs::write(&path, "[[deny]]\ntool = \"shell\"\nreason = \"no\"\n").unwrap();
+        let ok = FileDenyApprover::load(&path, inner.clone()).unwrap();
+        assert_eq!(ok.rules.len(), 1);
+        std::fs::write(
+            &path,
+            "[[deny]]\ntool = \"shell\"\nreason = \"no\"\nwhen = 1\n",
+        )
+        .unwrap();
+        assert!(
+            FileDenyApprover::load(&path, inner.clone()).is_err(),
+            "unknown key"
+        );
+        std::fs::write(&path, "not toml at all [[").unwrap();
+        assert!(
+            FileDenyApprover::load(&path, inner.clone()).is_err(),
+            "not toml"
+        );
+        assert!(
+            FileDenyApprover::load(&dir.join("absent.toml"), inner).is_err(),
+            "absent"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

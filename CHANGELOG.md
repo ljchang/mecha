@@ -60,6 +60,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no reflections, since every trigger today is an owner's act;
   `ruminate` is the stage with an effect until the principal lands.
 
+- **The principal: an executable under a contract, driven by `mecha exp`.**
+  A lifetime manifest's `[principal] command` is called before and after
+  every task with the trial's state as JSON on stdin — the case, the
+  graded row, the home's pending drafts and open questions — and answers
+  with the owner's verbs to run and the refusals to script. The driver
+  runs each verb as a child `mecha` against the trial home from a closed
+  set (`tasks set|steer|stop`, `outbox approve|reject|edit`,
+  `questions answer|abandon`) and records the call and every act on the
+  lifetime's ledger as a `principal` line, held like a stage. New with
+  it: `MECHA_DENIALS_FILE` and `tool::FileDenyApprover` — scripted
+  refusals a run answers ahead of its own approver as "Denied by the
+  user", the owner's channel with no headless path until now — and
+  `scripts/principal-gold.py`, the gold-verdict principal. Board closure
+  waits on a fixture graph server.
+
 - **Two more levers: `predictive_compaction` and `carried_state`**
   (`[agent] predictive_compaction`, `[agent] carried_state`,
   `--no-predictive-compaction`, `--no-carried-state`). The two in-run
