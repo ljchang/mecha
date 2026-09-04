@@ -242,12 +242,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     if let Ok((store, manifest)) = &recorded {
         let task_ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
+        // One row per run: the planned row's `repetition` is the graded
+        // run's `run` number, and a row with no run behind it (a case that
+        // never ran) is left pending rather than written empty.
         for planned in manifest.trials(&task_ids, &scorecard.provider, &scorecard.model) {
-            let runs: Vec<&GradedCase> = graded.iter().filter(|g| g.id == planned.task).collect();
-            if runs.is_empty() {
+            let Some(run) = graded
+                .iter()
+                .find(|g| g.id == planned.task && g.run == planned.repetition)
+            else {
                 continue;
-            }
-            if let Err(e) = store.save_trial(&trial_of(&planned, &runs)) {
+            };
+            if let Err(e) = store.save_trial(&trial_of(&planned, std::slice::from_ref(&run))) {
                 eprintln!(
                     "mecha eval: trial `{}` could not be written: {e:#}",
                     planned.id
@@ -826,12 +831,15 @@ fn effective_overrides(global: &GlobalOpts) -> Result<Vec<String>> {
 
 /// A plain eval's record: a one-arm manifest, written before the arm runs.
 /// The arm is `bare` plus whatever eval opts back in (`--mcp`), carrying
-/// the model and provider the flags name and the knobs both a scorecard
-/// and an A/B inherit from this machine. `--mcp-file`'s servers have no
-/// lever to be named by, so the description says so rather than refusing
-/// — a scorecard under fixture servers is the documented way to run the
-/// graph case set, and a record that says what it could not express beats
-/// no record.
+/// the provider and model that ran and the knobs both a scorecard and an
+/// A/B inherit from this machine. `--runs k` is the manifest's
+/// `repetitions`: each run of each case is its own trial row, so k rows
+/// share a condition hash and differ by repetition — the hash's contract
+/// ("the same hash was configured identically") holds, where one pass^k
+/// row per case would have carried the hash of a single run (found on
+/// review). An eval under `--mcp-file` is not recorded at all: its
+/// fixture servers have no lever to be named by, so the row's condition
+/// hash would call that eval bare (see below).
 fn record_measurement(
     global: &GlobalOpts,
     args: &Args,
@@ -871,10 +879,10 @@ fn record_measurement(
             ids: cases.iter().map(|c| c.id.clone()).collect(),
             tags: Vec::new(),
         },
-        1,
+        args.runs,
     )?;
     manifest.description = format!(
-        "mecha eval scorecard; {} run(s) per case, scored pass^k; approval rules lifted (eval's fixture forcing, not expressible as a lever)",
+        "mecha eval scorecard; {} run(s) per case, one trial row per run; approval rules lifted (eval's fixture forcing, not expressible as a lever)",
         args.runs,
     );
     let store = ExperimentStore::open_default(&name)?;
@@ -1621,6 +1629,59 @@ mod tests {
         let arm = measurement_arm(&flagged, false, &cfg).unwrap();
         assert_eq!(arm.provider.as_deref(), Some("anthropic"));
         assert_eq!(arm.model.as_deref(), Some("flagged"));
+    }
+
+    /// A plain eval under `--runs k` plans k rows per case — one per run,
+    /// sharing the arm's hash and differing by repetition — and each row
+    /// is that run's in full, stop cause included, where the A/B's pass^k
+    /// fold leaves it unmeasured.
+    #[test]
+    fn a_measurement_writes_one_row_per_run() {
+        use mecha_core::experiment::{Arm, Manifest, Preset, Tasks};
+        let manifest = Manifest::one_arm(
+            "eval-t",
+            "bare",
+            Arm {
+                preset: Some(Preset::Bare),
+                ..Arm::default()
+            },
+            Tasks {
+                cases: "eval/cases.jsonl".into(),
+                fixture: "eval/workspace".into(),
+                ids: vec!["c".into()],
+                tags: Vec::new(),
+            },
+            3,
+        )
+        .unwrap();
+        let rows = manifest.trials(&["c".to_string()], "p", "m");
+        assert_eq!(
+            rows.iter().map(|t| t.repetition).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert!(rows
+            .iter()
+            .all(|t| t.condition_hash == rows[0].condition_hash));
+        let run: GradedCase = serde_json::from_value(serde_json::json!({
+            "id": "c", "run": 2, "passed": true, "tags": ["t"],
+            "checks": [{"name": "contains", "passed": true, "detail": ""}],
+            "turns": 4, "elapsed_ms": 500, "malformed_tool_args": 0,
+            "unknown_tools": 0, "tool_errors": 0, "tool_denied": 0, "tools_called": ["shell"],
+            "compactions": 0, "ended_on_failed_call": false, "blocked_sends": 0, "stop_cause": "completed", "usage_complete": true,
+            "usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            "error": null, "text": "x"
+        }))
+        .unwrap();
+        let planned = rows.iter().find(|t| t.repetition == run.run).unwrap();
+        let row = trial_of(planned, std::slice::from_ref(&&run));
+        assert_eq!(row.repetition, 2);
+        assert_eq!(row.passed, Some(true));
+        let stats = row.stats.unwrap();
+        assert_eq!(
+            stats.stop_cause,
+            Some(mecha_core::agent::StopCause::Completed)
+        );
+        assert_eq!(stats.turns, 4);
     }
 
     /// A case's runs fold into one trial row the way the old pairing scored
