@@ -544,6 +544,19 @@ async fn ab_experiment(
         "--holdout-in must be at least 2, or every episode is held out and \
          nothing selects"
     );
+    // The record must say what ran. `--mcp` puts the MCP lever on in both
+    // arms, and the manifest says so through the shared `levers_on`;
+    // `--mcp-file` adds servers no lever can name, so an A/B under it is
+    // refused rather than filed as bare (found on review).
+    anyhow::ensure!(
+        args.mcp_file.is_none(),
+        "--mcp-file cannot be recorded on an A/B's design (no lever names a fixture server); run the A/B without it"
+    );
+    let shared: Vec<String> = if args.mcp {
+        vec!["mcp".into()]
+    } else {
+        Vec::new()
+    };
     let name = ab_name(kind, chrono::Utc::now());
     let mut manifest = Manifest::two_arm(
         &name,
@@ -557,6 +570,7 @@ async fn ab_experiment(
         },
         args.holdout_in,
         1,
+        &shared,
     )?;
     manifest.description = format!(
         "mecha eval A/B ({kind}): {label}; {} run(s) per case, scored pass^k, one pair per case",
@@ -718,6 +732,12 @@ fn trial_of(
             tool_denied: g.tool_denied,
             malformed_tool_args: g.malformed_tool_args,
             duration_secs: Some(g.elapsed_ms as f64 / 1000.0),
+            // Carried, not defaulted: a zero here would read as measured.
+            compactions: g.compactions,
+            ended_on_failed_call: g.ended_on_failed_call,
+            blocked_sends: g.blocked_sends,
+            stop_cause: g.stop_cause,
+            usage_complete: g.usage_complete,
             ..Default::default()
         }));
     mecha_core::experiment::Trial::finished(planned, passed, checks, stats)
@@ -1335,6 +1355,7 @@ mod tests {
                 "checks": [{"name": "contains", "passed": passed, "detail": ""}],
                 "turns": turns, "elapsed_ms": 500, "malformed_tool_args": 0,
                 "unknown_tools": 1, "tool_errors": 2, "tool_denied": 1, "tools_called": ["shell", "fs_read"],
+                "compactions": 1, "ended_on_failed_call": true, "blocked_sends": 1, "stop_cause": "completed", "usage_complete": true,
                 "usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
                 "error": null, "text": "x"
             }))
@@ -1371,6 +1392,10 @@ mod tests {
         // tool → 2 run-record errors and 1 denial; two runs fold to 4 and 2.
         assert_eq!(s.tool_errors, 4);
         assert_eq!(s.tool_denied, 2);
+        assert_eq!(s.compactions, 2, "carried, not defaulted");
+        assert_eq!(s.blocked_sends, 2);
+        assert!(s.ended_on_failed_call);
+        assert_eq!(s.stop_cause, Some(mecha_core::agent::StopCause::Completed));
         assert_eq!(s.duration_secs, Some(1.0));
         assert_eq!(t.status, mecha_core::experiment::TrialStatus::Done);
         let all_pass = [graded(1, true, 3), graded(2, true, 3)];

@@ -235,19 +235,30 @@ impl Manifest {
     pub fn two_arm(
         name: &str,
         treatment_name: &str,
-        treatment: Arm,
+        mut treatment: Arm,
         tasks: Tasks,
         holdout_in: u64,
         repetitions: u32,
+        shared_levers_on: &[String],
     ) -> Result<Manifest> {
+        // Levers both arms carry on over the preset — eval's `--mcp` opt-in
+        // — so the record says what ran rather than `bare` for a control
+        // that had its MCP servers (found on review). The condition hash
+        // follows.
         let mut arms = BTreeMap::new();
         arms.insert(
             "bare".to_string(),
             Arm {
                 preset: Some(Preset::Bare),
+                levers_on: shared_levers_on.to_vec(),
                 ..Arm::default()
             },
         );
+        for lever in shared_levers_on {
+            if !treatment.levers_on.contains(lever) {
+                treatment.levers_on.push(lever.clone());
+            }
+        }
         let split_seed = {
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for b in format!(
@@ -1383,7 +1394,8 @@ rationale = "no notice, fewer turns"
 
     /// A front-end's two-arm design is a manifest like any other: valid,
     /// stored, and its holdout draw fixed by the treatment's description so
-    /// a rerun holds out the same tasks.
+    /// a rerun holds out the same tasks. A lever both arms share is on both
+    /// arms' records and moves the hash.
     #[test]
     fn a_two_arm_design_is_a_manifest_with_a_stable_split() {
         let tasks = Tasks {
@@ -1401,25 +1413,18 @@ rationale = "no notice, fewer turns"
             }),
             ..Arm::default()
         };
-        let a = Manifest::two_arm(
-            "eval-ab",
-            "treatment",
-            treatment.clone(),
-            tasks.clone(),
-            3,
-            1,
-        )
-        .unwrap();
-        let b = Manifest::two_arm("eval-ab-again", "treatment", treatment, tasks.clone(), 3, 1)
-            .unwrap();
+        let mk = |name: &str, t: Arm, shared: &[String]| {
+            Manifest::two_arm(name, "treatment", t, tasks.clone(), 3, 1, shared).unwrap()
+        };
+        let a = mk("eval-ab", treatment.clone(), &[]);
+        let b = mk("eval-ab-again", treatment.clone(), &[]);
         assert_eq!(a.control, "bare");
         assert_eq!(
             a.split_seed, b.split_seed,
             "the same delta draws the same holdout"
         );
-        let other = Manifest::two_arm(
+        let other = mk(
             "eval-ab",
-            "treatment",
             Arm {
                 preset: Some(Preset::Bare),
                 overrides: vec!["max_turns=50".into()],
@@ -1429,12 +1434,22 @@ rationale = "no notice, fewer turns"
                 }),
                 ..Arm::default()
             },
-            tasks,
-            3,
-            1,
-        )
-        .unwrap();
+            &[],
+        );
         assert_ne!(a.split_seed, other.split_seed);
+        let with_mcp = mk("eval-ab-mcp", treatment, &["mcp".to_string()]);
+        for arm in with_mcp.arms.values() {
+            assert!(
+                !arm.resolve_levers().unwrap().contains(&Lever::Mcp),
+                "{arm:?}"
+            );
+        }
+        let task = ["a".to_string()];
+        assert_ne!(
+            with_mcp.trials(&task, "p", "m")[0].condition_hash,
+            a.trials(&task, "p", "m")[0].condition_hash,
+            "the shared lever moves the hash"
+        );
         let text = toml::to_string_pretty(&a).unwrap();
         let back = Manifest::parse(&text).unwrap();
         assert_eq!(back.arms.len(), 2);
