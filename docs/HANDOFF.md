@@ -2468,10 +2468,13 @@ none of `duration_secs` (#167), `learned rules: prefix block` (#168) or
 `predictive_compaction` (#169), and its version string, 0.1.17, cannot
 tell builds apart; the next `update` run of the *mecha* lines takes them
 all. The installed `mecha-graph` and `mecha-graph-mcp` carry a 2026-09-02
-file date and are *deliberately* not updated — mecha-graph PR #6 is open
-and uninstalled (checked), so running the `update` skill's graph
-`cargo install` lines would ship an unmerged branch. Run the mecha lines
-only.** What it built is in
+file date and are *deliberately* not updated — the `~/Github/mecha-graph`
+checkout sits on `feat/task-entity-association` at `f2725d9`, clean
+(checked from this lane, 2026-09-04 afternoon), which is PR #6's branch
+and PR #6 is open, so running the `update` skill's graph `cargo install`
+lines from that checkout would ship the unmerged branch. Run the mecha
+lines only, and check the graph checkout's branch before ever running
+the graph ones.** What it built is in
 `HISTORY.md` under this date: `situation.rs`, the situation on every new
 reflection, `scope` on `Rule` assigned by the harness from the batch's shared
 keys, one learner call per focus-tool batch, the loader matching scope
