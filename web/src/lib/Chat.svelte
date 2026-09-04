@@ -120,22 +120,28 @@
 
   // Which open chip a result or a refusal belongs to.
   //
-  // By name, not merely "the last one still running". `Agent::run_tools`
-  // emits every `ToolCall` in one sequential loop, refuses inline, and only
-  // then runs the approved calls in a `join_all` — so a turn that refuses
-  // one call and runs another holds two pending chips at once, and the
-  // refusal's own result arrives *before* the approved call's. Matching by
-  // position alone put one call's answer under another call's arguments:
-  // a planning-phase turn calling `fs_read` then `fs_write` closed the
-  // `fs_write` chip on its refusal, then landed `fs_write`'s "not available
-  // while planning" on the still-pending `fs_read` row and dropped the real
-  // read result entirely.
+  // **By id where there is one.** `Agent::run_tools` emits every `ToolCall`
+  // in one sequential loop and only then runs the approved calls in a
+  // `join_all`, which preserves order — so a turn holds several rows open at
+  // once and their results come back in *call* order. Neither position nor
+  // name pairs them: two `fs_write` calls in a turn got each other's output,
+  // and a turn that refuses one call and runs another landed the refusal on
+  // the row still running. Both were anonymous swaps until this row carried
+  // the arguments, and confident mislabels afterwards — the failure this
+  // change exists to prevent, arriving one layer above it.
   //
-  // That mislabel was anonymous before this branch and is a confident one
-  // now that the chip carries the call, which is the failure this change
-  // exists to prevent arriving one layer above it.
-  function openCall(entries, name) {
-    return entries.findLast((e) => e.kind === 'tool' && e.pending && e.name === name);
+  // An id that matches nothing means the row is already closed, so the
+  // result is dropped rather than moved onto somebody else's: the
+  // planning-phase refusal emits `ToolDenied` *and* `ToolResult`, and the
+  // denial already wrote the reason where it belongs.
+  //
+  // The name path is for events that genuinely have no id — `ToolDenied`
+  // carries none — and for a `web/dist` older than the binary serving it,
+  // which is the compatibility rule this file already follows elsewhere.
+  function openCall(entries, ev) {
+    const matches =
+      ev.id == null ? (e) => e.name === ev.name : (e) => e.id === ev.id;
+    return entries.findLast((e) => e.kind === 'tool' && e.pending && matches(e));
   }
 
   // A denial is the *end* of the call above it, not a second call.
@@ -155,7 +161,7 @@
   // path sees the recorded result and draws *one* chip for this call, so a
   // live view drawing two was the transcript contradicting itself.
   function resolveDenial(entries, ev) {
-    const open = openCall(entries, ev.name);
+    const open = openCall(entries, ev);
     if (!open) return false;
     open.pending = false;
     open.blocked = true;
@@ -293,6 +299,7 @@
           pushEntry({
             kind: 'tool',
             name: ev.name,
+            id: ev.id ?? null,
             draft: ev.draft ?? null,
             args: ev.args ?? null,
             pending: true,
@@ -303,7 +310,7 @@
           // somebody else's row: the planning-phase refusal emits both
           // `ToolDenied` and `ToolResult`, and the denial already wrote the
           // reason where it belongs.
-          const open = openCall(entries, ev.name);
+          const open = openCall(entries, ev);
           if (open) {
             open.pending = false;
             open.is_error = ev.is_error;
