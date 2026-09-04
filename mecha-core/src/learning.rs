@@ -1554,7 +1554,6 @@ impl LearningStore {
         edited.context("the reflection vanished between read and write")
     }
 
-    /// Refuse a reflection. Kept as evidence; never a candidate again.
     /// Write recomputed situations onto the reflections that have none,
     /// stamping each with `recomputed_at` (§17.7 item 6). Only a reflection
     /// whose `situation` is still absent takes one — a situation recorded at
@@ -1580,6 +1579,7 @@ impl LearningStore {
         Ok(written)
     }
 
+    /// Refuse a reflection. Kept as evidence; never a candidate again.
     pub fn drop_reflexion(&self, id: &str, reason: Option<String>) -> Result<Reflexion> {
         self.set_dropped(id, Some(reason))
     }
