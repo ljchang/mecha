@@ -2260,9 +2260,14 @@ prediction that was made *before* either was measured.
   the fifth, an unranked episode after every ranked one, the id last), the
   rank read off the same transcript read as the trajectory against the
   stores `appraisal::Stores` loads once per draw — keeps the confirming
-  slice uncorrelated with what selected the candidate. The rank is the one
-  input to the order the seed and the corpus do not pin, so `Draw::ranked`
-  is printed beside the seed. The seed is chosen by
+  slice uncorrelated with what selected the candidate. The rank is read off
+  inputs the seed and the corpus do not pin — the charter's order, and the
+  stores a session's errors are signed from as they stand at the draw, so a
+  resolved draft or a re-ranked line redraws the ties — which is why
+  `Measurement::ranked` records how many of the selection it ordered, beside
+  the seed and the holdout ids, and `harness show` prints it; a first cut
+  put it on a stderr line nobody keeps (found on review). And the stores are
+  not read at all without a charter with lines (`Stores::load_if_chartered`). The seed is chosen by
   the caller and recorded on the measurement along with the holdout's episode
   ids, because the split now depends on the corpus as it stood at measurement
   time rather than on the ids alone — and a sample nobody can redraw is a

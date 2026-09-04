@@ -641,6 +641,7 @@ async fn measure(
                 episodes: Vec::new(),
                 holdout_episodes: Vec::new(),
                 seed: draw.seed,
+                ranked: draw.ranked,
                 diverged,
                 replay_caveats,
                 divergence_detail,
@@ -682,6 +683,7 @@ async fn measure(
             episodes,
             holdout_episodes,
             seed: draw.seed,
+            ranked: draw.ranked,
             diverged,
             replay_caveats,
             divergence_detail,
@@ -846,6 +848,11 @@ fn show(id: &str) -> Result<()> {
             m.holdout_episodes.join(", "),
             m.seed
         );
+        // Absent on a record from before the tiebreak: unknown, not none.
+        match m.ranked {
+            Some(n) => println!("ranked:     {n} of the selection by a charter line"),
+            None => println!("ranked:     not recorded"),
+        }
         if !m.diverged.is_empty() {
             println!(
                 "diverged:   {} (dropped, not scored)",

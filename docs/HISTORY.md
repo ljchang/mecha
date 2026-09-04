@@ -3672,10 +3672,16 @@ same transcript read as the trajectory against the stores
 `appraisal::Stores` loads once per draw, and `selection_order` sorts the
 selection by headroom, then rank with the unranked after every ranked
 episode, then id. The holdout is not touched — drawn first and uniformly,
-where a priority may never reach (§8.1). `Draw::ranked` prints beside the
-seed, because the rank is the one input to the order the seed and the
-corpus do not pin: the charter is the owner's file, and re-ranking a line
-redraws the ties. The test builds three sessions with equal headroom whose
+where a priority may never reach (§8.1). `Measurement::ranked` records
+how many of the selection the tiebreak ordered, beside the seed and the
+holdout ids, because the rank is read off inputs those two do not pin —
+the charter's order, and the outbox, question, front-door and learning
+stores a session's errors are signed from, as they stand at the draw — so
+the same seed over the same corpus can tie differently once a draft is
+resolved or a line re-ranked (the first cut printed the count on stderr
+and claimed the charter was the only unpinned input; the review named the
+stores). The stores are read once per draw and not at all without a
+charter with lines. The test builds three sessions with equal headroom whose
 ids sort one way and whose plans serve lines the other way, and asserts
 the selection is in the charter's order whichever the seed holds out — and
 that the id order, the old sort, would have reversed it. `candidate.rs`'s

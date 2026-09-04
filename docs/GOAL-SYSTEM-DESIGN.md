@@ -1105,9 +1105,10 @@ charter is `Prose` class and cannot be cheaply A/B tested:
 > zero the top line; a task goal, a zero-magnitude error and a line since
 > removed rank nothing), `harness_probe::draw_episodes` orders the
 > selection by headroom, then that rank with unranked episodes after every
-> ranked one, then the id, and the measurement's line prints how many of
-> the selection carried a rank beside the seed — the one input to the
-> order the seed and the corpus do not pin. The holdout is untouched: it
+> ranked one, then the id, and the measurement records how many of the
+> selection carried a rank (`Measurement::ranked`) beside the seed — the
+> rank is read off the charter and the stores as they stand at the draw,
+> which the seed and the corpus do not pin. The holdout is untouched: it
 > is drawn first and uniformly, and a priority may never reach it (§8.1).
 > |goal error| as a priority in its own right is still not this — the rank
 > breaks ties, `Metric::headroom` still decides.
