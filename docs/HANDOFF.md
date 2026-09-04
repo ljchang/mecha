@@ -1679,7 +1679,11 @@ one person's mailbox rather than a public fact.
   lanes). Put it back on `main` before the next deploy — the deploy step is
   **check the branch, then pull, then restart**, not "pull, then restart",
   and that ordering is the whole content of the voice-worker item below
-  (mecha-26). ~~Three things merged to `main`
+  (mecha-26). *Since resolved, 2026-09-04 afternoon:* #161 and #162 merged
+  at 09:45Z and 09:52Z, and the shared checkout is back on `main` (at
+  `6e606a9`, checked from this lane), so what remains there is ordinary lag
+  behind `origin/main` rather than a feature branch's content — the deploy
+  ordering above still holds, for the ordinary reason. ~~Three things merged to `main`
   and **not deployed**: #159 (the handoff close), #153 and #154~~ — #153 and
   #154 are still **unrecorded in this document** (mecha-83's flag; their
   owners' entries are owed, this lane did not read their diffs). ~~The
@@ -2459,9 +2463,24 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
-**2026-09-04, later — §17.6 item 3 is built as PR #168
-(`feat/situation-scope`, unmerged), with §17.7 item 1's run record in the
-same change because it was the merge condition.** What it built is in
+**2026-09-04, later — §17.6 item 3 is built and merged as PR #168
+(`feat/situation-scope`, merged at `046ef0f` after thirteen review
+passes — eleven rounds of findings, then two clean at the bar), with
+§17.7 item 1's run record in the same change because it was the merge
+condition. Not yet deployed, and the staleness is two rows, not one. The
+installed `mecha` is behind main by at least #167/#168/#169: asked, not
+inferred — `strings ~/.cargo/bin/mecha` on 2026-09-04 afternoon holds
+none of `duration_secs` (#167), `learned rules: prefix block` (#168) or
+`predictive_compaction` (#169), and its version string, 0.1.17, cannot
+tell builds apart; the next `update` run of the *mecha* lines takes them
+all. The installed `mecha-graph` and `mecha-graph-mcp` carry a 2026-09-02
+file date and are *deliberately* not updated — the `~/Github/mecha-graph`
+checkout sits on `feat/task-entity-association` at `f2725d9`, clean
+(checked from this lane, 2026-09-04 afternoon), which is PR #6's branch
+and PR #6 is open, so running the `update` skill's graph `cargo install`
+lines from that checkout would ship the unmerged branch. Run the mecha
+lines only, and check the graph checkout's branch before ever running
+the graph ones.** What it built is in
 `HISTORY.md` under this date: `situation.rs`, the situation on every new
 reflection, `scope` on `Rule` assigned by the harness from the batch's shared
 keys, one learner call per focus-tool batch, the loader matching scope
@@ -3232,8 +3251,8 @@ What is missing beyond that is refinement:
   chains user rules then consolidated rules; the third leg — a window of recent
   unconsolidated reflections — was designed and not built.
 - **Rules are scoped by domain, by run, and now by tool set — but nothing
-  delivers one mid-run.** `Rule::scope` exists (PR #168, unmerged at the
-  time of writing) and `rules_carried_for` loads a scoped rule only into a
+  delivers one mid-run.** `Rule::scope` exists (PR #168, merged
+  2026-09-04) and `rules_carried_for` loads a scoped rule only into a
   run whose registry matches it. What is still missing is the §17.4
   *Delivery* half — one line on a tool's result the first time a recorded
   condition recurs, ruled off-by-default in `GOAL-SYSTEM-DESIGN.md` §17.7
