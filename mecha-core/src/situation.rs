@@ -130,14 +130,6 @@ impl Situation {
         self.tools.iter().all(|t| run.tools.contains(t))
     }
 
-    /// Whether `self` is at least as narrow as `region` — every scope key
-    /// the region sets, `self` sets the same way. A rule within a region is
-    /// the learner's to rewrite when that region is batched; a rule outside
-    /// it is context.
-    pub fn within(&self, region: &Situation) -> bool {
-        region.tools.iter().all(|t| self.tools.contains(t))
-    }
-
     /// The keys every member shares — the region a batch of reflections was
     /// recorded in. Tools: the intersection, in the first member's order.
     /// Every other key: kept only when every member sets it the same way.
@@ -260,16 +252,6 @@ mod tests {
         };
         assert!(scope.matches(&elsewhere));
         assert!(full.matches(&elsewhere));
-    }
-
-    #[test]
-    fn within_reads_narrower_or_equal() {
-        let region = s(&["shell"]).scope();
-        assert!(s(&["shell"]).scope().within(&region));
-        assert!(s(&["shell", "fs_write"]).scope().within(&region));
-        assert!(!s(&["fs_write"]).scope().within(&region));
-        assert!(!Situation::default().within(&region));
-        assert!(s(&["shell"]).scope().within(&Situation::default()));
     }
 
     #[test]
