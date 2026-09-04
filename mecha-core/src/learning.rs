@@ -611,12 +611,18 @@ pub fn finalize_rules(
 }
 
 /// Whether a rule is the learner's to rewrite when `region` is batched —
-/// its scope is within the region — or context it must leave alone. An
-/// unscoped rule (`scope: None`) is standing, so it is rewritable in the
-/// standing batch and context in every narrower one; that is how rules
-/// from before scoping migrate without a pass that guesses their region.
+/// its scope *is* the region — or context it must leave alone. Exact, not
+/// "within": a standing batch that could rewrite a `shell` rule would
+/// re-emit its reworded form with the standing scope and widen it on no
+/// evidence, and a `shell` batch rewriting a `shell, fs_write` rule would
+/// do the same one level down. Widening is consolidation's step
+/// (`docs/GOAL-SYSTEM-DESIGN.md` §17.4), with evidence from each
+/// sub-region, and this is not it. An unscoped rule (`scope: None`) is
+/// standing, so it is rewritable in the standing batch and context in
+/// every other; that is how rules from before scoping migrate without a
+/// pass that guesses their region.
 pub fn rewritable_in(rule: &Rule, region: &Situation) -> bool {
-    rule.scope.clone().unwrap_or_default().within(region)
+    rule.scope.clone().unwrap_or_default().scope() == region.scope()
 }
 
 /// Consolidate one region's rewrite into the domain's whole set.
@@ -4872,14 +4878,30 @@ mod situation_tests {
         assert_eq!(out[0].scope, None);
     }
 
+    /// Exact, in both directions: the standing batch must not rewrite a
+    /// `shell` rule (it would widen it on no evidence), and a `shell` batch
+    /// must not rewrite a rule scoped one tool narrower.
     #[test]
-    fn rewritable_reads_an_unscoped_rule_as_standing() {
+    fn a_rule_is_rewritable_only_in_its_own_region() {
         let legacy = rule("Legacy.", "r", None);
         assert!(rewritable_in(&legacy, &Situation::default()));
         assert!(!rewritable_in(&legacy, &shell()));
         let scoped = rule("Shell.", "r", Some(shell()));
         assert!(rewritable_in(&scoped, &shell()));
-        assert!(rewritable_in(&scoped, &Situation::default()));
+        assert!(!rewritable_in(&scoped, &Situation::default()));
+        let narrower = rule("Both.", "r", Some(run_with(&["shell", "fs_write"])));
+        assert!(!rewritable_in(&narrower, &shell()));
+        // A standing batch's rewrite carries the scoped rule through
+        // untouched even when the learner omits it.
+        let out = finalize_region_rules(
+            Vec::new(),
+            std::slice::from_ref(&scoped),
+            &Situation::default(),
+            &["x".into()],
+            "now",
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].scope, Some(shell()));
     }
 
     /// A reflection mined before the field, or with no tool in its window,

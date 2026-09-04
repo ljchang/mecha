@@ -439,8 +439,10 @@ no run ever had.
 surface, the workspace; never a tool argument, never the reflector's
 `error_type`, because a key a model can author is a key an injection can
 set (`situation.rs`) — and `mecha learn` batches a domain's pool by focus
-tool (`batches_by_region`), one learner call per batch, with the region's
-rules rewritable and every other rule shown as immutable context. The
+tool (`batches_by_region`), one learner call per batch, with the rules
+scoped exactly to the region rewritable and every other rule shown as
+immutable context (`rewritable_in` is equality, not containment: a wider
+batch rewriting a narrower rule would widen it on no evidence). The
 harness assigns the new rules' `scope` from the keys the batch shared
 (`finalize_region_rules`); the learner never names one. At run start
 `prepare_tools` renders the block *after* the registry is complete, through
