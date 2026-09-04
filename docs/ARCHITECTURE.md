@@ -2097,12 +2097,14 @@ likely to trip over from outside:
   window; a rename landing between one verb's re-read and its own rename
   can still lose that verb's key, and the ledger and `adoptable_card` are
   what repair it.
-- **The two halves find `~/.mecha` differently.** `mecha polls` resolves the
-  records through `work::mecha_home()`, which honours `MECHA_HOME`;
-  `mecha-mail polls` uses `dirs::home_dir()`, as every store in that crate
-  does. Under an isolated home the two sweep different directories —
-  `--records` is the override — and this is the first store both binaries
-  write, so a test harness that sets `MECHA_HOME` must pass it.
+- **`MECHA_HOME` reaches the shared store on both sides, and only there.**
+  `mecha polls` resolves the records through `work::mecha_home()`;
+  `mecha-mail polls` resolves the records *and its `polls.jsonl` ledger*
+  through its own `MECHA_HOME`-first helper, because the ledger that keeps
+  its sends from repeating must live in the same home as the records it is
+  about. The rest of `mecha-mail`'s stores — tokens, accounts, the bookings
+  ledger — still resolve through `dirs::home_dir()`, so an isolated home
+  isolates the poll store and nothing else in that crate.
 - **A pick card is nobody's draft.** It is staged through
   `OutboxStore::stage_by_harness` with `Author::Harness`, and
   `OutboxItem::writing_outcome` returns `None` for such an item — so a slot

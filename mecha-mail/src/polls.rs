@@ -182,9 +182,15 @@ pub fn jobs_due(record: &PollRecord) -> Vec<Job> {
             }
         }
         if let Some(due) = life["nudge_due"].as_array() {
+            // Deduplicated: the queue is an array another binary writes, and
+            // a name twice in it would be two reminders in one tick before
+            // either is ledgered.
+            let mut seen = BTreeSet::new();
             for name in due.iter().filter_map(Value::as_str) {
-                if let Some(person) = by_name(name) {
-                    jobs.push(Job::Nudge(person));
+                if seen.insert(name) {
+                    if let Some(person) = by_name(name) {
+                        jobs.push(Job::Nudge(person));
+                    }
                 }
             }
         }
@@ -228,16 +234,23 @@ pub fn event_text(record: &PollRecord) -> (String, String) {
 // The records on disk.
 
 /// Where `factory-publish` keeps the records.
-pub fn records_dir() -> Result<PathBuf> {
-    // `MECHA_HOME` first, as `mecha` resolves it: this is the first store
-    // both binaries write, and under an isolated home they must agree.
-    let home = match std::env::var("MECHA_HOME") {
+/// `~/.mecha`, with `MECHA_HOME` first as `mecha` resolves it: the poll
+/// records are the first store both binaries write, and under an isolated
+/// home the two halves must agree — and the ledger that keeps this half's
+/// sends from repeating must live in the same home as the records it is
+/// about. (The rest of this crate's stores — tokens, accounts, the
+/// bookings ledger — still resolve through `dirs::home_dir()`.)
+fn mecha_home() -> Result<PathBuf> {
+    Ok(match std::env::var("MECHA_HOME") {
         Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => dirs::home_dir()
             .context("cannot determine home directory")?
             .join(".mecha"),
-    };
-    Ok(home.join("factory").join("polls"))
+    })
+}
+
+pub fn records_dir() -> Result<PathBuf> {
+    Ok(mecha_home()?.join("factory").join("polls"))
 }
 
 fn person(v: &Value) -> Option<Person> {
@@ -379,11 +392,7 @@ impl LedgerEntry {
 }
 
 pub fn ledger_path() -> Result<PathBuf> {
-    Ok(dirs::home_dir()
-        .context("cannot determine home directory")?
-        .join(".mecha")
-        .join("mail")
-        .join("polls.jsonl"))
+    Ok(mecha_home()?.join("mail").join("polls.jsonl"))
 }
 
 pub fn entries(path: &Path) -> Vec<LedgerEntry> {
@@ -603,6 +612,13 @@ mod tests {
         }));
         let jobs = jobs_due(&r);
         assert_eq!(jobs, vec![Job::Nudge(r.people[1].clone())]);
+
+        // Twice in the queue is one reminder.
+        let r = record(json!({
+            "invites": {"Priya": "x", "Tal": "x"},
+            "nudge_due": ["Tal", "Tal"],
+        }));
+        assert_eq!(jobs_due(&r).len(), 1);
     }
 
     /// A verdict of `book` with nothing booked is the event; once booked,

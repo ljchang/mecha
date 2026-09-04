@@ -464,10 +464,18 @@ pub fn move_marker(description: &str, index: usize) -> String {
 /// followed by the event as JSON. Empty when the answer has no readable id,
 /// which the record shows as such rather than inventing one.
 pub fn event_id_of(output: &str) -> String {
-    output
+    let parsed = output
         .find('{')
         .and_then(|i| serde_json::from_str::<Value>(&output[i..]).ok())
-        .and_then(|v| v["event_id"].as_str().map(str::to_string))
+        .and_then(|v| v["event_id"].as_str().map(str::to_string));
+    // The recorded output is bounded, so the JSON may be cut short of its
+    // closing brace; the id is near the top, so read it from the text.
+    parsed
+        .or_else(|| {
+            let (_, rest) = output.split_once("\"event_id\": \"")?;
+            let (id, _) = rest.split_once('"')?;
+            (!id.is_empty()).then(|| id.to_string())
+        })
         .unwrap_or_default()
 }
 
@@ -517,7 +525,7 @@ pub fn loaded_index(record: &PollRecord, item: &OutboxItem) -> Option<usize> {
 /// Load the n-th ranked candidate (1-based) into the poll's pick card.
 /// Returns the slot as the reviewer will read it.
 pub fn pick(poll_id: &str, n: usize) -> Result<String> {
-    let (_cfg, store) = cfg_and_store()?;
+    let store = crate::commands::outbox::open_store()?;
     let record = load_by_id(poll_id)?;
     anyhow::ensure!(n >= 1, "candidates are numbered from 1");
     // Taken before the read it protects: an `outbox edit` landing between
@@ -536,7 +544,7 @@ pub fn pick(poll_id: &str, n: usize) -> Result<String> {
 
 /// Advance to the next candidate, wrapping — the `/polls` modal's `p` key.
 pub fn pick_next(poll_id: &str) -> Result<String> {
-    let (_cfg, store) = cfg_and_store()?;
+    let store = crate::commands::outbox::open_store()?;
     let record = load_by_id(poll_id)?;
     let count = record.ranked().len();
     anyhow::ensure!(count > 0, "the ranking is empty");
@@ -1060,6 +1068,13 @@ mod tests {
         assert_eq!(life["booked"]["event_id"], "ev42");
         assert_eq!(life["booked"]["via"], format!("outbox:{item_id}"));
         assert_eq!(event_id_of("nothing here"), "", "no id is no id");
+        assert_eq!(
+            event_id_of(
+                "created in `w`:\n{\n  \"event_id\": \"ev9\",\n  \"description\": \"cut sho"
+            ),
+            "ev9",
+            "a truncated answer still yields its id"
+        );
         assert_eq!(
             life["booked"]["account"], "work",
             "the account the release landed on"
