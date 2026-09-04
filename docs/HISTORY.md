@@ -3587,7 +3587,9 @@ new binary from the served page (a `304` naming its `ETag`, not a bare one).
 records where it was learned, a rule carries the region it applies in, and
 a run carries only the rules that match it.** `GOAL-SYSTEM-DESIGN.md` §17.6
 item 3 with §17.7 item 1 in the same change (#168, `feat/situation-scope`,
-**unmerged at the time of writing**). `situation.rs` is the closed-set
+merged at `046ef0f` the same afternoon after twelve review passes — eleven
+rounds of findings fixed on the branch, the last pass clean at the bar).
+`situation.rs` is the closed-set
 description of where a record was made — registry tool names in trace
 order, the trigger, the surface, the workspace — and the rule that shaped
 it is that a key is what the harness knows structurally: the reflector's
