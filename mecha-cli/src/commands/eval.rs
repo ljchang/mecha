@@ -646,7 +646,7 @@ async fn ab_experiment(
     // `GlobalOpts`, and `run_arm` carries them into both arms verbatim —
     // go on both records, or a control run at `--max-turns 60` is filed
     // as the default and hashes like one (found on review).
-    let shared_overrides = effective_overrides(global)?;
+    let shared_overrides = effective_overrides(global, "the A/B's design")?;
     let name = ab_name(kind, chrono::Utc::now());
     let mut manifest = Manifest::two_arm(
         &name,
@@ -831,7 +831,11 @@ async fn ab_experiment(
 /// under its floor is legal config) is dropped with a warning rather than
 /// refusing the A/B: it is being recorded, not proposed. An unset knob is
 /// not recorded — there is nothing to write.
-fn effective_overrides(global: &GlobalOpts) -> Result<Vec<String>> {
+/// `design` names the record the knob is missing from — "the A/B's
+/// design" or "the measurement's design" — because the one line that says
+/// a knob is absent from a condition hash must name the right record
+/// (found on review).
+fn effective_overrides(global: &GlobalOpts, design: &str) -> Result<Vec<String>> {
     let cfg = if global.global_config_only {
         mecha_core::config::Config::load_global()?
     } else {
@@ -855,7 +859,7 @@ fn effective_overrides(global: &GlobalOpts) -> Result<Vec<String>> {
         match mecha_core::harness::parse_change(&spec) {
             Ok(_) => out.push(spec),
             Err(e) => eprintln!(
-                "mecha eval: this machine's effective `{spec}` is not recorded on the A/B's design ({e:#}); both arms still run with it"
+                "mecha eval: this machine's effective `{spec}` is not recorded on {design} ({e:#}); the run still uses it"
             ),
         }
     }
@@ -966,7 +970,7 @@ fn measurement_arm(
     Ok(Arm {
         preset: Some(Preset::Bare),
         levers_on: if mcp { vec!["mcp".into()] } else { Vec::new() },
-        overrides: effective_overrides(global)?,
+        overrides: effective_overrides(global, "the measurement's design")?,
         provider: Some(provider_name),
         model: Some(model),
         ..Arm::default()
