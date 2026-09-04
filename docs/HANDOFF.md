@@ -1680,10 +1680,14 @@ one person's mailbox rather than a public fact.
   **check the branch, then pull, then restart**, not "pull, then restart",
   and that ordering is the whole content of the voice-worker item below
   (mecha-26). *Since resolved, 2026-09-04 afternoon:* #161 and #162 merged
-  at 09:45Z and 09:52Z, and the shared checkout is back on `main` (at
-  `6e606a9`, checked from this lane), so what remains there is ordinary lag
-  behind `origin/main` rather than a feature branch's content — the deploy
-  ordering above still holds, for the ordinary reason. ~~Three things merged to `main`
+  at 09:45Z and 09:52Z; the checkout was on `main` at `6e606a9` when this
+  lane looked at ~13:00 (44 behind `origin/main` by 15:29, mecha-83's
+  count), and by 15:45 sat at `58fc21a` — `origin/main`'s tip — on a branch
+  named `fix/selection-slice-power`, moved by neither lane. The 15:29
+  deploy built from a temporary worktree at `origin/main` for exactly this
+  reason, and the voice worker was restarted only after the worker file's
+  blob id matched `origin/main`'s. The ordering above still holds; the
+  check that settles it is the blob id of the file the unit runs. ~~Three things merged to `main`
   and **not deployed**: #159 (the handoff close), #153 and #154~~ — #153 and
   #154 are still **unrecorded in this document** (mecha-83's flag; their
   owners' entries are owed, this lane did not read their diffs). ~~The
@@ -2467,20 +2471,35 @@ the mechanism and every decision. What it left standing:
 (`feat/situation-scope`, merged at `046ef0f` after thirteen review
 passes — eleven rounds of findings, then two clean at the bar), with
 §17.7 item 1's run record in the same change because it was the merge
-condition. Not yet deployed, and the staleness is two rows, not one. The
-installed `mecha` is behind main by at least #167/#168/#169: asked, not
-inferred — `strings ~/.cargo/bin/mecha` on 2026-09-04 afternoon holds
-none of `duration_secs` (#167), `learned rules: prefix block` (#168) or
-`predictive_compaction` (#169), and its version string, 0.1.17, cannot
-tell builds apart; the next `update` run of the *mecha* lines takes them
-all. The installed `mecha-graph` and `mecha-graph-mcp` carry a 2026-09-02
-file date and are *deliberately* not updated — the `~/Github/mecha-graph`
-checkout sits on `feat/task-entity-association` at `f2725d9`, clean
-(checked from this lane, 2026-09-04 afternoon), which is PR #6's branch
-and PR #6 is open, so running the `update` skill's graph `cargo install`
-lines from that checkout would ship the unmerged branch. Run the mecha
-lines only, and check the graph checkout's branch before ever running
-the graph ones.** What it built is in
+condition. **Deployed 2026-09-04 15:29–15:37 by mecha-83, verified from
+this lane by asking the artifacts:** `strings ~/.cargo/bin/mecha` now holds
+`duration_secs` (#167), `learned rules: prefix block` (#168) and
+`predictive_compaction` (#169), where the same probe at ~14:30 held none —
+the version string read 0.1.17 both times and cannot tell builds apart,
+which is why the probe is a literal and not a version. Built from a
+temporary worktree at `origin/main` `58fc21a`, not from the shared
+checkout, which at 15:29 was 44 commits behind `origin/main` with every
+version string reading current (mecha-83's count; by the time this lane
+looked, someone had moved the checkout to `58fc21a` on a branch named
+`fix/selection-slice-power` — content-correct and branch-wrong, the
+inverse of 2026-09-03, and the check that settles either is the blob id
+of the file a unit runs, not the branch). mecha-graph PR #6 merged the
+same hour and `mecha-graph` + `mecha-graph-mcp` were installed from
+mecha-graph main `7fa6a69` (the installed server's strings carry the new
+`about`/`entity` schema); `target/release/mecha-graph` rebuilt for the
+01:30 nightly, which execs that path. Restarted, each confirmed active
+from `systemctl --user` here: mecha-slack, mecha-triggers, mecha-drain
+(15:29:57), mecha-serve (15:31:47), mecha-voice-worker (15:37:37 — the
+worker.py on disk hashes to `d818fa3`, identical to
+`origin/main:scripts/voice/worker.py`, so the +174-line worker is what
+runs). Not restarted, correctly: mecha-parakeet (active since
+2026-08-24; `parakeet_server.py` unchanged). Reported by mecha-83 and not
+verified from this lane: the web dist rebuilt and deployed
+(`index-cix-ATEa.js` → `index-NFyEeisJ.js`; the shared checkout's
+`web/dist` still holds the old name, so the served dist is elsewhere),
+the musl bench binary still Sep 3 (a scorecard run now measures old
+code), factory client and droplet already 0.2.8. PR #6's review residue
+is mecha-graph issue #8.** What it built is in
 `HISTORY.md` under this date: `situation.rs`, the situation on every new
 reflection, `scope` on `Rule` assigned by the harness from the batch's shared
 keys, one learner call per focus-tool batch, the loader matching scope
