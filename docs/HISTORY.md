@@ -3587,9 +3587,12 @@ new binary from the served page (a `304` naming its `ETag`, not a bare one).
 records where it was learned, a rule carries the region it applies in, and
 a run carries only the rules that match it.** `GOAL-SYSTEM-DESIGN.md` §17.6
 item 3 with §17.7 item 1 in the same change (#168, `feat/situation-scope`,
-**unmerged at the time of writing**). `situation.rs` is the closed-set
-description of where a record was made — registry tool names in trace
-order, the trigger, the surface, the workspace — and the rule that shaped
+merged at `046ef0f` the same afternoon after thirteen review passes —
+eleven rounds of findings fixed on the branch, then two passes clean at
+the bar, the second on the commit that fixed the first's nits).
+`situation.rs` is the closed-set description of where a record was made —
+registry tool names in trace order, the trigger, the surface, the workspace
+— and the rule that shaped
 it is that a key is what the harness knows structurally: the reflector's
 `error_type` sits beside the situation on the reflection and is not in it,
 because a key a model can author is a key an injection can set. `mecha
@@ -3638,8 +3641,9 @@ batch as standing.
 charter, and every negative has a word.** `GOAL-SYSTEM-DESIGN.md` §17.6
 items 1 and 2, in one pull request by the owner's ruling (#162,
 `feat/goal-ref-relevance`, stacked on the rulings themselves, #161 —
-**unmerged at the time of writing**, review loop closed at `9fc79ee` after
-four passes). Item 1, the producers §17.1 makes its prerequisite:
+both merged the same morning, #161 at 09:45Z and #162 at 09:52Z, review
+loop closed at `9fc79ee` after four passes). Item 1, the producers §17.1
+makes its prerequisite:
 `charter::prompt_block_for` asks for a `serves: charter:<id>` cite on the
 `todo` tool, only when `todo` is in the surface (`ToolsConfig::registers`,
 the predicate `Registry::with_builtins` now shares); `todo`'s schema
