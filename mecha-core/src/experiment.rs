@@ -537,22 +537,22 @@ impl Manifest {
         }
         anyhow::ensure!(self.repetitions >= 1, "repetitions must be at least 1");
         anyhow::ensure!(self.holdout_in >= 2, "holdout_in must be at least 2");
-        match self.kind {
-            TrialKind::Lifetime => {
-                let mut seen = std::collections::BTreeSet::new();
-                for id in &self.tasks.ids {
-                    anyhow::ensure!(
-                        seen.insert(id),
-                        "task `{id}` appears twice in the sequence; a lifetime's positions are its tasks"
-                    );
-                }
-            }
-            TrialKind::Single => {
-                anyhow::ensure!(
-                    self.schedule == Schedule::default(),
-                    "a `[schedule]` is a lifetime's; a single trial runs no stage between tasks"
-                );
-            }
+        // Both kinds: `ids` names each case once. For a lifetime the
+        // positions are the tasks; for a single, `cases_for` walks `ids` in
+        // order and a repeated id would plan two rows with one trial id —
+        // one overwriting the other on the store (found on review).
+        let mut seen = std::collections::BTreeSet::new();
+        for id in &self.tasks.ids {
+            anyhow::ensure!(
+                seen.insert(id),
+                "task `{id}` appears twice in `ids`; name each task once"
+            );
+        }
+        if self.kind == TrialKind::Single {
+            anyhow::ensure!(
+                self.schedule == Schedule::default(),
+                "a `[schedule]` is a lifetime's; a single trial runs no stage between tasks"
+            );
         }
         for (name, arm) in &self.arms {
             crate::work::valid_producer(name)
@@ -1121,7 +1121,9 @@ pub struct StageRun {
 pub enum StageStatus {
     Done,
     Failed,
-    /// A status this build does not know; neither counted done nor rerun.
+    /// A status this build does not know: counted neither done nor failed,
+    /// and **due again** (`stages_due` reruns anything not `done`), because
+    /// a status this build cannot read is not proof the stage finished.
     #[serde(other)]
     Unknown,
 }
@@ -2206,17 +2208,19 @@ rationale = "no rumination should fail more over the sequence"
             e.contains("not a stage lever") && e.contains("sensors_in_brief"),
             "{e}"
         );
-        let twice = MANIFEST
-            .replace(
-                "control = \"full\"",
-                "kind = \"lifetime\"\ncontrol = \"full\"",
-            )
-            .replace(
-                "fixture = \"eval/workspace\"",
-                "fixture = \"eval/workspace\"\nids = [\"a\", \"a\"]",
-            );
-        let e = Manifest::parse(&twice).unwrap_err().to_string();
-        assert!(e.contains("appears twice"), "{e}");
+        for kind in ["single", "lifetime"] {
+            let twice = MANIFEST
+                .replace(
+                    "control = \"full\"",
+                    &format!("kind = \"{kind}\"\ncontrol = \"full\""),
+                )
+                .replace(
+                    "fixture = \"eval/workspace\"",
+                    "fixture = \"eval/workspace\"\nids = [\"a\", \"a\"]",
+                );
+            let e = Manifest::parse(&twice).unwrap_err().to_string();
+            assert!(e.contains("appears twice"), "{kind}: {e}");
+        }
         for name in StageLever::ALL {
             assert_eq!(StageLever::parse(name.as_str()), Some(name));
             let wire: StageLever = serde_json::from_str(&format!("\"{}\"", name.as_str())).unwrap();

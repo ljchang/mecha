@@ -324,8 +324,14 @@ async fn run_lifetimes(
                 "mecha exp: {torn} line(s) of `{lifetime}`'s stage ledger could not be read and are counted, not rerun"
             );
         }
-        let passthrough =
-            mecha_core::experiment::child_invocation(real, arm, first.seed)?.passthrough;
+        // The arm's CLI-only levers ride as flags, and a stage that runs a
+        // model — validate's probes, ruminate's diagnostician — is a run
+        // against this home like any task's: the flags go with every stage,
+        // or the stages run levers the row's hash says are off (found on
+        // review).
+        let ChildInvocation {
+            flags, passthrough, ..
+        } = mecha_core::experiment::child_invocation(real, arm, first.seed)?;
         for planned_trial in rows {
             let position = planned_trial
                 .position
@@ -368,6 +374,7 @@ async fn run_lifetimes(
                     store,
                     mecha,
                     &home,
+                    &flags,
                     &passthrough,
                     manifest,
                     &trial,
@@ -395,6 +402,7 @@ async fn run_stage(
     store: &ExperimentStore,
     mecha: &Path,
     home: &Path,
+    flags: &[String],
     passthrough: &[String],
     manifest: &Manifest,
     after: &Trial,
@@ -418,9 +426,8 @@ async fn run_stage(
         error: None,
     };
     let outcome: Result<std::process::ExitStatus> = async {
-        let argv = stage
-            .argv()
-            .context("a config-switch lever is not a stage to run")?;
+        let argv =
+            stage_argv(stage, flags).context("a config-switch lever is not a stage to run")?;
         if let Some(parent) = log.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -441,7 +448,7 @@ async fn run_stage(
         std::fs::create_dir_all(&workspace)
             .with_context(|| format!("creating {}", workspace.display()))?;
         let mut cmd = tokio::process::Command::new(mecha);
-        cmd.args(argv).current_dir(&workspace);
+        cmd.args(&argv).current_dir(&workspace);
         cmd.env_clear();
         for (k, v) in mecha_core::sandbox::Sandbox::child_env(passthrough) {
             cmd.env(k, v);
@@ -803,6 +810,16 @@ fn status(name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// A stage's full argv: the verb the nightly runs, then the arm's
+/// CLI-only lever flags (`--no-skills`, `--no-charter`, `--no-mcp`, …),
+/// which are global options and so attach to any verb. `None` for the
+/// lever that is a config switch and runs nothing.
+fn stage_argv(stage: mecha_core::experiment::StageLever, flags: &[String]) -> Option<Vec<String>> {
+    let mut argv: Vec<String> = stage.argv()?.iter().map(|s| s.to_string()).collect();
+    argv.extend(flags.iter().cloned());
+    Some(argv)
+}
+
 /// One lifetime's sequence and ledger, for `status`.
 struct LifetimeReadout {
     id: String,
@@ -954,6 +971,23 @@ mod tests {
             !arm_moves(&arm, "max_turns_extra"),
             "the whole key, not a prefix"
         );
+    }
+
+    /// A stage runs with the arm's lever flags after its verb, so the
+    /// levers a row's hash says are off are off for the stage too.
+    #[test]
+    fn a_stage_carries_the_arms_lever_flags() {
+        use mecha_core::experiment::StageLever;
+        let flags = vec!["--no-skills".to_string(), "--no-mcp".to_string()];
+        assert_eq!(
+            stage_argv(StageLever::Validate, &flags).unwrap(),
+            vec!["validate", "--unprocessed-only", "--no-skills", "--no-mcp"]
+        );
+        assert_eq!(
+            stage_argv(StageLever::Reflect, &[]).unwrap(),
+            vec!["reflect"]
+        );
+        assert_eq!(stage_argv(StageLever::SensorsInBrief, &flags), None);
     }
 
     /// A manifest's `ids` narrow the case file to the tasks it names, in the
