@@ -376,8 +376,20 @@ impl ContextTracker {
     /// That spelling is the monotonicity guarantee in one line: whatever this
     /// type believes, it can only ever add a reason to compact.
     pub fn over(&self, limit: u64, bytes: usize) -> bool {
+        self.over_by(limit, bytes, true)
+    }
+
+    /// [`Self::over`] with the prediction switchable off — the
+    /// `predictive_compaction` lever (`docs/EXPERIMENT-DESIGN.md` Part II,
+    /// *The switch set*). With `predictive` false only the reported size
+    /// counts: the threshold stays, because a lever may remove a disposition
+    /// above a structural check and never the check itself; what goes is
+    /// compacting on the *forecast* of the next request, which is exactly
+    /// the reactive-only behaviour this type was built to improve on, and
+    /// the arm an experiment needs to measure the improvement against.
+    pub fn over_by(&self, limit: u64, bytes: usize, predictive: bool) -> bool {
         self.reported().is_some_and(|t| t >= limit)
-            || self.predict(bytes).is_some_and(|t| t >= limit)
+            || (predictive && self.predict(bytes).is_some_and(|t| t >= limit))
     }
 
     /// How many bytes of tool output the next turn can take before the
@@ -490,6 +502,29 @@ pub fn message_bytes(messages: &[Message]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lever's own contract: with prediction off, a transcript that is
+    /// over only by forecast is not due — and one over by report still is,
+    /// because the lever removes the disposition and never the check.
+    #[test]
+    fn over_by_drops_the_prediction_and_keeps_the_report() {
+        let mut t = ContextTracker::new();
+        t.observe(1_000, 1_000);
+        // Ten times the bytes: the prediction is above the report by the
+        // floor rate; the limit is set to exactly what it predicts, so the
+        // transcript is over by forecast and under by report.
+        let predicted = t.predict(10_000).unwrap();
+        assert!(predicted > 1_000);
+        assert!(t.over(predicted, 10_000), "predicted over");
+        assert!(
+            !t.over_by(predicted, 10_000, false),
+            "prediction switched off"
+        );
+        assert!(
+            t.over_by(1_000, 10_000, false),
+            "reported over still counts"
+        );
+    }
     use crate::message::{Role, Usage};
 
     fn msg(text: &str) -> Message {

@@ -556,6 +556,20 @@ pub struct AgentConfig {
     /// share that posture; it now derives its threshold from the window,
     /// because its validator gave it a measurement this has not earned yet.)
     pub step_escalation: bool,
+    /// Compact on the *forecast* of the next request, not only on the size
+    /// the last one reported. On by default — it is the whole of
+    /// `pressure.rs`, and the measured reason the reactive check stopped
+    /// dying on the turn that mattered. Off is a lever for an experiment
+    /// (`predictive_compaction`, `docs/EXPERIMENT-DESIGN.md` Part II): the
+    /// threshold stays, so a run never compacts *less* than the reactive
+    /// check would, only later.
+    pub predictive_compaction: bool,
+    /// Carry a tool's own state (the plan) verbatim across a compaction, in
+    /// the rebuilt head. On by default: the list the model keeps for itself
+    /// is exactly what a summariser is measured to drop. Off is a lever for
+    /// an experiment (`carried_state`): the summary still installs; the plan
+    /// just does not ride across it.
+    pub carried_state: bool,
 }
 
 impl Default for AgentConfig {
@@ -582,6 +596,8 @@ impl Default for AgentConfig {
             boredom: true,
             compact_validate: true,
             step_escalation: false,
+            predictive_compaction: true,
+            carried_state: true,
         }
     }
 }
@@ -1408,6 +1424,8 @@ struct AgentLayer {
     loop_guard: Option<bool>,
     boredom: Option<bool>,
     step_escalation: Option<bool>,
+    predictive_compaction: Option<bool>,
+    carried_state: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -1505,6 +1523,12 @@ impl ConfigLayer {
             }
             if let Some(v) = a.step_escalation {
                 t.step_escalation = v;
+            }
+            if let Some(v) = a.predictive_compaction {
+                t.predictive_compaction = v;
+            }
+            if let Some(v) = a.carried_state {
+                t.carried_state = v;
             }
             if a.timezone.is_some() {
                 t.timezone = a.timezone;

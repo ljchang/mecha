@@ -521,6 +521,8 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
             Lever::ApprovalRules => opts.no_rules,
             Lever::Boredom => !agent.boredom,
             Lever::CompactValidate => !agent.compact_validate,
+            Lever::PredictiveCompaction => !agent.predictive_compaction,
+            Lever::CarriedState => !agent.carried_state,
         })
         .collect()
 }
@@ -545,6 +547,8 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::ApprovalRules => opts.no_rules = true,
         Lever::Boredom => opts.no_boredom = true,
         Lever::CompactValidate => opts.no_compact_validate = true,
+        Lever::PredictiveCompaction => opts.no_predictive_compaction = true,
+        Lever::CarriedState => opts.no_carried_state = true,
     }
 }
 
@@ -611,7 +615,7 @@ fn step_escalation_enabled(cfg_value: bool, no_step_escalation: bool) -> bool {
     cfg_value && !no_step_escalation
 }
 
-/// The three `[agent]` switches a `--no-*` flag may narrow and never widen,
+/// The five `[agent]` switches a `--no-*` flag may narrow and never widen,
 /// folded in one place, on the config the agent is then built from.
 /// [`levers_off`] does **not** call this: it reads the folded config the
 /// caller hands it, so the record is the agent's own value rather than a
@@ -627,6 +631,8 @@ pub(crate) fn fold_agent_switches(agent: &mut mecha_core::config::AgentConfig, o
     agent.step_escalation = step_escalation_enabled(agent.step_escalation, opts.no_step_escalation);
     agent.boredom = agent.boredom && !opts.no_boredom;
     agent.compact_validate = agent.compact_validate && !opts.no_compact_validate;
+    agent.predictive_compaction = agent.predictive_compaction && !opts.no_predictive_compaction;
+    agent.carried_state = agent.carried_state && !opts.no_carried_state;
 }
 
 /// The `ToolCtx` shape `compact_requested` already established: presence is
@@ -1678,16 +1684,22 @@ mod tests {
                 cfg.agent.step_escalation = cfg_value;
                 cfg.agent.boredom = cfg_value;
                 cfg.agent.compact_validate = cfg_value;
+                cfg.agent.predictive_compaction = cfg_value;
+                cfg.agent.carried_state = cfg_value;
                 let opts = GlobalOpts {
                     no_step_escalation: no_flag,
                     no_boredom: no_flag,
                     no_compact_validate: no_flag,
+                    no_predictive_compaction: no_flag,
+                    no_carried_state: no_flag,
                     ..GlobalOpts::default()
                 };
                 let three = [
                     Lever::StepEscalation,
                     Lever::Boredom,
                     Lever::CompactValidate,
+                    Lever::PredictiveCompaction,
+                    Lever::CarriedState,
                 ];
 
                 // Unfolded: the record says what the config says, flag or no
@@ -1712,6 +1724,14 @@ mod tests {
                 assert_eq!(cfg.agent.boredom, expect, "cfg={cfg_value} flag={no_flag}");
                 assert_eq!(
                     cfg.agent.compact_validate, expect,
+                    "cfg={cfg_value} flag={no_flag}"
+                );
+                assert_eq!(
+                    cfg.agent.predictive_compaction, expect,
+                    "cfg={cfg_value} flag={no_flag}"
+                );
+                assert_eq!(
+                    cfg.agent.carried_state, expect,
                     "cfg={cfg_value} flag={no_flag}"
                 );
                 let folded = levers_off(&opts, &cfg);
