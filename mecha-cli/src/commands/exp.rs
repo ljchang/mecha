@@ -666,24 +666,35 @@ async fn principal_call(
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::from(err));
+        // One deadline over the whole exchange — the write of the state,
+        // the wait, the read of the answer — driven concurrently, and the
+        // child killed when the deadline drops it: a principal that never
+        // drained a payload past the pipe buffer used to wedge the driver
+        // on a running line with nothing to cancel the write (found on
+        // review).
+        cmd.kill_on_drop(true);
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawning the principal `{exe}`"))?;
-        {
+        let mut stdin = child.stdin.take().context("the principal's stdin")?;
+        let payload = serde_json::to_string(&input)?;
+        let exchange = async move {
             use tokio::io::AsyncWriteExt;
-            let mut stdin = child.stdin.take().context("the principal's stdin")?;
-            stdin
-                .write_all(serde_json::to_string(&input)?.as_bytes())
-                .await?;
-            stdin.shutdown().await?;
-        }
+            let write = async {
+                stdin.write_all(payload.as_bytes()).await?;
+                stdin.shutdown().await
+            };
+            let (written, output) = tokio::join!(write, child.wait_with_output());
+            written.context("handing the principal its state")?;
+            output.context("waiting for the principal")
+        };
         let output = match tokio::time::timeout(
             std::time::Duration::from_secs(principal.timeout_secs),
-            child.wait_with_output(),
+            exchange,
         )
         .await
         {
-            Ok(o) => o.context("waiting for the principal")?,
+            Ok(o) => o?,
             Err(_) => anyhow::bail!(
                 "the principal did not answer within {}s; its stderr is at {}",
                 principal.timeout_secs,
@@ -733,8 +744,17 @@ async fn principal_call(
                     // owner's steering message (found on review). The
                     // workspace is named because `[tools] workspace` rides
                     // into the home's config and beats the cwd.
+                    // The trial's own workspace and the run's posture: an
+                    // act may resume the parked run (`questions answer`),
+                    // and a continuation jailed to the scratch directory
+                    // failed every fixture read while exiting 0, and one
+                    // without `--yes` had every call blocked under the
+                    // operator's ask posture — both recorded done (found
+                    // on review). `--workspace` and `--yes` are the
+                    // driver's, so the principal cannot move either.
                     cmd.arg("--workspace")
-                        .arg(&workspace)
+                        .arg(store.workspace_for(&trial.id))
+                        .arg("--yes")
                         .args(flags)
                         .args(&act.verb);
                     env_for(&mut cmd, passthrough)?;

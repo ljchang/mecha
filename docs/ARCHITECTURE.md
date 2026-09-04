@@ -3274,7 +3274,10 @@ comparison over a chosen set**, with the design written before the run.
   model, the ceilings, the tool surface or the approvals,
   `PRINCIPAL_BLOCKED_OPTIONS`, named as the CLI spells them and tested
   against it) with the driver's own options *before* the subcommand,
-  where a trailing-argument verb like `tasks steer` cannot swallow them,
+  where a trailing-argument verb like `tasks steer` cannot swallow them
+  — the trial's own workspace and `--yes`, since a verb may resume the
+  parked run and a continuation jailed elsewhere or under the ask
+  posture fails every call while exiting 0 —
   and records the call and every act with its exit status on the
   lifetime's ledger as a `principal` line, so the record is the driver's
   and `stage_health` holds the verdict over a principal that could not
