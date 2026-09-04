@@ -418,10 +418,18 @@ impl Evidence {
                     // reported, the window was hit. Never reassurance.
                     (_, Some(at)) if self.context_overflows.is_some_and(|n| n > 0) => format!(
                         " — compaction fires at {}, and {} context overflow(s) are recorded: the \
-                     window WAS reached, whatever the peaks above say (an overflowing request \
-                     400s and is never priced, so it contributes no peak)",
+                     window WAS reached{} (an overflowing request 400s and is never priced, \
+                     so it contributes no peak)",
                         pct(Some(at)),
-                        self.context_overflows.unwrap_or(0)
+                        self.context_overflows.unwrap_or(0),
+                        // No cross-reference to a line the ablation removed:
+                        // the withheld brief has no peaks above (found on
+                        // review).
+                        if self.sensors_withheld {
+                            ""
+                        } else {
+                            ", whatever the peaks above say"
+                        }
                     ),
                     (Some(max), Some(at)) if max < at && self.compactions == 0 => format!(
                         " — compaction fires at {}, and the highest any run reached is {:.1} \
@@ -1425,6 +1433,11 @@ rationale: the threshold is too low";
             quiet.contains("compaction fires at 66.0%") && !quiet.contains("context pressure"),
             "the threshold survives the ablation:\n{quiet}"
         );
+        assert!(
+            quiet.contains("2 context overflow(s) are recorded") && !quiet.contains("peaks above"),
+            "the overflow reading stays, without pointing at a line that is gone:\n{quiet}"
+        );
+        assert!(full.contains("whatever the peaks above say"));
     }
 
     #[test]
