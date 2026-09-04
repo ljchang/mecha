@@ -154,7 +154,7 @@ own:
 | `tool_calls` | 169 | 0.41 | 0.33–0.50 | — | — |
 | wall-clock seconds (Harbor's, not on any record) | 169 | **0.74** | 0.66–0.81 | median 861 s | median 180 s |
 
-Five readings, and what each changes about what gets built next:
+Six readings, and what each changes about what gets built next:
 
 **1.7.1 The sign is right and the coverage is not.** Where the readout
 signs a run negative it is three times as likely to have failed (20% of
