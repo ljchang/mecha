@@ -1683,11 +1683,13 @@ one person's mailbox rather than a public fact.
   at 09:45Z and 09:52Z; the checkout was on `main` at `6e606a9` when this
   lane looked at ~13:00 (44 behind `origin/main` by 15:29, mecha-83's
   count), and by 15:45 sat at `58fc21a` — `origin/main`'s tip — on a branch
-  named `fix/selection-slice-power`, moved by neither lane. The 15:29
-  deploy built from a temporary worktree at `origin/main` for exactly this
-  reason, and the voice worker was restarted only after the worker file's
-  blob id matched `origin/main`'s. The ordering above still holds; the
-  check that settles it is the blob id of the file the unit runs. ~~Three things merged to `main`
+  named `fix/selection-slice-power` for four minutes (reflog 15:33–15:37,
+  mecha-26's lane), then back on `main` at `58fc21a`, clean, where it is
+  now. The 15:29 deploy built from a temporary worktree at `origin/main`
+  for exactly this reason, and the voice worker was restarted only after
+  the worker file's blob id matched `origin/main`'s. The ordering above
+  still holds; the check that settles it is the blob id of the file the
+  unit runs, never the branch name. ~~Three things merged to `main`
   and **not deployed**: #159 (the handoff close), #153 and #154~~ — #153 and
   #154 are still **unrecorded in this document** (mecha-83's flag; their
   owners' entries are owed, this lane did not read their diffs). ~~The
@@ -1993,6 +1995,39 @@ What is actually open now:
   said four callers: a grep for `global_config_only: true` misses
   `voice/mod.rs`, which assigns instead. The pattern you search with is
   part of the claim you can make.*
+- **The harness candidate queue was cleared 2026-09-04, and the gate that
+  filled it could not measure** (machine state in
+  `~/.mecha/learning/harness/candidates/`, which no clone records; verified
+  from this lane: `mecha harness list` reads "nothing waiting on you
+  (8 resolved)", seven files rejected today, `mecha harness overrides`
+  empty so no config moved). Per mecha-26, who did the clearing at the
+  owner's instruction: three candidates named config keys that never
+  existed (`tool.validation.strict`, `context.auto_compact`,
+  `context.compaction.threshold` — pre-fix residue, the closed set is now
+  named in `DIAGNOSE_INSTRUCTION`); three (`compact_at_tokens`,
+  `max_output_tokens`, `effort`) measured 0 wins, 0 losses, all ties with
+  identical work on both arms, filed as "below the floor of 8" when the
+  finding was that the arms never differed; one was an architecture
+  proposal contradicted by its own brief. **The rejection reasons are
+  prompt text**: `harness_history()` replays the newest 20 verbatim into
+  the next brief as "do not propose any of these again", so three of the
+  four overridable knobs were one careless reason away from retirement on
+  evidence that measured nothing. Why the gate had no power: the only
+  episodes surviving replay were four copies of one scripted echo/todo
+  smoke test whose prompt pins the tool sequence, and a pinned sequence
+  cannot diverge — `Metric::headroom` does not catch it (those episodes
+  carry 32 recorded calls of headroom and zero elasticity). Worse, a full
+  slice of all-ties read `!sel.better()` and *rejected*: no discriminating
+  power is not evidence against, the dash-is-never-zero shape one layer
+  up. A fix exists on `fix/selection-slice-power` at `cbc3738`
+  (`judge_slices` checks for identical arms ahead of the pair-count floor;
+  note in `ARCHITECTURE.md § The gate`) — **unmerged, no PR, the owner
+  has not decided**. Two upstream causes are open and belong here, not in
+  history: those smoke-test sessions carry no `SessionKind`, so
+  `include_tests = false` never excluded them; and the baseline arm
+  diverges on most non-scripted episodes (ten of eleven divergences on
+  2026-09-03 were baseline-arm) because a local sampler does not
+  reproduce its own tool sequence.
 - **Read the record, weekly at first.** `mecha harness list --all` and the
   nightly log. §2's failure mode (harness updating without benefiting) is now
   answerable from the store instead of from impression — but only if someone
@@ -2479,11 +2514,14 @@ the version string read 0.1.17 both times and cannot tell builds apart,
 which is why the probe is a literal and not a version. Built from a
 temporary worktree at `origin/main` `58fc21a`, not from the shared
 checkout, which at 15:29 was 44 commits behind `origin/main` with every
-version string reading current (mecha-83's count; by the time this lane
-looked, someone had moved the checkout to `58fc21a` on a branch named
-`fix/selection-slice-power` — content-correct and branch-wrong, the
-inverse of 2026-09-03, and the check that settles either is the blob id
-of the file a unit runs, not the branch). mecha-graph PR #6 merged the
+version string reading current (mecha-83's count). The checkout is now
+on `main` at `58fc21a`, clean; its reflog shows it on
+`fix/selection-slice-power` from 15:33 to 15:37 (mecha-26's lane, one
+commit, moved back), which is the window one lane's read landed in — so
+the branch name was wrong for four minutes and the tree was right
+throughout, the inverse of 2026-09-03. The deploy did not depend on
+either: the check used was the blob id of the file the unit execs, and
+that is the check to record. mecha-graph PR #6 merged the
 same hour and `mecha-graph` + `mecha-graph-mcp` were installed from
 mecha-graph main `7fa6a69` (the installed server's strings carry the new
 `about`/`entity` schema); `target/release/mecha-graph` rebuilt for the
@@ -2493,12 +2531,15 @@ from `systemctl --user` here: mecha-slack, mecha-triggers, mecha-drain
 worker.py on disk hashes to `d818fa3`, identical to
 `origin/main:scripts/voice/worker.py`, so the +174-line worker is what
 runs). Not restarted, correctly: mecha-parakeet (active since
-2026-08-24; `parakeet_server.py` unchanged). Reported by mecha-83 and not
-verified from this lane: the web dist rebuilt and deployed
-(`index-cix-ATEa.js` → `index-NFyEeisJ.js`; the shared checkout's
-`web/dist` still holds the old name, so the served dist is elsewhere),
-the musl bench binary still Sep 3 (a scorecard run now measures old
-code), factory client and droplet already 0.2.8. PR #6's review residue
+2026-08-24; `parakeet_server.py` unchanged). The web dist rebuilt and deployed — verified: `[web] assets` in
+`~/.mecha/config.toml` is `~/.mecha/web/dist`, deliberately not a repo
+path (production once served from a session worktree that was later
+cleaned), and that directory holds `index-NFyEeisJ.js` at 15:31; the
+repo's own `web/dist` still holds `index-cix-ATEa.js`, which is expected
+and is the trap the path exists to create — this lane looked there first.
+The musl bench binary is still 2026-09-03 11:00 (verified), so a
+scorecard run now measures old code. Reported by mecha-83 and not
+verified from this lane: factory client and droplet already 0.2.8. PR #6's review residue
 is mecha-graph issue #8.** What it built is in
 `HISTORY.md` under this date: `situation.rs`, the situation on every new
 reflection, `scope` on `Rule` assigned by the harness from the batch's shared
