@@ -181,7 +181,7 @@ impl RawSetpoint {
 /// reports it, which it does at the severity it deserves. The fix is the
 /// `update` skill, not a lenient parser; §11.1's containment 7 says
 /// "refusal" and is corrected here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SensorKind {
     /// How many outbox drafts are waiting on the owner. A count.
@@ -410,7 +410,29 @@ impl Charter {
     /// validity.
     fn validate(lines: Vec<RawLine>) -> Result<Charter> {
         let mut seen = BTreeSet::new();
+        let mut kinds_seen: std::collections::BTreeMap<SensorKind, &str> = Default::default();
         for line in &lines {
+            // Two lines with the same *kind* is not a tie rank can decide
+            // (two kinds watching one store is — see `line_for_sensor`); it
+            // is a dead line, because `line_for_sensor` finds the first and
+            // the lower one can never be attributed anything. Refused naming
+            // both, on the same principle as the duplicate id: an owner must
+            // not write a sensor, believe it did something, and never find
+            // out (found on review). When the readings phase gives each line
+            // its own reading this becomes a real question again; today
+            // there is nothing for the second line to mean.
+            if let Some(sensor) = &line.sensor {
+                if let Some(first) = kinds_seen.insert(sensor.kind, line.id.trim()) {
+                    bail!(
+                        "charter lines `{}` and `{}` both carry a `{}` sensor — only the \
+                         higher-ranked line would ever be attributed anything, so the \
+                         second does nothing; keep one",
+                        first,
+                        line.id.trim(),
+                        sensor.kind.wire()
+                    );
+                }
+            }
             if line.id.trim().is_empty() {
                 bail!("a charter line has an empty `id`");
             }
@@ -489,11 +511,13 @@ impl Charter {
     /// `None` when no line does.
     ///
     /// **Rank decides a tie**, which is the first consumer line order has
-    /// ever had: two lines watching the same store — one on how many drafts
-    /// wait, one on how long — both bear on a released draft, and the one
-    /// higher in the file is the one the owner ranked higher. What this
-    /// answers is *which line a record bearing on that store is attributed
-    /// to*; it never reads the store itself.
+    /// ever had: two lines watching the same store by *different* kinds —
+    /// one on how many drafts wait, one on how long — both bear on a
+    /// released draft, and the one higher in the file is the one the owner
+    /// ranked higher. Two lines with the *same* kind never reach here:
+    /// `validate` refuses them, because the lower one would be a dead line.
+    /// What this answers is *which line a record bearing on that store is
+    /// attributed to*; it never reads the store itself.
     pub fn line_for_sensor(&self, kinds: &[SensorKind]) -> Option<&CharterLine> {
         self.lines
             .iter()
@@ -838,6 +862,29 @@ setpoint = "high"
             );
             let _ = k.unit();
         }
+    }
+
+    /// Two lines carrying the same kind: the lower one could never be
+    /// attributed anything, so the document is refused naming both — a
+    /// dead sensor is the "wrote it, believed it, never found out" failure
+    /// one field down from a stray key.
+    #[test]
+    fn two_lines_with_the_same_sensor_kind_are_refused_naming_both() {
+        let e = Charter::validate(vec![
+            sensored("first", "one", SensorKind::OutboxAge, "24h"),
+            line("plain", "two"),
+            sensored("second", "three", SensorKind::OutboxAge, "48h"),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("`first`") && e.contains("`second`"), "{e}");
+        assert!(e.contains("outbox_age"), "{e}");
+        // Different kinds on one store remain a tie rank decides.
+        assert!(Charter::validate(vec![
+            sensored("a", "one", SensorKind::OutboxAge, "24h"),
+            sensored("b", "two", SensorKind::OutboxWaiting, "3"),
+        ])
+        .is_ok());
     }
 
     /// A stray key under the sensor table is refused like one under the

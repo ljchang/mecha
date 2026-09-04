@@ -139,7 +139,7 @@ start — it runs with **no charter at all**, with one stderr line, until
 **attribution**: a run that released a draft, parked a question or triaged a
 request is appraised *against that line*, with no plan and no `serves:`, which
 is how an ordinary run comes to reference the charter at all — and how a draft
-you sent unchanged can label `pride`. The sensor's kind and setpoint never
+you sent unchanged can label `pride` — a delivery against the line, never a number that merely moved. The sensor's kind and setpoint never
 enter a prompt; the line's text does, exactly as an unsensored line's does. The
 web editor shows a sensor beside its line and carries it through a re-rank; to
 add or change one, edit the TOML.
