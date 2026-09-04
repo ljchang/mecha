@@ -232,6 +232,7 @@ impl Manifest {
     /// design is chosen after a trial ran. Validated like a parsed one —
     /// `treatment_name` is a directory name, so the delta itself goes in
     /// the prediction's rationale, not the name.
+    #[allow(clippy::too_many_arguments)]
     pub fn two_arm(
         name: &str,
         treatment_name: &str,
