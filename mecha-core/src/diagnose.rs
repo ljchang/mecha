@@ -320,6 +320,20 @@ impl Evidence {
     /// A rate with no denominator prints as `unknown`, never as zero: "nothing
     /// went wrong" and "nothing happened" are different, and a diagnostician
     /// told the second reads it as the first.
+    /// The brief with the sensors withheld — the homeostat's pressure means
+    /// and the guilt sensor set to `None`, which the renderer already reads
+    /// as "no row sensed it" and says nothing for. `[agent]
+    /// sensors_in_brief = false`, a lifetime experiment's stage lever: the
+    /// sensors' only reader is this brief, so this is the whole ablation.
+    /// The counters (overflows, stop causes, tool errors) are the record,
+    /// not sensors, and stay.
+    pub fn without_sensors(mut self) -> Evidence {
+        self.mean_peak_context_pressure = None;
+        self.max_peak_context_pressure = None;
+        self.mean_anticipated_guilt = None;
+        self
+    }
+
     pub fn brief(&self) -> String {
         let pct = |r: Option<f64>| match r {
             Some(r) => format!("{:.1}%", r * 100.0),
@@ -1330,6 +1344,29 @@ rationale: the threshold is too low";
         let brief = evidence.brief();
         assert!(brief.contains("unknown (no denominator)"), "{brief}");
         assert!(!brief.contains("0.0%"), "{brief}");
+    }
+
+    /// `without_sensors` removes exactly the sensors — the homeostat's
+    /// pressure means and the guilt mean — and keeps every counter, so the
+    /// brief under the lever says less, never something different.
+    #[test]
+    fn without_sensors_clears_the_sensor_means_and_keeps_the_counters() {
+        let mut e = Evidence::of("m", &Corpus::default());
+        e.mean_peak_context_pressure = Some(0.4);
+        e.max_peak_context_pressure = Some(0.9);
+        e.mean_anticipated_guilt = Some(0.1);
+        e.context_overflows = Some(2);
+        e.tool_errors = 7;
+        let quiet = e.clone().without_sensors();
+        assert_eq!(quiet.mean_peak_context_pressure, None);
+        assert_eq!(quiet.max_peak_context_pressure, None);
+        assert_eq!(quiet.mean_anticipated_guilt, None);
+        assert_eq!(quiet.context_overflows, Some(2));
+        assert_eq!(quiet.tool_errors, 7);
+        assert!(quiet
+            .brief()
+            .contains("avg anticipated guilt: unknown (no denominator)"));
+        assert!(e.brief().contains("avg anticipated guilt: 0.10"));
     }
 
     #[test]
