@@ -743,7 +743,7 @@ fn load_mcp_file(path: &Path) -> Result<Vec<mecha_core::config::McpServerConfig>
         .collect())
 }
 
-fn load_cases(path: &Path, tags: &[String]) -> Result<Vec<EvalCase>> {
+pub(crate) fn load_cases(path: &Path, tags: &[String]) -> Result<Vec<EvalCase>> {
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
 
     let mut cases = Vec::new();

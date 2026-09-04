@@ -2891,6 +2891,67 @@ an unreadable outbox prints "the edit channel is missing, not empty" *before*
 the empty-corpus early return, which is the one path where a reader most needs
 to know it.
 
+## The experiment store
+
+`experiment.rs` and `mecha exp` (`docs/EXPERIMENT-DESIGN.md` §3–§4, Part II
+§14–§15, §18 — the design lives on PR #156 until it lands). An experiment
+is the unit larger than a run that no other store had: a **designed
+comparison over a chosen set**, with the design written before the run.
+
+- **The manifest is the design, written once.** Arms, the control, each
+  treatment arm's falsifiable prediction (its metric and rationale), the
+  tasks (an eval case file and its fixture), the seeds, the split seed. `new`
+  refuses to overwrite one: a second design over the same trials is the
+  after-the-fact redesign the manifest exists to prevent, `candidate.rs`'s
+  rule carried up a level. The control carries no prediction; every other
+  arm must. Loading is where every rule is enforced, so a `Manifest` value
+  is one that passed.
+- **An arm varies the closed set and nothing else** (D5, D14): levers by
+  name from `harness::Lever`, knobs by `KEY=VALUE` through
+  `harness::parse_change`, a preset (`bare` is what `mecha eval` runs,
+  `full` is every lever on) applied first. An unknown lever name is a load
+  error, never a skipped line. `approval_rules` is refused outright: a
+  `forbid` is the operator's standing word, and only eval's fixture
+  workspaces justify lifting it.
+- **Isolation is the whole store** (D12). Every trial runs as a child
+  `mecha run` with `MECHA_HOME` pointing at its arm's home under the
+  experiment directory, whose `config.toml` *is* the arm — the operator's
+  provider (without any inline key), the machine's sandbox and security
+  posture, and the arm's `[agent]` switches; the CLI-only levers ride as
+  `--no-*` flags. The runner refuses a home that is, or contains, the real
+  one, on `setup`'s rule for a workspace. Nothing in a trial home is ever
+  copied back: a rule learned inside a trial that landed in
+  `~/.mecha/learning/` would ride every real run's cached prefix from then
+  on.
+- **A session in a trial home is `SessionKind::Experiment`** (D13), set by
+  the runner through `MECHA_SESSION_KIND` — the second and last kind an
+  environment may set, beside `test`. `runlog::Scan` hides it in the real
+  store like a test session and admits it by default in a home carrying
+  the `EXPERIMENT` marker, so `reflect`, `learn` and the corpus read a
+  trial's sessions there without a flag anyone has to remember. And the
+  session names its trial back: `RunConfig::experiment` carries the
+  `ExperimentRef` the runner set in the child's environment, so neither
+  store is the only index.
+- **Each actor is its own process** (D3), and the runner is **a peer of
+  `mecha eval`, never a flag on it** (D7). Eval forces every lever off so a
+  scorecard grades the model it names; an experiment needs the opposite.
+  They share the substrate — the case file and its graders, the fixture
+  staging, the gate — and `mecha run --json` is a superset of the batch
+  result so the child's answer reaches the same grader.
+- **The gate is the existing one, over arm sets** (D4). Each treatment arm
+  is paired with the control by (task, seed, repetition), the holdout is
+  drawn uniformly with the manifest's split seed, and
+  `candidate::judge_slices` rules. Every metric is a cost: the task outcome
+  enters as `1 − passed`, never as a benefit axis. A trial that cannot
+  answer the metric — no grade, no stats — drops its pair rather than
+  scoring an unknown as zero, and a trial file that does not parse is
+  counted, never read as pending.
+- **Resume is the store.** A trial found `running` at start crashed with
+  its runner and is rerun; a finished one never is; an unknown status is
+  neither rerun nor judged. Only `single` trials run today; a `lifetime`
+  manifest loads and `run` refuses it by name — the design can be written
+  ahead of its driver.
+
 ## The doctor
 
 `mecha doctor` (`doctor.rs`, `commands/doctor.rs`) reads every store in one

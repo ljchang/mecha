@@ -196,6 +196,9 @@ replay_run.rs  the driver behind that, shared with the validation probes
 work.rs      ~/.mecha/work/<producer>/ — a run's workspace, and its retention
 batch.rs     bounded-concurrency fan-out over many prompts
 eval.rs      case types, graders, the LLM judge
+experiment.rs a designed comparison over a chosen set of runs: the manifest
+             written before the run, one trial per arm × task × seed, an
+             isolated home per arm, and the gate over arm sets
 config.rs    layered TOML config
 onboarding.rs what a new install still needs, and the one command that fixes each;
              never writes down a number the user merely believes
@@ -402,6 +405,7 @@ documents · the task board · the unified queue (`/queues`) · skills ·
 mecha-slack · the remote control · hooks · the outbox · the work directory ·
 triggers · the run-quality corpus (the gate, diagnosis, harness rumination) ·
 the goal system (charter, appraisal, homeostat, boredom) · the doctor ·
+the experiment store ·
 context accounting · timezones · compaction · the eval rig.
 
 Read the section before changing the subsystem — nearly every paragraph in it
