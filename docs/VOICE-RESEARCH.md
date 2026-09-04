@@ -1154,6 +1154,9 @@ Three parts, each pinned by a test that fails without it:
   re-read's own tail contains no "read it out". Written down because the
   stronger reading of the sentence above is the tempting one.
 
+**Changing a parameter by ear is designed and not built** — `docs/SPOKEN-OVERRIDE-DESIGN.md`. It reuses this door and inherits the
+residual below, which is why it is written down there rather than here.
+
 **The residual, stated in the direction that matters.** `MIN_SPAN_WORDS = 2`
 is written above as what keeps real answers alive — one-word accepts are
 immune, and they are what a person says. It is symmetric, and the other half
