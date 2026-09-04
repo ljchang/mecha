@@ -573,7 +573,8 @@ pub struct RunStats {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_escalations_revised: Option<u32>,
     /// Learned rules the harness delivered *during* the run, by id and the
-    /// turn they landed on — the situational half of what the run carried,
+    /// turn they landed on (not the voice facade's `delivered`, which says a
+    /// reply's words reached the socket) — the situational half of what the run carried,
     /// beside the prefix half on `RunConfig::rules_hash`
     /// (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 1). Pointers only, the taint
     /// snapshot's shape: never the rule text.
