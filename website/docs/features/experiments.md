@@ -138,7 +138,7 @@ ruminate = 10
 [tasks]
 cases = "eval/cases.jsonl"
 fixture = "eval/workspace"
-ids = ["hello", "files-read", "files-write", "shell-ls"]   # the sequence, in order
+ids = ["hello", "files-read", "files-write", "shell-ls"]   # the sequence, in order (required)
 
 [arms.full]
 preset = "full"

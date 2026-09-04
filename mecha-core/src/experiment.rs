@@ -180,6 +180,12 @@ pub enum StageLever {
     Validate,
     Ruminate,
     SensorsInBrief,
+    /// A stage this build cannot name, read off a ledger written by a
+    /// build that has one — the closed-enum-on-an-append-only-store rule:
+    /// the line reads as a stage run this build cannot name, never as a
+    /// torn line. Not in `ALL`, never parsed from a manifest, runs nothing.
+    #[serde(other)]
+    Unknown,
 }
 
 impl StageLever {
@@ -198,6 +204,7 @@ impl StageLever {
             StageLever::Validate => "validate",
             StageLever::Ruminate => "ruminate",
             StageLever::SensorsInBrief => "sensors_in_brief",
+            StageLever::Unknown => "unknown",
         }
     }
 
@@ -225,7 +232,7 @@ impl StageLever {
             StageLever::Learn => Some(&["learn", "--holdout", "0.25", "--auto"]),
             StageLever::Validate => Some(&["validate", "--unprocessed-only"]),
             StageLever::Ruminate => Some(&["harness", "ruminate"]),
-            StageLever::SensorsInBrief => None,
+            StageLever::SensorsInBrief | StageLever::Unknown => None,
         }
     }
 }
@@ -559,11 +566,20 @@ impl Manifest {
                 "seed `{s}` appears twice in `seeds`; name each seed once"
             );
         }
-        if self.kind == TrialKind::Single {
-            anyhow::ensure!(
+        match self.kind {
+            TrialKind::Single => anyhow::ensure!(
                 self.schedule == Schedule::default(),
                 "a `[schedule]` is a lifetime's; a single trial runs no stage between tasks"
-            );
+            ),
+            // The sequence is the design, and the case file is not: a
+            // lifetime that fell back to the file's order kept each
+            // finished row's stored position while a changed file moved
+            // the walk under it, and nothing on the record said so (found
+            // on review).
+            TrialKind::Lifetime => anyhow::ensure!(
+                !self.tasks.ids.is_empty(),
+                "a `lifetime` names its sequence in `[tasks] ids`; the case file's order is not a design"
+            ),
         }
         for (name, arm) in &self.arms {
             crate::work::valid_producer(name)
@@ -1414,7 +1430,23 @@ pub fn fold_home_overrides(
     home: &Path,
     arm: &Arm,
 ) -> Result<()> {
-    crate::harness::apply_overrides_file(config, &home.join(HOME_OVERRIDES));
+    // Strict, unlike the child's own loader: there a knob that fails to
+    // apply must not stop every run from starting, but here the fold *is*
+    // what makes a stage measurable, and a torn file applying nothing
+    // would read as "rumination had no effect" with the ledger saying it
+    // ran (found on review). The task's row carries the error instead.
+    let path = home.join(HOME_OVERRIDES);
+    if path.exists() {
+        let root = path.parent().expect("under the home");
+        let accepted = crate::harness::HarnessStore::open(root)?
+            .overrides()
+            .context("the trial home's accepted overrides could not be read, and the next task would have run without what a stage accepted")?;
+        for ov in accepted {
+            crate::harness::parse_change(&format!("{}={}", ov.key, ov.value))
+                .with_context(|| format!("accepted override `{}` in {}", ov.key, path.display()))?
+                .apply_to_agent(&mut config.agent)?;
+        }
+    }
     for spec in &arm.overrides {
         crate::harness::parse_change(spec)?.apply_to_agent(&mut config.agent)?;
     }
@@ -2258,9 +2290,27 @@ rationale = "no rumination should fail more over the sequence"
                 "kind = \"lifetime\"\ncontrol = \"full\"",
             )
             .replace(
+                "fixture = \"eval/workspace\"",
+                "fixture = \"eval/workspace\"\nids = [\"a\"]",
+            )
+            .replace(
                 "[arms.full]",
                 "[arms.full]\nstages_off = [\"followup_staging\"]",
             );
+        let unnamed = MANIFEST.replace(
+            "control = \"full\"",
+            "kind = \"lifetime\"\ncontrol = \"full\"",
+        );
+        let e = Manifest::parse(&unnamed).unwrap_err().to_string();
+        assert!(e.contains("names its sequence"), "{e}");
+        let sixth: StageLever = serde_json::from_str("\"followup_staging\"").unwrap();
+        assert_eq!(
+            sixth,
+            StageLever::Unknown,
+            "a ledger's stage this build cannot name"
+        );
+        assert_eq!(sixth.argv(), None);
+        assert!(!StageLever::ALL.contains(&StageLever::Unknown));
         let e = format!("{:#}", Manifest::parse(&unknown).unwrap_err());
         assert!(
             e.contains("not a stage lever") && e.contains("sensors_in_brief"),
@@ -2420,6 +2470,13 @@ rationale = "no rumination should fail more over the sequence"
             .config;
         fold_home_overrides(&mut plain, &home, &Arm::default()).unwrap();
         assert_eq!(plain.agent.max_turns, 30, "an unpinned key moves");
+        // A torn file is the task's error, never a silent nothing.
+        std::fs::write(&overrides, "[[override]]\nkey = \"max_turns\"\n").unwrap();
+        let e = format!(
+            "{:#}",
+            fold_home_overrides(&mut plain, &home, &Arm::default()).unwrap_err()
+        );
+        assert!(e.contains("could not be read"), "{e}");
         let _ = std::fs::remove_dir_all(&home);
     }
 
