@@ -259,6 +259,7 @@ pub fn summary(life: &Value) -> String {
         Some("pick") if !life["pick_item"].is_null() => "needs a pick — in the outbox".into(),
         Some("pick") => "needs a pick".into(),
         Some("no_time") => "no time found".into(),
+        Some("stalled") if !life["book"].is_null() => "stalled — booking never made".into(),
         Some("stalled") => "stalled — invitations never all sent".into(),
         Some(other) => other.to_string(),
         // No invitations on record is not "all sent": unknown is never done.
@@ -853,6 +854,14 @@ mod tests {
         );
         assert_eq!(summary(&json!({"verdict": "book", "booked": {}})), "booked");
         assert_eq!(summary(&json!({"verdict": "no_time"})), "no time found");
+        assert_eq!(
+            summary(&json!({"verdict": "stalled"})),
+            "stalled — invitations never all sent"
+        );
+        assert_eq!(
+            summary(&json!({"verdict": "stalled", "book": {"start": "x"}})),
+            "stalled — booking never made"
+        );
         assert_eq!(summary(&json!({"verdict": "closed"})), "closed");
     }
 
