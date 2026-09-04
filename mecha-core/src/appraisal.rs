@@ -1174,15 +1174,19 @@ pub fn of_session(
     // shape, see `stops_of` — is a `Steer` the loop above already signed at
     // that very index, so the stop yields to it: same owner act, one error,
     // and the probe (which joins on `Cite::Turn`) sees one thing to probe
-    // (found on review).
-    let signed_at: std::collections::BTreeSet<usize> = interventions
+    // (found on review). And two *stops* that resolve to one re-prompt —
+    // a delegated run stopped, resumed by the harness with no owner turn
+    // between, stopped again — are one owner act too, so the set grows as
+    // stops are signed rather than being fixed from the interventions
+    // (found on review, second pass).
+    let mut signed_at: std::collections::BTreeSet<usize> = interventions
         .iter()
         .filter(|i| i.trigger != crate::learning::Trigger::Followup)
         .map(|i| i.at)
         .collect();
     for s in records.stops {
         let cite = s.resumed_at.unwrap_or(s.at.saturating_sub(1));
-        if signed_at.contains(&cite) {
+        if !signed_at.insert(cite) {
             continue;
         }
         errors.push(GoalError {
@@ -2896,6 +2900,50 @@ mod tests {
             .filter(|e| e.channel == Channel::Intervention && e.cite == Cite::Turn(2))
             .collect();
         assert_eq!(at_two.len(), 1, "one owner act, one error: {:?}", a.errors);
+    }
+
+    /// Two stops with no owner turn between them share one re-prompt and
+    /// are one owner act: one error, not two (found on review, second
+    /// pass) — the delegated-run shape, stopped, resumed by the harness
+    /// under a delivery header, stopped again, then the owner types.
+    #[test]
+    fn two_stops_sharing_a_reprompt_sign_once() {
+        use crate::agent::StopCause;
+        use crate::message::Message;
+        let messages = vec![
+            Message::user("do the thing"),
+            said("starting…"),
+            Message::user(format!("{} someone", crate::mailbox::DELIVERY_STEM)),
+            said("resumed…"),
+            Message::user("enough — do the other thing"),
+        ];
+        let mut stopped = stats();
+        stopped.stop_cause = Some(StopCause::Stopped);
+        let stops = stops_of(
+            &[stopped.clone(), stopped.clone()],
+            &[Some(2), Some(4)],
+            &messages,
+        );
+        assert_eq!(stops.len(), 2);
+        assert!(stops.iter().all(|s| s.resumed_at == Some(4)), "{stops:?}");
+        let a = of_session(
+            "s",
+            &stopped,
+            &[],
+            &[],
+            SessionRecords {
+                stops: &stops,
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "t".into(),
+        );
+        let at_four = a
+            .errors
+            .iter()
+            .filter(|e| e.channel == Channel::Intervention && e.cite == Cite::Turn(4))
+            .count();
+        assert_eq!(at_four, 1, "{:?}", a.errors);
     }
 
     /// The harness's own words after a stop are not the owner coming back:
