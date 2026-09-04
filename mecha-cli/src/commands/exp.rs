@@ -537,9 +537,15 @@ async fn run_one(
     // What the home's own stages accepted rides into the next task, under
     // the arm's pins — or a lifetime's `ruminate` would measure as nothing.
     // A single runs no stage and folds nothing.
-    if manifest.kind == TrialKind::Lifetime {
-        mecha_core::experiment::fold_home_overrides(&mut config, &home, arm)?;
-    }
+    let moved = if manifest.kind == TrialKind::Lifetime {
+        mecha_core::experiment::fold_home_overrides(&mut config, &home, arm)?
+    } else {
+        Vec::new()
+    };
+    // A knob is pinned for this task if the arm moves it *or* the home's
+    // own loop did: the case's ceiling flag below must not override
+    // either, since a flag beats the rendered config.
+    let pinned = |key: &str| arm_moves(arm, key) || moved.iter().any(|k| k == key);
     std::fs::write(home.join("config.toml"), toml::to_string_pretty(&config)?)
         .with_context(|| format!("writing {}", home.join("config.toml").display()))?;
 
@@ -587,12 +593,12 @@ async fn run_one(
     // override the arm's config unconditionally. A compaction case that did
     // not get its threshold graded the harness rather than the arm (found on
     // review).
-    if let Some(n) = case.max_turns.filter(|_| !arm_moves(arm, "max_turns")) {
+    if let Some(n) = case.max_turns.filter(|_| !pinned("max_turns")) {
         cmd.arg("--max-turns").arg(n.to_string());
     }
     if let Some(n) = case
         .compact_at_tokens
-        .filter(|_| !arm_moves(arm, "compact_at_tokens"))
+        .filter(|_| !pinned("compact_at_tokens"))
     {
         cmd.arg("--compact-at").arg(n.to_string());
     }

@@ -1543,12 +1543,18 @@ pub fn fold_home_overrides(
     config: &mut crate::config::Config,
     home: &Path,
     arm: &Arm,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     // Strict, unlike the child's own loader: there a knob that fails to
     // apply must not stop every run from starting, but here the fold *is*
     // what makes a stage measurable, and a torn file applying nothing
     // would read as "rumination had no effect" with the ledger saying it
     // ran (found on review). The task's row carries the error instead.
+    // Returns the keys the home's file moved: a key the loop moved is the
+    // treatment for the next task exactly as an arm's pin is, and the
+    // driver must not let a case's own ceiling flag override it — a flag
+    // beats the rendered config, and 37 of the shipped cases carry one
+    // (found on review).
+    let mut moved = Vec::new();
     let path = home.join(HOME_OVERRIDES);
     if path.exists() {
         let root = path.parent().expect("under the home");
@@ -1559,12 +1565,13 @@ pub fn fold_home_overrides(
             crate::harness::parse_change(&format!("{}={}", ov.key, ov.value))
                 .with_context(|| format!("accepted override `{}` in {}", ov.key, path.display()))?
                 .apply_to_agent(&mut config.agent)?;
+            moved.push(ov.key);
         }
     }
     for spec in &arm.overrides {
         crate::harness::parse_change(spec)?.apply_to_agent(&mut config.agent)?;
     }
-    Ok(())
+    Ok(moved)
 }
 
 /// The stores a lever left *on* reads: the learning store (rules and
@@ -2722,7 +2729,12 @@ rationale = "no rumination should fail more over the sequence"
         };
         let mut config = child_invocation(&real, &arm, None).unwrap().config;
         assert_eq!(config.agent.max_turns, 20, "the arm's rendering");
-        fold_home_overrides(&mut config, &home, &arm).unwrap();
+        let moved = fold_home_overrides(&mut config, &home, &arm).unwrap();
+        assert_eq!(
+            moved,
+            vec!["max_turns".to_string(), "compact_at_tokens".to_string()],
+            "the keys the home's loop moved, for the driver to treat as pins"
+        );
         assert_eq!(config.agent.max_turns, 20, "the arm pins the treatment key");
         assert_eq!(
             config.agent.compact_at_tokens,
