@@ -328,8 +328,10 @@ Four properties come from the gate rather than from this command:
 
 - **Paired by case, and split.** A case is scored on pass^k in both arms. One in
   `--holdout-in` cases (default 3) is held out of selection by a draw seeded
-  from the override itself — never at random, or a rerun grades against a
-  different holdout and "confirmed on unseen cases" stops meaning anything.
+  from the override itself — never at random, so the same override over the
+  same case set grades against the same holdout on a rerun. (Add a case to
+  the file and the draw reshuffles: the promise is per case set, not per
+  case id.)
 - **A case that ran in only one arm is dropped.** Missing is missing, not a tie.
 - **The work guardrail outranks the score.** Tool calls falling below 75% of the
   baseline rejects the change: passing more cases while attempting less is the

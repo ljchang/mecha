@@ -226,10 +226,13 @@ impl Manifest {
     /// how `mecha eval`'s `--ab-config` and `--ab-rules` are spelled as
     /// experiments: the control is `bare` (what eval runs), the treatment
     /// is the control plus one delta, predicting a lower failure cost. The
-    /// split seed is derived from the treatment's own description so a
-    /// rerun of the same A/B holds out the same tasks — the property the
-    /// hash-by-id holdout used to give eval — and nothing else about the
-    /// design is chosen after a trial ran. Validated like a parsed one —
+    /// split seed is derived from the treatment's own description, so a
+    /// rerun of the same A/B *over the same case set* holds out the same
+    /// tasks — the draw is over pair indices, so a case added to the file
+    /// reshuffles it, where the hash-by-id holdout eval used kept per-case
+    /// membership fixed; the store's mechanism, with that narrower promise
+    /// — and nothing else about the design is chosen after a trial ran.
+    /// Validated like a parsed one —
     /// `treatment_name` is a directory name, so the delta itself goes in
     /// the prediction's rationale, not the name.
     #[allow(clippy::too_many_arguments)]
