@@ -324,8 +324,15 @@ thing here ever: the comments-only template, when no file exists yet, because
 still no `--add`, no `--set` and no tool — nothing that would let a model put a
 sentence in this file.
 
+A line's sensor, if it carries one (`[line.sensor]`, see
+[the appraisal page](/docs/features/appraisal#the-charter--what-mecha-is-for-in-your-own-words)),
+is printed beside the line as its kind and setpoint — the one thing about a
+charter a run's prompt does *not* carry — and rides in `--json` as
+`sensor: {kind, setpoint}` on the line, absent when there is none.
+
 Editing through this rather than a hand-run `vi` buys **validation feedback**: a
-duplicate id or a typo'd table name is reported the moment the editor closes,
+duplicate id, a typo'd table name, an unknown sensor kind or a setpoint in the
+wrong unit is reported the moment the editor closes,
 and `edit` exits non-zero if what you saved will not load — rather than at the
 next run's startup, where the warning scrolls past. Reading the file back is the
 ordinary loader, so what it says is what a run would get.
@@ -683,7 +690,9 @@ due date every time somebody changed a status.
 **Closing a task appraises the run that served it.** The transition *into*
 `done` or `dropped` — and only that transition, once — builds an appraisal off
 the session the task was delegated to and prints the verdict. A `done` closure
-whose label is not neutral may stage a follow-up task for the residue; a
+whose label names residue — or whose run was cut short — may stage a follow-up
+task for it; a `distress` closure does not, because a rejected draft or a steer
+is a verdict you already delivered with nothing in it to put on the board; a
 `dropped` one never does, because dropping is you declining the work rather than
 accepting mediocre work, and proposing a follow-up there would override the
 decision you just made. All of it is best-effort: the status change lands

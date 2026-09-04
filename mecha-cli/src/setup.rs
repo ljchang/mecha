@@ -766,7 +766,20 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
                 mecha_core::charter::CHARTER_CHAR_BUDGET
             );
         }
-        if let Some(block) = mecha_core::charter::prompt_block(&charter) {
+        // The block asks for a `serves: charter:<id>` cite on the `todo`
+        // tool, and only when `todo` will actually be in the surface — the
+        // skills block's rule, one block over: a prompt naming a tool the
+        // surface lacks costs the model a turn on a call that can only
+        // fail. Asked of the same predicate `with_builtins` registers by,
+        // with `--tool` applied the way it is applied further down.
+        let todo_in_surface = {
+            let mut tools = cfg.tools.clone();
+            if !opts.tools.is_empty() {
+                tools.enabled = opts.tools.clone();
+            }
+            tools.registers("todo")
+        };
+        if let Some(block) = mecha_core::charter::prompt_block_for(&charter, todo_in_surface) {
             let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();
             cfg.agent.system_prompt = Some(if base.is_empty() {
                 block
