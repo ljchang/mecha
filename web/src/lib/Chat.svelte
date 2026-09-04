@@ -144,6 +144,29 @@
     return entries.findLast((e) => e.kind === 'tool' && e.pending && matches(e));
   }
 
+  // A refusal that also produced a result.
+  //
+  // The planning-phase path is the one denial that emits both, and the two
+  // strings are not the same string. `ToolDenied` carries the label —
+  // literally `"planning phase"` — while `ToolResult` carries the sentence
+  // the model was actually handed: "`fs_write` is not available while
+  // planning. Work out what to do and say so; leave the phase to carry it
+  // out." The label arrives first and closes the row; the sentence is the
+  // one worth reading, and it is what the row showed before one chip per
+  // call was the rule.
+  //
+  // **By id only.** This is the one place a result may touch an
+  // already-closed row, so it has to be the row that call opened and no
+  // other — matching any looser would put one call's refusal onto another
+  // call's row, which is the swap the id exists to stop.
+  function fillRefusal(entries, ev) {
+    if (ev.id == null || !ev.preview) return false;
+    const row = entries.findLast((e) => e.kind === 'tool' && e.blocked && e.id === ev.id);
+    if (!row) return false;
+    row.preview = ev.preview;
+    return true;
+  }
+
   // A denial is the *end* of the call above it, not a second call.
   //
   // Three of the four denial paths in `Agent::run_tools` — the trifecta
@@ -311,6 +334,7 @@
           // `ToolDenied` and `ToolResult`, and the denial already wrote the
           // reason where it belongs.
           const open = openCall(entries, ev);
+          if (!open) fillRefusal(entries, ev);
           if (open) {
             open.pending = false;
             open.is_error = ev.is_error;
@@ -410,8 +434,15 @@
           }
           sawAffectThisRun = false;
           if (!ev.ok && ev.error) pushEntry({ kind: 'notice', text: ev.error });
+          // The backstop for a call whose result never arrived: a
+          // cancelled run, a dropped stream, a turn that ended mid-flight.
+          // Marked rather than merely closed — "nothing came back" and "we
+          // stopped listening" are different findings, and closing the row
+          // silently would file the second under the first. Before this row
+          // carried the call that distinction had nowhere to show; now the
+          // row opens, and it must not answer for a call that never did.
           entries = entries.map((e) =>
-            e.kind === 'tool' && e.pending ? { ...e, pending: false } : e
+            e.kind === 'tool' && e.pending ? { ...e, pending: false, unfinished: true } : e
           );
           break;
       }
@@ -1087,9 +1118,9 @@
             {:else if entry.args}
               <pre class="toolout">{entry.args}</pre>
             {/if}
-            <!-- "still running", "answered nothing" and "answered this" are
-                 three different readings, and an absent block would collapse
-                 the first two into the third. -->
+            <!-- "still running", "the run ended first", "answered nothing"
+                 and "answered this" are four different readings, and an
+                 absent block would collapse the first three into the last. -->
             <!-- A refusal is not an answer. The reload path cannot tell the
                  two apart — it sees only `is_error` on the recorded result —
                  so the live view is the more precise of the two here, not a
@@ -1102,6 +1133,8 @@
               <pre class="toolout">{entry.preview}</pre>
             {:else if entry.pending}
               <div class="tsep">still running</div>
+            {:else if entry.unfinished}
+              <div class="tsep">the run ended before this answered</div>
             {:else if !entry.blocked}
               <div class="tsep">answered with nothing</div>
             {/if}
