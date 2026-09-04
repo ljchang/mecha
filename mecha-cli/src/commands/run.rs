@@ -218,7 +218,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     if args.json {
+        // A superset of `batch::BatchResult`, field for field, so a caller
+        // that drives runs as processes — `mecha exp` — can read the result
+        // back through the same type the batch runner produces and hand it
+        // to the same grader. The fields the batch result does not have
+        // (model, provider, session) stay beside them.
         let value = serde_json::json!({
+            "id": "run",
+            "ok": outcome.refusal.is_none(),
+            "error": outcome.refusal,
             "text": outcome.text,
             "stop_reason": outcome.stop_reason,
             "turns": outcome.turns,
@@ -227,6 +235,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             "cost_usd": outcome.cost_usd,
             "refusal": outcome.refusal,
             "usage": outcome.usage,
+            "usage_complete": outcome.usage_complete,
+            "elapsed_ms": outcome.duration_secs.map(|s| (s * 1000.0) as u64).unwrap_or(0),
+            "tool_calls": outcome.tool_calls,
+            "malformed_tool_args": outcome.malformed_tool_args,
+            "blocked_sends": outcome.blocked_sends,
+            "compactions": outcome.compactions,
+            "taint": outcome.taint,
+            "meta": serde_json::Value::Null,
             "model": prepared.model,
             "provider": prepared.provider_name,
             "session": session.as_ref().map(|s| s.meta.id.clone()),

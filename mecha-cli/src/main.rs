@@ -337,6 +337,11 @@ pub enum Command {
     /// beats. Everything else stages here for review.
     Harness(commands::harness::Args),
 
+    /// A designed comparison over a chosen set of runs: arms that vary the
+    /// closed lever set, a control, a prediction per treatment arm, and one
+    /// isolated home per arm. A peer of `eval`, never a flag on it.
+    Exp(commands::exp::Args),
+
     /// Requests that arrived through the public surface, and the quarantine
     /// they pass through before any run with tools is told about them.
     /// `factory-publish drain` fetches them; this is what happens next.
@@ -465,6 +470,7 @@ async fn dispatch() -> Result<()> {
         Command::Serve(args) => commands::serve::execute(args).await,
         Command::Diagnose(args) => commands::diagnose::execute(&cli.global, args).await,
         Command::Harness(args) => commands::harness::execute(&cli.global, args).await,
+        Command::Exp(args) => commands::exp::execute(&cli.global, args).await,
         Command::Frontdoor(args) => commands::frontdoor::run(&cli.global, args).await,
         Command::Mail(args) => commands::mail::run(&cli.global, args).await,
         Command::Tasks(args) => commands::tasks::run(&cli.global, args).await,

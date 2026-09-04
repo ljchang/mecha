@@ -529,6 +529,8 @@ async fn appraise(
         workspace: None,
         kind,
         include_tests,
+        // Experiment sessions belong to their trial home's readers (D13).
+        include_experiments: mecha_core::experiment::in_experiment_home(),
     };
 
     // Best-effort, like every reader over these stores: a read failure costs
@@ -1123,6 +1125,8 @@ fn health(
             workspace: None,
             kind,
             include_tests,
+            // Experiment sessions belong to their trial home's readers (D13).
+            include_experiments: mecha_core::experiment::in_experiment_home(),
         },
     )?;
 

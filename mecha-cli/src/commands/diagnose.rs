@@ -95,6 +95,8 @@ pub fn corpus_slice(
             // surface it will run in.
             kind: None,
             include_tests: false,
+            // Experiment sessions belong to their trial home's readers (D13).
+            include_experiments: mecha_core::experiment::in_experiment_home(),
         },
     )?;
     let sessions_read = corpus.sessions_read;
