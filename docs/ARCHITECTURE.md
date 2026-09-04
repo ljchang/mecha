@@ -2258,11 +2258,14 @@ prediction that was made *before* either was measured.
   the caller and recorded on the measurement along with the holdout's episode
   ids, because the split now depends on the corpus as it stood at measurement
   time rather than on the ids alone — and a sample nobody can redraw is a
-  sample nobody can check. `judge_with` still hash-splits for
-  `eval --ab-config`, where every case runs and the pool is already uniform
-  — and since eval's A/B became a two-arm experiment (`experiment::judge`),
-  that draw is the manifest's seeded uniform one, its seed derived from the
-  delta so a rerun holds out the same cases.
+  sample nobody can check. `judge_with`'s hash split has one caller left,
+  `candidate::judge`; eval's A/B became a two-arm experiment and draws
+  through `experiment::judge` — the manifest's seeded uniform draw over pair
+  indices, its seed derived from the delta, so the same delta over the
+  *same case set* holds out the same cases and a case added to the file
+  reshuffles the draw (the hash-by-id split kept per-case membership fixed
+  regardless; the store's mechanism was chosen over it, with that narrower
+  promise stated).
 - **The work guardrail outranks the score.** A change that improves its metric
   while tool calls fall below `WORK_FLOOR` is rejected, not ranked — "fewer
   errors" is trivially achieved by attempting less, which is the null run and

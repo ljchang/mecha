@@ -209,7 +209,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `experiment::judge`, so `mecha exp judge <name>` re-derives it. The arms
   still run in-process on eval's forcings; the printed output keeps its
   shape, the holdout is drawn by a seed derived from the delta rather
-  than a hash of the case id (a rerun still holds out the same cases),
+  than a hash of the case id (the same delta over the same case set still
+  holds out the same cases; a case added to the file reshuffles the draw),
   and both flags now write one JSON shape — `experiment`, `ab_rules`,
   `ab_config`, `holdout_in`, `judgement`, `pairs`, `arm_a`, `arm_b`,
   `flips` (each `{id, was, now}`) — where `--ab-rules` used to write

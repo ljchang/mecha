@@ -563,7 +563,7 @@ async fn ab_experiment(
     // `GlobalOpts`, and `run_arm` carries them into both arms verbatim —
     // go on both records, or a control run at `--max-turns 60` is filed
     // as the default and hashes like one (found on review).
-    let shared_overrides = effective_overrides(global, fixture)?;
+    let shared_overrides = effective_overrides(global)?;
     let name = ab_name(kind, chrono::Utc::now());
     let mut manifest = Manifest::two_arm(
         &name,
@@ -591,10 +591,18 @@ async fn ab_experiment(
         store.root().display()
     );
 
-    eprintln!("── arm A: bare ──");
-    let (a_card, a_graded) = run_arm(global, args, cases, fixture, false, &[], "a").await?;
-    eprintln!("── arm B: {label} ──");
+    // **The record drives both arms.** Each arm runs with exactly the
+    // overrides its manifest row carries — the shared knobs on both, the
+    // delta on the treatment — so what was measured is what was written,
+    // whatever this machine's config says; the first cut applied the shared
+    // knobs to arm B only and left arm A on the machine's values, a confound
+    // the manifest recorded as identical (found on review).
+    let control_overrides = manifest.arms["bare"].overrides.clone();
     let overrides = manifest.arms["treatment"].overrides.clone();
+    eprintln!("── arm A: bare ──");
+    let (a_card, a_graded) =
+        run_arm(global, args, cases, fixture, false, &control_overrides, "a").await?;
+    eprintln!("── arm B: {label} ──");
     let (b_card, b_graded) =
         run_arm(global, args, cases, fixture, with_rules, &overrides, "b").await?;
 
@@ -616,8 +624,21 @@ async fn ab_experiment(
         }
         trials.push(trial_of(t, &graded));
     }
+    // Both arms have run by here, so a row that fails to write must not
+    // take the verdict and `--out` with it: the rows are the durable record,
+    // the printed verdict is what the operator waited an hour for (found on
+    // review). Failures are counted and said.
+    let mut unsaved = 0usize;
     for t in &trials {
-        store.save_trial(t)?;
+        if let Err(e) = store.save_trial(t) {
+            unsaved += 1;
+            eprintln!("mecha eval: trial `{}` could not be written: {e:#}", t.id);
+        }
+    }
+    if unsaved > 0 {
+        eprintln!(
+            "mecha eval: {unsaved} trial row(s) not on the store; the verdict below is from memory and `mecha exp judge {name}` will not reproduce it"
+        );
     }
     let verdicts = mecha_core::experiment::judge(&manifest, &trials);
     let verdict = verdicts
@@ -705,31 +726,45 @@ async fn ab_experiment(
     Ok(())
 }
 
-/// The four override knobs as both arms actually run them: the config the
-/// arms load (`prepare_tools` loads it against the workspace, which for an
-/// eval is the fixture) with the flags on top, spelled as `KEY=VALUE` so
-/// they land on the manifest through the same parser an arm's own
-/// overrides go through. A knob with no value (`compact_at_tokens` unset)
-/// is not recorded — there is nothing to write, and the child arm resolves
-/// it the same way.
-fn effective_overrides(global: &GlobalOpts, fixture: &Path) -> Result<Vec<String>> {
-    let cfg = mecha_core::config::Config::load(fixture)?;
-    let mut out = Vec::new();
+/// The four override knobs as both arms actually run them, spelled as
+/// `KEY=VALUE` so they land on the manifest through the same parser an
+/// arm's own overrides go through. **Loaded the way the arms load**:
+/// `prepare_tools` reads the config against the working directory (or the
+/// global file alone under `--global-config-only`) with the flags on top,
+/// and the first cut read it against the fixture — a different file
+/// whenever either end carried a `mecha.toml`, and the value it recorded
+/// was then applied to one arm only (found on review). A knob whose
+/// effective value the closed set will not accept (`compact_at_tokens`
+/// under its floor is legal config) is dropped with a warning rather than
+/// refusing the A/B: it is being recorded, not proposed. An unset knob is
+/// not recorded — there is nothing to write.
+fn effective_overrides(global: &GlobalOpts) -> Result<Vec<String>> {
+    let cfg = if global.global_config_only {
+        mecha_core::config::Config::load_global()?
+    } else {
+        let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+        mecha_core::config::Config::load(&cwd)?
+    };
+    let mut candidates = Vec::new();
     let max_turns = global.max_turns.unwrap_or(cfg.agent.max_turns);
-    out.push(format!("max_turns={max_turns}"));
+    candidates.push(format!("max_turns={max_turns}"));
     if let Some(n) = global.compact_at.or(cfg.agent.compact_at_tokens) {
-        out.push(format!("compact_at_tokens={n}"));
+        candidates.push(format!("compact_at_tokens={n}"));
     }
     if let Some(n) = global.max_output_tokens.or(cfg.agent.max_output_tokens) {
-        out.push(format!("max_output_tokens={n}"));
+        candidates.push(format!("max_output_tokens={n}"));
     }
     if let Some(e) = global.effort.or(cfg.agent.effort) {
-        out.push(format!("effort={}", e.as_str()));
+        candidates.push(format!("effort={}", e.as_str()));
     }
-    for spec in &out {
-        mecha_core::harness::parse_change(spec).with_context(|| {
-            format!("this machine's effective `{spec}` is not a value the closed set accepts")
-        })?;
+    let mut out = Vec::new();
+    for spec in candidates {
+        match mecha_core::harness::parse_change(&spec) {
+            Ok(_) => out.push(spec),
+            Err(e) => eprintln!(
+                "mecha eval: this machine's effective `{spec}` is not recorded on the A/B's design ({e:#}); both arms still run with it"
+            ),
+        }
     }
     Ok(out)
 }
