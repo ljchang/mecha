@@ -58,17 +58,43 @@
   // chosen launch voice, barge-in) replaces this when the speech servers
   // land; until then it is the fail-to-a-lesser-mode shape, and marked so.
 
+  // Which argument names a call, most specific first.
+  //
+  // `DraftView` is a *shape*, not a ranking: it lifts addressing into
+  // `headers` and prose into `body`, and everything else falls through to
+  // `other` in `serde_json::Map` order — which is `BTreeMap` order, because
+  // `preserve_order` is off. So `other` arrives sorted by key, and the first
+  // entry is the alphabetically first argument rather than the one a reader
+  // would recognise the call by: `fs_read {path, offset, limit}` leads with
+  // `limit`, `web_search {query, limit}` leads with `limit`. Two reads of
+  // different files with the same limit are the same row twice, which is the
+  // bug this chip exists to fix, wearing a confident label.
+  //
+  // Ranking here rather than in `DraftView` keeps that type a shape for
+  // every one of its readers. Checked by `web/test/tool-digest.mjs`.
+  const DIGEST_FIELDS = ['path', 'command', 'query', 'url', 'pattern', 'task', 'name', 'id'];
+
+  // A bare number or boolean never says *which* call this was — it says how
+  // much, how deep, how many. Values reach the page already rendered to
+  // strings, so the type is gone and the shape is all that is left to go on.
+  const QUANTITY = /^(-?\d+(\.\d+)?|true|false|null)$/;
+
   // One line saying *which* call this was, for the closed chip.
   //
-  // Two `fs_write` rows in a turn are the same row twice until the path is
-  // on one of them. The server already shaped the call the way a person
-  // reads one, and that shaping puts the salient argument first: addressing
-  // if the call has any, else the first plain argument — `command` for a
-  // shell, `path` for a write, `query` for a search. Display only; the
-  // whole call is one tap below, and nothing here decides anything.
+  // Addressing first — `DraftView` ordered `headers` for a reader already.
+  // Then a known identifying argument, then any argument that is not a bare
+  // quantity, and only then the first one there is: an unanticipated tool
+  // still gets a label, which is the fallback `other` has always been.
+  // Display only; the whole call is one tap below, and nothing here decides
+  // anything.
   function toolDigest(draft) {
     if (!draft) return '';
-    const pair = draft.headers?.[0] ?? draft.other?.[0];
+    const other = draft.other ?? [];
+    const pair =
+      draft.headers?.[0] ??
+      DIGEST_FIELDS.map((k) => other.find(([name]) => name === k)).find(Boolean) ??
+      other.find(([, value]) => !QUANTITY.test(String(value).trim())) ??
+      other[0];
     return oneLine(pair ? pair[1] : (draft.body ?? ''));
   }
 

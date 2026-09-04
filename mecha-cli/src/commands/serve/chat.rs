@@ -622,7 +622,13 @@ fn strip_voice_preamble(text: &str) -> &str {
 fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
     // The call's arguments, kept until its result arrives — a `tool_result`
     // block names only the id that produced it.
-    let mut names: HashMap<String, (String, serde_json::Value)> = HashMap::new();
+    //
+    // Borrowed from `messages` rather than cloned: an input is whatever the
+    // model passed, so a session holding one `fs_write` of a large file would
+    // copy that file on every transcript read, only for `clip_args` to cut it
+    // back to 2,000 chars a line later. That is `CARD_BODY_CHARS`'s bound
+    // being paid for one step above where it applies.
+    let mut names: HashMap<&str, (&str, &serde_json::Value)> = HashMap::new();
     let mut entries = Vec::new();
     for message in messages {
         match message.role {
@@ -641,10 +647,12 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                             is_error,
                             content,
                         } => {
-                            let (name, draft, args) = match names.get(tool_use_id) {
-                                Some((name, input)) => {
-                                    (name.clone(), WireDraft::of(input), Some(clip_args(input)))
-                                }
+                            let (name, draft, args) = match names.get(tool_use_id.as_str()) {
+                                Some(&(name, input)) => (
+                                    name.to_string(),
+                                    WireDraft::of(input),
+                                    Some(clip_args(input)),
+                                ),
                                 // A result whose call is not in the window —
                                 // compaction cut above it. The result is still
                                 // the record; a chip that showed nothing would
@@ -681,7 +689,7 @@ fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                             }
                         }
                         Block::ToolUse { id, name, input } => {
-                            names.insert(id.clone(), (name.clone(), input.clone()));
+                            names.insert(id.as_str(), (name.as_str(), input));
                         }
                         _ => {}
                     }
