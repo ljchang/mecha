@@ -4526,6 +4526,20 @@ fn handle_polls_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('r') => fetch_selected_poll(modal),
+        // The pick: load the next ranked candidate into the poll's outbox
+        // card. The card is still what gets released — this only changes
+        // which slot it holds — so the review stays in /outbox.
+        KeyCode::Char('p') => {
+            if let Some(row) = modal.selected_row() {
+                let poll_id = row.poll_id.clone();
+                modal.status = Some(match crate::commands::polls::pick_next(&poll_id) {
+                    Ok(slot) => {
+                        format!("{poll_id}: pick card now holds {slot} — release it in /outbox")
+                    }
+                    Err(e) => format!("{poll_id}: {e:#}"),
+                });
+            }
+        }
         KeyCode::Char('c') => {
             if let Some(row) = modal.selected_row() {
                 modal.input = Some(polls::ResolutionInput {
