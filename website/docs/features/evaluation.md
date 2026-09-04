@@ -28,7 +28,11 @@ Every scorecard is also recorded as a one-arm
 machine's knobs and each case as a trial row — so what a scorecard measured
 sits on the same store as every comparison, and `mecha exp status <name>`
 and `export` read it back. The scorecard is still what eval prints; `-o`
-names the experiment in `experiment`.
+names the experiment in `experiment`. The one eval that is not recorded is
+one run with `--mcp-file`: fixture servers have no lever to record them
+under, and a trial row whose condition hash could not tell that eval from a
+bare one would break the hash's contract, so eval says it is not recording
+and the scorecard still runs.
 
 ## The four kinds of check, in descending order of worth
 
@@ -373,7 +377,7 @@ proposal; see [Run quality](/docs/features/run-quality#the-diagnostic-stage).
 | `--judge-model` / `--judge-provider` | the model under test | who grades `expect.judge` |
 | `--keep-workspaces` | off | do not delete the staging root |
 | `--mcp` | off | connect this machine's MCP servers |
-| `--mcp-file <PATH>` | — | connect exactly the servers in that file; refused with `--ab-config` / `--ab-rules`, since fixture servers have no lever to record them under and an A/B will not file its design as bare |
+| `--mcp-file <PATH>` | — | connect exactly the servers in that file; refused with `--ab-config` / `--ab-rules`, since fixture servers have no lever to record them under and an A/B will not file its design as bare; a plain eval under it is not recorded as a measurement, for the same reason |
 | `--no-ask-user` | off | withhold `ask_user` (by default it is present and always declines) |
 | `--compare <PATHS…>` | — | print a table from written reports instead of running |
 | `--ab-rules` | off | paired rules-free / rules-on run |
