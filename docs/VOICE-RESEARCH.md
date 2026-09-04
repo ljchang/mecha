@@ -1156,6 +1156,19 @@ bare "yes" released it. One word, immune to the span gate by design, so
 nothing downstream could catch it. Composing an offer is free now; arming it
 is a separate step and a promise that the question actually went out.
 
+**And the same ordering, one layer in.** `answer_completion`'s four arms armed
+the next question and *then* wrote the reply. `Say` and `Release` pop the head
+and re-arm on the following draft, whose question exists only inside a string
+not yet on the wire — so a socket dropping there left a question armed that
+nobody had been asked, under a `confirm_key` that survives the reconnect, and
+the next bare "yes" is one word and immune to the gate. Pre-existing; adding
+`next_question` to `report_release`'s `Err` branch is what newly routed the
+failed-release path through it. Every arm goes through `reply_then_arm` now,
+and `finish_with` reports whether the words reached the socket rather than
+assuming they did. Not arming on a failed write is safe everywhere: the
+question has already been taken from the store, so the draft simply waits in
+the outbox with nothing armed against it.
+
 **And the fix for that had its own ordering bug**, worth keeping because it is
 the same shape one layer up. The response head was opened at the top of
 `answer_completion`, before `react` had decided anything — but on
@@ -1200,12 +1213,16 @@ the budget and deferring. It asks for a decision instead, and
 `no_single_word_of_the_reask_is_an_answer` checks the first constraint against
 the real phrase lists rather than against a comment.
 
-The two `Pending` transitions are opposites and both are on the type, because
-each was got wrong once in a `match` arm in another module.
-`after_reask` *extends* `asked` and increments — the offer is still playing, so
-the next segment of the same playback must still be compared against it, and a
-long offer reads the whole draft aloud. `after_reread` *replaces* and resets —
-a real answer arrived, so the offer has finished and the streak is over.
+The two `Pending` transitions are on the type, because each was got wrong once
+in a `match` arm in another module. They are **not** opposites, and the version
+that made them so is the one this replaced: `after_reask` extended `asked`
+while a since-deleted `after_reread` replaced it, and each was wrong in the
+direction the other was right — a re-read is reachable *from an echo*, so "the
+offer has finished playing" is false there too. Both call `sliding()` now, and
+differ only in the counter: `after_saying` resets it because something was
+answered, `after_reask` increments it because nothing was. The previous
+utterance survives in `asked_before` either way, which is what makes the
+distinction unnecessary.
 
 And one that predates all of it: `report_release`'s `Err` branch was the only
 reply omitting `next_question`, while `answer_completion` pops the head whatever

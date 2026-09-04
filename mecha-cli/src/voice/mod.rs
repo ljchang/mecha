@@ -326,11 +326,14 @@ mod echo_span_tests {
             }
             armed += 1;
             let before = lines[n.saturating_sub(4)..n].join("\n");
-            // The *gate*, not merely a nearby `say`. Arming after a `say`
+            // The *gate*, not merely a nearby `say`. Arming after a write
             // whose result was discarded is the same bug one step narrower:
-            // a hang-up during the last delta leaves a live yes behind.
+            // a hang-up during the last delta leaves a live yes behind. Each
+            // of these names a value that is true only if the words went out.
             assert!(
-                before.contains("if say(stream") || before.contains("if written.is_ok()"),
+                ["if say(stream", "if written.is_ok()", "if delivered"]
+                    .iter()
+                    .any(|gate| before.contains(gate)),
                 "line {} arms a confirmation without checking that it reached \
                  the wire:\n{before}",
                 n + 1
@@ -339,6 +342,21 @@ mod echo_span_tests {
         assert!(
             armed >= 2,
             "the arming call sites have gone; both doors must still arm somewhere"
+        );
+
+        // And there is exactly one way to arm. Every site went through
+        // `confirmations.set` directly at some point in this branch's life,
+        // and each one had to be found separately; funnelling them through
+        // `arm_confirmation` is what makes the check above complete rather
+        // than a sample.
+        let sets = lines
+            .iter()
+            .filter(|l| l.trim_start().starts_with("shared.confirmations.set("))
+            .count();
+        assert_eq!(
+            sets, 1,
+            "a confirmation is armed somewhere other than `arm_confirmation`, \
+             so the delivery check above no longer covers every site"
         );
     }
 
@@ -1178,7 +1196,7 @@ async fn hosted_completion(
         if !disconnected {
             if let Some(offer) = &offer {
                 if say(stream, shared, id, &format!(" {}", offer.speech)).await {
-                    arm_confirmation(shared, confirm_key, offer).await;
+                    arm_confirmation(shared, confirm_key, offer.pending.clone()).await;
                 }
             }
             finish_stream(
@@ -1221,7 +1239,7 @@ async fn hosted_completion(
             // if it was actually delivered.
             if written.is_ok() {
                 if let Some(offer) = &offer {
-                    arm_confirmation(shared, confirm_key, offer).await;
+                    arm_confirmation(shared, confirm_key, offer.pending.clone()).await;
                 }
             }
             written
@@ -1278,11 +1296,8 @@ async fn offer_for_turn(
 /// on review.
 ///
 /// So: composing is free, arming is a promise that a question was asked.
-async fn arm_confirmation(shared: &Arc<Shared>, confirm_key: &str, offer: &confirm::Offer) {
-    shared
-        .confirmations
-        .set(confirm_key, offer.pending.clone())
-        .await;
+async fn arm_confirmation(shared: &Arc<Shared>, confirm_key: &str, pending: confirm::Pending) {
+    shared.confirmations.set(confirm_key, pending).await;
 }
 
 /// The response head plus the opening `role` chunk, for an SSE reply.
@@ -1379,9 +1394,18 @@ async fn answer_completion(
             // answering it. Every arm slides the window over what it is
             // about to say — one rule, in one place, because a stale window
             // is a span check against words nobody heard.
-            let rest = pending.after_saying(&said);
-            shared.confirmations.set(confirm_key, rest).await;
-            Some(finish_with(stream, shared, id, want_stream, &said).await)
+            Some(
+                reply_then_arm(
+                    stream,
+                    shared,
+                    id,
+                    want_stream,
+                    &said,
+                    confirm_key,
+                    pending.after_saying(&said),
+                )
+                .await,
+            )
         }
         confirm::Reaction::NotConvinced(said) => {
             // The head stays and the count goes up; `after_reask` owns both.
@@ -1393,14 +1417,12 @@ async fn answer_completion(
                 reasks = rest.reasks,
                 "spoken answer was a span of the question — asking again rather than acting"
             );
-            shared.confirmations.set(confirm_key, rest).await;
-            Some(finish_with(stream, shared, id, want_stream, &said).await)
+            Some(reply_then_arm(stream, shared, id, want_stream, &said, confirm_key, rest).await)
         }
         confirm::Reaction::Say(said) => {
             let mut rest = pending.after_saying(&said);
             rest.queue.pop_front();
-            shared.confirmations.set(confirm_key, rest).await;
-            Some(finish_with(stream, shared, id, want_stream, &said).await)
+            Some(reply_then_arm(stream, shared, id, want_stream, &said, confirm_key, rest).await)
         }
         confirm::Reaction::Release {
             acknowledge,
@@ -1421,15 +1443,49 @@ async fn answer_completion(
             // belongs in the window like everything else we say.
             let mut rest = pending.after_saying(&format!("{acknowledge} {report}"));
             rest.queue.pop_front();
-            shared.confirmations.set(confirm_key, rest).await;
             let spoken = if want_stream {
                 report
             } else {
                 format!("{acknowledge} {report}")
             };
-            Some(finish_with(stream, shared, id, want_stream, &spoken).await)
+            Some(reply_then_arm(stream, shared, id, want_stream, &spoken, confirm_key, rest).await)
         }
     }
+}
+
+/// Say it, and arm the next question **only if it was actually said**.
+///
+/// The four arms of `answer_completion` armed first and wrote afterwards,
+/// which is the same defect the compose/arm split was extracted to fix, one
+/// layer in. `Say` and `Release` pop the head and re-arm on the *next* draft,
+/// whose question exists only inside the string not yet on the wire — so a
+/// socket dropping there left a question armed that nobody was asked, under a
+/// `confirm_key` that survives the reconnect, and the next bare "yes" is one
+/// word and immune to the span gate. Adding `next_question` to
+/// `report_release`'s `Err` branch newly routed the failed-release path
+/// through it, which is how a pre-existing ordering became this branch's
+/// problem. Found on review.
+///
+/// Not arming on a failed write is safe in every arm: the question was
+/// already taken from the store, so the draft simply waits in the outbox
+/// with nothing armed against it.
+#[allow(clippy::too_many_arguments)]
+async fn reply_then_arm(
+    stream: &mut TcpStream,
+    shared: &Arc<Shared>,
+    id: &str,
+    want_stream: bool,
+    text: &str,
+    confirm_key: &str,
+    pending: confirm::Pending,
+) -> Result<()> {
+    let delivered = finish_with(stream, shared, id, want_stream, text).await?;
+    if delivered {
+        arm_confirmation(shared, confirm_key, pending).await;
+    } else {
+        tracing::info!("the reply did not reach the socket, so no question is armed behind it");
+    }
+    Ok(())
 }
 
 /// Close out a harness-authored reply on whichever channel was asked for.
@@ -1439,11 +1495,11 @@ async fn finish_with(
     id: &str,
     want_stream: bool,
     text: &str,
-) -> Result<()> {
+) -> Result<bool> {
     if want_stream {
-        say(stream, shared, id, text).await;
+        let delivered = say(stream, shared, id, text).await;
         finish_stream(stream, id, &shared.model, None).await;
-        return Ok(());
+        return Ok(delivered);
     }
     write_json(
         stream,
@@ -1464,6 +1520,8 @@ async fn finish_with(
         }),
     )
     .await
+    // A blocking reply that wrote is delivered; the error case propagates.
+    .map(|()| true)
 }
 
 async fn completion(
@@ -1801,7 +1859,7 @@ async fn completion(
         if !disconnected {
             if let Some(offer) = &offer {
                 if say(stream, shared, &id, &format!(" {}", offer.speech)).await {
-                    arm_confirmation(shared, &confirm_key, offer).await;
+                    arm_confirmation(shared, &confirm_key, offer.pending.clone()).await;
                 }
             }
             let failed = outcome.as_ref().err().map(|e| format!("{e:#}"));
@@ -1836,7 +1894,7 @@ async fn completion(
                 .await;
                 if written.is_ok() {
                     if let Some(offer) = &offer {
-                        arm_confirmation(shared, &confirm_key, offer).await;
+                        arm_confirmation(shared, &confirm_key, offer.pending.clone()).await;
                     }
                 }
             }
@@ -2182,6 +2240,32 @@ mod tests {
 mod the_reply_reaches_the_wire {
     use super::*;
     use tokio::io::AsyncReadExt;
+
+    /// `finish_with` must *report* delivery, not assert it.
+    ///
+    /// `reply_then_arm` gates arming on that boolean, so a `finish_with` that
+    /// always returns true reinstates the whole defect while every other test
+    /// stays green — checked by mutation, which is how this test came to
+    /// exist. The streaming branch is the one that matters: `write_json` on
+    /// the blocking path already returns a `Result` that propagates.
+    #[test]
+    fn finish_with_reports_whether_the_words_went_out() {
+        let src = include_str!("mod.rs");
+        let i = src
+            .find("\nasync fn finish_with(")
+            .expect("harness-authored replies still close out here");
+        let body = &src[i + 1..][..src[i + 1..]
+            .find("\n}\n")
+            .expect("`finish_with` still has a closing brace at column zero")];
+        assert!(
+            body.contains("let delivered = say("),
+            "the streaming branch discards `say`'s result again: {body:?}"
+        );
+        assert!(
+            !body.contains("return Ok(true)"),
+            "the streaming branch claims delivery instead of measuring it: {body:?}"
+        );
+    }
 
     /// The socket test above proves `open_sse` writes a head; it cannot
     /// prove the caller that needed one calls it — deleting that line leaves
