@@ -1798,7 +1798,11 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > arm renders identically, rather than grade two equal arms. The count
 > cap stays domain-wide while the learner sees one region, so a
 > many-region domain can refuse a batch against a total the batch could
-> not see; fail-safe, and named rather than moved. The registry the block
+> not see; fail-safe, and named rather than moved. A second seam of the
+> same kind: the learner is told the other regions' rules are immutable,
+> and a *reworded* restatement of one has no text match, so it lands beside
+> the original as a new rule scoped to the batch — a model-did-not-listen
+> case the count cap and the next consolidation bound, not the code. The registry the block
 > is matched against is `build`'s, after subagents join it; the
 > front-end's own tools join later and are not scope targets. Two keys
 > are recorded and not yet scope keys, with the reasons in `situation.rs`:

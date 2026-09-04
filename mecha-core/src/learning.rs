@@ -687,9 +687,23 @@ pub fn batches_by_region(reflexions: Vec<Reflexion>) -> Vec<(Situation, Vec<Refl
         by_focus.entry(key).or_default().push(r);
     }
     by_focus
-        .into_values()
-        .map(|rs| {
-            let region = Situation::region(rs.iter().filter_map(|r| r.situation.as_ref())).scope();
+        .into_iter()
+        .map(|(focus, rs)| {
+            // The standing bucket's region is standing by definition — it
+            // is the bucket for lessons with no tool to scope to — and never
+            // the intersection of whatever else its members' windows held.
+            // Two members that reach it carry a window anyway: a reflection
+            // from before the field (no situation at all, which must
+            // constrain nothing) and one whose focus was a front-end tool,
+            // whose window still names the tools before it. Folding either
+            // into an intersection narrowed the standing region to `shell`
+            // and turned the domain's unscoped rules into out-of-region
+            // context (found on review).
+            let region = if focus.is_empty() {
+                Situation::default()
+            } else {
+                Situation::region(rs.iter().filter_map(|r| r.situation.as_ref())).scope()
+            };
             (region, rs)
         })
         .collect()
@@ -4989,15 +5003,23 @@ mod situation_tests {
     }
 
     /// A reflection mined before the field, or with no tool in its window,
-    /// batches as standing — never dropped, never guessed a region.
+    /// batches as standing — never dropped, never guessed a region. And the
+    /// standing bucket's region *stays* standing whatever its members'
+    /// windows held: a legacy reflection beside one that refused `ask_user`
+    /// after `shell` must not yield a `shell` region. Fails on the
+    /// intersection over members' situations.
     #[test]
     fn a_reflection_without_a_situation_batches_as_standing() {
         let mut legacy = refl("old", &[], "steer");
         legacy.situation = None;
-        let batches = batches_by_region(vec![legacy, refl("new", &["shell"], "denial")]);
+        let asked = refl("asked", &["shell", "ask_user"], "denial");
+        assert_eq!(asked.situation.as_ref().unwrap().focus(), None);
+        let batches = batches_by_region(vec![legacy, asked, refl("new", &["shell"], "denial")]);
         assert_eq!(batches.len(), 2);
         assert!(batches[0].0.is_standing());
+        assert_eq!(batches[0].1.len(), 2);
         assert_eq!(batches[0].1[0].id, "old");
+        assert_eq!(batches[1].0.tools, vec!["shell"]);
     }
 
     /// The pair a run record keeps: the block a run in this situation gets
