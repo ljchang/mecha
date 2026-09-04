@@ -207,8 +207,8 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
         if manifest.kind == TrialKind::Lifetime {
             let s = &manifest.schedule;
             println!(
-                "schedule: reflect every {} · learn every {} · validate every {} · ruminate every {} (0 = never)",
-                s.reflect, s.learn, s.validate, s.ruminate
+                "schedule: reflect every {} · validate every {} · learn every {} · retire every {} · ruminate every {} (0 = never)",
+                s.reflect, s.validate, s.learn, s.retire, s.ruminate
             );
         }
         for t in &todo {
@@ -918,7 +918,7 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
     let (trials, skipped) = store.trials()?;
     let trials: Vec<Trial> = trials.into_values().collect();
     let (stages, torn_stages) = store.all_stage_runs()?;
-    let verdicts = judge(&manifest, &trials, &stages);
+    let verdicts = judge(&manifest, &trials, &stages, torn_stages);
     if json {
         println!(
             "{}",
@@ -962,13 +962,23 @@ fn judge_cmd(name: &str, json: bool) -> Result<()> {
         );
         if manifest.kind == TrialKind::Lifetime {
             println!(
-                "  stages: treatment {} ok · {} failed · {} interrupted    control {} ok · {} failed · {} interrupted",
+                "  stages: treatment {} ok · {} failed · {} interrupted · {} unknown    control {} ok · {} failed · {} interrupted · {} unknown{}",
                 v.stages.done,
                 v.stages.failed,
                 v.stages.interrupted,
+                v.stages.unknown,
                 v.control_stages.done,
                 v.control_stages.failed,
-                v.control_stages.interrupted
+                v.control_stages.interrupted,
+                v.control_stages.unknown,
+                if v.unreadable_stage_lines > 0 {
+                    format!(
+                        "    {} ledger line(s) unreadable",
+                        v.unreadable_stage_lines
+                    )
+                } else {
+                    String::new()
+                }
             );
         }
         println!(
@@ -1000,7 +1010,7 @@ fn export(name: &str) -> Result<()> {
     // that a treatment occurred, and the reviewable object is the whole
     // record (found on review).
     let (stages, torn_stages) = store.all_stage_runs()?;
-    let verdicts = judge(&manifest, &trials, &stages);
+    let verdicts = judge(&manifest, &trials, &stages, torn_stages);
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({

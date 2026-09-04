@@ -131,8 +131,9 @@ repetitions = 1
 
 [schedule]            # every N tasks; 0 = never. This is the default.
 reflect = 1
-learn = 5
 validate = 5
+learn = 5
+retire = 5
 ruminate = 10
 
 [tasks]
@@ -155,8 +156,8 @@ Each lifetime — one per arm × seed × repetition — gets its own home under 
 experiment directory, seeded like an arm's. The driver walks the sequence in
 order: after each task it runs the stages the schedule makes due, as child
 `mecha` verbs against that home — `reflect`, `validate --unprocessed-only`,
-`learn --holdout 0.25 --auto`, `harness ruminate`, the nightly's own order
-and flags, so what a lifetime measures is the loop that ships (validate
+`learn --holdout 0.25 --auto`, `rules propose-retirements --apply`,
+`harness ruminate`, the nightly's own order and flags, so what a lifetime measures is the loop that ships (validate
 measures before learn consumes) — one after another and never beside a
 task, and writes
 each to the lifetime's **stage ledger** (`stages/<lifetime>.jsonl`) with its
@@ -167,7 +168,7 @@ before the next task starts.
 
 **Stage levers** are a second closed set, beside the per-run levers, and a
 lifetime's arm may name them off in `stages_off`: `reflect`, `learn`,
-`validate`, `ruminate`, and `sensors_in_brief` — the last is not a stage but
+`validate`, `retire`, `ruminate`, and `sensors_in_brief` — the last is not a stage but
 the switch (`[agent] sensors_in_brief`) that hands the homeostat's and guilt's
 readings to the diagnostician's brief, which is those sensors' only reader.
 A `single` manifest refuses them. Stage levers off are part of a row's
@@ -175,7 +176,10 @@ condition hash; an arm with every stage on hashes as its single-trial twin.
 
 `status` shows each lifetime's sequence by position (`✓ ✗ ! ~ ·`) with its
 stage counts; `judge` pairs positions across arms as it pairs tasks, since the
-sequence is shared. Read the trajectory, not the mean: a loop that learns has
+sequence is shared, and reads the ledger: a stage that failed, was
+interrupted, or could not be read on either side holds the verdict at
+*propose*, because a treatment not known to have run cannot claim its
+effect. Read the trajectory, not the mean: a loop that learns has
 a slope.
 
 One limit worth knowing before spending a night on it: every reflection

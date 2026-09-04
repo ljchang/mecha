@@ -3079,6 +3079,8 @@ comparison over a chosen set**, with the design written before the run.
   (found on review) — the driver runs each in `lifetime_home`, and after each
   task runs the stages the manifest's `[schedule]` makes due — `reflect`,
   `validate --unprocessed-only`, `learn --holdout 0.25 --auto`,
+  `rules propose-retirements --apply` (the one brake on rules that go
+  live as they are derived; a loop without it flatters the learn arm),
   `harness ruminate`, **the nightly's own order and argv**
   (`scripts/ruminate.sh`): validate is the held-out measurement and
   learn marks reflections processed, so learn first would grade the
@@ -3102,8 +3104,10 @@ comparison over a chosen set**, with the design written before the run.
   and the rerun's log is a new file; a `running` line nothing supersedes
   reads as interrupted. **`judge` and `export` read the ledger**: for a
   lifetime it is the evidence that the treatment occurred, so each arm's
-  verdict carries its stage health and the control's, a failed or
-  interrupted stage on either side holds the verdict at *propose*
+  verdict carries its stage health and the control's, a failed,
+  interrupted or unreadable stage line — or one in a status this build
+  cannot read; unknown is never clean — on either side holds the verdict
+  at *propose*
   (a trial that cannot answer the metric drops its pair; a stage that
   did not run cannot claim its effect), and the export carries every
   stage line. A lifetime that reaches a row this build cannot read
@@ -3122,7 +3126,8 @@ comparison over a chosen set**, with the design written before the run.
   stage's log is a second file (`-a2`), as its ledger line is a second
   line.
 - **Stage levers are a second closed set** (`experiment::StageLever`:
-  `reflect`, `learn`, `validate`, `ruminate`, `sensors_in_brief`), named
+  `reflect`, `learn`, `validate`, `ruminate`, `retire`,
+  `sensors_in_brief`), named
   off per arm in `stages_off`, refused on a `single` manifest where no
   stage runs and a lever that changed nothing would still move the hash,
   and part of the row's condition (`condition_hash_with_stages`, whose
