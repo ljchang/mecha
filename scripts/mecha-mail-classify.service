@@ -63,6 +63,11 @@ Type=oneshot
 # 50 is the tool's own ceiling. A night that brought fewer costs less; a night
 # that brought more leaves the remainder for the next sweep rather than
 # silently dropping it, because `classify` skips what the store already knows.
+# The graph MCP server is spawned by name against *this* PATH (mecha passes
+# PATH through to the child), and a spawn failure is skipped, not fatal —
+# the kg_* tools would just be absent, with one line on stderr. The same
+# line the slack and triggers units carry (found on review).
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStartPre=/bin/mkdir -p %h/.mecha/work/mail-classify
 ExecStart=%h/.cargo/bin/mecha --workspace %h/.mecha/work/mail-classify mail classify --limit 50
 # The sweep is model-bound and this host's inference is bandwidth-bound, so a

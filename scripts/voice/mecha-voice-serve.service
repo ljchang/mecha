@@ -11,6 +11,11 @@ Description=mecha voice-serve (OpenAI facade for the voice worker, :8990)
 After=network.target
 
 [Service]
+# The graph MCP server is spawned by name against *this* PATH (mecha passes
+# PATH through to the child), and a spawn failure is skipped, not fatal —
+# the kg_* tools would just be absent, with one line on stderr. The same
+# line the slack and triggers units carry (found on review).
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/home/ljchang/.cargo/bin/mecha voice-serve --port 8990 --yes
 Restart=on-failure
 RestartSec=5
