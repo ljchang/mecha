@@ -1040,8 +1040,10 @@ and the only one whose remedy is a person; and *failed* must never render as
 That second rule is why there is a seventh state — a transcript with no
 outcome record is a run that never got as far as saying how it went, and
 reporting it as either of the other two invents the one fact the card is
-about. `Interrupted` reads as finished and never as failed, on doctor's own
-rule for the same field: a person stopping a run is the system working.
+about. A cancellation reads as finished and never as failed, on doctor's own
+rule for the same field: `stopped` is a person, `parked` a question to the
+owner, `shutdown` the process, and the older `interrupted` did not say
+which — none is the harness ending the work.
 
 ## The unified queue — `/queues`
 
@@ -2933,8 +2935,9 @@ recoverable from the finding's own name:
   fifth of its runs over a failed call, failing a quarter of its tool calls, or
   having a quarter of its runs cut short by a ceiling. Thresholds deliberately
   **high**, because rule-based evaluators are measured to under-report success
-  and a doctor that cries wolf stops being read; `Interrupted` excluded, since
-  a person pressing Ctrl-C is the system working and counting it would make an
+  and a doctor that cries wolf stops being read; the cancellations (`Stopped`,
+  `Parked`, `Shutdown`, the older `Interrupted`) excluded, since a person
+  pressing Ctrl-C is the system working and counting it would make an
   attentive user look like a problem; per model with a 20-run floor, since a
   blend across models describes neither and names the wrong one.
 

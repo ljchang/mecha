@@ -996,16 +996,22 @@ async fn run_agent(
     // that says what happened.
     let token = stop.map(CancellationToken::child_token).unwrap_or_default();
     let cx = RunContext::clone(prepared.agent.context()).with_cancel(token.clone());
+    // The two ways a trigger run ends early say which they are: the
+    // wall-clock limit is the process's ceiling, not the owner's word, so it
+    // records `Shutdown`; a cancel by request is the owner and records
+    // `Stopped`. A bare token cancel would record the unknown-which
+    // `Interrupted` for both.
+    let handle = cx.cancel_handle().expect("with_cancel just set it");
     let limit = t
         .timeout_duration()
         .to_std()
         .unwrap_or(std::time::Duration::from_secs(1200));
     let timer = {
-        let token = token.clone();
+        let handle = handle.clone();
         tokio::spawn(async move {
             tokio::select! {
-                _ = tokio::time::sleep(limit) => token.cancel(),
-                _ = token.cancelled() => {}
+                _ = tokio::time::sleep(limit) => handle.cancel(mecha_core::agent::CancelReason::Shutdown),
+                _ = handle.cancelled() => {}
             }
         })
     };
@@ -1016,17 +1022,17 @@ async fn run_agent(
     // there would stop the whole scheduler. Two seconds is well under human
     // patience and costs one `stat` per tick.
     let canceller = {
-        let token = token.clone();
+        let handle = handle.clone();
         let store = TriggerStore::open_default()?;
         let name = t.name.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    _ = token.cancelled() => return,
+                    _ = handle.cancelled() => return,
                     _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
                         if store.cancel_requested(&name) {
                             eprintln!("mecha: trigger `{name}` cancelled by request");
-                            token.cancel();
+                            handle.cancel(mecha_core::agent::CancelReason::Stopped);
                             return;
                         }
                     }

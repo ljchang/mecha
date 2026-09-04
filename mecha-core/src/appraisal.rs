@@ -838,6 +838,12 @@ pub struct SessionRecords<'a> {
     pub frontdoor_unreadable: bool,
     pub reflexions: &'a [crate::learning::Reflexion],
     pub learning_unreadable: bool,
+    /// The runs a person stopped, placed among the messages — see [`Stop`]
+    /// and [`stops_of`]. From the transcript, not a store, but it rides
+    /// here because it is session-scoped the way the drafts are: a stop is
+    /// attributed to the session, and `of_session` is a function that does
+    /// not walk transcripts.
+    pub stops: &'a [Stop],
     /// The owner's charter, for the sensored-line attribution
     /// (`docs/GOAL-SYSTEM-DESIGN.md` §11.1): an error whose pointer is an
     /// item a sensored line watches is attributed to that line when the run
@@ -1057,9 +1063,15 @@ pub fn of_session(
             controllable: None,
             cite: Cite::Counter("stop_cause".into()),
         }),
-        // `Interrupted` is **not** an error, on doctor's rule for the same
-        // field: a person pressing Ctrl-C is the system working, and counting
-        // it would make an attentive owner look like a problem.
+        // The cancellations are **not** counter errors. `Parked` is the
+        // mechanism working; `Shutdown` is nobody's verdict — the process or
+        // a wall-clock limit ended a run that may have been fine; and the
+        // older `Interrupted` is unknown-which and reads as none of them
+        // (`docs/APPRAISAL-RESEARCH.md` §3.3). `Stopped` *is* the owner's
+        // verdict, and it is read below on the intervention channel from
+        // `records.stops`, per run and placed among the messages, rather
+        // than here off the folded stop cause — which is the *last* run's
+        // and would miss every stop the owner re-prompted past.
         _ => {}
     }
 
@@ -1143,6 +1155,28 @@ pub fn of_session(
             visible: false,
             controllable: None,
             cite: Cite::Turn(i.at),
+        });
+    }
+
+    // --- Intervention, from the stop cause: a person stopped the run ---
+    //
+    // §3.3's two channels, both `Agency::Owner` and both signed like a steer:
+    // **stopped and re-prompted in the same session** is a redirect, cited at
+    // the re-prompt — the follow-up `extract_interventions` files it as and
+    // the loop above skips, so nothing is counted twice; **stopped and never
+    // resumed** is the abandonment signal the dialogue-feedback literature
+    // ranks highest (§6.2), cited at the stop. A run that ended on a parked
+    // question, a shutdown, or the unknown-which `Interrupted` is not here:
+    // `stops_of` admits only `Stopped`.
+    for s in records.stops {
+        errors.push(GoalError {
+            goal: goal.clone(),
+            channel: Channel::Intervention,
+            sign: -1.0,
+            agency: Agency::Owner,
+            visible: false,
+            controllable: None,
+            cite: Cite::Turn(s.resumed_at.unwrap_or(s.at.saturating_sub(1))),
         });
     }
 
@@ -1460,6 +1494,46 @@ pub fn for_session(
     for_transcript(&transcript, session_id, created_at, records, goal)
 }
 
+/// A run a person stopped, placed among the messages: `at` is the message
+/// count when its outcome was written (so the run's last turn is `at - 1`),
+/// and `resumed_at` the index of the owner's next prompt in the same
+/// session, when there was one. Two readings, both the owner's
+/// (`docs/APPRAISAL-RESEARCH.md` §3.3): resumed is a redirect, not resumed
+/// is an abandonment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stop {
+    pub at: usize,
+    pub resumed_at: Option<usize>,
+}
+
+/// The stops in a transcript, from its per-run outcomes and their positions
+/// (`Transcript::outcomes` / `outcome_positions`). Only `StopCause::Stopped`
+/// qualifies: `Parked` is the mechanism working, `Shutdown` is nobody's
+/// verdict, and the older `Interrupted` is unknown-which and admitted as
+/// none of them. The re-prompt is the first user message with text at or
+/// after the stop — a tool-result-only user message is the loop's, not the
+/// owner's.
+pub fn stops_of(
+    outcomes: &[crate::session::RunStats],
+    positions: &[usize],
+    messages: &[crate::message::Message],
+) -> Vec<Stop> {
+    outcomes
+        .iter()
+        .zip(positions)
+        .filter(|(o, _)| o.stop_cause == Some(crate::agent::StopCause::Stopped))
+        .map(|(_, &at)| {
+            let resumed_at = messages
+                .iter()
+                .enumerate()
+                .skip(at)
+                .find(|(_, m)| m.role == crate::message::Role::User && !m.text().trim().is_empty())
+                .map(|(i, _)| i);
+            Stop { at, resumed_at }
+        })
+        .collect()
+}
+
 /// The same, for a caller that already read the transcript — `mecha
 /// distill`, which needs the messages again afterwards to render the
 /// distillation, used to pay four complete read-and-parse passes per session
@@ -1477,6 +1551,15 @@ pub fn for_transcript(
     let stats = transcript.episode.as_ref()?;
     let messages = &transcript.convo.messages;
     let interventions = crate::learning::extract_interventions(messages);
+    let stops = stops_of(
+        &transcript.outcomes,
+        &transcript.outcome_positions,
+        messages,
+    );
+    let records = SessionRecords {
+        stops: &stops,
+        ..records
+    };
     // Without a goal, `of_session` never has one to attribute anything to —
     // see the matching comment in `mecha sessions appraise` for why an
     // absent goal is recorded rather than guessed.
@@ -2507,6 +2590,9 @@ mod tests {
             StopCause::OutputTokenBudget,
             StopCause::CostBudget,
             StopCause::Interrupted,
+            StopCause::Parked,
+            StopCause::Stopped,
+            StopCause::Shutdown,
             StopCause::Loop,
             StopCause::NoOutput,
         ];
@@ -2517,6 +2603,9 @@ mod tests {
                 | StopCause::OutputTokenBudget
                 | StopCause::CostBudget
                 | StopCause::Interrupted
+                | StopCause::Parked
+                | StopCause::Stopped
+                | StopCause::Shutdown
                 | StopCause::Loop
                 | StopCause::NoOutput => {}
             }
@@ -2556,6 +2645,139 @@ mod tests {
     }
 
     // --- the assembler ---
+
+    fn said(text: &str) -> crate::message::Message {
+        crate::message::Message::assistant(vec![crate::message::Block::Text { text: text.into() }])
+    }
+
+    /// §3.3's first channel: a run the owner stopped and then re-prompted is
+    /// a redirect, cited at the re-prompt, on the intervention channel with
+    /// the owner's agency — and not counted twice, since the re-prompt is
+    /// the follow-up the intervention loop skips.
+    #[test]
+    fn a_stopped_run_reprompted_is_the_owners_redirect_at_the_reprompt() {
+        use crate::agent::StopCause;
+        use crate::message::Message;
+        let messages = vec![
+            Message::user("do the thing"),
+            said("starting…"),
+            Message::user("no — the other thing"),
+            said("done"),
+        ];
+        let mut stopped = stats();
+        stopped.stop_cause = Some(StopCause::Stopped);
+        let mut done = stats();
+        done.stop_cause = Some(StopCause::Completed);
+        // The first run ended after two messages; the second after four.
+        let stops = stops_of(&[stopped, done.clone()], &[2, 4], &messages);
+        assert_eq!(
+            stops,
+            vec![Stop {
+                at: 2,
+                resumed_at: Some(2)
+            }]
+        );
+
+        let a = of_session(
+            "s",
+            &done,
+            &[],
+            &[],
+            SessionRecords {
+                stops: &stops,
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "t".into(),
+        );
+        let stop_errors: Vec<_> = a
+            .errors
+            .iter()
+            .filter(|e| e.channel == Channel::Intervention)
+            .collect();
+        assert_eq!(stop_errors.len(), 1, "{:?}", a.errors);
+        let e = stop_errors[0];
+        assert_eq!(e.sign, -1.0);
+        assert_eq!(e.agency, Agency::Owner);
+        assert_eq!(e.cite, Cite::Turn(2), "cited at the re-prompt");
+        assert!(Valence::of(&a).negatives >= 1);
+    }
+
+    /// §3.3's second channel: stopped and never resumed is the abandonment
+    /// signal, cited at the stop.
+    #[test]
+    fn a_stopped_run_never_resumed_is_an_abandonment_at_the_stop() {
+        use crate::agent::StopCause;
+        use crate::message::Message;
+        let messages = vec![Message::user("do the thing"), said("starting…")];
+        let mut stopped = stats();
+        stopped.stop_cause = Some(StopCause::Stopped);
+        let stops = stops_of(std::slice::from_ref(&stopped), &[2], &messages);
+        assert_eq!(
+            stops,
+            vec![Stop {
+                at: 2,
+                resumed_at: None
+            }]
+        );
+        let a = of_session(
+            "s",
+            &stopped,
+            &[],
+            &[],
+            SessionRecords {
+                stops: &stops,
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "t".into(),
+        );
+        let e = a
+            .errors
+            .iter()
+            .find(|e| e.channel == Channel::Intervention)
+            .expect("the abandonment is signed");
+        assert_eq!(e.cite, Cite::Turn(1), "the run's last turn");
+        assert_eq!(e.agency, Agency::Owner);
+    }
+
+    /// The other three cancellations sign nothing: a park is the mechanism
+    /// working, a shutdown is nobody's verdict, and the older `Interrupted`
+    /// is unknown-which and must not be read as any of them. Asserted
+    /// through `stops_of` (which admits none) and through the counter arm
+    /// (which signs none), so both doors are checked.
+    #[test]
+    fn parked_shutdown_and_legacy_interrupted_sign_nothing() {
+        use crate::agent::StopCause;
+        use crate::message::Message;
+        let messages = vec![Message::user("go"), said("…")];
+        for cause in [
+            StopCause::Parked,
+            StopCause::Shutdown,
+            StopCause::Interrupted,
+        ] {
+            let mut s = stats();
+            s.stop_cause = Some(cause);
+            assert!(
+                stops_of(std::slice::from_ref(&s), &[2], &messages).is_empty(),
+                "{cause:?}"
+            );
+            let a = of_session(
+                "s",
+                &s,
+                &[],
+                &[],
+                SessionRecords::default(),
+                Some(crate::agent::Taint::default()),
+                "t".into(),
+            );
+            assert!(
+                a.errors.iter().all(|e| e.sign >= 0.0),
+                "{cause:?} must sign no negative: {:?}",
+                a.errors
+            );
+        }
+    }
 
     fn stats() -> crate::session::RunStats {
         crate::session::RunStats {
@@ -3194,6 +3416,7 @@ mod tests {
 
     fn bare_outcome() -> crate::agent::RunOutcome {
         crate::agent::RunOutcome {
+            duration_secs: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,

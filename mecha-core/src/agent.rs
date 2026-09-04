@@ -231,6 +231,11 @@ pub struct RunContext {
     /// Sharing one token across several runs is a feature — that is how a whole
     /// batch is cancelled at once.
     pub cancel: Option<CancellationToken>,
+    /// Why `cancel` fired, if the canceller said — see [`CancelReason`].
+    /// One cell per `with_cancel`, shared with every [`CancelHandle`] handed
+    /// out and stamped onto the run's `ToolCtx`, so a tool that parks a
+    /// question writes the same cell the loop reads.
+    pub cancel_reason: Arc<std::sync::Mutex<Option<CancelReason>>>,
     /// Which tools this run may see at all. See [`Phase`].
     pub phase: Phase,
     /// Conditions sampled when this run began — see [`Homeostat`].
@@ -343,6 +348,7 @@ impl RunContext {
             approver,
             budget: Budget::default(),
             cancel: None,
+            cancel_reason: Arc::new(std::sync::Mutex::new(None)),
             phase: Phase::default(),
             compact_at_tokens: None,
             queued_input: None,
@@ -396,7 +402,37 @@ impl RunContext {
 
     pub fn with_cancel(mut self, token: CancellationToken) -> Self {
         self.cancel = Some(token);
+        self.cancel_reason = Arc::new(std::sync::Mutex::new(None));
         self
+    }
+
+    /// Adopt a handle minted elsewhere: the token *and* its reason cell, so
+    /// the front-end holding the handle and the loop reading the outcome
+    /// share one cell. The pair to [`RunContext::cancel_handle`].
+    pub fn with_cancel_handle(mut self, handle: CancelHandle) -> Self {
+        self.cancel = Some(handle.token);
+        self.cancel_reason = handle.reason;
+        self
+    }
+
+    /// The token and its reason cell together, for a canceller that can say
+    /// why — `None` when the run is not cancellable at all.
+    pub fn cancel_handle(&self) -> Option<CancelHandle> {
+        self.cancel.clone().map(|token| CancelHandle {
+            token,
+            reason: Arc::clone(&self.cancel_reason),
+        })
+    }
+
+    /// What the outcome of a cancelled run records: the reason the
+    /// canceller gave, or `Interrupted` when none did.
+    pub fn cancel_stop_cause(&self) -> StopCause {
+        self.cancel_reason
+            .lock()
+            .ok()
+            .and_then(|r| *r)
+            .map(StopCause::from)
+            .unwrap_or(StopCause::Interrupted)
     }
 
     pub fn with_hooks(mut self, hooks: Arc<crate::hooks::HookSet>) -> Self {
@@ -703,6 +739,81 @@ pub struct ToolCallTrace {
     pub staged: bool,
 }
 
+/// Why a run is being cancelled, said by the canceller so the outcome can
+/// record it. A `CancellationToken` carries no reason, and every front-end
+/// held only a token — so a parked question, Ctrl-C and a service restart
+/// all recorded `Interrupted`, and the appraisal skipped all three on the
+/// rule that an interrupt is an attentive owner, which is right for the park
+/// and wrong for the rest (`docs/APPRAISAL-RESEARCH.md` §1.4, §3.3). The
+/// reason rides beside the token on [`RunContext`] and is stamped onto the
+/// run's `ToolCtx`; a canceller that has neither still cancels through the
+/// token alone and the outcome records `Interrupted`, honestly unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelReason {
+    /// A question was parked to the owner; see [`StopCause::Parked`].
+    Parked,
+    /// A person stopped the run; see [`StopCause::Stopped`].
+    Stopped,
+    /// The process or a limit ended it; see [`StopCause::Shutdown`].
+    Shutdown,
+}
+
+impl From<CancelReason> for StopCause {
+    fn from(r: CancelReason) -> StopCause {
+        match r {
+            CancelReason::Parked => StopCause::Parked,
+            CancelReason::Stopped => StopCause::Stopped,
+            CancelReason::Shutdown => StopCause::Shutdown,
+        }
+    }
+}
+
+/// A run's cancel token and the reason cell beside it, for a canceller that
+/// can say why. Cloneable and `Send`, so a watcher task holds one the way it
+/// used to hold a token clone.
+#[derive(Clone, Default)]
+pub struct CancelHandle {
+    token: CancellationToken,
+    reason: Arc<std::sync::Mutex<Option<CancelReason>>>,
+}
+
+impl CancelHandle {
+    /// A fresh token and an empty reason cell, for a front-end that mints
+    /// the handle before it has a `RunContext` to take one from (a voice
+    /// slot, a web session) and attaches it later with
+    /// [`RunContext::with_cancel_handle`].
+    pub fn new() -> Self {
+        CancelHandle {
+            token: CancellationToken::new(),
+            reason: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// Record the reason, then cancel. The reason is written first so the
+    /// loop, which reads it when it builds the interrupted outcome, cannot
+    /// observe the cancel before the reason. A second call keeps the first
+    /// reason: the loop stops once, on the first cancel, and that is the one
+    /// the outcome describes.
+    pub fn cancel(&self, reason: CancelReason) {
+        if let Ok(mut slot) = self.reason.lock() {
+            slot.get_or_insert(reason);
+        }
+        self.token.cancel();
+    }
+
+    pub fn token(&self) -> &CancellationToken {
+        &self.token
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.token.is_cancelled()
+    }
+
+    pub async fn cancelled(&self) {
+        self.token.cancelled().await
+    }
+}
+
 /// Why the loop stopped. `Completed` is the model deciding it was done;
 /// everything else is the harness cutting it short.
 ///
@@ -717,8 +828,25 @@ pub enum StopCause {
     MaxTurns,
     OutputTokenBudget,
     CostBudget,
-    /// Someone cancelled it — a user pressing Ctrl-C, a shutdown, a timeout.
+    /// Cancelled, and the canceller did not say why — the value every
+    /// cancellation recorded before the three below existed, and what a
+    /// bare `CancellationToken::cancel()` still records. **Unknown-which**:
+    /// a reader must not take it for any of the three, on the wire-format
+    /// rule (`docs/APPRAISAL-RESEARCH.md` §3.3).
     Interrupted,
+    /// The run parked a question to the owner (`questions::ParkingAsker`)
+    /// and ended so the answer can arrive as a later run. The mechanism
+    /// working; never an error.
+    Parked,
+    /// A person stopped it — Ctrl-C, a stop button, `tasks stop`, a
+    /// trigger cancelled by request. The owner's verdict on the run in
+    /// flight, which is why the appraisal reads it and reads `Parked` not.
+    Stopped,
+    /// The process or a limit ended it — a service shutdown, SIGTERM, a
+    /// trigger's wall-clock ceiling. Not the owner's word and not the
+    /// harness's ceiling on the *work* (that is `MaxTurns`' family): a run
+    /// that was fine and got restarted under it.
+    Shutdown,
     /// The model repeated an identical tool call, with an identical result,
     /// right after a compaction — the sign that compaction did not carry the
     /// task and the run is stuck re-living it. Distinct from `MaxTurns` on
@@ -759,6 +887,8 @@ impl StopCause {
     /// trials in one benchmark, so a check blind to it is blind to the thing
     /// most worth seeing.
     pub fn cut_short(self) -> bool {
+        // `Parked`, `Stopped`, `Shutdown` and the older `Interrupted` are all
+        // on the other side: none is the harness ending the *work*.
         matches!(
             self,
             StopCause::MaxTurns
@@ -776,6 +906,9 @@ impl StopCause {
             StopCause::OutputTokenBudget => "hit the output-token budget",
             StopCause::CostBudget => "hit the cost budget",
             StopCause::Interrupted => "was interrupted",
+            StopCause::Parked => "parked a question to the owner",
+            StopCause::Stopped => "was stopped",
+            StopCause::Shutdown => "was shut down",
             StopCause::Loop => "repeated an identical tool call after compacting",
             StopCause::NoOutput => "produced no answer, and did not recover when asked",
         }
@@ -1054,6 +1187,14 @@ pub struct RunOutcome {
     /// quiet lie in the same field a budget reads; saying the number is partial
     /// costs one bool.
     pub usage_complete: bool,
+    /// Wall-clock seconds from `run_in`'s entry to its return — the whole run,
+    /// queue wait and tool time included, which is the number a caller sees
+    /// and the one no counter approximates: on the kept Terminal-Bench trials
+    /// it discriminated pass from fail at 0.74 while nothing on the record
+    /// passed 0.65 (`docs/APPRAISAL-RESEARCH.md` §1.7.4). `Some` on every
+    /// outcome `run_in` returns; the loop's own constructors leave it `None`
+    /// because the clock is `run_in`'s.
+    pub duration_secs: Option<f64>,
 }
 
 pub struct Agent {
@@ -1334,6 +1475,7 @@ impl Agent {
         // Counted here rather than by the builders, for the same reason the
         // snapshot below is: the loop returns from six places, and the count
         // lives in a local behind all of them.
+        let started = std::time::Instant::now();
         let mut context_overflows = 0u32;
         // Taken off the conversation and put back below, rather than borrowed
         // out of it: the loop already holds `&mut convo.messages` for its whole
@@ -1354,6 +1496,7 @@ impl Agent {
         // on this conversation is the one that needs it most.
         convo.pressure = pressure.clone();
         let mut outcome = ran?;
+        outcome.duration_secs = Some(started.elapsed().as_secs_f64());
         outcome.context_overflows = context_overflows;
         // One place, after every exit. The loop returns from six of them, and
         // a snapshot attached at five is worse than one attached at none —
@@ -1429,6 +1572,7 @@ impl Agent {
             tools: Arc::new(ToolCtx {
                 events: events.clone(),
                 cancel: cx.cancel.clone(),
+                cancel_reason: Some(Arc::clone(&cx.cancel_reason)),
                 phase: cx.phase,
                 withheld: cx.withheld.clone(),
                 // Identity only — the counters are folded per turn in
@@ -1529,6 +1673,7 @@ impl Agent {
                     blocked_sends,
                     taint,
                     compactions,
+                    cx.cancel_stop_cause(),
                 );
                 emit_done(
                     &events,
@@ -1837,6 +1982,7 @@ impl Agent {
 
                 let cost = self.cost(&usage);
                 let mut outcome = RunOutcome {
+                    duration_secs: None,
                     homeostat: None,
                     context_overflows: 0,
                     boredom_notices: 0,
@@ -2002,6 +2148,7 @@ impl Agent {
                         blocked_sends,
                         taint,
                         compactions,
+                        cx.cancel_stop_cause(),
                     );
                     emit_done(
                         &events,
@@ -2798,6 +2945,7 @@ impl Agent {
         }
 
         RunOutcome {
+            duration_secs: None,
             text,
             stop_reason: response.stop_reason,
             usage,
@@ -2921,6 +3069,7 @@ impl Agent {
         blocked_sends: u32,
         taint: Taint,
         compactions: u32,
+        stop_cause: StopCause,
     ) -> RunOutcome {
         // Say it was interrupted in the text itself, not only in `stop_cause`.
         // Whatever is here gets read by a human or fed to a grader, and a
@@ -2960,11 +3109,12 @@ impl Agent {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
-            stop_cause: StopCause::Interrupted,
+            stop_cause,
             compactions,
             cost_usd: self.cost(&usage),
             // Input is known from the first frame; the cut turn's output is not.
             usage_complete: false,
+            duration_secs: None,
         }
     }
 
@@ -6254,6 +6404,7 @@ mod tests {
         // A run that never overflowed records `Some(0)` — "the sensor was
         // here and saw nothing" — which is a different claim from `None`.
         let clean = crate::session::RunStats::from(&RunOutcome {
+            duration_secs: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,
@@ -7145,6 +7296,73 @@ mod tests {
             "the escalation's usage must be folded into the run's total, got {:?}",
             outcome.usage
         );
+    }
+
+    /// A canceller that says why is recorded as saying it: cancel through
+    /// the handle with `Stopped` and the outcome is `Stopped`, not the
+    /// unknown-which `Interrupted` every cancellation used to record. And
+    /// the clock is on it — `duration_secs` is `Some` on whatever `run_in`
+    /// returns, a cut-off run included.
+    #[tokio::test]
+    async fn a_cancel_that_says_why_is_recorded_as_saying_it() {
+        let (agent, _provider) = agent_with_tools(
+            vec![assistant(
+                vec![Block::Text {
+                    text: "never reached".into(),
+                }],
+                StopReason::EndTurn,
+            )],
+            vec![],
+            PermissionMode::Allow,
+        );
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_cancel(CancellationToken::new());
+        cx.cancel_handle().unwrap().cancel(CancelReason::Stopped);
+
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(outcome.stop_cause, StopCause::Stopped);
+        assert!(outcome.duration_secs.is_some(), "the clock is run_in's");
+        // The record derives from the outcome, so the split reaches the store.
+        let stats = crate::session::RunStats::from(&outcome);
+        assert_eq!(stats.stop_cause, Some(StopCause::Stopped));
+        assert!(stats.duration_secs.is_some());
+    }
+
+    /// The other side of the same rule: a bare token cancel — every caller
+    /// that has not been taught to say why, and every old front-end — still
+    /// records `Interrupted`, honestly unknown, never a guess at one of the
+    /// three. A `Shutdown` said through the handle records `Shutdown`.
+    #[tokio::test]
+    async fn a_bare_token_cancel_stays_unknown_which() {
+        for (reason, expect) in [
+            (None, StopCause::Interrupted),
+            (Some(CancelReason::Shutdown), StopCause::Shutdown),
+            (Some(CancelReason::Parked), StopCause::Parked),
+        ] {
+            let (agent, _provider) = agent_with_tools(
+                vec![assistant(
+                    vec![Block::Text {
+                        text: "never reached".into(),
+                    }],
+                    StopReason::EndTurn,
+                )],
+                vec![],
+                PermissionMode::Allow,
+            );
+            let token = CancellationToken::new();
+            let cx = agent.context().as_ref().clone().with_cancel(token.clone());
+            match reason {
+                None => token.cancel(),
+                Some(r) => cx.cancel_handle().unwrap().cancel(r),
+            }
+            let mut convo = Conversation::user("go");
+            let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+            assert_eq!(outcome.stop_cause, expect, "{reason:?}");
+        }
     }
 
     /// The review's first finding: a cancellation arriving during tool

@@ -254,6 +254,7 @@ mod tests {
 
     fn outcome() -> RunOutcome {
         RunOutcome {
+            duration_secs: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,
