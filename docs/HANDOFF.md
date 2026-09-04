@@ -1634,7 +1634,16 @@ ways); the tailnet door answers 200 with the new hash. `mecha-slack`,
 restarted together at 23:07:13Z, each verified from a journal window
 opened at the restart (`Connected to cosanlab as mecha. 1 owner(s)`, `1
 trigger(s), 1 enabled`, both `serve` doors, `Uvicorn running on
-127.0.0.1:7860`; the drain wrapper logs nothing at start). `mecha-mail`,
+127.0.0.1:7860`; the drain wrapper logs nothing at start). Re-run
+independently by mecha-83, who added the check a restart alone does not
+give — a restart proves a new *process*, not a new *file*: `readlink
+/proc/<serve pid>/exe` resolves to `~/.cargo/bin/mecha` with no
+`(deleted)`, and `stat -L` on both gives one inode (54145907, mtime
+23:06:56Z), so the serving process executes the installed bytes. **The
+`-L` is the check**: plain `stat /proc/<pid>/exe` reports the procfs
+symlink's own inode, which differs from the file's and reads exactly like
+a stale process — mecha-83 nearly reported one on its strength, and this
+lane reproduced the artifact (58438464 against 54145907). `mecha-mail`,
 the `mecha-slack` crate and both graph binaries untouched: `git diff
 --name-only 77eb704 4c71092 -- mecha-mail mecha-slack` is empty and the
 graph checkout has not moved. The `/proc/*/exe` sweep still shows the two
