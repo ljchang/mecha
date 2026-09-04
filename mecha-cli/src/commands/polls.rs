@@ -227,7 +227,13 @@ pub fn save(record: &PollRecord) -> Result<()> {
     for key in &record.dirty {
         current["lifecycle"][*key] = record.lifecycle()[*key].clone();
     }
-    let tmp = record.path.with_extension("json.tmp");
+    // A sibling unique to this process: three binaries write this file,
+    // and a shared temp name would let two of them interleave into a torn
+    // record that both then report as unreadable. `scan` walks `.json`
+    // only, so the sibling is invisible to it either way.
+    let tmp = record
+        .path
+        .with_extension(format!("json.{}.tmp", std::process::id()));
     std::fs::write(&tmp, serde_json::to_string_pretty(&current)?)?;
     std::fs::rename(&tmp, &record.path)
         .with_context(|| format!("renaming into {}", record.path.display()))?;
@@ -438,7 +444,10 @@ pub fn poll_marker(poll_id: &str) -> String {
 /// and the next tick staged a second, which is two events for one poll.
 fn adoptable_card(store: &OutboxStore, tool: &str, poll_id: &str) -> Result<Option<OutboxItem>> {
     let marker = poll_marker(poll_id);
-    Ok(store.items()?.into_iter().find(|item| {
+    // The strict walk: an item this binary cannot read is an error here,
+    // not a shorter list — a shorter list is how the orphan goes unseen and
+    // a second card gets staged, the exact outcome this guards against.
+    Ok(store.items_strict()?.into_iter().find(|item| {
         item.status == "pending"
             && item.author() == mecha_core::outbox::Author::Harness
             && item.tool == tool

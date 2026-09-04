@@ -338,7 +338,12 @@ pub fn save(record: &PollRecord) -> Result<()> {
     for key in &record.dirty {
         current["lifecycle"][*key] = record.lifecycle()[*key].clone();
     }
-    let tmp = record.path.with_extension("json.tmp");
+    // A sibling unique to this process: three binaries write this file,
+    // and a shared temp name would let two of them interleave into a torn
+    // record that both then report as unreadable.
+    let tmp = record
+        .path
+        .with_extension(format!("json.{}.tmp", std::process::id()));
     std::fs::write(&tmp, serde_json::to_string_pretty(&current)?)
         .with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &record.path)
