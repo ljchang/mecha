@@ -214,7 +214,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and both flags now write one JSON shape — `experiment`, `ab_rules`,
   `ab_config`, `holdout_in`, `judgement`, `pairs`, `arm_a`, `arm_b`,
   `flips` (each `{id, was, now}`) — where `--ab-rules` used to write
-  `without_rules`/`with_rules` and `flips` keyed the same way. Both arms'
+  `without_rules`/`with_rules` and `flips` keyed the same way. Two
+  narrowings: `--mcp-file` is refused with either A/B flag, since the
+  fixture servers it adds have no lever to record them under; and the
+  manifest's description says that both arms ran with the operator's
+  approval rules lifted, eval's fixture forcing, which no lever can name. Both arms'
   records carry the four knobs the machine and the flags set, so a control
   run at `--max-turns 60` is filed as such.
 

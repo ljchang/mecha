@@ -580,8 +580,15 @@ async fn ab_experiment(
         &shared,
         &shared_overrides,
     )?;
+    // The one condition no lever can name: eval lifts the operator's
+    // approval rules in both arms (`force_reproducible`), while `bare` on a
+    // manifest means rules *on* and `Arm::resolve_levers` refuses the
+    // name. Said in the one field eval sets, so a later `mecha exp run` of
+    // this design — which would keep the rules — is not mistaken for the
+    // same condition (found on review).
     manifest.description = format!(
-        "mecha eval A/B ({kind}): {label}; {} run(s) per case, scored pass^k, one pair per case",
+        "mecha eval A/B ({kind}): {label}; {} run(s) per case, scored pass^k, one pair per case; \
+         approval rules lifted in both arms (eval's fixture forcing, not expressible as a lever)",
         args.runs
     );
     let store = ExperimentStore::open_default(&name)?;
@@ -791,6 +798,15 @@ fn trial_of(
         .iter()
         .flat_map(|g| g.checks.iter().cloned())
         .collect();
+    // `RunStats::fold` is written for one session's *sequential* runs, so
+    // its `stop_cause`, `exhausted` and `ended_on_failed_call` are
+    // last-wins. These rows are independent replicates of one case, and
+    // "the last replicate's" is not what those field names say — so on a
+    // multi-run row the three are left unmeasured (`None` / their
+    // defaults) rather than borrowed from run k, and `duration_secs` is
+    // the total across replicates (found on review). A single run's row is
+    // that run's, in full.
+    let replicates = graded.len();
     let stats =
         mecha_core::session::RunStats::fold(graded.iter().map(|g| mecha_core::session::RunStats {
             turns: g.turns,
@@ -808,9 +824,9 @@ fn trial_of(
             duration_secs: Some(g.elapsed_ms as f64 / 1000.0),
             // Carried, not defaulted: a zero here would read as measured.
             compactions: g.compactions,
-            ended_on_failed_call: g.ended_on_failed_call,
+            ended_on_failed_call: replicates == 1 && g.ended_on_failed_call,
             blocked_sends: g.blocked_sends,
-            stop_cause: g.stop_cause,
+            stop_cause: if replicates == 1 { g.stop_cause } else { None },
             usage_complete: g.usage_complete,
             ..Default::default()
         }));
@@ -1468,8 +1484,23 @@ mod tests {
         assert_eq!(s.tool_denied, 2);
         assert_eq!(s.compactions, 2, "carried, not defaulted");
         assert_eq!(s.blocked_sends, 2);
-        assert!(s.ended_on_failed_call);
-        assert_eq!(s.stop_cause, Some(mecha_core::agent::StopCause::Completed));
+        assert!(
+            !s.ended_on_failed_call,
+            "unmeasured on a multi-run row, not run k's"
+        );
+        assert_eq!(s.stop_cause, None, "unmeasured on a multi-run row");
+        let one = [graded(1, true, 3)];
+        let single = trial_of(&planned, &one.iter().collect::<Vec<_>>())
+            .stats
+            .unwrap();
+        assert!(
+            single.ended_on_failed_call,
+            "a single run's row is that run's"
+        );
+        assert_eq!(
+            single.stop_cause,
+            Some(mecha_core::agent::StopCause::Completed)
+        );
         assert_eq!(s.duration_secs, Some(1.0));
         assert_eq!(t.status, mecha_core::experiment::TrialStatus::Done);
         let all_pass = [graded(1, true, 3), graded(2, true, 3)];
