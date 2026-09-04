@@ -1899,7 +1899,7 @@ impl Agent {
                     // Monotonicity is unaffected — this can only ever *add* a
                     // summary, never delay the harness's own.
                     if !asked
-                        && !pressure.over_by(
+                        && pressure.freed_enough(
                             limit,
                             crate::pressure::message_bytes(messages),
                             self.cfg.predictive_compaction,
@@ -6189,6 +6189,56 @@ mod tests {
     /// So the reactive check declines to act on the one turn where acting was
     /// the whole game, and finds out by being refused. Graded on
     /// `context_overflows`, which is what that counter is for.
+    #[tokio::test]
+    async fn a_turns_results_no_longer_take_the_next_request_over_the_window() {
+        let call = |id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "bulk".into(),
+                    input: json!({"n": 100_000}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let cfg = AgentConfig {
+            compact_at_tokens: Some(40_000),
+            ..AgentConfig::default()
+        };
+        let provider = SizedProvider::new(
+            Some(60_000),
+            vec![
+                call("t1"),
+                call("t2"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+        );
+        let agent = sized_agent(&provider, cfg);
+
+        let mut convo = Conversation::from(vec![Message::user("go")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        assert_eq!(outcome.text, "done");
+        assert_eq!(
+            outcome.context_overflows, 0,
+            "the prediction saw results that were already in `messages`; the \
+             reactive check could only have found out by sending them"
+        );
+        let sizes: Vec<u64> = provider
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, _)| *t)
+            .collect();
+        assert!(
+            sizes.iter().all(|t| *t <= 60_000),
+            "no request may exceed the window: {sizes:?}"
+        );
+        // And it acted rather than got lucky: the transcript was rewritten.
+        assert!(!convo.rewritten.is_empty());
+    }
+
     /// The `predictive_compaction` lever, measured as a pair on one fixture:
     /// with the forecast on, no request is ever sent at or over the
     /// threshold, because the free passes ran on the prediction before the
@@ -6251,56 +6301,6 @@ mod tests {
         );
         // And both arms still shrink: the check stayed.
         assert!(without.last().unwrap() < &40_000, "{without:?}");
-    }
-
-    #[tokio::test]
-    async fn a_turns_results_no_longer_take_the_next_request_over_the_window() {
-        let call = |id: &str| {
-            assistant(
-                vec![Block::ToolUse {
-                    id: id.into(),
-                    name: "bulk".into(),
-                    input: json!({"n": 100_000}),
-                }],
-                StopReason::ToolUse,
-            )
-        };
-        let cfg = AgentConfig {
-            compact_at_tokens: Some(40_000),
-            ..AgentConfig::default()
-        };
-        let provider = SizedProvider::new(
-            Some(60_000),
-            vec![
-                call("t1"),
-                call("t2"),
-                assistant(vec![Block::text("done")], StopReason::EndTurn),
-            ],
-        );
-        let agent = sized_agent(&provider, cfg);
-
-        let mut convo = Conversation::from(vec![Message::user("go")]);
-        let outcome = agent.run(&mut convo, None).await.unwrap();
-
-        assert_eq!(outcome.text, "done");
-        assert_eq!(
-            outcome.context_overflows, 0,
-            "the prediction saw results that were already in `messages`; the \
-             reactive check could only have found out by sending them"
-        );
-        let sizes: Vec<u64> = provider
-            .seen
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(t, _)| *t)
-            .collect();
-        assert!(
-            sizes.iter().all(|t| *t <= 60_000),
-            "no request may exceed the window: {sizes:?}"
-        );
-        // And it acted rather than got lucky: the transcript was rewritten.
-        assert!(!convo.rewritten.is_empty());
     }
 
     /// The deferral the loop has always meant to make.
@@ -6388,6 +6388,70 @@ mod tests {
         assert!(
             !convo.rewritten.is_empty(),
             "the transcript was rewritten, so the block was entered"
+        );
+    }
+
+    /// The same fixture with the prediction off is the pre-prediction
+    /// behaviour: the run enters the block over the reported threshold, the
+    /// passes retire that reading, and with no forecast to re-ask the loop
+    /// pays for the summary rather than reading a retired number as "freed
+    /// enough". Fails on the first cut of the lever, which skipped the
+    /// summariser here on every turn a pass freed a byte (found on review).
+    #[tokio::test]
+    async fn with_the_prediction_off_a_retired_reading_still_pays_for_the_summary() {
+        let big = "z".repeat(100_000);
+        let bulk = json!({"n": 100_000});
+        let mut history = vec![Message::user("go")];
+        for i in 0..5 {
+            history.push(Message::assistant(vec![Block::ToolUse {
+                id: format!("s{i}"),
+                name: "bulk".into(),
+                input: json!({"n": i}),
+            }]));
+            history.push(Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: format!("s{i}"),
+                content: "z".repeat(i),
+                is_error: false,
+            }]));
+        }
+        for id in ["a", "b"] {
+            history.push(Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: "bulk".into(),
+                input: bulk.clone(),
+            }]));
+            history.push(Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content: big.clone(),
+                is_error: false,
+            }]));
+        }
+        let cfg = AgentConfig {
+            compact_at_tokens: Some(60_000),
+            predictive_compaction: false,
+            ..AgentConfig::default()
+        };
+        let provider = SizedProvider::new(
+            None,
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "c".into(),
+                        name: "bulk".into(),
+                        input: json!({"n": 10}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+        );
+        let agent = sized_agent(&provider, cfg);
+        let mut convo = Conversation::from(history);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.text, "done");
+        assert!(
+            provider.summaries() >= 1,
+            "the reactive arm must not skip the summary on a retired reading"
         );
     }
 
@@ -7612,64 +7676,6 @@ mod tests {
     /// Before this, the model saw its own plan only through the echo in the
     /// last `todo` result, which made the whole mechanism conditional on the
     /// transcript never getting long.
-    /// The `carried_state` lever: the same fixture with the carry off
-    /// compacts the list away and does not put it back — the head has no
-    /// carried block. Fails on the old shape, where the carry was
-    /// unconditional and nothing could switch it off to measure it.
-    #[tokio::test]
-    async fn the_carried_state_lever_leaves_the_list_behind() {
-        let todo = Arc::new(crate::tool::todo::TodoTool::new());
-        let mut turns = vec![assistant(
-            vec![
-                Block::text("planning"),
-                Block::ToolUse {
-                    id: "todo1".into(),
-                    name: "todo".into(),
-                    input: json!({"items": [
-                        {"content": "fix the port", "status": "in_progress"},
-                        {"content": "run the tests", "status": "pending"}
-                    ]}),
-                },
-            ],
-            StopReason::ToolUse,
-        )];
-        for i in 0..10 {
-            turns.push(assistant(
-                vec![
-                    Block::text(format!("step {i}")),
-                    Block::ToolUse {
-                        id: format!("t{i}"),
-                        name: "echo".into(),
-                        input: json!({"value": "x"}),
-                    },
-                ],
-                StopReason::ToolUse,
-            ));
-        }
-        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
-        let (mut agent, _) = agent_with_tools(
-            turns,
-            vec![Arc::new(EchoTool), todo.clone()],
-            PermissionMode::Allow,
-        );
-        agent.cfg.compact_at_tokens = Some(1);
-        agent.cfg.compact_keep_recent = 2;
-        agent.cfg.max_turns = 6;
-        agent.cfg.force_final_answer = false;
-        agent.cfg.compact_validate = false;
-        agent.cfg.carried_state = false;
-
-        let mut convo = Conversation::user("the original task");
-        let outcome = agent.run(&mut convo, None).await.unwrap();
-        assert!(outcome.compactions >= 1, "the fixture must compact");
-        let head = convo.messages[0].text();
-        assert!(
-            !head.contains(crate::compact::CARRIED_HEADER),
-            "the carry is off, so no carried block: {head}"
-        );
-        assert!(!head.contains("fix the port"), "{head}");
-    }
-
     #[tokio::test]
     async fn the_task_list_survives_a_compaction() {
         let todo = Arc::new(crate::tool::todo::TodoTool::new());
@@ -7731,6 +7737,64 @@ mod tests {
         assert!(head.contains("[~] fix the port"), "{head}");
         assert!(head.contains("[ ] run the tests"), "{head}");
         assert!(head.contains(crate::compact::CARRIED_HEADER), "{head}");
+    }
+
+    /// The `carried_state` lever: the same fixture with the carry off
+    /// compacts the list away and does not put it back — the head has no
+    /// carried block. Fails on the old shape, where the carry was
+    /// unconditional and nothing could switch it off to measure it.
+    #[tokio::test]
+    async fn the_carried_state_lever_leaves_the_list_behind() {
+        let todo = Arc::new(crate::tool::todo::TodoTool::new());
+        let mut turns = vec![assistant(
+            vec![
+                Block::text("planning"),
+                Block::ToolUse {
+                    id: "todo1".into(),
+                    name: "todo".into(),
+                    input: json!({"items": [
+                        {"content": "fix the port", "status": "in_progress"},
+                        {"content": "run the tests", "status": "pending"}
+                    ]}),
+                },
+            ],
+            StopReason::ToolUse,
+        )];
+        for i in 0..10 {
+            turns.push(assistant(
+                vec![
+                    Block::text(format!("step {i}")),
+                    Block::ToolUse {
+                        id: format!("t{i}"),
+                        name: "echo".into(),
+                        input: json!({"value": "x"}),
+                    },
+                ],
+                StopReason::ToolUse,
+            ));
+        }
+        turns.push(assistant(vec![Block::text("done")], StopReason::EndTurn));
+        let (mut agent, _) = agent_with_tools(
+            turns,
+            vec![Arc::new(EchoTool), todo.clone()],
+            PermissionMode::Allow,
+        );
+        agent.cfg.compact_at_tokens = Some(1);
+        agent.cfg.compact_keep_recent = 2;
+        agent.cfg.max_turns = 6;
+        agent.cfg.force_final_answer = false;
+        agent.cfg.compact_validate = false;
+        agent.cfg.carried_state = false;
+
+        let mut convo = Conversation::user("the original task");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert!(outcome.compactions >= 1, "the fixture must compact");
+        let head = convo.messages[0].text();
+        assert!(
+            !head.contains(crate::compact::CARRIED_HEADER),
+            "the carry is off, so no carried block: {head}"
+        );
+        assert!(!head.contains("fix the port"), "{head}");
     }
 
     #[tokio::test]

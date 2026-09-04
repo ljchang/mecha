@@ -1694,7 +1694,7 @@ mod tests {
                     no_carried_state: no_flag,
                     ..GlobalOpts::default()
                 };
-                let three = [
+                let switches = [
                     Lever::StepEscalation,
                     Lever::Boredom,
                     Lever::CompactValidate,
@@ -1705,7 +1705,7 @@ mod tests {
                 // Unfolded: the record says what the config says, flag or no
                 // flag. This is the assertion that fails on both earlier shapes.
                 let unfolded = levers_off(&opts, &cfg);
-                for lever in three {
+                for lever in switches {
                     assert_eq!(
                         unfolded.contains(&lever),
                         !cfg_value,
@@ -1735,7 +1735,7 @@ mod tests {
                     "cfg={cfg_value} flag={no_flag}"
                 );
                 let folded = levers_off(&opts, &cfg);
-                for lever in three {
+                for lever in switches {
                     assert_eq!(
                         folded.contains(&lever),
                         !expect,
