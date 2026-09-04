@@ -415,7 +415,13 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
         println!("every reflection carries a situation — nothing to backfill");
         return Ok(());
     }
-    // One read per session, shared by every reflection that cites it.
+    // The store listed once — `Session::find` is a full scan of the
+    // directory per call (found on review) — then one read per cited
+    // session, shared by every reflection that cites it.
+    let paths: std::collections::HashMap<String, std::path::PathBuf> = Session::list(sessions_dir)?
+        .into_iter()
+        .map(|(meta, path)| (meta.id, path))
+        .collect();
     let mut by_session: std::collections::HashMap<
         String,
         Result<
@@ -434,8 +440,10 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
             continue;
         }
         let read = by_session.entry(r.session_id.clone()).or_insert_with(|| {
-            let path = Session::find(sessions_dir, &r.session_id).map_err(|e| format!("{e:#}"))?;
-            let (meta, convo) = Session::load(&path).map_err(|e| format!("{e:#}"))?;
+            let path = paths
+                .get(&r.session_id)
+                .ok_or_else(|| format!("no session matching \"{}\"", r.session_id))?;
+            let (meta, convo) = Session::load(path).map_err(|e| format!("{e:#}"))?;
             Ok((meta, extract_interventions(&convo.messages)))
         });
         match read {
@@ -446,10 +454,9 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
                     r.id.clone(),
                     "no intervention with this trigger and text in the transcript".into(),
                 )),
-                Backfilled::Ambiguous(n) => unmatched.push((
-                    r.id.clone(),
-                    format!("{n} interventions fit with different tool windows"),
-                )),
+                Backfilled::Ambiguous(n) => {
+                    unmatched.push((r.id.clone(), format!("fits {n} different tool windows")))
+                }
             },
         }
     }
