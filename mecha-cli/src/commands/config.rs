@@ -172,6 +172,8 @@ mark_untrusted_output = true
 # MCP servers. Their tools appear as `<name>__<tool>`.
 # [[mcp]]
 # name = "graph"
-# command = "/path/to/mecha-graph-mcp"
+# command = "mecha-graph-mcp"      # on PATH after `cargo install mecha-graph-mcp`
 # args = []
+# # Its kg_* tools carry their own namespace; skip the graph__ prefix.
+# prefix_tools = false
 "#;
