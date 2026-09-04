@@ -857,7 +857,9 @@ async fn appraise(
                 // it did not load, and every session's reading is partial
                 // for it.
                 "charter_read": !charter_unreadable,
-                "charter_has_sensors": charter.as_ref().is_some_and(|c| c.has_sensors()),
+                // `null` when the charter did not load: unknown, not
+                // `false` — a dash is never zero.
+                "charter_has_sensors": charter.as_ref().map(|c| c.has_sensors()),
                 "labels": labels,
                 "valence": {
                     "signed_sessions": signed,

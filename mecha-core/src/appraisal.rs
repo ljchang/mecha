@@ -424,11 +424,19 @@ impl Affect {
     /// a `Distress` is a rejected draft or a steer, a verdict the owner
     /// already delivered with nothing in it to put on a board, and staging
     /// a "revisit" task from one would override the decision the owner just
-    /// made. Every other non-`Neutral` word stays as it was there. Here
-    /// rather than in the gate, so the split lives beside the variant it
-    /// is about and a new variant has to answer it.
+    /// made. A *positive* word names no residue either — `Pride` and
+    /// `Excitement` say the run served a line well or is expected to, and
+    /// staging a follow-up from one would be the same override, one sign
+    /// over (found on review: dormant while the closure path always passes
+    /// a `Task` goal, but the gate is defined on the label and `Pride` has
+    /// a producer now). Every other word names something a person might
+    /// act on. Here rather than in the gate, so the split lives beside the
+    /// variant it is about and a new variant has to answer it.
     pub fn names_residue(self) -> bool {
-        !matches!(self, Affect::Neutral | Affect::Distress)
+        !matches!(
+            self,
+            Affect::Neutral | Affect::Distress | Affect::Pride | Affect::Excitement
+        )
     }
 
     /// The wire form — `serde`'s own `rename_all = "snake_case"`, spelled
@@ -926,6 +934,33 @@ pub fn of_session(
     end_taint: Option<crate::agent::Taint>,
     created_at: String,
 ) -> Appraisal {
+    // **A charter reference is kept only if the loaded charter contains
+    // the line.** `goals` may carry the model's own `serves:` string
+    // (`for_transcript`, via the plan), and `GoalRef::from_str` constrains
+    // only the kind word — the id is free text a plan could put anything
+    // in. Left alone, `serves: charter:no-such-line` plus one draft sent
+    // unchanged would derive `Pride` on a machine with no charter at all
+    // (found on review), which makes the label a self-report — the one
+    // thing this module says it structurally is not. So a `Charter` id is
+    // checked against `records.charter` here, before any error is built:
+    // named and present, it stays; named and absent, or no charter
+    // consulted (the live readout reads no stores), or the charter
+    // unreadable, it is dropped and the run appraises as goal-less on that
+    // reference. Fail-closed on purpose — unknown is never clean — and
+    // `Task`/`Setpoint` references are untouched: the board owns those
+    // ids and the closure appraisal supplies its own. The attributed
+    // references added below come from the charter itself, so they need
+    // no check.
+    let goals: Vec<GoalRef> = goals
+        .iter()
+        .filter(|g| match g {
+            GoalRef::Charter(id) => records
+                .charter
+                .is_some_and(|c| c.lines().iter().any(|l| &l.id == id)),
+            GoalRef::Task(_) | GoalRef::Setpoint(_) => true,
+        })
+        .cloned()
+        .collect();
     let goal = goals.first().cloned();
     let mut errors = Vec::new();
 
@@ -1315,7 +1350,7 @@ pub fn of_session(
     // frustration's per-goal repetition both see it. `goal.is_none()` per
     // error rather than once for the run, so a future arm that fills its
     // own goal is left alone.
-    let mut goals = goals.to_vec();
+    let mut goals = goals;
     if let Some(charter) = records.charter {
         for e in errors.iter_mut().filter(|e| e.goal.is_none()) {
             let kinds = sensor_kinds_for(&e.cite);
@@ -2321,11 +2356,21 @@ mod tests {
             7
         );
         // The residue split every variant has to answer: the two words that
-        // are a verdict with nothing to put on a board, and everything else.
-        assert!(!Affect::Neutral.names_residue());
-        assert!(!Affect::Distress.names_residue());
+        // are a verdict with nothing to put on a board, the two positive
+        // words, and everything else.
+        for a in [
+            Affect::Neutral,
+            Affect::Distress,
+            Affect::Pride,
+            Affect::Excitement,
+        ] {
+            assert!(!a.names_residue(), "{a:?} names no residue");
+        }
         for a in Affect::ALL {
-            if !matches!(a, Affect::Neutral | Affect::Distress) {
+            if !matches!(
+                a,
+                Affect::Neutral | Affect::Distress | Affect::Pride | Affect::Excitement
+            ) {
                 assert!(a.names_residue(), "{a:?}");
             }
         }
@@ -3487,6 +3532,92 @@ text = "Tell me the truth early."
         );
         assert_eq!(a.label, Affect::Pride);
         assert_eq!(Valence::of(&a).compact(), "+1.0");
+    }
+
+    /// The label must not be derivable from a string the model wrote
+    /// (found on review): `serves: charter:no-such-line` plus one clean
+    /// send used to reach `Pride` with no charter on the machine, because
+    /// `GoalRef::from_str` constrains only the kind word. A charter
+    /// reference survives into the record only if the loaded charter
+    /// contains the line; absent, unreadable or not consulted, it is
+    /// dropped and the run appraises goal-less on it. `Task` references
+    /// are the board's and pass through.
+    #[test]
+    fn a_charter_reference_the_loaded_charter_does_not_contain_is_dropped() {
+        let sent = draft("o1", "sent", false);
+        let fabricated = GoalRef::Charter("no-such-line".into());
+        // No charter consulted at all — the live readout's shape.
+        let a = of_session(
+            "s1",
+            &stats(),
+            std::slice::from_ref(&fabricated),
+            &[],
+            SessionRecords {
+                drafts: &[&sent],
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        assert_eq!(
+            a.label,
+            Affect::Neutral,
+            "no Pride from a model-authored id"
+        );
+        assert!(a.goals.is_empty());
+        assert_eq!(a.errors[0].goal, None);
+
+        // A charter that does not contain the line: same answer.
+        let charter = charter_with_sensors();
+        let a = of_session(
+            "s1",
+            &stats(),
+            std::slice::from_ref(&fabricated),
+            &[],
+            SessionRecords {
+                drafts: &[&sent],
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        // The fabricated reference is gone; the sensored line then
+        // attributes the draft, which is the charter's own reference.
+        assert_eq!(a.goals, vec![GoalRef::Charter("answer-what-waits".into())]);
+
+        // A line the charter does contain, named by the plan, is kept —
+        // the `serves:` producer works when it tells the truth.
+        let real = GoalRef::Charter("tell-the-truth-early".into());
+        let a = of_session(
+            "s1",
+            &stats(),
+            std::slice::from_ref(&real),
+            &[],
+            SessionRecords {
+                drafts: &[&sent],
+                charter: Some(&charter),
+                ..Default::default()
+            },
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        assert_eq!(a.goals, vec![real.clone()]);
+        assert_eq!(a.errors[0].goal, Some(real));
+        assert_eq!(a.label, Affect::Pride);
+
+        // A task reference passes through unchecked: the board owns it.
+        let task = GoalRef::Task("t1".into());
+        let a = of_session(
+            "s1",
+            &stats(),
+            std::slice::from_ref(&task),
+            &[],
+            SessionRecords::default(),
+            Some(crate::agent::Taint::default()),
+            "2026-09-04T00:00:00Z".into(),
+        );
+        assert_eq!(a.goals, vec![task]);
     }
 
     /// A run that named its own goal keeps it: the closure appraisal reads
