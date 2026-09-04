@@ -388,6 +388,69 @@ pub fn append(path: &Path, entry: &LedgerEntry) -> Result<()> {
     Ok(())
 }
 
+/// Bring a record up to date with what the ledger says already happened —
+/// the repair for a tick that sent (and ledgered) but could not write the
+/// record. Runs over every record, not only the owed ones, because a
+/// record whose jobs are all in the ledger is exactly the one that looks
+/// like it needs nothing. Returns whether anything changed.
+pub fn reconcile(record: &mut PollRecord, entries: &[LedgerEntry]) -> bool {
+    let mut changed = false;
+    let stamp = |at: &str| {
+        DateTime::parse_from_rfc3339(at)
+            .map(|d| d.with_timezone(&Utc))
+            .ok()
+    };
+    let poll_id = record.poll_id.clone();
+    for entry in entries.iter().filter(|e| e.poll_id == poll_id) {
+        match entry.action.as_str() {
+            "invited" => {
+                if record.lifecycle()["invites"][&entry.name].is_null()
+                    && record.lifecycle()["invites"].get(&entry.name).is_some()
+                {
+                    if let Some(at) = stamp(&entry.at) {
+                        mark_invited(record, &entry.name, at);
+                        changed = true;
+                    }
+                }
+            }
+            "booked" if record.lifecycle()["booked"].is_null() => {
+                if let Some(at) = stamp(&entry.at) {
+                    mark_booked(record, &entry.event_id, &entry.account, at);
+                    changed = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    // Every name still owed a nudge has one in the ledger: the tick sent
+    // them and lost the write.
+    let due: Vec<String> = record.lifecycle()["nudge_due"]
+        .as_array()
+        .map(|d| {
+            d.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !due.is_empty() {
+        let nudged: Vec<&LedgerEntry> = entries
+            .iter()
+            .filter(|e| e.poll_id == poll_id && e.action == "nudged")
+            .collect();
+        if due
+            .iter()
+            .all(|name| nudged.iter().any(|e| &e.name == name))
+        {
+            if let Some(at) = nudged.iter().filter_map(|e| stamp(&e.at)).max() {
+                mark_nudged(record, at);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 /// The key a job writes to the ledger, and reads before running.
 pub fn job_key(poll_id: &str, job: &Job) -> (String, String, String) {
     match job {
@@ -612,6 +675,50 @@ mod tests {
             vec!["conflict"]
         );
         assert!(jobs_due(&r).is_empty());
+    }
+
+    /// A tick that ledgered a send and then failed to write the record is
+    /// repaired from the ledger — for a record that no longer looks owed.
+    #[test]
+    fn the_ledger_repairs_a_record_the_tick_could_not_write() {
+        let entry = |name: &str, action: &str, event: &str| LedgerEntry {
+            poll_id: "lab-20300128".into(),
+            name: name.into(),
+            action: action.into(),
+            event_id: event.into(),
+            account: "work".into(),
+            at: "2030-01-28T12:00:00Z".into(),
+        };
+        let entries = vec![
+            entry("Priya", "invited", ""),
+            entry("Tal", "nudged", ""),
+            entry("", "booked", "ev7"),
+            LedgerEntry {
+                poll_id: "other".into(),
+                ..entry("Tal", "invited", "")
+            },
+        ];
+        let mut r = record(json!({
+            "invites": {"Priya": null, "Tal": null},
+            "nudge_due": ["Tal"],
+            "verdict": "book",
+            "book": {"start": "2030-02-05T18:00:00Z", "end": "2030-02-05T19:00:00Z"},
+        }));
+        assert!(reconcile(&mut r, &entries));
+        let life = r.lifecycle();
+        assert_eq!(life["invites"]["Priya"], "2030-01-28T12:00:00Z");
+        assert!(
+            life["invites"]["Tal"].is_null(),
+            "another poll's row is not ours"
+        );
+        assert_eq!(life["nudge_due"], json!([]));
+        assert_eq!(life["nudged_at"], "2030-01-28T12:00:00Z");
+        assert_eq!(life["booked"]["event_id"], "ev7");
+        assert!(jobs_due(&r)
+            .iter()
+            .all(|j| matches!(j, Job::Invite(p) if p.name == "Tal")));
+        // Idempotent: a second pass changes nothing.
+        assert!(!reconcile(&mut r, &entries));
     }
 
     /// The ledger key is what stops a re-send: one invitation per person per

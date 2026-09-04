@@ -447,7 +447,7 @@ mod tests {
         assert_eq!(row.lifecycle.as_deref(), Some("needs a pick"));
         assert_eq!(
             row.ranked,
-            vec!["Tue 5 Feb, 1:00–2:00 PM EST — Tal if needed"]
+            vec!["Tue 5 Feb, 1:00 PM–2:00 PM EST — Tal if needed"]
         );
         let detail = text(&row.detail_lines());
         assert!(detail.contains("lifecycle: needs a pick"), "{detail}");

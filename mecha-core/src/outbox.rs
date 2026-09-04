@@ -77,6 +77,11 @@ pub enum Author {
     #[default]
     Model,
     Harness,
+    /// A value this binary does not know — written by a newer one. Loads
+    /// rather than failing the item, and is treated as not-a-model's for
+    /// the miner: unknown is never clean.
+    #[serde(other)]
+    Unknown,
 }
 
 impl OutboxKind {
@@ -313,7 +318,7 @@ impl OutboxItem {
         if self.kind != OutboxKind::Message || self.status != "sent" {
             return None;
         }
-        if self.author == Author::Harness {
+        if self.author != Author::Model {
             return None;
         }
         Some(match self.edited() {
@@ -483,6 +488,18 @@ impl OutboxStore {
         taint: Taint,
         from: Provenance,
     ) -> Result<OutboxItem> {
+        self.stage_as(Author::Model, tool, kind, args, taint, from)
+    }
+
+    fn stage_as(
+        &self,
+        author: Author,
+        tool: &str,
+        kind: OutboxKind,
+        args: Value,
+        taint: Taint,
+        from: Provenance,
+    ) -> Result<OutboxItem> {
         let Provenance {
             session_id,
             workspace,
@@ -504,7 +521,7 @@ impl OutboxStore {
             resolved_at: None,
             reason: None,
             error: None,
-            author: Author::Model,
+            author,
             call_id,
             filled_defaults,
         };
@@ -517,16 +534,14 @@ impl OutboxStore {
     /// answers), and [`Author::Harness`] so its release is never read as
     /// evidence about drafting. Reviewed and released exactly as any message.
     pub fn stage_by_harness(&self, tool: &str, args: Value) -> Result<OutboxItem> {
-        let mut item = self.stage(
+        self.stage_as(
+            Author::Harness,
             tool,
             OutboxKind::Message,
             args,
             Taint::default(),
             Provenance::default(),
-        )?;
-        item.author = Author::Harness;
-        self.write_item(&item)?;
-        Ok(item)
+        )
     }
 
     /// Every item, oldest first. A file that fails to parse is skipped with
@@ -1565,6 +1580,17 @@ mod tests {
         .unwrap();
         assert_eq!(legacy.author, Author::Model);
         assert!(legacy.mineable_as_writing());
+
+        // A value from a newer binary loads, and is nobody's draft.
+        let future: OutboxItem = serde_json::from_value(json!({
+            "id": "20260101-000000-abd", "status": "sent", "tool": "mail__send",
+            "args_before": {"body": "a"}, "args": {"body": "b"},
+            "summary": "mail__send", "created_at": "2026-01-01T00:00:00Z",
+            "author": "scheduler",
+        }))
+        .unwrap();
+        assert_eq!(future.author, Author::Unknown);
+        assert_eq!(future.writing_outcome(), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

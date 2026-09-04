@@ -536,10 +536,24 @@ async fn polls(
     }
     let ledger = pl::ledger_path()?;
     let _sweep = mecha_mail::bookings::lock_sweep(&ledger)?;
-    let done = pl::handled(&ledger);
-    let (records, problems) = pl::scan(&dir)?;
+    let entries = pl::entries(&ledger);
+    let done: std::collections::BTreeSet<_> = entries
+        .iter()
+        .map(|e| (e.poll_id.clone(), e.name.clone(), e.action.clone()))
+        .collect();
+    let (mut records, problems) = pl::scan(&dir)?;
     for problem in &problems {
         eprintln!("unreadable: {problem}");
+    }
+    // What the ledger says went but the record never learned — a tick that
+    // sent and could not write — is repaired first, over every record.
+    for record in records.iter_mut() {
+        if pl::reconcile(record, &entries) {
+            match pl::save(record) {
+                Ok(()) => println!("{}: record caught up with the ledger", record.poll_id),
+                Err(e) => eprintln!("{}: writing the record — {e:#}", record.poll_id),
+            }
+        }
     }
 
     let owed: Vec<(pl::PollRecord, Vec<pl::Job>)> = records
