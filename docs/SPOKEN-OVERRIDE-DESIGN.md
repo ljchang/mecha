@@ -99,6 +99,23 @@ and it is avoided by readback rather than by parsing.
 4. Everything else is unchanged: the confirmation still gates the send, the
    echo window still slides, `MAX_REASKS` still bounds the re-ask.
 
+**The cycle needs its own bound, and `MAX_REASKS` is not it** — that counts
+`NotConvinced` re-asks, and a re-offer is a fresh offer. The loop is not
+hypothetical: the re-offer's *tail speaks the new value*, which is exactly the
+word most likely to come back off the speaker, and an override token is what
+it would come back as. Two rules, and the first is the one that matters:
+
+- **The value already set is never an alternative.** Overriding `account` to
+  `personal` when it is already `personal` is not a change, and an echo of the
+  tail is precisely that no-op. Removing it from the offered set makes the
+  dominant loop unrepresentable rather than bounded — the same move as taking
+  the accept menu off the tail in #158, one layer up. Reaching A→B→A then
+  needs the room to echo a name the tail never said.
+- **And a small per-draft cap regardless**, terminating the way everything
+  else on this surface does: state the value, stop offering alternatives, and
+  leave it for the page. A bound whose argument is "the other rule makes this
+  unreachable" is the kind that stops being true quietly.
+
 ### 4.2 Where the alternatives come from
 
 **The live tool schema, read at offer time — not a new field on `OutboxItem`.**
@@ -138,10 +155,17 @@ it looks odd" — run it through `review_policy::parse_answer` and drop any
 option that returns anything but `NotAnAnswer`. An account named `"yes"`,
 `"ok"`, `"later"`, `"read"` or `"no"` must never enter the spoken vocabulary.
 
-Fail closed, per draft: if any alternative for a field collides, that field
-gets **no spoken override at all** and the owner uses the page. Dropping only
-the colliding option would leave a set whose safety depends on which names a
-server happened to choose.
+Fail closed, and **over the draft's whole spoken vocabulary rather than each
+field against the answer lists**. `mail_reply` has two overridable fields, so
+collisions are pairwise as well as against `parse_answer`: a server-declared
+account named `reply all` passes `parse_answer` cleanly and collides with
+§4.4's boolean pair, and neither field checked alone would see it. If any two
+tokens in a draft's spoken vocabulary collide — or any one of them parses as
+an answer — that **draft** gets no spoken override and the owner uses the page.
+
+Per draft rather than per option, for the same reason: dropping only the
+colliding token leaves a set whose safety depends on which names a server
+happened to choose. Found on review, which had this as a per-field rule.
 
 This wants the test shape `no_single_word_of_the_reask_is_an_answer` already
 uses — checked against the real phrase lists, not against a comment, because a
@@ -183,6 +207,14 @@ fit, but it is the *model's* question — session-bound, `ask_user`-authored,
 answered on the page, and part of the draft-time path in §1. The review-time
 override reuses `Pending`/`react` and `update_args` and persists nothing new.
 Two mechanisms, two moments; a pointer between them, not a merge.
+
+**"Reuses `react`" is true of the machinery and not of the signature.** `react`
+is pure over `(utterance, pending, head, next)`; a schema-derived vocabulary is
+computed at *offer* time (§4.2) and needed at *answer* time (§4.1.2), so it has
+to reach `react` as an argument or ride on `Pending`. `Pending` is in-memory
+and already carries the echo window, so it is the natural home — but that is a
+real signature change, and this doc should not imply otherwise while being
+precise about access paths everywhere else.
 
 **No open-ended spoken values**, per §4.4.
 
