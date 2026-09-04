@@ -262,19 +262,29 @@ def reconstruct(trial):
 # ─── Layers 1 and 3: the real reader ─────────────────────────────────────────
 
 
-def run_appraise(mecha, home, session_dir, appraise=False, session_id=None):
+def run_appraise(mecha, home, session_dir, appraise=False, session_id=None, model=None):
     """The free readout, or with `appraise` the paid pass too (one appraisal,
     since the store holds one session). Returns the CLI's JSON plus, for the
     paid pass, the appraiser's own reasoning line off stderr as `reasoning`
     — the model's words, kept as data beside the verdict."""
     env = dict(os.environ, MECHA_HOME=str(home), MECHA_SESSION_DIR=str(session_dir))
-    # The scratch home must not inherit a session kind, or `MECHA_SESSION_KIND`
-    # from an operator shell would mark nothing here (it only marks writes).
-    env.pop("MECHA_SESSION_KIND", None)
+    # The operator's shell must not reach the readout. `MECHA_SESSION_KIND`
+    # would mark nothing here (it only marks writes) but is popped on
+    # principle; `MECHA_LOG` writes trace lines to stderr *after* the
+    # appraiser's reasoning line, which is read to the end of stderr; and
+    # `MECHA_PROVIDER` / `MECHA_MODEL` merge *above* the scratch config, so
+    # the model that answered could differ from the one `/props` named and
+    # `--out` recorded (found on review). The scratch home is also the cwd,
+    # so no `mecha.toml` in the operator's directory layers in either.
+    for var in ("MECHA_SESSION_KIND", "MECHA_LOG", "MECHA_PROVIDER", "MECHA_MODEL"):
+        env.pop(var, None)
     cmd = [mecha, "sessions", "appraise", "--days", DAYS, "--json"]
     if appraise:
-        cmd += ["--appraise", "--max-appraisals", "1"]
-    p = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        # Pinned on the command line as well as in the scratch config: flags
+        # sit above every layer, so this is the one spelling nothing can
+        # override, and it names the alias `/props` answered.
+        cmd += ["--appraise", "--max-appraisals", "1", "--provider", "local", "--model", model]
+    p = subprocess.run(cmd, env=env, cwd=str(home), capture_output=True, text=True)
     if p.returncode != 0:
         sys.exit(f"{mecha} sessions appraise failed over {session_dir}:\n{p.stderr}")
     start = p.stdout.find("{")
@@ -467,7 +477,9 @@ def main():
         v = readout["valence"]
         appraiser = None
         if args.appraise:
-            paid = run_appraise(args.mecha, home, one, appraise=True, session_id=t.session.stem)
+            paid = run_appraise(
+                args.mecha, home, one, appraise=True, session_id=t.session.stem, model=appraiser_model
+            )
             tally = paid["appraiser"]
             # The pass must have been driven, once: "the model looked and
             # found nothing" and "no appraisal ran" are opposite findings,
