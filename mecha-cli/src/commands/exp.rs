@@ -524,7 +524,10 @@ async fn run_one(
     } = mecha_core::experiment::child_invocation(real, arm, trial.seed)?;
     // What the home's own stages accepted rides into the next task, under
     // the arm's pins — or a lifetime's `ruminate` would measure as nothing.
-    mecha_core::experiment::fold_home_overrides(&mut config, &home, arm)?;
+    // A single runs no stage and folds nothing.
+    if manifest.kind == TrialKind::Lifetime {
+        mecha_core::experiment::fold_home_overrides(&mut config, &home, arm)?;
+    }
     std::fs::write(home.join("config.toml"), toml::to_string_pretty(&config)?)
         .with_context(|| format!("writing {}", home.join("config.toml").display()))?;
 

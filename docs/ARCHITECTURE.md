@@ -3103,7 +3103,11 @@ comparison over a chosen set**, with the design written before the run.
   home's `overrides.toml` beneath every file layer and the rendered
   `config.toml` names every `[agent]` key, so `fold_home_overrides` folds
   the home's own accepted overrides into the next task's config over the
-  arm's rendering — the arm's pinned keys still win, being the design —
+  arm's rendering — the arm's pinned keys still win, being the design;
+  `seed_home` drops the machine's own `overrides.toml` from the seeded
+  copy, since its values already sit in the rendered config beneath the
+  operator's file where the loader puts them, so the home's file holds
+  only what the home's stages accepted, and a single never folds —
   or `ruminate`, the one stage with an effect today, would have measured
   as nothing with the ledger saying it ran (found on review). A retried
   stage's log is a second file (`-a2`), as its ledger line is a second
@@ -3118,8 +3122,11 @@ comparison over a chosen set**, with the design written before the run.
   driver does not run; `sensors_in_brief` is `[agent] sensors_in_brief`
   in the trial home's config — `diagnose::Evidence::without_sensors`
   withholds the homeostat's means and the guilt mean from the
-  diagnostician's brief, the sensors' only reader, so withholding them is
-  the whole ablation — and the counters stay, because a lever removes a
+  diagnostician's brief **by omission** (the lines leave the brief,
+  never rendered as the no-data sentinel, which would tell the
+  diagnostician the corpus recorded nothing when it did), the sensors'
+  only reader, so withholding them is the whole ablation — and the
+  counters stay, because a lever removes a
   disposition, never the record. The stages the design names and nothing
   has built (`followup_staging`, `prioritised_replay`) are not levers: a
   lever must be a switch that exists. What a lifetime can show today has

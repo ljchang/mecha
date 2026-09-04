@@ -194,6 +194,11 @@ pub struct Evidence {
     /// treating a rise in both as two corroborating signals is seeing one
     /// cause twice.
     pub mean_anticipated_guilt: Option<f64>,
+    /// The sensors were withheld from this brief (`without_sensors`): the
+    /// pressure and guilt lines are *omitted*, never rendered as the
+    /// no-data sentinel, because "unknown (no denominator)" is a claim
+    /// about the corpus and the lever has no business making one.
+    pub sensors_withheld: bool,
     /// Calls a human or a policy refused, and sends the interlock refused.
     ///
     /// Reported beside the error rate rather than folded into it, because the
@@ -279,6 +284,7 @@ impl Evidence {
             // an unknown threshold must not become a confident sentence.
             compact_at_fraction: None,
             mean_anticipated_guilt: corpus.mean_anticipated_guilt(),
+            sensors_withheld: false,
             workspaces: {
                 let mut w: Vec<(String, usize)> = corpus
                     .by_workspace()
@@ -316,16 +322,19 @@ impl Evidence {
     }
 
     /// The brief with the sensors withheld — the homeostat's pressure means
-    /// and the guilt sensor set to `None`, which the renderer already reads
-    /// as "no row sensed it" and says nothing for. `[agent]
-    /// sensors_in_brief = false`, a lifetime experiment's stage lever: the
-    /// sensors' only reader is this brief, so this is the whole ablation.
-    /// The counters (overflows, stop causes, tool errors) are the record,
-    /// not sensors, and stay.
+    /// and the guilt sensor dropped, and their lines **omitted** from the
+    /// rendering rather than printed as `unknown (no denominator)`, which
+    /// is the brief's word for "no row sensed it" and would tell the
+    /// diagnostician something false about a corpus that did (found on
+    /// review). `[agent] sensors_in_brief = false`, a lifetime experiment's
+    /// stage lever: the sensors' only reader is this brief, so this is the
+    /// whole ablation. The counters (overflows, stop causes, tool errors)
+    /// are the record, not sensors, and stay.
     pub fn without_sensors(mut self) -> Evidence {
         self.mean_peak_context_pressure = None;
         self.max_peak_context_pressure = None;
         self.mean_anticipated_guilt = None;
+        self.sensors_withheld = true;
         self
     }
 
@@ -444,6 +453,17 @@ impl Evidence {
                 .map(|g| format!("{g:.2}"))
                 .unwrap_or_else(|| "unknown (no denominator)".into()),
         );
+        if self.sensors_withheld {
+            // Withheld by omission: the two sensor lines leave the brief
+            // whole, so the diagnostician reads less, never something else.
+            out = out
+                .lines()
+                .filter(|l| {
+                    !l.starts_with("context pressure:") && !l.starts_with("avg anticipated guilt:")
+                })
+                .map(|l| format!("{l}\n"))
+                .collect();
+        }
         if !self.metrics.is_empty() {
             out.push_str(
                 "\nwhat each metric you may predict currently costs — a metric no run has \
@@ -1363,10 +1383,14 @@ rationale: the threshold is too low";
         assert_eq!(quiet.mean_anticipated_guilt, None);
         assert_eq!(quiet.context_overflows, Some(2));
         assert_eq!(quiet.tool_errors, 7);
-        assert!(quiet
-            .brief()
-            .contains("avg anticipated guilt: unknown (no denominator)"));
+        let quiet_brief = quiet.brief();
+        assert!(
+            !quiet_brief.contains("context pressure") && !quiet_brief.contains("anticipated guilt"),
+            "withheld by omission, never as the no-data sentinel:\n{quiet_brief}"
+        );
+        assert!(quiet_brief.contains("compactions: "), "the counters stay");
         assert!(e.brief().contains("avg anticipated guilt: 0.10"));
+        assert!(e.brief().contains("context pressure: avg peak 40.0%"));
     }
 
     #[test]
