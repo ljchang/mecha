@@ -135,14 +135,26 @@ which line. Every kind listed does something today; two the design names
 being accepted and ignored. One consequence of the refusal to know before you
 author a sensor: a machine still on an older release does not refuse to
 start — it runs with **no charter at all**, with one stderr line, until
-`mecha doctor` reports it. Update every machine first. What a sensor buys today is
-**attribution**: a run that released a draft, parked a question or triaged a
-request is appraised *against that line*, with no plan and no `serves:`, which
-is how an ordinary run comes to reference the charter at all — and how a draft
-you sent unchanged can label `pride` — a delivery against the line, never a number that merely moved. The sensor's kind and setpoint never
-enter a prompt; the line's text does, exactly as an unsensored line's does. The
-web editor shows a sensor beside its line and carries it through a re-rank; to
-add or change one, edit the TOML.
+`mecha doctor` reports it. Update every machine first. What a sensor buys is
+**attribution** and a **reading**. Attribution: a run that released a draft,
+parked a question or triaged a request is appraised *against that line*, with
+no plan and no `serves:`, which is how an ordinary run comes to reference the
+charter at all — and how a draft you sent unchanged can label `pride` — a
+delivery against the line, never a number that merely moved. The reading:
+each sensored line's current value shows beside it on `mecha charter`, the
+TUI's `/charter` and the web settings page (`3d 16h, past the 24h setpoint`,
+`nothing waiting`, or `store unreadable` — an unreadable store is never shown
+as zero), every run records it as it began, and `mecha doctor` judges stuck
+drafts, unanswered questions and stale requests against *your* setpoint
+rather than its own constant, naming the line. A line that has read past its
+setpoint on each of the last ten runs is a doctor finding too: either the
+debt is real, or the setpoint is in the wrong unit — an hour where you meant a
+day — and doctor says both, because it cannot tell. A setpoint of zero is
+refused at load for the same reason: nothing could ever be within it. The
+sensor's kind, setpoint and reading never enter a prompt; the line's text
+does, exactly as an unsensored line's does. The web editor shows a sensor
+beside its line and carries it through a re-rank; to add or change one, edit
+the TOML.
 
 **Order is rank, and there is no priority field.** Value conflict — *protect the
 owner* against *don't let a colleague down* — is the measured cause of goal

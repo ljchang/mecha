@@ -46,6 +46,46 @@ pub struct CharterModal {
     pub over_budget: bool,
     /// One line of feedback after an edit — saved, unchanged, or refused.
     pub status: Option<String>,
+    /// Each sensored line's current reading — the detail view shows it
+    /// beside the sensor, on §11.1's rule that the editor shows the reading
+    /// and the prompt never carries it. **Read on its own thread**, like the
+    /// doctor modal's restart probe: `read_charter` is three store reads
+    /// and, where a line carries `intervention_rate`, a scan of up to
+    /// `doctor::RUNS_WINDOW` transcripts, and `load` runs on the thread that
+    /// owns the event loop and the draw — inline, `/charter` froze input
+    /// for the length of the read, longest on the machine with the most
+    /// history (found on review). `poll` moves the answer in.
+    pub readings: Readings,
+}
+
+/// The readings' arrival: still on their thread, arrived, or lost with it.
+pub enum Readings {
+    Pending(std::sync::mpsc::Receiver<Vec<mecha_core::reading::LineReading>>),
+    Ready(Vec<mecha_core::reading::LineReading>),
+    /// The reader thread ended without answering. Unknown, not empty.
+    Lost,
+}
+
+impl Readings {
+    /// Spawn the read and hand back the receiver.
+    fn spawn(charter: Charter) -> Readings {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(mecha_core::reading::read_charter(
+                &charter,
+                chrono::Utc::now(),
+            ));
+        });
+        Readings::Pending(rx)
+    }
+
+    /// The reading for one line, once arrived; `None` while pending or lost.
+    fn for_line(&self, id: &str) -> Option<&mecha_core::reading::LineReading> {
+        match self {
+            Readings::Ready(rs) => rs.iter().find(|r| r.line == id),
+            Readings::Pending(_) | Readings::Lost => None,
+        }
+    }
 }
 
 impl CharterModal {
@@ -61,6 +101,7 @@ impl CharterModal {
                 detail_scroll: 0,
                 char_count: charter.char_count(),
                 over_budget: charter.over_budget(),
+                readings: Readings::spawn(charter),
                 path,
                 exists,
                 error: None,
@@ -77,7 +118,21 @@ impl CharterModal {
                 exists,
                 error: Some(format!("{e:#}")),
                 status: None,
+                readings: Readings::Ready(Vec::new()),
             },
+        }
+    }
+
+    /// Move an arrived reading in. Called from the loop's tick, never from
+    /// `draw`, which is immutable by design.
+    pub fn poll(&mut self) {
+        let Readings::Pending(rx) = &self.readings else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(readings) => self.readings = Readings::Ready(readings),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.readings = Readings::Lost,
         }
     }
 
@@ -280,6 +335,15 @@ impl CharterModal {
                 ),
                 Style::new().fg(Color::DarkGray),
             ));
+            let reading = match &self.readings {
+                Readings::Pending(_) => "reading: …".to_string(),
+                Readings::Lost => "reading: lost — `mecha charter` reads it".to_string(),
+                Readings::Ready(_) => match self.readings.for_line(&line.id) {
+                    Some(r) => format!("reading: {}", r.summary()),
+                    None => "reading: none".to_string(),
+                },
+            };
+            body.push(Line::styled(reading, Style::new().fg(Color::DarkGray)));
         }
         let area = super::centered(
             frame.area(),
@@ -332,7 +396,38 @@ mod tests {
             char_count: 100,
             over_budget: false,
             status: None,
+            readings: Readings::Ready(Vec::new()),
         }
+    }
+
+    /// The reading arrives on its thread and `poll` moves it in; a thread
+    /// that dies is a lost reading, never an empty one.
+    #[test]
+    fn readings_arrive_through_poll_and_a_dead_reader_reads_as_lost() {
+        let mut m = modal(vec![line("waits", "Keep it short.")]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        m.readings = Readings::Pending(rx);
+        m.poll();
+        assert!(matches!(m.readings, Readings::Pending(_)));
+        tx.send(vec![mecha_core::reading::LineReading {
+            line: "waits".into(),
+            kind: mecha_core::charter::SensorKind::OutboxAge,
+            setpoint: "24h".into(),
+            reading: mecha_core::reading::Reading::Nothing,
+        }])
+        .unwrap();
+        m.poll();
+        assert_eq!(
+            m.readings.for_line("waits").map(|r| r.summary()),
+            Some("nothing waiting".to_string())
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<mecha_core::reading::LineReading>>();
+        m.readings = Readings::Pending(rx);
+        drop(tx);
+        m.poll();
+        assert!(matches!(m.readings, Readings::Lost));
+        assert!(m.readings.for_line("waits").is_none());
     }
 
     #[test]

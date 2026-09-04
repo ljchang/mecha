@@ -3583,6 +3583,83 @@ installed and restarted at 18:04 the same day, once a peer's inference run
 had released the model server, and the skill's step-1b probe confirmed the
 new binary from the served page (a `304` naming its `ETag`, not a bare one).
 
+**2026-09-04, evening — a charter sensor reads: each sensored line
+against its store, on every run record, on every owner surface, and in the
+doctor against the owner's own number.** `GOAL-SYSTEM-DESIGN.md` §11.1's
+readings phase (#176, `feat/charter-readings`, unmerged when written).
+`reading.rs` reads a line as one of five states kept apart — `Unread`
+(store unreadable), `Deferred` (this reader does not scan that store),
+`Nothing` (nothing waits; the line is met by construction), `Sparse` (the
+corpus kind under the doctor's twenty-run floor) and `Observed { value,
+over, excess }` — and `excess`, the overshoot over the overshoot
+plus the setpoint, is the line-specific guilt term §11.1 promised in place
+of `guilt.rs`'s one saturated number: zero within the setpoint, half of
+maximal at twice it, never one, on `AGE_HALF_AT_HOURS`'s lesson that a term
+reaching `1.0` erases the others and the corpus reads a constant; a zero
+setpoint is refused at `SensorKind::parse_setpoint` because nothing could
+ever be within it. `Homeostat::at_start` loads the charter itself (global
+and read-only, like the backlog's stores) and records `Homeostat::charter`
+from the inherited backlog, `None` for a row before the field or a charter
+that did not load and `Some([])` for a charter with no sensor, through
+`reading::lenient` so a kind a later binary adds costs the readings and not
+the run record; the corpus kind is `Deferred` in a run and read by the
+surfaces through `reading::corpus_rate`, with `Corpus::intervention_rate`
+defined as a stop by request on the run record and nothing else — coarser
+than the learning store's four triggers, under-counting rather than
+guessing, and the doc says which one it sees. The doctor's `Patience` is the harness
+constant or the setpoint of the line whose sensor watches that store, in
+the owner's spelling, so the stuck-draft, unanswered-question and
+stale-request findings name the line (`1 draft pending for more than 12h
+(charter line \`waits\`)`); the count and rate kinds have no constant to
+fall back to and fire only where a line names one; and
+`check_sensor_saturation` reports a line past its setpoint on each of the
+last `SATURATED_AFTER_RUNS` informative rows — same line, kind and setpoint
+spelling, so an edited setpoint starts a fresh streak — saying both things
+it could mean, because doctor cannot tell a real debt from an hour where the
+owner meant a day. The surfaces read `reading::read_charter` and the two
+JSON ones render `reading::lines_json`, with `reading` a *sibling* of
+`sensor` because `sensor`'s two keys are what the web serialiser writes back
+on a save (the first cut nested the whole record under `reading`, so the
+page's `reading.state` read null — caught by the test). Smoke: a scratch
+home with three sensored lines and two pending drafts read `3d 16h, past the
+24h setpoint` / `2 waiting, past the 1 setpoint` / `no runs recorded yet`
+on `mecha charter`, and `mecha doctor` raised the owner's 24h over its own
+48h and named the line. The review's first pass found three things, all
+fixed on the branch: the web handler ran three store reads and a possible
+200-transcript scan inline on the executor (`spawn_blocking` now, on
+`board.rs`'s rule); a corpus whose every transcript is torn read as
+`Nothing` — `Corpus::scan` is `Ok` with the rot counted, not `Err`, so
+"unreadable" was only ever a failure to list the directory, and unknown was
+reported as met (`corpus_rate_in` now tells the three apart, with a test on
+a torn file); and the surface printed a share off any denominator while the
+doctor refused one under twenty runs, in the one place containment 5 wants
+the owner judging a setpoint (`Reading::Sparse`). The second pass found
+three more, fixed the same way: the settings page rebuilt each row by hand
+in `hydrate` and dropped `reading`, so the browser was the one surface of
+three showing none while its payload carried one (`charter-toml.js`'s
+`rows`, with `web/test/charter-rows.mjs` pinning that `sensor` keeps its
+two keys and `reading` never reaches the file); the TUI's `/charter` ran
+the same read inline on the draw thread the web fix had just moved off the
+executor (a thread and `CharterModal::poll` on the tick, `Readings::Lost`
+when the thread dies); and `request_closure` read `Backlog::frontdoor`,
+every open request, where the doctor's finding reads only the three
+owner-facing states — a week-old `needs_info` parked on the stranger would
+have saturated a line no finding named, and the remedy pointed at the same
+unactionable reading (`frontdoor::WAITING_ON_OWNER` is now the one list,
+`Backlog::read_with_owner_requests` hands the reading the narrowed depth,
+and the wide depth stays what every recorded row has always held). The
+third pass found the two remaining ways the sensor and the finding could
+disagree: `tool_denied` counts a policy's refusal as well as a person's —
+`forbid`, a hook, the interlock, a guard — so one routine rule would have
+pinned "you stepped into every run" with nobody awake, and the rate now
+reads `StopCause::Stopped` alone until the record can tell the two apart;
+and the owner-facing request depth aged from `created_at` while the doctor
+ages from the drain's clock, so a form stamped a month before ingestion
+read a month overdue on the sensor and a day old to the doctor
+(`Record::arrived_at` is now the one clock, the wide depth keeping
+`created_at`). Not built: the replay tiebreak, `board_overdue` and `cost`,
+and the reflection's "which line moved".
+
 **2026-09-04, later — the goal system's second sprint PR: a reflection
 records where it was learned, a rule carries the region it applies in, and
 a run carries only the rules that match it.** `GOAL-SYSTEM-DESIGN.md` §17.6

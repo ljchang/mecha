@@ -2505,6 +2505,29 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
+**2026-09-04, evening — §11.1's readings phase is built as PR #176
+(`feat/charter-readings`, rebased onto `bc562a8`; unmerged when written,
+the review loop's state is on the PR, and merging is the owner's call).**
+What it built is in `HISTORY.md` under this date: `mecha-core/src/reading.rs`
+(a sensored line read as one of four states, `excess` as the line-specific
+guilt term, a zero setpoint refused at the parser), `Homeostat::charter`
+on every run record from the next install on (a new field, loaded
+leniently), the doctor's stuck-draft, unanswered-question and stale-request
+findings judged against the owner's setpoint and naming the line, findings
+for the count and rate kinds only where a line names one, the saturation
+finding after ten informative runs past the setpoint, and the reading
+beside the line on `mecha charter`, the TUI detail and the web settings
+page. **Two rows go stale when it merges:** the installed `mecha` (ask it —
+`mecha charter --json` on a charter with a sensor carries a `reading`
+key; `strings ~/.cargo/bin/mecha | grep -c 'past the'` is the cheap probe)
+and `web/dist`, whose settings page shows no reading until rebuilt (update
+skill surface 1b). **Still not measurable on this machine:** the live
+charter has seven lines and no sensor, so every reading surface is empty
+and the doctor's thresholds are the harness's constants until the owner
+adds one — the smoke was a scratch home. **Open from §11.1 now:** the replay
+tiebreak (last, because it changes what gets replayed), `board_overdue` and
+`cost` as kinds, and the reflection's "which line moved".
+
 **2026-09-04, later — §17.6 item 3 is built and merged as PR #168
 (`feat/situation-scope`, merged at `046ef0f` after thirteen review
 passes — eleven rounds of findings, then two clean at the bar), with
@@ -2584,7 +2607,7 @@ and stop being true of the derivation when #162 merges** — they are kept as
 the measurement they were. **Open, in the order §17.6 sets** (item 3 is
 #168 above, its merge condition met in the same change): §11.1's later phases —
 the per-line readings, the line-specific guilt, the doctor's owner
-thresholds, the editor showing a reading beside the line, the replay
+thresholds and the editor's reading are #176 above, leaving the replay
 tiebreak, and `board_overdue`/`cost` as kinds once a reader exists; item 4,
 measuring the appraiser at scale (zero build — and #160 has since reported
 169 of 169 "nothing further", so retire-or-refeed is the actual question);

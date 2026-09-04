@@ -1639,6 +1639,11 @@ fn notice_staged(app: &mut App, n: usize) {
 /// still-working notice rather than kept — a wedged child must not pin the
 /// one-second tick forever, and the store keeps the truth either way.
 fn poll_watches(app: &mut App) {
+    // The charter modal's readings arrive on their own thread; moved in
+    // here, on the tick, because `draw` is immutable.
+    if let Some(modal) = &mut app.charter {
+        modal.poll();
+    }
     if app.watches.is_empty() {
         return;
     }
