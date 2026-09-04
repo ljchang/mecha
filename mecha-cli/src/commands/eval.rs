@@ -711,7 +711,9 @@ async fn ab_experiment(
         let out = serde_json::json!({
             "experiment": name,
             "ab_rules": with_rules,
-            "ab_config": overrides,
+            "ab_config": args.ab_config,
+            "arm_b_overrides": overrides,
+            "arm_a_overrides": control_overrides,
             "holdout_in": args.holdout_in,
             "judgement": judgement,
             "pairs": verdict.pairs,
