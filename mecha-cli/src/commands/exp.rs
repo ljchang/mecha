@@ -763,6 +763,14 @@ async fn principal_call(
                         .args(flags)
                         .args(&act.verb);
                     env_for(&mut cmd, passthrough)?;
+                    // The refusals scripted for this task reach a verb that
+                    // resumes the parked run (`questions answer`): the
+                    // continuation is the same task under the same
+                    // treatment (found on review).
+                    let denials = mecha_core::experiment::denials_file(home);
+                    if denials.exists() {
+                        cmd.env(mecha_core::tool::DENIALS_FILE_ENV, &denials);
+                    }
                     let out = std::fs::OpenOptions::new().append(true).open(&log)?;
                     let err = out.try_clone()?;
                     cmd.stdin(std::process::Stdio::null())

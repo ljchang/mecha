@@ -1744,6 +1744,14 @@ pub fn child_invocation(
             server.env.clear();
         }
     }
+    // Every store path is the home's (D12). An operator's `[outbox] dir`
+    // rode in verbatim, so a trial's drafts would have staged into the
+    // real outbox and the principal read a store the verbs it emitted did
+    // not write (found on review); the same for the skills and messages
+    // directories. Cleared, each store resolves under `MECHA_HOME`.
+    config.outbox.dir = None;
+    config.skills.dir = None;
+    config.messages.dir = None;
     let mut flags = Vec::new();
     for lever in levers_off {
         match lever {
@@ -3058,6 +3066,25 @@ rationale = "no rumination should fail more over the sequence"
             bare_held.judgement.selection, bare.judgement.selection,
             "the tallies are untouched"
         );
+    }
+
+    /// A trial home owns every store path: an operator's explicit outbox,
+    /// skills or messages directory never rides into a child's config.
+    #[test]
+    fn a_child_home_owns_every_store_path() {
+        let mut real = crate::config::Config::default();
+        real.outbox.dir = Some("/home/me/.mecha/outbox".into());
+        real.skills.dir = Some("/home/me/.mecha/skills".into());
+        real.messages.dir = Some("/home/me/.mecha/messages".into());
+        let child = child_invocation(&real, &Arm::default(), None)
+            .unwrap()
+            .config;
+        assert_eq!(
+            child.outbox.dir, None,
+            "the real outbox would take a trial's drafts"
+        );
+        assert_eq!(child.skills.dir, None);
+        assert_eq!(child.messages.dir, None);
     }
 
     /// The principal's contract: a `[principal]` is a lifetime's, its
