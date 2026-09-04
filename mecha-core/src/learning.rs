@@ -724,11 +724,20 @@ pub fn carried_in<'a>(rules: &'a [Rule], run: &'a Situation) -> impl Iterator<It
 /// cannot name a hash and a set that disagree. `block: None` renders
 /// nothing; `hash` is then of the empty string, which is *recorded and
 /// empty*, where a run record with no hash at all is *unknown*.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RulesCarried {
     pub block: Option<String>,
     pub hash: String,
     pub rule_ids: Vec<String>,
+}
+
+impl Default for RulesCarried {
+    /// [`Self::none`] — a derived default would give `hash: ""`, a third
+    /// state neither *unknown* nor *recorded and empty*, which is the one
+    /// pair this type exists to keep apart.
+    fn default() -> Self {
+        RulesCarried::none()
+    }
 }
 
 impl RulesCarried {

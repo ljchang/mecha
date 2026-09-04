@@ -37,7 +37,7 @@ use mecha_core::config::{Config, ProviderConfig};
 use mecha_core::counterfactual::ProbeVerdict;
 use mecha_core::eval::Judge;
 use mecha_core::learning::{
-    domain_rules_section, locate_followup, rules_hash, strip_rules_block, wrap_rules_block,
+    domain_rules_section_for, locate_followup, rules_hash, strip_rules_block, wrap_rules_block,
     LearningStore, Origin, Reflexion, Rule, Trigger, ValidationRecord,
 };
 use mecha_core::message::{CompletionRequest, Message};
@@ -131,11 +131,14 @@ impl RuleSurface {
             .collect()
     }
 
-    /// Render the block a run would see if only the selected learned rules
-    /// (by index into `flat`) existed. User rules always ride: they are not
-    /// on trial, and an arm without them would measure a deployment that
-    /// cannot exist.
-    fn block_with(&self, selected: &[usize]) -> Option<String> {
+    /// Render the block a run in `run`'s situation would see if only the
+    /// selected learned rules (by index into `flat`) existed. User rules
+    /// are not on trial and an arm without them would measure a deployment
+    /// that cannot exist — but they ride under the same scope filter the
+    /// run path applies (`domain_rules_section_for`), because a hand-scoped
+    /// user rule a real run in this situation drops must not ride in the
+    /// measured arm either (found on review).
+    fn block_with(&self, selected: &[usize], run: &Situation) -> Option<String> {
         let mut sections = Vec::new();
         for (domain, user) in &self.user_by_domain {
             let learned: Vec<Rule> = self
@@ -145,7 +148,7 @@ impl RuleSurface {
                 .filter(|(i, (d, _))| d == domain && selected.contains(i))
                 .map(|(_, (_, r))| r.clone())
                 .collect();
-            sections.extend(domain_rules_section(domain, user, &learned));
+            sections.extend(domain_rules_section_for(domain, user, &learned, run));
         }
         wrap_rules_block(sections)
     }
@@ -173,7 +176,7 @@ async fn attribute_regression(
         return Ok(None);
     }
     let fails = |selected: Vec<usize>| async move {
-        let block = surface.block_with(&selected);
+        let block = surface.block_with(&selected, &prep.situation());
         match probe::drive_arm(
             prepared,
             provider_cfg,
@@ -413,6 +416,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let surface = RuleSurface::load(&store)?;
     let mut record = |r: &mecha_core::learning::Reflexion,
                       carried: &[usize],
+                      run: &Situation,
                       outcome: &str,
                       attributed: Option<String>|
      -> Result<()> {
@@ -420,7 +424,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // measured set is a function of the replayed run's situation, and a
         // row that named the store's whole set would charge observations to
         // rules that were not in the prompt.
-        let block = surface.block_with(carried).unwrap_or_default();
+        let block = surface.block_with(carried, run).unwrap_or_default();
         // Append-only, no store lock: a validate run must never block the
         // reflect a closing session fires, and a single appended line needs
         // no read-modify-write.
@@ -467,7 +471,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // Rendered for the probe's own recorded config, which is the
             // one the branch replays under (a later attach may differ).
             let carried = surface.carried(&prep.situation());
-            let Some(rules_block) = surface.block_with(&carried) else {
+            let Some(rules_block) = surface.block_with(&carried, &prep.situation()) else {
                 eprintln!(
                     "· {}: no rule rides in the recorded run's situation; skipping",
                     r.id
@@ -555,7 +559,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     None => println!("    no single rule attributable"),
                 }
             }
-            record(r, &carried, outcome_str(baseline, with), attributed)?;
+            record(
+                r,
+                &carried,
+                &prep.situation(),
+                outcome_str(baseline, with),
+                attributed,
+            )?;
             continue;
         }
 
@@ -589,7 +599,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // in every block regardless of selection, so a domain with user
         // rules and nothing scoped to this run still has an arm to measure
         // (found on the next review). The row is not written.
-        let Some(rules_block) = surface.block_with(&carried) else {
+        let Some(rules_block) = surface.block_with(&carried, &run) else {
             eprintln!(
                 "· {}: no rule rides in this session's situation; skipping",
                 r.id
@@ -662,7 +672,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 r.id,
                 if i == 0 { "baseline" } else { "with-rules" }
             );
-            record(r, &carried, "inconclusive", None)?;
+            record(r, &carried, &run, "inconclusive", None)?;
             inconclusive += 1;
             continue;
         }
@@ -708,7 +718,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         // Judge-graded, so no bisection: a followup regression is a prompt to
         // read two answers, not evidence that convicts one rule.
-        record(r, &carried, outcome, None)?;
+        record(r, &carried, &run, outcome, None)?;
     }
 
     println!(
@@ -917,7 +927,7 @@ mod tests {
         assert_eq!(surface.carried(&Situation::default()), all);
 
         assert_eq!(
-            surface.block_with(&all).unwrap(),
+            surface.block_with(&all, &Situation::default()).unwrap(),
             store
                 .rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)
                 .unwrap()
@@ -926,12 +936,12 @@ mod tests {
 
         // An empty selection still carries the user's rules — they are not on
         // trial — and none of the learned ones.
-        let none = surface.block_with(&[]).unwrap();
+        let none = surface.block_with(&[], &Situation::default()).unwrap();
         assert!(none.contains("User rule."));
         assert!(!none.contains("Learned A.") && !none.contains("Sign off"));
 
         // A subset carries exactly its members.
-        let one = surface.block_with(&[1]).unwrap();
+        let one = surface.block_with(&[1], &Situation::default()).unwrap();
         assert!(one.contains("Learned B.") && !one.contains("Learned A."));
 
         // A scoped rule is carried only by a run that registers its tool,
@@ -956,8 +966,31 @@ mod tests {
             surface.rule_ids(&with_shell),
             vec!["r-a", "r-b", "r-shell", "r-c"]
         );
-        assert!(!surface.block_with(&no_shell).unwrap().contains("rm -rf"));
-        assert!(surface.block_with(&with_shell).unwrap().contains("rm -rf"));
+        let fs_only = Situation::of_run(&["fs_read".into()], None);
+        let shell_run = Situation::of_run(&["shell".into()], None);
+        assert!(!surface
+            .block_with(&no_shell, &fs_only)
+            .unwrap()
+            .contains("rm -rf"));
+        assert!(surface
+            .block_with(&with_shell, &shell_run)
+            .unwrap()
+            .contains("rm -rf"));
+        // A hand-scoped user rule follows the same filter as the run path.
+        std::fs::write(
+            store.root().join("rules/behavior.user.toml"),
+            "[[rules]]\ntext = \"User rule.\"\n\n[[rules]]\ntext = \"Shell user rule.\"\n[rules.scope]\ntools = [\"shell\"]\n",
+        )
+        .unwrap();
+        let surface = RuleSurface::load(&store).unwrap();
+        assert!(!surface
+            .block_with(&no_shell, &fs_only)
+            .unwrap()
+            .contains("Shell user rule."));
+        assert!(surface
+            .block_with(&with_shell, &shell_run)
+            .unwrap()
+            .contains("Shell user rule."));
 
         std::fs::remove_dir_all(store.root()).ok();
     }
@@ -984,7 +1017,10 @@ mod tests {
             "retired rules are not on the surface"
         );
         assert!(surface.rule_ids(&[0]).is_empty());
-        assert!(surface.block_with(&[0]).unwrap().contains("No id yet."));
+        assert!(surface
+            .block_with(&[0], &Situation::default())
+            .unwrap()
+            .contains("No id yet."));
         std::fs::remove_dir_all(store.root()).ok();
     }
 
