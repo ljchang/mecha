@@ -248,7 +248,13 @@ def reconstruct(trial):
     }
     if stop_cause is not None:
         stats["stop_cause"] = stop_cause
+    meta = next((r for r in records if r.get("record") == "meta"), {})
     extras = {
+        # The id the CLI prints its reasoning line under is the transcript's
+        # own `meta.id`, not the filename; they agree for anything mecha
+        # wrote, and reading it from the record keeps a copied file whose
+        # name drifted from turning "no reasoning" into a silent None.
+        "meta_id": meta.get("id"),
         "bad_lines": bad_lines,
         "has_summary": summary is not None,
         "assistant_turns": assistant_turns,
@@ -483,7 +489,12 @@ def main():
         appraiser = None
         if args.appraise:
             paid = run_appraise(
-                args.mecha, home, one, appraise=True, session_id=t.session.stem, model=appraiser_model
+                args.mecha,
+                home,
+                one,
+                appraise=True,
+                session_id=extras["meta_id"] or t.session.stem,
+                model=appraiser_model,
             )
             tally = paid["appraiser"]
             # The pass must have been driven, once: "the model looked and
