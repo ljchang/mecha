@@ -365,7 +365,7 @@ proposal; see [Run quality](/docs/features/run-quality#the-diagnostic-stage).
 | `--judge-model` / `--judge-provider` | the model under test | who grades `expect.judge` |
 | `--keep-workspaces` | off | do not delete the staging root |
 | `--mcp` | off | connect this machine's MCP servers |
-| `--mcp-file <PATH>` | — | connect exactly the servers in that file |
+| `--mcp-file <PATH>` | — | connect exactly the servers in that file; refused with `--ab-config` / `--ab-rules`, since fixture servers have no lever to record them under and an A/B will not file its design as bare |
 | `--no-ask-user` | off | withhold `ask_user` (by default it is present and always declines) |
 | `--compare <PATHS…>` | — | print a table from written reports instead of running |
 | `--ab-rules` | off | paired rules-free / rules-on run |
