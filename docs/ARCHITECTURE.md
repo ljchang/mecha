@@ -3117,7 +3117,10 @@ comparison over a chosen set**, with the design written before the run.
   exists to prevent (found on review). The stores a lever left on reads —
   `learning/`, `skills/`, `charter.toml` — are seeded once into the arm's
   home from the real one when it is first created, never written back, so
-  `full` means the harness as this machine had it. The child's
+  `full` means the harness as this machine had it. **Every store path
+  in the rendered config is the home's**: an operator's `[outbox] dir`,
+  skills or messages directory is cleared, or a trial's drafts would
+  stage into the real outbox (found on review). The child's
   environment is an **allowlist** on `Sandbox::child_env`'s shape: the
   base set, the provider key variables, and the three that name the trial
   — `MECHA_HOME` is not the only variable that moves a store, and an
@@ -3303,7 +3306,11 @@ comparison over a chosen set**, with the design written before the run.
   consultation; a read-only call reaches none, so a refusal of a
   read-only tool never fires — hands every unmatched call to the
   approver beneath it, and the file is cleared *before* each call so a
-  principal that failed to answer leaves no stale refusal armed. What the principal cannot do yet is close
+  principal that failed to answer leaves no stale refusal armed. Every
+  approver a run builds is wrapped — the parent loop's, each
+  subagent's, a front-end's — and the file reaches the verb that
+  resumes a parked run, so the refusals hold for the whole task and
+  every call delegated within it. What the principal cannot do yet is close
   board tasks: the board is the graph's, over MCP, and a trial home has
   no graph — the closure channel waits on a fixture graph server.
 
