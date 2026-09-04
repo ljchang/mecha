@@ -801,7 +801,7 @@ impl Surface {
         // Kept for whatever staged the draft to read back (a poll sweep wants
         // the event id), and bounded: the store is parsed whole on every
         // lookup, so a page-sized answer must not ride every sent item.
-        let kept: String = output.content.chars().take(4096).collect();
+        let kept: String = output.content.chars().take(16_384).collect();
         store.resolve_with_output(&item.id, "sent", None, Some(kept))?;
         Ok(output.content.trim().to_string())
     }

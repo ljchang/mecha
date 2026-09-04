@@ -600,6 +600,10 @@ async fn polls(
 
     let tools = MailTools::load()?;
     let now = || chrono::Utc::now();
+    // Every failure's text, kept: the aggregate at the end carries them, so
+    // a revoked-token sentinel inside one still reaches `exit_code_for` —
+    // swallowed into a count, `mecha-mail polls` could never exit 77.
+    let mut errors: Vec<String> = Vec::new();
     let stamp =
         |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let mut failures = 0usize;
@@ -633,12 +637,12 @@ async fn polls(
             (Ok(m), Ok(c)) => (m, c),
             (Err(e), _) | (_, Err(e)) => {
                 eprintln!("{}: {e}", record.poll_id);
+                errors.push(format!("{}: {e}", record.poll_id));
                 failures += 1;
                 continue;
             }
         };
         let mut nudged: Vec<String> = Vec::new();
-        let mut nudge_failed = false;
         for name in pl::unresolvable_nudges(&record) {
             eprintln!(
                 "{}: a nudge is queued for `{name}`, who is not on the record — not sent, \
@@ -790,18 +794,17 @@ async fn polls(
             .await;
             if let Err(e) = outcome {
                 eprintln!("{}: {e:#}", record.poll_id);
+                errors.push(format!("{}: {e:#}", record.poll_id));
                 failures += 1;
-                if matches!(job, pl::Job::Nudge(_)) {
-                    nudge_failed = true;
-                }
                 // The next job on this record, not the next record: a dead
                 // address must not starve everyone sorted after it.
                 continue;
             }
         }
-        // The names that went leave the queue; a failed one stays due, and
-        // the ledger keeps the sent ones from repeating.
-        if !nudged.is_empty() && !nudge_failed {
+        // The names that went leave the queue — whether or not another
+        // failed; a failed one stays due, and the ledger keeps the sent
+        // ones from repeating.
+        if !nudged.is_empty() {
             pl::mark_nudged(&mut record, &nudged, now());
         }
         // A write that fails is this record's failure, counted like the
@@ -813,7 +816,10 @@ async fn polls(
         }
     }
     if failures > 0 {
-        bail!("{failures} job(s) failed; the rest are ledgered and will not repeat");
+        bail!(
+            "{failures} job(s) failed; the rest are ledgered and will not repeat:\n{}",
+            errors.join("\n")
+        );
     }
     Ok(())
 }
