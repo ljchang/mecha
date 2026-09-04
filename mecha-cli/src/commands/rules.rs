@@ -121,6 +121,9 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
                     // does: "measured clean" and "not measured" are different
                     // states and only one of them earned its place.
                     "probation": r.probation,
+                    // Where it loads: `null` is a rule from before scoping
+                    // (everywhere), a string is `Situation::describe`.
+                    "scope": r.scope.as_ref().map(|s| s.describe()),
                     "observations": tally.map(|t| t.observations),
                     // Beside observations, because they answer different
                     // questions and the gap between them is the roster's
@@ -182,6 +185,14 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
     } else {
         "active".into()
     };
+    // Where the rule loads. Unscoped and standing both load everywhere, and
+    // are printed apart because they are different facts about the evidence
+    // — see `Rule::scope`.
+    let scope = match &r.scope {
+        None => "unscoped (predates scoping; loads everywhere)".to_string(),
+        Some(s) if s.is_standing() => "standing (loads everywhere)".to_string(),
+        Some(s) => format!("loads with {}", s.describe()),
+    };
     // Three states, no two rendering alike: graded, ran-but-graded-nothing,
     // and never probed. Collapsing the middle into the first printed
     // "0 improved, 0 regressed" for inconclusive-only coverage — a clean
@@ -205,7 +216,7 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
         _ => "never validated".into(),
     };
     format!(
-        "[{state}] {}\n      id {id} · created {} · {measured}",
+        "[{state}] {}\n      id {id} · created {} · {scope} · {measured}",
         r.text,
         r.created_at.as_deref().unwrap_or("unknown"),
     )
@@ -463,6 +474,8 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
             created_at: now,
             resolved_at: None,
             reason: None,
+            // A retirement argues about the whole domain, not one region.
+            scope: None,
         };
         store.write_proposal(&proposal)?;
         store.commit(&format!(

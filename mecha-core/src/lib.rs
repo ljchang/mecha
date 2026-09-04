@@ -92,6 +92,7 @@ pub mod sample;
 pub mod sandbox;
 pub mod search;
 pub mod session;
+pub mod situation;
 pub mod skill;
 pub mod step;
 pub mod subagent;

@@ -178,6 +178,8 @@ capture.rs   what a typed or spoken capture says about *when* — detected and
 harness.rs   the self-improvement record: candidates, their judgements, and
              the override layer an accepted config change rides in
 learning.rs  the reflection/rule store behind reflect, learn, validate
+situation.rs where a record was made, from closed sets only: a reflection's
+             situation, a rule's scope, and the run a scope is matched against
 counterfactual.rs  did the rules change the answer at the recorded moment?
 distill.rs   session → episode, staged to the knowledge graph over MCP
 gossip.rs    two readers over independent *sources*, asking each other questions:

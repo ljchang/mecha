@@ -18,8 +18,8 @@ use crate::{probe, setup, GlobalOpts};
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
 use mecha_core::learning::{
-    budget_refuses, domain_rules_section, wrap_rules_block, LeapRun, Learner, LearningStore,
-    Proposal, Trigger, MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
+    batches_by_region, budget_refuses, LeapRun, Learner, LearningStore, Proposal, Trigger,
+    MAX_ACTIVE_RULES_PER_DOMAIN, RULES_CHAR_BUDGET,
 };
 use mecha_core::session::Session;
 use std::collections::BTreeMap;
@@ -139,11 +139,23 @@ pub fn dispose(auto: bool, regressed: u32, measured: u32) -> Disposition {
 /// The trailing release also *persists* through this pass's write, where
 /// retirement's own call lands only when a domain has a conviction to
 /// record.
+///
+/// **Only the batch's own region is stamped.** `finalize_region_rules`
+/// carries every other region's active rules through untouched, and a
+/// stamp is a verdict about what *this* gate could not grade — a `shell`
+/// batch landing on probation must not shorten an unrelated standing
+/// rule's leash from 3 to 2 (found on review; it was safe only while a pass
+/// rewrote the whole domain). The release below still runs over the whole
+/// set, because it is a function of the ledger and not of this batch.
 fn stamp_probation(
     rules: &mut [mecha_core::learning::Rule],
     tallies: &BTreeMap<String, mecha_core::learning::RuleTally>,
+    region: &mecha_core::situation::Situation,
 ) {
-    for r in rules.iter_mut().filter(|r| r.retired_at.is_none()) {
+    for r in rules
+        .iter_mut()
+        .filter(|r| r.retired_at.is_none() && mecha_core::learning::rewritable_in(r, region))
+    {
         let ever_graded =
             r.id.as_deref()
                 .and_then(|id| tallies.get(id))
@@ -288,48 +300,115 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     });
 
-    // A batch identical to one some proposal already argued — most likely a
-    // gate rejection whose reflections rightly returned to the pool — is not
-    // argued again until the pool changes. Without this, an unchanged pool
-    // means a fresh near-identical proposal (and its probe cost) every night.
-    // `--auto` needs the brake most: its `rejected_by_gate` arm leaves the
-    // reflections unprocessed, and `learn-live.sh` runs per *session*, so an
-    // unguarded identical batch re-pays a learner call plus a probe pair per
-    // steer/denial on every session close until the pool changes.
-    if args.propose || args.auto {
-        by_domain.retain(|domain, rs| {
-            let batch: std::collections::BTreeSet<&str> =
-                rs.iter().map(|r| r.id.as_str()).collect();
-            let argued = proposals.iter().any(|p| {
-                p.domain == *domain
-                    && p.reflexion_ids.len() == batch.len()
-                    && p.reflexion_ids.iter().all(|id| batch.contains(id.as_str()))
-            });
-            if argued {
+    // Decide every batch before anything expensive is built: which
+    // situation batches of which domains this pass will actually argue.
+    // One learner call per batch, not per domain — the rules it writes are
+    // scoped to the region the batch shares, and it is shown the domain's
+    // other rules as context it may not rewrite (`learning::batches_by_region`,
+    // `Learner::learn`). Deciding here rather than inside the loop keeps the
+    // brakes below ahead of `setup::prepare`: `--auto` on an unchanged pool
+    // used to build the whole agent (MCP servers, provider preflight) before
+    // discovering there was nothing to argue (found on review).
+    let mut batches: Vec<(String, mecha_core::situation::Situation, Vec<_>)> = Vec::new();
+    let mut proposing: std::collections::BTreeSet<String> = Default::default();
+    // Batches below the floor, counted so the steady state where every
+    // region sits at one or two reflections is visible in the summary
+    // rather than quiet.
+    let mut waiting = 0usize;
+    for (domain, reflexions) in &by_domain {
+        for (region, reflexions) in batches_by_region(reflexions.clone()) {
+            let reflexions = &reflexions;
+            // The floor is per batch as well as per domain: the learner call
+            // moved inside the batch, and a domain floor alone let three
+            // reflections on three tools pass `--min 3` as three
+            // single-incident learner calls, each minting a scoped rule (and
+            // under `--auto` a probe pair) from one event — the permissive
+            // failure, found on review. A small region waits, unprocessed,
+            // until its own pool reaches the floor; the standing batch
+            // usually gets there first.
+            if reflexions.len() < args.min {
+                waiting += 1;
                 println!(
-                    "{domain}: this exact batch of {} reflection(s) was already argued \
-                     (see `mecha proposals`); waiting for new reflections",
-                    batch.len()
+                    "{domain} [{}]: {} reflection(s), below --min {}; waiting for more in \
+                     this situation",
+                    region.describe(),
+                    reflexions.len(),
+                    args.min
                 );
+                continue;
             }
-            !argued
-        });
+            // One pending proposal per domain. Each batch proposes a
+            // whole-domain set from the same base, so two pending rows for a
+            // domain are alternatives: accepting one moves the rules under
+            // the other, and `accept`'s only way past that is `--force`, the
+            // lossy path. The later batches wait, unprocessed, behind the
+            // review (`--auto` resolves at birth and never parks here).
+            if (args.propose || args.auto) && already_argued(&proposals, domain, reflexions) {
+                println!(
+                    "{domain} [{}]: this exact batch of {} reflection(s) was already argued \
+                     (see `mecha proposals`); waiting for new reflections",
+                    region.describe(),
+                    reflexions.len()
+                );
+                continue;
+            }
+            if args.propose && !args.auto {
+                // Pending in the store, or admitted earlier in this very
+                // pass: every admitted batch under `--propose` writes a
+                // proposal, so the second of a domain would be the
+                // alternative this check exists to prevent. After the
+                // argued brake, not before: a batch the brake turns away
+                // must not claim the slot, or a `rejected_by_gate` batch
+                // (whose reflections stay unprocessed, so the brake stays
+                // true) starves every other region of its domain for good
+                // (found on review).
+                let pending = proposals
+                    .iter()
+                    .any(|p| p.domain == *domain && p.status == "pending")
+                    || !proposing.insert(domain.clone());
+                if pending {
+                    println!(
+                        "{domain} [{}]: a proposal for this domain is pending review; this \
+                         batch waits behind it (`mecha proposals`)",
+                        region.describe()
+                    );
+                    continue;
+                }
+            }
+            // A batch identical to one some proposal already argued — most
+            // likely a gate rejection whose reflections rightly returned to the
+            // pool — is not argued again until the pool changes. Without this,
+            // an unchanged pool means a fresh near-identical proposal (and its
+            // probe cost) every night. `--auto` needs the brake most: its
+            // `rejected_by_gate` arm leaves the reflections unprocessed, and
+            // `learn-live.sh` runs per *session*, so an unguarded identical
+            // batch re-pays a learner call plus a probe pair per steer/denial on
+            // every session close until the pool changes.
+            batches.push((domain.clone(), region, reflexions.clone()));
+        }
     }
 
-    if by_domain.is_empty() {
+    if waiting > 0 {
+        println!(
+            "{waiting} situation batch(es) below --min {} and waiting; `--min 1` learns them now",
+            args.min
+        );
+    }
+    if batches.is_empty() {
         println!("nothing to learn from yet");
         return Ok(());
     }
 
     if args.dry_run {
-        for (domain, rs) in &by_domain {
+        for (domain, region, batch) in &batches {
             let learned = store.learned_rules(domain)?;
             println!(
-                "{domain}: would absorb {} reflection(s) into {} existing learned rule(s)",
-                rs.len(),
+                "{domain} [{}]: would absorb {} reflection(s) into {} existing learned rule(s)",
+                region.describe(),
+                batch.len(),
                 learned.len()
             );
-            for r in rs {
+            for r in batch {
                 println!("  · {}", r.reflexion_text);
             }
         }
@@ -358,12 +437,26 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     };
     let sessions_dir = Session::default_dir()?;
 
-    for (domain, reflexions) in &by_domain {
+    for (domain, region, reflexions) in &batches {
         let user_rules = store.user_rules(domain)?;
+        // Read per batch, not per domain: the previous batch of this domain
+        // may have just written the set this one carries forward.
         let learned_before = store.learned_rules(domain)?;
+        println!(
+            "{domain} [{}]: {} reflection(s)",
+            region.describe(),
+            reflexions.len()
+        );
 
         let Some(rules) = learner
-            .learn(domain, &user_rules, &learned_before, reflexions, &tallies)
+            .learn(
+                domain,
+                region,
+                &user_rules,
+                &learned_before,
+                reflexions,
+                &tallies,
+            )
             .await?
         else {
             eprintln!("{domain}: the learner produced no usable rule set; nothing changed");
@@ -375,15 +468,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // provenance, retired rules are carried through untouched. The gate
         // below measures exactly what acceptance would deploy.
         let ids: Vec<String> = reflexions.iter().map(|r| r.id.clone()).collect();
-        let mut rules = mecha_core::learning::finalize_rules(
+        let mut rules = mecha_core::learning::finalize_region_rules(
             rules,
             &learned_before,
+            region,
             &ids,
             &chrono::Utc::now().to_rfc3339(),
         );
 
         // Retired rules stay in the file but never render, so they cost the
-        // budget nothing.
+        // budget nothing. Summed over the whole domain's active set, which
+        // is now more than any one run carries — the same seam as the
+        // count cap, and the warning stays on the store-wide figure
+        // because that is the ceiling every run is under.
         let rendered: usize = rules
             .iter()
             .filter(|r| r.active())
@@ -409,27 +506,57 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                  {MAX_ACTIVE_RULES_PER_DOMAIN} and no smaller than the current \
                  {active_before}. Nothing changed; consolidate or retire before adding."
             );
+            // Recorded, so the argued brake holds. A refusal that left no
+            // trace re-paid a learner call on every pass under `--auto` —
+            // and with a per-region learner the call that would shrink a
+            // domain at the cap is a different call from the one refused,
+            // so the pool did not change underneath it (found on review).
+            // The reflections stay unprocessed; the brake, not the cap, is
+            // what stops the repeat until the pool moves.
+            if args.propose || args.auto {
+                store.write_proposal(&Proposal {
+                    id: Session::new_id(),
+                    domain: domain.clone(),
+                    status: "rejected_by_cap".into(),
+                    reflexion_ids: ids.clone(),
+                    rules_before: learned_before.clone(),
+                    rules: rules.clone(),
+                    evidence: format!(
+                        "refused before measurement: {active_after} active rules would be \
+                         over the cap of {MAX_ACTIVE_RULES_PER_DOMAIN} (was {active_before}); \
+                         consolidate or retire in `{domain}` first"
+                    ),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    resolved_at: Some(chrono::Utc::now().to_rfc3339()),
+                    reason: None,
+                    scope: Some(region.clone()),
+                })?;
+            }
             continue;
         }
 
         // ── the gate: measure the candidate, then dispose of it ──
         if args.propose || args.auto {
             let prepared = prepared.as_ref().expect("built under --propose/--auto");
-            let candidate_block = wrap_rules_block(
-                domain_rules_section(domain, &user_rules, &rules)
-                    .into_iter()
-                    .collect(),
-            );
-            // The before-arm of the counterfactual: the domains a probe
-            // exercising this one would carry, so the two arms differ in the
-            // candidate and nothing else.
-            let current_block = store
-                .rules_prompt_block_for(&mecha_core::learning::run_domains_including(domain))?;
+            // Both arms rendered for the situation of the session each probe
+            // replays — the domains a run exercising this one would carry,
+            // filtered to what that run's registry matches — so the two
+            // arms differ in the candidate and nothing else, and neither is
+            // a block no run has.
+            let arms = |run: &mecha_core::situation::Situation| -> Result<probe::Arms> {
+                let domains = mecha_core::learning::run_domains_including(domain);
+                let current = store.rules_carried_for(&domains, run)?.block;
+                let candidate = store
+                    .rules_carried_with(&domains, run, Some((domain, &rules)))?
+                    .block;
+                Ok((current, candidate))
+            };
 
             let mut lines = Vec::new();
             let (mut improved, mut regressed, mut unchanged, mut inconclusive) =
                 (0u32, 0u32, 0u32, 0u32);
             let mut measured = 0u32;
+            let mut skipped = 0u32;
             // An allowlist, not an exclusion: only steers and denials have a
             // replayable intervention point. Followups keep the judge path in
             // `mecha validate`; edits (outbox) have no transcript at all.
@@ -442,12 +569,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     learner.model(),
                     &sessions_dir,
                     r,
-                    current_block.as_deref(),
-                    candidate_block.as_deref(),
+                    &arms,
                 )
                 .await?
                 {
                     probe::ProbeResult::Skipped(why) => {
+                        skipped += 1;
                         lines.push(format!("{} [{}]: skipped — {why}", r.id, r.trigger));
                     }
                     probe::ProbeResult::Verdicts(b, t) => {
@@ -486,6 +613,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     "{inconclusive} probe pair(s) ran and none graded (inconclusive); \
                      review by reading"
                 )
+            } else if measured == 0 && skipped > 0 {
+                // Skipped is a third fact: the probe was possible and
+                // declined — no rule scoped to that run, or a candidate
+                // arm identical to the current one — which is not "had
+                // nothing to run".
+                format!("{skipped} probe(s) skipped and none ran; review by reading")
             } else if measured == 0 {
                 "no trace-gradeable reflections in this batch; review by reading".into()
             } else {
@@ -511,7 +644,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // thing probation exists to remember.
             let Disposition { status, probation } = dispose(args.auto, regressed, measured);
             if probation {
-                stamp_probation(&mut rules, &tallies);
+                stamp_probation(&mut rules, &tallies, region);
             }
             let applied = status == "auto_applied" || status == "auto_applied_probation";
             // The proposal is written whichever way this went. Under `--auto`
@@ -537,6 +670,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         (status == "rejected_by_gate").then(|| chrono::Utc::now().to_rfc3339())
                     }),
                 reason: None,
+                scope: Some(region.clone()),
             };
             store.write_proposal(&proposal)?;
             println!(
@@ -622,9 +756,111 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Whether a proposal already argued exactly this batch of reflections.
+fn already_argued(
+    proposals: &[mecha_core::learning::Proposal],
+    domain: &str,
+    batch: &[mecha_core::learning::Reflexion],
+) -> bool {
+    let ids: std::collections::BTreeSet<&str> = batch.iter().map(|r| r.id.as_str()).collect();
+    proposals.iter().any(|p| {
+        p.domain == domain
+            && p.reflexion_ids.len() == ids.len()
+            && p.reflexion_ids.iter().all(|id| ids.contains(id.as_str()))
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{dispose, hold_out, stamp_probation};
+    use super::{already_argued, dispose, hold_out, stamp_probation};
+    use std::collections::BTreeMap;
+
+    /// A `shell` batch on probation stamps its own rules and leaves the
+    /// standing rule it carried through on the ordinary leash. Fails on the
+    /// unscoped stamp, which marked every ungraded rule in the domain.
+    #[test]
+    fn probation_stamps_only_the_batch_region() {
+        use mecha_core::learning::Rule;
+        use mecha_core::situation::Situation;
+        let shell = Situation::of_run(&["shell".into()], None);
+        let mut rules = vec![
+            Rule {
+                text: "Standing, carried through.".into(),
+                id: Some("r-standing".into()),
+                ..Default::default()
+            },
+            Rule {
+                text: "New shell rule.".into(),
+                id: Some("r-shell".into()),
+                scope: Some(shell.clone()),
+                ..Default::default()
+            },
+        ];
+        stamp_probation(&mut rules, &BTreeMap::new(), &shell);
+        assert!(!rules[0].probation, "not this batch's to stamp");
+        assert!(rules[1].probation);
+    }
+
+    /// The brake compares one region's batch against the proposals, so a
+    /// shell batch already argued waits while a new standing batch in the
+    /// same domain still learns.
+    #[test]
+    fn the_argued_brake_is_per_batch_not_per_domain() {
+        use mecha_core::learning::{Proposal, Reflexion};
+        let refl = |id: &str| Reflexion {
+            id: id.into(),
+            domain: "behavior".into(),
+            session_id: "s".into(),
+            trigger: "denial".into(),
+            context: String::new(),
+            intervention: String::new(),
+            reflexion_text: String::new(),
+            error_type: None,
+            confidence: None,
+            is_processed: false,
+            leap_run_id: None,
+            created_at: String::new(),
+            origin: mecha_core::learning::Origin::Clean,
+            evidence: mecha_core::learning::Evidence::Full,
+            edited_at: None,
+            dropped_at: None,
+            dropped_reason: None,
+            situation: None,
+        };
+        let argued = Proposal {
+            id: "p".into(),
+            domain: "behavior".into(),
+            status: "rejected_by_gate".into(),
+            reflexion_ids: vec!["a".into(), "b".into()],
+            rules_before: Vec::new(),
+            rules: Vec::new(),
+            evidence: String::new(),
+            created_at: String::new(),
+            resolved_at: None,
+            reason: None,
+            scope: None,
+        };
+        assert!(already_argued(
+            std::slice::from_ref(&argued),
+            "behavior",
+            &[refl("a"), refl("b")]
+        ));
+        assert!(!already_argued(
+            std::slice::from_ref(&argued),
+            "behavior",
+            &[refl("a")]
+        ));
+        assert!(!already_argued(
+            std::slice::from_ref(&argued),
+            "behavior",
+            &[refl("c")]
+        ));
+        assert!(!already_argued(
+            &[argued],
+            "writing",
+            &[refl("a"), refl("b")]
+        ));
+    }
 
     /// Probation marks what this pass could not grade — never a rule the
     /// ledger has already measured. A consolidation is a full replacement, so
@@ -694,7 +930,11 @@ mod tests {
             );
         }
 
-        stamp_probation(&mut rules, &tallies);
+        stamp_probation(
+            &mut rules,
+            &tallies,
+            &mecha_core::situation::Situation::default(),
+        );
 
         let by_id = |want: Option<&str>| {
             rules
