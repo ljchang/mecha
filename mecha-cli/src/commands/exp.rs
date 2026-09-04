@@ -370,6 +370,7 @@ async fn run_lifetimes(
                 }
             }
             for stage in stages_due(&manifest.schedule, position, &stages_off, &ledger) {
+                let attempt = ExperimentStore::next_attempt(&ledger, position, stage);
                 let run = run_stage(
                     store,
                     mecha,
@@ -381,6 +382,7 @@ async fn run_lifetimes(
                     &lifetime,
                     stage,
                     position,
+                    attempt,
                 )
                 .await;
                 store.record_stage(&run)?;
@@ -409,11 +411,12 @@ async fn run_stage(
     lifetime: &str,
     stage: mecha_core::experiment::StageLever,
     position: u32,
+    attempt: u32,
 ) -> mecha_core::experiment::StageRun {
     use mecha_core::experiment::{StageRun, StageStatus};
     let started = std::time::Instant::now();
     let started_at = chrono::Utc::now().to_rfc3339();
-    let log = store.stage_log(lifetime, position, stage);
+    let log = store.stage_log(lifetime, position, stage, attempt);
     let mut run = StageRun {
         lifetime: lifetime.to_string(),
         arm: after.arm.clone(),
@@ -515,10 +518,13 @@ async fn run_one(
     };
     let home = home.to_path_buf();
     let ChildInvocation {
-        config,
+        mut config,
         flags,
         passthrough,
     } = mecha_core::experiment::child_invocation(real, arm, trial.seed)?;
+    // What the home's own stages accepted rides into the next task, under
+    // the arm's pins — or a lifetime's `ruminate` would measure as nothing.
+    mecha_core::experiment::fold_home_overrides(&mut config, &home, arm)?;
     std::fs::write(home.join("config.toml"), toml::to_string_pretty(&config)?)
         .with_context(|| format!("writing {}", home.join("config.toml").display()))?;
 
@@ -734,6 +740,7 @@ fn status(name: &str, json: bool) -> Result<()> {
                     })).collect::<Vec<_>>(),
                     "stages_done": l.stages_done,
                     "stages_failed": l.stages_failed,
+                    "stages_unknown": l.stages_unknown,
                     "unreadable_stage_lines": l.torn,
                 })
             })
@@ -798,10 +805,13 @@ fn status(name: &str, json: bool) -> Result<()> {
                 marks,
                 l.stages_done,
                 l.stages_failed,
-                if l.torn > 0 {
-                    format!("  ({} ledger line(s) unreadable)", l.torn)
-                } else {
-                    String::new()
+                match (l.stages_unknown, l.torn) {
+                    (0, 0) => String::new(),
+                    (u, 0) => format!("  ({u} stage line(s) in a status this build cannot read)"),
+                    (0, t) => format!("  ({t} ledger line(s) unreadable)"),
+                    (u, t) => format!(
+                        "  ({u} stage line(s) in a status this build cannot read; {t} unreadable)"
+                    ),
                 }
             );
         }
@@ -827,6 +837,9 @@ struct LifetimeReadout {
     positions: Vec<(u32, Trial)>,
     stages_done: usize,
     stages_failed: usize,
+    /// Lines in a status this build cannot read: a finding, never a stage
+    /// that was not scheduled.
+    stages_unknown: usize,
     torn: usize,
 }
 
@@ -848,6 +861,7 @@ fn lifetime_readout(
                 positions: Vec::new(),
                 stages_done: 0,
                 stages_failed: 0,
+                stages_unknown: 0,
                 torn: 0,
             })
             .positions
@@ -862,7 +876,7 @@ fn lifetime_readout(
             match r.status {
                 StageStatus::Done => l.stages_done += 1,
                 StageStatus::Failed => l.stages_failed += 1,
-                StageStatus::Unknown => {}
+                StageStatus::Unknown => l.stages_unknown += 1,
             }
         }
     }

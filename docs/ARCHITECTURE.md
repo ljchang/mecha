@@ -3098,7 +3098,16 @@ comparison over a chosen set**, with the design written before the run.
   the stage a crash fell between before the next task, a failed stage is
   due again as a second line, and a torn line is counted, never read as
   a stage that ran. A lifetime that reaches a row this build cannot read
-  stops there rather than running the rest on a broken history.
+  stops there rather than running the rest on a broken history. **What a
+  stage accepted reaches the next task**: the child's loader applies a
+  home's `overrides.toml` beneath every file layer and the rendered
+  `config.toml` names every `[agent]` key, so `fold_home_overrides` folds
+  the home's own accepted overrides into the next task's config over the
+  arm's rendering — the arm's pinned keys still win, being the design —
+  or `ruminate`, the one stage with an effect today, would have measured
+  as nothing with the ledger saying it ran (found on review). A retried
+  stage's log is a second file (`-a2`), as its ledger line is a second
+  line.
 - **Stage levers are a second closed set** (`experiment::StageLever`:
   `reflect`, `learn`, `validate`, `ruminate`, `sensors_in_brief`), named
   off per arm in `stages_off`, refused on a `single` manifest where no

@@ -1054,12 +1054,31 @@ impl ExperimentStore {
         self.root.join("stages").join(lifetime).join("workspace")
     }
 
-    /// Where a stage's stderr lands.
-    pub fn stage_log(&self, lifetime: &str, after_position: u32, stage: StageLever) -> PathBuf {
-        self.root
-            .join("stages")
-            .join(lifetime)
-            .join(format!("{after_position:03}-{}.log", stage.as_str()))
+    /// Where a stage's output lands. Keyed by attempt as well: the ledger
+    /// keeps a failed stage's line and the rerun's as two lines, so the
+    /// logs must be two files, or the failed line points at the rerun's
+    /// output (found on review).
+    pub fn stage_log(
+        &self,
+        lifetime: &str,
+        after_position: u32,
+        stage: StageLever,
+        attempt: u32,
+    ) -> PathBuf {
+        self.root.join("stages").join(lifetime).join(format!(
+            "{after_position:03}-{}-a{attempt}.log",
+            stage.as_str()
+        ))
+    }
+
+    /// The attempt number the next run of `stage` after `position` gets:
+    /// one more than the ledger already holds for that pair.
+    pub fn next_attempt(ledger: &[StageRun], position: u32, stage: StageLever) -> u32 {
+        ledger
+            .iter()
+            .filter(|r| r.after_position == position && r.stage == stage)
+            .count() as u32
+            + 1
     }
 
     pub fn record_stage(&self, run: &StageRun) -> Result<()> {
@@ -1361,6 +1380,29 @@ pub fn child_invocation(
         flags,
         passthrough,
     })
+}
+
+/// A trial home's own accepted harness overrides, relative to the home.
+pub const HOME_OVERRIDES: &str = "learning/harness/overrides.toml";
+
+/// Fold the home's *own* accepted overrides into the config the next task
+/// runs under. The child's loader applies `overrides.toml` beneath every
+/// file layer, and the rendered `config.toml` names every `[agent]` key,
+/// so without this a change `harness ruminate` accepted inside the home
+/// never reached a task — the one stage with an effect today measured as
+/// nothing, with the ledger saying it ran (found on review). The arm's own
+/// `overrides` are re-applied last: they are the design, and a lifetime
+/// whose loop could move the treatment key would drift off its hash.
+pub fn fold_home_overrides(
+    config: &mut crate::config::Config,
+    home: &Path,
+    arm: &Arm,
+) -> Result<()> {
+    crate::harness::apply_overrides_file(config, &home.join(HOME_OVERRIDES));
+    for spec in &arm.overrides {
+        crate::harness::parse_change(spec)?.apply_to_agent(&mut config.agent)?;
+    }
+    Ok(())
 }
 
 /// The stores a lever left *on* reads: the learning store (rules and
@@ -2306,9 +2348,55 @@ rationale = "no rumination should fail more over the sequence"
             vec![StageLever::Reflect]
         );
         assert!(store
-            .stage_log("full__r1", 3, StageLever::Reflect)
-            .ends_with("full__r1/003-reflect.log"));
+            .stage_log("full__r1", 3, StageLever::Reflect, 2)
+            .ends_with("full__r1/003-reflect-a2.log"));
+        assert_eq!(
+            ExperimentStore::next_attempt(&ledger, 2, StageLever::Learn),
+            2,
+            "one failed learn on the ledger: the rerun is attempt 2"
+        );
+        assert_eq!(
+            ExperimentStore::next_attempt(&ledger, 9, StageLever::Learn),
+            1
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What a stage accepted inside the home reaches the next task: the
+    /// home's `overrides.toml` folds into the rendered config over the
+    /// arm's rendering, and the arm's own pinned keys still win.
+    #[test]
+    fn the_homes_accepted_overrides_reach_the_next_task_and_the_arms_pins_win() {
+        let home = std::env::temp_dir().join(format!("mecha-exp-fold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let overrides = home.join(HOME_OVERRIDES);
+        std::fs::create_dir_all(overrides.parent().unwrap()).unwrap();
+        std::fs::write(
+            &overrides,
+            "[[override]]\nkey = \"max_turns\"\nvalue = \"30\"\ncandidate = \"c1\"\naccepted_at = \"2026-09-04T00:00:00Z\"\n\
+             [[override]]\nkey = \"compact_at_tokens\"\nvalue = \"24000\"\ncandidate = \"c2\"\naccepted_at = \"2026-09-04T00:00:00Z\"\n",
+        )
+        .unwrap();
+        let real = crate::config::Config::default();
+        let arm = Arm {
+            overrides: vec!["max_turns=20".into()],
+            ..Arm::default()
+        };
+        let mut config = child_invocation(&real, &arm, None).unwrap().config;
+        assert_eq!(config.agent.max_turns, 20, "the arm's rendering");
+        fold_home_overrides(&mut config, &home, &arm).unwrap();
+        assert_eq!(config.agent.max_turns, 20, "the arm pins the treatment key");
+        assert_eq!(
+            config.agent.compact_at_tokens,
+            Some(24000),
+            "what ruminate accepted in this home reaches the next task"
+        );
+        let mut plain = child_invocation(&real, &Arm::default(), None)
+            .unwrap()
+            .config;
+        fold_home_overrides(&mut plain, &home, &Arm::default()).unwrap();
+        assert_eq!(plain.agent.max_turns, 30, "an unpinned key moves");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The one stage lever that is a switch rides into the trial home's
