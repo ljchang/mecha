@@ -2637,31 +2637,32 @@ impl Learner {
         // only what is inside.
         let (active, outside): (Vec<&Rule>, Vec<&Rule>) =
             active.into_iter().partition(|r| rewritable_in(r, region));
-        let outside_section =
-            if outside.is_empty() {
-                String::new()
-            } else {
-                format!(
+        let outside_section = if outside.is_empty() {
+            String::new()
+        } else {
+            format!(
                 "## Learned rules for other situations (IMMUTABLE, context only — each applies \
                  where its own tools are in play; never restate or contradict them)\n{}\n\n",
                 outside
                     .iter()
                     .map(|r| format!(
                         "- [{}] {}",
-                        r.scope.as_ref().map(Situation::describe).unwrap_or_default(),
+                        r.scope
+                            .as_ref()
+                            .map_or_else(|| Situation::default().describe(), Situation::describe),
                         r.text
                     ))
                     .collect::<Vec<_>>()
                     .join("\n")
             )
-            };
+        };
         let situation_line = if region.is_standing() {
             "Situation: everywhere — these rules ride in every run, so only a lesson that \
              holds regardless of which tools are in play belongs here."
                 .to_string()
         } else {
             format!(
-                "Situation: {} — every reflection below was recorded with this tool in play, \
+                "Situation: {} — every reflection below was recorded with these tools in play, \
                  and the rules you write are loaded only into runs that carry it. Scope them \
                  to it; a lesson that would hold anywhere is still stated here, since this set \
                  is where it was learned.",

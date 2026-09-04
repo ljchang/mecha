@@ -139,11 +139,23 @@ pub fn dispose(auto: bool, regressed: u32, measured: u32) -> Disposition {
 /// The trailing release also *persists* through this pass's write, where
 /// retirement's own call lands only when a domain has a conviction to
 /// record.
+///
+/// **Only the batch's own region is stamped.** `finalize_region_rules`
+/// carries every other region's active rules through untouched, and a
+/// stamp is a verdict about what *this* gate could not grade — a `shell`
+/// batch landing on probation must not shorten an unrelated standing
+/// rule's leash from 3 to 2 (found on review; it was safe only while a pass
+/// rewrote the whole domain). The release below still runs over the whole
+/// set, because it is a function of the ledger and not of this batch.
 fn stamp_probation(
     rules: &mut [mecha_core::learning::Rule],
     tallies: &BTreeMap<String, mecha_core::learning::RuleTally>,
+    region: &mecha_core::situation::Situation,
 ) {
-    for r in rules.iter_mut().filter(|r| r.retired_at.is_none()) {
+    for r in rules
+        .iter_mut()
+        .filter(|r| r.retired_at.is_none() && mecha_core::learning::rewritable_in(r, region))
+    {
         let ever_graded =
             r.id.as_deref()
                 .and_then(|id| tallies.get(id))
@@ -576,7 +588,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // thing probation exists to remember.
                 let Disposition { status, probation } = dispose(args.auto, regressed, measured);
                 if probation {
-                    stamp_probation(&mut rules, &tallies);
+                    stamp_probation(&mut rules, &tallies, &region);
                 }
                 let applied = status == "auto_applied" || status == "auto_applied_probation";
                 // The proposal is written whichever way this went. Under `--auto`
@@ -706,6 +718,33 @@ fn already_argued(
 #[cfg(test)]
 mod tests {
     use super::{already_argued, dispose, hold_out, stamp_probation};
+    use std::collections::BTreeMap;
+
+    /// A `shell` batch on probation stamps its own rules and leaves the
+    /// standing rule it carried through on the ordinary leash. Fails on the
+    /// unscoped stamp, which marked every ungraded rule in the domain.
+    #[test]
+    fn probation_stamps_only_the_batch_region() {
+        use mecha_core::learning::Rule;
+        use mecha_core::situation::Situation;
+        let shell = Situation::of_run(&["shell".into()], None);
+        let mut rules = vec![
+            Rule {
+                text: "Standing, carried through.".into(),
+                id: Some("r-standing".into()),
+                ..Default::default()
+            },
+            Rule {
+                text: "New shell rule.".into(),
+                id: Some("r-shell".into()),
+                scope: Some(shell.clone()),
+                ..Default::default()
+            },
+        ];
+        stamp_probation(&mut rules, &BTreeMap::new(), &shell);
+        assert!(!rules[0].probation, "not this batch's to stamp");
+        assert!(rules[1].probation);
+    }
 
     /// The brake compares one region's batch against the proposals, so a
     /// shell batch already argued waits while a new standing batch in the
@@ -836,7 +875,11 @@ mod tests {
             );
         }
 
-        stamp_probation(&mut rules, &tallies);
+        stamp_probation(
+            &mut rules,
+            &tallies,
+            &mecha_core::situation::Situation::default(),
+        );
 
         let by_id = |want: Option<&str>| {
             rules
