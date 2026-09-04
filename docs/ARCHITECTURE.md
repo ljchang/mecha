@@ -2342,7 +2342,16 @@ The decisions that carry it, each a bug if undone:
   lever on, and the realised surface is `tools` and `system_prompt` on the
   same record — an experiment pairs arms on the switch set and checks the
   surface from those fields (one variant briefly recorded its effect, and
-  the field then meant two things; found on review). The record's loader
+  the field then meant two things; found on review). Four switches also
+  live in config (`[agent] step_escalation|boredom|compact_validate`,
+  `[messages] enabled` — the last folded because a missing mailbox leaves
+  no trace in either surface field), and for those `levers_off` reads the
+  *folded config the agent was built from*, never the flag: two earlier
+  shapes answered from the flag and let `prepare_tools`' fold be deleted
+  with the record still saying "absent" of a notice the agent went on
+  issuing, every test green. Empty lists (`fallbacks`, `[[hook]]`,
+  `[outbox] tools`) are not switches and are not recorded — named blind
+  spots. The record's loader
   degrades the *whole* list to `None` on an unknown name, never to a shorter
   list, because a lever dropped from `levers_off` reads as on; `None` is the
   same answer a transcript from before the field gives, and neither is

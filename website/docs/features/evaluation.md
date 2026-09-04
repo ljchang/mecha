@@ -253,7 +253,7 @@ line, because its fixture workspaces are what make that defensible.
 | The `compact` tool | **the one that was missed.** It is registered from local `context_window` / `compact_at_tokens` and sits at the front of the cached prefix, so two differently-configured boxes graded different prefixes — it changes the *tool list*, not merely what a run may do |
 | Step escalation | off by default, but a machine's own `config.toml` could turn it on, and a scorecard must not depend on that either |
 | Boredom, compact validation | the two `[agent]` switches that ship *on*: a notice in the model's context and a second model call per compaction, each decided by this machine's config. Forced since the lever set named them; a scorecard taken before that ran with whatever the box said |
-| [Approval rules](/docs/features/tools) | a `forbid` in this box's rules file would score a case's `shell` call as `Blocked by policy:` here and not there |
+| [Approval rules](/docs/features/tools-and-mcp#approval) | a `forbid` in this box's rules file would score a case's `shell` call as `Blocked by policy:` here and not there |
 
 The workspace is also forced to the fixture and the run to read-only. Sandboxed
 cases get their writes only through their own approver, scoped to their own

@@ -1314,7 +1314,14 @@ mod tests {
     /// absences — D14's whole reason for one definition.
     #[test]
     fn the_record_names_exactly_what_eval_forced() {
-        let cfg = mecha_core::config::Config::default();
+        // What `prepare_tools` hands `build`: this machine's defaults with
+        // the flags folded in. `levers_off` reads the folded config, never
+        // the flag, so the fold is part of what "eval forced" means.
+        let folded = |opts: &GlobalOpts| {
+            let mut cfg = mecha_core::config::Config::default();
+            crate::setup::fold_agent_switches(&mut cfg.agent, opts);
+            cfg
+        };
         // Eval is the bare preset *plus* the operator's rules lifted — the
         // one lever `Lever::bare` refuses to throw, so it is asserted here
         // by name rather than folded into the preset.
@@ -1329,7 +1336,7 @@ mod tests {
         let mut bare = GlobalOpts::default();
         force_reproducible(&mut bare, false, false);
         assert_eq!(
-            crate::setup::levers_off(&bare, &cfg),
+            crate::setup::levers_off(&bare, &folded(&bare)),
             bare_plus_rules(&[]),
             "the bare arm records every lever off, the rules included"
         );
@@ -1338,14 +1345,14 @@ mod tests {
         let mut with_mcp = GlobalOpts::default();
         force_reproducible(&mut with_mcp, true, false);
         assert_eq!(
-            crate::setup::levers_off(&with_mcp, &cfg),
+            crate::setup::levers_off(&with_mcp, &folded(&with_mcp)),
             bare_plus_rules(&[Lever::Mcp])
         );
 
         let mut with_rules = GlobalOpts::default();
         force_reproducible(&mut with_rules, false, true);
         assert_eq!(
-            crate::setup::levers_off(&with_rules, &cfg),
+            crate::setup::levers_off(&with_rules, &folded(&with_rules)),
             bare_plus_rules(&[Lever::LearnedRules])
         );
 
@@ -1354,7 +1361,7 @@ mod tests {
             let mut one = GlobalOpts::default();
             crate::setup::switch_off(&mut one, lever);
             assert!(
-                crate::setup::levers_off(&one, &cfg).contains(&lever),
+                crate::setup::levers_off(&one, &folded(&one)).contains(&lever),
                 "{lever:?} thrown through switch_off must read as off"
             );
         }
@@ -1364,9 +1371,9 @@ mod tests {
         // so a provider without a context window changes `tools`, not this.
         let untouched = GlobalOpts::default();
         assert_eq!(
-            crate::setup::levers_off(&untouched, &cfg),
-            vec![Lever::StepEscalation],
-            "step escalation is the one switch that ships off"
+            crate::setup::levers_off(&untouched, &folded(&untouched)),
+            vec![Lever::Messages, Lever::StepEscalation],
+            "messaging and step escalation are the two switches that ship off"
         );
     }
 
