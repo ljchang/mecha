@@ -467,7 +467,18 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
     let written = if dry_run {
         updates.len()
     } else {
-        store.set_situations(&updates, &chrono::Utc::now().to_rfc3339())?
+        let written = store.set_situations(&updates, &chrono::Utc::now().to_rfc3339())?;
+        // Committed on its own, like every batch pass over this store: the
+        // rewrite changes which region batches the next `learn --auto`
+        // argues, and left uncommitted it would ride into the next
+        // nightly's `reflect: 0 session(s)` commit (found on review).
+        if written > 0 {
+            store.commit(&format!(
+                "reflect --backfill-situations: {written} situation(s) recomputed, {} left absent",
+                unmatched.len()
+            ));
+        }
+        written
     };
     println!(
         "{verb} {written} of {} situation(s); {} left absent, {} session(s) read",

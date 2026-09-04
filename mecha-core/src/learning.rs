@@ -1501,31 +1501,6 @@ impl LearningStore {
     ///
     /// One-way, and stated plainly: the withheld context cannot be recovered
     /// from this file afterwards. The transcript still has it.
-    /// Write recomputed situations onto the reflections that have none,
-    /// stamping each with `recomputed_at` (§17.7 item 6). Only a reflection
-    /// whose `situation` is still absent takes one — a situation recorded at
-    /// mining is never overwritten by a recomputation, and running the pass
-    /// twice is free. Returns how many were written. Held under the store
-    /// lock by the caller, like every rewrite here.
-    pub fn set_situations(
-        &self,
-        updates: &[(String, crate::situation::Situation)],
-        recomputed_at: &str,
-    ) -> Result<usize> {
-        let mut written = 0usize;
-        self.rewrite_reflexions(|all| {
-            for r in all.iter_mut().filter(|r| r.situation.is_none()) {
-                if let Some((_, s)) = updates.iter().find(|(id, _)| *id == r.id) {
-                    r.situation = Some(s.clone());
-                    r.situation_recomputed_at = Some(recomputed_at.to_string());
-                    written += 1;
-                }
-            }
-            Ok(())
-        })?;
-        Ok(written)
-    }
-
     pub fn edit_reflexion(&self, id: &str, lesson: &str) -> Result<Reflexion> {
         let lesson = lesson.trim();
         anyhow::ensure!(!lesson.is_empty(), "a lesson cannot be empty");
@@ -1580,6 +1555,31 @@ impl LearningStore {
     }
 
     /// Refuse a reflection. Kept as evidence; never a candidate again.
+    /// Write recomputed situations onto the reflections that have none,
+    /// stamping each with `recomputed_at` (§17.7 item 6). Only a reflection
+    /// whose `situation` is still absent takes one — a situation recorded at
+    /// mining is never overwritten by a recomputation, and running the pass
+    /// twice is free. Returns how many were written. Held under the store
+    /// lock by the caller, like every rewrite here.
+    pub fn set_situations(
+        &self,
+        updates: &[(String, crate::situation::Situation)],
+        recomputed_at: &str,
+    ) -> Result<usize> {
+        let mut written = 0usize;
+        self.rewrite_reflexions(|all| {
+            for r in all.iter_mut().filter(|r| r.situation.is_none()) {
+                if let Some((_, s)) = updates.iter().find(|(id, _)| *id == r.id) {
+                    r.situation = Some(s.clone());
+                    r.situation_recomputed_at = Some(recomputed_at.to_string());
+                    written += 1;
+                }
+            }
+            Ok(())
+        })?;
+        Ok(written)
+    }
+
     pub fn drop_reflexion(&self, id: &str, reason: Option<String>) -> Result<Reflexion> {
         self.set_dropped(id, Some(reason))
     }
