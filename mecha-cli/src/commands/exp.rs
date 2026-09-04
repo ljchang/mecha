@@ -731,7 +731,8 @@ async fn principal_call(
             } else if !answer.deny.is_empty() {
                 failures.push("refusals are scripted before a task, not after it".into());
             }
-            for mut act in answer.acts {
+            for request in answer.acts {
+                let mut act = mecha_core::experiment::PrincipalAct::from(request);
                 if !mecha_core::experiment::allowed_verb(&act.verb) {
                     act.ok = Some(false);
                     failures.push(format!(
@@ -757,8 +758,17 @@ async fn principal_call(
                     // operator's ask posture — both recorded done (found
                     // on review). `--workspace` and `--yes` are the
                     // driver's, so the principal cannot move either.
+                    // Before the task the trial's workspace is not staged
+                    // yet (run_one stages it), so an act runs from the
+                    // lifetime's scratch workspace; after it, from the
+                    // trial's, where the parked continuation lives (found
+                    // on review).
+                    let act_workspace = match point {
+                        PrincipalPoint::AfterTask => store.workspace_for(&trial.id),
+                        _ => workspace.clone(),
+                    };
                     cmd.arg("--workspace")
-                        .arg(store.workspace_for(&trial.id))
+                        .arg(&act_workspace)
                         .arg("--yes")
                         .args(flags)
                         .args(&act.verb);

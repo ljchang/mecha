@@ -185,7 +185,7 @@ pub struct PrincipalOutput {
     /// The owner's verbs to run, as `mecha` argv after the binary — from
     /// the closed set `allowed_verb` names, in order.
     #[serde(default)]
-    pub acts: Vec<PrincipalAct>,
+    pub acts: Vec<PrincipalRequest>,
     /// Refusals to script for the task about to run (`before_task`):
     /// written to the trial home's denials file, which the run child's
     /// approver reads ahead of its own answer.
@@ -193,20 +193,42 @@ pub struct PrincipalOutput {
     pub deny: Vec<crate::tool::DenialRule>,
 }
 
+/// One verb the principal asks for: what it answers with. Strict — an
+/// exit code or a verdict on it is the driver's alone, and a principal
+/// that claims one is off the contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct PrincipalRequest {
+    pub verb: Vec<String>,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// One verb as the ledger records it: the request, plus how the driver's
+/// run of it went. A separate type from the request on purpose — a single
+/// type that refused the driver's own fields on read made every line with
+/// an act unreadable, torn on the ledger and invisible to `stage_health`
+/// (found on review).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PrincipalAct {
     pub verb: Vec<String>,
     #[serde(default)]
     pub reason: String,
-    /// Filled by the driver after it ran the verb: the exit code, and
-    /// whether it succeeded. Never read from the principal's answer — a
-    /// verb that never ran must not carry an exit code the principal
-    /// claimed (found on review).
-    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
+}
+
+impl From<PrincipalRequest> for PrincipalAct {
+    fn from(r: PrincipalRequest) -> Self {
+        PrincipalAct {
+            verb: r.verb,
+            reason: r.reason,
+            exit_code: None,
+            ok: None,
+        }
+    }
 }
 
 /// The owner's verbs a principal may run, by their leading words — the
@@ -3263,15 +3285,45 @@ rationale = "no rumination should fail more over the sequence"
             "a point a later build names"
         );
         assert!(
-            serde_json::from_str::<PrincipalAct>(
+            serde_json::from_str::<PrincipalRequest>(
                 r#"{"verb":["outbox","approve","x","-y"],"exit_code":0,"ok":true}"#,
             )
             .is_err(),
             "an exit code is the driver's alone; a principal that claims one is off the contract"
         );
         let plain: PrincipalAct =
-            serde_json::from_str(r#"{"verb":["outbox","approve","x","-y"]}"#).unwrap();
+            serde_json::from_str::<PrincipalRequest>(r#"{"verb":["outbox","approve","x","-y"]}"#)
+                .unwrap()
+                .into();
         assert_eq!((plain.exit_code, plain.ok), (None, None));
+        // The ledger's line, with the driver's fields filled, reads back:
+        // the one type that refused them made every line with an act torn.
+        let dir = std::env::temp_dir().join(format!("mecha-exp-acts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = ExperimentStore::open(&dir, "life").unwrap();
+        let mut filled = plain.clone();
+        filled.exit_code = Some(1);
+        filled.ok = Some(false);
+        let line = StageRun {
+            lifetime: "full__r1".into(),
+            arm: "full".into(),
+            stage: StageLever::Principal,
+            after_position: 2,
+            attempt: 1,
+            started_at: "t0".into(),
+            finished_at: "t1".into(),
+            status: StageStatus::Failed,
+            exit_code: None,
+            error: Some("`mecha outbox approve x -y` exited 1".into()),
+            point: Some(PrincipalPoint::AfterTask),
+            acts: vec![filled.clone()],
+        };
+        store.record_stage(&line).unwrap();
+        let (runs, torn) = store.stage_runs("full__r1").unwrap();
+        assert_eq!((runs.len(), torn), (1, 0), "a filled act round-trips");
+        assert_eq!(runs[0].acts, vec![filled]);
+        assert_eq!(stage_health(&runs).failed, 1, "and the hold sees it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// What a stage accepted inside the home reaches the next task: the
