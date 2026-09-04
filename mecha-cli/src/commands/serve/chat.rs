@@ -1621,10 +1621,12 @@ fn begin_turn(
             // Only an ordinary chat is renamed: a delegation already carries
             // the task's name (and `task_withholding` reads that title), and
             // a voice session is the same conversation from another door.
-            // And not on a run the owner cut off: the retry is already on
-            // its way to the same server (`title::settled`). The bookmark is
-            // left where it was, so the threshold fires on the turn that
-            // finishes instead of being spent on one that did not.
+            // And not on a run the owner cut off, nor on one that failed:
+            // the retry is already on its way to the same server
+            // (`title::settled`; a provider error is the same shape, the
+            // owner re-asking). The bookmark is left where it was, so the
+            // threshold fires on the turn that finishes instead of being
+            // spent on one that did not.
             name_it = ws
                 .session
                 .meta
@@ -1634,7 +1636,7 @@ fn begin_turn(
                 && mecha_core::title::due(owner_turns.len(), ws.titled_at)
                 && outcome
                     .as_ref()
-                    .map_or(true, |o| mecha_core::title::settled(o.stop_cause));
+                    .is_ok_and(|o| mecha_core::title::settled(o.stop_cause));
             // **Claimed here, under the lock that decided it.** Advancing the
             // bookmark after the generation (which is where the previous fix
             // put it) leaves a window the owner's typing speed decides: the

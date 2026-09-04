@@ -199,6 +199,46 @@ class TranscriptStartedTurns(unittest.TestCase):
 
         self.assertTrue(run(scenario()))
 
+    def test_a_kept_ruling_does_not_outlive_its_turn(self):
+        """The override skips the stock reset at turn *start* when a VAD stop
+        is pending. The reset at turn *end* is untouched, so turn N+1 must
+        begin with nothing of turn N — no text for an expired safety net to
+        end it on, no ruling, no pending stop."""
+
+        async def scenario():
+            call = Call(
+                TranscriptStartedTurnStop,
+                [EndOfTurnState.COMPLETE, EndOfTurnState.INCOMPLETE],
+                STT_TTFS_P99,
+            )
+            await call.start()
+            s = call.strategy
+            # Turn 1: a complete question, ended on its own transcript.
+            await call.speaks()
+            await call.stops_speaking()
+            await call.turn_starts()
+            await call.transcript("Tell me about Jonathan Phillips.")
+            await asyncio.sleep(0.05)
+            ended_once = len(call.stopped) == 1
+            # The controller tells every stop strategy the turn ended.
+            await s.handle_user_turn_stopped()
+            clean = (s._text, s._vad_stopped, s._turn_complete) == ("", False, False)
+            # Turn 2 opens on an INCOMPLETE first fragment and must be held,
+            # not ended by turn 1's leftovers.
+            await call.speaks()
+            await call.stops_speaking()
+            await call.turn_starts()
+            await call.transcript("add a couple")
+            await asyncio.sleep(1.5)
+            held = len(call.stopped) == 1
+            await call.close()
+            return ended_once, clean, held
+
+        ended_once, clean, held = run(scenario())
+        self.assertTrue(ended_once)
+        self.assertTrue(clean, "turn 1's state survived its own end")
+        self.assertTrue(held, "turn 2 was ended on turn 1's leftovers")
+
     def test_the_private_it_reads_is_checked_at_construction(self):
         """A pipecat rename must refuse the call, not quietly degrade."""
         s = TranscriptStartedTurnStop(turn_analyzer=ScriptedAnalyzer([]))
