@@ -130,15 +130,23 @@ impl PollRecord {
             .cloned()
             .unwrap_or_default()
     }
-    pub fn participant_emails(&self) -> Vec<String> {
+    /// Every participant's address — and an error, never a shorter list,
+    /// when one has none: a person missing from the booking is the finding
+    /// this whole surface exists to avoid.
+    pub fn participant_emails(&self) -> Result<Vec<String>> {
         self.value["participants"]
             .as_array()
-            .map(|list| {
-                list.iter()
-                    .filter_map(|p| p["email"].as_str().map(str::to_string))
-                    .collect()
+            .context("the record has no participant list")?
+            .iter()
+            .map(|p| {
+                p["email"].as_str().map(str::to_string).with_context(|| {
+                    format!(
+                        "participant `{}` has no address",
+                        p["name"].as_str().unwrap_or("?")
+                    )
+                })
             })
-            .unwrap_or_default()
+            .collect()
     }
 }
 
@@ -375,7 +383,7 @@ pub fn pick_args(record: &PollRecord, index: usize) -> Result<Value> {
         "title": record.title,
         "start_time": row["start"],
         "end_time": row["end"],
-        "attendees": record.participant_emails(),
+        "attendees": record.participant_emails()?,
         "description": description,
     });
     if let Some(account) = life["account"].as_str() {
@@ -463,8 +471,12 @@ pub fn pick(poll_id: &str, n: usize) -> Result<String> {
     };
     anyhow::ensure!(n >= 1, "candidates are numbered from 1");
     // Taken before the read it protects: an `outbox edit` landing between
-    // the read and the write would otherwise be rebuilt over.
-    let _lock = store.lock()?;
+    // the read and the write would otherwise be rebuilt over. Never waited
+    // on — `outbox send` holds this across a human prompt, and the TUI's
+    // `p` runs on its event loop.
+    let Some(_lock) = store.try_lock()? else {
+        bail!("the outbox is locked by a review in progress — try again in a moment");
+    };
     let item = store.item(item_id)?;
     anyhow::ensure!(
         item.status == "pending",
@@ -500,8 +512,14 @@ pub fn sweep() -> Result<Vec<String>> {
     // the store, and two overlapping sweeps — the timer and a hand run —
     // would each see no card and each stage one, the second of which no
     // later tick reconciles. `stage_by_harness` and `update_args` do not
-    // take the lock themselves.
-    let _lock = store.lock()?;
+    // take the lock themselves. Never waited on: this is the last verb on
+    // the slots timer's line, and `outbox send` holds the lock across a
+    // human prompt — a tick that finds it held says so and yields.
+    let Some(_lock) = store.try_lock()? else {
+        return Ok(vec![
+            "the outbox is locked by a review in progress; nothing done this tick".to_string(),
+        ]);
+    };
     let dir = records_dir()?;
     let (records, problems) = scan(&dir)?;
     let mut lines: Vec<String> = problems
@@ -725,6 +743,19 @@ mod tests {
 
         let err = pick_args(&r, 2).unwrap_err().to_string();
         assert!(err.contains("2 candidate(s), not 3"), "{err}");
+
+        // A participant with no address is a finding, not a shorter invite.
+        let mut short = r.value.clone();
+        short["participants"][1] = json!({"name": "Tal", "url": "u2"});
+        let short = PollRecord {
+            path: r.path.clone(),
+            poll_id: r.poll_id.clone(),
+            title: r.title.clone(),
+            value: short,
+            dirty: BTreeSet::new(),
+        };
+        let err = pick_args(&short, 0).unwrap_err().to_string();
+        assert!(err.contains("`Tal` has no address"), "{err}");
     }
 
     /// The owner edited the card — a title, an extra attendee — and then

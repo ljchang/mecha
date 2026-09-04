@@ -2080,6 +2080,12 @@ likely to trip over from outside:
   invitation, a lost `booked` a second calendar event. The timer still runs
   the three in sequence; the merge is what makes that a convenience rather
   than the invariant.
+- **The two halves find `~/.mecha` differently.** `mecha polls` resolves the
+  records through `work::mecha_home()`, which honours `MECHA_HOME`;
+  `mecha-mail polls` uses `dirs::home_dir()`, as every store in that crate
+  does. Under an isolated home the two sweep different directories —
+  `--records` is the override — and this is the first store both binaries
+  write, so a test harness that sets `MECHA_HOME` must pass it.
 - **A pick card is nobody's draft.** It is staged through
   `OutboxStore::stage_by_harness` with `Author::Harness`, and
   `OutboxItem::writing_outcome` returns `None` for such an item — so a slot

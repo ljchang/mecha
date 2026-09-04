@@ -689,6 +689,10 @@ async fn polls(
                             .await
                             .map_err(|e| anyhow::anyhow!(e))
                             .context("re-verifying the winning slot")?;
+                        // `freebusy` returned Ok, so at least one account was
+                        // readable — an all-failed fan-out is its Err path,
+                        // propagated above. Same contract as the bookings
+                        // sweep's two call sites.
                         match classify_partial(true, &partial) {
                             PartialCoverage::SkipRevoked(revoked) => {
                                 for failure in &revoked {
@@ -762,7 +766,9 @@ async fn polls(
                 if matches!(job, pl::Job::Nudge(_)) {
                     nudge_failed = true;
                 }
-                break;
+                // The next job on this record, not the next record: a dead
+                // address must not starve everyone sorted after it.
+                continue;
             }
         }
         // The nudge queue clears only when every nudge went; a failed one

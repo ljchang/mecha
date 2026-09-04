@@ -948,7 +948,7 @@ async fn send(
                 if !output.is_empty() {
                     println!("{}", indent(&output));
                 }
-                if item.edited() {
+                if item.edited() && item.author() == mecha_core::outbox::Author::Model {
                     println!(
                         "  the draft was edited before sending — `mecha reflect` will \
                          mine the diff as a writing lesson"
