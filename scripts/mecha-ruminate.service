@@ -14,4 +14,10 @@ Description=mecha nightly rumination (reflect, validate, learn)
 
 [Service]
 Type=oneshot
+# The wrapper runs `mecha` by absolute path, but the graph MCP server mecha
+# spawns is resolved by name against *this* PATH (passed through to the
+# child), and a spawn failure is skipped, not fatal — the kg_* tools would
+# just be absent, with one line on stderr and a normal exit. The same line
+# the slack and triggers units carry (found on review).
+Environment=PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=%h/Github/mecha/scripts/ruminate.sh
