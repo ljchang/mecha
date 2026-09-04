@@ -978,8 +978,25 @@ impl MailTools {
         end: &str,
         attendee: Option<&str>,
     ) -> Result<(String, String), String> {
-        let account = self.pick(account, Mode::Create(Surface::Calendar))?[0];
         let attendees: Vec<String> = attendee.map(str::to_string).into_iter().collect();
+        self.create_event_with_attendees(account, title, description, start, end, &attendees)
+            .await
+    }
+
+    /// The same event, with everyone on it — a meeting poll's booking, where
+    /// every participant (the silent ones included) is an attendee and the
+    /// provider's invite is how each of them learns the time.
+    pub async fn create_event_with_attendees(
+        &self,
+        account: Option<&str>,
+        title: &str,
+        description: &str,
+        start: &str,
+        end: &str,
+        attendees: &[String],
+    ) -> Result<(String, String), String> {
+        let account = self.pick(account, Mode::Create(Surface::Calendar))?[0];
+        let attendees: Vec<String> = attendees.to_vec();
         let result = with_token(&account.manager, |t| {
             let (title, description) = (title.to_string(), description.to_string());
             let (start, end) = (start.to_string(), end.to_string());
