@@ -1403,22 +1403,15 @@ rationale = "no notice, fewer turns"
         };
         let a = Manifest::two_arm(
             "eval-ab",
-            "max_turns=40",
+            "treatment",
             treatment.clone(),
             tasks.clone(),
             3,
             1,
         )
         .unwrap();
-        let b = Manifest::two_arm(
-            "eval-ab-again",
-            "max_turns=40",
-            treatment,
-            tasks.clone(),
-            3,
-            1,
-        )
-        .unwrap();
+        let b = Manifest::two_arm("eval-ab-again", "treatment", treatment, tasks.clone(), 3, 1)
+            .unwrap();
         assert_eq!(a.control, "bare");
         assert_eq!(
             a.split_seed, b.split_seed,
