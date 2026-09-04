@@ -84,6 +84,11 @@ pub struct Corpus {
     /// one (found on review). Zero when `include_tests` is set or a `kind`
     /// was asked for by name.
     pub hidden_tests: usize,
+    /// Experiment sessions the scan hid — the twin of `hidden_tests`, for
+    /// the same reason: an experiment session that leaked into the real
+    /// store must be counted where it was excluded, or "nothing went
+    /// wrong" reads identically to "nothing happened".
+    pub hidden_experiments: usize,
 }
 
 /// How to bound a scan. Both limits are honest about cost rather than about
@@ -150,6 +155,16 @@ impl Scan {
             && meta.kind == Some(SessionKind::Test)
     }
 
+    /// [`Self::hides_test`]'s twin for `SessionKind::Experiment`, built the
+    /// same way: exact about the window and the kind, never keyed on the
+    /// kind alone.
+    pub fn hides_experiment(&self, meta: &SessionMeta) -> bool {
+        self.in_window(meta)
+            && self.kind.is_none()
+            && !self.include_experiments
+            && meta.kind == Some(SessionKind::Experiment)
+    }
+
     /// The date and workspace filters, without the kind rule.
     fn in_window(&self, meta: &SessionMeta) -> bool {
         if self.since.is_some_and(|t| meta.created_at < t) {
@@ -206,6 +221,9 @@ impl Corpus {
                 if scan.hides_test(&meta) {
                     out.hidden_tests += 1;
                 }
+                if scan.hides_experiment(&meta) {
+                    out.hidden_experiments += 1;
+                }
                 continue;
             }
             // Attributed rather than taken from the header: a mid-session
@@ -256,6 +274,7 @@ impl Corpus {
             sessions_read: self.sessions_read,
             unreadable: self.unreadable,
             hidden_tests: self.hidden_tests,
+            hidden_experiments: self.hidden_experiments,
         }
     }
 

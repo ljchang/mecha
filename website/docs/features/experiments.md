@@ -68,11 +68,16 @@ mecha exp export boredom > out.json
 ```
 
 Every trial is its own `mecha` process, started with `MECHA_HOME` pointing at
-its arm's home under the experiment directory. That home's `config.toml` *is*
-the arm — your provider (without any inline key), your sandbox and security
-settings, and the arm's switches — so nothing about an arm is ambient. The
-runner refuses a home that is, or contains, your real one, and nothing in a
-trial home is ever copied back.
+its arm's home under the experiment directory and with the staged workspace
+as its working directory. That home's `config.toml` *is* the arm: your whole
+config with every inline provider key scrubbed (the environment variable the
+key names still reaches the child), your sandbox, security and approval rules
+intact, and the arm's switches and knobs applied — so nothing about an arm is
+ambient, and your `forbid` list still stands. Your learning store, skills and
+charter are copied into the arm's home once, when it is first created, so a
+`full` arm runs the harness as your machine has it; nothing is ever copied
+back. The child gets a clean environment with only what it needs, the runner
+refuses a home that is, or contains, your real one.
 
 A trial's session is marked `experiment`. In your real store that kind is
 hidden from every readout, like a smoke test; in the trial home it is admitted,

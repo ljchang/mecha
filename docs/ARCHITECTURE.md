@@ -2915,20 +2915,39 @@ comparison over a chosen set**, with the design written before the run.
   workspaces justify lifting it.
 - **Isolation is the whole store** (D12). Every trial runs as a child
   `mecha run` with `MECHA_HOME` pointing at its arm's home under the
-  experiment directory, whose `config.toml` *is* the arm — the operator's
-  provider (without any inline key), the machine's sandbox and security
-  posture, and the arm's `[agent]` switches; the CLI-only levers ride as
-  `--no-*` flags. The runner refuses a home that is, or contains, the real
-  one, on `setup`'s rule for a workspace. Nothing in a trial home is ever
-  copied back: a rule learned inside a trial that landed in
-  `~/.mecha/learning/` would ride every real run's cached prefix from then
-  on.
+  experiment directory, whose `config.toml` *is* the arm: the operator's
+  whole config with every inline provider key scrubbed (the variable
+  `api_key_env` names passes through), the trial's seed on the default
+  provider, and the arm's `[agent]` switches and knobs applied; the
+  CLI-only levers ride as `--no-*` flags. **The machine's posture
+  travels** — sandbox, security, the approval `[[rule]]`s, `[mcp]`,
+  `[[hook]]`, `[outbox]` — because an arm varies the closed set and nothing
+  else, and the first cut dropped the rules while running `--yes`, which
+  is the silently-degrading-guard shape the `approval_rules` refusal
+  exists to prevent (found on review). The stores a lever left on reads —
+  `learning/`, `skills/`, `charter.toml` — are seeded once into the arm's
+  home from the real one when it is first created, never written back, so
+  `full` means the harness as this machine had it. The child's
+  environment is an **allowlist** on `Sandbox::child_env`'s shape: the
+  base set, the provider key variables, and the three that name the trial
+  — `MECHA_HOME` is not the only variable that moves a store, and an
+  exported `MECHA_LEARNING_DIR` would have pointed a trial at the real
+  learning store (found on review). Its cwd is the staged workspace, so
+  no `mecha.toml` in the runner's checkout layers over the arm. The runner
+  refuses a home that is, or contains, the real one, on `setup`'s rule for
+  a workspace. Nothing in a trial home is ever copied back: a rule learned
+  inside a trial that landed in `~/.mecha/learning/` would ride every real
+  run's cached prefix from then on.
 - **A session in a trial home is `SessionKind::Experiment`** (D13), set by
   the runner through `MECHA_SESSION_KIND` — the second and last kind an
   environment may set, beside `test`. `runlog::Scan` hides it in the real
-  store like a test session and admits it by default in a home carrying
-  the `EXPERIMENT` marker, so `reflect`, `learn` and the corpus read a
-  trial's sessions there without a flag anyone has to remember. And the
+  store like a test session — and counts what it hid
+  (`Corpus::hidden_experiments`, `hides_experiment`), on the incident
+  behind `hidden_tests`: the failure was never that test runs were
+  counted, it was that nothing said they had been excluded — and admits
+  it by default in a home carrying the `EXPERIMENT` marker, so `reflect`,
+  `learn` and the corpus read a trial's sessions there without a flag
+  anyone has to remember. And the
   session names its trial back: `RunConfig::experiment` carries the
   `ExperimentRef` the runner set in the child's environment, so neither
   store is the only index.
@@ -2937,7 +2956,11 @@ comparison over a chosen set**, with the design written before the run.
   scorecard grades the model it names; an experiment needs the opposite.
   They share the substrate — the case file and its graders, the fixture
   staging, the gate — and `mecha run --json` is a superset of the batch
-  result so the child's answer reaches the same grader.
+  result, tested as a round-trip through `BatchResult` on a refused run
+  whose last call failed, so the child's answer reaches the same grader
+  with every field the grader reads (a refusal used to arrive as a struct
+  where the result wants a string, which made every refused trial
+  unparseable and dropped its episode from both arms; found on review).
 - **The gate is the existing one, over arm sets** (D4). Each treatment arm
   is paired with the control by (task, seed, repetition), the holdout is
   drawn uniformly with the manifest's split seed, and

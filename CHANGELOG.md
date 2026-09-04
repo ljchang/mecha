@@ -15,7 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the override knobs, a control, a falsifiable prediction per treatment
   arm, the tasks as an eval case file, the seeds, the split seed), `run`
   drives one child `mecha run` per arm × task × seed × repetition into an
-  isolated home per arm whose `config.toml` is the arm, `status` and
+  isolated home per arm whose `config.toml` is the arm (the operator's
+  posture with keys scrubbed and the arm applied; the learning store,
+  skills and charter seeded once; a clean, allowlisted environment; the
+  staged workspace as cwd), `status` and
   `judge` read the trials back (each treatment arm against the control
   through the candidate gate, the task outcome entering as a cost), and
   `export` hands the whole record over. A peer of `eval`, never a flag on
