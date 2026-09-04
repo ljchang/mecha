@@ -1276,7 +1276,9 @@ pub struct LeapRun {
 pub struct Proposal {
     pub id: String,
     pub domain: String,
-    /// `pending` | `accepted` | `rejected` | `rejected_by_gate`.
+    /// `pending` | `accepted` | `rejected` | `rejected_by_gate` |
+    /// `rejected_by_cap` (refused by the count cap before any measurement;
+    /// resolved at birth, kept so the argued brake sees the batch).
     pub status: String,
     /// The reflections this proposal was learned from. Marked processed only
     /// when the proposal is resolved — a rejected-by-gate set returns to the

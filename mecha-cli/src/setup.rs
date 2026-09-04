@@ -23,7 +23,13 @@ pub struct Prepared {
     pub model: String,
     pub workspace: PathBuf,
     /// The resolved config, for commands that need to build a *second*
-    /// connection — `eval` and its judge model.
+    /// connection — `eval` and its judge model. **`config.agent` does not
+    /// carry the learned-rules block; `agent` does.** `build` appends the
+    /// block to a private clone of the agent config (the registry it is
+    /// matched against exists only there), so a caller that builds another
+    /// agent from this field starts without rules — every current one
+    /// (`probe`, `harness_probe`, `replay`) overwrites `system_prompt` from
+    /// a recorded config anyway.
     pub config: Config,
     /// The active sandbox, for surfaces that describe what `shell` actually
     /// is — the TUI's /tools modal. The tools themselves already hold it.

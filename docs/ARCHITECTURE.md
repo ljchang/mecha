@@ -478,8 +478,13 @@ than two strings, with the same skip when the candidate changes nothing in
 the recorded run's situation. One seam left as it was:
 `MAX_ACTIVE_RULES_PER_DOMAIN` and `budget_refuses` are still domain-wide
 while each learner call sees one region, so on a domain with several
-regions a batch can be refused against a total it could not see — fail-safe
-(the batch returns to the pool), but the steady state to watch for.
+regions a batch can be refused against a total it could not see — and the
+call that would shrink the domain is a different call from the one
+refused, so a domain at the cap stays there until a region consolidates
+or the owner retires. Fail-safe, and the refusal writes a
+`rejected_by_cap` proposal so the argued brake stops the repeat (an
+untraced refusal re-paid a learner call every pass); the steady state to
+watch for is `mecha proposals` filling with them.
 
 **Distillation is not learning, and its provenance rule differs on purpose.**
 `mecha distill` (`distill.rs`) summarises each closed session into an episode

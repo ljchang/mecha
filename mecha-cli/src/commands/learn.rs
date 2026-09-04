@@ -506,6 +506,32 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                  {MAX_ACTIVE_RULES_PER_DOMAIN} and no smaller than the current \
                  {active_before}. Nothing changed; consolidate or retire before adding."
             );
+            // Recorded, so the argued brake holds. A refusal that left no
+            // trace re-paid a learner call on every pass under `--auto` —
+            // and with a per-region learner the call that would shrink a
+            // domain at the cap is a different call from the one refused,
+            // so the pool did not change underneath it (found on review).
+            // The reflections stay unprocessed; the brake, not the cap, is
+            // what stops the repeat until the pool moves.
+            if args.propose || args.auto {
+                store.write_proposal(&Proposal {
+                    id: Session::new_id(),
+                    domain: domain.clone(),
+                    status: "rejected_by_cap".into(),
+                    reflexion_ids: ids.clone(),
+                    rules_before: learned_before.clone(),
+                    rules: rules.clone(),
+                    evidence: format!(
+                        "refused before measurement: {active_after} active rules would be \
+                         over the cap of {MAX_ACTIVE_RULES_PER_DOMAIN} (was {active_before}); \
+                         consolidate or retire in `{domain}` first"
+                    ),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    resolved_at: Some(chrono::Utc::now().to_rfc3339()),
+                    reason: None,
+                    scope: Some(region.clone()),
+                })?;
+            }
             continue;
         }
 
