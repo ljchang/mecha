@@ -33,9 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`mecha exp` runs lifetimes.** A `kind = "lifetime"` manifest — an
   ordered task sequence (`tasks.ids`, in order) and a `[schedule]` of
   loop stages between tasks (`reflect` every task, `validate
-  --unprocessed-only` then `learn --holdout 0.25 --auto` every fifth,
-  `harness ruminate` every tenth, by default; 0 is never — the nightly's
-  order and flags, validate measuring before learn consumes) — runs one isolated home per arm × seed × repetition, walks
+  --unprocessed-only`, `learn --holdout 0.25 --auto` and `rules
+  propose-retirements --apply` every fifth, `harness ruminate` every
+  tenth, by default; 0 is never — the nightly's order and flags, validate
+  measuring before learn consumes and the retirement brake after) — runs one isolated home per arm × seed × repetition, walks
   the sequence in position order, and after each task runs the stages due
   as child `mecha` verbs in that home, sequentially, each written to the
   lifetime's stage ledger (`stages/<lifetime>.jsonl`) with its exit
@@ -43,14 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rerun, a missing stage runs before the next task, a failed one is due
   again with its own log, and an interrupted one leaves a `running` line
   that burns its attempt. `judge` and `export` read the ledger: a failed
-  or interrupted stage on either side holds an arm's verdict at
-  *propose*, and the export carries every stage line. What a stage accepts inside the home — a
+  interrupted or unreadable stage line on either side holds an arm's
+  verdict at *propose*, and the export carries every stage line. What a stage accepts inside the home — a
   `ruminate` override — reaches the next task under the arm's pinned
   keys. Rows gain `position` and `lifetime`; `status` shows each
   lifetime's sequence by position with its stage counts. New with it: the
   **stage levers**, a second closed set an arm names off in `stages_off`
-  (`reflect`, `learn`, `validate`, `ruminate`, `sensors_in_brief`), on the
-  row's condition hash, refused on a `single`; and `[agent]
+  (`reflect`, `learn`, `validate`, `ruminate`, `retire`,
+  `sensors_in_brief`), on the row's condition hash, refused on a
+  `single`; and `[agent]
   sensors_in_brief` (default on), the switch behind the last one, which
   withholds the homeostat's and guilt's readings from the diagnostician's
   brief — their only reader. A lifetime run with no one answering mines

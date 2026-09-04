@@ -117,6 +117,13 @@ pub struct Schedule {
     pub learn: u32,
     #[serde(default = "five")]
     pub validate: u32,
+    /// `rules propose-retirements --apply`: the nightly's one brake on
+    /// rules that go live as they are derived. Runs after `learn`, as the
+    /// nightly does; a loop that installed rules and never retired a
+    /// harmful one would be more permissive than the one that ships, in
+    /// the direction that flatters the `learn` arm (found on review).
+    #[serde(default = "five")]
+    pub retire: u32,
     #[serde(default = "ten")]
     pub ruminate: u32,
 }
@@ -134,6 +141,7 @@ impl Default for Schedule {
             reflect: 1,
             learn: 5,
             validate: 5,
+            retire: 5,
             ruminate: 10,
         }
     }
@@ -152,6 +160,9 @@ impl Schedule {
         }
         if every(self.learn) {
             out.push(StageLever::Learn);
+        }
+        if every(self.retire) {
+            out.push(StageLever::Retire);
         }
         if every(self.ruminate) {
             out.push(StageLever::Ruminate);
@@ -175,6 +186,8 @@ pub enum StageLever {
     Learn,
     Validate,
     Ruminate,
+    /// `rules propose-retirements --apply`; see `Schedule::retire`.
+    Retire,
     SensorsInBrief,
     /// A stage this build cannot name, read off a ledger written by a
     /// build that has one — the closed-enum-on-an-append-only-store rule:
@@ -185,11 +198,12 @@ pub enum StageLever {
 }
 
 impl StageLever {
-    pub const ALL: [StageLever; 5] = [
+    pub const ALL: [StageLever; 6] = [
         StageLever::Reflect,
         StageLever::Learn,
         StageLever::Validate,
         StageLever::Ruminate,
+        StageLever::Retire,
         StageLever::SensorsInBrief,
     ];
 
@@ -199,6 +213,7 @@ impl StageLever {
             StageLever::Learn => "learn",
             StageLever::Validate => "validate",
             StageLever::Ruminate => "ruminate",
+            StageLever::Retire => "retire",
             StageLever::SensorsInBrief => "sensors_in_brief",
             StageLever::Unknown => "unknown",
         }
@@ -228,6 +243,7 @@ impl StageLever {
             StageLever::Learn => Some(&["learn", "--holdout", "0.25", "--auto"]),
             StageLever::Validate => Some(&["validate", "--unprocessed-only"]),
             StageLever::Ruminate => Some(&["harness", "ruminate"]),
+            StageLever::Retire => Some(&["rules", "propose-retirements", "--apply"]),
             StageLever::SensorsInBrief | StageLever::Unknown => None,
         }
     }
@@ -1222,9 +1238,10 @@ pub struct StageHealth {
 }
 
 impl StageHealth {
-    /// A stage that did not run as designed: failed or interrupted.
+    /// A stage not known to have run as designed: failed, interrupted, or
+    /// in a status this build cannot read — unknown is never clean.
     pub fn broken(&self) -> usize {
-        self.failed + self.interrupted
+        self.failed + self.interrupted + self.unknown
     }
 }
 
@@ -1598,6 +1615,10 @@ pub struct ArmJudgement {
     /// rather than counting as zero", one level up (found on review).
     pub stages: StageHealth,
     pub control_stages: StageHealth,
+    /// Ledger lines on the store that did not parse. A torn line has no
+    /// arm, so it holds every verdict: a line that could not be read is
+    /// not evidence the stage ran as designed.
+    pub unreadable_stage_lines: usize,
 }
 
 /// A finished control trial and the treatment trial on the same episode.
@@ -1616,7 +1637,12 @@ struct TrialPair<'a> {
 /// same way twice), and judge each arm through the gate. A trial that
 /// cannot answer the metric drops its pair; an arm with no pairs is
 /// reported with none rather than omitted.
-pub fn judge(manifest: &Manifest, trials: &[Trial], stages: &[StageRun]) -> Vec<ArmJudgement> {
+pub fn judge(
+    manifest: &Manifest,
+    trials: &[Trial],
+    stages: &[StageRun],
+    unreadable_stage_lines: usize,
+) -> Vec<ArmJudgement> {
     let health_of = |arm: &str| {
         let own: Vec<StageRun> = stages.iter().filter(|r| r.arm == arm).cloned().collect();
         stage_health(&own)
@@ -1694,10 +1720,10 @@ pub fn judge(manifest: &Manifest, trials: &[Trial], stages: &[StageRun]) -> Vec<
         let stages = health_of(name);
         let control_stages = health_of(control_name);
         let mut judgement = judgement;
-        let broken = stages.broken() + control_stages.broken();
+        let broken = stages.broken() + control_stages.broken() + unreadable_stage_lines;
         if broken > 0 && judgement.disposition == crate::candidate::Disposition::Accept {
             judgement.disposition = crate::candidate::Disposition::Propose(format!(
-                "{broken} stage run(s) failed or were interrupted across this arm's and the control's lifetimes; the treatment is not known to have run as designed"
+                "{broken} stage line(s) failed, interrupted, unreadable, or in a status this build cannot read across this arm's and the control's lifetimes; the treatment is not known to have run as designed"
             ));
         }
         out.push(ArmJudgement {
@@ -1709,6 +1735,7 @@ pub fn judge(manifest: &Manifest, trials: &[Trial], stages: &[StageRun]) -> Vec<
             judgement,
             stages,
             control_stages,
+            unreadable_stage_lines,
         });
     }
     out
@@ -2049,7 +2076,7 @@ rationale = "no notice, fewer turns"
         };
         let m = Manifest::one_arm("eval-x", "bare", bare.clone(), tasks.clone(), 1).unwrap();
         assert_eq!(m.control, None);
-        assert!(judge(&m, &[], &[]).is_empty(), "nothing to judge");
+        assert!(judge(&m, &[], &[], 0).is_empty(), "nothing to judge");
         let text = toml::to_string_pretty(&m).unwrap();
         let back = Manifest::parse(&text).unwrap();
         assert_eq!(back.control, None);
@@ -2073,7 +2100,7 @@ rationale = "no notice, fewer turns"
         assert_eq!(bake.control, None);
         assert_eq!(bake.arms.len(), 3);
         assert!(
-            judge(&bake, &[], &[]).is_empty(),
+            judge(&bake, &[], &[], 0).is_empty(),
             "a bake-off judges nothing either"
         );
         // And a comparison still needs the control and a treatment arm: one
@@ -2379,9 +2406,10 @@ rationale = "no rumination should fail more over the sequence"
                 StageLever::Reflect,
                 StageLever::Validate,
                 StageLever::Learn,
+                StageLever::Retire,
                 StageLever::Ruminate
             ],
-            "the design's default: every, fifth, fifth, tenth"
+            "the design's default: every, fifth, fifth, fifth, tenth — the nightly's order"
         );
     }
 
@@ -2458,6 +2486,11 @@ rationale = "no rumination should fail more over the sequence"
             Some(&["validate", "--unprocessed-only"][..]),
             "the held-out measurement, as the nightly runs it"
         );
+        assert_eq!(
+            StageLever::Retire.argv(),
+            Some(&["rules", "propose-retirements", "--apply"][..]),
+            "the brake, as the nightly runs it"
+        );
     }
 
     /// The ledger says what ran: due stages are the schedule's minus the
@@ -2492,6 +2525,7 @@ rationale = "no rumination should fail more over the sequence"
             reflect: 1,
             learn: 2,
             validate: 2,
+            retire: 0,
             ruminate: 0,
         };
         assert_eq!(
@@ -2583,7 +2617,7 @@ rationale = "no rumination should fail more over the sequence"
             trials.push(done("full", &format!("t{i}"), 1, true, 10));
             trials.push(done("bare", &format!("t{i}"), 1, false, 10));
         }
-        let clean = judge(&m, &trials, &[]);
+        let clean = judge(&m, &trials, &[], 0);
         let bare = clean.iter().find(|v| v.arm == "bare").unwrap();
         assert_eq!(bare.stages, StageHealth::default());
         let failed = StageRun {
@@ -2598,7 +2632,7 @@ rationale = "no rumination should fail more over the sequence"
             exit_code: Some(1),
             error: None,
         };
-        let held = judge(&m, &trials, &[failed]);
+        let held = judge(&m, &trials, std::slice::from_ref(&failed), 0);
         let bare_held = held.iter().find(|v| v.arm == "bare").unwrap();
         assert_eq!(bare_held.stages.failed, 1);
         assert_ne!(
@@ -2606,6 +2640,23 @@ rationale = "no rumination should fail more over the sequence"
             crate::candidate::Disposition::Accept,
             "never accepted over a stage that did not run: {:?}",
             bare_held.judgement.disposition
+        );
+        // Unknown is never clean, and a torn line holds every verdict.
+        let mut odd = failed.clone();
+        odd.status = StageStatus::Unknown;
+        let held = judge(&m, &trials, &[odd], 0);
+        let v = held.iter().find(|v| v.arm == "bare").unwrap();
+        assert_eq!((v.stages.unknown, v.stages.broken()), (1, 1));
+        assert_ne!(
+            v.judgement.disposition,
+            crate::candidate::Disposition::Accept
+        );
+        let held = judge(&m, &trials, &[], 1);
+        let v = held.iter().find(|v| v.arm == "bare").unwrap();
+        assert_eq!(v.unreadable_stage_lines, 1);
+        assert_ne!(
+            v.judgement.disposition,
+            crate::candidate::Disposition::Accept
         );
         assert_eq!(
             bare_held.judgement.selection, bare.judgement.selection,
@@ -2726,7 +2777,7 @@ rationale = "no rumination should fail more over the sequence"
         }
         // One quiet trial never got stats: its pair drops.
         trials.iter_mut().find(|t| t.arm == "quiet").unwrap().stats = None;
-        let verdicts = judge(&m, &trials, &[]);
+        let verdicts = judge(&m, &trials, &[], 0);
         assert_eq!(verdicts.len(), 2);
         let bare = verdicts.iter().find(|v| v.arm == "bare").unwrap();
         assert_eq!(bare.metric, ExpMetric::Failure);
@@ -2752,7 +2803,7 @@ rationale = "no rumination should fail more over the sequence"
             quiet.judgement.disposition
         );
         // Deterministic: the same manifest draws the same holdout.
-        let again = judge(&m, &trials, &[]);
+        let again = judge(&m, &trials, &[], 0);
         assert_eq!(again[0].holdout, verdicts[0].holdout);
         assert_eq!(
             again[0].judgement.holdout.wins,

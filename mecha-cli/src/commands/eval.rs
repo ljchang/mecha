@@ -730,7 +730,7 @@ async fn ab_experiment(
             "mecha eval: {unsaved} trial row(s) not on the store; the verdict below is from memory and `mecha exp judge {name}` will not reproduce it"
         );
     }
-    let verdicts = mecha_core::experiment::judge(&manifest, &trials, &[]);
+    let verdicts = mecha_core::experiment::judge(&manifest, &trials, &[], 0);
     let verdict = verdicts
         .into_iter()
         .find(|v| v.arm == "treatment")
