@@ -187,7 +187,12 @@ pub fn jobs_due(record: &PollRecord) -> Vec<Job> {
             }
         }
     }
-    if life["verdict"].as_str() == Some("book") && life["booked"].is_null() {
+    // A collision recorded on the last attempt waits for the sweep to turn
+    // it into the owner's pick; this side never re-tries the slot.
+    if life["verdict"].as_str() == Some("book")
+        && life["booked"].is_null()
+        && life["conflict"].is_null()
+    {
         if let (Some(start), Some(end)) =
             (life["book"]["start"].as_str(), life["book"]["end"].as_str())
         {
@@ -425,24 +430,12 @@ pub fn mark_booked(record: &mut PollRecord, event_id: &str, account: &str, at: D
 }
 
 /// The clean winner collides with something now on the owner's calendar:
-/// no event, and the verdict becomes the owner's pick with the collision
-/// named — the same fail-closed re-verify the bookings sweep runs.
+/// no event, and the collision written down — the same fail-closed
+/// re-verify the bookings sweep runs. The verdict and the ranking are the
+/// factory sweep's; it reads `conflict` and turns the poll into the owner's
+/// pick over the full ranking, with the collision named on its row.
 pub fn mark_conflict(record: &mut PollRecord, reason: &str) {
     record.set("conflict", json!(reason));
-    record.set("verdict", json!("pick"));
-    if let Some(book) = record.lifecycle()["book"].clone().as_object() {
-        record.set(
-            "ranked",
-            json!([{
-                "start": book["start"],
-                "end": book["end"],
-                "duration_minutes": book["duration_minutes"],
-                "yes": 0, "if_needed": 0, "no": 0,
-                "feasible": true, "unanimous": true,
-                "reason": format!("everyone can — but {reason}"),
-            }]),
-        );
-    }
 }
 
 #[cfg(test)]
@@ -593,20 +586,31 @@ mod tests {
         assert_eq!(life["a_field_from_the_future"], true);
     }
 
-    /// A collision flips the verdict to the owner's pick and says why.
+    /// A collision is written down and the slot is never re-tried; the
+    /// verdict and the ranking stay the factory sweep's to change.
     #[test]
-    fn a_conflict_becomes_a_pick_with_the_reason() {
+    fn a_conflict_is_recorded_and_the_booking_is_not_retried() {
         let mut r = record(json!({
             "verdict": "book",
             "book": {"start": "2030-02-05T18:00:00Z", "end": "2030-02-05T19:00:00Z", "duration_minutes": 60},
+            "ranked": [{"reason": "the sweep's"}],
         }));
+        assert_eq!(jobs_due(&r).len(), 1);
         mark_conflict(&mut r, "your calendar now has something at that time");
         let life = r.lifecycle();
-        assert_eq!(life["verdict"], "pick");
-        assert!(life["ranked"][0]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("your calendar now has"));
+        assert_eq!(
+            life["conflict"],
+            "your calendar now has something at that time"
+        );
+        assert_eq!(life["verdict"], "book", "not this half's to change");
+        assert_eq!(
+            life["ranked"][0]["reason"], "the sweep's",
+            "not this half's to change"
+        );
+        assert_eq!(
+            r.dirty.iter().copied().collect::<Vec<_>>(),
+            vec!["conflict"]
+        );
         assert!(jobs_due(&r).is_empty());
     }
 

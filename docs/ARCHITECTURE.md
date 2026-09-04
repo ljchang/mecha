@@ -2089,6 +2089,10 @@ likely to trip over from outside:
 - **No verb decides what another verb owns.** When a poll closes and what
   wins are the factory sweep's; whether a message goes is the record's
   (`invites[name]` is null); what a pick is loaded with is the owner's. A
+  clean winner that collides with the owner's live calendar at booking time
+  is written down by `mecha-mail polls` as `conflict` and nothing more — the
+  factory sweep reads it and turns the verdict into a pick over the full
+  ranking, with the collision named on its row. A
   crash between a provider's answer and the record write is repaired by the
   ledger (`~/.mecha/mail/polls.jsonl`), consulted before every send.
 - **The freebusy is the pipeline's, not a file the model wrote.** `slots
