@@ -817,6 +817,7 @@ mod tests {
             dropped_at: None,
             dropped_reason: None,
             situation: None,
+            situation_recomputed_at: None,
         }
     }
 

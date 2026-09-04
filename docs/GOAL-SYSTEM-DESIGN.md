@@ -1999,6 +1999,17 @@ follow from facts in the tree and stand as written. None is built.
    and workspace from the transcript and `SessionMeta`, and writes
    `situation` with provenance *recomputed*. Unmatched reflections get no
    situation — absent, not zero. The goal field is never backfilled.
+   *Built 2026-09-04, night* (`feat/situation-backfill`): `mecha reflect
+   --backfill-situations`, deterministic end to end — one `Session::load`
+   per cited session, `extract_interventions` over it,
+   `learning::backfill_situation` matching on (session, trigger, text)
+   and refusing a match when several fit with different windows, and
+   `LearningStore::set_situations` writing only where the field is
+   absent and stamping `Reflexion::situation_recomputed_at`, the
+   provenance mark. `--dry-run` reports without writing. The live store's
+   dry run on the day: 37 of 45 would recompute, 8 stay absent — 6 with no
+   intervention of that trigger and text in the transcript any more, 2
+   whose session is not in the store. The goal is untouched.
 7. **Split `Interrupted` before any weak evidence class.** *Built
    2026-09-04:* `StopCause::{Parked, Stopped, Shutdown}`, with `Interrupted`
    kept as the unknown-which value old records and a bare token cancel
