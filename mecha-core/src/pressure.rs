@@ -376,8 +376,46 @@ impl ContextTracker {
     /// That spelling is the monotonicity guarantee in one line: whatever this
     /// type believes, it can only ever add a reason to compact.
     pub fn over(&self, limit: u64, bytes: usize) -> bool {
+        self.over_by(limit, bytes, true)
+    }
+
+    /// [`Self::over`] with the prediction switchable off — the
+    /// `predictive_compaction` lever (`docs/EXPERIMENT-DESIGN.md` Part II,
+    /// *The switch set*). With `predictive` false only the reported size
+    /// counts: the threshold stays, because a lever may remove a disposition
+    /// above a structural check and never the check itself. The lever's
+    /// scope is this trigger and nothing else in this type:
+    /// [`Self::affordable_output_bytes`] and [`Self::forecast`] still
+    /// predict with it off, so the arm is "compaction fires reactively",
+    /// not "the run has no forecast" — the tool-output budget still keeps a
+    /// turn from leaping the gap on its own.
+    pub fn over_by(&self, limit: u64, bytes: usize, predictive: bool) -> bool {
         self.reported().is_some_and(|t| t >= limit)
-            || self.predict(bytes).is_some_and(|t| t >= limit)
+            || (predictive && self.predict(bytes).is_some_and(|t| t >= limit))
+    }
+
+    /// The re-ask after the free passes: did they free enough that no
+    /// summary is needed this turn? `true` only on a reading that says so.
+    ///
+    /// With the prediction on this is `!over`, and the prediction *is* the
+    /// reading — the passes just retired the reported size, and the
+    /// forecast answers against the transcript as it now is. With it off
+    /// (the `predictive_compaction` lever) the only reading is the report,
+    /// and after the passes it is stale, so the honest answer is "unknown"
+    /// — and unknown must fall toward the summary, never away from it:
+    /// the first cut of the lever read a retired report as "not over" and
+    /// skipped the summariser on every turn a pass freed a byte, so a
+    /// tool-heavy `mecha eval` run (which throws this lever) was managed by
+    /// thinning alone while text kept accumulating toward the window
+    /// (found on review). This is the pre-prediction behaviour restored:
+    /// the reactive check, having entered the block over the threshold,
+    /// pays for the summary unless a *fresh* report says otherwise.
+    pub fn freed_enough(&self, limit: u64, bytes: usize, predictive: bool) -> bool {
+        if predictive {
+            !self.over(limit, bytes)
+        } else {
+            self.reported().is_some_and(|t| t < limit)
+        }
     }
 
     /// How many bytes of tool output the next turn can take before the
@@ -490,6 +528,53 @@ pub fn message_bytes(messages: &[Message]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lever's own contract: with prediction off, a transcript that is
+    /// over only by forecast is not due — and one over by report still is,
+    /// because the lever removes the disposition and never the check.
+    #[test]
+    fn over_by_drops_the_prediction_and_keeps_the_report() {
+        let mut t = ContextTracker::new();
+        t.observe(1_000, 1_000);
+        // Ten times the bytes: the prediction is above the report by the
+        // floor rate; the limit is set to exactly what it predicts, so the
+        // transcript is over by forecast and under by report.
+        let predicted = t.predict(10_000).unwrap();
+        assert!(predicted > 1_000);
+        assert!(t.over(predicted, 10_000), "predicted over");
+        assert!(
+            !t.over_by(predicted, 10_000, false),
+            "prediction switched off"
+        );
+        assert!(
+            t.over_by(1_000, 10_000, false),
+            "reported over still counts"
+        );
+    }
+    /// The re-ask with the prediction off: a retired report is not "freed
+    /// enough". Fails on the first cut of the lever, which read `None` as
+    /// under the limit.
+    #[test]
+    fn a_stale_report_never_says_freed_enough_with_the_prediction_off() {
+        let mut t = ContextTracker::new();
+        t.observe(70_000, 210_000);
+        assert!(!t.freed_enough(60_000, 210_000, false), "fresh and over");
+        t.invalidate();
+        assert!(
+            !t.freed_enough(60_000, 100_000, false),
+            "stale: unknown falls toward the summary"
+        );
+        assert!(
+            t.freed_enough(60_000, 100_000, true),
+            "with the prediction on, the forecast is the reading and it says under"
+        );
+        let mut fresh = ContextTracker::new();
+        fresh.observe(10_000, 30_000);
+        assert!(
+            fresh.freed_enough(60_000, 30_000, false),
+            "a fresh report under the limit does"
+        );
+    }
     use crate::message::{Role, Usage};
 
     fn msg(text: &str) -> Message {

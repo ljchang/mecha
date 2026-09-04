@@ -2348,7 +2348,7 @@ The decisions that carry it, each a bug if undone:
   measurement arm and the acceptance arm silently stop being comparable.
   `harness::Lever` is the on/off half beside it (`EXPERIMENT-DESIGN.md`
   Part II, *The switch set* — PR #156 until it lands):
-  the thirteen subsystems a run can carry structurally absent, each a switch
+  the fifteen subsystems a run can carry structurally absent, each a switch
   that exists today, recorded on `RunConfig::levers_off` in `Lever::ALL`'s
   order. `mecha eval`'s `force_reproducible` is `Lever::bare` thrown through
   `setup::switch_off` plus one explicit line for `ApprovalRules` — the lever
@@ -2359,7 +2359,7 @@ The decisions that carry it, each a bug if undone:
   for the record, so eval's bare arm and any recorded run's absences come
   from one definition — a test reads each through the other (eval itself
   writes no session, so the meeting point is the function, not a record).
-  **The record is the switch, never the effect**, for all thirteen alike:
+  **The record is the switch, never the effect**, for all fifteen alike:
   an empty rules store or a provider with no `context_window` leaves its
   lever on, and the realised surface is `tools` and `system_prompt` on the
   same record — an experiment pairs arms on the switch set and checks the
@@ -2379,9 +2379,11 @@ The decisions that carry it, each a bug if undone:
   list, because a lever dropped from `levers_off` reads as on; `None` is the
   same answer a transcript from before the field gives, and neither is
   "all on". A lever with no off position is not in the set: the record must
-  never say "absent" of something that ran, so the dispositions *The switch set* lists
-  without a switch (predictive compaction, carried state, the appraiser's
-  pass) join when their switch does.
+  never say "absent" of something that ran. Predictive compaction and
+  carried state got their switches (`[agent] predictive_compaction`,
+  `[agent] carried_state`, and the `--no-*` flags) and joined; the
+  appraiser's pass has no in-run site to remove, and `sensors_in_brief` is
+  a stage lever for a trial's manifest, not a run's record.
 - **A divergent episode is dropped, not scored.** Replay answers from the
   recording; once an arm structurally departs, its remaining stats describe a
   run against tool results nobody asked for. Dropping fails safe: thin
