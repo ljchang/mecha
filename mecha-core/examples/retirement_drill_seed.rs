@@ -199,6 +199,7 @@ fn seed_learning_store(learning_dir: &str, session_id: &str, steer: &str) -> Res
         edited_at: None,
         dropped_at: None,
         dropped_reason: None,
+        situation: None,
     })?;
     store.commit("retirement drill: seeded scenario");
     Ok(())

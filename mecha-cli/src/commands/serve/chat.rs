@@ -82,6 +82,8 @@ pub struct ChatState {
     /// For `RunConfig::levers_off`, carried from `Prepared` because the
     /// switches are not readable off the shared agent.
     levers_off: Vec<mecha_core::harness::Lever>,
+    /// For `RunConfig::rules_hash`, carried the same way.
+    rules: mecha_core::learning::RulesCarried,
     context_window: Option<u64>,
     outbox_root: PathBuf,
     sessions: Mutex<HashMap<String, WebSession>>,
@@ -209,6 +211,7 @@ impl ChatState {
             provider_name: prepared.provider_name.clone(),
             model: prepared.model.clone(),
             levers_off: prepared.levers_off.clone(),
+            rules: prepared.rules.clone(),
             context_window,
             outbox_root,
             sessions: Mutex::new(HashMap::new()),
@@ -231,6 +234,7 @@ impl ChatState {
         String,
         mecha_core::config::Config,
         Vec<mecha_core::harness::Lever>,
+        mecha_core::learning::RulesCarried,
         PathBuf,
     ) {
         (
@@ -239,6 +243,7 @@ impl ChatState {
             self.model.clone(),
             self.config.clone(),
             self.levers_off.clone(),
+            self.rules.clone(),
             self.outbox_root.clone(),
         )
     }
@@ -934,6 +939,7 @@ fn ensure_session_as<'a>(
             &chat.config,
             &chat.provider_name,
             &chat.levers_off,
+            Some(&chat.rules),
         )))?;
         let (events, _) = broadcast::channel(512);
         let questions = super::present::Questions::default();
@@ -2280,6 +2286,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         &chat.config,
         &chat.provider_name,
         &chat.levers_off,
+        Some(&chat.rules),
     ))) {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response();
     }

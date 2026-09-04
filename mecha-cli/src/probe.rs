@@ -36,6 +36,7 @@ use mecha_core::learning::{strip_rules_block, Reflexion, Trigger};
 use mecha_core::replay::{extract, Trajectory};
 use mecha_core::replay_run::{drive_branch, replay_registry, OnDivergence};
 use mecha_core::session::{RunConfig, Session};
+use mecha_core::situation::Situation;
 use mecha_core::tool::ModeApprover;
 use std::path::Path;
 use std::sync::Arc;
@@ -68,6 +69,13 @@ pub struct ProbePrep {
 }
 
 impl ProbePrep {
+    /// The situation the recorded run was in: the registry and workspace
+    /// its `RunConfig` names. What a rules block for this probe is rendered
+    /// against.
+    pub fn situation(&self) -> Situation {
+        Situation::of_run(&self.recorded.tools, Some(&self.recorded.workspace))
+    }
+
     /// The tool names the recording carried — what a fidelity check must
     /// narrow a live registry down to before fingerprinting it, never the
     /// live registry's own full name list.
@@ -334,24 +342,42 @@ pub async fn drive_arm(
     }
 }
 
-/// Probe one steer/denial reflection by counterfactual replay.
+/// The (baseline, treatment) rules blocks a probe's two arms carry — each
+/// appended to the recorded system prompt (stripped of any rules block of
+/// its own era); `None` means that arm runs rules-free.
+pub type Arms = (Option<String>, Option<String>);
+
+/// Probe one steer/denial reflection by counterfactual replay: drive both
+/// arms over `r`'s recorded session.
 ///
-/// `baseline_block` / `treatment_block` are rules blocks appended to the
-/// recorded system prompt (stripped of any rules block of its own era) —
-/// `None` means that arm runs rules-free.
+/// `arms` renders the (baseline, treatment) rules blocks **for the situation
+/// the recorded run was in** — the block a run carries is a function of its
+/// registry once rules are scoped, so a block rendered from the whole store
+/// would measure a set no run has. The probe knows the situation only after
+/// it has read the transcript, which is why this takes a renderer and not
+/// two strings.
 pub async fn probe_reflection(
     prepared: &Prepared,
     provider_cfg: &ProviderConfig,
     model: &str,
     sessions_dir: &Path,
     r: &Reflexion,
-    baseline_block: Option<&str>,
-    treatment_block: Option<&str>,
+    arms: &dyn Fn(&Situation) -> Result<Arms>,
 ) -> Result<ProbeResult> {
     let prep = match prepare_probe(sessions_dir, r)? {
         Ok(prep) => prep,
         Err(why) => return Ok(ProbeResult::Skipped(why)),
     };
+    let (baseline_block, treatment_block) = arms(&prep.situation())?;
+    // Two identical arms measure nothing and would grade as "unchanged" —
+    // a verdict the caller counts. Reachable once rules are scoped: a
+    // candidate whose new rules match no tool the recorded run carried
+    // renders the same block as the current set.
+    if baseline_block == treatment_block {
+        return Ok(ProbeResult::Skipped(
+            "the candidate changes nothing in the recorded run's situation".into(),
+        ));
+    }
     let mut verdicts = Vec::new();
     for block in [baseline_block, treatment_block] {
         match drive_arm(
@@ -359,7 +385,7 @@ pub async fn probe_reflection(
             provider_cfg,
             model,
             &prep,
-            prep.system_with(block),
+            prep.system_with(block.as_deref()),
         )
         .await?
         {
