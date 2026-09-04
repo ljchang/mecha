@@ -75,13 +75,24 @@ level and had let them reach 0.1.3 against 0.1.4, which is the cost the
 split was charging. The last export ran on 2026-09-01 and is
 `mecha-graph#2`; the histories stay disjoint, and nothing was back-published.
 
-**The boundary is not clean, and the exception is operational.**
-`scripts/nightly-mecha.sh` is private-only *by design* — the export strips
-it — and the 08:00 crontab line runs it from
-`~/Github/personalized_knowledge_graph`. So the private repo is not retired:
-it still holds that script, the gold eval sets and the roster tooling, and
-both crontab lines still point at it. `scripts/nightly.sh` exists in both;
-the cron runs the private copy.
+**Nothing runs from the private checkout any more (2026-09-04, the owner's
+ruling: no calls to `pkg`, everything on the public repo).** Both crontab
+lines run from `~/Github/mecha-graph` — 01:30 `scripts/nightly.sh` and 08:00
+`scripts/nightly-mecha.sh`, both of which exist there — and every MCP
+consumer runs `~/.cargo/bin/mecha-graph-mcp`, byte-identical to the public
+release build: mecha's own `[[mcp]] name = "graph"`, Claude Code's
+user-scope server (now also named `graph`; the `pkg` entry that pointed at
+the private repo's Aug-16 `pkg-mcp` — holding the empty pre-rename
+`~/pkg/graph.db`, so every `kg_*` call answered with nothing rather than an
+error — was removed), and Hermes's `mcp_servers.pkg` entry, repointed the
+same morning. A host app keeps its old server process until it restarts:
+Claude Code sessions and the Hermes dashboard started before the change are
+still holding the private binary, and restart to pick up the new one. The
+private repo keeps only the gold eval sets, the operator docs and the
+roster tooling, and nothing on this machine executes from it. This
+paragraph used to say the 08:00 line ran the private copy of
+`nightly-mecha.sh` "by design"; that was already false when the crontab was
+read on 2026-09-04, and the 01:30 line was the last one moved.
 
 A change spanning the two must land **public first**. The gossip cooldown
 arc is the worked example: `--min-sources` is a flag on the public binary
