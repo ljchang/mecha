@@ -116,8 +116,20 @@ stale against a reconfigured account list while looking authoritative. And the
 registry is where the schema already is; copying it is the duplication that
 `docs/README.md` warns about, one layer down.
 
+**If the tool is not in the registry, there is no override.** A staged draft
+outlives the run that made it, and an MCP server can be removed from config
+between staging and review. Fail closed and say nothing about alternatives:
+the offer still states the value, and the page still works.
+
 The loop's invariant is not touched: this reads a schema through the `Tool`
 trait, in the facade, and learns nothing about where the tool came from.
+
+**The match is whole-utterance, never substring** — the same rule
+`parse_answer` follows and for the same reason. `"personal"` overrides;
+*"actually that one should go from personal"* does not, and falls through to
+the model as the ordinary correction it is. A substring match would make every
+mention of an account name an override, which is the bag-of-words looseness
+six rounds of the worker's text filter already rejected.
 
 ### 4.3 The filter, which is the load-bearing part
 
@@ -141,14 +153,24 @@ Three conditions, all required:
 
 - the harness supplied the value (`filled_defaults` names it),
 - the choice is genuinely the owner's, not a constant,
-- the schema gives a **closed set** to speak.
+- there is a **closed set** to speak — from the schema's `enum`, or, for a
+  boolean, from a pair this repo authors.
 
 | field | qualifies | why |
 |---|---|---|
-| `account` | yes | the archetype; the model cannot know work from personal |
-| `reply_all` | yes | consequential, boolean, and the offer can name both sides |
+| `account` | yes | the archetype; the model cannot know work from personal. `enum` in the schema |
+| `reply_all` | yes, but not from the schema | `{"type": "boolean", "default": false}` — **no `enum` at all**, so §4.2's live read yields nothing and the pair has to be ours |
 | `calendar_id` | no | `"primary"` is a harness constant |
 | `all_day` | no | same |
+
+**A boolean's pair cannot be yes/no**, which is the first thing to reach for
+and is unusable: both are in `SEND_PHRASES`/`LATER_PHRASES`, so §4.3's filter
+disables the field. It has to be named — *"reply all"* against *"just the
+sender"* — and neither of those collides. That is a small mercy but it is also
+the better design: a harness-authored pair is compile-time closed, exactly like
+`SEND_PHRASES`, so §2.2's server-declared hazard does not arise for booleans at
+all. Found on review of this doc, which had `reply_all` qualifying under a
+condition it does not meet.
 
 A field with no `enum` and no boolean type is not overridable by ear. That is a
 deliberate ceiling: an open-ended spoken value is a transcription bet on a
@@ -202,6 +224,21 @@ Suggested order:
 - **Does `reply_all` belong in the first cut**, or is `account` alone the
   right scope? `account` is the one that prompted this; `reply_all` is the one
   whose wrong value is most embarrassing.
+- **An override must not be mined as a writing correction — and this is a
+  decision the doc should carry rather than leave to whoever builds it.**
+  `mineable_as_writing()` is `writing_outcome() == SentEdited`, and an
+  override makes `edited()` true, so an account switch would enter
+  `mecha reflect`'s corpus as *"the owner rewrote what I wrote"*. It is not:
+  the prose is untouched and only the envelope moved. That matters more than
+  the appraisal consequence below, because a learned rule rides every future
+  prompt's cached prefix — the longest-half-life path in the system.
+
+  The principled line is available and generalises: `DraftView` already knows
+  `body_field`, so **a diff that touches no prose key is not a writing
+  correction**. That also fixes the pre-existing case — editing only a subject
+  line in `mecha outbox edit` is mined today — which is the argument for
+  fixing it in the miner rather than special-casing the override.
+
 - **Should an override without a following confirmation expire?** A switched
   account on a draft nobody then sends is harmless, but the staged item now
   reads as edited by the owner (`edited()` is true, and `writing_outcome()`
