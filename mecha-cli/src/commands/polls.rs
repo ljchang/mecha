@@ -283,7 +283,7 @@ fn open_store(cfg: &mecha_core::config::Config) -> Result<OutboxStore> {
     OutboxStore::open(root)
 }
 
-/// "Tue 5 Feb, 1:00–2:00 PM EST" for one ranked row, in the poll's zone.
+/// "Tue 5 Feb, 1:00 PM–2:00 PM EST" for one ranked row, in the poll's zone.
 pub fn local_range(row: &Value, timezone: &str) -> String {
     let parse = |k: &str| {
         row[k]
@@ -300,7 +300,7 @@ pub fn local_range(row: &Value, timezone: &str) -> String {
             format!(
                 "{}, {}–{}",
                 s.format("%a %-d %b"),
-                s.format("%-I:%M"),
+                s.format("%-I:%M %p"),
                 e.format("%-I:%M %p %Z")
             )
         }
@@ -657,11 +657,11 @@ mod tests {
         let description = args["description"].as_str().unwrap();
         assert!(description.starts_with("Before the grant deadline."));
         assert!(
-            description.contains("  1. Tue 5 Feb, 1:00–2:00 PM EST — Tal if needed"),
+            description.contains("  1. Tue 5 Feb, 1:00 PM–2:00 PM EST — Tal if needed"),
             "{description}"
         );
         assert!(
-            description.contains("▸ 2. Thu 7 Feb, 1:00–2:00 PM EST — Priya can't"),
+            description.contains("▸ 2. Thu 7 Feb, 1:00 PM–2:00 PM EST — Priya can't"),
             "{description}"
         );
         assert!(description.contains("Never answered: Tal."));
