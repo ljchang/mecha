@@ -138,6 +138,7 @@ own:
 | the readout as shipped | `mecha sessions appraise --json` over the 172 transcripts verbatim | **appraised 0 of 172** — no session carries an `outcome` record; `Record::Outcome` landed in v0.1.7 (2026-08-19), after every one of these ran |
 | the counters, reconstructed | tool calls and errored results from the message blocks, compactions from `rewrite` records, turns and usage from `summary`, the stop cause from Harbor's exception record joined to the transcript's `max_turns` | consistent with Harbor's own record on every row: all 20 `AgentTimeoutError` trials are exactly the 20 transcripts with no `summary` |
 | `of_session` over the reconstruction | one synthesised `outcome` record appended per copy, the real CLI run over each | the rows below |
+| the appraiser (`--appraise`) | the paid pass driven once per session over the same store | §1.7.6: nothing, 169 of 169 |
 
 | predictor (higher = worse) | n | AUROC | 95% CI | rate in fail | rate in pass |
 |---|---|---|---|---|---|
@@ -153,7 +154,7 @@ own:
 | `tool_calls` | 169 | 0.41 | 0.33–0.50 | — | — |
 | wall-clock seconds (Harbor's, not on any record) | 169 | **0.74** | 0.66–0.81 | median 861 s | median 180 s |
 
-Five readings, and what each changes about what gets built next:
+Six readings, and what each changes about what gets built next:
 
 **1.7.1 The sign is right and the coverage is not.** Where the readout
 signs a run negative it is three times as likely to have failed (20% of
@@ -202,6 +203,40 @@ keep the label as an overlay) stands; the label is not an instrument. (A
 measurement by mecha 0.1.17, taken 2026-09-03. PR #162 changes `label_of`
 so a negative no longer reads `Neutral`; under it the 24 signed sessions
 would read `distress` on a re-run, and 145 would still read `neutral`.)
+
+**1.7.6 The appraiser is a paid no-op, and §3.10's measurement is taken.**
+Driven once per session over the same synthesised store
+(`scripts/appraisal-validity.py --appraise`, `qwen3.6-35b-a3b`, 169 calls,
+about fifteen seconds each, none failed): it returned "the numbers support
+nothing further" on **169 of 169**, including all 75 failures the readout is
+silent on, so its signed error discriminates at exactly 0.50 and adds nothing
+to `Valence::negative`. This is §3.10's own prediction confirmed at scale:
+`AppraiserEvidence` is seven fields built from the computed `Appraisal` —
+the negative and positive error counts, the per-channel counts, the label,
+whether a goal was named, and the homeostat's context pressure and load —
+and never the stop cause or the transcript. Over these 169 sessions those
+seven fields take exactly **two** distinct values: 145 briefs of "no errors,
+`neutral`, no goal, no homeostat" and 24 of "one negative error on the
+counter channel", otherwise identical. Part of that collapse is the
+store's, not the appraiser's: the reconstruction never synthesises the
+homeostat, so pressure and load read unknown on all 169 by construction;
+`tool_denied`, `malformed_tool_args` and `blocked_sends` are pinned at
+zero, three `Counter` inputs fewer; and no channel but `Counter` could
+appear because the scratch store holds no drafts and no questions
+(`Edit`, `Commitment`), the homeostat is absent (`Setpoint`), an
+autonomous `--yes` run has no steering to mine (`Intervention`), and
+`Appraisal` is this pass's own output. A live corpus would give the
+briefs more values. What survives untouched is the half the ruling
+rests on: the evidence carries no stop cause and no transcript, so a pass
+and a fail that `completed` cleanly *with the same counters* are
+byte-identical to it there too, and so are a `max_turns` failure and the
+three `max_turns` passes. A model reasoning over counts cannot separate
+what the counts do not. The ruling §3.10 asked for
+follows: retire the pass as it stands, or give it the one structured input
+that differs between a clean pass and a clean fail — the plan's step list
+with statuses, or the run's final answer against its task — on step
+escalation's precedent. Nothing about the model is in question; the
+evidence is.
 
 Caveats the numbers carry. The reconstruction is not the record: fields the
 loop counts at run time (`malformed_tool_args`, `tool_denied`,
@@ -465,6 +500,12 @@ further". Run `mecha sessions appraise --appraise --max-appraisals 143` once
 over the store; if the yield is near zero it is a paid no-op and should be
 retired, or given one more structured input (the plan's step list with
 statuses, the model's own prior output, on step escalation's precedent).
+
+*Measured 2026-09-03, §1.7.6: 169 of 169 "nothing further", against a known
+verdict, at 0.50 — over the synthesised Terminal-Bench store (§1.7's
+caveats: the homeostat and three counters are absent by construction), not
+the live one, which has no verdict to measure against. The yield is zero,
+not near it. Retire, or re-feed.*
 
 ### 3.11 Two small corrections
 
