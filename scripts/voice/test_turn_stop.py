@@ -92,6 +92,9 @@ class Call:
         @self.strategy.event_handler("on_user_turn_stopped")
         async def _on_stopped(strategy, params):
             self.stopped.append(time.monotonic())
+            # What the controller does next: tell every stop strategy the
+            # turn is over.
+            await strategy.handle_user_turn_stopped()
 
         await self.strategy.process_frame(
             STTMetadataFrame(service_name="parakeet", ttfs_p99_latency=self.p99)
@@ -199,6 +202,45 @@ class TranscriptStartedTurns(unittest.TestCase):
 
         self.assertTrue(run(scenario()))
 
+    def test_a_transcript_landing_after_the_owner_resumed_is_not_a_timer(self):
+        """The 2026-09-01 shape: "Can you research" [INCOMPLETE], and the
+        owner is already saying "Um options for" when its transcript lands.
+        The VAD start has cleared the pending stop, so the override defers
+        to the stock reset - and the stock fallback timer must still not
+        arm, because the owner is audibly speaking."""
+
+        async def scenario(cls):
+            call = Call(cls, [EndOfTurnState.INCOMPLETE, EndOfTurnState.COMPLETE], STT_TTFS_P99)
+            await call.start()
+            await call.speaks()
+            await call.stops_speaking()
+            await call.speaks()  # resumed before the transcript arrived
+            await call.turn_starts()
+            await call.transcript("Can you research")
+            await asyncio.sleep(STT_TTFS_P99 + 0.3)  # past any timer it could arm
+            held = not call.stopped
+            await call.stops_speaking()
+            await asyncio.sleep(0.05)
+            # The second segment's words are still in flight here.
+            ended_early = bool(call.stopped)
+            await call.transcript("options for a Starlink for a car.")
+            await asyncio.sleep(0.05)
+            ended = len(call.stopped) == 1
+            await call.close()
+            return held, ended_early, ended
+
+        held, early, ended = run(scenario(TranscriptStartedTurnStop))
+        self.assertTrue(held, "a timer ended the turn while the owner was speaking")
+        self.assertFalse(early, "the turn ended before the second segment's words arrived")
+        self.assertTrue(ended)
+
+        # Fails on the stock strategy and on the first revision of this
+        # class: the earlier transcript was still "finalized" at the second
+        # VAD stop, so the COMPLETE there ended the turn without the second
+        # segment's words - which then opened a turn of their own.
+        _, early, _ = run(scenario(TurnAnalyzerUserTurnStopStrategy))
+        self.assertTrue(early, "the stock strategy no longer shows the fault this guards")
+
     def test_a_kept_ruling_does_not_outlive_its_turn(self):
         """The override skips the stock reset at turn *start* when a VAD stop
         is pending. The reset at turn *end* is untouched, so turn N+1 must
@@ -220,9 +262,12 @@ class TranscriptStartedTurns(unittest.TestCase):
             await call.transcript("Tell me about Jonathan Phillips.")
             await asyncio.sleep(0.05)
             ended_once = len(call.stopped) == 1
-            # The controller tells every stop strategy the turn ended.
-            await s.handle_user_turn_stopped()
-            clean = (s._text, s._vad_stopped, s._turn_complete) == ("", False, False)
+            # The harness has already relayed the controller's stop callback.
+            # `_turn_complete` is not asserted: the stock fallback branch runs
+            # *after* that callback, inside the same transcript handling, and
+            # leaves it True with a timer armed - in pipecat itself too. It
+            # cannot end anything without text, which is what is asserted.
+            clean = (s._text, s._vad_stopped) == ("", False)
             # Turn 2 opens on an INCOMPLETE first fragment and must be held,
             # not ended by turn 1's leftovers.
             await call.speaks()
@@ -267,9 +312,13 @@ class Transcripts(unittest.TestCase):
         self.assertEqual(len(texts), 1)
         self.assertTrue(texts[0].finalized)
 
-    def test_the_stt_wait_is_the_workers_number(self):
+    def test_the_stt_wait_reaches_the_pipeline(self):
+        """Not the constructor argument - the frame the service broadcasts
+        at start, which is the only way the number reaches the strategy."""
         stt = ParakeetSTT(api_key="unused", base_url="http://127.0.0.1:1/v1")
-        self.assertEqual(stt._ttfs_p99_latency, STT_TTFS_P99)
+        frame = stt.service_metadata_frame()
+        self.assertIsInstance(frame, STTMetadataFrame)
+        self.assertEqual(frame.ttfs_p99_latency, STT_TTFS_P99)
         self.assertGreater(STT_TTFS_P99, VAD_STOP_SECS)
 
 

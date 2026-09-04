@@ -1728,8 +1728,9 @@ one person's mailbox rather than a public fact.
   `worker.py`, and `title::settled` so the session-title pass no longer
   thinks for 18 s beside the retry of a run a barge-in cancelled. **Needs
   the worker restarted and `mecha` reinstalled** — checkout on `main`
-  first, as below. The next call should show no `+0.80 s` pairs in the
-  journal. Of the three things that call was owed: (a) `ECHO_SEGMENT_RMS`
+  first, as below. The next call should show no fixed-lag pairs in the
+  journal — neither `+0.80 s` nor `+1.80 s`, the latter being what the
+  fault would look like if the safety net were ending turns instead. Of the three things that call was owed: (a) `ECHO_SEGMENT_RMS`
   still has no number — no echo segment appeared in four minutes on
   speakers (the canceller is armed now), and owner speech measured a third
   of the 2026-09-01 level (median RMS 0.019 vs 0.061), which is the figure
