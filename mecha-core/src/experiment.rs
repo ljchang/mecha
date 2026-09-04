@@ -57,9 +57,9 @@ pub struct Manifest {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    /// `single` or `lifetime` (Part II §14). Only `single` runs today; a
-    /// `lifetime` manifest loads — the design is the design — and `run`
-    /// refuses it by name, so the manifest can be written ahead of the driver.
+    /// `single` or `lifetime` (Part II §14): one run per arm × task × seed
+    /// × repetition, or one home per arm × seed × repetition walked through
+    /// the task sequence with the loop's stages between (`schedule`).
     #[serde(default)]
     pub kind: TrialKind,
     /// The arm every treatment arm is paired against. Must name an arm, and
@@ -1275,13 +1275,17 @@ pub fn stage_health(runs: &[StageRun]) -> StageHealth {
                 }
             }
             StageStatus::Running => {
+                // Its own terminal line, or a later attempt's success: the
+                // rerun always takes a higher attempt number, so without
+                // the second clause one interrupt pinned every verdict at
+                // propose forever (found on review).
                 let superseded = runs.iter().any(|t| {
                     t.status != StageStatus::Running
                         && t.lifetime == r.lifetime
                         && t.after_position == r.after_position
                         && t.stage == r.stage
                         && t.attempt == r.attempt
-                });
+                }) || later_done(r);
                 if !superseded {
                     h.interrupted += 1;
                 }
@@ -2649,6 +2653,23 @@ rationale = "no rumination should fail more over the sequence"
         let (ledger, _) = store.stage_runs("full__r1").unwrap();
         let h = stage_health(&ledger);
         assert_eq!((h.done, h.failed), (3, 0), "{h:?}");
+        // An interrupted stage whose rerun succeeds on the next attempt is
+        // that success, not an interruption forever.
+        let mut cut = run(StageLever::Validate, 5, StageStatus::Running);
+        cut.attempt = 1;
+        store.record_stage(&cut).unwrap();
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        assert_eq!(stage_health(&ledger).interrupted, 1);
+        let next = ExperimentStore::next_attempt(&ledger, 0, 5, StageLever::Validate);
+        assert_eq!(next, 2, "the interrupted attempt is burnt");
+        for status in [StageStatus::Running, StageStatus::Done] {
+            let mut again = run(StageLever::Validate, 5, status);
+            again.attempt = next;
+            store.record_stage(&again).unwrap();
+        }
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        let h = stage_health(&ledger);
+        assert_eq!((h.interrupted, h.done), (0, 4), "{h:?}");
         assert_eq!(
             stages_due(&schedule, 2, &[], &ledger),
             vec![StageLever::Validate],
