@@ -144,10 +144,13 @@ async fn preflight_provider(cfg: &mecha_core::config::Config, opts: &GlobalOpts)
 /// denial channel, in an experiment's run and no other — a `Deny` is mined
 /// as the owner's correction, and a file exported against the real home
 /// would author corrections nobody made. Loud on any other run, strict on
-/// an unreadable file. **Every approver a run builds goes through here**
-/// — the parent loop's, each subagent's, a front-end's own — or a call
-/// the principal refused runs unrefused wherever the wrapper was skipped
-/// (found on review).
+/// an unreadable file. **Every approver `prepare` builds goes through
+/// here** — the parent loop's, each subagent's, the one a caller hands
+/// `prepare_with_approver` — or a call the principal refused runs
+/// unrefused wherever the wrapper was skipped (found on review). The
+/// serve and voice surfaces install their own approver after `prepare`
+/// and are not wrapped; both refuse to start under the variable at all,
+/// since neither run is an experiment's.
 fn scripted_refusals(approver: Arc<dyn Approver>) -> Result<Arc<dyn Approver>> {
     match std::env::var(mecha_core::tool::DENIALS_FILE_ENV) {
         Ok(path) if !path.is_empty() => {

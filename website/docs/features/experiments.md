@@ -199,7 +199,9 @@ command = ["/home/me/mecha/scripts/principal-gold.py", "/home/me/mecha/eval/prin
 timeout_secs = 600
 ```
 
-The principal is pure: it never runs a verb itself. The driver runs each one
+The principal must read its whole state before answering; one that exits
+without draining stdin is a failed call, recorded on the ledger. The
+principal is pure: it never runs a verb itself. The driver runs each one
 as a child `mecha` against the trial home, from a closed set — `tasks
 set|steer|stop`, `outbox approve|reject|edit`, `questions answer|abandon`,
 never a session, a reflection or a rule — and records the call and every act
