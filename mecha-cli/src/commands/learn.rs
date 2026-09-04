@@ -311,6 +311,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // discovering there was nothing to argue (found on review).
     let mut batches: Vec<(String, mecha_core::situation::Situation, Vec<_>)> = Vec::new();
     let mut proposing: std::collections::BTreeSet<String> = Default::default();
+    // Batches below the floor, counted so the steady state where every
+    // region sits at one or two reflections is visible in the summary
+    // rather than quiet.
+    let mut waiting = 0usize;
     for (domain, reflexions) in &by_domain {
         for (region, reflexions) in batches_by_region(reflexions.clone()) {
             let reflexions = &reflexions;
@@ -323,6 +327,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // until its own pool reaches the floor; the standing batch
             // usually gets there first.
             if reflexions.len() < args.min {
+                waiting += 1;
                 println!(
                     "{domain} [{}]: {} reflection(s), below --min {}; waiting for more in \
                      this situation",
@@ -383,6 +388,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
     }
 
+    if waiting > 0 {
+        println!(
+            "{waiting} situation batch(es) below --min {} and waiting; `--min 1` learns them now",
+            args.min
+        );
+    }
     if batches.is_empty() {
         println!("nothing to learn from yet");
         return Ok(());
