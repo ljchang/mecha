@@ -675,11 +675,14 @@ fn edit(store: &OutboxStore, id: &str, json: bool, body_file: Option<&Path>) -> 
 
     let _lock = store.lock()?;
     let updated = store.update_args(&item.id, args)?;
-    if updated.edited() {
+    if updated.edited() && updated.author() == mecha_core::outbox::Author::Model {
         println!(
             "edited; `send` will use the new text, and `mecha reflect` \
                   will mine the diff as a writing lesson once sent"
         );
+    } else if updated.edited() {
+        // A harness-authored card: the miner structurally never sees it.
+        println!("edited; `send` will use the new text");
     } else {
         println!("no change");
     }
