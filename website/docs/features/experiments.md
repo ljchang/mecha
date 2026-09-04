@@ -207,7 +207,10 @@ with its exit status on the lifetime's ledger, so a principal that could not
 act holds the verdict like a failed stage. Refusals it scripts before a task
 land in the home's `principal/denials.toml`; the run reads them ahead of its
 own approver and renders each as "Denied by the user", which the learning
-loop mines as a correction — the owner's word, inside the trial home.
+loop mines as a correction — the owner's word, inside the trial home. Only an
+experiment's run honours that file; any other run started with it refuses to
+start, since a scripted refusal on your real home would author corrections
+nobody made.
 
 `scripts/principal-gold.py` is the gold-verdict version: a draft addressed off
 the fixture cast is rejected and any other released, a parked question is
