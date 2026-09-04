@@ -3280,9 +3280,13 @@ comparison over a chosen set**, with the design written before the run.
   the run child is started with `MECHA_DENIALS_FILE` naming it, where
   `tool::FileDenyApprover` answers a matching call with
   `Decision::Deny(reason)` — "Denied by the user", mined as a correction,
-  which is the point: inside a trial home the principal *is* the owner,
-  and D12 is what keeps the same file from authoring the real owner's
-  corrections. The approver is strict at load (an unreadable file stops
+  which is the point: inside a trial home the principal *is* the owner.
+  Two things keep the same file from authoring the real owner's
+  corrections: the variable is honoured **only under the experiment
+  session kind** and stops any other run loudly (a file exported against
+  the real home would be the `ModeApprover` incident in a new costume),
+  and D12 keeps a trial home's learning store from reaching the real
+  one. The approver is strict at load (an unreadable file stops
   the run), answers on every path a call reaches an approver by —
   `approve`, the `permit` an allow rule routes to, escalation,
   consultation; a read-only call reaches none, so a refusal of a

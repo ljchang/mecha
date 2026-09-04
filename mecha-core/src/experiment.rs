@@ -1418,12 +1418,21 @@ pub fn stage_health(runs: &[StageRun]) -> StageHealth {
     let mut h = StageHealth::default();
     // A later attempt that settled the pair — ran, or was recorded skipped
     // out of sequence — stands for every earlier line of it.
+    // A line's identity is its lifetime, position, stage *and point*: the
+    // two principal calls at one position share the first three, and
+    // `after_task` always takes the higher attempt, so without the point a
+    // failed `before_task` was stood for by the `after_task`'s success
+    // and the hold never fired (found on review).
+    let same_pair = |t: &StageRun, r: &StageRun| {
+        t.lifetime == r.lifetime
+            && t.after_position == r.after_position
+            && t.stage == r.stage
+            && t.point == r.point
+    };
     let later_settled = |r: &StageRun| {
         runs.iter().any(|t| {
             matches!(t.status, StageStatus::Done | StageStatus::Skipped)
-                && t.lifetime == r.lifetime
-                && t.after_position == r.after_position
-                && t.stage == r.stage
+                && same_pair(t, r)
                 && t.attempt > r.attempt
         })
     };
@@ -1447,11 +1456,7 @@ pub fn stage_health(runs: &[StageRun]) -> StageHealth {
                 // the second clause one interrupt pinned every verdict at
                 // propose forever (found on review).
                 let superseded = runs.iter().any(|t| {
-                    t.status != StageStatus::Running
-                        && t.lifetime == r.lifetime
-                        && t.after_position == r.after_position
-                        && t.stage == r.stage
-                        && t.attempt == r.attempt
+                    t.status != StageStatus::Running && same_pair(t, r) && t.attempt == r.attempt
                 }) || later_settled(r);
                 if !superseded {
                     h.interrupted += 1;
@@ -3062,6 +3067,40 @@ rationale = "no rumination should fail more over the sequence"
             "an empty list clears the file"
         );
         let _ = std::fs::remove_dir_all(&home);
+        // A failed before_task is not stood for by the after_task's success
+        // at the same position: the point is part of a line's identity.
+        let line = |attempt: u32, point: PrincipalPoint, status: StageStatus| StageRun {
+            lifetime: "full__r1".into(),
+            arm: "full".into(),
+            stage: StageLever::Principal,
+            after_position: 3,
+            attempt,
+            started_at: "t0".into(),
+            finished_at: "t1".into(),
+            status,
+            exit_code: None,
+            error: None,
+            point: Some(point),
+            acts: Vec::new(),
+        };
+        let ledger = vec![
+            line(1, PrincipalPoint::BeforeTask, StageStatus::Failed),
+            line(2, PrincipalPoint::AfterTask, StageStatus::Running),
+            line(2, PrincipalPoint::AfterTask, StageStatus::Done),
+        ];
+        let h = stage_health(&ledger);
+        assert_eq!((h.done, h.failed, h.broken()), (1, 1, 1), "{h:?}");
+        let ledger = vec![
+            line(1, PrincipalPoint::BeforeTask, StageStatus::Running),
+            line(2, PrincipalPoint::AfterTask, StageStatus::Done),
+            line(3, PrincipalPoint::BeforeTask, StageStatus::Done),
+        ];
+        let h = stage_health(&ledger);
+        assert_eq!(
+            (h.done, h.interrupted),
+            (2, 0),
+            "an interrupted before_task is stood for only by a later before_task: {h:?}"
+        );
         // The ledger's stage for it is not a lever.
         assert!(!StageLever::ALL.contains(&StageLever::Principal));
         assert_eq!(

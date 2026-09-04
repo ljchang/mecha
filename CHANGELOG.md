@@ -71,7 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lifetime's ledger as a `principal` line, held like a stage. New with
   it: `MECHA_DENIALS_FILE` and `tool::FileDenyApprover` — scripted
   refusals a run answers ahead of its own approver as "Denied by the
-  user", the owner's channel with no headless path until now — and
+  user", the owner's channel with no headless path until now, honoured
+  only under the experiment session kind and refusing any other run's
+  start — and
   `scripts/principal-gold.py`, the gold-verdict principal. Board closure
   waits on a fixture graph server.
 

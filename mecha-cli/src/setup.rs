@@ -1196,13 +1196,23 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
             })
         };
     // A scripted refusal ahead of whatever answers otherwise: the
-    // principal's denial channel in a trial home, or an operator's own
-    // scripted refusals. Strict — an unreadable file stops the run.
+    // principal's denial channel, in an experiment's run and no other — a
+    // `Deny` is mined as the owner's correction, and a file exported
+    // against the real home would author corrections nobody made. Loud
+    // on any other run, strict on an unreadable file.
     let approver: Arc<dyn Approver> = match std::env::var(mecha_core::tool::DENIALS_FILE_ENV) {
-        Ok(path) if !path.is_empty() => Arc::new(
-            mecha_core::tool::FileDenyApprover::load(std::path::Path::new(&path), approver)
-                .context("the denials file this run was started with")?,
-        ),
+        Ok(path) if !path.is_empty() => {
+            let kind = std::env::var(mecha_core::session::SESSION_KIND_ENV).ok();
+            anyhow::ensure!(
+                mecha_core::tool::denials_file_applies(kind.as_deref()),
+                "{} is an experiment's channel — a scripted refusal is mined as the owner's correction — and this run is not an experiment's; unset it",
+                mecha_core::tool::DENIALS_FILE_ENV
+            );
+            Arc::new(
+                mecha_core::tool::FileDenyApprover::load(std::path::Path::new(&path), approver)
+                    .context("the denials file this run was started with")?,
+            )
+        }
         _ => approver,
     };
 

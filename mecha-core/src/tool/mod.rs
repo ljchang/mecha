@@ -864,17 +864,30 @@ pub struct ModeApprover {
 
 /// The environment variable naming a denials file for this run. Set by
 /// `mecha exp`'s lifetime driver for a task the principal wants to refuse
-/// calls in; an operator may set it to script their own refusals. Not in
+/// calls in, and **honoured only when the run is an experiment's**
+/// (`session::SESSION_KIND_ENV` = `experiment`): a `Deny` renders as
+/// "Denied by the user" and is mined as the owner's correction, so a file
+/// exported against the real home would author corrections nobody made —
+/// the `ModeApprover` incident in a new costume (found on review). Set on
+/// any other run, it stops the start rather than doing nothing. Not in
 /// `Sandbox::child_env`'s base set — a driver passes it on purpose.
 pub const DENIALS_FILE_ENV: &str = "MECHA_DENIALS_FILE";
+
+/// Whether a denials file may apply to a run of this session kind: an
+/// experiment's, and no other.
+pub fn denials_file_applies(session_kind: Option<&str>) -> bool {
+    session_kind == Some("experiment")
+}
 
 /// One scripted refusal: a tool by name (`*` for any), optionally only
 /// when the call's input contains a string, and the reason the person
 /// gives. Rendered as `Decision::Deny`, which the loop prints as
 /// "Denied by the user: " and the learning miner reads as a correction —
 /// that is the point: the principal *is* the owner inside a trial home
-/// (Part II §16, the one channel with no headless path), and D12 is what
-/// keeps the same file from authoring the real owner's corrections.
+/// (Part II §16, the one channel with no headless path). Two things keep
+/// the same file from authoring the real owner's corrections: the run
+/// honours it only under the experiment session kind, and D12 keeps a
+/// trial home's learning store from ever reaching the real one.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DenialRule {
@@ -1279,6 +1292,17 @@ mod denial_tests {
             Decision::Deny("not on my machine".into())
         );
         assert_eq!(approver.permit(&Echo, &ls).await, Decision::Allow);
+    }
+
+    /// The file applies to an experiment's run and no other: a `Deny` is
+    /// mined as the owner's correction, and no file may author one for
+    /// the real owner.
+    #[test]
+    fn the_denials_file_applies_to_an_experiments_run_only() {
+        assert!(denials_file_applies(Some("experiment")));
+        assert!(!denials_file_applies(Some("test")));
+        assert!(!denials_file_applies(Some("task")));
+        assert!(!denials_file_applies(None));
     }
 
     /// The file is strict: a rule with a key this build does not know, or
