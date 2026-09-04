@@ -3681,7 +3681,11 @@ the same seed over the same corpus can tie differently once a draft is
 resolved or a line re-ranked (the first cut printed the count on stderr
 and claimed the charter was the only unpinned input; the review named the
 stores). The stores are read once per draw and not at all without a
-charter with lines. The test builds three sessions with equal headroom whose
+charter with lines — and the second pass found the first cut of that
+guard folded an unreadable charter into an empty one, so a hand-edit that
+broke `charter.toml` turned the tiebreak off and recorded `ranked: 0`,
+"ran and ranked nothing", for "could not run"; `appraisal::Chartered`
+now answers three ways, and the draw records unknown for the first. The test builds three sessions with equal headroom whose
 ids sort one way and whose plans serve lines the other way, and asserts
 the selection is in the charter's order whichever the seed holds out — and
 that the id order, the old sort, would have reversed it. `candidate.rs`'s

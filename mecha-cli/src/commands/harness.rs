@@ -452,13 +452,15 @@ async fn measure(
 
     eprintln!(
         "\nmeasuring `{}` over {} selected + {} held-out episode(s) × 2 arms \
-         (seed {}, {} of the selection ranked by a charter line, {} unusable session(s) \
-         passed over)",
+         (seed {}, {} ranked by a charter line, {} unusable session(s) passed over)",
         change.spec(),
         draw.selection.len(),
         draw.holdout.len(),
         draw.seed,
-        draw.ranked,
+        match draw.ranked {
+            Some(n) => format!("{n} of the selection"),
+            None => "none — the charter did not load".to_string(),
+        },
         unusable
     );
 
@@ -850,8 +852,8 @@ fn show(id: &str) -> Result<()> {
         );
         // Absent on a record from before the tiebreak: unknown, not none.
         match m.ranked {
-            Some(n) => println!("ranked:     {n} of the selection by a charter line"),
-            None => println!("ranked:     not recorded"),
+            Some(n) => println!("ranked:     {n} of the selection as drawn, by a charter line"),
+            None => println!("ranked:     not recorded, or the charter did not load"),
         }
         if !m.diverged.is_empty() {
             println!(

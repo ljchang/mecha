@@ -469,7 +469,10 @@ pub struct Measurement {
     /// is resolved or a line re-ranked. `episodes` keeps the resulting
     /// order; this says whether the tiebreak had anything to decide, and
     /// it used to live on a stderr line nobody keeps (found on review).
-    /// `None` on a record from before the field: unknown, not zero.
+    /// Counted over the selection **as drawn**, before divergence dropped
+    /// any episode, so it can exceed what `episodes` holds. `None` on a
+    /// record from before the field, or where the tiebreak could not run
+    /// because the charter did not load: unknown, not zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ranked: Option<usize>,
     /// Sessions dropped because an arm left the recording — a divergent
@@ -614,7 +617,7 @@ pub struct Drawn {
     pub holdout_episodes: Vec<String>,
     pub seed: u64,
     /// See [`Measurement::ranked`].
-    pub ranked: usize,
+    pub ranked: Option<usize>,
     pub diverged: Vec<String>,
     /// See [`Measurement::replay_caveats`].
     pub replay_caveats: Vec<String>,
@@ -663,7 +666,7 @@ impl Measurement {
             episodes,
             holdout_episodes,
             seed,
-            ranked: Some(ranked),
+            ranked,
             diverged,
             replay_caveats,
             divergence_detail,
@@ -949,7 +952,7 @@ mod tests {
                 episodes: vec!["a".into(), "b".into()],
                 holdout_episodes: vec!["b".into()],
                 seed: 7,
-                ranked: 1,
+                ranked: Some(1),
                 diverged: vec![],
                 replay_caveats: vec![],
                 divergence_detail: vec![],

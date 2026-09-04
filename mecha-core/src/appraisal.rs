@@ -894,6 +894,45 @@ pub fn charter_rank(appraisal: &Appraisal, charter: &crate::charter::Charter) ->
         .min()
 }
 
+/// What [`Stores::load_if_chartered`] found, three ways: the charter could
+/// not be read (the tiebreak cannot run — unknown, never zero); it has no
+/// line to rank against (the tiebreak has nothing to decide — a true zero,
+/// and no store is read); or it has lines, and the stores are loaded.
+pub enum Chartered {
+    Unreadable,
+    Empty,
+    Stores(Stores),
+}
+
+impl Chartered {
+    /// The classification, pure over what `load_charter` returned, with the
+    /// store load handed in so a test can prove it is not paid for the
+    /// first two.
+    fn classify(
+        charter: Option<crate::charter::Charter>,
+        unreadable: bool,
+        load: impl FnOnce() -> Stores,
+    ) -> Chartered {
+        if unreadable {
+            return Chartered::Unreadable;
+        }
+        let Some(charter) = charter.filter(|c| !c.is_empty()) else {
+            return Chartered::Empty;
+        };
+        let mut stores = load();
+        stores.charter = Some(charter);
+        Chartered::Stores(stores)
+    }
+
+    /// The stores, where there are any to read.
+    pub fn stores(&self) -> Option<&Stores> {
+        match self {
+            Chartered::Stores(s) => Some(s),
+            Chartered::Unreadable | Chartered::Empty => None,
+        }
+    }
+}
+
 /// Every store an appraisal reads, loaded once — for a caller that will
 /// appraise many sessions in one pass and must not re-read four stores per
 /// session. The same best-effort terms as `mecha sessions appraise`'s own
@@ -980,14 +1019,14 @@ impl Stores {
     /// than after it: a fresh install or a charter with no lines paid four
     /// store reads per draw to compute nothing (found on review). The
     /// charter is read once either way, so a charter that does not load
-    /// costs one file read and no stores.
-    pub fn load_if_chartered() -> Option<Stores> {
-        let (charter, charter_unreadable) = load_charter();
-        let charter = charter.filter(|c| !c.is_empty())?;
-        let mut stores = Stores::load_without_charter();
-        stores.charter = Some(charter);
-        stores.charter_unreadable = charter_unreadable;
-        Some(stores)
+    /// costs one file read and no stores — and says so, because a
+    /// malformed `charter.toml` is the owner's own hand edit, and a draw
+    /// that fell back to headroom-then-id must record that the tiebreak
+    /// *could not* run, never that it ran and ranked nothing (found on
+    /// review, when the first cut folded unreadable into empty).
+    pub fn load_if_chartered() -> Chartered {
+        let (charter, unreadable) = load_charter();
+        Chartered::classify(charter, unreadable, Stores::load_without_charter)
     }
 
     /// One session's drafts — the outbox is the one store an appraisal
@@ -4333,6 +4372,48 @@ text = "Tell me the truth early."
         assert_eq!(charter.rank_of("fifth"), Some(1));
         assert_eq!(charter.rank_of(" top "), Some(0));
         assert_eq!(charter.rank_of("gone"), None);
+    }
+
+    /// The three answers the draw's loader gives, and the store read paid
+    /// only for the third: an unreadable charter is not an empty one — the
+    /// draw records the first as "could not run" and the second as a true
+    /// zero — and neither reads a store.
+    #[test]
+    fn an_unreadable_charter_is_not_an_empty_one_and_neither_reads_a_store() {
+        let never = || -> Stores { panic!("the stores must not be read without a charter line") };
+        assert!(matches!(
+            Chartered::classify(None, true, never),
+            Chartered::Unreadable
+        ));
+        assert!(matches!(
+            Chartered::classify(Some(crate::charter::Charter::default()), false, never),
+            Chartered::Empty
+        ));
+        let charter =
+            crate::charter::Charter::parse("[[line]]\nid = \"top\"\ntext = \"First.\"\n").unwrap();
+        let mut loaded = false;
+        let c = Chartered::classify(Some(charter), false, || {
+            loaded = true;
+            Stores {
+                drafts: vec![],
+                outbox_unreadable: false,
+                questions: vec![],
+                questions_unreadable: false,
+                requests: vec![],
+                frontdoor_unreadable: false,
+                reflexions: vec![],
+                learning_unreadable: false,
+                charter: None,
+                charter_unreadable: false,
+            }
+        });
+        assert!(loaded);
+        assert_eq!(
+            c.stores()
+                .and_then(|s| s.charter.as_ref())
+                .map(|c| c.lines().len()),
+            Some(1)
+        );
     }
 
     /// `Pride` is a *delivery* word (found on review): a run that named a
