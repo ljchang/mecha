@@ -210,7 +210,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still run in-process on eval's forcings; the printed output keeps its
   shape, the holdout is drawn by a seed derived from the delta rather
   than a hash of the case id (a rerun still holds out the same cases),
-  and the JSON gains `experiment` and `pairs`.
+  and both flags now write one JSON shape — `experiment`, `ab_rules`,
+  `ab_config`, `holdout_in`, `judgement`, `pairs`, `arm_a`, `arm_b`,
+  `flips` (each `{id, was, now}`) — where `--ab-rules` used to write
+  `without_rules`/`with_rules` and `flips` keyed the same way. Both arms'
+  records carry the four knobs the machine and the flags set, so a control
+  run at `--max-turns 60` is filed as such.
 
 - **`mecha eval` now forces boredom and compact validation off**, with the
   rest of the lever set. Both are `[agent]` switches that ship on, so two

@@ -127,7 +127,7 @@ pub struct Args {
     #[arg(long, conflicts_with = "compare")]
     pub ab_rules: bool,
 
-    /// Measure a candidate config change: run the case set once as configured
+    /// Measure a candidate config change: run the case set once bare
     /// and once with these overrides, and judge the difference.
     ///
     /// `KEY=VALUE`, repeatable. Keys are run options, which is the honest
@@ -147,7 +147,8 @@ pub struct Args {
     )]
     pub ab_config: Vec<String>,
 
-    /// One episode in this many is held out of selection, for `--ab-config`.
+    /// One episode in this many is held out of selection, for `--ab-config`
+    /// and `--ab-rules`.
     #[arg(long, default_value_t = 3, value_name = "N")]
     pub holdout_in: u64,
 }
@@ -557,6 +558,12 @@ async fn ab_experiment(
     } else {
         Vec::new()
     };
+    // And the knobs both arms inherit from this machine and the flags —
+    // the four `OverrideKey`s reach a run from `config.toml` and
+    // `GlobalOpts`, and `run_arm` carries them into both arms verbatim —
+    // go on both records, or a control run at `--max-turns 60` is filed
+    // as the default and hashes like one (found on review).
+    let shared_overrides = effective_overrides(global, fixture)?;
     let name = ab_name(kind, chrono::Utc::now());
     let mut manifest = Manifest::two_arm(
         &name,
@@ -571,6 +578,7 @@ async fn ab_experiment(
         args.holdout_in,
         1,
         &shared,
+        &shared_overrides,
     )?;
     manifest.description = format!(
         "mecha eval A/B ({kind}): {label}; {} run(s) per case, scored pass^k, one pair per case",
@@ -695,6 +703,35 @@ async fn ab_experiment(
         eprintln!("\nwrote {}", path.display());
     }
     Ok(())
+}
+
+/// The four override knobs as both arms actually run them: the config the
+/// arms load (`prepare_tools` loads it against the workspace, which for an
+/// eval is the fixture) with the flags on top, spelled as `KEY=VALUE` so
+/// they land on the manifest through the same parser an arm's own
+/// overrides go through. A knob with no value (`compact_at_tokens` unset)
+/// is not recorded — there is nothing to write, and the child arm resolves
+/// it the same way.
+fn effective_overrides(global: &GlobalOpts, fixture: &Path) -> Result<Vec<String>> {
+    let cfg = mecha_core::config::Config::load(fixture)?;
+    let mut out = Vec::new();
+    let max_turns = global.max_turns.unwrap_or(cfg.agent.max_turns);
+    out.push(format!("max_turns={max_turns}"));
+    if let Some(n) = global.compact_at.or(cfg.agent.compact_at_tokens) {
+        out.push(format!("compact_at_tokens={n}"));
+    }
+    if let Some(n) = global.max_output_tokens.or(cfg.agent.max_output_tokens) {
+        out.push(format!("max_output_tokens={n}"));
+    }
+    if let Some(e) = global.effort.or(cfg.agent.effort) {
+        out.push(format!("effort={}", e.as_str()));
+    }
+    for spec in &out {
+        mecha_core::harness::parse_change(spec).with_context(|| {
+            format!("this machine's effective `{spec}` is not a value the closed set accepts")
+        })?;
+    }
+    Ok(out)
 }
 
 /// The experiment an A/B records as. A producer name, so lowercase, digits,
