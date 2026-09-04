@@ -574,6 +574,14 @@ pub struct AgentConfig {
     /// an experiment (`carried_state`): the summary still installs; the plan
     /// just does not ride across it.
     pub carried_state: bool,
+    /// Hand the homeostat's means and the guilt sensor to the
+    /// diagnostician's brief (`diagnose::Evidence`). On by default; off is
+    /// a *stage* lever for a lifetime experiment (`sensors_in_brief`), the
+    /// one switch that decides whether the sensors have any reader at all
+    /// — nothing narrows a run on them, so withholding them from the brief
+    /// is the whole ablation. The counters stay: this removes the sensors,
+    /// never the record.
+    pub sensors_in_brief: bool,
 }
 
 impl Default for AgentConfig {
@@ -602,6 +610,7 @@ impl Default for AgentConfig {
             step_escalation: false,
             predictive_compaction: true,
             carried_state: true,
+            sensors_in_brief: true,
         }
     }
 }
@@ -1430,6 +1439,7 @@ struct AgentLayer {
     step_escalation: Option<bool>,
     predictive_compaction: Option<bool>,
     carried_state: Option<bool>,
+    sensors_in_brief: Option<bool>,
     timezone: Option<String>,
 }
 
@@ -1533,6 +1543,9 @@ impl ConfigLayer {
             }
             if let Some(v) = a.carried_state {
                 t.carried_state = v;
+            }
+            if let Some(v) = a.sensors_in_brief {
+                t.sensors_in_brief = v;
             }
             if a.timezone.is_some() {
                 t.timezone = a.timezone;

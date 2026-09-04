@@ -256,6 +256,67 @@ pub struct Reflexion {
     /// is shown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub situation: Option<crate::situation::Situation>,
+    /// When the situation above was **recomputed** after the fact rather
+    /// than recorded at mining (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 6):
+    /// `mecha reflect --backfill-situations` re-runs the deterministic
+    /// intervention extraction over the transcript, matches this reflection
+    /// to its intervention by session, trigger and text, and reads the tool
+    /// window, surface and workspace off that. The stamp is the provenance
+    /// mark the design asks for — a recomputed situation is a fact about
+    /// the transcript as it stands now, not about what the miner held —
+    /// and `None` means the situation, where there is one, was recorded at
+    /// mining. The goal is never backfilled; nothing here touches it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub situation_recomputed_at: Option<String>,
+}
+
+/// What matching one reflection back to its transcript found — the
+/// deterministic half of §17.7 item 6, pure over the interventions
+/// `extract_interventions` yields for the session and the session's header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Backfilled {
+    /// Exactly one situation fits: one intervention with this trigger and
+    /// text, or several whose windows agree.
+    Matched(crate::situation::Situation),
+    /// No intervention in the transcript carries this trigger and text —
+    /// the transcript was compacted since, or the reflection is an outbox
+    /// edit with no transcript behind it. Absent, never a guess.
+    NoMatch,
+    /// Several interventions fit and their windows differ, so the situation
+    /// is not knowable from the record. Absent rather than the first.
+    Ambiguous(usize),
+}
+
+/// Match a reflection mined before the field to the intervention it came
+/// from, and recompute its situation the way the miner would have recorded
+/// it. The key is what a reflection persists — `session_id`, `trigger` and
+/// the intervention text, copied verbatim from `Intervention::text` at
+/// mining — since the message index is not on the record.
+pub fn backfill_situation(
+    r: &Reflexion,
+    interventions: &[Intervention],
+    meta: &crate::session::SessionMeta,
+) -> Backfilled {
+    let mut fits: Vec<crate::situation::Situation> = Vec::new();
+    for i in interventions {
+        if i.trigger.as_str() != r.trigger || i.text != r.intervention {
+            continue;
+        }
+        let s = crate::situation::Situation::recorded(
+            &i.tools_before,
+            i.trigger.as_str(),
+            meta.kind,
+            Some(&meta.workspace),
+        );
+        if !fits.contains(&s) {
+            fits.push(s);
+        }
+    }
+    match fits.len() {
+        0 => Backfilled::NoMatch,
+        1 => Backfilled::Matched(fits.remove(0)),
+        n => Backfilled::Ambiguous(n),
+    }
 }
 
 impl Reflexion {
@@ -1493,6 +1554,53 @@ impl LearningStore {
         edited.context("the reflection vanished between read and write")
     }
 
+    /// Write recomputed situations onto the reflections that have none,
+    /// stamping each with `recomputed_at` (§17.7 item 6). Only a reflection
+    /// whose `situation` is still absent takes one — a situation recorded at
+    /// mining is never overwritten by a recomputation, and running the pass
+    /// twice is free. Returns how many were written. Held under the store
+    /// lock by the caller, like every rewrite here.
+    pub fn set_situations(
+        &self,
+        updates: &[(String, crate::situation::Situation)],
+        recomputed_at: &str,
+    ) -> Result<usize> {
+        // Decide before writing. `rewrite_reflexions` re-serialises the
+        // whole file whatever its closure did, and a re-serialisation is
+        // not identity — a lenient field (`Situation::surface`) that this
+        // build could not name is written back as absent — so a pass with
+        // nothing to apply must not touch the file at all, or the
+        // advertised free second run is a lossy, uncommitted rewrite
+        // (found on review).
+        let applicable: Vec<&(String, crate::situation::Situation)> = {
+            let absent: std::collections::HashSet<String> = self
+                .reflexions()?
+                .into_iter()
+                .filter(|r| r.situation.is_none())
+                .map(|r| r.id)
+                .collect();
+            updates
+                .iter()
+                .filter(|(id, _)| absent.contains(id))
+                .collect()
+        };
+        if applicable.is_empty() {
+            return Ok(0);
+        }
+        let mut written = 0usize;
+        self.rewrite_reflexions(|all| {
+            for r in all.iter_mut().filter(|r| r.situation.is_none()) {
+                if let Some((_, s)) = applicable.iter().find(|(id, _)| *id == r.id) {
+                    r.situation = Some(s.clone());
+                    r.situation_recomputed_at = Some(recomputed_at.to_string());
+                    written += 1;
+                }
+            }
+            Ok(())
+        })?;
+        Ok(written)
+    }
+
     /// Refuse a reflection. Kept as evidence; never a candidate again.
     pub fn drop_reflexion(&self, id: &str, reason: Option<String>) -> Result<Reflexion> {
         self.set_dropped(id, Some(reason))
@@ -2253,6 +2361,7 @@ impl Reflector {
             // The caller holds the session record and the intervention's tool
             // window; the reflector saw prose and must not author a key.
             situation: None,
+            situation_recomputed_at: None,
         }))
     }
 }
@@ -2876,6 +2985,7 @@ mod tests {
             dropped_at: None,
             dropped_reason: None,
             situation: None,
+            situation_recomputed_at: None,
         };
         assert!(r(Origin::Clean).learnable());
         // The attack this closes: one sentence from a hostile page surviving
@@ -3067,6 +3177,7 @@ mod tests {
             dropped_at: None,
             dropped_reason: None,
             situation: None,
+            situation_recomputed_at: None,
         };
         store.append_reflexion(&r).unwrap();
         r
@@ -3273,6 +3384,7 @@ mod tests {
             dropped_at: None,
             dropped_reason: None,
             situation: None,
+            situation_recomputed_at: None,
         };
         assert_eq!(
             r.provenance(),
@@ -3678,6 +3790,7 @@ mod tests {
             dropped_at: None,
             dropped_reason: None,
             situation: None,
+            situation_recomputed_at: None,
         };
         store.append_reflexion(&r).unwrap();
         let back = store.reflexions().unwrap();
@@ -3902,6 +4015,7 @@ mod tests {
                     dropped_at: None,
                     dropped_reason: None,
                     situation: None,
+                    situation_recomputed_at: None,
                 })
                 .unwrap();
         }
@@ -4111,6 +4225,7 @@ mod tests {
             dropped_at: None,
             dropped_reason: None,
             situation: None,
+            situation_recomputed_at: None,
         }
     }
 
@@ -4489,6 +4604,7 @@ mod tests {
                 dropped_at: None,
                 dropped_reason: None,
                 situation: None,
+                situation_recomputed_at: None,
             };
             assert!(r.learnable());
         }
@@ -4867,6 +4983,7 @@ mod situation_tests {
                 Some(SessionKind::Tui),
                 None,
             )),
+            situation_recomputed_at: None,
         }
     }
 
@@ -5120,5 +5237,129 @@ mod situation_tests {
         let r = refl("a", &["shell"], "denial");
         let back: Reflexion = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back.situation, r.situation);
+    }
+
+    /// §17.7 item 6: a reflection mined before the field is matched back to
+    /// its transcript by session, trigger and text, and the situation is
+    /// what the miner would have recorded. No match and a disagreeing match
+    /// both read as absent — never the first one that fits.
+    #[test]
+    fn a_reflection_is_matched_to_its_intervention_by_trigger_and_text_or_not_at_all() {
+        let meta = crate::session::SessionMeta {
+            id: "s".into(),
+            created_at: "2026-09-04T00:00:00Z".parse().unwrap(),
+            provider: "local".into(),
+            model: "m".into(),
+            workspace: std::path::PathBuf::from("/w"),
+            title: None,
+            kind: Some(SessionKind::Web),
+        };
+        let iv = |trigger: Trigger, text: &str, tools: &[&str]| Intervention {
+            trigger,
+            context: String::new(),
+            text: text.into(),
+            aftermath: String::new(),
+            at: 3,
+            tools_before: tools.iter().map(|t| t.to_string()).collect(),
+            tools_after: vec![],
+        };
+        let mut r = refl("r1", &[], "denial");
+        r.situation = None;
+        r.intervention = "Denied by the user: no".into();
+
+        let interventions = vec![
+            iv(Trigger::Steer, "Denied by the user: no", &["fs_read"]),
+            iv(
+                Trigger::Denial,
+                "Denied by the user: no",
+                &["fs_read", "shell"],
+            ),
+        ];
+        assert_eq!(
+            backfill_situation(&r, &interventions, &meta),
+            Backfilled::Matched(Situation::recorded(
+                &["fs_read".into(), "shell".into()],
+                "denial",
+                Some(SessionKind::Web),
+                Some(std::path::Path::new("/w")),
+            )),
+            "the trigger tells the two apart"
+        );
+        assert_eq!(backfill_situation(&r, &[], &meta), Backfilled::NoMatch);
+
+        // Two fits with different windows: not knowable, so absent.
+        let differing = vec![
+            iv(Trigger::Denial, "Denied by the user: no", &["shell"]),
+            iv(Trigger::Denial, "Denied by the user: no", &["mail_send"]),
+        ];
+        assert_eq!(
+            backfill_situation(&r, &differing, &meta),
+            Backfilled::Ambiguous(2)
+        );
+        // Two fits with the same window: one situation, matched.
+        let agreeing = vec![
+            iv(Trigger::Denial, "Denied by the user: no", &["shell"]),
+            iv(Trigger::Denial, "Denied by the user: no", &["shell"]),
+        ];
+        assert!(matches!(
+            backfill_situation(&r, &agreeing, &meta),
+            Backfilled::Matched(_)
+        ));
+    }
+
+    /// The write takes only reflections still without a situation, stamps
+    /// the recomputation, and is free to run twice: a situation recorded at
+    /// mining is never overwritten.
+    #[test]
+    fn set_situations_fills_only_the_absent_and_stamps_the_recomputation() {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-backfill-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = LearningStore::open(&dir).unwrap();
+        let mut absent = refl("absent", &[], "denial");
+        absent.situation = None;
+        let mined = refl("mined", &["todo"], "steer");
+        store.append_reflexion(&absent).unwrap();
+        store.append_reflexion(&mined).unwrap();
+
+        let recomputed = Situation::recorded(&["shell".into()], "denial", None, None);
+        let updates = vec![
+            ("absent".to_string(), recomputed.clone()),
+            (
+                "mined".to_string(),
+                Situation::recorded(&["x".into()], "steer", None, None),
+            ),
+        ];
+        assert_eq!(
+            store
+                .set_situations(&updates, "2026-09-05T00:00:00Z")
+                .unwrap(),
+            1
+        );
+        let all = store.reflexions().unwrap();
+        let a = all.iter().find(|r| r.id == "absent").unwrap();
+        assert_eq!(a.situation, Some(recomputed));
+        assert_eq!(
+            a.situation_recomputed_at.as_deref(),
+            Some("2026-09-05T00:00:00Z")
+        );
+        let m = all.iter().find(|r| r.id == "mined").unwrap();
+        assert_eq!(
+            m.situation, mined.situation,
+            "recorded at mining, never overwritten"
+        );
+        assert_eq!(m.situation_recomputed_at, None);
+        // A second pass finds nothing absent — and does not touch the file:
+        // a rewrite is not identity, so "free" has to mean byte-identical.
+        let file = dir.join("reflections.jsonl");
+        let before = std::fs::read(&file).unwrap();
+        let mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+        assert_eq!(store.set_situations(&updates, "later").unwrap(), 0);
+        assert_eq!(store.set_situations(&[], "later").unwrap(), 0);
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), mtime);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

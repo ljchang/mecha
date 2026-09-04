@@ -1586,6 +1586,74 @@ built from a worktree at `main` anyway, because the deploying session
 cannot run git against the shared tree; the bytes are the same.
 Single-writer docs are held by nobody.
 
+**2026-09-04 19:40–19:41Z — #176 (charter readings) and #179 (replay
+tiebreak) deployed by mecha-6a from the shared checkout on `main` at
+`77eb704`, clean.** `~/.cargo/bin/mecha` reinstalled (`cargo install
+--path mecha-cli --locked --force`, file 19:40Z; version string still
+0.1.17 and cannot tell builds apart, so the probes are literals):
+`strings ~/.cargo/bin/mecha | grep -c 'setpoint on charter line\|ranked by
+a charter line\|not read in a run'` read 0 before and 4 after, and
+`MECHA_HOME=<scratch> mecha charter --json` on a three-sensor charter
+carried a `reading` per line. `~/.mecha/web/dist` replaced by `rsync
+--delete` from a fresh `npm ci && npm run build` of the same commit, after
+checking `deployed-local` was unset and the dist held main's 15:31Z
+bundle; the tailnet door (`tailscale serve` → `:63242`) answers 200 with
+`index-DgrUjRr3.js` (a bare `curl 127.0.0.1:63242` is 403 — the door wants
+the tailnet identity, so probe the `ts.net` name). `mecha-slack`,
+`mecha-triggers`, `mecha-drain`, `mecha-serve`, `mecha-voice-worker`
+restarted at 19:41:04Z, each verified from a journal window opened at the
+restart: `Connected to cosanlab as mecha. 1 owner(s)`, `1 trigger(s), 1
+enabled`, both `serve` doors, `Uvicorn running on 127.0.0.1:7860`; the
+drain is `mecha-drain-follow`, a bash wrapper that execs `mecha` per
+sweep, so it holds no handle on the old binary and logs nothing at start.
+`mecha-mail` and both graph binaries deliberately not reinstalled:
+`mecha-mail/` has no commit between `bc562a8` and `77eb704`, and
+`~/Github/mecha-graph` is on `main` at `7fa6a69`, clean, with
+`mecha-graph-mcp` dated 15:25Z — after its last merge. The `/proc/*/exe`
+sweep found two `mecha-graph-mcp` children still executing the binary
+replaced at 15:25Z, pids 2652610 (ppid 2149208) and 2947935 (ppid 2885200,
+a Claude session's), both left alone and reported to the live sessions —
+a stale process is its owner's to restart. No `~/.mecha/config.toml`
+change. The live charter still carries no sensor, so every reading surface
+shows nothing to read until the owner authors one.
+
+**2026-09-04 23:06–23:07Z — #178 (exp lifetimes), #180 (the tool chip
+carries the call), #184 (situation backfill) and #181's docs deployed by
+mecha-6a from the shared checkout on `main` at `4c71092`, clean.** The
+19:41Z row above was true until #180 merged at `bcd63ef` (~22:57Z), from
+when both halves were stale; #180 changes the chat SSE wire format, so
+the binary and `web/dist` had to move together and did. `~/.cargo/bin/mecha`
+reinstalled (file 23:06Z, version string still 0.1.17): `strings
+~/.cargo/bin/mecha | grep -c backfill-situations` read 0 before and 2
+after. `~/.mecha/web/dist` replaced by `rsync -a --delete` from a fresh
+`npm ci && npm run build` of the same commit — bundle `index-bvHYg5hk.js`,
+where `grep -c "the run ended before this answered"` reads 0 on the old
+`index-DgrUjRr3.js` and 1 on the new (mecha-83's probe, non-vacuous both
+ways); the tailnet door answers 200 with the new hash. `mecha-slack`,
+`mecha-triggers`, `mecha-drain`, `mecha-serve`, `mecha-voice-worker`
+restarted together at 23:07:13Z, each verified from a journal window
+opened at the restart (`Connected to cosanlab as mecha. 1 owner(s)`, `1
+trigger(s), 1 enabled`, both `serve` doors, `Uvicorn running on
+127.0.0.1:7860`; the drain wrapper logs nothing at start). Re-run
+independently by mecha-83, who added the check a restart alone does not
+give — a restart proves a new *process*, not a new *file*: `readlink
+/proc/<serve pid>/exe` resolves to `~/.cargo/bin/mecha` with no
+`(deleted)`, and `stat -L` on both gives one inode (54145907, mtime
+23:06:56Z), so the serving process executes the installed bytes. **The
+`-L` is the check**: plain `stat /proc/<pid>/exe` reports the procfs
+symlink's own inode, which differs from the file's and reads exactly like
+a stale process — mecha-83 nearly reported one on its strength, and this
+lane reproduced the artifact (58438464 against 54145907). `mecha-mail`,
+the `mecha-slack` crate and both graph binaries untouched: `git diff
+--name-only 77eb704 4c71092 -- mecha-mail mecha-slack` is empty and the
+graph checkout has not moved. The `/proc/*/exe` sweep still shows the two
+`mecha-graph-mcp` children from the 19:41Z row (pids 2652610 and 2947935)
+executing the binary replaced at 15:25Z, under other sessions' hosts —
+left alone. No `~/.mecha/config.toml` change. **Owed to the owner now
+that the binary carries #184:** `mecha reflect --backfill-situations
+--dry-run`, then the write (37 of 45 on the day's dry run), and a sensored
+line on the live charter, which still has none.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2517,17 +2585,16 @@ findings judged against the owner's setpoint and naming the line, findings
 for the count and rate kinds only where a line names one, the saturation
 finding after ten informative runs past the setpoint, and the reading
 beside the line on `mecha charter`, the TUI detail and the web settings
-page. **Two rows go stale when it merges:** the installed `mecha` (ask it —
-`mecha charter --json` on a charter with a sensor carries a `reading`
-key; `strings ~/.cargo/bin/mecha | grep -c 'past the'` is the cheap probe)
-and `web/dist`, whose settings page shows no reading until rebuilt (update
-skill surface 1b). **Still not measurable on this machine:** the live
+page. **Merged at `5e85ce5` and deployed 2026-09-04 19:40–19:41Z by
+mecha-6a with #179** — the machine-state row under §Machine state, dated,
+has the probes. **Still not measurable on this machine:** the live
 charter has seven lines and no sensor, so every reading surface is empty
 and the doctor's thresholds are the harness's constants until the owner
 adds one — the smoke was a scratch home. **The replay tiebreak followed the
-same night** (`feat/replay-tiebreak`, PR after #176; `appraisal::charter_rank`,
-`harness_probe::selection_order`, `Draw::ranked` printed beside the seed —
-`HISTORY.md` has it), so **open from §11.1 now:** `board_overdue` and
+same night as PR #179, merged at `77eb704` and deployed in the same run**
+(`appraisal::charter_rank`, gated on a clean-origin appraisal;
+`harness_probe::selection_order`; `Measurement::ranked` beside the seed —
+`HISTORY.md` has it, five review passes), so **open from §11.1 now:** `board_overdue` and
 `cost` as kinds, the reflection's "which line moved", and |goal error| as
 a replay priority in its own right (§8: the rank only breaks ties).
 
@@ -2588,8 +2655,11 @@ against the run's registry (`rules_carried_for`), and `RunConfig::rules_hash`
 §17.4 built note:** mid-run delivery on a recurring condition (§17.7 item 2
 keeps it off by default until the null-step and restart counters are read),
 region widening and narrowing in consolidation, per-region validation
-budgets, the situation backfill for the 41 reflections mined before the
-field (§17.7 item 6), and surface and workspace as *scope* keys — both are
+budgets, the situation backfill (§17.7 item 6 — **built 2026-09-04 night
+as `mecha reflect --backfill-situations`, `feat/situation-backfill`;
+dry-run on the live store: 37 of 45 recomputable, 8 absent with reasons;
+the write is the owner's to run, after the binary is reinstalled**), and
+surface and workspace as *scope* keys — both are
 recorded, neither is matched, for the reasons in `situation.rs`'s module doc
 (the surface needs `prepare` to be told the session kind; the workspace
 waits on widening, or nearly every rule pins to one workspace). The twelve

@@ -444,7 +444,19 @@ scoped exactly to the region rewritable and every other rule shown as
 immutable context (`rewritable_in` is equality, not containment: a wider
 batch rewriting a narrower rule would widen it on no evidence). The
 harness assigns the new rules' `scope` from the keys the batch shared
-(`finalize_region_rules`); the learner never names one. At run start
+(`finalize_region_rules`); the learner never names one. **A reflection
+from before the field gets its situation back by recomputation, or stays
+without one and says why** (`mecha reflect --backfill-situations`,
+§17.7 item 6): `learning::backfill_situation` re-runs the deterministic
+extraction over the transcript and matches on the three things a
+reflection persists — session, trigger, intervention text — refusing a
+match when several fit with different tool windows; `set_situations`
+writes only where the field is absent and stamps
+`situation_recomputed_at`, so a situation recorded at mining is never
+overwritten and the pass is idempotent. Absent is honest and never a
+guess: the goal is not backfilled, and a reflection with no transcript (an
+outbox edit) or whose intervention a compaction has since removed keeps
+batching as standing. At run start
 `setup::build` renders the block after builtins, MCP servers and subagents
 have joined the registry (an earlier draft rendered before subagents
 existed, so a rule scoped to one could never match — found on review; the
@@ -3223,9 +3235,102 @@ comparison over a chosen set**, with the design written before the run.
   counted, never read as pending.
 - **Resume is the store.** A trial found `running` at start crashed with
   its runner and is rerun; a finished one never is; an unknown status is
-  neither rerun nor judged. Only `single` trials run today; a `lifetime`
-  manifest loads and `run` refuses it by name — the design can be written
-  ahead of its driver.
+  neither rerun nor judged.
+- **A lifetime is one home per arm × seed × repetition, walked in
+  order** (Part II §14, D12 again). The unit that can measure the loop's
+  consumers is the sequence, so `trials()` plans a `lifetime` manifest's
+  rows contiguous and positioned (`Trial::position`, `Trial::lifetime` =
+  `lifetime_id`) in **the manifest's `ids` order** — `cases_for` orders
+  the file's cases by the manifest, since the sequence is the design and
+  the first cut walked the file's order under a manifest claiming another
+  (found on review) — the driver runs each in `lifetime_home`, and after each
+  task runs the stages the manifest's `[schedule]` makes due — `reflect`,
+  `validate --unprocessed-only`, `learn --holdout 0.25 --auto`,
+  `rules propose-retirements --apply` (the one brake on rules that go
+  live as they are derived; a loop without it flatters the learn arm),
+  `harness ruminate`, **the nightly's own order and argv**
+  (`scripts/ruminate.sh`): validate is the held-out measurement and
+  learn marks reflections processed, so learn first would grade the
+  rules on their own training data and measure a loop that does not
+  ship (the first cut did; found on review) — as child `mecha` verbs
+  against that home from a scratch workspace beside the ledger (a
+  path jail from the home itself is refused), on the run child's
+  environment allowlist and session kind,
+  **sequentially and never beside a task**: the stages are model calls on
+  the same server, and an arm whose `learn` contended with its tasks for
+  seats would differ in wall clock for a reason that is not the treatment
+  (§18). Each stage run is a line on the lifetime's **stage ledger**
+  (`ExperimentStore::record_stage`, `stages/<lifetime>.jsonl`) with its
+  exit status; the ledger is what says a stage ran, the manifest only
+  what was scheduled, and `stages_due` is the schedule minus the arm's
+  stage levers minus the ledger's done lines — so a resumed driver runs
+  the stage a crash fell between before the next task, a failed stage is
+  due again as a second line — **only while no later position has
+  finished**: past that the driver records it `skipped`, out of
+  sequence, because a stage run after later tasks acts on sessions those
+  tasks never ran under and its success would have released the judge's
+  hold on a treatment that did not occur (found on review); a skipped
+  stage is never rerun, counts as broken, and stands for the failure it
+  follows — so in practice the in-run retry fires only when the driver
+  stopped between the failure and the next task, and a failure the
+  driver walked past is skipped on resume, which judges the same — and
+  a torn line is counted, never read as a stage that ran. A manifest is
+  written once; a hand-reordered `ids` under a resumed lifetime leaves
+  finished rows with the old order's positions and the walk with the
+  new one's, and `position` is not on the hash, so the record cannot
+  see it — the case-file caveat's twin. A `running` line is appended *before* the spawn, so
+  a driver killed mid-stage leaves a record, the attempt number is burnt
+  and the rerun's log is a new file; a `running` line nothing supersedes
+  reads as interrupted. **`judge` and `export` read the ledger**: for a
+  lifetime it is the evidence that the treatment occurred, so each arm's
+  verdict carries its stage health and the control's, a failed,
+  interrupted or unreadable stage line — or one in a status this build
+  cannot read; unknown is never clean — on either side holds the verdict
+  at *propose* in both directions (a treatment not known to have
+  occurred can no more be refuted than confirmed), and a failed line a later `done` line supersedes for the
+  same stage is the rerun's success, not a broken stage
+  (a trial that cannot answer the metric drops its pair; a stage that
+  did not run cannot claim its effect), and the export carries every
+  stage line. A lifetime that reaches a row this build cannot read
+  stops there rather than running the rest on a broken history. **What a
+  stage accepted reaches the next task**: the child's loader applies a
+  home's `overrides.toml` beneath every file layer and the rendered
+  `config.toml` names every `[agent]` key, so `fold_home_overrides` folds
+  the home's own accepted overrides into the next task's config over the
+  arm's rendering — the arm's pinned keys still win, being the design;
+  the fold hands back the keys it moved and the driver treats them as
+  the arm's pins, so a case's own `max_turns` or `compact_at_tokens`
+  flag — which beats the rendered config — never overrides what the
+  loop accepted; `seed_home` drops the machine's own `overrides.toml`
+  from the seeded copy, since its values already sit in the rendered config beneath the
+  operator's file where the loader puts them, so the home's file holds
+  only what the home's stages accepted, and a single never folds —
+  or `ruminate`, the one stage with an effect today, would have measured
+  as nothing with the ledger saying it ran (found on review). A retried
+  stage's log is a second file (`-a2`), as its ledger line is a second
+  line.
+- **Stage levers are a second closed set** (`experiment::StageLever`:
+  `reflect`, `learn`, `validate`, `ruminate`, `retire`,
+  `sensors_in_brief`), named
+  off per arm in `stages_off`, refused on a `single` manifest where no
+  stage runs and a lever that changed nothing would still move the hash,
+  and part of the row's condition (`condition_hash_with_stages`, whose
+  `stages_off=` term appears only when a stage is off, so every hash
+  minted before stage levers existed keeps its value). Five are verbs the
+  driver does not run; `sensors_in_brief` is `[agent] sensors_in_brief`
+  in the trial home's config — `diagnose::Evidence::without_sensors`
+  withholds the homeostat's means and the guilt mean from the
+  diagnostician's brief **by omission** (the lines leave the brief,
+  never rendered as the no-data sentinel, which would tell the
+  diagnostician the corpus recorded nothing when it did), the sensors'
+  only reader, so withholding them is the whole ablation — and the
+  counters stay, because a lever removes a
+  disposition, never the record. The stages the design names and nothing
+  has built (`followup_staging`, `prioritised_replay`) are not levers: a
+  lever must be a switch that exists. What a lifetime can show today has
+  a ceiling: every `learning::Trigger` but the unfired `Mismatch` is an
+  owner's act, so a sequence run with no principal mines nothing, and
+  `ruminate` is the one stage with an effect until the principal lands.
 
 ## The doctor
 

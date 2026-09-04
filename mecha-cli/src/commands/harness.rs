@@ -131,7 +131,8 @@ async fn ruminate(
         println!("no recorded run outcomes yet — nothing to diagnose from; deferring");
         return Ok(());
     };
-    let evidence = evidence_for(&model, &slice, harness_history().unwrap_or_default());
+    let cfg = mecha_core::config::Config::load_global()?;
+    let evidence = evidence_for(&model, &slice, harness_history().unwrap_or_default(), &cfg);
 
     let diagnosis = run_diagnostician(global, &evidence).await?;
     let proposal = match diagnosis.outcome {
