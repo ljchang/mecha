@@ -3073,11 +3073,20 @@ comparison over a chosen set**, with the design written before the run.
   order** (Part II §14, D12 again). The unit that can measure the loop's
   consumers is the sequence, so `trials()` plans a `lifetime` manifest's
   rows contiguous and positioned (`Trial::position`, `Trial::lifetime` =
-  `lifetime_id`), the driver runs each in `lifetime_home`, and after each
+  `lifetime_id`) in **the manifest's `ids` order** — `cases_for` orders
+  the file's cases by the manifest, since the sequence is the design and
+  the first cut walked the file's order under a manifest claiming another
+  (found on review) — the driver runs each in `lifetime_home`, and after each
   task runs the stages the manifest's `[schedule]` makes due — `reflect`,
-  `learn --auto`, `validate`, `harness ruminate`, in that order because
-  each reads what the one before wrote — as child `mecha` verbs in that
-  home, on the run child's environment allowlist and session kind,
+  `validate --unprocessed-only`, `learn --holdout 0.25 --auto`,
+  `harness ruminate`, **the nightly's own order and argv**
+  (`scripts/ruminate.sh`): validate is the held-out measurement and
+  learn marks reflections processed, so learn first would grade the
+  rules on their own training data and measure a loop that does not
+  ship (the first cut did; found on review) — as child `mecha` verbs
+  against that home from a scratch workspace beside the ledger (a
+  path jail from the home itself is refused), on the run child's
+  environment allowlist and session kind,
   **sequentially and never beside a task**: the stages are model calls on
   the same server, and an arm whose `learn` contended with its tasks for
   seats would differ in wall clock for a reason that is not the treatment
