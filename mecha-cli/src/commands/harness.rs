@@ -452,11 +452,15 @@ async fn measure(
 
     eprintln!(
         "\nmeasuring `{}` over {} selected + {} held-out episode(s) × 2 arms \
-         (seed {}, {} unusable session(s) passed over)",
+         (seed {}, {}, {} unusable session(s) passed over)",
         change.spec(),
         draw.selection.len(),
         draw.holdout.len(),
         draw.seed,
+        match draw.ranked {
+            Some(n) => format!("{n} of the selection ranked by a charter line"),
+            None => "the charter did not load, so nothing was ranked".to_string(),
+        },
         unusable
     );
 
@@ -639,6 +643,7 @@ async fn measure(
                 episodes: Vec::new(),
                 holdout_episodes: Vec::new(),
                 seed: draw.seed,
+                ranked: draw.ranked,
                 diverged,
                 replay_caveats,
                 divergence_detail,
@@ -680,6 +685,7 @@ async fn measure(
             episodes,
             holdout_episodes,
             seed: draw.seed,
+            ranked: draw.ranked,
             diverged,
             replay_caveats,
             divergence_detail,
@@ -844,6 +850,11 @@ fn show(id: &str) -> Result<()> {
             m.holdout_episodes.join(", "),
             m.seed
         );
+        // Absent on a record from before the tiebreak: unknown, not none.
+        match m.ranked {
+            Some(n) => println!("ranked:     {n} of the selection as drawn, by a charter line"),
+            None => println!("ranked:     not recorded, or the charter did not load"),
+        }
         if !m.diverged.is_empty() {
             println!(
                 "diverged:   {} (dropped, not scored)",
