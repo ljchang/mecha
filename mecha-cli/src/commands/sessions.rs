@@ -206,6 +206,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             let all = Session::list(&dir)?;
             let unkinded = all.iter().filter(|(meta, _)| meta.kind.is_none()).count();
             let hidden_tests = all.iter().filter(|(meta, _)| scan.hides_test(meta)).count();
+            let hidden_experiments = all
+                .iter()
+                .filter(|(meta, _)| scan.hides_experiment(meta))
+                .count();
             let total = all.len();
             let sessions: Vec<_> = all
                 .into_iter()
@@ -233,6 +237,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     if hidden_tests > 0 {
                         why.push(format!(
                             "{hidden_tests} smoke-test session(s) hidden (`--include-tests` shows them)"
+                        ));
+                    }
+                    if hidden_experiments > 0 {
+                        why.push(format!(
+                            "{hidden_experiments} experiment session(s) hidden (they belong to a trial home)"
                         ));
                     }
                     if unkinded > 0 && kind.is_some() {
@@ -270,6 +279,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             if hidden_tests > 0 {
                 println!(
                     "({hidden_tests} smoke-test session(s) hidden; `--include-tests` shows them)"
+                );
+            }
+            if hidden_experiments > 0 {
+                println!(
+                    "({hidden_experiments} experiment session(s) hidden; they belong to a trial home)"
                 );
             }
         }
@@ -1170,8 +1184,6 @@ fn health(
             corpus.hidden_experiments
         ));
     }
-    #[allow(clippy::let_and_return)]
-    let hidden_line = { hidden_line };
 
     if corpus.is_empty() {
         println!(
