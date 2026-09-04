@@ -1106,13 +1106,22 @@ struct Streamed {
 /// Pure and separate so the bound can be tested; `pump` applies it as it goes
 /// so a long run cannot accumulate without limit either.
 fn keep_tail(s: &mut String, cap: usize) {
-    if s.len() <= cap {
+    // **Characters, not bytes.** `SPOKEN_UNPROMPTED_CHARS` is a character
+    // count everywhere else it is used, and trimming on `len()` made the
+    // window up to three times shorter than its docstring claims on
+    // non-ASCII speech — in the permissive direction, since narration that
+    // falls out of `asked_before` reaches `Send` ungated. Found on review,
+    // where the test's own `"— ".repeat(cap)` case demonstrated it instead
+    // of catching it.
+    let chars = s.chars().count();
+    if chars <= cap {
         return;
     }
-    let mut start = s.len() - cap;
-    while start < s.len() && !s.is_char_boundary(start) {
-        start += 1;
-    }
+    let mut start = s
+        .char_indices()
+        .nth(chars - cap)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
     // Forward to the next space, so the seed never begins mid-word.
     if let Some(offset) = s[start..].find(' ') {
         start += offset + 1;
@@ -1147,9 +1156,11 @@ async fn pump(
                     // turn is spoken, not just the final one, and all of it
                     // can echo. See `Streamed::said`.
                     said.push_str(&t);
-                    // Twice the cap before trimming: bounded memory without
-                    // a drain on every token.
-                    if said.len() > 2 * crate::review_policy::SPOKEN_UNPROMPTED_CHARS {
+                    // A memory bound, and deliberately in bytes: this one
+                    // is about how large the buffer may grow, not about how
+                    // much speech the window holds. The trim at return is
+                    // the one that decides the window.
+                    if said.len() > 4 * crate::review_policy::SPOKEN_UNPROMPTED_CHARS {
                         keep_tail(&mut said, crate::review_policy::SPOKEN_UNPROMPTED_CHARS);
                     }
                     let chunk = sse_chunk(id, model, json!({"content": t}), None);
@@ -1455,6 +1466,14 @@ async fn answer_completion(
     // Past here this function owns the response. Nothing below runs a model,
     // so `pump` never runs either, and without this every word goes out as a
     // body with no status line in front of it.
+    //
+    // A failed head write returns before the `match`, so an authorised
+    // `Release` does not happen. That is deliberate and it is the narrower
+    // rule than the one the `Release` arm states about its acknowledgement:
+    // a socket that dies *before a word can be said* leaves nobody to tell,
+    // and sending on a call that is already gone is the surprising outcome.
+    // A socket that dies mid-acknowledgement is different — the answer was
+    // heard and the work is already under way — and that arm says so.
     if want_stream && !open_sse(stream, id, &shared.model).await {
         return Some(Ok(()));
     }
@@ -2364,13 +2383,25 @@ mod the_reply_reaches_the_wire {
             "the seed begins mid-word: {said:?}"
         );
 
-        // Short speech is untouched, and multi-byte text does not panic.
+        // Short speech is untouched.
         let mut short = "Sent. Anything else?".to_string();
         keep_tail(&mut short, cap);
         assert_eq!(short, "Sent. Anything else?");
+
+        // And the bound is in *characters*. Trimming on `len()` passes a
+        // byte assertion here while holding a third of the speech it
+        // promises — permissive, since what falls out of the window reaches
+        // `Send` ungated. This case used to demonstrate the bug rather than
+        // catch it.
         let mut wide = "— ".repeat(cap);
         keep_tail(&mut wide, cap);
-        assert!(wide.len() <= cap);
+        assert!(
+            wide.chars().count() > cap / 2,
+            "the window holds {} characters of a {cap}-character budget, so \
+             multi-byte speech falls out of it early",
+            wide.chars().count()
+        );
+        assert!(wide.chars().count() <= cap);
     }
 
     /// The echo window is seeded from **everything spoken**, not the final
