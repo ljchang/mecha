@@ -9,10 +9,11 @@ that vary the harness, a control they are measured against, a prediction each
 treatment arm makes before anything runs, and one isolated home per arm so a
 trial's learning never touches your real store.
 
-It is a peer of [`mecha eval`](/docs/features/evaluation), never a flag on it.
-Eval holds the harness fixed at its bare preset and grades the model; an
-experiment holds the model fixed and varies the harness. They share the case
-file, the fixture and the graders.
+An arm is a **model and a harness configuration**, and an experiment may vary
+either or both. [`mecha eval`](/docs/features/evaluation) is the special case
+of arms that name models under the `bare` preset, run in-process and printed
+as a scorecard; it shares this feature's case file, fixture and graders, and
+its own A/B flags are two-arm manifests waiting to be written as such.
 
 ## The manifest
 
@@ -43,9 +44,18 @@ preset = "bare"
 [arms.bare.prediction]
 metric = "failure"
 rationale = "everything off should fail more"
+
+[arms.small-model]
+provider = "small"          # a key in your [providers] table
+model = "gemma-4-e4b"
+[arms.small-model.prediction]
+metric = "failure"
+rationale = "the same harness on a smaller model fails more"
 ```
 
-An arm may only vary the closed set: levers by name (the list is
+An arm may name its `provider` (a key in your config's `[providers]` table)
+and `model`; absent, it runs against your default. Beyond that it may only
+vary the closed set: levers by name (the list is
 `mecha_core::harness::Lever`), knobs as `KEY=VALUE` over the same override set
 `harness ruminate` uses, and a preset — `bare` is what eval runs, `full` is
 every lever on. An unknown lever name is a load error. The `approval_rules`

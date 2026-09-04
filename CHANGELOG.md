@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`mecha exp` — experiments** (`mecha_core::experiment`;
   `docs/EXPERIMENT-DESIGN.md`). A designed comparison over a chosen set of
-  runs: `new` writes a manifest once (arms varying the closed lever set and
-  the override knobs, a control, a falsifiable prediction per treatment
+  runs: `new` writes a manifest once (arms naming a provider and model
+  and varying the closed lever set and the override knobs — either axis
+  or both — a control, a falsifiable prediction per treatment
   arm, the tasks as an eval case file, the seeds, the split seed), `run`
   drives one child `mecha run` per arm × task × seed × repetition into an
   isolated home per arm whose `config.toml` is the arm (the operator's
@@ -21,8 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   staged workspace as cwd), `status` and
   `judge` read the trials back (each treatment arm against the control
   through the candidate gate, the task outcome entering as a cost), and
-  `export` hands the whole record over. A peer of `eval`, never a flag on
-  it. New with it: `SessionKind::Experiment`, hidden from the real store's
+  `export` hands the whole record over. `eval` is the special case of
+  arms that name models under the `bare` preset, and is to become a thin
+  front over this. New with it: `SessionKind::Experiment`, hidden from the real store's
   readers and admitted in a trial home; `RunConfig::experiment`, the trial
   reference a child's session carries; and `mecha run --json` now a
   superset of the batch result (tool calls, taint, counters, elapsed), so

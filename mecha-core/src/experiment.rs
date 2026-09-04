@@ -116,6 +116,16 @@ pub struct Arm {
     /// `KEY=VALUE` over `harness::OverrideKey`, validated at load.
     #[serde(default)]
     pub overrides: Vec<String>,
+    /// The provider this arm runs against, by the operator's config key;
+    /// the operator's default when absent. The **other axis** of a
+    /// condition: an arm is a model and a harness configuration, and an
+    /// experiment may vary either or both — eval's model bake-off is the
+    /// special case of arms that name models under the `bare` preset.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// The model id, overriding the provider's default.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub prediction: Option<Prediction>,
 }
@@ -260,7 +270,9 @@ impl Manifest {
     }
 
     /// Every trial the design calls for, in a stable order, each with its
-    /// condition hash. Pure: the store decides which have run.
+    /// condition hash. `provider` and `model` are the operator's defaults;
+    /// an arm that names its own overrides them, and the hash follows the
+    /// arm. Pure: the store decides which have run.
     pub fn trials(&self, task_ids: &[String], provider: &str, model: &str) -> Vec<Trial> {
         let seeds: Vec<Option<u64>> = if self.seeds.is_empty() {
             vec![None]
@@ -270,6 +282,8 @@ impl Manifest {
         let mut out = Vec::new();
         for (arm_name, arm) in &self.arms {
             let resolved = arm.resolve_levers().expect("validated at load");
+            let provider = arm.provider.as_deref().unwrap_or(provider);
+            let model = arm.model.as_deref().unwrap_or(model);
             for task in task_ids {
                 for seed in &seeds {
                     for rep in 1..=self.repetitions {
@@ -695,21 +709,31 @@ pub fn child_invocation(
     seed: Option<u64>,
 ) -> Result<ChildInvocation> {
     let levers_off = arm.resolve_levers()?;
-    anyhow::ensure!(
-        real.providers.contains_key(&real.default_provider),
-        "the operator's config names default_provider `{}` but has no [providers.{}]",
-        real.default_provider,
-        real.default_provider
-    );
     let mut config = real.clone();
+    // The arm's provider, or the operator's default: the model axis.
+    if let Some(p) = &arm.provider {
+        config.default_provider = p.clone();
+    }
+    anyhow::ensure!(
+        config.providers.contains_key(&config.default_provider),
+        "arm names provider `{}` but the operator's config has no [providers.{}]",
+        config.default_provider,
+        config.default_provider
+    );
     let mut passthrough = Vec::new();
+    let default = config.default_provider.clone();
     for (name, provider) in config.providers.iter_mut() {
         provider.api_key = None;
         if let Some(env) = &provider.api_key_env {
             passthrough.push(env.clone());
         }
-        if seed.is_some() && name == &config.default_provider {
-            provider.seed = seed;
+        if name == &default {
+            if seed.is_some() {
+                provider.seed = seed;
+            }
+            if let Some(m) = &arm.model {
+                provider.model = Some(m.clone());
+            }
         }
     }
     let mut flags = Vec::new();
@@ -1123,6 +1147,60 @@ rationale = "no notice, fewer turns"
             b"[[line]]\n[[line]]\n"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The other axis: an arm that names a provider or a model runs
+    /// against it, its trials hash to it, and an arm naming a provider the
+    /// operator has not configured is refused where the config is known.
+    #[test]
+    fn an_arm_can_name_its_model_and_the_hash_follows() {
+        let text = MANIFEST.replace(
+            "[arms.quiet]\nlevers_off",
+            "[arms.quiet]\nprovider = \"small\"\nmodel = \"tiny\"\nlevers_off",
+        );
+        let m = Manifest::parse(&text).unwrap();
+        let trials = m.trials(&["a".to_string()], "local", "m");
+        let of = |arm: &str| {
+            trials
+                .iter()
+                .find(|t| t.arm == arm && t.seed == Some(1))
+                .unwrap()
+                .condition_hash
+                .clone()
+        };
+        assert_ne!(of("quiet"), of("full"));
+        let mut real = crate::config::Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        real.providers.insert(
+            "local".into(),
+            crate::config::ProviderConfig {
+                kind: "local".into(),
+                model: Some("m".into()),
+                ..Default::default()
+            },
+        );
+        assert!(child_invocation(&real, &m.arms["quiet"], None)
+            .unwrap_err()
+            .to_string()
+            .contains("no [providers.small]"));
+        real.providers.insert(
+            "small".into(),
+            crate::config::ProviderConfig {
+                kind: "local".into(),
+                model: Some("big".into()),
+                ..Default::default()
+            },
+        );
+        let inv = child_invocation(&real, &m.arms["quiet"], Some(2)).unwrap();
+        assert_eq!(inv.config.default_provider, "small");
+        assert_eq!(inv.config.providers["small"].model.as_deref(), Some("tiny"));
+        assert_eq!(inv.config.providers["small"].seed, Some(2));
+        assert_eq!(
+            inv.config.providers["local"].seed, None,
+            "the seed pins the arm's provider only"
+        );
     }
 
     #[test]

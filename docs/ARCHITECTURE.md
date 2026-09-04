@@ -2906,7 +2906,13 @@ comparison over a chosen set**, with the design written before the run.
   rule carried up a level. The control carries no prediction; every other
   arm must. Loading is where every rule is enforced, so a `Manifest` value
   is one that passed.
-- **An arm varies the closed set and nothing else** (D5, D14): levers by
+- **An arm is a model and a harness configuration.** It may name a
+  `provider` (a key in the operator's `[providers]`) and a `model`, or
+  inherit the defaults; the condition hash follows the arm. That is the
+  axis `mecha eval` varies, and it is why the two converge rather than
+  stay peers: eval is the special case of arms that name models under the
+  `bare` preset, and its A/B flags are two-arm manifests. Beyond the model,
+  **an arm varies the closed set and nothing else** (D5, D14): levers by
   name from `harness::Lever`, knobs by `KEY=VALUE` through
   `harness::parse_change`, a preset (`bare` is what `mecha eval` runs,
   `full` is every lever on) applied first. An unknown lever name is a load
@@ -2951,10 +2957,12 @@ comparison over a chosen set**, with the design written before the run.
   session names its trial back: `RunConfig::experiment` carries the
   `ExperimentRef` the runner set in the child's environment, so neither
   store is the only index.
-- **Each actor is its own process** (D3), and the runner is **a peer of
-  `mecha eval`, never a flag on it** (D7). Eval forces every lever off so a
-  scorecard grades the model it names; an experiment needs the opposite.
-  They share the substrate — the case file and its graders, the fixture
+- **Each actor is its own process** (D3). D7 kept the runner a peer of
+  `mecha eval` so a scorecard's forcings could not become negotiable by
+  flag; a manifest records the preset on every session, which answers
+  the same concern the other way, so the intended end state is `eval` as
+  a thin front over `exp` for the model bake-off (the owner's ruling,
+  2026-09-04), with the scorecard output kept. They share the substrate — the case file and its graders, the fixture
   staging, the gate — and `mecha run --json` is a superset of the batch
   result, tested as a round-trip through `BatchResult` on a refused run
   whose last call failed, so the child's answer reaches the same grader

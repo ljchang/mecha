@@ -2,12 +2,12 @@
 //! Part II §14): `new` writes a design, `run` drives its trials, `status`
 //! and `judge` read them back, `export` hands the whole record over.
 //!
-//! **A peer of `mecha eval`, never a flag on it** (D7). Eval forces every
-//! lever off so a scorecard grades the model it names; an experiment needs
-//! the opposite — levers on by design, an isolated home per arm, each actor
-//! its own process. The two share the substrate (the case file and its
-//! graders, the fixture staging, the candidate gate) and differ in what they
-//! hold fixed.
+//! An arm is a model and a harness configuration, and an experiment may
+//! vary either or both. `mecha eval` is the special case — arms that name
+//! models under the `bare` preset, run in-process, printed as a scorecard —
+//! and the intended end state is eval as a thin front over this (the
+//! owner's ruling, 2026-09-04). The two share the substrate today: the case
+//! file and its graders, the fixture staging, the candidate gate.
 //!
 //! **Every trial is a child `mecha run`** (D3), started with `MECHA_HOME`
 //! pointing at its arm's home under the experiment directory, whose
