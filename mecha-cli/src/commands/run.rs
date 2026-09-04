@@ -218,35 +218,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     }
 
     if args.json {
-        // A superset of `batch::BatchResult`, field for field, so a caller
-        // that drives runs as processes — `mecha exp` — can read the result
-        // back through the same type the batch runner produces and hand it
-        // to the same grader. The fields the batch result does not have
-        // (model, provider, session) stay beside them.
-        let value = serde_json::json!({
-            "id": "run",
-            "ok": outcome.refusal.is_none(),
-            "error": outcome.refusal,
-            "text": outcome.text,
-            "stop_reason": outcome.stop_reason,
-            "turns": outcome.turns,
-            "exhausted": outcome.exhausted,
-            "stop_cause": outcome.stop_cause,
-            "cost_usd": outcome.cost_usd,
-            "refusal": outcome.refusal,
-            "usage": outcome.usage,
-            "usage_complete": outcome.usage_complete,
-            "elapsed_ms": outcome.duration_secs.map(|s| (s * 1000.0) as u64).unwrap_or(0),
-            "tool_calls": outcome.tool_calls,
-            "malformed_tool_args": outcome.malformed_tool_args,
-            "blocked_sends": outcome.blocked_sends,
-            "compactions": outcome.compactions,
-            "taint": outcome.taint,
-            "meta": serde_json::Value::Null,
-            "model": prepared.model,
-            "provider": prepared.provider_name,
-            "session": session.as_ref().map(|s| s.meta.id.clone()),
-        });
+        let value = result_json(
+            &outcome,
+            &prepared.model,
+            &prepared.provider_name,
+            session.as_ref().map(|s| s.meta.id.as_str()),
+        );
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else if args.no_stream {
         println!("{}", outcome.text);
@@ -306,5 +283,127 @@ fn first_words(prompt: &str) -> String {
         format!("{}…", flat.chars().take(60).collect::<String>())
     } else {
         flat
+    }
+}
+
+/// The `--json` object: a superset of [`mecha_core::batch::BatchResult`],
+/// field for field and value for value, so a caller that drives runs as
+/// processes — `mecha exp` — reads the result back through the same type the
+/// batch runner produces and hands it to the same grader. The fields the
+/// batch result does not have (model, provider, session) sit beside them.
+/// `ok` and `error` follow the batch runner's own rendering: a refusal is a
+/// *struct* on the outcome and a string on the result, and the first cut
+/// emitted the struct, which made every refused trial unparseable and
+/// silently dropped its episode from both arms of an experiment (found on
+/// review). The round-trip is tested below rather than promised here.
+pub(crate) fn result_json(
+    outcome: &mecha_core::agent::RunOutcome,
+    model: &str,
+    provider: &str,
+    session: Option<&str>,
+) -> serde_json::Value {
+    let refused = outcome.stop_reason == mecha_core::StopReason::Refusal;
+    serde_json::json!({
+        "id": "run",
+        "ok": !outcome.exhausted && !refused && outcome.malformed_tool_args == 0,
+        "error": outcome.refusal.as_ref().map(|r| {
+            format!(
+                "refused ({}): {}",
+                r.category.clone().unwrap_or_else(|| "unspecified".into()),
+                r.explanation.clone().unwrap_or_default()
+            )
+        }),
+        "text": outcome.text,
+        "stop_reason": outcome.stop_reason,
+        "turns": outcome.turns,
+        "exhausted": outcome.exhausted,
+        "ended_on_failed_call": outcome.ended_on_failed_call,
+        "stop_cause": outcome.stop_cause,
+        "cost_usd": outcome.cost_usd,
+        "refusal": outcome.refusal,
+        "usage": outcome.usage,
+        "usage_complete": outcome.usage_complete,
+        "elapsed_ms": outcome.duration_secs.map(|s| (s * 1000.0) as u64).unwrap_or(0),
+        "tool_calls": outcome.tool_calls,
+        "malformed_tool_args": outcome.malformed_tool_args,
+        "blocked_sends": outcome.blocked_sends,
+        "compactions": outcome.compactions,
+        "taint": outcome.taint,
+        "meta": serde_json::Value::Null,
+        "model": model,
+        "provider": provider,
+        "session": session,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::agent::{RunOutcome, StopCause};
+    use mecha_core::message::{Refusal, Usage};
+    use mecha_core::StopReason;
+
+    /// The superset claim, measured: a refused, cut-off run whose last call
+    /// failed reads back through `BatchResult` with every field it can
+    /// carry non-defaulted. Fails on the first cut twice over — the refusal
+    /// struct did not parse as `error`, and `ended_on_failed_call` was not
+    /// emitted at all, so a case expecting it always failed under `exp`.
+    #[test]
+    fn the_json_result_is_a_batch_result_a_grader_can_read() {
+        let outcome = RunOutcome {
+            text: "no".into(),
+            stop_reason: StopReason::Refusal,
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 2,
+                ..Usage::default()
+            },
+            turns: 3,
+            refusal: Some(Refusal {
+                category: Some("policy".into()),
+                explanation: Some("not this".into()),
+            }),
+            exhausted: false,
+            ended_on_failed_call: true,
+            tool_calls: vec![mecha_core::agent::ToolCallTrace {
+                name: "shell".into(),
+                input: serde_json::json!({"command": "ls"}),
+                is_error: true,
+                denied: false,
+                unknown: false,
+                staged: false,
+            }],
+            malformed_tool_args: 1,
+            blocked_sends: 2,
+            taint: mecha_core::agent::Taint {
+                private: true,
+                untrusted: false,
+            },
+            homeostat: None,
+            context_overflows: 0,
+            boredom_notices: 0,
+            step_escalations_attempted: 0,
+            step_escalations_revised: 0,
+            stop_cause: StopCause::Completed,
+            compactions: 1,
+            cost_usd: None,
+            usage_complete: true,
+            duration_secs: Some(1.5),
+        };
+        let value = result_json(&outcome, "m", "local", Some("sess"));
+        let back: mecha_core::batch::BatchResult = serde_json::from_value(value.clone()).unwrap();
+        assert!(!back.ok, "a refusal is not ok");
+        assert_eq!(back.error.as_deref(), Some("refused (policy): not this"));
+        assert!(back.ended_on_failed_call);
+        assert_eq!(back.tool_calls.len(), 1);
+        assert!(back.tool_calls[0].is_error);
+        assert_eq!(back.malformed_tool_args, 1);
+        assert_eq!(back.blocked_sends, 2);
+        assert_eq!(back.compactions, 1);
+        assert!(back.taint.private);
+        assert_eq!(back.elapsed_ms, 1500);
+        assert_eq!(back.stop_cause, Some(StopCause::Completed));
+        assert_eq!(back.turns, 3);
+        assert_eq!(value["session"], "sess");
     }
 }

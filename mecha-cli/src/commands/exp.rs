@@ -226,8 +226,11 @@ async fn run_one(
         ),
     };
     let home = store.arm_home(&trial.arm)?;
-    let ChildInvocation { config, flags } =
-        mecha_core::experiment::child_invocation(real, arm, trial.seed)?;
+    let ChildInvocation {
+        config,
+        flags,
+        passthrough,
+    } = mecha_core::experiment::child_invocation(real, arm, trial.seed)?;
     std::fs::write(home.join("config.toml"), toml::to_string_pretty(&config)?)
         .with_context(|| format!("writing {}", home.join("config.toml").display()))?;
 
@@ -259,19 +262,44 @@ async fn run_one(
         .arg("--yes")
         .arg("--no-stream")
         .arg("--workspace")
-        .arg(&workspace);
+        .arg(&workspace)
+        // The staged workspace is the child's cwd, so no `mecha.toml` in
+        // whatever checkout the runner was started from layers over the
+        // arm — the hazard `global_config_only` names for the trigger
+        // daemon, which is not reachable from a child's argv (found on
+        // review). Holds as long as no fixture ships a `mecha.toml`.
+        .current_dir(&workspace);
     for f in &flags {
         cmd.arg(f);
     }
-    if let Some(n) = case.max_turns {
+    // A case's own turn ceiling is part of the task, and eval applies it —
+    // unless the arm moves `max_turns`, in which case the arm is the
+    // treatment and wins; `--max-turns` would otherwise override the arm's
+    // config unconditionally.
+    let arm_moves_turns = arm
+        .overrides
+        .iter()
+        .any(|o| o.trim_start().starts_with("max_turns"));
+    if let Some(n) = case.max_turns.filter(|_| !arm_moves_turns) {
         cmd.arg("--max-turns").arg(n.to_string());
     }
     cmd.arg(&prompt);
-    // The child's whole store is the arm's home; the operator's session
-    // directory override and session kind must not reach it, and the
-    // reference is how its config record names this trial.
+    // **An allowlist, not a denylist.** The child's whole store is the arm's
+    // home, and `MECHA_HOME` is not the only variable that moves a store:
+    // `MECHA_LEARNING_DIR`, `MECHA_OUTBOX_DIR`, `MECHA_QUESTIONS_DIR`,
+    // `MECHA_MESSAGES_DIR` and `MECHA_TRIGGERS_DIR` each point one store at
+    // the real one ahead of the home, and `MECHA_PROVIDER` / `MECHA_MODEL` /
+    // `MECHA_EFFORT` rewrite the arm above its config — so an operator with
+    // any of them exported would have run a trial against their real
+    // learning store, or hashed a condition for a model that did not run
+    // (found on review). Cleared, then only what the child needs, on
+    // `Sandbox::child_env`'s shape: the base set, the provider's key
+    // variable, and the three that name this trial.
+    cmd.env_clear();
+    for (k, v) in mecha_core::sandbox::Sandbox::child_env(&passthrough) {
+        cmd.env(k, v);
+    }
     cmd.env("MECHA_HOME", &home)
-        .env_remove("MECHA_SESSION_DIR")
         .env(mecha_core::session::SESSION_KIND_ENV, "experiment")
         .env(EXPERIMENT_REF_ENV, serde_json::to_string(&reference)?)
         .stdin(std::process::Stdio::null())

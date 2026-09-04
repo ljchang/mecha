@@ -550,7 +550,11 @@ impl ExperimentStore {
         let home = self.root.join("homes").join(arm);
         let real = crate::work::mecha_home()?;
         refuse_unsafe_home(&home, &real)?;
+        let fresh = !home.join(HOME_MARKER).exists();
         std::fs::create_dir_all(&home)?;
+        if fresh {
+            seed_home(&real, &home)?;
+        }
         std::fs::write(
             home.join(HOME_MARKER),
             b"an experiment home; see mecha exp\n",
@@ -659,16 +663,30 @@ impl ExperimentRef {
 }
 
 /// How an arm reaches a child `mecha run`: the trial home's `config.toml`
-/// carries the provider and the five `[agent]` switches, and the levers that
-/// are CLI-only become `--no-*` flags. Pure — the runner writes the file and
-/// spawns the process. The operator's provider block is copied *without* an
-/// inline `api_key`: the environment variable it names passes through the
-/// child's environment anyway, and a secret does not belong in a store that
-/// a trial's artifacts get exported from.
+/// carries the operator's whole posture with the arm's switches applied,
+/// and the levers that are CLI-only become `--no-*` flags. Pure — the
+/// runner writes the file and spawns the process.
+///
+/// **The machine's posture travels, the arm varies the closed set.** The
+/// child config starts from the operator's config, not from defaults: the
+/// sandbox and security sections, the approval `[[rule]]`s and `[approval]`
+/// (the first cut dropped them, so every trial ran with the operator's
+/// `forbid` list gone *and* `--yes` — the silently-degrading-guard shape,
+/// and the exact opposite of what refusing the `approval_rules` lever
+/// promises; found on review), the `[mcp]`, `[[hook]]` and `[outbox]`
+/// sections a lever left on needs something to be on *of*, search
+/// backends, subagent profiles. Every provider's inline `api_key` is
+/// scrubbed — the variable `api_key_env` names passes through the child's
+/// environment (`passthrough`), and a secret does not belong in a store a
+/// trial's artifacts get exported from. The trial's seed pins the default
+/// provider.
 #[derive(Debug, Clone)]
 pub struct ChildInvocation {
     pub config: crate::config::Config,
     pub flags: Vec<String>,
+    /// Environment variables the child needs beyond the base set: every
+    /// provider's `api_key_env`.
+    pub passthrough: Vec<String>,
 }
 
 pub fn child_invocation(
@@ -677,34 +695,23 @@ pub fn child_invocation(
     seed: Option<u64>,
 ) -> Result<ChildInvocation> {
     let levers_off = arm.resolve_levers()?;
-    let mut config = crate::config::Config {
-        default_provider: real.default_provider.clone(),
-        ..crate::config::Config::default()
-    };
-    let mut provider = real
-        .providers
-        .get(&real.default_provider)
-        .cloned()
-        .with_context(|| {
-            format!(
-                "the operator's config names default_provider `{}` but has no [providers.{}]",
-                real.default_provider, real.default_provider
-            )
-        })?;
-    provider.api_key = None;
-    if seed.is_some() {
-        provider.seed = seed;
+    anyhow::ensure!(
+        real.providers.contains_key(&real.default_provider),
+        "the operator's config names default_provider `{}` but has no [providers.{}]",
+        real.default_provider,
+        real.default_provider
+    );
+    let mut config = real.clone();
+    let mut passthrough = Vec::new();
+    for (name, provider) in config.providers.iter_mut() {
+        provider.api_key = None;
+        if let Some(env) = &provider.api_key_env {
+            passthrough.push(env.clone());
+        }
+        if seed.is_some() && name == &config.default_provider {
+            provider.seed = seed;
+        }
     }
-    config
-        .providers
-        .insert(real.default_provider.clone(), provider);
-    // The machine's sandbox and security posture travel: an arm varies the
-    // closed set and nothing else, and a trial that ran unconfined because
-    // the child home had no sandbox section would be a different machine.
-    config.sandbox = real.sandbox.clone();
-    config.security = real.security.clone();
-    config.tools = real.tools.clone();
-
     let mut flags = Vec::new();
     for lever in levers_off {
         match lever {
@@ -732,7 +739,49 @@ pub fn child_invocation(
         let change = crate::harness::parse_change(spec)?;
         change.apply_to_agent(&mut config.agent)?;
     }
-    Ok(ChildInvocation { config, flags })
+    Ok(ChildInvocation {
+        config,
+        flags,
+        passthrough,
+    })
+}
+
+/// The stores a lever left *on* reads: the learning store (rules and
+/// reflections), the skills directory, the charter. A fresh trial home has
+/// none, so `full` would have meant "the machine's `[agent]` switches and
+/// nothing else" (found on review). Seeded once, when the arm's home is
+/// first created, from the real home — a snapshot, never written back, so
+/// `full` means the harness as this machine had it when the arm started
+/// and a trial's `learn` lands in the copy.
+pub const SEEDED: [&str; 3] = ["learning", "skills", "charter.toml"];
+
+pub fn seed_home(real: &Path, home: &Path) -> Result<()> {
+    for name in SEEDED {
+        let from = real.join(name);
+        let to = home.join(name);
+        if !from.exists() || to.exists() {
+            continue;
+        }
+        copy_tree(&from, &to)
+            .with_context(|| format!("seeding {} into {}", name, home.display()))?;
+    }
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    if from.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        }
+    } else {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(from, to)?;
+    }
+    Ok(())
 }
 
 // ─── The judge ──────────────────────────────────────────────────────────────
@@ -965,7 +1014,7 @@ rationale = "no notice, fewer turns"
     }
 
     #[test]
-    fn a_child_invocation_carries_the_arm_and_nothing_ambient() {
+    fn a_child_invocation_carries_the_machines_posture_and_the_arm_and_no_secret() {
         let m = Manifest::parse(MANIFEST).unwrap();
         let mut real = crate::config::Config {
             default_provider: "local".into(),
@@ -977,21 +1026,33 @@ rationale = "no notice, fewer turns"
                 kind: "local".into(),
                 model: Some("m".into()),
                 api_key: Some("secret".into()),
-                ..real.providers.values().next().cloned().unwrap_or_default()
+                api_key_env: Some("LOCAL_KEY".into()),
+                ..Default::default()
             },
         );
+        real.rules.push(crate::policy::RuleConfig {
+            tool: "shell".into(),
+            decision: crate::policy::RuleDecision::Forbid,
+            ..Default::default()
+        });
         let quiet = child_invocation(&real, &m.arms["quiet"], Some(3)).unwrap();
         assert!(!quiet.config.agent.boredom);
         assert!(!quiet.config.agent.compact_validate);
-        assert!(
-            quiet.config.agent.step_escalation
-                == crate::config::AgentConfig::default().step_escalation
-        );
         assert_eq!(quiet.config.agent.max_turns, 20, "the override landed");
         assert!(quiet.flags.is_empty(), "both levers are config switches");
         let p = &quiet.config.providers["local"];
         assert_eq!(p.seed, Some(3), "the trial's seed pins the provider");
         assert_eq!(p.api_key, None, "no secret in the store");
+        assert!(
+            quiet.passthrough.iter().any(|v| v == "LOCAL_KEY"),
+            "the key's variable travels: {:?}",
+            quiet.passthrough
+        );
+        assert_eq!(
+            quiet.config.rules.len(),
+            1,
+            "the operator's forbid travels — refusing the lever must mean something"
+        );
 
         let bare = child_invocation(&real, &m.arms["bare"], None).unwrap();
         for flag in [
@@ -1014,10 +1075,54 @@ rationale = "no notice, fewer turns"
         assert!(!bare.config.agent.predictive_compaction);
         assert!(!bare.config.agent.carried_state);
         assert!(!bare.config.messages.enabled);
-        // The rendered file parses back as a config, so the child can load it.
+        assert_eq!(
+            bare.config.providers["local"].seed, None,
+            "unseeded stays unseeded"
+        );
         let text = toml::to_string(&bare.config).unwrap();
         let back: crate::config::Config = toml::from_str(&text).unwrap();
         assert_eq!(back.agent.max_turns, bare.config.agent.max_turns);
+        assert_eq!(back.rules.len(), 1);
+    }
+
+    /// The stores a lever reads are seeded once from the real home, never
+    /// written back: `full` means the harness as this machine has it.
+    #[test]
+    fn an_arm_home_is_seeded_from_the_real_stores_once() {
+        let root = std::env::temp_dir().join(format!("mecha-exp-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let real = root.join("real");
+        std::fs::create_dir_all(real.join("learning")).unwrap();
+        std::fs::create_dir_all(real.join("skills").join("deploy")).unwrap();
+        std::fs::write(real.join("learning").join("rules.jsonl"), b"{}\n").unwrap();
+        std::fs::write(
+            real.join("skills").join("deploy").join("SKILL.md"),
+            b"# deploy\n",
+        )
+        .unwrap();
+        std::fs::write(real.join("charter.toml"), b"[[line]]\n").unwrap();
+        std::fs::write(real.join("config.toml"), b"default_provider = \"x\"\n").unwrap();
+        let home = root.join("home");
+        seed_home(&real, &home).unwrap();
+        assert!(home.join("learning").join("rules.jsonl").is_file());
+        assert!(home
+            .join("skills")
+            .join("deploy")
+            .join("SKILL.md")
+            .is_file());
+        assert!(home.join("charter.toml").is_file());
+        assert!(
+            !home.join("config.toml").exists(),
+            "the config is the arm's, not the machine's"
+        );
+        // Once: a later seed does not overwrite what the trial home has.
+        std::fs::write(home.join("charter.toml"), b"[[line]]\n[[line]]\n").unwrap();
+        seed_home(&real, &home).unwrap();
+        assert_eq!(
+            std::fs::read(home.join("charter.toml")).unwrap(),
+            b"[[line]]\n[[line]]\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
