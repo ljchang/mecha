@@ -302,6 +302,22 @@ pub enum CorpusRate {
     Share(f64),
 }
 
+/// What the readers draw on, read once by the caller.
+///
+/// The front door is read twice over, on purpose: [`Backlog::frontdoor`]
+/// counts every open request, which is what every recorded row has always
+/// held, and `requests_on_owner` is the subset a person owes an answer to
+/// (`frontdoor::waiting_on_owner`) — the set the doctor's stale-request
+/// finding measures, and so the set the `request_closure` sensor must
+/// measure, or a `needs_info` parked on the stranger for a week reads as a
+/// saturated line no finding names (found on review).
+pub struct Sources<'a> {
+    pub backlog: &'a Backlog,
+    /// `None` when the front door could not be read.
+    pub requests_on_owner: Option<Depth>,
+    pub corpus: CorpusRate,
+}
+
 /// How far past `setpoint` an observed value sits, in `[0, 1)`.
 ///
 /// Zero at or within the setpoint; `e / (e + setpoint)` above it, where `e`
@@ -364,13 +380,9 @@ fn age_reading(depth: Option<&Depth>, setpoint: Setpoint, now: DateTime<Utc>) ->
 
 /// Read one line. `None` for a line with no sensor — an unsensored line is
 /// not the lesser kind (§11.1, containment 4), it just has nothing to read.
-pub fn read_line(
-    line: &CharterLine,
-    backlog: &Backlog,
-    corpus: &CorpusRate,
-    now: DateTime<Utc>,
-) -> Option<LineReading> {
+pub fn read_line(line: &CharterLine, sources: &Sources, now: DateTime<Utc>) -> Option<LineReading> {
     let sensor = line.sensor.as_ref()?;
+    let backlog = sources.backlog;
     let reading = match sensor.kind {
         SensorKind::OutboxWaiting => match backlog.outbox.as_ref() {
             None => Reading::Unread,
@@ -380,8 +392,10 @@ pub fn read_line(
         SensorKind::QuestionLatency => {
             age_reading(backlog.questions.as_ref(), sensor.setpoint, now)
         }
-        SensorKind::RequestClosure => age_reading(backlog.frontdoor.as_ref(), sensor.setpoint, now),
-        SensorKind::InterventionRate => match corpus {
+        SensorKind::RequestClosure => {
+            age_reading(sources.requests_on_owner.as_ref(), sensor.setpoint, now)
+        }
+        SensorKind::InterventionRate => match &sources.corpus {
             CorpusRate::NotScanned => Reading::Deferred,
             CorpusRate::Unreadable => Reading::Unread,
             CorpusRate::Empty => Reading::Nothing,
@@ -427,16 +441,11 @@ pub fn read_line(
 /// Every sensored line, in charter order. Empty for a charter with no
 /// sensor, which a caller reports as *having none* rather than as reading
 /// nothing (`Charter::has_sensors`).
-pub fn read_lines(
-    charter: &Charter,
-    backlog: &Backlog,
-    corpus: &CorpusRate,
-    now: DateTime<Utc>,
-) -> Vec<LineReading> {
+pub fn read_lines(charter: &Charter, sources: &Sources, now: DateTime<Utc>) -> Vec<LineReading> {
     charter
         .lines()
         .iter()
-        .filter_map(|l| read_line(l, backlog, corpus, now))
+        .filter_map(|l| read_line(l, sources, now))
         .collect()
 }
 
@@ -512,13 +521,21 @@ pub fn corpus_rate_in(dir: &std::path::Path) -> CorpusRate {
 /// for it. Not for a run — [`crate::homeostat::Homeostat::at_start`] reads
 /// the backlog it already holds and defers the corpus kind.
 pub fn read_charter(charter: &Charter, now: DateTime<Utc>) -> Vec<LineReading> {
-    let backlog = Backlog::read();
+    let (backlog, requests_on_owner) = Backlog::read_with_owner_requests();
     let corpus = if wants_corpus(charter) {
         corpus_rate()
     } else {
         CorpusRate::NotScanned
     };
-    read_lines(charter, &backlog, &corpus, now)
+    read_lines(
+        charter,
+        &Sources {
+            backlog: &backlog,
+            requests_on_owner,
+            corpus,
+        },
+        now,
+    )
 }
 
 #[cfg(test)]
@@ -553,6 +570,56 @@ mod tests {
         "2026-09-04T12:00:00Z".parse().unwrap()
     }
 
+    /// Sources whose owner-facing requests are the backlog's front door
+    /// unchanged — for the tests that are not about that distinction.
+    fn src(backlog: &Backlog, corpus: CorpusRate) -> Sources<'_> {
+        Sources {
+            backlog,
+            requests_on_owner: backlog.frontdoor.clone(),
+            corpus,
+        }
+    }
+
+    /// `request_closure` reads the requests waiting on the owner, not every
+    /// open request: a week-old `needs_info` sits in the backlog's front
+    /// door, and the line reads nothing waiting.
+    #[test]
+    fn a_request_parked_on_the_stranger_does_not_age_the_request_closure_line() {
+        let c = charter(vec![sensored("close", SensorKind::RequestClosure, "72h")]);
+        let backlog = Backlog {
+            frontdoor: Some(depth(1, Some("2026-08-28T12:00:00Z"))),
+            ..Default::default()
+        };
+        let widened = read_lines(&c, &src(&backlog, CorpusRate::NotScanned), now());
+        assert_eq!(
+            widened[0].reading.over(),
+            Some(true),
+            "the wide reader would saturate"
+        );
+        let narrowed = read_lines(
+            &c,
+            &Sources {
+                backlog: &backlog,
+                requests_on_owner: Some(depth(0, None)),
+                corpus: CorpusRate::NotScanned,
+            },
+            now(),
+        );
+        assert_eq!(narrowed[0].reading, Reading::Nothing);
+        // And an unreadable front door is unread on the line, whatever the
+        // wide depth says.
+        let unread = read_lines(
+            &c,
+            &Sources {
+                backlog: &backlog,
+                requests_on_owner: None,
+                corpus: CorpusRate::NotScanned,
+            },
+            now(),
+        );
+        assert_eq!(unread[0].reading, Reading::Unread);
+    }
+
     #[test]
     fn excess_is_zero_within_the_setpoint_half_at_twice_it_and_never_one() {
         assert_eq!(excess(10.0, 24.0), 0.0);
@@ -571,7 +638,7 @@ mod tests {
             outbox: Some(depth(2, Some("2026-09-02T12:00:00Z"))),
             ..Default::default()
         };
-        let r = read_lines(&c, &backlog, &CorpusRate::NotScanned, now());
+        let r = read_lines(&c, &src(&backlog, CorpusRate::NotScanned), now());
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].line, "waits");
         assert_eq!(r[0].setpoint, "24h");
@@ -597,7 +664,7 @@ mod tests {
             outbox: Some(depth(0, None)),
             ..Default::default()
         };
-        let r = read_lines(&c, &backlog, &CorpusRate::NotScanned, now());
+        let r = read_lines(&c, &src(&backlog, CorpusRate::NotScanned), now());
         assert_eq!(r[0].reading, Reading::Nothing);
         assert_eq!(r[0].summary(), "nothing waiting");
         assert_eq!(
@@ -624,7 +691,7 @@ mod tests {
             frontdoor: Some(depth(1, Some("not a stamp"))),
             ..Default::default()
         };
-        let r = read_lines(&c, &backlog, &CorpusRate::NotScanned, now());
+        let r = read_lines(&c, &src(&backlog, CorpusRate::NotScanned), now());
         assert_eq!(r[0].reading, Reading::Unread);
         assert_eq!(r[1].reading, Reading::Unread);
         assert_eq!(r[0].reading.over(), None);
@@ -636,11 +703,11 @@ mod tests {
     fn the_corpus_kind_is_deferred_in_a_run_and_read_on_a_surface() {
         let c = charter(vec![sensored("hands", SensorKind::InterventionRate, "20%")]);
         let backlog = Backlog::default();
-        let deferred = read_lines(&c, &backlog, &CorpusRate::NotScanned, now());
+        let deferred = read_lines(&c, &src(&backlog, CorpusRate::NotScanned), now());
         assert_eq!(deferred[0].reading, Reading::Deferred);
         assert_eq!(deferred[0].reading.over(), None);
 
-        let read = read_lines(&c, &backlog, &CorpusRate::Share(0.3), now());
+        let read = read_lines(&c, &src(&backlog, CorpusRate::Share(0.3)), now());
         assert_eq!(
             read[0].reading,
             Reading::Observed {
@@ -655,10 +722,10 @@ mod tests {
             "30% of recent runs, past the 20% setpoint"
         );
 
-        let empty = read_lines(&c, &backlog, &CorpusRate::Empty, now());
+        let empty = read_lines(&c, &src(&backlog, CorpusRate::Empty), now());
         assert_eq!(empty[0].reading, Reading::Nothing);
         assert_eq!(empty[0].summary(), "no runs recorded yet");
-        let sparse = read_lines(&c, &backlog, &CorpusRate::Sparse(2), now());
+        let sparse = read_lines(&c, &src(&backlog, CorpusRate::Sparse(2)), now());
         assert_eq!(sparse[0].reading, Reading::Sparse { runs: 2 });
         assert_eq!(sparse[0].reading.over(), None);
         assert_eq!(sparse[0].reading.excess(), None);
@@ -669,7 +736,7 @@ mod tests {
                 crate::doctor::RUNS_MIN
             )
         );
-        let unreadable = read_lines(&c, &backlog, &CorpusRate::Unreadable, now());
+        let unreadable = read_lines(&c, &src(&backlog, CorpusRate::Unreadable), now());
         assert_eq!(unreadable[0].reading, Reading::Unread);
     }
 
@@ -683,7 +750,7 @@ mod tests {
             },
             sensored("age", SensorKind::OutboxAge, "24h"),
         ]);
-        let r = read_lines(&c, &Backlog::default(), &CorpusRate::NotScanned, now());
+        let r = read_lines(&c, &src(&Backlog::default(), CorpusRate::NotScanned), now());
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].line, "age");
         let none = charter(vec![RawLine {
@@ -691,7 +758,12 @@ mod tests {
             text: "no sensor".into(),
             sensor: None,
         }]);
-        assert!(read_lines(&none, &Backlog::default(), &CorpusRate::NotScanned, now()).is_empty());
+        assert!(read_lines(
+            &none,
+            &src(&Backlog::default(), CorpusRate::NotScanned),
+            now()
+        )
+        .is_empty());
     }
 
     /// The record rides in every session file from now on: it must round
@@ -738,7 +810,7 @@ mod tests {
             outbox: Some(depth(0, None)),
             ..Default::default()
         };
-        let readings = read_lines(&c, &backlog, &CorpusRate::NotScanned, now());
+        let readings = read_lines(&c, &src(&backlog, CorpusRate::NotScanned), now());
         let json = lines_json(&c, &readings);
         assert_eq!(
             json[0],

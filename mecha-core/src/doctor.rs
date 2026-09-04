@@ -928,16 +928,10 @@ fn check_questions(
 
 // --- frontdoor --------------------------------------------------------------
 
-/// The states that mean a request is waiting on the user rather than on the
-/// requester: `extracted` awaits triage, `awaiting_me` awaits a draft review,
-/// and `triaged` is triage's "I drafted nothing — this needs a person":
-/// nothing ever re-triages it, so left alone it waits forever, invisibly.
-/// (`needs_info` waits on the stranger, and `drained` on the extraction pass.)
-const WAITING_ON_ME: [&str; 3] = [
-    crate::frontdoor::EXTRACTED,
-    crate::frontdoor::AWAITING_ME,
-    crate::frontdoor::TRIAGED,
-];
+/// The owner-facing request states — `frontdoor::WAITING_ON_OWNER`, one
+/// list shared with the `request_closure` sensor so the finding and the
+/// reading measure the same requests.
+const WAITING_ON_ME: [&str; 3] = crate::frontdoor::WAITING_ON_OWNER;
 
 /// Read the request records directly, for the same no-side-effects reason as
 /// the outbox — [`crate::frontdoor::Frontdoor::open`] creates the directory.

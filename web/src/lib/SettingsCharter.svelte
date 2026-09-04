@@ -1,6 +1,6 @@
 <script>
   import { tick } from 'svelte';
-  import { serialize as toToml, slugify, splitHeader } from './charter-toml.js';
+  import { rows, serialize as toToml, slugify, splitHeader } from './charter-toml.js';
 
   // The charter pane. The lines are edited in place — tap one to open it,
   // drag its grip to re-rank — and nothing reaches disk until an explicit
@@ -75,12 +75,8 @@
     // `sensor` is carried, never edited here: the list editor re-ranks and
     // rewrites text, and a save must write the owner's sensor back exactly
     // as it was read (see `serialize`). Editing one is the TOML editor's.
-    lines = (c.lines ?? []).map((l) => ({
-      uid: ++uidSeq,
-      id: l.id,
-      text: l.text,
-      sensor: l.sensor ? { kind: l.sensor.kind, setpoint: l.sensor.setpoint } : null,
-    }));
+    // `reading` rides beside it for display only — see `rows`.
+    lines = rows(c.lines, () => ++uidSeq);
     original = snapshot();
   }
 
@@ -171,7 +167,7 @@
   });
 
   function addLine() {
-    const line = { uid: ++uidSeq, id: '', text: '', sensor: null };
+    const line = { uid: ++uidSeq, id: '', text: '', sensor: null, reading: null };
     lines = [...lines, line];
     editing = line.uid;
     savedNote = null;

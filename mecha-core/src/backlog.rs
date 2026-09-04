@@ -105,6 +105,22 @@ impl Backlog {
     /// Read every mecha-owned store. Best-effort per store, like doctor: one
     /// unreadable store never suppresses the other four.
     pub fn read() -> Backlog {
+        Self::read_with_owner_requests().0
+    }
+
+    /// [`Backlog::read`], plus the front door narrowed to the requests
+    /// waiting on the **owner** (`frontdoor::waiting_on_owner`), from the
+    /// same read of the store. `frontdoor` itself counts every open
+    /// request — a `needs_info` parked on the stranger ages there without
+    /// anything being owed, the imprecision `guilt.rs`'s module doc names —
+    /// and the `request_closure` charter sensor must measure only what the
+    /// doctor's stale-request finding does, or a reading can sit past its
+    /// setpoint with no finding naming an item (found on review). Kept
+    /// beside the backlog rather than on it: `Backlog` is recorded on every
+    /// run, and a new field there moves what every older row is compared
+    /// against. `None` when the store could not be read, on the same rule
+    /// as every depth here.
+    pub fn read_with_owner_requests() -> (Backlog, Option<Depth>) {
         // The outbox is read once and its sent ids handed to the front
         // door's reader: whether a closed request was a give-up is a join
         // (below), and the join must not see a different outbox than the
@@ -117,13 +133,20 @@ impl Backlog {
                 .map(|i| i.id.as_str())
                 .collect()
         });
-        Backlog {
-            outbox: outbox_items.as_deref().map(Self::outbox_depth),
-            questions: Self::read_questions(),
-            frontdoor: Self::read_frontdoor(sent.as_ref()),
-            proposals: Self::read_proposals(),
-            candidates: Self::read_candidates(),
-        }
+        let (frontdoor, on_owner) = match Self::read_frontdoor(sent.as_ref()) {
+            Some((open, on_owner)) => (Some(open), Some(on_owner)),
+            None => (None, None),
+        };
+        (
+            Backlog {
+                outbox: outbox_items.as_deref().map(Self::outbox_depth),
+                questions: Self::read_questions(),
+                frontdoor,
+                proposals: Self::read_proposals(),
+                candidates: Self::read_candidates(),
+            },
+            on_owner,
+        )
     }
 
     fn read_outbox_items() -> Option<Vec<crate::outbox::OutboxItem>> {
@@ -156,22 +179,41 @@ impl Backlog {
         Some(Depth::of(open.len(), open.iter().map(|q| q.asked_at.as_str())).given_up(abandoned))
     }
 
-    fn read_frontdoor(sent: Option<&HashSet<&str>>) -> Option<Depth> {
+    /// Every open request, and the owner-facing subset, from one read.
+    fn read_frontdoor(sent: Option<&HashSet<&str>>) -> Option<(Depth, Depth)> {
         // Like `read_questions`: a front door that has never existed is
         // empty, not unreadable — and `open_default` would *create* it,
         // twice per run at both ends of `Homeostat::finish`, and read a
         // failed creation as an unknown depth (found on review).
         let Some(store) = Frontdoor::open_existing_default() else {
-            return Some(Depth::default());
+            return Some((Depth::default(), Depth::default()));
         };
         let records = store.records().ok()?;
+        Some(Self::frontdoor_depths(&records, sent))
+    }
+
+    /// The two front-door depths over a set of records: every request not
+    /// yet closed (what `Backlog::frontdoor` has always counted, give-ups
+    /// included), and the requests waiting on the owner.
+    fn frontdoor_depths(
+        records: &[frontdoor::Record],
+        sent: Option<&HashSet<&str>>,
+    ) -> (Depth, Depth) {
         let open: Vec<_> = records
             .iter()
             .filter(|r| r.state != frontdoor::CLOSED)
             .collect();
-        Some(
+        let on_owner: Vec<_> = records
+            .iter()
+            .filter(|r| frontdoor::waiting_on_owner(&r.state))
+            .collect();
+        (
             Depth::of(open.len(), open.iter().map(|r| r.created_at.as_str()))
-                .given_up(Self::frontdoor_given_up(&records, sent)),
+                .given_up(Self::frontdoor_given_up(records, sent)),
+            Depth::of(
+                on_owner.len(),
+                on_owner.iter().map(|r| r.created_at.as_str()),
+            ),
         )
     }
 
@@ -619,6 +661,37 @@ mod tests {
         assert_eq!(d.owner_facing_net(), Some(-2));
         assert_eq!(d.given_up, Some(2));
         assert_eq!(d.owner_facing_cleared(), Some(0));
+    }
+
+    /// The owner-facing depth counts only what a person owes an answer to:
+    /// a `needs_info` parked on the stranger is open and ages, but it is
+    /// not waiting on the owner, and the `request_closure` sensor must not
+    /// read it (found on review).
+    #[test]
+    fn the_owner_facing_depth_excludes_a_request_parked_on_the_stranger() {
+        let record = |seq: i64, state: &str, created_at: &str| -> frontdoor::Record {
+            serde_json::from_value(serde_json::json!({
+                "seq": seq,
+                "type_id": "contact",
+                "state": state,
+                "created_at": created_at,
+                "drained_at": created_at,
+                "values": {},
+                "outbox": [],
+            }))
+            .unwrap()
+        };
+        let records = vec![
+            record(1, frontdoor::NEEDS_INFO, "2026-08-01T00:00:00Z"),
+            record(2, frontdoor::EXTRACTED, "2026-08-10T00:00:00Z"),
+            record(3, frontdoor::CLOSED, "2026-07-01T00:00:00Z"),
+        ];
+        let (open, on_owner) = Backlog::frontdoor_depths(&records, None);
+        assert_eq!(open.waiting, 2);
+        assert_eq!(open.oldest.as_deref(), Some("2026-08-01T00:00:00Z"));
+        assert_eq!(on_owner.waiting, 1);
+        assert_eq!(on_owner.oldest.as_deref(), Some("2026-08-10T00:00:00Z"));
+        assert_eq!(on_owner.given_up, 0);
     }
 
     /// A read creates nothing (found on review, which noted nothing
