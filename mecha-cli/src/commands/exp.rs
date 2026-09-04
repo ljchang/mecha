@@ -597,9 +597,14 @@ async fn principal_call(
         repetition: trial.repetition,
         condition_hash: trial.condition_hash.clone(),
     };
-    let env_for = |cmd: &mut tokio::process::Command| -> Result<()> {
+    // Two environments: the `mecha` children need the provider and search
+    // key variables the run child gets; the principal executable — pure by
+    // contract, never a model call, a third party named by a path — gets
+    // the base set only, on the rule `connect` keeps for MCP servers
+    // (found on review).
+    let env_for = |cmd: &mut tokio::process::Command, keys: &[String]| -> Result<()> {
         cmd.env_clear();
-        for (k, v) in mecha_core::sandbox::Sandbox::child_env(passthrough) {
+        for (k, v) in mecha_core::sandbox::Sandbox::child_env(keys) {
             cmd.env(k, v);
         }
         cmd.env("MECHA_HOME", home)
@@ -655,7 +660,7 @@ async fn principal_call(
             .context("the principal names no executable")?;
         let mut cmd = tokio::process::Command::new(exe);
         cmd.args(args);
-        env_for(&mut cmd)?;
+        env_for(&mut cmd, &[])?;
         let err =
             std::fs::File::create(&log).with_context(|| format!("creating {}", log.display()))?;
         cmd.stdin(std::process::Stdio::piped())
@@ -722,14 +727,17 @@ async fn principal_call(
                 }
                 let status: Result<std::process::ExitStatus> = async {
                     let mut cmd = tokio::process::Command::new(mecha);
-                    // The workspace last, as the stage runner's: `[tools]
-                    // workspace` rides into the home's config and beats
-                    // the cwd, and nothing in the verb may name one.
-                    cmd.args(&act.verb)
+                    // The driver's options *before* the verb: they are
+                    // global, and `tasks steer` takes trailing arguments
+                    // that would swallow anything after its text into the
+                    // owner's steering message (found on review). The
+                    // workspace is named because `[tools] workspace` rides
+                    // into the home's config and beats the cwd.
+                    cmd.arg("--workspace")
+                        .arg(&workspace)
                         .args(flags)
-                        .arg("--workspace")
-                        .arg(&workspace);
-                    env_for(&mut cmd)?;
+                        .args(&act.verb);
+                    env_for(&mut cmd, passthrough)?;
                     let out = std::fs::OpenOptions::new().append(true).open(&log)?;
                     let err = out.try_clone()?;
                     cmd.stdin(std::process::Stdio::null())
@@ -853,9 +861,9 @@ async fn run_stage(
         // the trial home's config verbatim and would beat the cwd, jailing
         // a stage's probes to the operator's project directory instead
         // (found on review).
-        cmd.args(&argv)
-            .arg("--workspace")
+        cmd.arg("--workspace")
             .arg(&workspace)
+            .args(&argv)
             .current_dir(&workspace);
         cmd.env_clear();
         for (k, v) in mecha_core::sandbox::Sandbox::child_env(passthrough) {
@@ -1258,13 +1266,15 @@ fn status(name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// A stage's full argv: the verb the nightly runs, then the arm's
-/// CLI-only lever flags (`--no-skills`, `--no-charter`, `--no-mcp`, …),
-/// which are global options and so attach to any verb. `None` for the
+/// A stage's full argv: the arm's CLI-only lever flags (`--no-skills`,
+/// `--no-charter`, `--no-mcp`, …) *first*, then the verb the nightly
+/// runs. The flags are global options and attach before a subcommand as
+/// well as after; before is the placement a trailing-argument verb cannot
+/// swallow, so every child the driver spawns uses it. `None` for the
 /// lever that is a config switch and runs nothing.
 fn stage_argv(stage: mecha_core::experiment::StageLever, flags: &[String]) -> Option<Vec<String>> {
-    let mut argv: Vec<String> = stage.argv()?.iter().map(|s| s.to_string()).collect();
-    argv.extend(flags.iter().cloned());
+    let mut argv: Vec<String> = flags.to_vec();
+    argv.extend(stage.argv()?.iter().map(|s| s.to_string()));
     Some(argv)
 }
 
@@ -1469,13 +1479,42 @@ mod tests {
         let flags = vec!["--no-skills".to_string(), "--no-mcp".to_string()];
         assert_eq!(
             stage_argv(StageLever::Validate, &flags).unwrap(),
-            vec!["validate", "--unprocessed-only", "--no-skills", "--no-mcp"]
+            vec!["--no-skills", "--no-mcp", "validate", "--unprocessed-only"]
         );
         assert_eq!(
             stage_argv(StageLever::Reflect, &[]).unwrap(),
             vec!["reflect"]
         );
         assert_eq!(stage_argv(StageLever::SensorsInBrief, &flags), None);
+    }
+
+    /// Every option the principal's verbs are refused is a global option
+    /// this CLI really defines — a blocklist that named a field rather
+    /// than a flag let the flag through (found on review).
+    #[test]
+    fn the_blocked_options_are_the_clis_global_options() {
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        let mut longs = std::collections::BTreeSet::new();
+        let mut shorts = std::collections::BTreeSet::new();
+        for a in cmd.get_arguments().filter(|a| a.is_global_set()) {
+            if let Some(l) = a.get_long() {
+                longs.insert(format!("--{l}"));
+            }
+            if let Some(s) = a.get_short() {
+                shorts.insert(format!("-{s}"));
+            }
+        }
+        for name in mecha_core::experiment::PRINCIPAL_BLOCKED_OPTIONS {
+            assert!(
+                longs.contains(name) || shorts.contains(name),
+                "`{name}` is on the blocklist but is not a global option the CLI defines"
+            );
+        }
+        assert!(
+            longs.iter().any(|l| l.starts_with("--no-")),
+            "the prefix rule covers something"
+        );
     }
 
     /// A manifest's `ids` narrow the case file to the tasks it names, in the
