@@ -1472,7 +1472,6 @@ mod tests {
                 skill: None,
                 mailbox: None,
                 compact_requested: None,
-                rules: mecha_core::learning::RulesCarried::none(),
                 _mcp: Vec::new(),
             },
             ctx: mecha_core::tool::ToolCtx::default(),

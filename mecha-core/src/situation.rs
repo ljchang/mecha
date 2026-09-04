@@ -91,6 +91,15 @@ impl Situation {
 
     /// The situation a run is in at start: the registry it carries and the
     /// workspace it is jailed to. What a rule's scope is matched against.
+    ///
+    /// The registry at render time is the one `setup::build` has after
+    /// builtins, MCP servers and subagents joined it. A front-end inserts
+    /// its own tools afterwards (`ask_user`, recall, the TUI's), so those
+    /// names are in `RunConfig::tools` and not in the situation the block
+    /// was matched against — a rule scoped to one of them would never load.
+    /// None of them is a tool a reflection's window names today, and the
+    /// gap is recorded here rather than closed, since closing it means
+    /// telling `prepare` what the front-end will add.
     pub fn of_run(tools: &[String], workspace: Option<&Path>) -> Situation {
         Situation {
             tools: tools.to_vec(),

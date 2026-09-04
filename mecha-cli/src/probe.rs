@@ -37,9 +37,6 @@ use mecha_core::replay::{extract, Trajectory};
 use mecha_core::replay_run::{drive_branch, replay_registry, OnDivergence};
 use mecha_core::session::{RunConfig, Session};
 use mecha_core::situation::Situation;
-
-/// The (baseline, treatment) rules blocks a probe's two arms carry.
-pub type Arms = (Option<String>, Option<String>);
 use mecha_core::tool::ModeApprover;
 use std::path::Path;
 use std::sync::Arc;
@@ -350,6 +347,9 @@ pub async fn drive_arm(
 /// `baseline_block` / `treatment_block` are rules blocks appended to the
 /// recorded system prompt (stripped of any rules block of its own era) —
 /// `None` means that arm runs rules-free.
+/// The (baseline, treatment) rules blocks a probe's two arms carry.
+pub type Arms = (Option<String>, Option<String>);
+
 /// Drive both arms of a probe over `r`'s recorded session.
 ///
 /// `arms` renders the (baseline, treatment) rules blocks **for the situation
@@ -371,6 +371,15 @@ pub async fn probe_reflection(
         Err(why) => return Ok(ProbeResult::Skipped(why)),
     };
     let (baseline_block, treatment_block) = arms(&prep.situation())?;
+    // Two identical arms measure nothing and would grade as "unchanged" —
+    // a verdict the caller counts. Reachable once rules are scoped: a
+    // candidate whose new rules match no tool the recorded run carried
+    // renders the same block as the current set.
+    if baseline_block == treatment_block {
+        return Ok(ProbeResult::Skipped(
+            "the candidate changes nothing in the recorded run's situation".into(),
+        ));
+    }
     let mut verdicts = Vec::new();
     for block in [baseline_block, treatment_block] {
         match drive_arm(

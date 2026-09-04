@@ -3621,7 +3621,15 @@ reads *unknown* and never empty (`RunConfig::rules_arm_note`, printed by
 replayed session's own `RunConfig::tools` and keys the ledger row to that
 block, and `learn`'s gate hands `probe_reflection` a renderer rather than
 two strings. Verified live: a `MECHA_SESSION_KIND=test` run recorded twelve
-ids under one hash and an empty delivered list. Not built, named in the
+ids under one hash and an empty delivered list. The review's first pass
+found two things worth having: the render sat at the end of
+`prepare_tools`, before `build` inserts subagents, so a rule scoped to a
+subagent tool could never have matched (moved into `build`, after the
+subagent loop); and `validate`'s bisection surface loaded every domain
+where the measured arm had always been `RUN_DOMAINS`, which would have put
+`triage` rules in front of a tool-having probe — the exact residual
+`Reflexion::learnable` names by hand (restricted, with a test that a
+triage rule stays off the surface). Not built, named in the
 §17.4 note: mid-run delivery, widening and narrowing, per-region validation
 budgets, and the backfill for reflections mined before the field, which
 batch as standing.

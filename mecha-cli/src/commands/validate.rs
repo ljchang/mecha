@@ -82,10 +82,19 @@ struct RuleSurface {
 }
 
 impl RuleSurface {
+    /// Loads the **run domains only** (`RUN_DOMAINS`). A probe replays a
+    /// tool-having run, so its block must be one such a run can carry: the
+    /// `triage` domain rides in the mail classifier's tool-less pass and
+    /// nowhere else, and `Reflexion::learnable`'s untrusted-origin exemption
+    /// for it is argued from exactly that — a triage rule in a probe prompt
+    /// would put mail-derived text in front of an agent with tools, and a
+    /// ledger row naming its id would charge observations to a rule the
+    /// measured run could never have had (found on review).
     fn load(store: &LearningStore) -> Result<Self> {
         let mut flat = Vec::new();
         let mut user_by_domain = BTreeMap::new();
-        for domain in store.domains() {
+        for domain in mecha_core::learning::RUN_DOMAINS {
+            let domain = domain.to_string();
             user_by_domain.insert(domain.clone(), store.user_rules(&domain)?);
             for rule in store.learned_rules(&domain)? {
                 if rule.active() {
@@ -458,6 +467,18 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             .map(|rc| Situation::of_run(&rc.tools, Some(&rc.workspace)))
             .unwrap_or_default();
         let carried = surface.carried(&run);
+        // Nothing carried is nothing to measure: both arms would be
+        // byte-identical and grade as "unchanged", which the summary counts
+        // as a verdict — the measured-clean-versus-not-measured conflation
+        // one function over (found on review). The row is not written.
+        if carried.is_empty() {
+            eprintln!(
+                "· {}: no active rule is scoped to this session's situation; skipping",
+                r.id
+            );
+            skipped += 1;
+            continue;
+        }
         let rules_block = surface.block_with(&carried).unwrap_or_default();
         let with_rules = if base_system.is_empty() {
             rules_block.clone()
@@ -479,6 +500,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // Rendered for the probe's own recorded config, which is the
             // one the branch replays under (a later attach may differ).
             let carried = surface.carried(&prep.situation());
+            if carried.is_empty() {
+                eprintln!(
+                    "· {}: no active rule is scoped to the recorded run's situation; skipping",
+                    r.id
+                );
+                skipped += 1;
+                continue;
+            }
             let rules_block = surface.block_with(&carried).unwrap_or_default();
             let mut arms = Vec::new();
             for block in [None, Some(rules_block.as_str())] {
@@ -858,8 +887,21 @@ mod tests {
             .write_learned_rules("writing", &[rule("Sign off briefly.", Some("r-c"))])
             .unwrap();
 
+        // A classifier rule never reaches a probe: the surface is the run
+        // domains, not the store.
+        store
+            .write_learned_rules(
+                mecha_core::learning::TRIAGE_DOMAIN,
+                &[rule("Newsletters are ignore.", Some("r-triage"))],
+            )
+            .unwrap();
+
         let surface = RuleSurface::load(&store).unwrap();
         assert_eq!(surface.flat.len(), 3);
+        assert!(surface
+            .flat
+            .iter()
+            .all(|(d, _)| d != mecha_core::learning::TRIAGE_DOMAIN));
         let all: Vec<usize> = (0..surface.flat.len()).collect();
         assert_eq!(surface.rule_ids(&all), vec!["r-a", "r-b", "r-c"]);
         // Unscoped rules are carried by every run.
@@ -867,7 +909,10 @@ mod tests {
 
         assert_eq!(
             surface.block_with(&all).unwrap(),
-            store.rules_prompt_block().unwrap().unwrap()
+            store
+                .rules_prompt_block_for(mecha_core::learning::RUN_DOMAINS)
+                .unwrap()
+                .unwrap()
         );
 
         // An empty selection still carries the user's rules — they are not on

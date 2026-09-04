@@ -1793,7 +1793,14 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > off-by-default ruling. Also unbuilt: consolidation's widening and
 > narrowing, and per-region validation — `validate` renders per probe for
 > the replayed session's registry and keys the ledger row to that block,
-> which is the honest half of R2 and not the per-region budget. Two keys
+> which is the honest half of R2 and not the per-region budget — and the
+> probe skips a session whose carried set is empty, or whose candidate
+> arm renders identically, rather than grade two equal arms. The count
+> cap stays domain-wide while the learner sees one region, so a
+> many-region domain can refuse a batch against a total the batch could
+> not see; fail-safe, and named rather than moved. The registry the block
+> is matched against is `build`'s, after subagents join it; the
+> front-end's own tools join later and are not scope targets. Two keys
 > are recorded and not yet scope keys, with the reasons in `situation.rs`:
 > the surface, because `prepare` does not know it, and the workspace,
 > because scoping to it before widening exists would pin nearly every rule
