@@ -1910,7 +1910,7 @@ follow from facts in the tree and stand as written. None is built.
    replays with the prefix block and reports the scoped set as *unknown*,
    never empty. Lands with sprint item 3 or item 3 does not merge.
    *Built 2026-09-04, with item 3:* `RunConfig::rules_hash` and `rule_ids`
-   from the one render in `prepare_tools` (`RulesCarried`), and
+   from the one render in `setup::build` (`RulesCarried`), and
    `RunStats::delivered` written `Some([])` by this build because the loop
    delivers nothing mid-run yet; `mecha replay` prints the arm through
    `RunConfig::rules_arm_note`, and a record from before either field
