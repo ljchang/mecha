@@ -996,11 +996,15 @@ async fn run_agent(
     // that says what happened.
     let token = stop.map(CancellationToken::child_token).unwrap_or_default();
     let cx = RunContext::clone(prepared.agent.context()).with_cancel(token.clone());
-    // The two ways a trigger run ends early say which they are: the
-    // wall-clock limit is the process's ceiling, not the owner's word, so it
-    // records `Shutdown`; a cancel by request is the owner and records
-    // `Stopped`. A bare token cancel would record the unknown-which
-    // `Interrupted` for both.
+    // The three ways a trigger run ends early say which they are: the
+    // wall-clock limit and the daemon's own stop (a SIGTERM to the
+    // scheduler, reaching this run through the child token above) are the
+    // process's, not the owner's word, so they record `Shutdown`; a cancel
+    // by request is the owner and records `Stopped`. The daemon's stop
+    // arrives on the *parent* token with no reason of its own, so the timer
+    // task watches it and says `Shutdown` before the child fires — otherwise
+    // a service restart mid-run recorded the unknown-which `Interrupted`,
+    // indistinguishable from a cancel nobody classified (found on review).
     let handle = cx.cancel_handle().expect("with_cancel just set it");
     let limit = t
         .timeout_duration()
@@ -1008,9 +1012,17 @@ async fn run_agent(
         .unwrap_or(std::time::Duration::from_secs(1200));
     let timer = {
         let handle = handle.clone();
+        let parent = stop.cloned();
         tokio::spawn(async move {
+            let shutdown = async {
+                match &parent {
+                    Some(p) => p.cancelled().await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 _ = tokio::time::sleep(limit) => handle.cancel(mecha_core::agent::CancelReason::Shutdown),
+                _ = shutdown => handle.cancel(mecha_core::agent::CancelReason::Shutdown),
                 _ = handle.cancelled() => {}
             }
         })
