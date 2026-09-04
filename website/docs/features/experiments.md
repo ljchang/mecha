@@ -154,8 +154,11 @@ rationale = "without rumination the loop cannot move a knob, so failures do not 
 Each lifetime — one per arm × seed × repetition — gets its own home under the
 experiment directory, seeded like an arm's. The driver walks the sequence in
 order: after each task it runs the stages the schedule makes due, as child
-`mecha` verbs in that home (`reflect`, `learn --auto`, `validate`,
-`harness ruminate`), one after another and never beside a task, and writes
+`mecha` verbs against that home — `reflect`, `validate --unprocessed-only`,
+`learn --holdout 0.25 --auto`, `harness ruminate`, the nightly's own order
+and flags, so what a lifetime measures is the loop that ships (validate
+measures before learn consumes) — one after another and never beside a
+task, and writes
 each to the lifetime's **stage ledger** (`stages/<lifetime>.jsonl`) with its
 exit status and where its output went. The ledger is what says a stage ran;
 the manifest says only what was scheduled. Resume reads both: a finished task

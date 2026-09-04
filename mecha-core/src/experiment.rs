@@ -100,9 +100,13 @@ pub struct Manifest {
 }
 
 /// How often each loop stage runs between a lifetime's tasks: every N
-/// tasks, 0 for never. Stages due after one position run in this order —
-/// reflect, learn, validate, ruminate — because each reads what the one
-/// before wrote.
+/// tasks, 0 for never. Stages due after one position run in the nightly's
+/// order (`scripts/ruminate.sh`) — reflect, **validate, then learn**,
+/// ruminate — because `learn` marks reflections processed and `validate
+/// --unprocessed-only` is the measurement that must see them first, or
+/// the rules are graded on their own training data. The first cut ran
+/// learn before validate and would have measured a loop that does not
+/// ship (found on review).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Schedule {
@@ -142,11 +146,11 @@ impl Schedule {
         if every(self.reflect) {
             out.push(StageLever::Reflect);
         }
-        if every(self.learn) {
-            out.push(StageLever::Learn);
-        }
         if every(self.validate) {
             out.push(StageLever::Validate);
+        }
+        if every(self.learn) {
+            out.push(StageLever::Learn);
         }
         if every(self.ruminate) {
             out.push(StageLever::Ruminate);
@@ -208,13 +212,17 @@ impl StageLever {
             .join(", ")
     }
 
-    /// The `mecha` verb a stage runs as, in the trial home. `None` for the
+    /// The `mecha` verb a stage runs as, in the trial home — **the
+    /// nightly's own argv** (`scripts/ruminate.sh`), so what a lifetime
+    /// measures is the loop that ships: `validate --unprocessed-only` is
+    /// the held-out measurement, `learn --holdout 0.25 --auto` keeps a
+    /// quarter of reflections unseen for the next one. `None` for the
     /// lever that is a config switch rather than a stage.
     pub fn argv(self) -> Option<&'static [&'static str]> {
         match self {
             StageLever::Reflect => Some(&["reflect"]),
-            StageLever::Learn => Some(&["learn", "--auto"]),
-            StageLever::Validate => Some(&["validate"]),
+            StageLever::Learn => Some(&["learn", "--holdout", "0.25", "--auto"]),
+            StageLever::Validate => Some(&["validate", "--unprocessed-only"]),
             StageLever::Ruminate => Some(&["harness", "ruminate"]),
             StageLever::SensorsInBrief => None,
         }
@@ -2155,7 +2163,8 @@ rationale = "no rumination should fail more over the sequence"
         assert_eq!(m.schedule.due_after(1), vec![StageLever::Reflect]);
         assert_eq!(
             m.schedule.due_after(2),
-            vec![StageLever::Reflect, StageLever::Learn, StageLever::Validate]
+            vec![StageLever::Reflect, StageLever::Validate, StageLever::Learn],
+            "validate measures before learn consumes — the nightly's order"
         );
         assert!(
             !m.schedule.due_after(4).contains(&StageLever::Ruminate),
@@ -2163,7 +2172,12 @@ rationale = "no rumination should fail more over the sequence"
         );
         assert_eq!(
             Schedule::default().due_after(10),
-            StageLever::ALL[..4].to_vec(),
+            vec![
+                StageLever::Reflect,
+                StageLever::Validate,
+                StageLever::Learn,
+                StageLever::Ruminate
+            ],
             "the design's default: every, fifth, fifth, tenth"
         );
     }
@@ -2209,7 +2223,15 @@ rationale = "no rumination should fail more over the sequence"
             assert_eq!(wire, name, "the wire name is the lever's name");
         }
         assert_eq!(StageLever::SensorsInBrief.argv(), None);
-        assert_eq!(StageLever::Learn.argv(), Some(&["learn", "--auto"][..]));
+        assert_eq!(
+            StageLever::Learn.argv(),
+            Some(&["learn", "--holdout", "0.25", "--auto"][..])
+        );
+        assert_eq!(
+            StageLever::Validate.argv(),
+            Some(&["validate", "--unprocessed-only"][..]),
+            "the held-out measurement, as the nightly runs it"
+        );
     }
 
     /// The ledger says what ran: due stages are the schedule's minus the

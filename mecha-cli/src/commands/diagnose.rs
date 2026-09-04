@@ -213,7 +213,12 @@ pub fn corpus_slice(
 /// own findings about runs and triggers — machine-authored text, the only
 /// prose in the brief — plus whatever history the caller wants the
 /// diagnostician to not re-derive.
-pub fn evidence_for(model: &str, slice: &Corpus, history: Vec<String>) -> Evidence {
+pub fn evidence_for(
+    model: &str,
+    slice: &Corpus,
+    history: Vec<String>,
+    cfg: &mecha_core::config::Config,
+) -> Evidence {
     let mut evidence = Evidence::of(model, slice);
     if let Ok(home) = mecha_core::work::mecha_home() {
         for finding in mecha_core::doctor::examine(&home, chrono::Utc::now())
@@ -228,11 +233,11 @@ pub fn evidence_for(model: &str, slice: &Corpus, history: Vec<String>) -> Eviden
     evidence.history = history;
     evidence.compact_at_fraction = compact_at_fraction(slice);
     // The stage lever: a trial home whose config withholds the sensors gets
-    // a brief without them. Unknown config reads as the default (on).
-    let sensors = mecha_core::config::Config::load_global()
-        .map(|c| c.agent.sensors_in_brief)
-        .unwrap_or(true);
-    if sensors {
+    // a brief without them. The config is the caller's, loaded with `?`, so
+    // an unreadable one fails the verb rather than handing an arm that
+    // named the lever off the sensors anyway under a hash that says it did
+    // not (found on review).
+    if cfg.agent.sensors_in_brief {
         evidence
     } else {
         evidence.without_sensors()
@@ -566,7 +571,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // The interactive verb shows history too: a person about to spend a
     // measurement deserves to know what already failed one.
     let history = harness_history().unwrap_or_default();
-    let evidence = evidence_for(&model, &slice, history);
+    let cfg = mecha_core::config::Config::load_global()?;
+    let evidence = evidence_for(&model, &slice, history, &cfg);
 
     if args.dry_run {
         println!("{}", evidence.brief());

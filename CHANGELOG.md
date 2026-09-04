@@ -32,9 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`mecha exp` runs lifetimes.** A `kind = "lifetime"` manifest — an
   ordered task sequence (`tasks.ids`, in order) and a `[schedule]` of
-  loop stages between tasks (`reflect` every task, `learn --auto` and
-  `validate` every fifth, `harness ruminate` every tenth, by default;
-  0 is never) — runs one isolated home per arm × seed × repetition, walks
+  loop stages between tasks (`reflect` every task, `validate
+  --unprocessed-only` then `learn --holdout 0.25 --auto` every fifth,
+  `harness ruminate` every tenth, by default; 0 is never — the nightly's
+  order and flags, validate measuring before learn consumes) — runs one isolated home per arm × seed × repetition, walks
   the sequence in position order, and after each task runs the stages due
   as child `mecha` verbs in that home, sequentially, each written to the
   lifetime's stage ledger (`stages/<lifetime>.jsonl`) with its exit
