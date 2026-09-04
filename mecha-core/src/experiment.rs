@@ -90,8 +90,9 @@ pub struct Manifest {
     #[serde(default = "three")]
     pub holdout_in: u64,
     /// A `lifetime`'s loop stages between tasks (Part II §14): after every
-    /// task `reflect`, after every fifth `learn --auto` then `validate`,
-    /// after every tenth `harness ruminate`, by default. Sequence and
+    /// task `reflect`, after every fifth `validate` then `learn --auto`
+    /// (validate measures before learn consumes), after every tenth
+    /// `harness ruminate`, by default. Sequence and
     /// schedule live here, on the design, so the stage order a lifetime ran
     /// under is on the record and never in a script. A `single` manifest
     /// carries none.
@@ -546,6 +547,16 @@ impl Manifest {
             anyhow::ensure!(
                 seen.insert(id),
                 "task `{id}` appears twice in `ids`; name each task once"
+            );
+        }
+        // The same collision one field over: a seed twice mints two rows
+        // with one trial id, and two lifetimes in one home and one ledger
+        // (found on review).
+        let mut seen_seeds = std::collections::BTreeSet::new();
+        for s in &self.seeds {
+            anyhow::ensure!(
+                seen_seeds.insert(s),
+                "seed `{s}` appears twice in `seeds`; name each seed once"
             );
         }
         if self.kind == TrialKind::Single {
@@ -1072,12 +1083,17 @@ impl ExperimentStore {
     }
 
     /// The attempt number the next run of `stage` after `position` gets:
-    /// one more than the ledger already holds for that pair.
-    pub fn next_attempt(ledger: &[StageRun], position: u32, stage: StageLever) -> u32 {
+    /// one more than the ledger holds for that pair, **plus every torn
+    /// line** — a line that did not parse may have been this pair's, and
+    /// an attempt number reused would truncate the log the suffix exists
+    /// to keep (found on review). Monotonic, not dense: a torn line on
+    /// another pair skips a number here, which costs nothing.
+    pub fn next_attempt(ledger: &[StageRun], torn: usize, position: u32, stage: StageLever) -> u32 {
         ledger
             .iter()
             .filter(|r| r.after_position == position && r.stage == stage)
             .count() as u32
+            + torn as u32
             + 1
     }
 
@@ -2250,6 +2266,9 @@ rationale = "no rumination should fail more over the sequence"
             e.contains("not a stage lever") && e.contains("sensors_in_brief"),
             "{e}"
         );
+        let seeds = MANIFEST.replace("seeds = [1, 2]", "seeds = [1, 1]");
+        let e = Manifest::parse(&seeds).unwrap_err().to_string();
+        assert!(e.contains("seed `1` appears twice"), "{e}");
         for kind in ["single", "lifetime"] {
             let twice = MANIFEST
                 .replace(
@@ -2351,13 +2370,18 @@ rationale = "no rumination should fail more over the sequence"
             .stage_log("full__r1", 3, StageLever::Reflect, 2)
             .ends_with("full__r1/003-reflect-a2.log"));
         assert_eq!(
-            ExperimentStore::next_attempt(&ledger, 2, StageLever::Learn),
+            ExperimentStore::next_attempt(&ledger, 0, 2, StageLever::Learn),
             2,
             "one failed learn on the ledger: the rerun is attempt 2"
         );
         assert_eq!(
-            ExperimentStore::next_attempt(&ledger, 9, StageLever::Learn),
+            ExperimentStore::next_attempt(&ledger, 0, 9, StageLever::Learn),
             1
+        );
+        assert_eq!(
+            ExperimentStore::next_attempt(&ledger, 1, 9, StageLever::Learn),
+            2,
+            "a torn line may have been this pair's: never reuse its number"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
