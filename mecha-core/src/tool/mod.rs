@@ -386,6 +386,10 @@ pub struct ToolCtx {
     /// so cancelling the parent actually cancels the child instead of politely
     /// waiting out its entire run. Stamped by `Agent::run_in`, like `events`.
     pub cancel: Option<tokio_util::sync::CancellationToken>,
+    /// The reason cell beside `cancel` — see [`crate::agent::CancelReason`].
+    /// Stamped by `Agent::run_in` with `cancel`, so a tool that ends the run
+    /// (`ParkingAsker`) can say why through [`ToolCtx::cancel_run`].
+    pub cancel_reason: Option<std::sync::Arc<std::sync::Mutex<Option<crate::agent::CancelReason>>>>,
     /// The run's phase. A tool that contains a run passes it on, so delegation
     /// is not the way to get a write executed from a planning run. Stamped by
     /// `Agent::run_in`, like `events`.
@@ -467,6 +471,7 @@ impl Default for ToolCtx {
             spill_dir: fresh_spill_dir(),
             events: None,
             cancel: None,
+            cancel_reason: None,
             phase: crate::agent::Phase::default(),
             withheld: std::sync::Arc::from(Vec::new()),
             call_id: None,
@@ -485,6 +490,22 @@ fn fresh_spill_dir() -> Option<PathBuf> {
 }
 
 impl ToolCtx {
+    /// End the run this call belongs to, saying why. The reason lands in
+    /// the cell `run_in` stamped beside the token, so the outcome records it
+    /// (`StopCause::Parked` for a parked question) instead of the
+    /// unknown-which `Interrupted`; without a token this is a no-op, as a
+    /// bare `cancel.cancel()` was.
+    pub fn cancel_run(&self, reason: crate::agent::CancelReason) {
+        if let Some(cell) = &self.cancel_reason {
+            if let Ok(mut slot) = cell.lock() {
+                slot.get_or_insert(reason);
+            }
+        }
+        if let Some(token) = &self.cancel {
+            token.cancel();
+        }
+    }
+
     /// The same policy pointed at a different root. Used to give one run — an
     /// eval case, a batch item — its own isolated copy of a workspace without
     /// rebuilding the agent around it. The spill directory is re-derived too:

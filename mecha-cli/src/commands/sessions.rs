@@ -668,6 +668,8 @@ async fn appraise(
                 learning_unreadable,
                 charter: charter.as_ref(),
                 charter_unreadable,
+                // Filled by `for_transcript` from the transcript it walks.
+                stops: &[],
             },
             None,
         ) else {
