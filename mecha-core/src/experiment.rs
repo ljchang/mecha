@@ -1239,7 +1239,12 @@ pub struct StageHealth {
 
 impl StageHealth {
     /// A stage not known to have run as designed: failed, interrupted, or
-    /// in a status this build cannot read — unknown is never clean.
+    /// in a status this build cannot read — unknown is never clean. A
+    /// failed or unknown line a later `done` line supersedes for the same
+    /// stage is not counted: `stages_due` reruns a failed stage, and the
+    /// rerun's success is the ledger saying it ran (found on review —
+    /// without this, one transient failure held every verdict at propose
+    /// forever).
     pub fn broken(&self) -> usize {
         self.failed + self.interrupted + self.unknown
     }
@@ -1247,11 +1252,28 @@ impl StageHealth {
 
 pub fn stage_health(runs: &[StageRun]) -> StageHealth {
     let mut h = StageHealth::default();
+    let later_done = |r: &StageRun| {
+        runs.iter().any(|t| {
+            t.status == StageStatus::Done
+                && t.lifetime == r.lifetime
+                && t.after_position == r.after_position
+                && t.stage == r.stage
+                && t.attempt > r.attempt
+        })
+    };
     for r in runs {
         match r.status {
             StageStatus::Done => h.done += 1,
-            StageStatus::Failed => h.failed += 1,
-            StageStatus::Unknown => h.unknown += 1,
+            StageStatus::Failed => {
+                if !later_done(r) {
+                    h.failed += 1;
+                }
+            }
+            StageStatus::Unknown => {
+                if !later_done(r) {
+                    h.unknown += 1;
+                }
+            }
             StageStatus::Running => {
                 let superseded = runs.iter().any(|t| {
                     t.status != StageStatus::Running
@@ -2602,6 +2624,20 @@ rationale = "no rumination should fail more over the sequence"
         let (ledger, _) = store.stage_runs("full__r1").unwrap();
         let h = stage_health(&ledger);
         assert_eq!((h.done, h.interrupted), (2, 0), "{h:?}");
+        // The failed learn's rerun succeeds: the failure is superseded and
+        // the stage is known to have run.
+        assert_eq!(h.failed, 1);
+        let mut learned = run(StageLever::Learn, 2, StageStatus::Done);
+        learned.attempt = 2;
+        store.record_stage(&learned).unwrap();
+        let (ledger, _) = store.stage_runs("full__r1").unwrap();
+        let h = stage_health(&ledger);
+        assert_eq!((h.done, h.failed), (3, 0), "{h:?}");
+        assert_eq!(
+            stages_due(&schedule, 2, &[], &ledger),
+            vec![StageLever::Validate],
+            "learn is done now; validate never ran after 2 and is still due"
+        );
         let (all, torn) = store.all_stage_runs().unwrap();
         assert_eq!((all.len(), torn), (ledger.len(), 1));
         let _ = std::fs::remove_dir_all(&dir);
