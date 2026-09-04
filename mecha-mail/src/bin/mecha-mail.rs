@@ -512,10 +512,6 @@ async fn cancel_drained(
     Ok(())
 }
 
-/// Reminders, from the same sweep: templated, from the user's own account
-/// (the one that made the event), each tier fired once and remembered in
-/// the ledger. Runs on the same timers as everything else here — the
-/// 15-minute slot refresh gives the 1-hour tier its resolution.
 /// One tick of the meeting polls' mail-and-calendar half.
 ///
 /// Each job is checked against the ledger, done, ledgered, and written into
@@ -756,7 +752,13 @@ async fn polls(
         if nudged_any && !nudge_failed {
             pl::mark_nudged(&mut record, now());
         }
-        pl::save(&record)?;
+        // A write that fails is this record's failure, counted like the
+        // others; the ledger already holds what went, so the next tick
+        // repairs the record rather than repeating the sends.
+        if let Err(e) = pl::save(&record) {
+            eprintln!("{}: writing the record — {e:#}", record.poll_id);
+            failures += 1;
+        }
     }
     if failures > 0 {
         bail!("{failures} job(s) failed; the rest are ledgered and will not repeat");
@@ -764,6 +766,10 @@ async fn polls(
     Ok(())
 }
 
+/// Reminders, from the same sweep: templated, from the user's own account
+/// (the one that made the event), each tier fired once and remembered in
+/// the ledger. Runs on the same timers as everything else here — the
+/// 15-minute slot refresh gives the 1-hour tier its resolution.
 async fn remind_due(
     tools: &MailTools,
     requests: &std::path::Path,

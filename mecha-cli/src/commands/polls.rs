@@ -239,6 +239,8 @@ pub fn summary(life: &Value) -> String {
         Some("pick") => "needs a pick".into(),
         Some("no_time") => "no time found".into(),
         Some(other) => other.to_string(),
+        // No invitations on record is not "all sent": unknown is never done.
+        None if total == 0 => "—".into(),
         None if sent < total => format!("invites {sent}/{total}"),
         None => "invites sent".into(),
     }
@@ -416,6 +418,9 @@ pub fn pick(poll_id: &str, n: usize) -> Result<String> {
         );
     };
     anyhow::ensure!(n >= 1, "candidates are numbered from 1");
+    // Taken before the read it protects: an `outbox edit` landing between
+    // the read and the write would otherwise be rebuilt over.
+    let _lock = store.lock()?;
     let item = store.item(item_id)?;
     anyhow::ensure!(
         item.status == "pending",
@@ -423,7 +428,6 @@ pub fn pick(poll_id: &str, n: usize) -> Result<String> {
         item.status
     );
     let args = repick(&record, &item.args, n - 1)?;
-    let _lock = store.lock()?;
     store.update_args(item_id, args)?;
     let tz = record.lifecycle()["timezone"].as_str().unwrap_or("UTC");
     Ok(local_range(&record.ranked()[n - 1], tz))
@@ -725,6 +729,12 @@ mod tests {
 
     #[test]
     fn the_summary_reads_the_lifecycle_the_way_the_sweep_wrote_it() {
+        assert_eq!(
+            summary(&json!({})),
+            "—",
+            "no invitations on record is not done"
+        );
+        assert_eq!(summary(&json!({"invites": {}})), "—");
         assert_eq!(
             summary(&json!({"invites": {"a": null, "b": "t"}})),
             "invites 1/2"
