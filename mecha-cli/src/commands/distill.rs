@@ -148,6 +148,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             )?,
         };
 
+    // The charter, for the episode tag's sensored-line attribution
+    // (§11.1) — one small file per distill run, and the one store this
+    // command does read beside the outbox, because the goal it yields is
+    // redacted to its kind word before pkg (`goal: "charter"`) and that is
+    // exactly the salience a queue reader wants.
+    let (charter, charter_unreadable) = mecha_core::appraisal::load_charter();
+
     let mut distilled = 0usize;
     let mut skipped = 0usize;
     // Counted apart from `distilled`: a carrier is an episode the
@@ -206,6 +213,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             meta.created_at.to_rfc3339(),
             mecha_core::appraisal::SessionRecords {
                 drafts: &mine,
+                charter: charter.as_ref(),
+                charter_unreadable,
                 ..Default::default()
             },
             None,

@@ -36,7 +36,7 @@ beside the original rather than replacing it (§2.1 and §4.4).
 | 7 | the appraisal record, the pure `Affect` function, the quarantined appraiser, and step appraisal's model half | **shipped in full**, 2026-08-27/28 |
 | 8 | goal-closure appraisal and the readout surfaces | **shipped, 2026-08-28** (#99, #103) — §5.4's `tasks set --status done\|dropped` trigger (`mecha-cli/src/commands/tasks.rs`'s `appraise_closure`/`worth_a_follow_up`/`stage_follow_up`; the follow-up *gate* is `done`-only, never `dropped`, per §5.4's own "the owner took it anyway" framing) and §6.2's readout on all three surfaces (`mecha_core::appraisal::live`, a per-*run* sibling to `of_session` that passes no drafts at all (no message-index boundary to scope them by) and reads `Neutral` outright on any compacted run rather than a partial signal; TUI status-strip badge; web logo tint as a CSS outline, never a fill, per `brand.md`; a real per-*answer* voice `cfg_weight` nudge via `LocalTTS.on_turn_context_created`, lagging one turn by construction — it fires while the turn that earns the label is still streaming, so a call hears the *previous* turn's mood). Built against §14's own note below, by explicit owner ruling — see the paragraph above |
 | 9 | episode tagging, review-queue salience, gossip seeding | **episode tagging and gossip seeding shipped, 2026-08-28** (#97, #98); review-queue salience's status is not verified from this branch |
-| 10 | the charter (§11) and anticipated guilt's sensor (§7.4) | **the charter store/loader/CLI/prompt-block shipped**, plus the homeostat's own aggregate into `diagnose::Evidence`; anticipated guilt shipped **as a recorded sensor only** — see the note after this table. §7.4's actual anticipatory mechanism (an in-run signal that changes behaviour, not just a recorded number) and any charter-driven `Pride`/`Frustration` labelling are still open, both blocked on the same thing rung 7's measurement found: affect is a constant until a run actually names a goal |
+| 10 | the charter (§11) and anticipated guilt's sensor (§7.4) | **the charter store/loader/CLI/prompt-block shipped**, plus the homeostat's own aggregate into `diagnose::Evidence`; anticipated guilt shipped **as a recorded sensor only** — see the note after this table. §7.4's actual anticipatory mechanism (an in-run signal that changes behaviour, not just a recorded number) and any charter-driven `Pride`/`Frustration` labelling are still open, both blocked on the same thing rung 7's measurement found: affect is a constant until a run actually names a goal. *Correction, 2026-09-04: `Pride` has a producer — §11.1's sensored-line attribution, built with §17.6 items 1–2 — and the label is no longer a constant, since §17.1 ungated it; the anticipatory mechanism stays open* |
 | 11 | curiosity | unbuilt |
 
 Two things were deliberately named rather than done, so they are not
@@ -1051,7 +1051,20 @@ charter is `Prose` class and cannot be cheaply A/B tested:
   well-formed version points the other way: *"tell the owner the truth early,
   especially when it disappoints."*
 
-### 11.1 Sensored lines — ruled 2026-09-02, designed here, unbuilt
+### 11.1 Sensored lines — ruled 2026-09-02, designed here; the parser, serialiser, template and attribution join built 2026-09-04
+
+> **Built 2026-09-04** (`feat/goal-ref-relevance`, §17.6's sprint items 1
+> and 2): the `[line.sensor]` table with `SensorKind` as a closed enum and
+> a setpoint typed by kind (`charter.rs`), the web serialiser carrying a
+> sensor through a save (`charter-toml.js`, pinned by the shared
+> web-editor sample), the commented template example, and the attribution
+> join in `appraisal::of_session` — by `Cite`, never by the queue delta,
+> rank deciding a tie. Unbuilt from this section: the per-line *readings*,
+> the line-specific guilt, the doctor's owner thresholds, the editor
+> showing a reading beside the line (containment 5's first guard), and the
+> replay tiebreak. Every containment below holds in the built half: no
+> `Metric` reads a charter, the sensor is not rendered into the prompt, an
+> unknown kind refuses the document at load.
 
 The owner ruled that a charter line may carry a **sensor**: an observable
 the harness reads from its own stores, with a setpoint the owner wrote. It
@@ -1581,8 +1594,10 @@ nothing yet reads it for anything but rendering it into the prompt.
 
 ## 17. Ruled 2026-09-03: relevance, the charter, and Situation as the second join
 
-Rulings from the owner, recorded with what each asks of the tree. None is
-built. They follow a trace of `appraisal.rs`, `goal.rs`, `charter.rs`,
+Rulings from the owner, recorded with what each asks of the tree. **§17.1's
+gate and its prerequisite producers were built 2026-09-04** (§17.6 items 1
+and 2, one pull request); the rest is unbuilt. They follow a trace of
+`appraisal.rs`, `goal.rs`, `charter.rs`,
 `homeostat.rs` and `learning.rs` on this date, which found: no relevance
 dimension anywhere; `appraisal.rs` with no reference to `crate::charter`;
 `GoalRef::Charter` with no producer on an ordinary run
@@ -1785,9 +1800,26 @@ the data these produce.
    prompt block asks for a `serves:` cite on ordinary runs; §11.1's parser,
    serialiser and template test as one change; the attribution join in
    `of_session`. Exit: "sessions naming a goal" leaves zero.
+   *Built 2026-09-04, with item 2 in one pull request by the owner's
+   ruling.* The block asks only when `todo` is in the surface
+   (`prompt_block_for`), `todo`'s schema documents `charter:<id>`, and
+   `sessions appraise` now prints how many sessions cite a charter line
+   beside whether the charter carries a sensor at all — the exit is
+   measured against a live charter with a sensored line, not against this
+   machine's, which had none on the day.
 2. **The relevance gate** in `label_of` and `Readout`: label from sign and
    agency, controllability as refinement. Pure, unit-tested, no model. Exit:
    the 22 rejected drafts carry a word.
+   *Built 2026-09-04.* The word is `Affect::Distress` — OCC's
+   undifferentiated well-being emotion, refined by a probe into regret or
+   disappointment — and every negative the free readout assembles carries
+   it. Two consumers moved: the closure follow-up gate reads
+   `Affect::names_residue` (a `Distress` is a verdict, not residue), and
+   the live surfaces' word and the voice nudge now fire on a ceiling or a
+   steer. `Readout`'s shape did not change: the gate sits upstream, in
+   the channel arms, and the label it shows is the ungated one. The
+   appraiser-`Neutral` correction in `affect_of` (#96 round 3) was removed
+   with its four tests, its case gone.
 3. **`Situation` persisted on the reflection**, from `tools_before`,
    `trigger`, `error_type`, surface and workspace, plus a `scope` on `Rule`
    and the learner batched by region. No new model call. Exit: a rule

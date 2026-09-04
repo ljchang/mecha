@@ -121,7 +121,28 @@ fn edit() -> Result<()> {
 
 fn show_lines(charter: &Charter) {
     for (i, line) in charter.lines().iter().enumerate() {
-        println!("  {}. {} — {}", i + 1, line.id, line.text);
+        println!(
+            "  {}. {} — {}{}",
+            i + 1,
+            line.id,
+            line.text,
+            sensor_suffix(line)
+        );
+    }
+}
+
+/// ` · sensor outbox_age ≤ 24h` on a line that carries one, empty
+/// otherwise. The owner's own setpoint spelling, never a reading — this
+/// command shows what the run's prompt would carry plus the one thing it
+/// deliberately does not (the sensor never enters a prompt).
+fn sensor_suffix(line: &mecha_core::charter::CharterLine) -> String {
+    match &line.sensor {
+        Some(s) => format!(
+            "  · sensor {} · setpoint {}",
+            s.kind.wire(),
+            s.setpoint_text
+        ),
+        None => String::new(),
     }
 }
 
@@ -170,10 +191,21 @@ fn show(json: bool) -> Result<()> {
             "exists": path.is_file(),
             "over_budget": charter.over_budget(),
             "char_count": charter.char_count(),
-            "lines": charter.lines().iter().map(|l| serde_json::json!({
-                "id": l.id,
-                "text": l.text,
-            })).collect::<Vec<_>>(),
+            "lines": charter.lines().iter().map(|l| {
+                let mut line = serde_json::json!({
+                    "id": l.id,
+                    "text": l.text,
+                });
+                // Absent on a line without one, on the same shape the web
+                // settings endpoint serves.
+                if let Some(s) = &l.sensor {
+                    line["sensor"] = serde_json::json!({
+                        "kind": s.kind.wire(),
+                        "setpoint": s.setpoint_text,
+                    });
+                }
+                line
+            }).collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
@@ -201,7 +233,13 @@ fn show(json: bool) -> Result<()> {
 
     println!("{}\n", path.display());
     for (i, line) in charter.lines().iter().enumerate() {
-        println!("{}. {} — {}", i + 1, line.id, line.text);
+        println!(
+            "{}. {} — {}{}",
+            i + 1,
+            line.id,
+            line.text,
+            sensor_suffix(line)
+        );
     }
     if charter.over_budget() {
         println!(

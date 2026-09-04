@@ -2464,6 +2464,40 @@ the system prompt (no progressive disclosure, no tool), so it is in the cached
 prefix: `CHARTER_CHAR_BUDGET` is 2,000 and doctor reports crossing it rather
 than refusing, because the cost is prefix bytes on every request.
 
+**A line may carry a sensor, and the sensor never reaches a prompt**
+(`GOAL-SYSTEM-DESIGN.md` §11.1; parser, serialiser, template and the
+attribution join built 2026-09-04, the readings and the doctor's owner
+thresholds not yet). `[line.sensor]` is `kind` from a **closed enum**
+(`SensorKind`: `outbox_waiting`, `outbox_age`, `question_latency`,
+`request_closure`, `board_overdue`, `intervention_rate`, `cost`) and a
+`setpoint` the kind types (a duration like `24h`, a count, a rate like `20%`,
+dollars) — an unknown kind or a setpoint in the wrong unit refuses the whole
+document at load, which is the fail-closed direction the charter already has
+and, on purpose, a startup refusal on an older binary. Three things to keep
+when touching it:
+
+- **`prompt_block` renders a sensored line exactly as an unsensored one.** The
+  kind and setpoint are harness-only (containment 2: every exposed number
+  invites the model to reason about it); `mecha charter`, the TUI's detail
+  view and the web editor show them, the prompt never does. The web editor
+  *carries* a sensor through a save and does not compose one — a serialiser
+  that dropped the table would delete the owner's sensor on the next re-rank,
+  which is why `charter.rs`'s web-editor sample and
+  `website/scripts/check-charter-toml.mjs` pin a sensored line.
+- **Attribution is by id, never by delta** (containment 6). `appraisal::
+  of_session` maps each error's `Cite` to the store its pointer names —
+  `Draft` to the outbox kinds, `Question` to `question_latency`, `Request` to
+  `request_closure`, an intervention pointer to `intervention_rate` — and
+  attributes a goal-less error to the highest-ranked line watching that
+  store. The queue-delta arm maps to nothing: a level difference credits a
+  run for the owner clearing the outbox by hand. A run that named its own
+  goal keeps it. This is the first consumer line order has ever had.
+- **The block asks for `serves: charter:<id>` only when `todo` is in the
+  surface** (`prompt_block_for`, asked of `ToolsConfig::registers`, the same
+  predicate `with_builtins` registers by) — the skills block's rule, one block
+  over: a prompt naming a tool the surface lacks costs a turn on a call that
+  can only fail.
+
 **`Affect` is a pure function of the record and there is deliberately no way to
 report one.** A model that reads a run and says "frustrated" is an
 unfalsifiable, drifting self-report and an injection target — a fetched page
@@ -2565,9 +2599,23 @@ labels are not degenerate first. The rung 7 corpus found 119 of 120 sessions
 dimensions nothing measures": the label gates on `controllable`, a paid
 replay, and discards the sign every error carries. **The surfaces show
 `Valence`** — positive and negative sums kept apart, never netted — with the
-label as the second line; the free readout's label range is `Neutral` alone
-now that a ceiling reads as the owner's own limit rather than `World`
-agency. Inventing precedence until every run gets an interesting word
+label as the second line. **The label's gate is relevance, not
+controllability** (`GOAL-SYSTEM-DESIGN.md` §17.1, ruled 2026-09-03, built
+2026-09-04): relevance is decided by the channel arms in `of_session` — a
+pending draft, a follow-up, a Ctrl-C produce no error at all — and every
+error that exists is then named from its sign and agency alone, with a probe
+verdict *refining* the word rather than licensing it. So the free readout's
+label range is `Neutral`, `Distress` (the coarse word: a signed, attributed
+negative not yet split into regret or disappointment) and `Pride` (a positive
+against a sensored charter line); `Anger` is the appraiser's, and the probe
+words stay the probe's. The incident: twenty-two owner-rejected drafts all
+read `Neutral` because `label_of` gated on the one dimension only a paid
+replay fills. Two consumers moved with the ungating and are the traps for the
+next label: `tasks set`'s follow-up gate reads `Affect::names_residue`, not
+`!= Neutral`, because a `Distress` is a verdict with nothing to put on a
+board; and the voice nudge, the TUI badge word and the web chip word now fire
+on a live ceiling stop or steer, which the comments beside them used to call
+unreachable. Inventing precedence until every run gets an interesting word
 manufactures the signal the measurement exists to test for; showing the sign
 the record already holds does not.
 

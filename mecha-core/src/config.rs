@@ -658,6 +658,16 @@ pub struct ToolsConfig {
 }
 
 impl ToolsConfig {
+    /// Would `Registry::with_builtins` register the builtin called `name`?
+    /// `enabled` empty means all; `disabled` is applied after. The one
+    /// predicate, so a prompt block that says "call the `todo` tool" can
+    /// ask the same question the registry answers rather than a copy of it.
+    pub fn registers(&self, name: &str) -> bool {
+        let allowed = self.enabled.is_empty() || self.enabled.iter().any(|e| e == name);
+        let blocked = self.disabled.iter().any(|d| d == name);
+        allowed && !blocked
+    }
+
     /// Ceiling when nothing pins the budget: right for the wide-window
     /// frontier models the number was originally chosen against.
     const OUTPUT_BUDGET_MAX: usize = 24_000;

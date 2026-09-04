@@ -1201,9 +1201,9 @@ impl Tool for TodoTool {
          there, so include finished items with status `completed`. Exactly one item should \
          be `in_progress` at a time, and an item should be marked `completed` as soon as \
          it is done rather than in a batch at the end. If the work serves a task on \
-         the board, pass `serves` — and pass it on every write, like `items`, \
-         because both replace what was there. Skip this tool only for work of \
-         one or two steps."
+         the board or a line of the owner's charter, pass `serves` — and pass it on \
+         every write, like `items`, because both replace what was there. Skip this \
+         tool only for work of one or two steps."
     }
 
     fn input_schema(&self) -> Value {
@@ -1247,9 +1247,11 @@ impl Tool for TodoTool {
                 },
                 "serves": {
                     "type": "string",
-                    "description": "Optional. What this whole plan is working toward, as \
-                                    `task:<id>` for a task on the board. Pass it on every \
-                                    write, like `items` — it is replaced, not merged."
+                    "description": "Optional. What this whole plan is working toward: \
+                                    `task:<id>` for a task on the board, or `charter:<id>` \
+                                    for the charter line it serves (the ids are listed in \
+                                    the Charter section of your instructions). Pass it on \
+                                    every write, like `items` — it is replaced, not merged."
                 }
             },
             "required": ["items"]
