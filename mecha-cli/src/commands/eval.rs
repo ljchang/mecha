@@ -708,7 +708,14 @@ fn trial_of(
             turns: g.turns,
             usage: g.usage.clone(),
             tool_calls: g.tools_called.len() as u32,
-            tool_errors: g.tool_errors,
+            // `GradedCase` splits what `RunStats` folds, on opposite axes:
+            // its `tool_errors` is `is_error && !unknown` (denials in,
+            // invented tools apart), the run record's is
+            // `unknown || (is_error && !denied)`. Re-derived here so the
+            // row means what every row on the store means (found on
+            // review).
+            tool_errors: g.tool_errors.saturating_sub(g.tool_denied) + g.unknown_tools,
+            tool_denied: g.tool_denied,
             malformed_tool_args: g.malformed_tool_args,
             duration_secs: Some(g.elapsed_ms as f64 / 1000.0),
             ..Default::default()
@@ -1327,7 +1334,7 @@ mod tests {
                 "id": "c", "run": run, "passed": passed, "tags": ["t"],
                 "checks": [{"name": "contains", "passed": passed, "detail": ""}],
                 "turns": turns, "elapsed_ms": 500, "malformed_tool_args": 0,
-                "unknown_tools": 0, "tool_errors": 1, "tools_called": ["shell", "fs_read"],
+                "unknown_tools": 1, "tool_errors": 2, "tool_denied": 1, "tools_called": ["shell", "fs_read"],
                 "usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
                 "error": null, "text": "x"
             }))
@@ -1360,7 +1367,10 @@ mod tests {
         let s = t.stats.unwrap();
         assert_eq!(s.turns, 8);
         assert_eq!(s.tool_calls, 4);
-        assert_eq!(s.tool_errors, 2);
+        // Per run: 2 graded errors, of which 1 a denial, plus 1 invented
+        // tool → 2 run-record errors and 1 denial; two runs fold to 4 and 2.
+        assert_eq!(s.tool_errors, 4);
+        assert_eq!(s.tool_denied, 2);
         assert_eq!(s.duration_secs, Some(1.0));
         assert_eq!(t.status, mecha_core::experiment::TrialStatus::Done);
         let all_pass = [graded(1, true, 3), graded(2, true, 3)];
