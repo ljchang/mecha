@@ -587,6 +587,11 @@ async fn appraise(
                 Err(_) => (Vec::new(), true),
             },
         };
+    // The charter, for the sensored-line attribution (§11.1): a session
+    // that released a draft or parked a question is attributed to the line
+    // whose sensor watches that store. Same best-effort terms — unreadable
+    // costs the attribution and says so.
+    let (charter, charter_unreadable) = appraisal::load_charter();
 
     // Walked here rather than through `runlog::Corpus`, and the difference is
     // the unit: that reader yields one row per **run**, which is right for
@@ -661,6 +666,8 @@ async fn appraise(
                 frontdoor_unreadable,
                 reflexions: &reflexions,
                 learning_unreadable,
+                charter: charter.as_ref(),
+                charter_unreadable,
             },
             None,
         ) else {
@@ -795,6 +802,15 @@ async fn appraise(
     // counter did not survive its merge). Derived here so the next honest
     // read costs a flag, not an archaeology pass.
     let mut named_a_goal = 0usize;
+    // The two producers this sprint shipped, counted apart so each stays
+    // measurable (found on review — folded into one, the `serves:` ask
+    // could produce nothing and the readout would still go green on
+    // attribution): `named_a_goal` is what the plan said, `attributed` is
+    // what a sensored line gave a goal-less error, and
+    // `cite_a_charter_line` is either producer yielding a charter reference
+    // — the prerequisite §17.1 puts on the gate.
+    let mut attributed_by_sensor = 0usize;
+    let mut cite_a_charter_line = 0usize;
     // The dimensional readout, summed: how many sessions the record has
     // anything signed to say about, and how much either way. This is the
     // number `docs/APPRAISAL-RESEARCH.md` §1 found the label hiding.
@@ -804,6 +820,16 @@ async fn appraise(
         *labels.entry(enum_key(a.label)).or_default() += 1;
         if !a.goals.is_empty() {
             named_a_goal += 1;
+        }
+        if !a.attributed.is_empty() {
+            attributed_by_sensor += 1;
+        }
+        if a.goals
+            .iter()
+            .chain(a.attributed.iter())
+            .any(|g| matches!(g, mecha_core::goal::GoalRef::Charter(_)))
+        {
+            cite_a_charter_line += 1;
         }
         let v = appraisal::Valence::of(a);
         // Partial whether or not anything was signed: a silent reading
@@ -834,6 +860,15 @@ async fn appraise(
                 "sessions_unreadable": sessions_unreadable,
                 "tests_hidden": tests_hidden,
                 "named_a_goal": named_a_goal,
+                "attributed_by_sensor": attributed_by_sensor,
+                "cite_a_charter_line": cite_a_charter_line,
+                // The charter was consulted for attribution: `false` means
+                // it did not load, and every session's reading is partial
+                // for it.
+                "charter_read": !charter_unreadable,
+                // `null` when the charter did not load: unknown, not
+                // `false` — a dash is never zero.
+                "charter_has_sensors": charter.as_ref().map(|c| c.has_sensors()),
                 "labels": labels,
                 "valence": {
                     "signed_sessions": signed,
@@ -953,18 +988,26 @@ async fn appraise(
         .count();
     println!(
         "\n  {:.0}% carry no label — {unreachable} of the {} `Affect` variants need a \
-         charter, a notion of harm, a cross-run view, a prediction, or an \
-         exposure producer",
+         notion of harm, a cross-run view, a prediction, or an exposure producer",
         neutral as f64 / appraisals.len() as f64 * 100.0,
         appraisal::Affect::ALL.len(),
     );
     // The other number the corpus turns on: frustration and every
     // goal-attributed label are unreachable for a session that names no
     // goal, and `serves:` coverage has never been measurable from the
-    // instrument itself since #91's counter was lost in its merge.
+    // instrument itself since #91's counter was lost in its merge. The
+    // charter half says whether attribution could have happened at all —
+    // a zero beside a charter with no sensored line is not a finding about
+    // the sessions.
     println!(
-        "  {named_a_goal} of {} named a goal (`serves:`)",
-        appraisals.len()
+        "  {named_a_goal} of {} named a goal (`serves:`); {attributed_by_sensor} attributed \
+         to a charter line by a sensor; {cite_a_charter_line} cite a charter line either way{}",
+        appraisals.len(),
+        match (&charter, charter_unreadable) {
+            (_, true) => " — charter did not load, attribution off",
+            (Some(c), false) if !c.has_sensors() => " — no charter line carries a sensor",
+            _ => "",
+        }
     );
 
     println!("\n  signed errors, by channel");

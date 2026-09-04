@@ -688,12 +688,19 @@ async fn appraise_closure(
 /// owner gave up on got a "Revisit" task put right back on the board.
 fn worth_a_follow_up(new_status: &str, a: &mecha_core::appraisal::Appraisal) -> bool {
     // The label, or the typed residue predicate beside it. A ceiling used
-    // to reach this gate as the label `Anger`; it labels `Neutral` now (the
-    // owner's own limit — `of_session`'s ceiling arm) and reaches the gate
-    // through `cut_short` instead, which is the same closure named by what
-    // it actually is: a run the owner accepted with work cut off. No
-    // threshold over raw magnitudes is derived here.
-    new_status == "done" && (a.label != mecha_core::appraisal::Affect::Neutral || a.cut_short())
+    // to reach this gate as the label `Anger`; it reaches it through
+    // `cut_short` now (the owner's own limit — `of_session`'s ceiling arm),
+    // which is the same closure named by what it actually is: a run the
+    // owner accepted with work cut off. No threshold over raw magnitudes is
+    // derived here.
+    //
+    // `names_residue`, not `!= Neutral`: since §17.1 ungated the label, a
+    // rejected draft or a steer labels `Distress` — a verdict the owner
+    // already delivered, with nothing in it to put on a board — and the
+    // gate must not stage a "revisit" task from one, or the ungating would
+    // have turned every rejected-draft closure into a follow-up nobody
+    // asked for. The split lives on the variant, beside the word.
+    new_status == "done" && (a.label.names_residue() || a.cut_short())
 }
 
 /// Is `id` exactly one ordinary path component — never a root, a `..`,
@@ -885,6 +892,15 @@ fn appraise_session(
                 }
             },
         };
+    // The charter, on the same terms. Every error here already carries the
+    // task as its goal, so the sensored-line attribution fills nothing on
+    // this path today; it is passed so a future arm that names no goal is
+    // attributed the same way the corpus readout attributes it, and so an
+    // unreadable charter marks this reading partial like any other store.
+    let (charter, charter_unreadable) = mecha_core::appraisal::load_charter();
+    if charter_unreadable {
+        eprintln!("mecha: the charter did not load while appraising {task_id} — nothing is attributed to a charter line");
+    }
     let goal = mecha_core::goal::GoalRef::Task(task_id.to_string());
     Ok(Some(mecha_core::appraisal::of_session(
         session_id,
@@ -900,6 +916,8 @@ fn appraise_session(
             frontdoor_unreadable,
             reflexions: &reflexions,
             learning_unreadable,
+            charter: charter.as_ref(),
+            charter_unreadable,
         },
         end_taint,
         chrono::Utc::now().to_rfc3339(),
@@ -2632,6 +2650,7 @@ mod tests {
             id: "s1".into(),
             session_id: "s1".into(),
             goals: vec![mecha_core::goal::GoalRef::Task("task-1a2b3c4d".into())],
+            attributed: Vec::new(),
             state: None,
             errors: Vec::new(),
             label,
@@ -2725,7 +2744,11 @@ mod tests {
             "done",
             &appraisal(mecha_core::appraisal::Affect::Neutral)
         ));
-        let mut rejected = appraisal(mecha_core::appraisal::Affect::Neutral);
+        // Labelled the way `of_session` labels it since §17.1 — `Distress`,
+        // not `Neutral` — because that is the record this gate actually
+        // receives; a fixture pinned at `Neutral` would have stayed green
+        // while the live gate staged a follow-up on every rejected draft.
+        let mut rejected = appraisal(mecha_core::appraisal::Affect::Distress);
         rejected.errors = vec![mecha_core::appraisal::GoalError {
             goal: None,
             channel: mecha_core::appraisal::Channel::Edit,
@@ -2735,6 +2758,11 @@ mod tests {
             controllable: None,
             cite: mecha_core::appraisal::Cite::Draft("o1".into()),
         }];
+        assert_eq!(
+            mecha_core::appraisal::affect_of(&rejected),
+            mecha_core::appraisal::Affect::Distress,
+            "the fixture carries the label the derivation gives it"
+        );
         assert!(!worth_a_follow_up("done", &rejected));
     }
 
@@ -2760,19 +2788,30 @@ mod tests {
     }
 
     #[test]
-    fn every_non_neutral_closure_is_worth_a_follow_up() {
-        // The whole non-Neutral alphabet, from the enum's own list rather
-        // than a hand-picked subset — the first cut named Embarrassment
-        // (which has no producer) and omitted Regret/Disappointment (which
-        // probes produce), so the test's names disagreed with the
-        // reachability facts this branch itself establishes. The gate is a
-        // pure function of the label, so iterating everything is both the
-        // honest claim and the drift-proof one.
+    fn every_residue_naming_closure_is_worth_a_follow_up_and_a_verdict_is_not() {
+        // The whole alphabet, from the enum's own list rather than a
+        // hand-picked subset — the first cut named Embarrassment (which has
+        // no producer) and omitted Regret/Disappointment (which probes
+        // produce), so the test's names disagreed with the reachability
+        // facts this branch itself establishes. The gate is a pure function
+        // of the label's `names_residue`, so iterating everything is both
+        // the honest claim and the drift-proof one; the two words that name
+        // a verdict and no residue are the ones that must not stage.
         for label in mecha_core::appraisal::Affect::ALL {
-            if label == mecha_core::appraisal::Affect::Neutral {
-                continue;
-            }
-            assert!(worth_a_follow_up("done", &appraisal(label)), "{label:?}");
+            let stages = worth_a_follow_up("done", &appraisal(label));
+            // A verdict with nothing to put on a board, or a positive
+            // word: neither stages. `Pride` has a producer since §11.1's
+            // attribution, and a follow-up for a run that served a line
+            // well would override the owner's acceptance one sign over
+            // (found on review).
+            let no_residue = matches!(
+                label,
+                mecha_core::appraisal::Affect::Neutral
+                    | mecha_core::appraisal::Affect::Distress
+                    | mecha_core::appraisal::Affect::Pride
+                    | mecha_core::appraisal::Affect::Excitement
+            );
+            assert_eq!(stages, !no_residue, "{label:?}");
         }
     }
 

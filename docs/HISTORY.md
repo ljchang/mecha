@@ -3583,6 +3583,56 @@ installed and restarted at 18:04 the same day, once a peer's inference run
 had released the model server, and the skill's step-1b probe confirmed the
 new binary from the served page (a `304` naming its `ETag`, not a bare one).
 
+**2026-09-04 — the goal system's first sprint: a run can reference the
+charter, and every negative has a word.** `GOAL-SYSTEM-DESIGN.md` §17.6
+items 1 and 2, in one pull request by the owner's ruling (#162,
+`feat/goal-ref-relevance`, stacked on the rulings themselves, #161 —
+**unmerged at the time of writing**, review loop closed at `9fc79ee` after
+four passes). Item 1, the producers §17.1 makes its prerequisite:
+`charter::prompt_block_for` asks for a `serves: charter:<id>` cite on the
+`todo` tool, only when `todo` is in the surface (`ToolsConfig::registers`,
+the predicate `Registry::with_builtins` now shares); `todo`'s schema
+documents `charter:<id>`; and §11.1's sensored line landed as one change —
+`[line.sensor]` on `CharterLine`, `SensorKind` a closed enum of **five**
+kinds each with a reader (`outbox_waiting`, `outbox_age`,
+`question_latency`, `request_closure`, `intervention_rate`; the design's
+`board_overdue` and `cost` wait for the readings phase, because a kind that
+parses and does nothing is the `deny_unknown_fields` failure one field
+down), a setpoint typed by kind and refused at load in the wrong unit, two
+lines with one kind refused naming both, the web serialiser carrying a
+sensor through a save (`charter-toml.js`, pinned by the shared web-editor
+sample and `check-charter-toml.mjs`), the template's commented example, and
+the attribution join in `appraisal::of_session` — `sensor_kinds_for` maps
+each `Cite` to the store its pointer names, the highest-ranked line with a
+sensor on it is attributed where the run named no goal, onto the error and
+into `Appraisal::attributed` — kept apart from `goals`, so the `serves:` ask
+and the attribution stay separately measurable — and the queue delta maps
+to nothing (containment 6). `sessions appraise` prints named, attributed and
+either-way counts beside whether the charter carries a sensor at all. Item 2, the gate: `label_of` names every negative from sign and
+agency — `Affect::Distress`, OCC's undifferentiated well-being emotion,
+where a private `Own`/`Owner` negative used to read `Neutral` until a paid
+replay filled `controllable`; a probe refines it to regret or
+disappointment. `Pride` gained its first producer and then, over three
+review passes, its three fences: a charter reference is kept only if the
+loaded charter contains the line (a plan's `charter:no-such-line` plus one
+clean send had derived `Pride` on a machine with no charter); the positive
+arm is an allow-list on the pointer — a draft sent unchanged or a question
+answered and finished — so the queue delta and the appraiser's own positive
+verdict earn nothing; and `Affect::names_residue` is false for `Distress`,
+`Pride` and `Excitement`, so the closure follow-up gate never stages a
+"revisit" task from a verdict or a compliment. The appraiser-`Neutral`
+correction in `affect_of` (#96 round 3) went with its case. The live
+surfaces' word and the voice `cfg_weight` nudge now fire on a ceiling stop
+or a steer. Measured on the branch: mecha-core 1288 tests, mecha-cli 730;
+the test-list diff against `origin/main` was exactly the intended set
+(four appraiser-correction tests removed, six pins renamed, twenty-two
+added). Three doc corrections rode with it: §11.1's containment 7 says
+"startup refusal" and `setup.rs` in fact degrades an unloadable charter to an
+un-chartered run with one stderr line, so `mecha doctor` is the containment
+and the `update` skill the fix; the rung 10 table row that called `Pride`
+open; and `ARCHITECTURE.md`'s "label range is `Neutral` alone". Nothing
+installed or restarted.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -4323,6 +4373,29 @@ read from the process environment is shared by every test in the binary,
 whatever a mutex says**; isolate it in a child process (`current_exe()` with
 `--exact --ignored` on a probe test) or do not test it through the
 environment at all.
+
+**2026-09-04 — widening a derived value's range turned a dormant gate live,
+and a gate defined on a goal alone let every channel that copies the goal
+earn the word.** Two shapes from one pull request (#162), both caught by the
+review workflow rather than the suite. First: ungating `label_of` meant a
+rejected draft labelled `Distress` instead of `Neutral`, and the closure
+follow-up gate read `label != Neutral`, so every rejected-draft closure would
+have staged a "revisit" task — the exact override of the owner's decision the
+gate's own doc forbids — while its tests stayed green, because they
+constructed the label directly at `Neutral`. The mirror image of the
+2026-09-02 trap below: there a narrowed range made the gate dead, here a
+widened one made it fire on a case it had never seen. **When a derived
+value's range moves in either direction, `grep` every consumer that compares
+it to the old degenerate value; each one is a gate that was leaning on the
+degeneracy.** Second: `Pride` was gated on `(goal, agency)`, and three
+producers copy the run's named goal onto a positive error — the delivered
+draft it was meant for, the queue-delta arm (a global level difference), and
+the quarantined appraiser (a model's own verdict). The first fix checked the
+goal against the charter, which closed the fabricated-id hole and left the
+other two open, because neither needed a fabricated id. **A label that must
+never be self-reported is gated on the pointer, as an allow-list: name the
+channels that earn the word, so a future producer has to opt in rather than
+being admitted by sharing a field.**
 
 **2026-09-02 — changing a label's producer made a gate dead code, silently.**
 A ceiling stopped reading as `Agency::World`/`Anger` (the owner's own limit is

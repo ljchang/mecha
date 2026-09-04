@@ -266,6 +266,21 @@ impl CharterModal {
                 Style::new().fg(Color::White),
             ));
         }
+        // The sensor is shown where the owner reads the line in full, never
+        // in the list row and never in a prompt: it is the owner's own
+        // setpoint, in their own spelling, so this is the one surface that
+        // says a line carries one at all.
+        if let Some(sensor) = &line.sensor {
+            body.push(Line::raw(""));
+            body.push(Line::styled(
+                format!(
+                    "sensor: {} · setpoint {} — attributes runs that touched what it watches to this line",
+                    sensor.kind.wire(),
+                    sensor.setpoint_text
+                ),
+                Style::new().fg(Color::DarkGray),
+            ));
+        }
         let area = super::centered(
             frame.area(),
             84,
@@ -301,6 +316,7 @@ mod tests {
         CharterLine {
             id: id.into(),
             text: text.into(),
+            sensor: None,
         }
     }
 

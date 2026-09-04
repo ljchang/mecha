@@ -115,7 +115,34 @@ text = "Tell me the truth early, especially when it disappoints."
 [[line]]
 id = "protect-my-attention"
 text = "Do not put something in front of me that I could not act on today."
+
+[[line]]
+id = "answer-what-waits-on-me"
+text = "Keep what waits on me short: a staged draft should not sit for days."
+[line.sensor]
+kind = "outbox_age"
+setpoint = "24h"
 ```
+
+**A line may carry a sensor.** An observable mecha reads from its own stores,
+with a setpoint you wrote saying what the line means by "short" or "few". The
+kinds are a closed set — `outbox_waiting`, `outbox_age`, `question_latency`,
+`request_closure`, `intervention_rate` — and each fixes its setpoint's unit (a
+duration like `24h`, a whole number, a rate like `20%`); a kind mecha does not
+know, or a setpoint in the wrong unit, refuses the whole file at load and says
+which line. Every kind listed does something today; two the design names
+(`board_overdue`, `cost`) wait until a reading exists for them, rather than
+being accepted and ignored. One consequence of the refusal to know before you
+author a sensor: a machine still on an older release does not refuse to
+start — it runs with **no charter at all**, with one stderr line, until
+`mecha doctor` reports it. Update every machine first. What a sensor buys today is
+**attribution**: a run that released a draft, parked a question or triaged a
+request is appraised *against that line*, with no plan and no `serves:`, which
+is how an ordinary run comes to reference the charter at all — and how a draft
+you sent unchanged can label `pride` — a delivery against the line, never a number that merely moved. The sensor's kind and setpoint never
+enter a prompt; the line's text does, exactly as an unsensored line's does. The
+web editor shows a sensor beside its line and carries it through a re-rank; to
+add or change one, edit the TOML.
 
 **Order is rank, and there is no priority field.** Value conflict — *protect the
 owner* against *don't let a colleague down* — is the measured cause of goal
@@ -203,7 +230,7 @@ A `GoalRef` is a **pointer, never a copy**, and renders on the wire as
 
 | Kind | Points at |
 |---|---|
-| `charter:<line-id>` | A standing commitment — a `[[line]]`'s own `id`. |
+| `charter:<line-id>` | A standing commitment — a `[[line]]`'s own `id`. Named by the plan's `serves:` (the charter block asks for it when the `todo` tool is in the surface), or attributed after the fact by a line's sensor. |
 | `task:<uid>` | A task on [the graph's board](/docs/reference/cli#tasks), by the graph's uid. |
 | `setpoint:<name>` | A homeostatic setpoint. Named so the wire format survives its arrival; no store yet. |
 
@@ -377,9 +404,11 @@ mecha sessions appraise --days 30
 
   label
     anger                1  (1%)
-    neutral            117  (99%)
+    distress            17  (14%)
+    neutral            100  (85%)
 
-  99% carry no label — 5 of the 10 `Affect` variants need a charter, a notion of harm, a cross-run view, a prediction, or an exposure producer
+  85% carry no label — 4 of the 11 `Affect` variants need a notion of harm, a cross-run view, a prediction, or an exposure producer
+  18 of 118 named a goal (`serves:`, or a sensored charter line); 0 cite a charter line — no charter line carries a sensor
 
   signed errors, by channel
     counter             14
@@ -409,13 +438,13 @@ index with nothing saying which run held it, and an outbox item records the
 session that drafted it — so attributing either per-run would multiply both
 channels by the number of times the session was resumed.
 
-### The finding: most runs have no label
+### The finding: most runs had no label, and why the gate moved
 
 On the corpus this was built against, **119 of 120 sessions labelled
-`neutral`**, and the reason is structural rather than a tuning problem. The free
-readout's label can only ever be *neutral*: every negative it assembles is
-self- or owner-caused with `controllable` unfilled, which is the one branch of
-the derivation with no word for it; and no counter kind fires twice in one
+`neutral`**, and the reason was structural rather than a tuning problem. The
+free readout's label could only ever be *neutral*: every negative it assembles
+is self- or owner-caused with `controllable` unfilled, which was the one branch
+of the derivation with no word for it; and no counter kind fires twice in one
 session, so frustration's repetition cannot occur.
 
 That is the measurement the rung exists to produce, learned cheaply here rather
@@ -424,14 +453,34 @@ until every run gets an interesting word — manufactures exactly the signal thi
 was meant to test for.
 
 **The label is not the readout.** A second look at the same corpus found the
-reason narrower still: the label gates on the most expensive dimension it has
-(a paid replay fills `controllable`) and discards the cheapest — the sign,
+reason narrower still: the label gated on the most expensive dimension it has
+(a paid replay fills `controllable`) and discarded the cheapest — the sign,
 which every error carries. Twenty-two drafts the owner had rejected all read
-`neutral`. So every surface now shows the **valence** first: the positive and
+`neutral`. So every surface shows the **valence** first: the positive and
 negative magnitudes summed separately, never netted (`+1.0 −2.0`), with the
 label beside it when the derivation earns one. On the TUI and in a Slack
 thread that is a number; on the web it is a small two-sided bar. Silent runs —
 nothing signed either way — still show nothing.
+
+**The gate is relevance, not controllability.** The owner then ruled that an
+appraisal's first check is whether the outcome bears on a live goal, that the
+label derives from sign and agency, and that controllability *refines* a word
+once a replay has filled it and is never a precondition for one. Every
+computational appraisal model reviewed puts its one gate at relevance and then
+labels from two variables; a product over unfilled dimensions collapses, and the
+old derivation was that product. Relevance is decided by the channels
+themselves — a pending draft, a follow-up question, a Ctrl-C produce no error
+at all — and every error that exists is then named: `anger` where nothing here
+caused it, `embarrassment` where it reached somebody, and otherwise
+**`distress`**, the coarse word for a signed, attributed error that a probe has
+not yet split into `regret` or `disappointment`. The twenty-two rejected drafts
+carry a word. The cost is stated rather than hidden: `distress` is honest about
+not knowing whether an alternative existed, and a rejected draft labelled
+`distress` may mean only that the owner wanted something else — the label says a
+verdict landed, and a replay says whose it was. One consumer changed with it: a
+task closure stages a follow-up only for a label that names *residue*, and
+`distress` does not — it is a verdict the owner already delivered, with nothing
+in it to put on a board.
 
 ## The two paid passes
 
