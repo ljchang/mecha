@@ -463,7 +463,14 @@ async fn run_stage(
         std::fs::create_dir_all(&workspace)
             .with_context(|| format!("creating {}", workspace.display()))?;
         let mut cmd = tokio::process::Command::new(mecha);
-        cmd.args(&argv).current_dir(&workspace);
+        // Explicit, as the run child's is: `[tools] workspace` rides into
+        // the trial home's config verbatim and would beat the cwd, jailing
+        // a stage's probes to the operator's project directory instead
+        // (found on review).
+        cmd.args(&argv)
+            .arg("--workspace")
+            .arg(&workspace)
+            .current_dir(&workspace);
         cmd.env_clear();
         for (k, v) in mecha_core::sandbox::Sandbox::child_env(passthrough) {
             cmd.env(k, v);

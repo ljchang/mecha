@@ -3107,7 +3107,8 @@ comparison over a chosen set**, with the design written before the run.
   verdict carries its stage health and the control's, a failed,
   interrupted or unreadable stage line — or one in a status this build
   cannot read; unknown is never clean — on either side holds the verdict
-  at *propose*, and a failed line a later `done` line supersedes for the
+  at *propose* in both directions (a treatment not known to have
+  occurred can no more be refuted than confirmed), and a failed line a later `done` line supersedes for the
   same stage is the rerun's success, not a broken stage
   (a trial that cannot answer the metric drops its pair; a stage that
   did not run cannot claim its effect), and the export carries every
