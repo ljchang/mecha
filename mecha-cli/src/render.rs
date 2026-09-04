@@ -185,9 +185,15 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                         // cutting the run short against the user's wishes, and
                         // is worth telling them how to prevent.
                         let line = match outcome.stop_cause {
-                            StopCause::Interrupted => {
+                            // Nobody's ceiling: a person, a parked question,
+                            // or the process ending. Reported plainly, no fix.
+                            StopCause::Interrupted
+                            | StopCause::Parked
+                            | StopCause::Stopped
+                            | StopCause::Shutdown => {
                                 format!(
-                                    "interrupted after {}",
+                                    "{} after {}",
+                                    outcome.stop_cause.describe(),
                                     mecha_core::agent::turns_phrase(outcome.turns)
                                 )
                             }
@@ -205,7 +211,11 @@ pub fn spawn(mut rx: UnboundedReceiver<AgentEvent>, opts: RenderOpts) -> JoinHan
                                     // runaway; bounding the thinking is what
                                     // helps. See scripts/start-moe-mtp.sh.
                                     StopCause::NoOutput => "the model reasoned past its per-turn budget without answering; cap its thinking (llama-server: --reasoning-budget) or retry",
-                                    StopCause::Completed | StopCause::Interrupted => "",
+                                    StopCause::Completed
+                                    | StopCause::Interrupted
+                                    | StopCause::Parked
+                                    | StopCause::Stopped
+                                    | StopCause::Shutdown => "",
                                 };
                                 format!(
                                     "{} after {} — the answer may be incomplete ({fix})",

@@ -997,16 +997,34 @@ async fn run_agent(
     // that says what happened.
     let token = stop.map(CancellationToken::child_token).unwrap_or_default();
     let cx = RunContext::clone(prepared.agent.context()).with_cancel(token.clone());
+    // The three ways a trigger run ends early say which they are: the
+    // wall-clock limit and the daemon's own stop (a SIGTERM to the
+    // scheduler, reaching this run through the child token above) are the
+    // process's, not the owner's word, so they record `Shutdown`; a cancel
+    // by request is the owner and records `Stopped`. The daemon's stop
+    // arrives on the *parent* token with no reason of its own, so the timer
+    // task watches it and says `Shutdown` before the child fires — otherwise
+    // a service restart mid-run recorded the unknown-which `Interrupted`,
+    // indistinguishable from a cancel nobody classified (found on review).
+    let handle = cx.cancel_handle().expect("with_cancel just set it");
     let limit = t
         .timeout_duration()
         .to_std()
         .unwrap_or(std::time::Duration::from_secs(1200));
     let timer = {
-        let token = token.clone();
+        let handle = handle.clone();
+        let parent = stop.cloned();
         tokio::spawn(async move {
+            let shutdown = async {
+                match &parent {
+                    Some(p) => p.cancelled().await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
-                _ = tokio::time::sleep(limit) => token.cancel(),
-                _ = token.cancelled() => {}
+                _ = tokio::time::sleep(limit) => handle.cancel(mecha_core::agent::CancelReason::Shutdown),
+                _ = shutdown => handle.cancel(mecha_core::agent::CancelReason::Shutdown),
+                _ = handle.cancelled() => {}
             }
         })
     };
@@ -1017,17 +1035,17 @@ async fn run_agent(
     // there would stop the whole scheduler. Two seconds is well under human
     // patience and costs one `stat` per tick.
     let canceller = {
-        let token = token.clone();
+        let handle = handle.clone();
         let store = TriggerStore::open_default()?;
         let name = t.name.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    _ = token.cancelled() => return,
+                    _ = handle.cancelled() => return,
                     _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
                         if store.cancel_requested(&name) {
                             eprintln!("mecha: trigger `{name}` cancelled by request");
-                            token.cancel();
+                            handle.cancel(mecha_core::agent::CancelReason::Stopped);
                             return;
                         }
                     }

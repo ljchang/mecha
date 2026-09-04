@@ -1239,9 +1239,11 @@ const TOOL_ERROR_RATE: f64 = 0.25;
 /// calls are different denominators: twenty runs can hold four calls.
 const RUNS_MIN_CALLS: u64 = 20;
 
-/// The share of runs the *harness* cut short. `Interrupted` is excluded from
-/// the numerator by [`cut_short`]: a person pressing Ctrl-C is the system
-/// working, and counting it would make an attentive user look like a problem.
+/// The share of runs the *harness* cut short. The cancellations — `Stopped`,
+/// `Parked`, `Shutdown`, and the older unknown-which `Interrupted` — are
+/// excluded from the numerator by [`cut_short`]: a person pressing Ctrl-C is
+/// the system working, and counting it would make an attentive user look
+/// like a problem.
 const CUT_SHORT_RATE: f64 = 0.25;
 
 /// Did the harness end this run? One definition, on [`crate::agent::StopCause`],

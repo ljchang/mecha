@@ -495,9 +495,7 @@ impl crate::tool::ask::Asker for ParkingAsker {
         // Only stop if it actually landed. A question that failed to store
         // leaves the run alive to report, per `record`.
         if self.parked().len() > before {
-            if let Some(cancel) = &ctx.cancel {
-                cancel.cancel();
-            }
+            ctx.cancel_run(crate::agent::CancelReason::Parked);
         }
         Some(answer)
     }
@@ -625,9 +623,11 @@ mod tests {
         let asker = ParkingAsker::new(std::sync::Arc::clone(&s), "sess-7", Some("task-3".into()));
 
         let cancel = tokio_util::sync::CancellationToken::new();
+        let reason = std::sync::Arc::new(std::sync::Mutex::new(None));
         let ctx = ToolCtx {
             workspace: PathBuf::from("/w/a"),
             cancel: Some(cancel.clone()),
+            cancel_reason: Some(std::sync::Arc::clone(&reason)),
             ..Default::default()
         };
 
@@ -635,6 +635,13 @@ mod tests {
         let answer = asker.ask_in(&ctx, "Which address?", &[]).await.unwrap();
 
         assert!(cancel.is_cancelled(), "the run must end, not wait");
+        // And say why: the outcome records `Parked`, not the unknown-which
+        // `Interrupted` a bare token cancel would leave (§3.3).
+        assert_eq!(
+            *reason.lock().unwrap(),
+            Some(crate::agent::CancelReason::Parked),
+            "a park names itself"
+        );
         assert_eq!(asker.parked().len(), 1);
         let q = s.get(&asker.parked()[0]).unwrap();
         assert_eq!(q.question, "Which address?");

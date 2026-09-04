@@ -700,6 +700,7 @@ mod tests {
 
     fn stats(calls: u32, errors: u32, ended_failed: bool, cause: StopCause) -> RunStats {
         RunStats {
+            duration_secs: None,
             homeostat: None,
             context_overflows: None,
             boredom_notices: None,

@@ -183,6 +183,19 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_compact_validate: bool,
 
+    /// Compact on the reported size only, never on the forecast of the next
+    /// request, even if `[agent] predictive_compaction` is set. The
+    /// threshold stays. An experiment's lever; forced off by `mecha eval`
+    /// with the rest of the set.
+    #[arg(long, global = true)]
+    pub no_predictive_compaction: bool,
+
+    /// Don't carry a tool's state (the plan) across a compaction, even if
+    /// `[agent] carried_state` is set. An experiment's lever; forced off by
+    /// `mecha eval` with the rest of the set.
+    #[arg(long, global = true)]
+    pub no_carried_state: bool,
+
     /// Don't route any tools through the outbox — configured [outbox] tools
     /// execute directly under the usual gates instead of being staged.
     #[arg(long, global = true)]

@@ -615,6 +615,13 @@ pub struct RunStats {
     /// reader that is counting rather than reconstructing.
     #[serde(default)]
     pub taint: Taint,
+    /// Wall-clock seconds the run took, from `RunOutcome::duration_secs`.
+    /// `None` on a row written before the field existed — never zero, a
+    /// run that took no time is not a thing this store has seen — and on
+    /// a fold where any row lacked it, because a partial sum understates
+    /// and would read as a shorter run rather than an unknown one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<f64>,
 }
 
 impl RunStats {
@@ -688,6 +695,12 @@ impl RunStats {
         // doctor's rule for the same value: unrecorded is unknown, never
         // assumed complete.
         self.stop_cause = other.stop_cause;
+        // Unlike the counters below, *not* `or`: a sum missing one run's
+        // time is a shorter episode, not a partly known one.
+        self.duration_secs = match (self.duration_secs, other.duration_secs) {
+            (Some(a), Some(b)) => Some(a + b),
+            _ => None,
+        };
         self.exhausted = other.exhausted;
         self.ended_on_failed_call = other.ended_on_failed_call;
         self.tool_calls += other.tool_calls;
@@ -774,6 +787,7 @@ impl RunStats {
             stop_cause: Some(o.stop_cause),
             exhausted: o.exhausted,
             ended_on_failed_call: o.ended_on_failed_call,
+            duration_secs: o.duration_secs,
             tool_calls: o.tool_calls.len() as u32,
             // `denied` is excluded, and the exclusion has to be written out: a
             // denied trace carries `is_error: true` too, so filtering on
@@ -1015,6 +1029,20 @@ pub struct Transcript {
     /// of the one in hand — rewrites nothing, so its positions stay exact;
     /// see the `Rewrite` arm in [`Session::read`].
     pub config_positions: Vec<usize>,
+    /// Every run's outcome, in order, and the message count when each was
+    /// written — `config_positions`' shape, for the same reason: a per-run
+    /// fact (this run was stopped) has to be placed among the messages to
+    /// say what followed it (a re-prompt, or nothing). `episode` is the fold
+    /// of these. Repaired by the `Rewrite` arm the way `config_positions`
+    /// is, with one difference in the summarising case: a config position
+    /// falls back to zero because the config in flight is still a fair
+    /// answer for the rewritten head, but an outcome's *place* among
+    /// messages that no longer exist has no fair answer — so it becomes
+    /// `None`, and a reader placing stops skips it rather than searching a
+    /// list the stop was never in (found on review: the old positions read
+    /// every pre-compaction stop as an abandonment cited past the end).
+    pub outcomes: Vec<RunStats>,
+    pub outcome_positions: Vec<Option<usize>>,
     /// Every recorded outcome, folded into the episode the session describes.
     pub episode: Option<RunStats>,
     /// The taint checkpoints, positioned against the loaded messages — the
@@ -1289,6 +1317,7 @@ impl Session {
         let mut configs = Vec::new();
         let mut config_positions: Vec<usize> = Vec::new();
         let mut outcomes = Vec::new();
+        let mut outcome_positions: Vec<Option<usize>> = Vec::new();
         let mut meta = None;
         let mut title = None;
         let mut messages = Vec::new();
@@ -1384,8 +1413,12 @@ impl Session {
                         for p in &mut config_positions {
                             *p = (*p).min(m.len());
                         }
+                        for p in outcome_positions.iter_mut().flatten() {
+                            *p = (*p).min(m.len());
+                        }
                     } else {
                         config_positions.fill(0);
+                        outcome_positions.fill(None);
                     }
                     messages = m;
                     taint_checkpoints.clear();
@@ -1403,7 +1436,10 @@ impl Session {
                     config_positions.push(messages.len());
                     configs.push(c);
                 }
-                Ok(Record::Outcome(o)) => outcomes.push(o),
+                Ok(Record::Outcome(o)) => {
+                    outcome_positions.push(Some(messages.len()));
+                    outcomes.push(o);
+                }
                 Ok(Record::Summary { .. }) => {}
                 Err(e) => tracing::warn!(error = %e, "skipping malformed transcript line"),
             }
@@ -1428,7 +1464,9 @@ impl Session {
             convo: Conversation::resumed(messages, taint),
             configs,
             config_positions,
-            episode: RunStats::fold(outcomes),
+            episode: RunStats::fold(outcomes.iter().cloned()),
+            outcomes,
+            outcome_positions,
             taint_timeline: TaintTimeline {
                 checkpoints: taint_checkpoints,
             },
@@ -1702,6 +1740,7 @@ mod homeostat_record_tests {
     #[test]
     fn the_conditions_a_run_happened_under_reach_its_record() {
         let bare = || crate::agent::RunOutcome {
+            duration_secs: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,
@@ -2244,6 +2283,89 @@ mod tests {
         assert!(wire.contains(r#""levers_off":["boredom"]"#), "{wire}");
     }
 
+    /// `Transcript::outcomes` / `outcome_positions`: every run's outcome, in
+    /// order, each with the message count when it was written — the
+    /// per-run placement the appraisal's stop reading needs, since the
+    /// folded `episode` keeps only the *last* run's stop cause.
+    #[test]
+    fn read_keeps_every_outcome_with_its_position() {
+        use crate::agent::StopCause;
+        let dir = tmpdir();
+        let session = Session::create(&dir, meta_with_id("20260101T000000-stops")).unwrap();
+        session
+            .append_messages(&[Message::user("first"), Message::assistant(vec![])])
+            .unwrap();
+        let stopped = RunStats {
+            stop_cause: Some(StopCause::Stopped),
+            duration_secs: Some(1.5),
+            ..Default::default()
+        };
+        session.append(&Record::Outcome(stopped)).unwrap();
+        session
+            .append_messages(&[Message::user("again"), Message::assistant(vec![])])
+            .unwrap();
+        let done = RunStats {
+            stop_cause: Some(StopCause::Completed),
+            duration_secs: Some(2.0),
+            ..Default::default()
+        };
+        session.append(&Record::Outcome(done)).unwrap();
+
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(t.outcomes.len(), 2);
+        assert_eq!(t.outcome_positions, vec![Some(2), Some(4)]);
+        assert_eq!(t.outcomes[0].stop_cause, Some(StopCause::Stopped));
+        let episode = t.episode.unwrap();
+        assert_eq!(
+            episode.stop_cause,
+            Some(StopCause::Completed),
+            "the fold keeps the last"
+        );
+        assert_eq!(episode.duration_secs, Some(3.5), "and sums the clock");
+
+        // A summarising compaction replaces the head: the earlier outcomes'
+        // places are gone and read `None`, never an index into a list they
+        // were not recorded against (found on review). A later outcome is
+        // placed in the new list.
+        session
+            .append(&Record::Rewrite {
+                messages: vec![Message::user("summary of everything so far")],
+            })
+            .unwrap();
+        session
+            .append(&Record::Outcome(RunStats {
+                stop_cause: Some(StopCause::Completed),
+                ..Default::default()
+            }))
+            .unwrap();
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(t.outcome_positions, vec![None, None, Some(1)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fold missing one run's time is unknown, not shorter: `None`, never
+    /// the partial sum — the opposite of the `or` the counters use, and on
+    /// purpose. And an old row with no field reads `None`, not zero.
+    #[test]
+    fn a_duration_fold_missing_a_run_is_unknown_not_shorter() {
+        let a = RunStats {
+            duration_secs: Some(4.0),
+            ..Default::default()
+        };
+        let b = RunStats::default();
+        assert_eq!(RunStats::fold([a.clone(), b]).unwrap().duration_secs, None);
+        let c = RunStats {
+            duration_secs: Some(1.0),
+            ..Default::default()
+        };
+        assert_eq!(RunStats::fold([a, c]).unwrap().duration_secs, Some(5.0));
+        let old: RunStats = serde_json::from_str(r#"{"turns":3}"#).unwrap();
+        assert_eq!(old.duration_secs, None);
+        assert!(!serde_json::to_string(&old)
+            .unwrap()
+            .contains("duration_secs"));
+    }
+
     #[test]
     fn run_configs_come_back_in_order_one_per_attach() {
         let dir = tmpdir();
@@ -2608,6 +2730,7 @@ mod tests {
             staged,
         };
         let outcome = RunOutcome {
+            duration_secs: None,
             homeostat: None,
             context_overflows: 0,
             boredom_notices: 0,
@@ -2675,6 +2798,7 @@ mod tests {
 
         let outcome =
             |turns: u32, calls: usize, errored: bool, ended_failed: bool, cause| RunOutcome {
+                duration_secs: None,
                 homeostat: None,
                 context_overflows: 0,
                 boredom_notices: 0,
@@ -2778,6 +2902,7 @@ mod tests {
         use crate::message::StopReason;
 
         let mut incomplete = RunOutcome {
+            duration_secs: None,
             homeostat: None,
             context_overflows: 0,
             boredom_notices: 0,
@@ -3182,6 +3307,7 @@ mod tests {
             staged: false,
         };
         let o = crate::agent::RunOutcome {
+            duration_secs: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,

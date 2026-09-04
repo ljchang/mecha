@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Two more levers: `predictive_compaction` and `carried_state`**
+  (`[agent] predictive_compaction`, `[agent] carried_state`,
+  `--no-predictive-compaction`, `--no-carried-state`). The two in-run
+  dispositions the lever set could not name because nothing could switch
+  them off: the compaction *trigger* firing on the forecast of the next
+  request (the threshold stays — a lever removes a disposition above a
+  structural check, never the check — and so do the predictor's other
+  uses, the per-turn tool-output budget and the headroom the model is
+  shown), and a tool's state riding verbatim across a compaction. Both
+  ship on, both are recorded on `RunConfig::levers_off`, and `mecha eval`
+  forces both off with the rest of the set. The appraiser's pass stays out
+  of the set — it has no in-run site — and `sensors_in_brief` waits for the
+  trial manifest, being a stage lever rather than a run's.
+
+- **A cancelled run records what ended it.** `StopCause` gains `Parked`
+  (a question put to the owner), `Stopped` (a person: Ctrl-C, a stop
+  button, `tasks stop`, a trigger cancelled by request) and `Shutdown`
+  (the process or a limit: SIGTERM, a facade shutdown, a trigger's
+  wall-clock ceiling). The canceller says which through
+  `agent::CancelReason`, carried beside the token on `RunContext` and on
+  `ToolCtx`; a bare token cancel still records `Interrupted`, which is now
+  read as unknown-which and never as any of the three. The appraisal reads
+  `Stopped` as the owner's verdict on the intervention channel — a stop
+  followed by a re-prompt is a redirect cited at the re-prompt, a stop
+  never resumed is an abandonment — and reads the other three as nothing.
+  `docs/APPRAISAL-RESEARCH.md` §3.3, measured in §1.7.2 as the largest
+  single move available to the readout.
+- **`RunStats::duration_secs`** — the run's wall-clock seconds, from
+  `run_in`'s entry to its return; `None` on rows written before it and on
+  any fold missing a run's time. §1.7.4 found wall clock the best predictor
+  of failure on the kept Terminal-Bench trials and on no record.
+
 - **The lever set** (`mecha_core::harness::Lever`, `RunConfig::levers_off`;
   `docs/EXPERIMENT-DESIGN.md` Part II, *The switch set*, on PR #156). The
   closed on/off half of the override
