@@ -452,11 +452,13 @@ async fn measure(
 
     eprintln!(
         "\nmeasuring `{}` over {} selected + {} held-out episode(s) × 2 arms \
-         (seed {}, {} unusable session(s) passed over)",
+         (seed {}, {} of the selection ranked by a charter line, {} unusable session(s) \
+         passed over)",
         change.spec(),
         draw.selection.len(),
         draw.holdout.len(),
         draw.seed,
+        draw.ranked,
         unusable
     );
 

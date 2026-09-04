@@ -870,6 +870,135 @@ impl SessionRecords<'_> {
     }
 }
 
+/// The highest charter rank a session's signed errors name — §11.1's
+/// *consumer for rank*, and §8's priority function's first tiebreak: a
+/// signed error against the top line replays before one against the fifth.
+///
+/// Zero is the top line. `None` when no signed error names a line the
+/// loaded charter contains: a run that named nothing, a task or setpoint
+/// goal, or a `serves: charter:<id>` for a line since removed — the
+/// charter's order is the only rank there is, so a line not in it has none.
+/// Only errors with a sign count: a zero-magnitude error against the top
+/// line is not a moment that carried information, which is what the
+/// priority is for. Pure — a function of the record and the charter, so it
+/// replays over the corpus and no model is near the draw.
+pub fn charter_rank(appraisal: &Appraisal, charter: &crate::charter::Charter) -> Option<usize> {
+    appraisal
+        .errors
+        .iter()
+        .filter(|e| e.sign != 0.0)
+        .filter_map(|e| match &e.goal {
+            Some(GoalRef::Charter(id)) => charter.rank_of(id),
+            _ => None,
+        })
+        .min()
+}
+
+/// Every store an appraisal reads, loaded once — for a caller that will
+/// appraise many sessions in one pass and must not re-read four stores per
+/// session. The same best-effort terms as `mecha sessions appraise`'s own
+/// assembly: a store that has never existed is empty, one that could not be
+/// read is empty *and marked*, so the appraisal built from it reads as
+/// partial rather than as a run nothing touched.
+///
+/// **Only the replay draw reads through this today.** `sessions appraise`,
+/// `distill` and `tasks set` each carry their own copy of the assembly; they
+/// could migrate, and the reason they have not is scope, not a difference.
+pub struct Stores {
+    pub drafts: Vec<crate::outbox::OutboxItem>,
+    pub outbox_unreadable: bool,
+    pub questions: Vec<crate::questions::Question>,
+    pub questions_unreadable: bool,
+    pub requests: Vec<crate::frontdoor::Record>,
+    pub frontdoor_unreadable: bool,
+    pub reflexions: Vec<crate::learning::Reflexion>,
+    pub learning_unreadable: bool,
+    pub charter: Option<crate::charter::Charter>,
+    pub charter_unreadable: bool,
+}
+
+impl Stores {
+    /// Read the default stores under the mecha home.
+    pub fn load() -> Stores {
+        let (drafts, outbox_unreadable) = match crate::outbox::OutboxStore::open_existing_default()
+        {
+            None => (Vec::new(), false),
+            Some(store) => match store.items_counting() {
+                Ok((items, skipped)) => (items, skipped > 0),
+                Err(_) => (Vec::new(), true),
+            },
+        };
+        let (questions, questions_unreadable) =
+            match crate::questions::QuestionStore::open_existing_default() {
+                None => (Vec::new(), false),
+                Some(store) => match store.items_counting() {
+                    Ok((items, skipped)) => (items, skipped > 0),
+                    Err(_) => (Vec::new(), true),
+                },
+            };
+        let (requests, frontdoor_unreadable) =
+            match crate::frontdoor::Frontdoor::open_existing_default() {
+                None => (Vec::new(), false),
+                Some(fd) => match fd.records_counting() {
+                    Ok((items, skipped)) => (items, skipped > 0),
+                    Err(_) => (Vec::new(), true),
+                },
+            };
+        let (reflexions, learning_unreadable) =
+            match crate::learning::LearningStore::open_existing_default() {
+                None => (Vec::new(), false),
+                Some(store) => match store.reflexions_counting() {
+                    Ok((items, skipped)) => (items, skipped > 0),
+                    Err(_) => (Vec::new(), true),
+                },
+            };
+        let (charter, charter_unreadable) = load_charter();
+        Stores {
+            drafts,
+            outbox_unreadable,
+            questions,
+            questions_unreadable,
+            requests,
+            frontdoor_unreadable,
+            reflexions,
+            learning_unreadable,
+            charter,
+            charter_unreadable,
+        }
+    }
+
+    /// One session's drafts — the outbox is the one store an appraisal
+    /// scopes by session before the walk, the rest filter by id inside.
+    pub fn drafts_of(&self, session_id: &str) -> Vec<&crate::outbox::OutboxItem> {
+        self.drafts
+            .iter()
+            .filter(|i| i.session_id.as_deref() == Some(session_id))
+            .collect()
+    }
+
+    /// The records bundle for one session, over `drafts` from
+    /// [`Stores::drafts_of`] (borrowed separately so the bundle can borrow
+    /// it). `stops` is left for `for_transcript` to fill.
+    pub fn records<'a>(
+        &'a self,
+        drafts: &'a [&'a crate::outbox::OutboxItem],
+    ) -> SessionRecords<'a> {
+        SessionRecords {
+            drafts,
+            outbox_unreadable: self.outbox_unreadable,
+            questions: &self.questions,
+            questions_unreadable: self.questions_unreadable,
+            requests: &self.requests,
+            frontdoor_unreadable: self.frontdoor_unreadable,
+            reflexions: &self.reflexions,
+            learning_unreadable: self.learning_unreadable,
+            charter: self.charter.as_ref(),
+            charter_unreadable: self.charter_unreadable,
+            stops: &[],
+        }
+    }
+}
+
 /// The charter as an appraisal store: read best-effort from its one path,
 /// on the terms every other store in [`SessionRecords`] gets. A missing
 /// file is an *empty* charter (loaded, attributes nothing, not partial); a
@@ -4130,6 +4259,57 @@ text = "Tell me the truth early."
             "2026-09-04T00:00:00Z".into(),
         );
         assert_eq!(a.goals, vec![task]);
+    }
+
+    /// §11.1's consumer for rank: the smallest line index any signed error
+    /// names, over the loaded charter; a zero-magnitude error, a task goal
+    /// and a line the charter no longer holds all rank nothing.
+    #[test]
+    fn the_charter_rank_is_the_highest_line_a_signed_error_names() {
+        let charter = crate::charter::Charter::parse(
+            "[[line]]\nid = \"top\"\ntext = \"First.\"\n\n[[line]]\nid = \"fifth\"\ntext = \"Later.\"\n",
+        )
+        .unwrap();
+        let err = |goal: Option<GoalRef>, sign: f32| GoalError {
+            goal,
+            channel: Channel::Counter,
+            sign,
+            agency: Agency::Own,
+            visible: false,
+            controllable: None,
+            cite: Cite::Counter("x".into()),
+        };
+        let mut a = Appraisal {
+            id: "a".into(),
+            session_id: "s".into(),
+            goals: vec![],
+            attributed: vec![],
+            state: None,
+            errors: vec![
+                err(Some(GoalRef::Charter("fifth".into())), -1.0),
+                err(Some(GoalRef::Task("t".into())), -1.0),
+                err(Some(GoalRef::Charter("gone".into())), -1.0),
+                err(Some(GoalRef::Charter("top".into())), 0.0),
+            ],
+            label: Affect::Neutral,
+            origin: crate::learning::Origin::Clean,
+            taint: crate::agent::Taint::default(),
+            created_at: "2026-09-04T00:00:00Z".into(),
+            partial: false,
+        };
+        assert_eq!(
+            charter_rank(&a, &charter),
+            Some(1),
+            "fifth, since top's error has no sign"
+        );
+        a.errors
+            .push(err(Some(GoalRef::Charter("top".into())), 0.5));
+        assert_eq!(charter_rank(&a, &charter), Some(0));
+        a.errors.clear();
+        assert_eq!(charter_rank(&a, &charter), None);
+        assert_eq!(charter.rank_of("fifth"), Some(1));
+        assert_eq!(charter.rank_of(" top "), Some(0));
+        assert_eq!(charter.rank_of("gone"), None);
     }
 
     /// `Pride` is a *delivery* word (found on review): a run that named a
