@@ -245,12 +245,18 @@ fn show(store: &LearningStore, id: &str, as_json: bool) -> Result<()> {
     // Absent is said, never rendered as "everywhere": a reflection mined
     // before the field batches as standing, and the roster should not make
     // that look like a measured fact about where it happened.
+    // A recomputed situation says so: it is a fact about the transcript as
+    // it stood at the backfill, not about what the miner held.
     println!(
-        "situation: {}",
+        "situation: {}{}",
         r.situation
             .as_ref()
             .map(|s| s.describe())
-            .unwrap_or_else(|| "unknown (mined before it was recorded)".into())
+            .unwrap_or_else(|| "unknown (mined before it was recorded)".into()),
+        r.situation_recomputed_at
+            .as_deref()
+            .map(|at| format!(" (recomputed {at})"))
+            .unwrap_or_default()
     );
     if let Some(at) = &r.edited_at {
         println!("edited by you {at}");
