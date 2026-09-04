@@ -1687,11 +1687,12 @@ one person's mailbox rather than a public fact.
   deploy sat at `58fc21a` — `origin/main`'s tip — on a branch named
   `fix/selection-slice-power` for four minutes (reflog 15:33–15:37Z,
   mecha-26's lane), then back on `main` at `58fc21a`, clean, where it is
-  now. The 15:29 deploy built from a temporary worktree at `origin/main`
+  now. The 15:29Z deploy built from a temporary worktree at `origin/main`
   for exactly this reason, and the voice worker was restarted only after
-  the worker file's blob id matched `origin/main`'s. The ordering above
-  still holds; the check that settles it is the blob id of the file the
-  unit runs, never the branch name. ~~Three things merged to `main`
+  the worker file's blob id matched `origin/main`'s (times UTC, from the
+  reflog and `systemctl`). The ordering above still holds; the check that
+  settles it is the blob id of the file the unit runs, never the branch
+  name. ~~Three things merged to `main`
   and **not deployed**: #159 (the handoff close), #153 and #154~~ — #153 and
   #154 are still **unrecorded in this document** (mecha-83's flag; their
   owners' entries are owed, this lane did not read their diffs). ~~The
@@ -2509,19 +2510,21 @@ the mechanism and every decision. What it left standing:
 passes — eleven rounds of findings, then two clean at the bar), with
 §17.7 item 1's run record in the same change because it was the merge
 condition. **Deployed 2026-09-04 15:29–15:37Z by mecha-83 (all times in
-this block UTC, from `systemctl --user show -p ActiveEnterTimestamp`, the
-reflog, or a file mtime), verified from this lane by asking the
+this block UTC, from `systemctl --user show -p ActiveEnterTimestamp`,
+which prints its zone, or the reflog and file mtimes, which print local
+time on a box that runs UTC), verified from this lane by asking the
 artifacts:** `strings ~/.cargo/bin/mecha` now holds `duration_secs`
 (#167), `learned rules: prefix block` (#168) and `predictive_compaction`
 (#169), where the same probe run by this lane *before* mecha-83's install
 held none — an ordinal claim, needing no clock — and the version string
 read 0.1.17 both times and cannot tell builds apart, which is why the
-probe is a literal and not a version. `mecha-mail` was installed by the
-same run (file date 15:29Z, the same minute as `mecha`, which is not a
-build proof); no literal distinguishes it, since its own crate had no
-commits in the range and mecha-core's new literals are not linked into
-it, so its row is narrower: rebuilt against the new core, by the skill's
-second `cargo install` line, on mecha-83's account. Built from a
+probe is a literal and not a version. `mecha-mail` was reinstalled by
+the same run, by the skill's second `cargo install` line, from sources
+unchanged in the range — its crate had no commits between `6e606a9` and
+`58fc21a`, and it has no `mecha-core` dependency at all, so no literal
+could distinguish the build and none is claimed; the file date (15:29Z,
+the same minute as `mecha`) is consistent with the account and is not a
+proof of it. Built from a
 temporary worktree at `origin/main` `58fc21a`, not from the shared
 checkout, which at 15:29Z was 44 commits behind `origin/main` with every
 version string reading current (mecha-83's count). The checkout is now
