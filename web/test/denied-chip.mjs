@@ -33,9 +33,22 @@ function readOut(marker) {
 
 const openCallSrc = readOut('  function openCall(entries, ev) {');
 const denialSrc = readOut('  function resolveDenial(entries, ev) {');
-const [openCall, resolveDenial] = new Function(
-  `${openCallSrc}${denialSrc} return [openCall, resolveDenial];`
+const fillSrc = readOut('  function fillRefusal(entries, ev) {');
+const [openCall, resolveDenial, fillRefusal] = new Function(
+  `${openCallSrc}${denialSrc}${fillSrc} return [openCall, resolveDenial, fillRefusal];`
 )();
+
+// The two strings the planning-phase path really emits. Written out because
+// a test that invents its own refusal text asserts its own invention back:
+// the previous version of the case below fed `resolveDenial` the sentence and
+// then checked the sentence came out, so it passed just as happily while the
+// row showed the two-word label instead. Keep these equal to
+// `mecha-core/src/agent.rs` — the label on `ToolDenied`, the sentence on the
+// `ToolResult` it emits beside it.
+const PLANNING_LABEL = 'planning phase';
+const PLANNING_SENTENCE =
+  '`fs_write` is not available while planning. Work out what to do and say so; ' +
+  'leave the phase to carry it out.';
 
 let passed = 0;
 let failed = 0;
@@ -185,15 +198,21 @@ const call = (name, id = null) => ({
   entries.push({ kind: 'tool', name: 'fs_read', id: 't1', pending: true, args: '{"path":"agent.rs"}' });
   entries.push({ kind: 'tool', name: 'fs_write', id: 't2', pending: true, args: '{"path":"out.txt"}' });
 
-  // The refusal, inline in the same loop.
-  resolveDenial(entries, {
-    name: 'fs_write',
-    reason: '`fs_write` is not available while planning.',
-  });
+  // The refusal, inline in the same loop. `ToolDenied` carries the label.
+  resolveDenial(entries, { name: 'fs_write', reason: PLANNING_LABEL });
+  is(entries[1].preview, PLANNING_LABEL, 'the label is what closes the row');
 
-  // The refusal's own result, which the planning path emits too.
-  const strayTarget = openCall(entries, { id: 't2', name: 'fs_write' });
-  is(strayTarget, undefined, "the refused call's result finds no open chip and is dropped");
+  // The refusal's own result, which the planning path emits too — carrying
+  // the sentence, which is the half worth reading.
+  const strayEvent = { id: 't2', name: 'fs_write', preview: PLANNING_SENTENCE };
+  const strayTarget = openCall(entries, strayEvent);
+  is(strayTarget, undefined, "the refused call's result finds no open chip to close");
+  is(fillRefusal(entries, strayEvent), true, 'and fills in the row it belongs to');
+  is(
+    entries[1].preview,
+    PLANNING_SENTENCE,
+    'so the row says what to do about it, not just that it happened'
+  );
 
   // Then the approved call's result, after join_all.
   const readTarget = openCall(entries, { id: 't1', name: 'fs_read' });
@@ -209,8 +228,40 @@ const call = (name, id = null) => ({
   );
   is(
     entries[1].preview,
-    '`fs_write` is not available while planning.',
+    PLANNING_SENTENCE,
     'while the refused write shows why it was refused'
+  );
+}
+
+// A result may only ever fill in the row its own call opened.
+{
+  const entries = [
+    { kind: 'tool', name: 'fs_write', id: 't1', pending: false, blocked: true, preview: 'planning phase' },
+    { kind: 'tool', name: 'fs_write', id: 't2', pending: false, blocked: true, preview: 'planning phase' },
+  ];
+  fillRefusal(entries, { id: 't2', name: 'fs_write', preview: 'the sentence for t2' });
+  is(entries[0].preview, 'planning phase', "another call's refused row is untouched");
+  is(entries[1].preview, 'the sentence for t2', 'and its own row is filled');
+}
+
+// The three denial paths that emit no result leave the label standing —
+// there is no better string coming, and inventing one would be worse.
+{
+  const entries = [{ ...call('mail__mail_send', 't1'), pending: false, blocked: true, preview: 'blocked outbound call: trifecta armed' }];
+  is(
+    fillRefusal(entries, { id: 't9', name: 'mail__mail_send', preview: 'unrelated' }),
+    false,
+    'a result for a different call fills nothing'
+  );
+  is(
+    fillRefusal(entries, { name: 'mail__mail_send', preview: 'no id' }),
+    false,
+    'and an event with no id cannot claim a closed row'
+  );
+  is(
+    entries[0].preview,
+    'blocked outbound call: trifecta armed',
+    "the interlock's own words survive"
   );
 }
 
