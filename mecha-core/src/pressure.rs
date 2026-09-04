@@ -383,10 +383,12 @@ impl ContextTracker {
     /// `predictive_compaction` lever (`docs/EXPERIMENT-DESIGN.md` Part II,
     /// *The switch set*). With `predictive` false only the reported size
     /// counts: the threshold stays, because a lever may remove a disposition
-    /// above a structural check and never the check itself; what goes is
-    /// compacting on the *forecast* of the next request, which is exactly
-    /// the reactive-only behaviour this type was built to improve on, and
-    /// the arm an experiment needs to measure the improvement against.
+    /// above a structural check and never the check itself. The lever's
+    /// scope is this trigger and nothing else in this type:
+    /// [`Self::affordable_output_bytes`] and [`Self::forecast`] still
+    /// predict with it off, so the arm is "compaction fires reactively",
+    /// not "the run has no forecast" — the tool-output budget still keeps a
+    /// turn from leaping the gap on its own.
     pub fn over_by(&self, limit: u64, bytes: usize, predictive: bool) -> bool {
         self.reported().is_some_and(|t| t >= limit)
             || (predictive && self.predict(bytes).is_some_and(|t| t >= limit))

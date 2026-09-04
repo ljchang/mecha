@@ -172,8 +172,11 @@ pub enum Lever {
     /// `--no-compact-validate`, or `[agent] compact_validate = false`.
     CompactValidate,
     /// `--no-predictive-compaction`, or `[agent] predictive_compaction =
-    /// false`: compaction fires on the reported size only, never on the
-    /// forecast of the next request. The threshold stays.
+    /// false`: the compaction *trigger* fires on the reported size only,
+    /// never on the forecast of the next request. The threshold stays, and
+    /// so do the predictor's other two uses — the per-turn tool-output
+    /// budget and the headroom forecast the model is shown. "No compaction
+    /// on the forecast", not "no forecast".
     PredictiveCompaction,
     /// `--no-carried-state`, or `[agent] carried_state = false`: a tool's
     /// state (the plan) does not ride across a compaction.
