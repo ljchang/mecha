@@ -257,12 +257,23 @@ pub fn parse_record(path: &Path, value: Value) -> Result<Option<PollRecord>> {
         .as_str()
         .context("a lifecycle record with no `poll_id`")?
         .to_string();
+    // A participant this cannot read is the same finding as a record it
+    // cannot read: dropped, they would get no invitation and be missing
+    // from the booking, with a clean exit.
     let people = value["participants"]
         .as_array()
         .context("a lifecycle record whose `participants` is not a list")?
         .iter()
-        .filter_map(person)
-        .collect();
+        .enumerate()
+        .map(|(i, v)| {
+            person(v).with_context(|| {
+                format!(
+                    "participant {i} has no readable name and email: {}",
+                    serde_json::to_string(v).unwrap_or_default()
+                )
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(Some(PollRecord {
         path: path.to_path_buf(),
         poll_id,
@@ -839,15 +850,29 @@ mod tests {
             json!({"poll_id": "d", "participants": "Priya", "lifecycle": {}}).to_string(),
         )
         .unwrap();
-        let (records, problems) = scan(dir.path()).unwrap();
+        let (records, _) = scan(dir.path()).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].poll_id, "a");
-        assert_eq!(problems.len(), 2);
+        // …and so is a participant with no address.
+        std::fs::write(
+            dir.path().join("e.json"),
+            json!({"poll_id": "e", "participants": [{"name": "Tal", "url": "u"}], "lifecycle": {}})
+                .to_string(),
+        )
+        .unwrap();
+        let (records, problems) = scan(dir.path()).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(problems.len(), 3);
         assert!(problems[0].contains("c.json"));
         assert!(
             problems[1].contains("d.json") && problems[1].contains("participants"),
             "{}",
             problems[1]
+        );
+        assert!(
+            problems[2].contains("e.json") && problems[2].contains("participant 0"),
+            "{}",
+            problems[2]
         );
     }
 }

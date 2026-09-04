@@ -549,6 +549,10 @@ async fn polls(
     // sent and could not write — is repaired first, over every record.
     for record in records.iter_mut() {
         if pl::reconcile(record, &entries) {
+            if dry_run {
+                println!("{}: record would catch up with the ledger", record.poll_id);
+                continue;
+            }
             match pl::save(record) {
                 Ok(()) => println!("{}: record caught up with the ledger", record.poll_id),
                 Err(e) => eprintln!("{}: writing the record — {e:#}", record.poll_id),
