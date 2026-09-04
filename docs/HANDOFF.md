@@ -1643,14 +1643,18 @@ one person's mailbox rather than a public fact.
   lanes). Put it back on `main` before the next deploy — the deploy step is
   **check the branch, then pull, then restart**, not "pull, then restart",
   and that ordering is the whole content of the voice-worker item below
-  (mecha-26). Three things merged to `main`
-  and **not deployed**: #159 (the handoff close), #153 and #154 — the last
-  two are also **unrecorded in this document** (mecha-83's flag; their
-  owners' entries are owed, this lane did not read their diffs). The
-  `update` run is deliberately held until #158 merges, one deploy rather
-  than two voice-worker restarts (mecha-26, relaying the owner's call);
-  #153's echo-floor and #158's timing tail both wait on that one restart,
-  which needs the checkout pulled onto merged `main` *first*. And a finding
+  (mecha-26). *Superseded the same morning:* the checkout is back on
+  `main` (~10:00, this lane, after #161/#162 merged), and mecha-26 ran the
+  `update` at **10:04 from main `188b823`** — `mecha` reinstalled from the
+  shared checkout (the previous install had come from a worktree),
+  `web/dist` rebuilt and rsynced, five units restarted and verified by
+  their startup lines, `mecha-parakeet` deliberately not restarted
+  (`parakeet_server.py` unchanged, a restart costs a model load). So #153,
+  #154, #158, #159 and #162 are merged *and* deployed; #153 and #154 are
+  still **unrecorded in this document** (mecha-83's flag; their owners'
+  entries are owed, this lane did not read their diffs). #153's echo-floor
+  and #158's timing tail now wait on the measurement call, not on a
+  restart. And a finding
   from #158's lane for the first call after that deploy: `journalctl --user
   -u mecha-voice-worker | grep "Say yes to send it"` is empty over thirty
   days — the spoken outbox confirmation has never played in a real call,
