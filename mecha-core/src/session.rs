@@ -942,9 +942,16 @@ pub struct Transcript {
     /// written — `config_positions`' shape, for the same reason: a per-run
     /// fact (this run was stopped) has to be placed among the messages to
     /// say what followed it (a re-prompt, or nothing). `episode` is the fold
-    /// of these.
+    /// of these. Repaired by the `Rewrite` arm the way `config_positions`
+    /// is, with one difference in the summarising case: a config position
+    /// falls back to zero because the config in flight is still a fair
+    /// answer for the rewritten head, but an outcome's *place* among
+    /// messages that no longer exist has no fair answer — so it becomes
+    /// `None`, and a reader placing stops skips it rather than searching a
+    /// list the stop was never in (found on review: the old positions read
+    /// every pre-compaction stop as an abandonment cited past the end).
     pub outcomes: Vec<RunStats>,
-    pub outcome_positions: Vec<usize>,
+    pub outcome_positions: Vec<Option<usize>>,
     /// Every recorded outcome, folded into the episode the session describes.
     pub episode: Option<RunStats>,
     /// The taint checkpoints, positioned against the loaded messages — the
@@ -1219,7 +1226,7 @@ impl Session {
         let mut configs = Vec::new();
         let mut config_positions: Vec<usize> = Vec::new();
         let mut outcomes = Vec::new();
-        let mut outcome_positions: Vec<usize> = Vec::new();
+        let mut outcome_positions: Vec<Option<usize>> = Vec::new();
         let mut meta = None;
         let mut title = None;
         let mut messages = Vec::new();
@@ -1315,8 +1322,12 @@ impl Session {
                         for p in &mut config_positions {
                             *p = (*p).min(m.len());
                         }
+                        for p in outcome_positions.iter_mut().flatten() {
+                            *p = (*p).min(m.len());
+                        }
                     } else {
                         config_positions.fill(0);
+                        outcome_positions.fill(None);
                     }
                     messages = m;
                     taint_checkpoints.clear();
@@ -1335,7 +1346,7 @@ impl Session {
                     configs.push(c);
                 }
                 Ok(Record::Outcome(o)) => {
-                    outcome_positions.push(messages.len());
+                    outcome_positions.push(Some(messages.len()));
                     outcomes.push(o);
                 }
                 Ok(Record::Summary { .. }) => {}
@@ -2209,7 +2220,7 @@ mod tests {
 
         let t = Session::read(&session.path).unwrap();
         assert_eq!(t.outcomes.len(), 2);
-        assert_eq!(t.outcome_positions, vec![2, 4]);
+        assert_eq!(t.outcome_positions, vec![Some(2), Some(4)]);
         assert_eq!(t.outcomes[0].stop_cause, Some(StopCause::Stopped));
         let episode = t.episode.unwrap();
         assert_eq!(
@@ -2218,6 +2229,24 @@ mod tests {
             "the fold keeps the last"
         );
         assert_eq!(episode.duration_secs, Some(3.5), "and sums the clock");
+
+        // A summarising compaction replaces the head: the earlier outcomes'
+        // places are gone and read `None`, never an index into a list they
+        // were not recorded against (found on review). A later outcome is
+        // placed in the new list.
+        session
+            .append(&Record::Rewrite {
+                messages: vec![Message::user("summary of everything so far")],
+            })
+            .unwrap();
+        session
+            .append(&Record::Outcome(RunStats {
+                stop_cause: Some(StopCause::Completed),
+                ..Default::default()
+            }))
+            .unwrap();
+        let t = Session::read(&session.path).unwrap();
+        assert_eq!(t.outcome_positions, vec![None, None, Some(1)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
