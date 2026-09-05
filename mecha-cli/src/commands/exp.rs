@@ -723,32 +723,6 @@ async fn principal_call(
             .context("the principal's answer is not the contract's shape")
     }
     .await;
-    // After the task: what the refusals scripted for it did, read off the
-    // task's session — a refusal that never fired is on the line, and
-    // said, rather than recorded like one that did (found on review).
-    if point == PrincipalPoint::AfterTask {
-        match mecha_core::experiment::read_denials(home) {
-            Ok(rules) if !rules.is_empty() => {
-                let session_text = trial
-                    .session_id
-                    .as_ref()
-                    .and_then(|id| {
-                        std::fs::read_to_string(home.join("sessions").join(format!("{id}.jsonl")))
-                            .ok()
-                    })
-                    .unwrap_or_default();
-                run.refusals = mecha_core::experiment::refusal_outcomes(&rules, &session_text);
-                for r in run.refusals.iter().filter(|r| r.fired == 0) {
-                    eprintln!(
-                        "  ↳ the scripted refusal of `{}` ({}) never fired at position {position}",
-                        r.tool, r.reason
-                    );
-                }
-            }
-            Ok(_) => {}
-            Err(e) => eprintln!("  ↳ the denials file could not be read back: {e:#}"),
-        }
-    }
     match outcome {
         Err(e) => run.error = Some(format!("{e:#}")),
         Ok(answer) => {
@@ -877,6 +851,33 @@ async fn principal_call(
             } else {
                 run.error = Some(failures.join("; "));
             }
+        }
+    }
+    // After the acts, not before them: an act may resume the parked run on
+    // the same session, and a refusal the continuation walked into must
+    // count — a refusal that never fired is on the line, and said, rather
+    // than recorded like one that did (found on review, twice).
+    if point == PrincipalPoint::AfterTask {
+        match mecha_core::experiment::read_denials(home) {
+            Ok(rules) if !rules.is_empty() => {
+                let session_text = trial
+                    .session_id
+                    .as_ref()
+                    .and_then(|id| {
+                        std::fs::read_to_string(home.join("sessions").join(format!("{id}.jsonl")))
+                            .ok()
+                    })
+                    .unwrap_or_default();
+                run.refusals = mecha_core::experiment::refusal_outcomes(&rules, &session_text);
+                for r in run.refusals.iter().filter(|r| r.fired == 0) {
+                    eprintln!(
+                        "  ↳ the scripted refusal of `{}` ({}) never fired at position {position}",
+                        r.tool, r.reason
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("  ↳ the denials file could not be read back: {e:#}"),
         }
     }
     run.finished_at = chrono::Utc::now().to_rfc3339();
