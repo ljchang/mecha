@@ -517,6 +517,7 @@ fn skipped_line(
         )),
         point,
         acts: Vec::new(),
+        refusals: Vec::new(),
     }
 }
 
@@ -580,6 +581,7 @@ async fn principal_call(
         error: None,
         point: Some(point),
         acts: Vec::new(),
+        refusals: Vec::new(),
     };
     if let Err(e) = store.record_stage(&run) {
         run.status = StageStatus::Failed;
@@ -721,6 +723,32 @@ async fn principal_call(
             .context("the principal's answer is not the contract's shape")
     }
     .await;
+    // After the task: what the refusals scripted for it did, read off the
+    // task's session — a refusal that never fired is on the line, and
+    // said, rather than recorded like one that did (found on review).
+    if point == PrincipalPoint::AfterTask {
+        match mecha_core::experiment::read_denials(home) {
+            Ok(rules) if !rules.is_empty() => {
+                let session_text = trial
+                    .session_id
+                    .as_ref()
+                    .and_then(|id| {
+                        std::fs::read_to_string(home.join("sessions").join(format!("{id}.jsonl")))
+                            .ok()
+                    })
+                    .unwrap_or_default();
+                run.refusals = mecha_core::experiment::refusal_outcomes(&rules, &session_text);
+                for r in run.refusals.iter().filter(|r| r.fired == 0) {
+                    eprintln!(
+                        "  ↳ the scripted refusal of `{}` ({}) never fired at position {position}",
+                        r.tool, r.reason
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("  ↳ the denials file could not be read back: {e:#}"),
+        }
+    }
     match outcome {
         Err(e) => run.error = Some(format!("{e:#}")),
         Ok(answer) => {
@@ -902,6 +930,7 @@ async fn run_stage(
         error: None,
         point: None,
         acts: Vec::new(),
+        refusals: Vec::new(),
     };
     // The running line first, so a driver killed mid-stage leaves a record
     // and the rerun takes the next attempt number rather than this one's

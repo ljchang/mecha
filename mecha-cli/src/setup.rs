@@ -151,7 +151,10 @@ async fn preflight_provider(cfg: &mecha_core::config::Config, opts: &GlobalOpts)
 /// serve and voice surfaces install their own approver after `prepare`
 /// and are not wrapped; both refuse to start under the variable at all,
 /// since neither run is an experiment's.
-fn scripted_refusals(approver: Arc<dyn Approver>) -> Result<Arc<dyn Approver>> {
+fn scripted_refusals(
+    approver: Arc<dyn Approver>,
+    registry: &Registry,
+) -> Result<Arc<dyn Approver>> {
     match std::env::var(mecha_core::tool::DENIALS_FILE_ENV) {
         Ok(path) if !path.is_empty() => {
             let kind = std::env::var(mecha_core::session::SESSION_KIND_ENV).ok();
@@ -160,10 +163,18 @@ fn scripted_refusals(approver: Arc<dyn Approver>) -> Result<Arc<dyn Approver>> {
                 "{} is an experiment's channel — a scripted refusal is mined as the owner's correction — and this run is not an experiment's; unset it",
                 mecha_core::tool::DENIALS_FILE_ENV
             );
-            Ok(Arc::new(
+            let wrapped =
                 mecha_core::tool::FileDenyApprover::load(std::path::Path::new(&path), approver)
-                    .context("the denials file this run was started with")?,
-            ))
+                    .context("the denials file this run was started with")?;
+            // A refusal that can never fire is measured as an owner who
+            // refused: said at start, where the registry is in hand.
+            for (rule, why) in wrapped.inert_rules(registry) {
+                eprintln!(
+                    "mecha: the scripted refusal of `{}` ({}) {why}, so it will never fire in this run",
+                    rule.tool, rule.reason
+                );
+            }
+            Ok(Arc::new(wrapped))
         }
         _ => Ok(approver),
     }
@@ -181,7 +192,7 @@ pub async fn prepare_with_approver(
 ) -> Result<Prepared> {
     let mut tools = prepare_tools(opts, true).await?;
     if tools.config.tools.permission_mode == PermissionMode::Ask {
-        tools.approver = scripted_refusals(approver)?;
+        tools.approver = scripted_refusals(approver, &tools.registry)?;
     }
     preflight_provider(&tools.config, opts).await;
     build(tools, opts)
@@ -1224,7 +1235,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
                 mode: cfg.tools.permission_mode,
             })
         };
-    let approver = scripted_refusals(approver)?;
+    let approver = scripted_refusals(approver, &registry)?;
 
     // An MCP server may legitimately shadow `todo` (registered after the
     // built-ins, deliberately). The handle would then be live but frozen —
@@ -1396,13 +1407,14 @@ fn build_subagent(
     child_cfg.system_prompt = profile.system_prompt.clone();
     child_cfg.system_prompt_file = None;
 
+    // The refusals reach a delegated call too: a subagent built with a
+    // fresh mode approver ran unrefused what the parent could not (found
+    // on review).
+    let child_approver = scripted_refusals(Arc::new(ModeApprover { mode }), &child_registry)?;
     let mut child = Agent::new(
         mecha_core::provider::build(provider_cfg)?,
         child_registry,
-        // The refusals reach a delegated call too: a subagent built with a
-        // fresh mode approver ran unrefused what the parent could not
-        // (found on review).
-        scripted_refusals(Arc::new(ModeApprover { mode }))?,
+        child_approver,
         ToolCtx {
             workspace: ctx.workspace.clone(),
             shell_timeout: ctx.shell_timeout,

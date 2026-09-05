@@ -905,12 +905,24 @@ pub struct DenialsFile {
 }
 
 impl DenialRule {
+    /// The needle is looked for in every string the input holds, as
+    /// written — not only in the input's JSON rendering, where a quote, a
+    /// backslash or a newline is escaped and a needle carrying one never
+    /// matched (found on review).
     pub fn matches(&self, tool: &str, input: &Value) -> bool {
         (self.tool == "*" || self.tool == tool)
-            && self
-                .input_contains
-                .as_deref()
-                .is_none_or(|needle| input.to_string().contains(needle))
+            && self.input_contains.as_deref().is_none_or(|needle| {
+                input.to_string().contains(needle) || strings_in(input).any(|s| s.contains(needle))
+            })
+    }
+}
+
+fn strings_in(value: &Value) -> Box<dyn Iterator<Item = &str> + '_> {
+    match value {
+        Value::String(s) => Box::new(std::iter::once(s.as_str())),
+        Value::Array(items) => Box::new(items.iter().flat_map(strings_in)),
+        Value::Object(map) => Box::new(map.values().flat_map(strings_in)),
+        _ => Box::new(std::iter::empty()),
     }
 }
 
@@ -943,6 +955,33 @@ impl FileDenyApprover {
 
     pub fn with_rules(rules: Vec<DenialRule>, inner: Arc<dyn Approver>) -> Self {
         FileDenyApprover { rules, inner }
+    }
+
+    pub fn rules(&self) -> &[DenialRule] {
+        &self.rules
+    }
+
+    /// The rules that can never fire in this run because they name a tool
+    /// no registered tool answers to — a typo, or a tool an arm's lever
+    /// removed — or a read-only tool, which reaches no approver. Warned
+    /// about at load: a refusal that is inert is measured as an owner who
+    /// refused (found on review).
+    pub fn inert_rules<'a>(
+        &'a self,
+        registry: &'a Registry,
+    ) -> impl Iterator<Item = (&'a DenialRule, &'static str)> {
+        self.rules.iter().filter_map(|r| {
+            if r.tool == "*" {
+                return None;
+            }
+            match registry.get(&r.tool) {
+                None => Some((r, "names no tool in this run")),
+                Some(t) if t.read_only() => {
+                    Some((r, "names a read-only tool, which reaches no approver"))
+                }
+                Some(_) => None,
+            }
+        })
     }
 
     fn scripted(&self, tool: &dyn Tool, input: &Value) -> Option<Decision> {
@@ -1285,6 +1324,52 @@ mod denial_tests {
             approver.approve(&Echo, &any).await,
             Decision::Deny("leave that alone".into())
         );
+        // A needle with a quote matches the string as written, not only
+        // its JSON rendering, where the quote is escaped.
+        let quoted = FileDenyApprover::with_rules(
+            vec![DenialRule {
+                tool: "shell".into(),
+                input_contains: Some("echo \"hi\"".into()),
+                reason: "no".into(),
+            }],
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+        );
+        let call = serde_json::json!({"command": "echo \"hi\" > out"});
+        assert_eq!(
+            quoted.approve(&Echo, &call).await,
+            Decision::Deny("no".into())
+        );
+        // Inert rules: a tool not in the registry, or a read-only one.
+        let mut registry = Registry::new();
+        registry.insert(Arc::new(Echo));
+        let inert: Vec<_> = FileDenyApprover::with_rules(
+            vec![
+                DenialRule {
+                    tool: "shell".into(),
+                    input_contains: None,
+                    reason: "a".into(),
+                },
+                DenialRule {
+                    tool: "shel".into(),
+                    input_contains: None,
+                    reason: "b".into(),
+                },
+                DenialRule {
+                    tool: "*".into(),
+                    input_contains: None,
+                    reason: "c".into(),
+                },
+            ],
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+        )
+        .inert_rules(&registry)
+        .map(|(r, why)| (r.reason.clone(), why))
+        .collect();
+        assert_eq!(inert, vec![("b".to_string(), "names no tool in this run")]);
         // The permit path — an approval rule's allow — refuses the same
         // way, or the ordinary unattended posture never sees a refusal.
         assert_eq!(
