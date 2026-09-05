@@ -6198,10 +6198,16 @@ and is what finally exercised the path.)
   author had not updated after changing the behaviour it tested, and one
   with a `cargo fmt` miss — each a full extra cycle of a reviewer's time.
   **Gate every push on the suite *and* clippy in the same command that
-  commits** (`cargo test … | grep -q FAILED && echo NOT GREEN || git
-  commit …`); a push that fails CI is a review pass spent on nothing. And
-  when a fix adds a *state* — a stall, a handoff, a merge — expect the next
-  pass to find its edges, because it will.
+  commits** (`cargo test && cargo clippy --all-targets -- -D warnings &&
+  git commit …`); a push that fails CI is a review pass spent on nothing —
+  and the gate this lane actually used, `cargo test … | grep -q FAILED &&
+  echo NOT GREEN || git commit …`, fails *open*: it runs no clippy, and a
+  compile error goes to stderr, so a tree that does not build prints no
+  `FAILED` and the commit lands. Every stage load-bearing on its exit
+  status, or it is not a gate. And when a fix adds a *state* — a stall, a
+  handoff, a merge — expect the next pass to find its edges, because it
+  will.
+
 - **Everything after clap's `--` is a positional, so a fix for argv
   injection broke reject completely — under a suite that stayed green
   because nothing ever spawned the child.** #126's separator fix put
