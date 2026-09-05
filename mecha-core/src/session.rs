@@ -616,6 +616,12 @@ pub struct RunStats {
     /// since the sensor shipped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_completions: Option<u32>,
+    /// Of those, completions whose span could be measured — started and
+    /// completed in this run, so a null was possible. The null rate's
+    /// denominator; a run with completions and none of these could not
+    /// have registered a null and must not dilute it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_measured: Option<u32>,
     /// Learned rules the harness delivered *during* the run, by id and the
     /// turn they landed on (not the voice facade's `delivered`, which says a
     /// reply's words reached the socket) — the situational half of what the run carried,
@@ -807,6 +813,10 @@ impl RunStats {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
+        self.step_measured = match (self.step_measured, other.step_measured) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
         self.delivered = match (self.delivered.take(), &other.delivered) {
             (Some(mut a), Some(b)) => {
                 a.extend(b.iter().cloned());
@@ -869,6 +879,7 @@ impl RunStats {
             step_nulls: Some(o.step_nulls),
             step_reopens: Some(o.step_reopens),
             step_completions: Some(o.step_completions),
+            step_measured: Some(o.step_measured),
             // `Some(empty)`, and written by this build on purpose: the loop
             // delivers no rule mid-run yet, and a record that says so is what
             // keeps a later replay from reading the absence as unknown.
@@ -1819,6 +1830,7 @@ mod homeostat_record_tests {
             step_nulls: 0,
             step_reopens: 0,
             step_completions: 0,
+            step_measured: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),
@@ -2813,6 +2825,7 @@ mod tests {
             step_nulls: 0,
             step_reopens: 0,
             step_completions: 0,
+            step_measured: 0,
             text: "done".into(),
             stop_reason: StopReason::EndTurn,
             usage: Usage {
@@ -2884,6 +2897,7 @@ mod tests {
                 step_nulls: 0,
                 step_reopens: 0,
                 step_completions: 0,
+                step_measured: 0,
                 text: String::new(),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage {
@@ -2991,6 +3005,7 @@ mod tests {
             step_nulls: 0,
             step_reopens: 0,
             step_completions: 0,
+            step_measured: 0,
             text: String::new(),
             stop_reason: StopReason::Other,
             usage: Usage::default(),
@@ -3406,6 +3421,7 @@ mod tests {
             step_nulls: 0,
             step_reopens: 0,
             step_completions: 0,
+            step_measured: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),

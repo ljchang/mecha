@@ -1189,6 +1189,9 @@ pub struct RunOutcome {
     /// Completed-step transitions — the denominator the two above are read
     /// against; a run with none had no plan the counters could speak to.
     pub step_completions: u32,
+    /// Of those, completions whose span could be measured — the null
+    /// rate's denominator; see `tool::StepCounts::measured`.
+    pub step_measured: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -2015,6 +2018,7 @@ impl Agent {
                     step_nulls: 0,
                     step_reopens: 0,
                     step_completions: 0,
+                    step_measured: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -2996,7 +3000,7 @@ impl Agent {
             blocked_sends,
             taint,
             // Filled by `run_in` once, rather than by every builder: the loop
-            // has six exit points and a field set at five of them is worse
+            // has five exit points and a field set at four of them is worse
             // than one set at none. `context_overflows` rides the same seam,
             // and for a second reason — it would arrive here as a tenth
             // positional `u32` immediately after `compactions`, where a
@@ -3009,6 +3013,7 @@ impl Agent {
             step_nulls: 0,
             step_reopens: 0,
             step_completions: 0,
+            step_measured: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -3153,6 +3158,7 @@ impl Agent {
             step_nulls: 0,
             step_reopens: 0,
             step_completions: 0,
+            step_measured: 0,
             stop_cause,
             compactions,
             cost_usd: self.cost(&usage),
@@ -4059,7 +4065,7 @@ fn emit_done(
     boredom_notices: u32,
     step_escalations_attempted: u32,
     step_escalations_revised: u32,
-    step_counts: (u32, u32, u32),
+    step_counts: (u32, u32, u32, u32),
 ) {
     outcome.context_overflows = context_overflows;
     outcome.boredom_notices = boredom_notices;
@@ -4069,18 +4075,20 @@ fn emit_done(
         outcome.step_nulls,
         outcome.step_reopens,
         outcome.step_completions,
+        outcome.step_measured,
     ) = step_counts;
     emit(events, AgentEvent::Done(Box::new(outcome.clone())));
 }
 
-/// The run's step counters as of now — `(nulls, reopens, completions)` —
-/// or zeros for a context with no sensor, which `run_in` never produces.
-fn step_counts_of(cx: &RunContext) -> (u32, u32, u32) {
+/// The run's step counters as of now — `(nulls, reopens, completions,
+/// measured)` — or zeros for a context with no sensor, which `run_in`
+/// never produces.
+fn step_counts_of(cx: &RunContext) -> (u32, u32, u32, u32) {
     cx.tools
         .step_counts
         .as_ref()
         .map(|c| c.snapshot())
-        .unwrap_or((0, 0, 0))
+        .unwrap_or((0, 0, 0, 0))
 }
 
 fn emit(events: &Option<UnboundedSender<AgentEvent>>, event: AgentEvent) {
@@ -6600,6 +6608,7 @@ mod tests {
             step_nulls: 0,
             step_reopens: 0,
             step_completions: 0,
+            step_measured: 0,
             ..outcome.clone()
         });
         assert_eq!(clean.context_overflows, Some(0));
@@ -7386,10 +7395,15 @@ mod tests {
         assert_eq!(outcome.step_nulls, 1, "completed with no call behind it");
         assert_eq!(outcome.step_reopens, 1, "then set back to in progress");
         assert_eq!(outcome.step_completions, 1, "one completed-step transition");
+        assert_eq!(
+            outcome.step_measured, 1,
+            "started and completed in this run"
+        );
         let stats = crate::session::RunStats::from(&outcome);
         assert_eq!(stats.step_nulls, Some(1));
         assert_eq!(stats.step_reopens, Some(1));
         assert_eq!(stats.step_completions, Some(1));
+        assert_eq!(stats.step_measured, Some(1));
     }
 
     /// The review finding: the escalation's own thresholds are argued, not
