@@ -1868,6 +1868,83 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > is not built); the twelve rules on this machine are unscoped and load
 > everywhere, as they did, until the standing batch rewrites them.
 
+> **Built 2026-09-05: consolidation's widening and narrowing, and the
+> per-region half of validation** (`feat/region-widening`). A rule now
+> carries `support` beside `scope` — the sub-regions its evidence was
+> recorded in, one scope per distinct window in the batch — and the two
+> differ exactly when a widening dropped a key. **Widening is
+> evidence-keyed and harness-computed.** The learner is told that a lesson
+> already stated by a rule from another situation is to be repeated *word
+> for word*; a reply that does so names the same lesson in a second
+> region, and `finalize_region_rules` — never the model — sets the scope to
+> the intersection of the two regions and adds the batch's sub-regions to
+> the rule's support — and only when one of the batch's windows lies
+> outside the old scope: a batch whose every window still carried the
+> rule's tools is evidence inside its region whatever the batch's focus,
+> so it adds support and widens nothing. **The standing batch never
+> widens**, and a window with no focus (a followup's, a front-end
+> tool's) is never support: `batches_by_region` already refuses those
+> windows as evidence of where, and the first review found a shell rule
+> restated in the standing batch widened to everywhere on a stale
+> followup window — the §17.3 incident on one learner reply. The model can claim only "same lesson"; where the
+> rule then loads follows from two batches of recorded situations, which
+> is this section's support-in-more-than-one-sub-region condition. Within
+> a batch the region was already the intersection of its members'
+> windows, so a new rule never applied wider than its evidence agreed on;
+> the cross-region step was the only one without a check. **Validation is
+> keyed per rule per region**: a ledger row records the sub-region the
+> probe *exercised* — the probed reflection's window, not the replayed
+> run's registry, which nearly every run shares — and `RuleTally` folds
+> the counts per region beside the totals. Two readers changed on that:
+> probation is released only by rows that exercised the rule (a `shell`
+> rule riding along in a probe that never touched `shell` was carried,
+> not tested, and used to leave probation on it), and `validate --cover N`
+> spends up to N probes per (rule, region) pair the ledger has never
+> graded, chosen from inside the region regardless of processed-state —
+> the budget this section says goes to sessions inside the region rather
+> than a recency window; the nightly passes `--cover 1`, so a widened rule
+> is measured in each sub-region it widened over. **A convicted rule
+> narrows rather than retires where the lattice allows it**
+> (`judge_convicted`, read by `rules propose-retirements`): every placed
+> conviction counts wherever its row lies, because a rule loads by
+> *registry* match and a row is placed by the probe's *window*, so a
+> `shell` rule is convicted in `http_fetch` windows whenever the run also
+> registered `shell` and shedding a region never stops it riding there
+> (the fourth review pass found an in-scope count that let a
+> bisection-proven regression read as clean at any count); if every
+> conviction lies in support regions the rule can shed and at least one
+> support region is clean, the rule re-scopes to the intersection of what
+> remains — checked to exclude every convicting window, not merely to
+> differ from the old scope — stamped `narrowed_at`/`narrowed_reason`,
+> and the scan thereafter folds only the ledger since the narrowing
+> (`tally_for`): the rows before it were the evidence it answered, and
+> folding them again would retire the narrowed rule on the next scan for
+> the region it just shed. A widening that moves a narrowed rule's scope
+> clears that mark, so the whole ledger folds again — a model's "same
+> lesson" may re-widen, but it cannot amnesty the convictions that
+> narrowed. Two more the fifth review pass found, and the sixth widened
+> both: coverage never probes a reflection *any* carried rule was
+> distilled from (a row charges every rule in the block, and a
+> self-grade would release probation and close the pair), and the
+> learner is never shown a hand-disabled rule to restate — `enabled`
+> rides through a restatement, and a disabled rule inside the batched
+> region is carried through a reply that omits it, since the learner
+> never saw it to drop it. Three corrections
+> the build recorded: scopes are conjunctive tool sets, so a standing rule
+> clean in `shell` and in `fs_write` and convicted in `http_fetch` cannot
+> say "everywhere but http_fetch" — the clean regions share no tool, the
+> intersection is standing again, and the rule *retires*, its reason
+> naming the clean regions so the lesson can be re-learned inside one; a
+> rule with no recorded support (from before the field, or from a
+> standing batch whose reflections carried no situation) has nowhere
+> narrower to go and retires as before; and a conviction with no region
+> cannot be placed and therefore cannot be narrowed away. Rows from
+> before the field carry no region and exercise nothing, so on this
+> machine every existing tally reads as ride-along until the next
+> validate pass writes placed rows. Still unbuilt from this section:
+> mid-run delivery (§17.7 item 2), surface and workspace as scope keys,
+> and a disjunctive scope — the split a narrowing cannot express today.
+
 ### 17.5 The validator these rulings are missing, and its template
 
 The tree validates at two tiers and neither is against a goal.
