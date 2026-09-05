@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "next": 1,
+  "events": [
+    {"id": "ev-lab-meeting", "account": "work", "title": "Lab meeting", "days_ahead": 2, "start_hour": 13, "minutes": 60, "location": "Room 214", "attendees": ["priya.nair@example.edu", "alex.chen@example.edu"]},
+    {"id": "ev-advising-chen", "account": "work", "title": "Advising: Alex Chen", "days_ahead": 1, "start_hour": 10, "minutes": 30, "attendees": ["alex.chen@example.edu"]},
+    {"id": "ev-seminar", "account": "work", "title": "Department seminar", "days_ahead": 4, "start_hour": 16, "minutes": 60, "location": "Auditorium"}
+  ]
+}

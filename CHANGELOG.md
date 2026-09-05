@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Fixture servers on the manifest, and the synthetic assistant home.**
+  A `[fixtures]` table on an experiment manifest names MCP servers the trial
+  home runs *instead of* the operator's: when it names any, the home's
+  `[[mcp]]` is exactly that list for every arm, each server persists under
+  the home (`fixtures/<name>/`, as `MECHA_FIXTURE_DIR`) and is seeded once,
+  a `charter` may be written over the seeded one, and the names join the
+  condition hash. That closed world opens the two owner channels the
+  principal was gated off: `outbox approve` and `tasks set` are permitted
+  under a manifest with fixtures (`experiment::SERVER_VERBS`,
+  `permitted_verb`), a release is vetted against the draft's
+  `<fixture>__` prefix and run under the driver's own `--yes`, and the
+  principal is told which fixtures its arm reaches. Two servers ship:
+  `eval/fixtures/board_server.py` (the graph's `kg_task_*` in the real
+  server's shapes, stateful, `kg_upsert` recorded and never entered) and
+  `eval/fixtures/mail_server.py` (`mecha-mail`'s surface, every send a
+  line in `sent.jsonl`, nothing delivered). `eval/fixtures/home/` is the
+  synthetic assistant home on the fictional cast — board, mailbox with one
+  injected thread, calendar, charter — with `eval/home-cases.jsonl`,
+  `eval/home-principal.toml` (release to the cast, close `task-<case id>`
+  by the grade) and `eval/home-lifetime.toml`. The manifest's relative
+  paths (servers, the principal's script and policy) resolve against the
+  checkout `exp run` starts from; the home is rendered before position 0's
+  `before_task` call so the principal's first verb finds the board.
+
 ### Added
 
 - **`mecha exp` — experiments** (`mecha_core::experiment`;
