@@ -181,20 +181,53 @@ impl RawSetpoint {
 /// reports it, which it does at the severity it deserves. The fix is the
 /// `update` skill, not a lenient parser; §11.1's containment 7 says
 /// "refusal" and is corrected here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SensorKind {
+/// One list declares the variants, [`SensorKind::ALL`] and
+/// [`SensorKind::wire`] together, so a kind that joins the enum is in the
+/// list a surface offers by construction — `ALL` used to be a hand-written
+/// array beside the enum, and a sixth variant wired through every
+/// exhaustive match but forgotten there would have compiled, parsed in
+/// TOML, and been silently absent from the web form's select (found on
+/// review). The wire word is spelled here as well as by `serde`'s
+/// `snake_case`, and a test holds the two spellings equal.
+macro_rules! sensor_kinds {
+    ($( $(#[$doc:meta])* $name:ident => $wire:literal ),* $(,)?) => {
+        #[derive(
+            Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, Deserialize,
+        )]
+        #[serde(rename_all = "snake_case")]
+        pub enum SensorKind {
+            $( $(#[$doc])* $name, )*
+        }
+
+        impl SensorKind {
+            /// Every kind, in declaration order, for a surface that lists
+            /// what an owner may pick from.
+            pub const ALL: [SensorKind; [$(SensorKind::$name),*].len()] =
+                [$(SensorKind::$name),*];
+
+            /// The wire word — `serde`'s own `snake_case` spelling, for a
+            /// message or a JSON field that wants a bare `&str`.
+            pub fn wire(self) -> &'static str {
+                match self {
+                    $( SensorKind::$name => $wire, )*
+                }
+            }
+        }
+    };
+}
+
+sensor_kinds! {
     /// How many outbox drafts are waiting on the owner. A count.
-    OutboxWaiting,
+    OutboxWaiting => "outbox_waiting",
     /// How long a staged draft has sat unreviewed. A duration.
-    OutboxAge,
+    OutboxAge => "outbox_age",
     /// How long a parked question waits for the owner's answer. A duration.
-    QuestionLatency,
+    QuestionLatency => "question_latency",
     /// How long a front-door request stays open before it is closed or
     /// answered. A duration.
-    RequestClosure,
+    RequestClosure => "request_closure",
     /// The share of runs in which the owner had to step in. A rate.
-    InterventionRate,
+    InterventionRate => "intervention_rate",
 }
 
 /// The unit a kind's setpoint is read in — fixed by the kind, never chosen
@@ -248,27 +281,6 @@ impl Setpoint {
 }
 
 impl SensorKind {
-    /// Every kind, for a surface that lists what an owner may pick from.
-    pub const ALL: [SensorKind; 5] = [
-        SensorKind::OutboxWaiting,
-        SensorKind::OutboxAge,
-        SensorKind::QuestionLatency,
-        SensorKind::RequestClosure,
-        SensorKind::InterventionRate,
-    ];
-
-    /// The wire word — `serde`'s own `snake_case` spelling, for a message
-    /// or a JSON field that wants a bare `&str`.
-    pub fn wire(self) -> &'static str {
-        match self {
-            SensorKind::OutboxWaiting => "outbox_waiting",
-            SensorKind::OutboxAge => "outbox_age",
-            SensorKind::QuestionLatency => "question_latency",
-            SensorKind::RequestClosure => "request_closure",
-            SensorKind::InterventionRate => "intervention_rate",
-        }
-    }
-
     pub fn unit(self) -> Unit {
         match self {
             SensorKind::OutboxAge | SensorKind::QuestionLatency | SensorKind::RequestClosure => {
@@ -966,6 +978,17 @@ setpoint = 0
   {"kind":"intervention_rate","unit":"rate","hint":"a rate like `0.2` or `20%`","describe":"the share of recent runs you stepped into"}
 ]"#;
     // sensor-kinds:end
+
+    /// The macro's wire word and `serde`'s `snake_case` are two spellings
+    /// of one name; every kind round-trips through both.
+    #[test]
+    fn every_kinds_wire_word_is_its_serde_spelling() {
+        for k in SensorKind::ALL {
+            let json = serde_json::to_string(&k).unwrap();
+            assert_eq!(json, format!("\"{}\"", k.wire()));
+            assert_eq!(serde_json::from_str::<SensorKind>(&json).unwrap(), k);
+        }
+    }
 
     #[test]
     fn the_marked_kinds_literal_is_what_the_server_serves() {

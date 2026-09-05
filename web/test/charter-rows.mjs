@@ -7,7 +7,7 @@
 // first cut dropped, leaving the browser the one charter surface with no
 // reading while the payload had one.
 import assert from 'node:assert/strict';
-import { readingStands, rows, sensorProblems, serialize } from '../src/lib/charter-toml.js';
+import { readingStands, rows, sensorProblems, sensorsWouldDrop, serialize } from '../src/lib/charter-toml.js';
 
 let uid = 0;
 const next = () => ++uid;
@@ -87,6 +87,20 @@ assert.deepEqual(
     { id: 'c', text: 'v', sensor: { kind: 'outbox_age', setpoint: '48h' } },
   ]),
   ['Lines 1 and 3 both carry a outbox_age sensor — keep one.']
+);
+
+
+// Only a kindless sensor closes the TOML hatch: the other problems serialise
+// faithfully and the server refuses them with the draft kept.
+assert.deepEqual(
+  sensorsWouldDrop([
+    { id: 'a', text: 't', sensor: { kind: '', setpoint: '5' } },
+    { id: 'b', text: 'u', sensor: { kind: 'outbox_age', setpoint: '' } },
+    { id: 'c', text: 'v', sensor: { kind: 'outbox_age', setpoint: '48h' } },
+    { id: 'd', text: 'w', sensor: null },
+    { id: '', text: '' },
+  ]),
+  [1]
 );
 
 console.log('charter-rows: ok');
