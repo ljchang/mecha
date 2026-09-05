@@ -1764,6 +1764,26 @@ from `52b8b0b` touches Rust only. The stale-process sweep found nothing.
 this corpus recorded the counters)`; the first rows carrying them are the
 runs from 21:58Z on. Announced to the one live peer (mecha-0c).
 
+**2026-09-05 23:42Z — #195 (the experiment task source; mecha-0c's arc,
+merged at `9246ea0`) deployed by mecha-53 at the owner's word, from
+`~/Github/mecha` on `main` at `9246ea0` (already fast-forwarded there by
+mecha-0c; clean, no `MERGE_HEAD` in any worktree, no benchmark running).**
+The range from the 21:58Z install (`87645f9`) touches
+`mecha-core/src/experiment.rs`, `mecha-cli/src/commands/{exp,eval}.rs`,
+two fixture scripts and `scripts/dojo-venv.sh` (a developer script no unit
+execs), so the binary alone. `~/.cargo/bin/mecha` reinstalled (file
+23:42:31Z; `strings` carries `the task source names no executable`, which
+the range added — a first probe on a pre-existing string proved nothing
+and was replaced, which is the lesson the `update` skill already states).
+Restarted 23:42:49Z, each verified from its own startup line in a journal
+window opened at the restart and from `/proc/<pid>/exe`: mecha-slack
+(`Connected to cosanlab as mecha. 1 owner(s), 16 thread(s)`),
+mecha-triggers (`1 trigger(s), 1 enabled · ticking every minute`),
+mecha-serve (both doors), mecha-drain (`Started`). Not restarted,
+correctly: mecha-voice-worker, mecha-parakeet, the web dist. The
+stale-process sweep found nothing. The installed binary and `main` agree
+at `9246ea0`; nothing is owed on this machine from today's merges.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
