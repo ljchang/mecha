@@ -3679,8 +3679,10 @@ dry run on the live store: 37 of 45 would recompute, 8 stay absent — six
 whose transcript no longer holds an intervention of that trigger and
 text (a compaction since, or an outbox edit with no transcript), two
 whose session is not in the store. The write itself was left to the
-owner: it changes which region batches the next `learn --auto` argues,
-and that is a store change worth a deliberate run.
+owner, since it changes which region batches the next `learn --auto`
+argues; the owner ran it at 23:12:30Z on the deployed binary — 37
+recomputed, 8 absent, learning-store commit `5767dc4`, a second dry run
+reading `0 of 8`.
 
 **2026-09-04, night — the replay tiebreak: line order decides what gets
 replayed among equals.** §11.1's last phase, built last as its own phasing
