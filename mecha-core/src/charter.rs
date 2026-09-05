@@ -206,6 +206,28 @@ pub enum Unit {
     Rate,
 }
 
+impl Unit {
+    /// The wire word, for a surface that lists what an owner may pick from.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Unit::Duration => "duration",
+            Unit::Count => "count",
+            Unit::Rate => "rate",
+        }
+    }
+
+    /// How a setpoint in this unit is spelled — the one sentence the parse
+    /// error and the web form's hint both use, so the form never proposes
+    /// a number and the refusal never disagrees with the hint.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Unit::Duration => "a duration like `24h` or `7d`",
+            Unit::Count => "a whole number",
+            Unit::Rate => "a rate like `0.2` or `20%`",
+        }
+    }
+}
+
 /// A setpoint typed by its kind.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Setpoint {
@@ -254,6 +276,18 @@ impl SensorKind {
             }
             SensorKind::OutboxWaiting => Unit::Count,
             SensorKind::InterventionRate => Unit::Rate,
+        }
+    }
+
+    /// What the kind watches, in one line, for a surface that offers the
+    /// closed set to the owner — the variant docs above, as prose.
+    pub fn describe(self) -> &'static str {
+        match self {
+            SensorKind::OutboxWaiting => "how many outbox drafts wait on you",
+            SensorKind::OutboxAge => "how long a staged draft has sat unreviewed",
+            SensorKind::QuestionLatency => "how long a parked question waits for your answer",
+            SensorKind::RequestClosure => "how long a front-door request stays open",
+            SensorKind::InterventionRate => "the share of recent runs you stepped into",
         }
     }
 
@@ -498,13 +532,9 @@ impl Charter {
                         let setpoint =
                             raw.kind.parse_setpoint(&setpoint_text).with_context(|| {
                                 format!(
-                                    "charter line `{id}`: sensor `{}` reads its setpoint as a {}",
+                                    "charter line `{id}`: sensor `{}` reads its setpoint as {}",
                                     raw.kind.wire(),
-                                    match raw.kind.unit() {
-                                        Unit::Duration => "duration like `24h` or `7d`",
-                                        Unit::Count => "whole number",
-                                        Unit::Rate => "rate like `0.2` or `20%`",
-                                    }
+                                    raw.kind.unit().hint()
                                 )
                             })?;
                         Some(Sensor {
@@ -593,6 +623,28 @@ impl Charter {
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
     }
+}
+
+/// The closed set of sensor kinds as a surface offers them to the owner —
+/// `[{kind, unit, hint, describe}]` in `SensorKind::ALL`'s order. Served by
+/// the web settings endpoint so the form's select is this list and not a
+/// copy that drifts; the hint is the parser's own unit sentence, and there
+/// is deliberately no default kind and no default setpoint in it — the page
+/// proposes nothing, the owner types both (§11.1's author rule).
+pub fn sensor_kinds_json() -> serde_json::Value {
+    serde_json::Value::Array(
+        SensorKind::ALL
+            .iter()
+            .map(|k| {
+                serde_json::json!({
+                    "kind": k.wire(),
+                    "unit": k.unit().wire(),
+                    "hint": k.unit().hint(),
+                    "describe": k.describe(),
+                })
+            })
+            .collect(),
+    )
 }
 
 /// The comments-only template a surface may write when no charter exists
@@ -892,6 +944,28 @@ setpoint = 0
         let err = format!("{:#}", Charter::parse(raw).unwrap_err());
         assert!(err.contains("charter line `waits`"), "{err}");
         assert!(err.contains("setpoint of zero"), "{err}");
+    }
+
+    /// The list a form offers is every kind, each with its unit's own hint
+    /// — the sentence the parser's refusal uses — and no value: a default
+    /// in this list would be the page proposing a number.
+    #[test]
+    fn the_kinds_a_form_offers_are_every_kind_with_the_parsers_own_hint_and_no_default() {
+        let kinds = sensor_kinds_json();
+        let arr = kinds.as_array().unwrap();
+        assert_eq!(arr.len(), SensorKind::ALL.len());
+        for (v, k) in arr.iter().zip(SensorKind::ALL) {
+            assert_eq!(v["kind"], k.wire());
+            assert_eq!(v["unit"], k.unit().wire());
+            assert_eq!(v["hint"], k.unit().hint());
+            assert!(v.get("setpoint").is_none() && v.get("default").is_none());
+            // The refusal names the same hint the form shows.
+            let err = format!("{:#}", Charter::parse(&format!(
+                "[[line]]\nid = \"x\"\ntext = \"t\"\n[line.sensor]\nkind = \"{}\"\nsetpoint = \"nonsense\"\n",
+                k.wire()
+            )).unwrap_err());
+            assert!(err.contains(k.unit().hint()), "{err}");
+        }
     }
 
     #[test]

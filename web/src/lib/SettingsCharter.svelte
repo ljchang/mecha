@@ -1,6 +1,6 @@
 <script>
   import { tick } from 'svelte';
-  import { rows, serialize as toToml, slugify, splitHeader } from './charter-toml.js';
+  import { rows, sensorProblems, serialize as toToml, slugify, splitHeader } from './charter-toml.js';
 
   // The charter pane. The lines are edited in place — tap one to open it,
   // drag its grip to re-rank — and nothing reaches disk until an explicit
@@ -143,8 +143,27 @@
       else if (seen.has(id)) out.push(`Two lines share the id “${id}”.`);
       else seen.set(id, i);
     }
+    out.push(...sensorProblems(lines));
     return out;
   });
+
+  // The closed set the server offers, with each unit's hint. Absent on an
+  // older server, in which case the form stands down and says so — the
+  // page never carries its own copy of the list, so a kind the binary does
+  // not know cannot be offered here.
+  const sensorKinds = $derived(charter?.sensor_kinds ?? null);
+  const kindInfo = (kind) => sensorKinds?.find((k) => k.kind === kind) ?? null;
+
+  // A sensor is the owner's, typed here exactly as it would be typed in the
+  // TOML: the page fills in neither the kind nor the setpoint, and the hint
+  // beside the field is the parser's own sentence for the unit, not a value.
+  function addSensor(line) {
+    line.sensor = { kind: '', setpoint: '' };
+  }
+  function removeSensor(line) {
+    line.sensor = null;
+    line.reading = null;
+  }
 
   const budget = $derived(charter?.budget ?? 2000);
 
@@ -443,8 +462,47 @@
             placeholder="What this priority actually asks for."
             aria-label="the priority, in your own words"
           ></textarea>
+          {#if line.sensor}
+            <!-- The sensor form. Author rule, not verb rule: the owner types
+                 the kind and the setpoint, and the page proposes neither —
+                 the select opens on "choose a kind", the setpoint field is
+                 empty, and the hint under it is the parser's own unit
+                 sentence. The server validates with the same reader every
+                 run loads through, and a refused save keeps the draft. -->
+            <div class="sensorform">
+              {#if sensorKinds}
+                <select class="idfield" bind:value={line.sensor.kind} aria-label="what the sensor watches">
+                  <option value="">choose a kind</option>
+                  {#each sensorKinds as k (k.kind)}
+                    <option value={k.kind}>{k.kind} — {k.describe}</option>
+                  {/each}
+                </select>
+                <input
+                  class="idfield"
+                  bind:value={line.sensor.setpoint}
+                  spellcheck="false"
+                  autocapitalize="off"
+                  placeholder="setpoint"
+                  aria-label="the setpoint, in the kind's unit"
+                />
+                <div class="sub hint">
+                  {#if kindInfo(line.sensor.kind)}
+                    setpoint: {kindInfo(line.sensor.kind).hint} — what the line means by "short" or "few"
+                  {:else}
+                    pick what the line watches; the setpoint's unit follows from it
+                  {/if}
+                </div>
+              {:else}
+                <div class="sub hint">this server offers no sensor kinds here — edit the sensor as TOML</div>
+              {/if}
+              <button class="btn small" onclick={() => removeSensor(line)}>Remove sensor</button>
+            </div>
+          {/if}
           <div class="row-actions">
             <button class="btn small" onclick={() => (editing = null)}>Done</button>
+            {#if !line.sensor && sensorKinds}
+              <button class="btn small" onclick={() => addSensor(line)}>+ Add sensor</button>
+            {/if}
             <button
               class="btn small danger"
               class:armed={deleteArmed === line.uid}
@@ -458,19 +516,17 @@
             {line.text || 'Empty — tap to write it.'}
           </button>
         {/if}
-        {#if line.sensor}
-          <!-- Read-only here: the owner's own setpoint, in their spelling,
-               kept across a save by `serialize`. Changing or adding one is
-               the TOML editor's job — a form for it would be this page
-               proposing a number. The current reading beside it is §11.1
-               containment 5's first guard: a setpoint in the wrong unit
-               shows as always past it, here, where the owner is editing. -->
+        {#if line.sensor && editing !== line.uid}
+          <!-- The owner's own setpoint, in their spelling, kept across a
+               save by `serialize`; tap the line to change it. The current
+               reading beside it is §11.1 containment 5's first guard: a
+               setpoint in the wrong unit shows as always past it, here,
+               where the owner is editing. -->
           <div class="sensor" title="an observable mecha reads from its own stores; runs that touch what it watches are attributed to this line — the reading never enters a prompt">
-            sensor · {line.sensor.kind} · setpoint {line.sensor.setpoint}
+            sensor · {line.sensor.kind || 'no kind yet'} · setpoint {line.sensor.setpoint || '—'}
             {#if line.reading}
               · <span class:over={line.reading.state === 'observed' && line.reading.over}>reading {line.reading.summary}</span>
             {/if}
-            · edit as TOML to change
           </div>
         {/if}
       </div>
@@ -650,6 +706,21 @@
   }
   .sensor .over {
     color: var(--warn, #e0a458);
+  }
+  .sensorform {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 8px;
+    margin: 6px 0 4px 36px;
+    align-items: center;
+  }
+  .sensorform .hint,
+  .sensorform .btn {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  .sensorform .hint {
+    font-size: 11.5px;
   }
   .idbtn {
     font-family: var(--mono);

@@ -223,6 +223,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays without one and is listed with the reason; a situation recorded
   at mining is never overwritten; `--dry-run` reports without writing.
   The recomputation is stamped on the record (`situation_recomputed_at`).
+- **A sensor can be authored in the web charter editor.** Under an open
+  line: a select over the closed set of kinds the server serves, an empty
+  setpoint field with the parser's own unit hint, and remove. Nothing is
+  prefilled — the page proposes no kind and no number — and a bad setpoint
+  is refused at the save by the same reader every run loads through, with
+  the line named. A half-filled sensor is flagged beside the line before
+  the save rather than dropped silently.
 
 ### Fixed
 

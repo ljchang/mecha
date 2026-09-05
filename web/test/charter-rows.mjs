@@ -7,7 +7,7 @@
 // first cut dropped, leaving the browser the one charter surface with no
 // reading while the payload had one.
 import assert from 'node:assert/strict';
-import { rows, serialize } from '../src/lib/charter-toml.js';
+import { rows, sensorProblems, serialize } from '../src/lib/charter-toml.js';
 
 let uid = 0;
 const next = () => ++uid;
@@ -40,5 +40,24 @@ const toml = serialize('', out);
 assert.match(toml, /kind = "outbox_age"/);
 assert.match(toml, /setpoint = "24h"/);
 assert.doesNotMatch(toml, /reading|observed|past the/);
+
+
+// A sensor the owner typed in the form is written exactly as one read from
+// the file — the same two keys — and a half-filled one is named before the
+// save rather than dropped silently by `serialize`.
+const typed = [{ id: 'q', text: 'Answer fast.', sensor: { kind: 'question_latency', setpoint: '12h' }, reading: null }];
+assert.match(serialize('', typed), /\[line\.sensor\]\nkind = "question_latency"\nsetpoint = "12h"/);
+assert.deepEqual(sensorProblems(typed), []);
+assert.deepEqual(sensorProblems([{ id: 'a', text: 't', sensor: { kind: '', setpoint: '' } }]), [
+  "Line 1's sensor needs a kind and a setpoint, or remove it.",
+]);
+assert.deepEqual(sensorProblems([{ id: 'a', text: 't', sensor: { kind: 'outbox_age', setpoint: ' ' } }]), [
+  "Line 1's sensor has no setpoint.",
+]);
+assert.deepEqual(sensorProblems([{ id: 'a', text: 't', sensor: { kind: '', setpoint: '3' } }]), ["Line 1's sensor has no kind."]);
+assert.deepEqual(sensorProblems([{ id: 'a', text: 't', sensor: null }, { id: 'b', text: 'u' }]), []);
+// And an empty sensor writes no table: the problem above is the only thing
+// standing between the owner and a silent drop.
+assert.doesNotMatch(serialize('', [{ id: 'a', text: 't', sensor: { kind: '', setpoint: '' } }]), /line\.sensor/);
 
 console.log('charter-rows: ok');

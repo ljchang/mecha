@@ -155,3 +155,21 @@ export function rows(lines, nextUid) {
     reading: l.reading ?? null,
   }));
 }
+
+/// What a half-filled sensor would cost silently: `serialize` writes no table
+/// for a sensor without a kind, so a form the owner opened and left empty
+/// would vanish on save with nothing said, and a kind with no setpoint would
+/// reach the server only to be refused after the two-tap save. Said here
+/// instead, beside the line, before the save is armed.
+export function sensorProblems(lines) {
+  const out = [];
+  for (const [i, l] of lines.entries()) {
+    if (!l.sensor) continue;
+    const kind = String(l.sensor.kind ?? '').trim();
+    const setpoint = String(l.sensor.setpoint ?? '').trim();
+    if (!kind && !setpoint) out.push(`Line ${i + 1}'s sensor needs a kind and a setpoint, or remove it.`);
+    else if (!kind) out.push(`Line ${i + 1}'s sensor has no kind.`);
+    else if (!setpoint) out.push(`Line ${i + 1}'s sensor has no setpoint.`);
+  }
+  return out;
+}
