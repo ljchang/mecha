@@ -201,3 +201,16 @@ export function sensorProblems(lines) {
   }
   return out;
 }
+
+/// The one shape `serialize` loses: a sensor with no kind writes no table.
+/// Kept apart from `sensorProblems`, which also names what the *server*
+/// refuses with the draft kept — an empty setpoint, two lines of one kind —
+/// because only a drop should close the TOML escape hatch; the rest keep
+/// it open exactly as an empty id or text does (found on review: the hatch
+/// was gated on every sensor problem, and a duplicate kind told the owner a
+/// half-filled sensor would be dropped when nothing would).
+export function sensorsWouldDrop(lines) {
+  return lines
+    .map((l, i) => (l.sensor && !String(l.sensor.kind ?? '').trim() ? i + 1 : null))
+    .filter((n) => n !== null);
+}

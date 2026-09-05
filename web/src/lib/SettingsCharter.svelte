@@ -4,6 +4,7 @@
     readingStands,
     rows,
     sensorProblems,
+    sensorsWouldDrop,
     serialize as toToml,
     slugify,
     splitHeader,
@@ -613,7 +614,7 @@
     <button
       class="btn"
       class:ghost={!blocked}
-      disabled={!blocked && dirty && sensorProblems(lines).length > 0}
+      disabled={!blocked && dirty && sensorsWouldDrop(lines).length > 0}
       onclick={() => {
         // Carry unsaved list edits across rather than silently reverting to
         // what is on disk.
@@ -622,12 +623,15 @@
         saveError = null;
       }}>Edit as TOML</button
     >
-    {#if !blocked && dirty && sensorProblems(lines).length > 0}
+    {#if !blocked && dirty && sensorsWouldDrop(lines).length > 0}
       <!-- Said here, not in a title: a disabled button swallows its title in
-           every engine. Only the sensor problems gate the hatch — an empty
-           id or text serialises faithfully and the server refuses it with
-           the draft kept, so those keep the hatch open. -->
-      <span class="sub hint">fix the half-filled sensor first — the TOML draft would drop it</span>
+           every engine. Only a sensor `serialize` would drop gates the
+           hatch — a kindless one; an empty id, text or setpoint and two
+           lines of one kind serialise faithfully and the server refuses
+           them with the draft kept, so those keep the hatch open. -->
+      <span class="sub hint">
+        line{sensorsWouldDrop(lines).length === 1 ? '' : 's'} {sensorsWouldDrop(lines).join(', ')}: give the sensor a kind or remove it — the TOML draft would drop it
+      </span>
     {/if}
   </div>
 
