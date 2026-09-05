@@ -3626,7 +3626,19 @@ lacked the focus filter `record` had, so a window ending in a front-end
 tool would have bought a probe whose row landed unplaced, forever; and
 the twin test on "scope changed" matched a pending learn proposal that
 had *widened* the convicted rule, so it now asks whether the proposal
-makes the verdict's own change.
+makes the verdict's own change. The fourth pass found three: a coverage
+probe could grade a rule against the reflection it was distilled from,
+and that self-grade released probation and closed the pair for good —
+`cover_selection` now passes over a rule's own `sources`; a verbatim
+restatement in a shed region re-widened a narrowed rule while
+`narrowed_at` kept the convictions that shed it buried, so a widening
+that moves the scope clears the narrowing mark and the whole ledger
+folds again; and the learner's outside section included hand-disabled
+rules under an instruction to restate them verbatim while `finalize_rules`
+did not carry `enabled`, so one reply re-enabled an owner's off switch —
+disabled rules are no longer shown and `enabled` rides through a
+restatement like `probation` does. A fifth pass is the one that
+counts.
 `ValidationRecord::region` is the probed reflection's window (not the
 run's registry, which every run shares), `RuleTally::regions` folds the
 counts per region with `in_scope` and `attributed_against` over them,

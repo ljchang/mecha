@@ -1919,7 +1919,13 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > and the scan thereafter folds only the ledger since the narrowing
 > (`tally_for`): the rows before it were the evidence it answered, and
 > folding them again would retire the narrowed rule on the next scan for
-> the region it just shed. Three corrections
+> the region it just shed. A widening that moves a narrowed rule's scope
+> clears that mark, so the whole ledger folds again — a model's "same
+> lesson" may re-widen, but it cannot amnesty the convictions that
+> narrowed. Two more the fifth review pass found: coverage never probes
+> a rule's own source reflection (a self-grade would release probation
+> and close the pair), and the learner is never shown a hand-disabled
+> rule to restate, since `enabled` now rides through a restatement. Three corrections
 > the build recorded: scopes are conjunctive tool sets, so a standing rule
 > clean in `shell` and in `fs_write` and convicted in `http_fetch` cannot
 > say "everywhere but http_fetch" — the clean regions share no tool, the

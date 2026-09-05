@@ -357,8 +357,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         args.trigger.iter().map(String::as_str).collect()
     };
     let all = store.reflexions()?;
-    let mut reflexions: Vec<_> =
-        select_probe_corpus(all.clone(), &wanted_triggers, args.unprocessed_only);
+    // The cover pool needs the corpus again; every other pass does not.
+    let for_cover = (args.cover > 0).then(|| all.clone());
+    let mut reflexions: Vec<_> = select_probe_corpus(all, &wanted_triggers, args.unprocessed_only);
     // What every ledger row this run charges its observation to. Loaded once:
     // the block was rendered from this same state, and a mid-run rules change
     // would make rows describe a set that was never measured.
@@ -368,7 +369,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // point is the region, and marked so the report can tell a row bought
     // for coverage from one on fresh evidence.
     let mut covering: BTreeMap<String, String> = BTreeMap::new();
-    if args.cover > 0 {
+    if let Some(all) = for_cover {
         let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
         let pool = select_probe_corpus(
             all,
@@ -848,7 +849,14 @@ fn cover_selection(
                 if n >= per_pair {
                     break;
                 }
-                if r.domain != *domain || taken.contains(&r.id) {
+                // Never the rule's own sources: the with-rules arm would
+                // replay the very correction the rule was distilled from,
+                // and one memorised "improved" would both release the D1
+                // leash and close the pair to coverage for good (found on
+                // review). The main pass keeps this out with
+                // `--unprocessed-only`; lifting that here is for regions
+                // with nothing fresh, not for self-grading.
+                if r.domain != *domain || taken.contains(&r.id) || rule.sources.contains(&r.id) {
                     continue;
                 }
                 // The same window `record` would place the row in: one with
@@ -1173,6 +1181,29 @@ mod tests {
         assert!(cover_selection(&only, &tallies, &asked, &Default::default(), 1).is_empty());
         let out = cover_selection(&only, &tallies, &pool, &Default::default(), 1);
         assert_eq!(out[0].0.id, "c-shell");
+        // A rule's own source reflection is passed over for that rule — a
+        // probe replaying the correction it was distilled from grades
+        // nothing — and stays eligible for another rule. Fails on the
+        // unfiltered pool (found on review).
+        let from_c = Rule {
+            sources: vec!["c-shell".into()],
+            ..only[0].1.clone()
+        };
+        let other = Rule {
+            scope: Some(sit(&["shell"])),
+            ..rule("Other shell.", Some("r-sh2"))
+        };
+        let two = vec![
+            ("behavior".to_string(), from_c),
+            ("behavior".to_string(), other),
+        ];
+        let shell_only = vec![refl("c-shell", &["shell"], false)];
+        let out = cover_selection(&two, &tallies, &shell_only, &Default::default(), 1);
+        let picks: Vec<(&str, &str)> = out
+            .iter()
+            .map(|(r, why)| (r.id.as_str(), why.as_str()))
+            .collect();
+        assert_eq!(picks, vec![("c-shell", "rule r-sh2 in shell")]);
         assert!(
             cover_selection(&flat, &tallies, &pool, &Default::default(), 0).is_empty(),
             "a zero budget adds nothing"

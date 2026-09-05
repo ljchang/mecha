@@ -243,19 +243,20 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
     // Where it was seen to hold, when that is more than where it loads —
     // a widened rule names each sub-region it widened over; a narrowed one
     // says what it shed.
-    let support = if r.support.len() > 1
+    // Standing support is the old scope of a widened pre-field rule and
+    // says nothing a `standing` scope does not already say.
+    let seen: Vec<String> = r
+        .support
+        .iter()
+        .filter(|s| !s.is_standing())
+        .map(|s| s.describe())
+        .collect();
+    let support = if seen.len() > 1
         || r.support
             .first()
-            .is_some_and(|s| Some(s) != r.scope.as_ref())
+            .is_some_and(|s| !s.is_standing() && Some(s) != r.scope.as_ref())
     {
-        format!(
-            " · seen in {}",
-            r.support
-                .iter()
-                .map(|s| s.describe())
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
+        format!(" · seen in {}", seen.join("; "))
     } else {
         String::new()
     };
@@ -611,7 +612,7 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
             // to `mecha proposals` and to doctor — forever. Superseded, not
             // accepted: nobody ruled on the paper, the direct path overtook
             // it. A twin is one whose only change to these rules is the
-            // retirement or narrowing applied here (`proposal_changes_rule`),
+            // retirement or narrowing applied here (`proposal_matches_verdict`),
             // and such a proposal holds no reflections, so there is nothing
             // to release.
             for mut p in pending_twins {
