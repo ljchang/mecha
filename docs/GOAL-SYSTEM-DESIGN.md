@@ -2063,9 +2063,12 @@ follow from facts in the tree and stand as written. None is built.
    reopen was not read at all — so the precondition could not be met from
    the store. `ToolCtx::step_counts` is minted per run by the loop (a
    sensor, not a lever), `todo` counts `Finding::Null` and the
-   completed-to-in-progress transition into it, `RunStats::step_nulls` and
-   `step_reopens` record them (`Option`, unknown before the sensor), and
-   `mecha sessions health` reads the rate and the totals over sensed runs.
+   completed-to-in-progress transition into it beside every completion,
+   `RunStats::step_nulls`, `step_reopens` and `step_completions` record
+   them (`Option`, unknown before the sensor), and `mecha sessions health`
+   reads the rates over runs that completed a plan step — not over every
+   run since the sensor, or the number would move with how often the
+   model plans at all — with the totals beside.
    The reading the ruling wants is a few nights of records away; the
    delivery line stays off until it is taken.
 3. **The ask, by surface — ruled 2026-09-04.** `ask_user` is registered only by a front-end

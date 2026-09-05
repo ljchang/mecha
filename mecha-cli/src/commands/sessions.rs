@@ -1306,15 +1306,27 @@ fn health(
     // The null-step and restart counters §17.7 item 2 wants read before a
     // mid-run rule delivery is switched on. Unknown before the sensor,
     // never a dash that reads as zero.
-    let (sensed_steps, nulls, reopens) = corpus.step_totals();
-    if sensed_steps > 0 {
-        // A step total beside a run share, each labelled as what it is: the
-        // boredom line above keeps one denominator, this one has two.
+    let steps = corpus.step_totals();
+    if steps.planned > 0 {
+        // Step totals beside run shares, each labelled as what it is, and
+        // the denominator named: runs that completed a plan step, not every
+        // run since the sensor.
         println!(
-            "  plan steps          {nulls} null step(s) in {} of runs, {reopens} reopened step(s) \
-             in {} of runs — over {sensed_steps} run(s) that recorded it",
+            "  plan steps          {} null and {} reopened of {} completed step(s); a null in {} \
+             and a reopen in {} of the {} run(s) that completed one (of {} that recorded the \
+             sensor)",
+            steps.nulls,
+            steps.reopens,
+            steps.completions,
             pct(corpus.step_null_rate()),
-            pct(corpus.step_reopen_rate())
+            pct(corpus.step_reopen_rate()),
+            steps.planned,
+            steps.sensed
+        );
+    } else if steps.sensed > 0 {
+        println!(
+            "  plan steps          — ({} run(s) recorded the sensor; none completed a plan step)",
+            steps.sensed
         );
     } else {
         println!("  plan steps          — (no run in this corpus recorded the counters)");
@@ -1355,6 +1367,7 @@ fn health(
 fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     let (cost, priced) = corpus.cost_usd();
     let (overflows, sensed) = corpus.context_overflows();
+    let steps = corpus.step_totals();
     serde_json::json!({
         "runs": corpus.len(),
         "sessions_read": corpus.sessions_read,
@@ -1380,9 +1393,11 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         // steps per sensed run. `null` before any run carried the sensor.
         "step_null_rate": corpus.step_null_rate(),
         "step_reopen_rate": corpus.step_reopen_rate(),
-        "runs_with_step_sensor": corpus.step_totals().0,
-        "step_nulls": corpus.step_totals().1,
-        "step_reopens": corpus.step_totals().2,
+        "runs_with_step_sensor": steps.sensed,
+        "runs_that_completed_a_step": steps.planned,
+        "step_completions": steps.completions,
+        "step_nulls": steps.nulls,
+        "step_reopens": steps.reopens,
         "cost_usd": cost,
         "runs_priced": priced,
         "by_model": corpus

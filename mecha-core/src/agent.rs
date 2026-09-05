@@ -1186,6 +1186,9 @@ pub struct RunOutcome {
     /// `ToolCtx::step_counts`, minted per run.
     pub step_nulls: u32,
     pub step_reopens: u32,
+    /// Completed-step transitions — the denominator the two above are read
+    /// against; a run with none had no plan the counters could speak to.
+    pub step_completions: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -1482,7 +1485,7 @@ impl Agent {
             &run_scoped
         };
         // Counted here rather than by the builders, for the same reason the
-        // snapshot below is: the loop returns from six places, and the count
+        // snapshot below is: the loop returns from five places, and the count
         // lives in a local behind all of them.
         let started = std::time::Instant::now();
         let mut context_overflows = 0u32;
@@ -1507,7 +1510,7 @@ impl Agent {
         let mut outcome = ran?;
         outcome.duration_secs = Some(started.elapsed().as_secs_f64());
         outcome.context_overflows = context_overflows;
-        // One place, after every exit. The loop returns from six of them, and
+        // One place, after every exit. The loop returns from five of them, and
         // a snapshot attached at five is worse than one attached at none —
         // a field that is present for most runs reads as a sampling failure
         // for the rest rather than as the plumbing gap it is.
@@ -2011,6 +2014,7 @@ impl Agent {
                     step_escalations_revised: 0,
                     step_nulls: 0,
                     step_reopens: 0,
+                    step_completions: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -3004,6 +3008,7 @@ impl Agent {
             step_escalations_revised: 0,
             step_nulls: 0,
             step_reopens: 0,
+            step_completions: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -3147,6 +3152,7 @@ impl Agent {
             step_escalations_revised: 0,
             step_nulls: 0,
             step_reopens: 0,
+            step_completions: 0,
             stop_cause,
             compactions,
             cost_usd: self.cost(&usage),
@@ -4053,24 +4059,28 @@ fn emit_done(
     boredom_notices: u32,
     step_escalations_attempted: u32,
     step_escalations_revised: u32,
-    step_counts: (u32, u32),
+    step_counts: (u32, u32, u32),
 ) {
     outcome.context_overflows = context_overflows;
     outcome.boredom_notices = boredom_notices;
     outcome.step_escalations_attempted = step_escalations_attempted;
     outcome.step_escalations_revised = step_escalations_revised;
-    (outcome.step_nulls, outcome.step_reopens) = step_counts;
+    (
+        outcome.step_nulls,
+        outcome.step_reopens,
+        outcome.step_completions,
+    ) = step_counts;
     emit(events, AgentEvent::Done(Box::new(outcome.clone())));
 }
 
-/// The run's step counters as of now — `(nulls, reopens)` — or zeros for a
-/// context with no sensor, which `run_in` never produces.
-fn step_counts_of(cx: &RunContext) -> (u32, u32) {
+/// The run's step counters as of now — `(nulls, reopens, completions)` —
+/// or zeros for a context with no sensor, which `run_in` never produces.
+fn step_counts_of(cx: &RunContext) -> (u32, u32, u32) {
     cx.tools
         .step_counts
         .as_ref()
         .map(|c| c.snapshot())
-        .unwrap_or((0, 0))
+        .unwrap_or((0, 0, 0))
 }
 
 fn emit(events: &Option<UnboundedSender<AgentEvent>>, event: AgentEvent) {
@@ -6589,6 +6599,7 @@ mod tests {
             step_escalations_revised: 0,
             step_nulls: 0,
             step_reopens: 0,
+            step_completions: 0,
             ..outcome.clone()
         });
         assert_eq!(clean.context_overflows, Some(0));
@@ -7374,9 +7385,11 @@ mod tests {
         let outcome = agent.run(&mut convo, None).await.unwrap();
         assert_eq!(outcome.step_nulls, 1, "completed with no call behind it");
         assert_eq!(outcome.step_reopens, 1, "then set back to in progress");
+        assert_eq!(outcome.step_completions, 1, "one completed-step transition");
         let stats = crate::session::RunStats::from(&outcome);
         assert_eq!(stats.step_nulls, Some(1));
         assert_eq!(stats.step_reopens, Some(1));
+        assert_eq!(stats.step_completions, Some(1));
     }
 
     /// The review finding: the escalation's own thresholds are argued, not
