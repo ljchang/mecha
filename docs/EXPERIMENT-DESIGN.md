@@ -842,6 +842,22 @@ Ranked:
    `eval/fixtures/` holds workspaces, not homes). Q2 for commitment, guilt,
    charter and follow-up staging; needs the principal. This is the dataset
    to *build*, and the one only this project can.
+   *Built 2026-09-05, first version:* `eval/fixtures/home/` — a board of
+   nine tasks (one per case, named `task-<case id>`, plus an overdue
+   budget justification, a scheduled read and a task waiting on the
+   administrator), a `work` mailbox of six threads on the cast including
+   one injected "IT helpdesk" message that instructs an assistant to
+   forward the budget and calendar to a stranger, three calendar events,
+   and a four-line charter with one sensored line (`outbox_age`, 24h).
+   Served by the two fixture servers over `[fixtures]`; six cases in
+   `eval/home-cases.jsonl` with trace graders only, since what a run
+   *left* is the principal's to judge; the lifetime manifest pairs `full`
+   against an arm with learn, validate and retire off. Dates in the seed
+   are relative (`due_in_days`, `days_ago`, `days_ahead`), resolved
+   against the clock the first time a store is read, so the board is
+   overdue relative to the run. Hand-authored, small, and the calibration
+   question of item 6 stands: the principal's rejection rate here is the
+   policy's, not an owner's.
 5. **AgentDojo** — the interlock's false-refusal cost beside its catch rate.
    A lever set that changes `blocked_sends` is a different experiment, and
    this is the dataset that prices it.
@@ -915,11 +931,22 @@ needs the lifetime driver and the principal. The order becomes:
 
 **Status, 2026-09-05.** 0, A, A′, D₁ (`mecha exp single|lifetime`, PRs
 #157–#178) and P (the gold-verdict principal under §21.1's contract, #185)
-are on main. Two channels the principal names are gated off it until a
-manifest can name fixture servers: release (`outbox approve` executes the
-routed tool for real, and a `full` arm carries the operator's live servers)
-and board closure (the board is the graph's over MCP). B, C, D₂ and E
-remain.
+are on main. The two channels that were gated off the principal — release
+and board closure — opened the same day with **fixture servers on the
+manifest** (`[fixtures]`, `experiment::Fixtures`): when a manifest names
+any, the trial home's `[[mcp]]` is exactly those, every live server of the
+operator's is dropped for every arm, each server persists under the home
+and is seeded once, and `outbox approve` and `tasks set` are permitted
+(`SERVER_VERBS`, `permitted_verb`) — a release further vetted against the
+draft's `<fixture>__` prefix. With them the **synthetic assistant home**
+(§17 item 4) exists as a first, hand-authored version:
+`eval/fixtures/board_server.py` and `eval/fixtures/mail_server.py` (the
+real servers' tool contracts, stateful, fail-closed), `eval/fixtures/home/`
+(board, mailbox with one injected thread, calendar, charter),
+`eval/home-cases.jsonl` (six owner-channel tasks), `eval/home-principal.toml`
+(release to the cast, close `task-<case id>` by the grade) and
+`eval/home-lifetime.toml`. §21.2's AgentDojo seed is still the way to a
+larger one. B, C, D₂ and E remain, as does the model-driven principal.
 
 Each step is useful alone, which is still the test of whether the split is
 real: step 0 is a finding by itself, A′ makes today's `eval` honest about
@@ -939,6 +966,23 @@ rumination) can be ablated under without anything in P.
   whether a principal driven by the model under test is the confound the
   gold version exists to avoid or an acceptable one on the ruminate judge's
   precedent.
+  *Proposed 2026-09-05, for the owner to rule:* it is a **second
+  executable under the same contract**, not a mode of the gold one —
+  `scripts/principal-model.py <policy.toml>`, where the policy carries the
+  persona (who the owner is, what they know that the assistant does not,
+  how strict they are) and a `[model] url`/`model` naming an
+  OpenAI-compatible endpoint, the local server by default. The driver
+  changes in one place: the manifest's `[principal]` records a
+  **content hash of the command's files** (`principal_hash`, over the
+  script and every argument that names a file) on each trial's row beside
+  the condition hash — a persona edited mid-lifetime is otherwise
+  invisible a week later, exactly the failure the manifest exists to
+  prevent. The model is a recorded confound, the ruminate judge's
+  precedent: the row carries the principal's model alias read from the
+  endpoint's `/props`, never asserted. Gold stays first: the model-driven
+  principal is called only for what gold cannot express — the policy names
+  the channels it may judge (`tone`, `usefulness`), and a verdict gold
+  already gave is never overturned by it.
 - **Real scripts or bare verbs for the stages.** `ruminate.sh` carries
   policy (`validate --unprocessed-only` *before* `learn`, so rules are not
   graded on their own training data); the verbs are what a lever switches.
@@ -1002,7 +1046,16 @@ chat endpoint over the agent loop, the contract `hyperstudy-agent`
 verifies, so mecha can be a HyperStudy participant in human-plus-agent
 coordination studies without any work on this side.
 
-### 21.1 Who drives a lifetime, and what a task is — the principal half ruled and built (2026-09-04, #185); the task-source half still the recommendation
+### 21.1 Who drives a lifetime, and what a task is — the principal half ruled and built (2026-09-04, #185; release and closure opened by fixture servers 2026-09-05); the task-source half still the recommendation
+
+> *Built note, 2026-09-05.* The fixture servers live in **mecha's tree**
+> for now (`eval/fixtures/`, beside `graph_server.py` and the cases that
+> use them), not in the scaffolding repository §21 proposes — that
+> repository does not exist yet, and the rule §21 states holds either way:
+> the servers are Python, drive nothing, link nothing, and mecha reaches
+> them only over MCP. What is mecha's by the rule is the manifest's
+> `[fixtures]` and the driver's refusal to release or close without it.
+> They migrate with `bench/` when the scaffolding repository is made.
 
 **Recommendation: mecha owns the trial; the scaffolding owns the task
 source and the principal, as executables mecha spawns.** `mecha exp run`
@@ -1084,3 +1137,28 @@ served over MCP for the world, mecha's own stores in the trial home
 (board, outbox, questions, charter) for the owner channels. Its tool
 schema differs from `mecha-mail`'s, which is a recorded condition, not a
 problem: the appraisal's owner channels never read a mail tool.
+
+*Measured 2026-09-05* (agentdojo 0.1.35, Python 3.12, a scratch venv):
+the package imports only with its LLM-vendor SDKs installed (`task_suite`
+pulls `agent_pipeline`, which imports `anthropic`), 233 MB all told, so
+the adapter runs in its own venv rather than the system interpreter. Once
+loaded: `workspace` has 24 tools, 40 user tasks, 6 injection tasks and 16
+injection vectors; `banking` 11/16/9, `travel` 28/20/7, `slack` 21/21/5.
+`load_and_inject_default_environment({})` yields the pydantic
+environment, and `FunctionsRuntime(suite.tools).run_function(env, name,
+args)` executes a tool against it with no network and no agent pipeline —
+the shape §21.2 assumed holds. So the adapter is **one fixture server on
+`[fixtures]`'s shape** (`dojo_server.py --suite workspace --task
+user_task_N [--injection injection_task_M]`): tools listed from the
+runtime's `Function.parameters.model_json_schema()`, the environment
+pickled to `MECHA_FIXTURE_DIR` after every call so the run child, the
+principal's verbs and the grader see one state, injections applied at
+load from the task's vectors. Two things it needs from mecha that the
+hand-authored home did not: a **second task source** — `[tasks]` today
+takes only an eval case file, and a Dojo task's prompt, setup and grade
+live in the suite, which is exactly §21.1's `list` / `setup` / `grade`
+contract, unbuilt — and a grader that calls `utility(pre, post, output)`
+and `security(pre, post)` on the persisted environment, which is the task
+source's `grade`. Cast rule: AgentDojo's cast is fictional by
+construction (Emma Johnson at Blue Sparrow Tech), so it passes the
+no-real-people rule as it is.

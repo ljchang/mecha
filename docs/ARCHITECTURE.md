@@ -3393,15 +3393,28 @@ comparison over a chosen set**, with the design written before the run.
   servers; the `mecha` children that run its verbs get the run child's
   allowlist. The principal is pure; **the driver runs each verb as a child `mecha`
   against the trial home, from the closed set `PRINCIPAL_VERBS`**
-  (`tasks set|steer|stop`, `outbox reject|edit`,
-  `questions answer|abandon` — never a session, a reflection or a rule,
-  and **never a release**: `outbox approve` executes the routed tool for
-  real, and a `full` arm carries the operator's live servers into the
-  trial home — the store is isolated, the effect is not — so a
-  principal that released would send from a real account, which crosses
-  a human structurally; release joins the set when a manifest can name
-  fixture servers, as board closure waits on a fixture graph (found on
-  review);
+  (`tasks set|steer|stop`, `outbox approve|reject|edit`,
+  `questions answer|abandon` — never a session, a reflection or a rule.
+  **Two of them reach a server** (`experiment::SERVER_VERBS`: `outbox
+  approve` executes the routed tool for real, `tasks set` writes the
+  board, which is the graph's over MCP) **and are permitted only under a
+  manifest that names fixture servers** (`permitted_verb`): with none, a
+  `full` arm carries the operator's live servers into the trial home —
+  the store is isolated, the effect is not — so a principal that released
+  would send from a real account and one that closed would close a real
+  task, which crosses a human structurally (found on review). A release
+  is vetted further against the draft it names: the draft must be pending
+  in this home and resolved by **the CLI's own selection rule**
+  (`outbox::select`, over the whole store — one rule, never a mirror of
+  it), named singly (`--all` refused), and its tool must carry a fixture
+  server's `<name>__` prefix (`release_target_is_fixture`) — a builtin
+  sink or an unprefixed server's tool lands where the driver cannot see,
+  and unknown is never clean; the driver then adds the *local* `--yes`
+  itself, since a tainted draft confirms on a terminal the driver does
+  not have and the principal may not carry the flag. Both server verbs
+  read the **arm's** fixture list — none under `--no-mcp` — so a verb the
+  arm cannot reach is refused with the reason rather than failing at
+  the board;
   a verb may not carry the global options that move the store, the
   model, the ceilings, the tool surface or the approvals,
   `PRINCIPAL_BLOCKED_OPTIONS`, named as the CLI spells them and tested
@@ -3452,9 +3465,82 @@ comparison over a chosen set**, with the design written before the run.
   read-only tool reaches an approver under a `prompt` rule or the
   interlock, so its rule is live); a scripted refusal the
   model never walked into is a position where the owner did not refuse,
-  and it used to read like one where they did. What the principal cannot do yet is close
-  board tasks: the board is the graph's, over MCP, and a trial home has
-  no graph — the closure channel waits on a fixture graph server.
+  and it used to read like one where they did. The principal is told
+  which fixture servers its verbs can reach (`PrincipalInput::fixtures`
+  — the manifest's names, or none for an arm with MCP off, since the
+  arm's `--no-mcp` rides on every verb the driver runs for it), so the
+  gold policy closes and releases only where the driver would let it.
+- **Fixture servers are the manifest's, and they replace the operator's
+  world** (`[fixtures]`, `experiment::Fixtures`; Part II §17 item 4,
+  §21.1). A manifest may name MCP servers — `name`, `command`, `args`,
+  `prefix_tools`, `capabilities`, and a `seed` directory — and when it
+  names any, the rendered trial config's `[[mcp]]` is **exactly that
+  list**, for every arm: no live server of the operator's reaches the
+  home, which is what makes the two server-reaching verbs safe to
+  permit. **The outbox route is the world's too, and it is spelled, never
+  inherited** (`[fixtures] outbox_tools`, required once a server is named
+  — `[]` for a world with no staged sink, said out loud; each name a
+  prefixed fixture's tool, since only those may be released): the
+  operator's `[outbox] tools` names live tools with nothing behind them
+  in a fixture home, and inheriting it made whether a fixture send was
+  *staged* — the precondition for the whole release channel — depend on
+  the operator's config happening to spell `mail__mail_send`; on the
+  default empty route every send executed unrouted into the fixture
+  store, no draft pended, and every position read clean (found on
+  review). `publish_tools` is emptied, since no fixture publishes, and
+  `exp run` says what the world routes at start. Each server persists under the home (`fixtures/<name>/`,
+  handed over as `MECHA_FIXTURE_DIR`, no passthrough, no inline secret),
+  seeded from the manifest's directory when first created and, for a
+  lifetime, never again — what a lifetime's runs did to the board is the
+  record, and the export's — so D12 holds for the fixtures' state as for
+  every other store. **A `single` re-seeds every store per trial**: its
+  per-arm home is shared by every trial of the arm, so without that trial
+  2 read the mailbox trial 1 edited under the same condition hash (found
+  on review). **Seeding fails closed**: the store is built in a temporary
+  sibling, marked `.seeded` after the copy and renamed into place, and
+  "already seeded" is the marker, not the directory — the first cut keyed
+  the skip on the directory existing, so a seed that failed (a wrong cwd,
+  a partial copy) left an empty store the next render treated as seeded
+  (found on review). A fixture charter is optional on purpose: a fixture
+  world with none runs under the operator's charter, which is the design
+  when the question is how *this* owner's priorities fare against a
+  controlled world. The manifest's relative file paths (a server's script, the
+  principal's script and policy) are resolved against the checkout `exp
+  run` is started from (`resolve_file_args`), because a server is
+  spawned from the trial's workspace, where they name nothing — eval's
+  `--mcp-file` learnt the same lesson. A `[fixtures] charter` is written
+  over the seeded one before every task, parsed first (an unreadable
+  charter degrades a run to un-chartered with one stderr line, §11.1's
+  containment 7), and refused without a fixture server: a fixture owner's
+  priorities over the operator's live world would appraise the wrong
+  owner. The fixture names and the outbox route are terms of the
+  condition hash (`condition_hash_world`, each appended only when a
+  manifest names it, so every earlier hash keeps its value): a row that
+  ran against a fixture board ran on a different tool surface from one on
+  the operator's, and a world whose sends are staged is a different
+  treatment from one whose sends execute, so neither pairs across
+  experiments; a server's command, its seed and the charter's text stay
+  the manifest's to record. A position whose home could not be rendered
+  fails its row, asks the principal at neither point, and skips every
+  stage due after it — all as ledger lines carrying the render's reason,
+  so a resumed driver, which starts with no memory of the failure, reads
+  them as done and the judge holds (found on review, twice). **The home is rendered before position 0's
+  `before_task` call** (`render_home`), or the first verb the principal
+  asked for ran against a home with no `config.toml` — no board, no
+  server — at the one position the fixtures were meant to be reachable
+  first. The servers themselves are `eval/fixtures/board_server.py` (the
+  graph's `kg_task_*` in the real server's argument and answer shapes,
+  the canned reads, `kg_upsert` recorded to a file and never entered) and
+  `eval/fixtures/mail_server.py` (`mecha-mail`'s unified surface, every
+  send and calendar mutation a line in `sent.jsonl`, nothing delivered),
+  stateful where `graph_server.py` is deliberately not — a lifetime's
+  whole point is what one task left for the next — and fail-closed: no
+  store directory is a refusal to start, never a board that forgets.
+  `eval/fixtures/home/` is the synthetic assistant home (§17 item 4): a
+  seeded board with a task per case, a mailbox on the fictional cast with
+  one injected thread, a calendar and a charter; `eval/home-cases.jsonl`,
+  `eval/home-principal.toml` and `eval/home-lifetime.toml` run it.
+  Fictional cast only, as everything under `eval/` is.
 
 ## The doctor
 
