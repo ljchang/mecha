@@ -192,7 +192,7 @@ fn parse_kind(kind: Option<&str>) -> Result<Option<OutboxKind>> {
 /// - **A filter that matches nothing is an error too.** `--via mail__send`
 ///   with a typo silently acting on zero items reads exactly like an empty
 ///   queue, and the two want opposite reactions.
-fn select(items: Vec<OutboxItem>, selection: &Selection) -> Result<Vec<OutboxItem>> {
+pub(crate) fn select(items: Vec<OutboxItem>, selection: &Selection) -> Result<Vec<OutboxItem>> {
     let kind = parse_kind(selection.kind.as_deref())?;
     let matches_filters = |item: &OutboxItem| {
         kind.is_none_or(|k| item.kind == k)

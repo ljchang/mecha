@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   home runs *instead of* the operator's: when it names any, the home's
   `[[mcp]]` is exactly that list for every arm, each server persists under
   the home (`fixtures/<name>/`, as `MECHA_FIXTURE_DIR`) and is seeded once,
-  a `charter` may be written over the seeded one, and the names join the
-  condition hash. That closed world opens the two owner channels the
+  a `charter` may be written over the seeded one, the outbox route is the
+  world's (`outbox_tools`, spelled, never inherited — the operator's names
+  live tools), and the names join the condition hash. That closed world opens the two owner channels the
   principal was gated off: `outbox approve` and `tasks set` are permitted
   under a manifest with fixtures (`experiment::SERVER_VERBS`,
   `permitted_verb`), a release is vetted against the draft's

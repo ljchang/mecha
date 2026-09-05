@@ -39,6 +39,16 @@ timeout_secs = 600
 
 [fixtures]
 charter = "eval/fixtures/home/charter.toml"
+# The outbox route of this world — the fixture tools whose calls are staged
+# as drafts for the principal to release or reject. Spelled here, never
+# inherited from the operator's config, whose routed names are live tools.
+outbox_tools = [
+  "mail__mail_send",
+  "mail__mail_reply",
+  "mail__calendar_create_event",
+  "mail__calendar_update_event",
+  "mail__calendar_delete_event",
+]
 
 [[fixtures.mcp]]
 name = "graph"
