@@ -1881,8 +1881,12 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > the rule's support — and only when one of the batch's windows lies
 > outside the old scope: a batch whose every window still carried the
 > rule's tools is evidence inside its region whatever the batch's focus,
-> and a standing batch with no windows is evidence of nowhere, so both add
-> support and widen nothing. The model can claim only "same lesson"; where the
+> so it adds support and widens nothing. **The standing batch never
+> widens**, and a window with no focus (a followup's, a front-end
+> tool's) is never support: `batches_by_region` already refuses those
+> windows as evidence of where, and the first review found a shell rule
+> restated in the standing batch widened to everywhere on a stale
+> followup window — the §17.3 incident on one learner reply. The model can claim only "same lesson"; where the
 > rule then loads follows from two batches of recorded situations, which
 > is this section's support-in-more-than-one-sub-region condition. Within
 > a batch the region was already the intersection of its members'
@@ -1905,8 +1909,10 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > counted against the rule's current scope, unknown-region rows counting
 > everywhere; if every conviction lies in support regions the rule can shed
 > and at least one support region is clean, the rule re-scopes to the
-> intersection of what remains, stamped `narrowed_at`/`narrowed_reason`,
-> and the shed convictions stop counting against it. Three corrections
+> intersection of what remains — checked to exclude every convicting
+> window, not merely to differ from the old scope — stamped
+> `narrowed_at`/`narrowed_reason`, and the shed convictions stop counting
+> against it. Three corrections
 > the build recorded: scopes are conjunctive tool sets, so a standing rule
 > clean in `shell` and in `fs_write` and convicted in `http_fetch` cannot
 > say "everywhere but http_fetch" — the clean regions share no tool, the

@@ -181,6 +181,22 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Whether `p` proposes to retire or re-scope rule `id`: its entry in
+/// `rules` differs from its entry in `rules_before` on `retired_at` or
+/// `scope`. A proposal that merely carries the rule forward — every learn
+/// proposal does, for the whole domain — proposes nothing about it.
+fn proposal_changes_rule(p: &Proposal, id: &str) -> bool {
+    let after = p.rules.iter().find(|r| r.id.as_deref() == Some(id));
+    let before = p.rules_before.iter().find(|r| r.id.as_deref() == Some(id));
+    match (before, after) {
+        (Some(b), Some(a)) => a.retired_at != b.retired_at || a.scope != b.scope,
+        // Absent before and present after is a new rule, not a change to
+        // this one; absent after is the whole-rewrite drop, which is not
+        // a retirement either.
+        _ => false,
+    }
+}
+
 fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
     let id =
         r.id.as_deref()
@@ -426,18 +442,22 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
         // rules is not re-staged — the nightly must not spam the queue
         // while a human hasn't looked yet. Collected rather than tested,
         // because the apply path below owes each of these a resolution.
+        //
+        // A twin is a proposal that *changes* each convicted rule — retires
+        // it, or moves its scope — relative to its own `rules_before`.
+        // `narrowed_at` alone is not the test: it is a durable flag that
+        // rides on an active rule forever, so a later `learn --propose`
+        // proposal, which writes the whole domain's set, would carry a
+        // once-narrowed rule unchanged and read as a twin — and under
+        // `--apply` be marked superseded, discarding a consolidation that
+        // was waiting on the owner (found on review).
         let convicted_ids: Vec<&str> = convicted.iter().filter_map(|r| r.id.as_deref()).collect();
         let pending_twins: Vec<mecha_core::learning::Proposal> = proposals
             .iter()
             .filter(|p| {
                 p.status == "pending"
                     && p.domain == domain
-                    && convicted_ids.iter().all(|id| {
-                        p.rules.iter().any(|r| {
-                            r.id.as_deref() == Some(*id)
-                                && (r.retired_at.is_some() || r.narrowed_at.is_some())
-                        })
-                    })
+                    && convicted_ids.iter().all(|id| proposal_changes_rule(p, id))
             })
             .cloned()
             .collect();
@@ -574,8 +594,10 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
             // `pending` after its content landed reads as awaiting review —
             // to `mecha proposals` and to doctor — forever. Superseded, not
             // accepted: nobody ruled on the paper, the direct path overtook
-            // it. Retirement proposals hold no reflections, so there is
-            // nothing to release.
+            // it. A twin is one whose only change to these rules is the
+            // retirement or narrowing applied here (`proposal_changes_rule`),
+            // and such a proposal holds no reflections, so there is nothing
+            // to release.
             for mut p in pending_twins {
                 p.status = "superseded".into();
                 p.resolved_at = Some(now.clone());
@@ -994,9 +1016,44 @@ mod tests {
                 })
                 .unwrap();
         }
+        // A pending *learn* proposal for the domain carries the rule
+        // forward unchanged — with a `narrowed_at` from an earlier scan —
+        // and proposes nothing about it: not a twin, and the scan must
+        // still stage. Fails on the flag-based twin test (found on review).
+        let mut carried = store.learned_rules("behavior").unwrap();
+        carried[0].narrowed_at = Some("2026-09-01T00:00:00Z".into());
+        store.write_learned_rules("behavior", &carried).unwrap();
+        store
+            .write_proposal(&mecha_core::learning::Proposal {
+                id: "learn-pending".into(),
+                domain: "behavior".into(),
+                status: "pending".into(),
+                reflexion_ids: vec!["refl-claimed".into()],
+                rules_before: carried.clone(),
+                rules: carried.clone(),
+                evidence: String::new(),
+                created_at: "2026-09-02T00:00:00Z".into(),
+                resolved_at: None,
+                reason: None,
+                scope: None,
+            })
+            .unwrap();
         propose(&store, 3, false).unwrap();
         propose(&store, 3, false).unwrap();
         let proposals = store.proposals().unwrap();
+        assert_eq!(
+            proposals.len(),
+            2,
+            "the learn proposal is not a twin; the narrowing stages once"
+        );
+        assert!(
+            proposals.iter().all(|p| p.status == "pending"),
+            "the learn proposal is left alone"
+        );
+        let proposals: Vec<_> = proposals
+            .into_iter()
+            .filter(|p| p.id != "learn-pending")
+            .collect();
         assert_eq!(proposals.len(), 1, "a pending twin is not re-staged");
         let staged = proposals[0]
             .rules
