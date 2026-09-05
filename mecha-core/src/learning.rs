@@ -760,12 +760,30 @@ pub fn finalize_region_rules(
     now: &str,
 ) -> Vec<Rule> {
     let known: HashSet<&str> = previous.iter().map(|p| p.text.as_str()).collect();
-    let support: Vec<Situation> = distinct_scopes(batch_support);
+    // Only a window with a focus is evidence of where: a followup's window
+    // is from an earlier turn and a front-end focus names whatever ran
+    // before it — the same members `batches_by_region` refuses to fold
+    // into a region (found on review). They are recorded on the reflection
+    // and count for nothing here.
+    let support: Vec<Situation> = distinct_scopes(
+        &batch_support
+            .iter()
+            .filter(|s| s.focus().is_some())
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     let mut out = finalize_rules(new_rules, previous, batch_sources, now);
     for r in &mut out {
         if r.scope.is_none() && !known.contains(r.text.as_str()) {
             r.scope = Some(region.scope());
             r.support = support.clone();
+            continue;
+        }
+        // The standing batch never widens: its region is standing by
+        // definition, not by intersection of any evidence, so a scoped rule
+        // restated there would ride in every prompt again — the §17.3
+        // incident scoping exists to prevent — on one learner reply.
+        if region.is_standing() {
             continue;
         }
         // A verbatim restatement of an active rule from *another* region:
@@ -2060,6 +2078,20 @@ pub fn judge_convicted(rule: &Rule, tally: &RuleTally, threshold: u32) -> Verdic
              tool, so no scope excludes where it failed",
             describe_all(&shed),
             describe_all(&kept)
+        ));
+    }
+    // The claim a narrowing makes is that the rule no longer loads where it
+    // was convicted, so that is what is checked — not merely that the scope
+    // moved. Support `{fs_read, shell}` and `{fs_read, http_fetch}` kept
+    // against a conviction in `{fs_read, mail_send}` narrows to `{fs_read}`,
+    // which still matches the convicting window (found on review).
+    if convicted_regions.iter().any(|r| narrowed.matches(r)) {
+        return retire(format!(
+            "{convictions} attributed regression(s) in {}; the clean regions ({}) narrow to \
+             `{}`, which still loads where it failed, so no scope excludes it",
+            describe_all(&shed),
+            describe_all(&kept),
+            narrowed.describe()
         ));
     }
     Verdict::Narrow {
@@ -5318,6 +5350,31 @@ mod probation_tests {
             Verdict::Retire { why } if why.contains("no known region")
         ));
 
+        // A narrowing that moves the scope but still covers the convicting
+        // window is no narrowing: support `{fs_read, shell}` and
+        // `{fs_read, http_fetch}` kept against a conviction in
+        // `{fs_read, mail_send}` would re-scope to `{fs_read}`, which the
+        // convicting window matches. Retire, naming the scope it would
+        // have taken (found on review).
+        let overlapping = Rule {
+            support: vec![
+                sit(&["fs_read", "shell"]),
+                sit(&["fs_read", "http_fetch"]),
+                sit(&["mail_send"]),
+            ],
+            ..widened()
+        };
+        let t = rule_tallies(&[
+            convicted_in(&["fs_read", "mail_send"]),
+            convicted_in(&["fs_read", "mail_send"]),
+            convicted_in(&["fs_read", "mail_send"]),
+            clean_in(&["fs_read", "shell"]),
+        ]);
+        assert!(matches!(
+            judge_convicted(&overlapping, &t["w"], 3),
+            Verdict::Retire { why } if why.contains("still loads where it failed") && why.contains("`fs_read`")
+        ));
+
         // The lattice's limit: clean in `http_fetch` and `fs_write`, which
         // share no tool, so no conjunctive scope excludes `shell`. Retire,
         // and say which regions were clean.
@@ -5620,11 +5677,18 @@ mod situation_tests {
 
         // A batch focused elsewhere whose every window still carried
         // `shell` is evidence inside the shell region: support grows, the
-        // scope does not. And a standing batch with no windows at all is
-        // evidence of nowhere.
+        // scope does not. And the standing batch never widens — not with
+        // no windows, and not with a stale followup window naming another
+        // tool, which `batches_by_region` already refuses as evidence
+        // (found on review: this widened a shell rule to everywhere).
+        let stale = Situation::recorded(&["http_fetch".into()], "followup", None, None);
         for (batch_region, windows) in [
             (fetch.clone(), vec![run_with(&["http_fetch", "shell"])]),
             (Situation::default(), Vec::new()),
+            (
+                Situation::default(),
+                vec![stale.clone(), run_with(&["fs_read"])],
+            ),
         ] {
             let out = finalize_region_rules(
                 vec![Rule {
@@ -5642,8 +5706,31 @@ mod situation_tests {
                 Some(shell()),
                 "no window outside shell: no widening"
             );
-            assert!(out[0].support.contains(&shell()));
+            if batch_region.is_standing() {
+                assert_eq!(out[0].support, previous[0].support, "untouched");
+            } else {
+                assert!(out[0].support.contains(&shell()));
+            }
+            assert!(
+                !out[0].support.contains(&run_with(&["http_fetch"])),
+                "a followup's window is not support"
+            );
         }
+        // And a new rule from a batch whose only windows lack a focus has
+        // no support at all — evidence of nowhere, honestly recorded.
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "Followup lesson.".into(),
+                ..Default::default()
+            }],
+            &[],
+            &Situation::default(),
+            &["f".into()],
+            std::slice::from_ref(&stale),
+            "now",
+        );
+        assert_eq!(out[0].scope, Some(Situation::default()));
+        assert!(out[0].support.is_empty());
 
         // A restatement inside the rule's own region adds support and
         // widens nothing — the intersection is the scope it had.

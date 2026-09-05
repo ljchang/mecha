@@ -3600,7 +3600,18 @@ inside the rule's current scope, so a region an earlier narrowing shed
 cannot read as "outside every support region" on the next scan, and
 `cover_selection` credits a picked probe to every (rule, region) its
 window exercises, so an unplaced ledger buys one probe rather than one
-per standing rule.
+per standing rule. The first review pass found three more, all fixed
+with a failing test each: a narrowing could re-scope to a scope that
+still covered the convicting window (`{fs_read, shell}` and `{fs_read,
+http_fetch}` kept against a conviction in `{fs_read, mail_send}` narrowed
+to `{fs_read}`), so the verdict now checks the new scope excludes every
+convicting region; `narrowed_at` is a durable flag, so a later learn
+proposal carrying a once-narrowed rule unchanged read as a pending twin
+and under `--apply` would have been marked superseded — the twin test
+now asks whether the proposal changes the rule against its own
+`rules_before`; and the standing batch could widen a scoped rule to
+everywhere on a stale followup window, so the standing batch never
+widens and only a window with a focus is support.
 `ValidationRecord::region` is the probed reflection's window (not the
 run's registry, which every run shares), `RuleTally::regions` folds the
 counts per region with `in_scope` and `attributed_against` over them,

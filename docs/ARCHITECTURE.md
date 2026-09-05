@@ -482,8 +482,10 @@ restatement from another region by re-scoping the rule to the
 intersection of the two regions and adding the batch's windows to its
 support — the model claims "same lesson", the scope follows from two
 batches of recorded evidence, and a batch with no window outside the old
-scope (a restatement inside the rule's own region, or a standing batch
-with no windows) adds support and widens nothing. Each ledger row records the
+scope (a restatement inside the rule's own region) adds support and
+widens nothing; the standing batch never widens and a window with no
+focus is never support, for the reason `batches_by_region` already
+gives. Each ledger row records the
 sub-region the probe *exercised* (`ValidationRecord::region`: the
 reflection's window, not the run's registry) and `RuleTally` folds per
 region beside the totals; probation is released only by rows that
@@ -492,8 +494,11 @@ region) pair nobody has graded from inside that region (the nightly
 passes 1), and `rules propose-retirements` asks `judge_convicted` before
 retiring: convictions counted against the current scope, and a rule
 convicted in some support regions and clean in others sheds the failing
-ones and re-scopes to the intersection of the rest (`narrowed_at`,
-`narrowed_reason`), its shed convictions no longer counting. It retires,
+ones and re-scopes to the intersection of the rest — a scope checked to
+exclude every convicting window (`narrowed_at`, `narrowed_reason`), its
+shed convictions no longer counting; the twin check that keeps the
+nightly from re-staging asks whether a pending proposal *changes* the
+rule against its own `rules_before`, never whether a flag is set. It retires,
 with the reason, when it has no recorded support, when a conviction has
 no region or lies outside every support region, or when the clean
 regions share no tool — a conjunctive scope cannot say "everywhere but
