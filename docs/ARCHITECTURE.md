@@ -3456,10 +3456,21 @@ comparison over a chosen set**, with the design written before the run.
   review). `publish_tools` is emptied, since no fixture publishes, and
   `exp run` says what the world routes at start. Each server persists under the home (`fixtures/<name>/`,
   handed over as `MECHA_FIXTURE_DIR`, no passthrough, no inline secret),
-  seeded once from the manifest's directory when first created and never
-  again — what a lifetime's runs did to the board is the record, and the
-  export's — so D12 holds for the fixtures' state as for every other
-  store. The manifest's relative file paths (a server's script, the
+  seeded from the manifest's directory when first created and, for a
+  lifetime, never again — what a lifetime's runs did to the board is the
+  record, and the export's — so D12 holds for the fixtures' state as for
+  every other store. **A `single` re-seeds every store per trial**: its
+  per-arm home is shared by every trial of the arm, so without that trial
+  2 read the mailbox trial 1 edited under the same condition hash (found
+  on review). **Seeding fails closed**: the store is built in a temporary
+  sibling, marked `.seeded` after the copy and renamed into place, and
+  "already seeded" is the marker, not the directory — the first cut keyed
+  the skip on the directory existing, so a seed that failed (a wrong cwd,
+  a partial copy) left an empty store the next render treated as seeded
+  (found on review). A fixture charter is optional on purpose: a fixture
+  world with none runs under the operator's charter, which is the design
+  when the question is how *this* owner's priorities fare against a
+  controlled world. The manifest's relative file paths (a server's script, the
   principal's script and policy) are resolved against the checkout `exp
   run` is started from (`resolve_file_args`), because a server is
   spawned from the trial's workspace, where they name nothing — eval's
