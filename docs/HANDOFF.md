@@ -2699,14 +2699,14 @@ the mechanism and every decision. What it left standing:
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
 **2026-09-05, later — §17.7 item 2's precondition is recordable: PR #194
-(`feat/step-counters`), merged at `87645f9` after five review passes and
+(`feat/step-counters`), merged at `87645f9` after six review passes and
 deployed 21:58Z by mecha-53 (the machine-state row under §Machine state,
 dated, has the probes).** What it built is in `HISTORY.md` under this
 date: four `Option<u32>` counters on `RunStats` — `step_nulls`,
 `step_reopens`, `step_completions`, `step_measured` — counted by `todo`
 into `ToolCtx::step_counts` (minted per run by the loop, a sensor not a
 lever), and read by `mecha sessions health` as a `plan steps` row and
-JSON keys. **The lesson the five passes taught, five times:** a rate is
+JSON keys. **The lesson the five finding-bearing passes taught, five times:** a rate is
 true only over runs in which the event could have happened — the null
 rate over runs with at least one *measured* completion (started and
 completed in the same run), the reopen rate over runs with any step
@@ -2715,7 +2715,7 @@ how often the model plans at all. **Nothing consumes the numbers yet**:
 the ruling asks for them to be read, and after a few nights of records
 `mecha sessions health --json` (`step_null_rate`, `step_reopen_rate`,
 `runs_with_a_measured_completion`, `runs_with_a_plan_step`) can be. The
-delivery line stays off until then. **Five minors the fifth pass left for
+delivery line stays off until then. **Five minors the sixth pass left for
 the owner:** the six-to-five comment edit at `run_in` left "attached at
 five is worse than none" behind; the no-slot todo test measures only
 no-panic (a leak test would give the bare tool its own slot); two
