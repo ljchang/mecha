@@ -481,8 +481,9 @@ teaches the same lesson, and `finalize_region_rules` answers a verbatim
 restatement from another region by re-scoping the rule to the
 intersection of the two regions and adding the batch's windows to its
 support — the model claims "same lesson", the scope follows from two
-batches of recorded evidence, and a restatement inside the rule's own
-region adds support and widens nothing. Each ledger row records the
+batches of recorded evidence, and a batch with no window outside the old
+scope (a restatement inside the rule's own region, or a standing batch
+with no windows) adds support and widens nothing. Each ledger row records the
 sub-region the probe *exercised* (`ValidationRecord::region`: the
 reflection's window, not the run's registry) and `RuleTally` folds per
 region beside the totals; probation is released only by rows that

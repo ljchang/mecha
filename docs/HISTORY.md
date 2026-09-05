@@ -3592,8 +3592,15 @@ recorded in (`distinct_scopes` of the batch's windows); a batch that
 repeats an outside rule word for word — the learner's prompt now asks for
 exactly that when a reflection teaches a lesson another situation already
 holds — widens it in `finalize_region_rules` to the intersection of the
-two regions with the batch's windows added to its support, the model
-claiming only "same lesson" and the harness computing where it loads.
+two regions with the batch's windows added to its support — only when a
+window lies outside the old scope, so a standing batch with no windows
+widens nothing — the model claiming only "same lesson" and the harness
+computing where it loads. `judge_convicted` places only the convictions
+inside the rule's current scope, so a region an earlier narrowing shed
+cannot read as "outside every support region" on the next scan, and
+`cover_selection` credits a picked probe to every (rule, region) its
+window exercises, so an unplaced ledger buys one probe rather than one
+per standing rule.
 `ValidationRecord::region` is the probed reflection's window (not the
 run's registry, which every run shares), `RuleTally::regions` folds the
 counts per region with `in_scope` and `attributed_against` over them,

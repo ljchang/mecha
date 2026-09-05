@@ -811,6 +811,14 @@ fn cover_selection(
     let mut out = Vec::new();
     let mut pool: Vec<&Reflexion> = pool.iter().collect();
     pool.sort_by(|a, b| a.id.cmp(&b.id));
+    // One probe's row charges every rule its window exercises, so a pick
+    // made for one pair covers every other (rule, region) that window is
+    // inside — counted here before it is graded, or twelve standing rules
+    // on an unplaced ledger would each buy their own probe of the same
+    // fact. `already` is not credited: those reflections may be followups
+    // or fail to prepare, and a promise from a row not yet written is
+    // exactly what this pass exists to avoid.
+    let mut picked_windows: Vec<Situation> = Vec::new();
     for (domain, rule) in flat {
         let Some(id) = rule.id.as_deref() else {
             continue;
@@ -822,10 +830,11 @@ fn cover_selection(
         };
         for region in regions {
             let graded = tallies.get(id).map_or(0, |t| t.in_scope(&region).graded);
-            if graded > 0 {
+            let credited = picked_windows.iter().filter(|w| region.matches(w)).count();
+            if graded > 0 || credited >= per_pair {
                 continue;
             }
-            let mut n = 0;
+            let mut n = credited;
             for r in &pool {
                 if n >= per_pair {
                     break;
@@ -833,14 +842,14 @@ fn cover_selection(
                 if r.domain != *domain || taken.contains(&r.id) {
                     continue;
                 }
-                let inside = r
-                    .situation
-                    .as_ref()
-                    .is_some_and(|s| region.matches(&s.scope()));
-                if !inside {
+                let Some(window) = r.situation.as_ref().map(|s| s.scope()) else {
+                    continue;
+                };
+                if !region.matches(&window) {
                     continue;
                 }
                 taken.insert(r.id.clone());
+                picked_windows.push(window);
                 out.push(((*r).clone(), format!("rule {id} in {}", region.describe())));
                 n += 1;
             }
@@ -1033,6 +1042,9 @@ mod tests {
             ("behavior".to_string(), widened),
             ("behavior".to_string(), scoped),
             ("writing".to_string(), rule("Other domain.", Some("r-o"))),
+            // Standing and ungraded: any pick above exercises it, so it
+            // buys no probe of its own.
+            ("behavior".to_string(), rule("Standing.", Some("r-std"))),
         ];
         // r-w is graded in shell already; http_fetch is the uncovered half.
         let mut tallies: BTreeMap<String, RuleTally> = BTreeMap::new();
@@ -1077,8 +1089,16 @@ mod tests {
         let out = cover_selection(&flat, &tallies, &pool, &Default::default(), 2);
         let ids: Vec<&str> = out.iter().map(|(r, _)| r.id.as_str()).collect();
         assert_eq!(ids, vec!["a-fetch", "b-fetch", "d-write"]);
-        assert!(!ids.contains(&"c-shell"), "shell is graded for r-w");
+        assert!(
+            !ids.contains(&"c-shell"),
+            "shell is graded for r-w, and r-std is credited by the picks above"
+        );
         assert!(!ids.contains(&"e-none"), "outside every region");
+        // Alone, the standing rule does buy one — the credit needs a pick.
+        let alone = vec![("behavior".to_string(), rule("Standing.", Some("r-std")))];
+        let out = cover_selection(&alone, &tallies, &pool, &Default::default(), 1);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0.id, "a-fetch");
         assert!(
             cover_selection(&flat, &tallies, &pool, &Default::default(), 0).is_empty(),
             "a zero budget adds nothing"

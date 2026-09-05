@@ -1878,7 +1878,11 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > for word*; a reply that does so names the same lesson in a second
 > region, and `finalize_region_rules` — never the model — sets the scope to
 > the intersection of the two regions and adds the batch's sub-regions to
-> the rule's support. The model can claim only "same lesson"; where the
+> the rule's support — and only when one of the batch's windows lies
+> outside the old scope: a batch whose every window still carried the
+> rule's tools is evidence inside its region whatever the batch's focus,
+> and a standing batch with no windows is evidence of nowhere, so both add
+> support and widen nothing. The model can claim only "same lesson"; where the
 > rule then loads follows from two batches of recorded situations, which
 > is this section's support-in-more-than-one-sub-region condition. Within
 > a batch the region was already the intersection of its members'
