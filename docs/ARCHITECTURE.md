@@ -3310,7 +3310,14 @@ comparison over a chosen set**, with the design written before the run.
   approver a run builds is wrapped — the parent loop's, each
   subagent's, a front-end's — and the file reaches the verb that
   resumes a parked run, so the refusals hold for the whole task and
-  every call delegated within it. What the principal cannot do yet is close
+  every call delegated within it. **A refusal that never fired is on
+  the record**: after the task the driver counts each rule's firings in
+  the session — the loop's own "Denied by the user: <reason>" sentence
+  — onto the `after_task` line as `refusals`, and the run warns at
+  start for a rule naming a tool no registered tool answers to or a
+  read-only one, which reaches no approver; a scripted refusal the
+  model never walked into is a position where the owner did not refuse,
+  and it used to read like one where they did. What the principal cannot do yet is close
   board tasks: the board is the graph's, over MCP, and a trial home has
   no graph — the closure channel waits on a fixture graph server.
 

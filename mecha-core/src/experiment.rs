@@ -141,8 +141,11 @@ pub enum PrincipalPoint {
     /// what gold closes.
     AfterTask,
     /// A point this build cannot name, read off a ledger a later build
-    /// wrote: the line stays readable and the pair keeps its own identity
-    /// in `stage_health`. Never constructed here, never called at.
+    /// wrote: the line stays readable. Every unknown point shares this one
+    /// identity in `stage_health`, so two points a later build adds at one
+    /// position read as one pair to this build — a limit, stated rather
+    /// than mechanised, since it bites only an older build on a newer
+    /// ledger. Never constructed here, never called at.
     #[serde(other)]
     Unknown,
 }
@@ -1455,6 +1458,62 @@ pub struct StageRun {
     pub point: Option<PrincipalPoint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub acts: Vec<PrincipalAct>,
+    /// An `after_task` principal line only: each refusal scripted for the
+    /// task, with how many times the run answered a call with it — read
+    /// off the task's session, where the loop writes the refusal's exact
+    /// sentence. A refusal that never fired is a treatment that did not
+    /// occur at this position, and without this it was recorded like one
+    /// that did (found on review).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refusals: Vec<RefusalOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RefusalOutcome {
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_contains: Option<String>,
+    pub reason: String,
+    pub fired: u32,
+}
+
+/// The sentence the loop writes for a person's refusal, as `agent.rs`
+/// renders `Decision::Deny`.
+pub const DENIED_PREFIX: &str = "Denied by the user: ";
+
+/// How often each scripted refusal fired in a session: the count of the
+/// loop's refusal sentence carrying that rule's reason, over the session
+/// file's text. Two rules sharing a reason share a count, and say so is
+/// the principal's job.
+pub fn refusal_outcomes(
+    rules: &[crate::tool::DenialRule],
+    session_text: &str,
+) -> Vec<RefusalOutcome> {
+    rules
+        .iter()
+        .map(|r| RefusalOutcome {
+            tool: r.tool.clone(),
+            input_contains: r.input_contains.clone(),
+            reason: r.reason.clone(),
+            fired: session_text
+                .matches(&format!("{DENIED_PREFIX}{}", r.reason))
+                .count() as u32,
+        })
+        .collect()
+}
+
+/// The refusals the home's denials file holds, for the driver to read
+/// back after the task; none when there is no file.
+pub fn read_denials(home: &Path) -> Result<Vec<crate::tool::DenialRule>> {
+    let path = denials_file(home);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let file: crate::tool::DenialsFile =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    Ok(file.rules)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2883,6 +2942,7 @@ rationale = "no rumination should fail more over the sequence"
             error: None,
             point: None,
             acts: Vec::new(),
+            refusals: Vec::new(),
         };
         store
             .record_stage(&run(StageLever::Reflect, 2, StageStatus::Done))
@@ -3067,6 +3127,7 @@ rationale = "no rumination should fail more over the sequence"
             error: None,
             point: None,
             acts: Vec::new(),
+            refusals: Vec::new(),
         };
         let held = judge(&m, &trials, std::slice::from_ref(&failed), 0);
         let bare_held = held.iter().find(|v| v.arm == "bare").unwrap();
@@ -3268,6 +3329,7 @@ rationale = "no rumination should fail more over the sequence"
             error: None,
             point: Some(point),
             acts: Vec::new(),
+            refusals: Vec::new(),
         };
         let ledger = vec![
             line(1, PrincipalPoint::BeforeTask, StageStatus::Failed),
@@ -3287,6 +3349,26 @@ rationale = "no rumination should fail more over the sequence"
             (2, 0),
             "an interrupted before_task is stood for only by a later before_task: {h:?}"
         );
+        // A refusal's firings are counted off the session's own sentence.
+        let rules = vec![
+            crate::tool::DenialRule {
+                tool: "shell".into(),
+                input_contains: Some("echo".into()),
+                reason: "use printf".into(),
+            },
+            crate::tool::DenialRule {
+                tool: "fs_write".into(),
+                input_contains: None,
+                reason: "read only today".into(),
+            },
+        ];
+        let session = "{\"content\":\"Denied by the user: use printf\"}\n{\"x\":1}\n{\"content\":\"Denied by the user: use printf, please\"}\n";
+        let out = refusal_outcomes(&rules, session);
+        assert_eq!((out[0].fired, out[1].fired), (2, 0), "{out:?}");
+        assert_eq!(out[1].tool, "fs_write");
+        write_denials(&home, &rules).unwrap();
+        assert_eq!(read_denials(&home).unwrap(), rules);
+        let _ = std::fs::remove_dir_all(&home);
         // The ledger's stage for it is not a lever.
         assert!(!StageLever::ALL.contains(&StageLever::Principal));
         assert_eq!(
@@ -3337,6 +3419,7 @@ rationale = "no rumination should fail more over the sequence"
             error: Some("`mecha outbox approve x -y` exited 1".into()),
             point: Some(PrincipalPoint::AfterTask),
             acts: vec![filled.clone()],
+            refusals: Vec::new(),
         };
         store.record_stage(&line).unwrap();
         let (runs, torn) = store.stage_runs("full__r1").unwrap();
