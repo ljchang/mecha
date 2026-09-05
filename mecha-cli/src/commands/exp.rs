@@ -92,7 +92,7 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
             limit,
             dry_run,
         } => run(&name, limit, dry_run).await,
-        Cmd::Status { name, json } => status(&name, json),
+        Cmd::Status { name, json } => status(&name, json).await,
         Cmd::Judge { name, json } => judge_cmd(&name, json),
         Cmd::Export { name } => export(&name),
     }
@@ -131,15 +131,30 @@ fn control_label(manifest: &Manifest) -> String {
 /// way round with the manifest still claiming the sequence it did not run
 /// (found on review). A single fans out over a set, so the same order
 /// costs it nothing.
-fn cases_for(manifest: &Manifest) -> Result<Vec<mecha_core::eval::EvalCase>> {
-    let cases = crate::commands::eval::load_cases(&manifest.tasks.cases, &manifest.tasks.tags)?;
+async fn cases_for(manifest: &Manifest) -> Result<Vec<mecha_core::eval::EvalCase>> {
+    let cases = match manifest.tasks.cases_path() {
+        Some(path) => crate::commands::eval::load_cases(path, &manifest.tasks.tags)?,
+        // A task source: `list` answers with the tasks, the driver filters
+        // by tag exactly as it filters a case file.
+        None => source_list(&manifest.tasks)
+            .await?
+            .into_iter()
+            .filter(|c| {
+                manifest.tasks.tags.is_empty()
+                    || c.tags.iter().any(|t| manifest.tasks.tags.contains(t))
+            })
+            .collect(),
+    };
     let cases: Vec<_> = if manifest.tasks.ids.is_empty() {
         cases
     } else {
         let mut ordered = Vec::with_capacity(manifest.tasks.ids.len());
         for id in &manifest.tasks.ids {
             let case = cases.iter().find(|c| &c.id == id).with_context(|| {
-                format!("task `{id}` is not in {}", manifest.tasks.cases.display())
+                format!(
+                    "task `{id}` is not among the tasks {}",
+                    task_origin(&manifest.tasks)
+                )
             })?;
             ordered.push(case.clone());
         }
@@ -165,6 +180,123 @@ fn cases_for(manifest: &Manifest) -> Result<Vec<mecha_core::eval::EvalCase>> {
     Ok(cases)
 }
 
+/// Where the tasks came from, for a message.
+fn task_origin(tasks: &mecha_core::experiment::Tasks) -> String {
+    match tasks.cases_path() {
+        Some(p) => format!("in {}", p.display()),
+        None => format!("the source `{}` lists", tasks.source.join(" ")),
+    }
+}
+
+/// Run one of the task source's verbs (Part II §21.1: `list`, `setup
+/// <task>`, `grade <task>`) as a child process on the run child's base
+/// environment plus the pointers `source_env` names, from `cwd`, with
+/// `stdin` handed over and the answer read from stdout. Fail-closed on
+/// every edge: a non-zero exit, a timeout, no JSON, or JSON in a shape this
+/// build does not know is an error, never an empty list or a pass. The
+/// source's relative file paths resolve against the checkout `exp run`
+/// starts from, like a fixture server's.
+async fn source_call(
+    tasks: &mecha_core::experiment::Tasks,
+    verb: &[&str],
+    env: &[(String, String)],
+    cwd: &Path,
+    stdin: Option<String>,
+) -> Result<String> {
+    let mut command = tasks.source.clone();
+    let base = std::env::current_dir().context("cannot determine the working directory")?;
+    mecha_core::experiment::resolve_file_args(&mut command, &base);
+    let (exe, args) = command
+        .split_first()
+        .context("the task source names no executable")?;
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.args(args).args(verb);
+    cmd.env_clear();
+    for (k, v) in mecha_core::sandbox::Sandbox::child_env(&[]) {
+        cmd.env(k, v);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    std::fs::create_dir_all(cwd)?;
+    cmd.current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("spawning the task source `{exe}`"))?;
+    let mut pipe = child.stdin.take().context("the task source's stdin")?;
+    let payload = stdin.unwrap_or_default();
+    let exchange = async move {
+        use tokio::io::AsyncWriteExt;
+        let write = async move {
+            pipe.write_all(payload.as_bytes()).await?;
+            pipe.shutdown().await?;
+            drop(pipe);
+            Ok::<(), std::io::Error>(())
+        };
+        let (written, output) = tokio::join!(write, child.wait_with_output());
+        written.context("handing the task source its input")?;
+        output.context("waiting for the task source")
+    };
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(tasks.source_timeout_secs),
+        exchange,
+    )
+    .await
+    {
+        Ok(o) => o?,
+        Err(_) => anyhow::bail!(
+            "the task source did not answer `{}` within {}s",
+            verb.join(" "),
+            tasks.source_timeout_secs
+        ),
+    };
+    anyhow::ensure!(
+        output.status.success(),
+        "the task source exited {} on `{}`: {}",
+        output.status,
+        verb.join(" "),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The JSON a verb answered with, from wherever it starts on stdout — a
+/// source may print a line first. `setup` answers with its exit code alone
+/// and never comes through here.
+fn source_json<'a>(text: &'a str, verb: &str) -> Result<&'a str> {
+    let start = text
+        .find(['{', '['])
+        .with_context(|| format!("the task source printed no JSON on `{verb}`"))?;
+    Ok(&text[start..])
+}
+
+/// `list`: the source's tasks as cases, in the source's order.
+async fn source_list(
+    tasks: &mecha_core::experiment::Tasks,
+) -> Result<Vec<mecha_core::eval::EvalCase>> {
+    let scratch = std::env::temp_dir().join("mecha-exp-source-list");
+    let text = source_call(tasks, &["list"], &[], &scratch, None).await?;
+    let listed: Vec<mecha_core::experiment::SourceTask> =
+        serde_json::from_str(source_json(&text, "list")?)
+            .context("the task source's `list` is not the contract's shape")?;
+    anyhow::ensure!(!listed.is_empty(), "the task source lists no tasks");
+    let mut seen = std::collections::BTreeSet::new();
+    let mut cases = Vec::with_capacity(listed.len());
+    for t in listed {
+        anyhow::ensure!(
+            seen.insert(t.id.clone()),
+            "the task source lists `{}` twice",
+            t.id
+        );
+        cases.push(t.into_case()?);
+    }
+    Ok(cases)
+}
+
 /// The provider and model the trials will run against, from the operator's
 /// config — recorded into every trial's condition hash, so a trial run
 /// against a different model later does not pair with one run today.
@@ -183,7 +315,7 @@ fn provider_and_model(cfg: &mecha_core::config::Config) -> Result<(String, Strin
 async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
     let store = ExperimentStore::open_default(name)?;
     let manifest = store.manifest()?;
-    let cases = cases_for(&manifest)?;
+    let cases = cases_for(&manifest).await?;
     let real = mecha_core::config::Config::load_global()?;
     let (provider, model) = provider_and_model(&real)?;
     let task_ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
@@ -1413,6 +1545,22 @@ async fn run_one(
     }
     mecha_core::eval::stage_workspace(&manifest.tasks.fixture, &workspace)
         .with_context(|| format!("staging {}", manifest.tasks.fixture.display()))?;
+    // A task source puts the world in this task's starting state — after
+    // the home and its fixture stores are rendered, before the child runs.
+    // Its failure is the row's: a task run against a world that was not
+    // set up would grade something else under this task's name.
+    if manifest.tasks.has_source() {
+        let env = mecha_core::experiment::source_env(&home, &workspace, Some(&case.id));
+        source_call(
+            &manifest.tasks,
+            &["setup", &case.id],
+            &env,
+            &workspace,
+            None,
+        )
+        .await
+        .with_context(|| format!("the task source could not set up `{}`", case.id))?;
+    }
 
     trial.status = TrialStatus::Running;
     trial.started_at = Some(chrono::Utc::now().to_rfc3339());
@@ -1537,6 +1685,29 @@ async fn run_one(
             mecha_core::eval::verify_workspace(command, &workspace, VERIFY_TIMEOUT).await,
         );
     }
+    // A task source grades the world's end state against the task, with the
+    // run's whole result on stdin — the answer text, the calls, the taint,
+    // the blocked sends. Its verdict is checks on the row, beside any trace
+    // assertion the listing carried; a source that cannot grade fails the
+    // row, never passes it.
+    if manifest.tasks.has_source() {
+        let env = mecha_core::experiment::source_env(&home, &workspace, Some(&case.id));
+        let text = source_call(
+            &manifest.tasks,
+            &["grade", &case.id],
+            &env,
+            &workspace,
+            Some(serde_json::to_string(&result)?),
+        )
+        .await
+        .with_context(|| format!("the task source could not grade `{}`", case.id))?;
+        let verdict: mecha_core::experiment::SourceGrade =
+            serde_json::from_str(source_json(&text, "grade")?)
+                .context("the task source's `grade` is not the contract's shape")?;
+        for check in verdict.into_checks()? {
+            graded.add_check(check);
+        }
+    }
     trial.passed = Some(graded.passed);
     trial.checks = graded.checks;
     trial.stats = match &trial.session_id {
@@ -1562,19 +1733,22 @@ async fn run_one(
     Ok(())
 }
 
-fn status(name: &str, json: bool) -> Result<()> {
+async fn status(name: &str, json: bool) -> Result<()> {
     let store = ExperimentStore::open_default(name)?;
     let manifest = store.manifest()?;
     // The plan, not the store alone: between `new` and the first `run` the
     // store holds no rows, and an all-zero table reads the same as a design
     // that calls for nothing (found on review). When the case file cannot
     // be read the store's rows stand in, and the readout says so.
-    let (trials, skipped) = match cases_for(&manifest).and_then(|cases| {
+    let planned: Result<_> = async {
+        let cases = cases_for(&manifest).await?;
         let real = mecha_core::config::Config::load_global()?;
         let (provider, model) = provider_and_model(&real)?;
         let ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
         store.plan(&manifest, &ids, &provider, &model)
-    }) {
+    }
+    .await;
+    let (trials, skipped) = match planned {
         Ok((planned, skipped)) => (
             planned
                 .into_iter()
@@ -1968,6 +2142,133 @@ mod tests {
         );
     }
 
+    /// A task source's three verbs, driven against the contract's reference
+    /// stub: `list` becomes cases with their tags and ceilings, `setup` sees
+    /// the pointers and leaves its mark under the fixtures root, `grade`
+    /// reads the run's result and answers with checks — and every edge is
+    /// fail-closed: an unknown verb, a missing task, a verdict that
+    /// disagrees with its checks.
+    #[tokio::test]
+    async fn a_task_source_lists_sets_up_and_grades_through_the_contract() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            eprintln!("SKIPPED: python3 is unavailable");
+            return;
+        }
+        let stub = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../eval/fixtures/source_stub.py")
+            .canonicalize()
+            .unwrap();
+        let tasks = mecha_core::experiment::Tasks {
+            cases: None,
+            source: vec!["python3".into(), stub.display().to_string()],
+            source_timeout_secs: 30,
+            fixture: "eval/workspace".into(),
+            ids: Vec::new(),
+            tags: Vec::new(),
+        };
+        let cases = source_list(&tasks).await.unwrap();
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].id, "say-hello");
+        assert_eq!(
+            cases[1].tags,
+            vec!["stub".to_string(), "farewell".to_string()]
+        );
+        assert_eq!(cases[1].max_turns, Some(2), "a ceiling rides along");
+        assert!(matches!(&cases[0].prompt, Prompt::One(p) if p.contains("hello")));
+
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-source-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let home = dir.join("home");
+        let workspace = dir.join("ws");
+        let env = mecha_core::experiment::source_env(&home, &workspace, Some("say-hello"));
+        source_call(&tasks, &["setup", "say-hello"], &env, &workspace, None)
+            .await
+            .unwrap();
+        let mark: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(home.join("fixtures").join("stub-setup.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            mark["task"], "say-hello",
+            "setup found the fixtures root through the pointer"
+        );
+        assert_eq!(mark["workspace"], workspace.display().to_string());
+
+        let result = serde_json::json!({"id": "say-hello", "ok": true, "text": "Hello there", "tool_calls": []});
+        let text = source_call(
+            &tasks,
+            &["grade", "say-hello"],
+            &env,
+            &workspace,
+            Some(result.to_string()),
+        )
+        .await
+        .unwrap();
+        let verdict: mecha_core::experiment::SourceGrade =
+            serde_json::from_str(source_json(&text, "grade").unwrap()).unwrap();
+        assert!(verdict.passed);
+        let checks = verdict.into_checks().unwrap();
+        assert_eq!(checks.len(), 1);
+        assert!(checks[0].passed && checks[0].name == "says hello");
+        let result = serde_json::json!({"id": "say-hello", "ok": true, "text": "Good day", "tool_calls": []});
+        let text = source_call(
+            &tasks,
+            &["grade", "say-hello"],
+            &env,
+            &workspace,
+            Some(result.to_string()),
+        )
+        .await
+        .unwrap();
+        let verdict: mecha_core::experiment::SourceGrade =
+            serde_json::from_str(source_json(&text, "grade").unwrap()).unwrap();
+        assert!(!verdict.passed && !verdict.into_checks().unwrap()[0].passed);
+
+        // Fail-closed edges.
+        let err = source_call(
+            &tasks,
+            &["grade", "no-such-task"],
+            &env,
+            &workspace,
+            Some("{}".into()),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("exited") && err.contains("no task"), "{err}");
+        let err = source_call(&tasks, &["dance"], &env, &workspace, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown verb"), "{err}");
+        let disagreeing = mecha_core::experiment::SourceGrade {
+            passed: true,
+            detail: String::new(),
+            checks: vec![mecha_core::eval::Check {
+                name: "x".into(),
+                passed: false,
+                detail: String::new(),
+            }],
+        };
+        assert!(disagreeing
+            .into_checks()
+            .unwrap_err()
+            .to_string()
+            .contains("disagrees"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A release resolves its draft by the CLI's own rule and then requires
     /// it pending: exact or unique prefix, never a namesake, never a draft
     /// already resolved.
@@ -2084,8 +2385,8 @@ mod tests {
     /// A manifest's `ids` narrow the case file to the tasks it names, in the
     /// manifest's order, and a name the file does not carry is a refusal
     /// rather than a silently smaller experiment.
-    #[test]
-    fn the_tasks_are_the_cases_the_manifest_names() {
+    #[tokio::test]
+    async fn the_tasks_are_the_cases_the_manifest_names() {
         let dir = std::env::temp_dir().join(format!("mecha-exp-cli-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cases = dir.join("cases.jsonl");
@@ -2117,7 +2418,12 @@ rationale = "r"
             dir.display()
         );
         let m = Manifest::parse(&text).unwrap();
-        let got: Vec<String> = cases_for(&m).unwrap().into_iter().map(|c| c.id).collect();
+        let got: Vec<String> = cases_for(&m)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
         assert_eq!(
             got,
             vec!["a", "b"],
@@ -2125,11 +2431,15 @@ rationale = "r"
         );
         let mut m2 = m.clone();
         m2.tasks.ids = vec!["nope".into()];
-        assert!(cases_for(&m2).unwrap_err().to_string().contains("nope"));
+        assert!(cases_for(&m2)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("nope"));
         let mut m3 = m;
         m3.tasks.ids.clear();
         m3.tasks.tags = vec!["t".into()];
-        assert_eq!(cases_for(&m3).unwrap().len(), 1, "tags narrow too");
+        assert_eq!(cases_for(&m3).await.unwrap().len(), 1, "tags narrow too");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

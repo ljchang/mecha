@@ -1032,12 +1032,27 @@ impl ExpMetric {
     }
 }
 
-/// Where the tasks come from: an eval case file, as `mecha eval` reads it,
-/// and the fixture workspace its cases run against.
+/// Where the tasks come from — one of two: an eval case file, as `mecha
+/// eval` reads it, or a **task source** (Part II §21.1): an executable the
+/// driver calls with `list`, `setup <task>` and `grade <task>`, for tasks
+/// whose prompt, starting state and grade live outside a case file — a
+/// benchmark suite's, where the grade is a function over the world's end
+/// state and not an assertion on the trace. Either way the fixture
+/// workspace is the jail the run gets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tasks {
-    pub cases: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cases: Option<PathBuf>,
+    /// The task source's command and arguments; relative file paths
+    /// resolve against the checkout `exp run` starts from, like a fixture
+    /// server's. Exactly one of `cases` and `source`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source: Vec<String>,
+    /// Bounds each of the source's verbs. `grade` may run a suite's own
+    /// checks over a large world; `list` should be instant.
+    #[serde(default = "source_timeout")]
+    pub source_timeout_secs: u64,
     pub fixture: PathBuf,
     /// Only these case ids, when set.
     #[serde(default)]
@@ -1045,6 +1060,154 @@ pub struct Tasks {
     /// Only cases carrying one of these tags, when set.
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+fn source_timeout() -> u64 {
+    600
+}
+
+impl Tasks {
+    /// A case file's tasks, and nothing else to call.
+    pub fn from_cases(
+        cases: impl Into<PathBuf>,
+        fixture: impl Into<PathBuf>,
+        ids: Vec<String>,
+    ) -> Tasks {
+        Tasks {
+            cases: Some(cases.into()),
+            source: Vec::new(),
+            source_timeout_secs: source_timeout(),
+            fixture: fixture.into(),
+            ids,
+            tags: Vec::new(),
+        }
+    }
+
+    pub fn has_source(&self) -> bool {
+        !self.source.is_empty()
+    }
+
+    /// The case file, for a caller that has established there is one.
+    pub fn cases_path(&self) -> Option<&Path> {
+        self.cases.as_deref()
+    }
+
+    fn validate(&self) -> Result<()> {
+        match (&self.cases, self.source.is_empty()) {
+            (Some(_), false) => anyhow::bail!(
+                "`[tasks]` names both `cases` and `source`; the tasks come from one or the other"
+            ),
+            (None, true) => anyhow::bail!(
+                "`[tasks]` names neither `cases` nor `source`; an experiment needs its tasks from one"
+            ),
+            _ => {}
+        }
+        anyhow::ensure!(
+            self.source_timeout_secs > 0,
+            "`[tasks] source_timeout_secs` must be positive"
+        );
+        Ok(())
+    }
+}
+
+// ─── The task source contract ──────────────────────────────────────────────
+
+/// What `list` answers with: one entry per task, in the source's order.
+/// The driver turns each into an [`crate::eval::EvalCase`] — an `expect`
+/// block may ride along for trace assertions the source wants beside its
+/// own grade, and is applied exactly as a case file's would be.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceTask {
+    pub id: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    #[serde(default)]
+    pub expect: crate::eval::Expect,
+}
+
+impl SourceTask {
+    pub fn into_case(self) -> Result<crate::eval::EvalCase> {
+        let case = crate::eval::EvalCase {
+            id: self.id,
+            prompt: crate::batch::Prompt::One(self.prompt),
+            expect: self.expect,
+            tags: self.tags,
+            sandbox: false,
+            max_turns: self.max_turns,
+            compact_at_tokens: None,
+        };
+        case.validate()?;
+        Ok(case)
+    }
+}
+
+/// What `grade <task>` answers with, given the run's result on stdin: a
+/// verdict and the checks behind it. Strict — a source that answers in a
+/// shape this build does not know has not graded, and the trial fails
+/// rather than passing on an unread verdict.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceGrade {
+    pub passed: bool,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub checks: Vec<crate::eval::Check>,
+}
+
+impl SourceGrade {
+    /// The checks a graded case gains: the source's own, and — when it
+    /// listed none — its verdict as one check, so the row always says what
+    /// the source decided. A `passed: true` over a failed check is refused:
+    /// the verdict must follow from the checks it names.
+    pub fn into_checks(self) -> Result<Vec<crate::eval::Check>> {
+        if self.checks.is_empty() {
+            return Ok(vec![crate::eval::Check {
+                name: "task source".into(),
+                passed: self.passed,
+                detail: self.detail,
+            }]);
+        }
+        let all = self.checks.iter().all(|c| c.passed);
+        anyhow::ensure!(
+            all == self.passed,
+            "the task source's verdict ({}) disagrees with its own checks ({} failed)",
+            if self.passed { "passed" } else { "failed" },
+            self.checks.iter().filter(|c| !c.passed).count()
+        );
+        Ok(self.checks)
+    }
+}
+
+/// The variables a task source's verb runs with, beyond the base set: the
+/// trial home, its fixture stores' root, the trial's workspace and the
+/// task — pointers, so a source finds the world it is to set up or grade
+/// without being told a server's name twice.
+pub const SOURCE_HOME_ENV: &str = "MECHA_HOME";
+pub const SOURCE_FIXTURES_ENV: &str = "MECHA_FIXTURES";
+pub const SOURCE_WORKSPACE_ENV: &str = "MECHA_EXPERIMENT_WORKSPACE";
+pub const SOURCE_TASK_ENV: &str = "MECHA_EXPERIMENT_TASK";
+
+pub fn source_env(home: &Path, workspace: &Path, task: Option<&str>) -> Vec<(String, String)> {
+    let mut v = vec![
+        (SOURCE_HOME_ENV.into(), home.to_string_lossy().into_owned()),
+        (
+            SOURCE_FIXTURES_ENV.into(),
+            home.join("fixtures").to_string_lossy().into_owned(),
+        ),
+        (
+            SOURCE_WORKSPACE_ENV.into(),
+            workspace.to_string_lossy().into_owned(),
+        ),
+    ];
+    if let Some(t) = task {
+        v.push((SOURCE_TASK_ENV.into(), t.to_string()));
+    }
+    v
 }
 
 impl Manifest {
@@ -1216,6 +1379,7 @@ impl Manifest {
         }
         anyhow::ensure!(self.repetitions >= 1, "repetitions must be at least 1");
         anyhow::ensure!(self.holdout_in >= 2, "holdout_in must be at least 2");
+        self.tasks.validate()?;
         self.fixtures.validate()?;
         // Both kinds: `ids` names each case once. For a lifetime the
         // positions are the tasks; for a single, `cases_for` walks `ids` in
@@ -3009,12 +3173,7 @@ rationale = "no notice, fewer turns"
     /// with one arm.
     #[test]
     fn a_manifest_without_a_control_is_a_measurement() {
-        let tasks = Tasks {
-            cases: "eval/cases.jsonl".into(),
-            fixture: "eval/workspace".into(),
-            ids: Vec::new(),
-            tags: Vec::new(),
-        };
+        let tasks = Tasks::from_cases("eval/cases.jsonl", "eval/workspace", Vec::new());
         let bare = Arm {
             preset: Some(Preset::Bare),
             model: Some("m".into()),
@@ -3093,12 +3252,7 @@ rationale = "no notice, fewer turns"
     /// arms' records and moves the hash.
     #[test]
     fn a_two_arm_design_is_a_manifest_with_a_stable_split() {
-        let tasks = Tasks {
-            cases: "eval/cases.jsonl".into(),
-            fixture: "eval/workspace".into(),
-            ids: Vec::new(),
-            tags: Vec::new(),
-        };
+        let tasks = Tasks::from_cases("eval/cases.jsonl", "eval/workspace", Vec::new());
         let treatment = Arm {
             preset: Some(Preset::Bare),
             overrides: vec!["max_turns=40".into()],
