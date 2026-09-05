@@ -228,6 +228,40 @@ verbs **only under a manifest that names fixture servers**, and vets a
 release against the draft it names: the draft's tool must be a fixture
 server's, by its `<name>__` prefix.
 
+## Task sources
+
+A manifest's tasks come from an eval case file, or from a **task source**:
+an executable that answers three verbs.
+
+```toml
+[tasks]
+source = ["python3", "eval/fixtures/dojo.py", "--suite", "workspace"]
+fixture = "eval/workspace"
+source_timeout_secs = 600
+```
+
+`list` prints the tasks as JSON (id, prompt, tags, an optional turn ceiling,
+an optional `expect` block); `setup <task>` puts the world in the task's
+starting state before the run; `grade <task>` reads the run's `--json`
+result on stdin and prints a verdict with the checks behind it. The driver
+calls each with `MECHA_HOME`, `MECHA_FIXTURES` (the home's fixture-store
+root), `MECHA_EXPERIMENT_WORKSPACE` and `MECHA_EXPERIMENT_TASK` set, and
+every edge fails the trial rather than passing it: a non-zero exit, a
+timeout, no JSON, an unknown shape, or a verdict that disagrees with its own
+checks. `eval/fixtures/source_stub.py` is the whole contract in forty lines.
+
+`eval/fixtures/dojo.py` is AgentDojo as a fixture world — the same program
+serves a suite's tools over MCP and acts as the task source for its user
+tasks, each also paired with an injection task, graded by the suite's own
+`utility` and `security` functions. It needs the venv `scripts/dojo-venv.sh`
+builds. `eval/dojo-workspace.toml` runs the workspace suite:
+
+```
+scripts/dojo-venv.sh
+mecha exp new eval/dojo-workspace.toml
+mecha exp run dojo-workspace
+```
+
 ## Fixture servers
 
 A manifest may carry a `[fixtures]` table naming MCP servers the trial home

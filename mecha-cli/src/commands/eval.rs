@@ -652,12 +652,11 @@ async fn ab_experiment(
         &name,
         "treatment",
         treatment,
-        Tasks {
-            cases: args.cases.clone(),
-            fixture: fixture.to_path_buf(),
-            ids: cases.iter().map(|c| c.id.clone()).collect(),
-            tags: Vec::new(),
-        },
+        Tasks::from_cases(
+            args.cases.clone(),
+            fixture.to_path_buf(),
+            cases.iter().map(|c| c.id.clone()).collect(),
+        ),
         args.holdout_in,
         1,
         &shared,
@@ -904,12 +903,11 @@ fn record_measurement(
         &name,
         "bare",
         arm,
-        Tasks {
-            cases: args.cases.clone(),
-            fixture: fixture.to_path_buf(),
-            ids: cases.iter().map(|c| c.id.clone()).collect(),
-            tags: Vec::new(),
-        },
+        Tasks::from_cases(
+            args.cases.clone(),
+            fixture.to_path_buf(),
+            cases.iter().map(|c| c.id.clone()).collect(),
+        ),
         args.runs,
     )?;
     manifest.description = format!(
@@ -1716,12 +1714,7 @@ mod tests {
                 preset: Some(Preset::Bare),
                 ..Arm::default()
             },
-            Tasks {
-                cases: "eval/cases.jsonl".into(),
-                fixture: "eval/workspace".into(),
-                ids: vec!["c".into()],
-                tags: Vec::new(),
-            },
+            Tasks::from_cases("eval/cases.jsonl", "eval/workspace", vec!["c".into()]),
             3,
         )
         .unwrap();

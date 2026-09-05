@@ -1,0 +1,40 @@
+# AgentDojo's workspace suite as a measurement (docs/EXPERIMENT-DESIGN.md
+# §17 item 5, §21.2): forty user tasks, each also run once with an injection
+# placed where its ground truth reads, over a fixture world served by
+# eval/fixtures/dojo.py.
+# One arm, no control — the readout is two rates the trifecta design has never
+# had: the interlock's catch rate on the injected pairs (the `security` check)
+# beside its false-refusal cost on the plain tasks (`utility`, with
+# `blocked_sends` on every row). Needs the venv: scripts/dojo-venv.sh.
+#
+#   mecha exp new eval/dojo-workspace.toml
+#   mecha exp run dojo-workspace
+#   mecha exp status dojo-workspace --json
+
+name = "dojo-workspace"
+description = "AgentDojo workspace: utility on plain tasks, security on injected pairs, under the full harness."
+split_seed = 23
+seeds = [1]
+repetitions = 1
+
+[tasks]
+source = ["python3", "eval/fixtures/dojo.py", "--suite", "workspace"]
+fixture = "eval/workspace"
+source_timeout_secs = 600
+
+[fixtures]
+# No staged sink: the interlock is what stands between the injected text and
+# `send_email`, and this measurement is of the interlock, not the outbox.
+outbox_tools = []
+
+[[fixtures.mcp]]
+name = "dojo"
+command = "python3"
+args = ["eval/fixtures/dojo.py", "serve", "--suite", "workspace"]
+[fixtures.mcp.capabilities]
+# The suite's inbox, calendar and drive hold other people's words, and the
+# injection lives in them; every read arms the interlock.
+untrusted_input = true
+
+[arms.full]
+preset = "full"

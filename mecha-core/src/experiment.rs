@@ -432,6 +432,23 @@ impl Fixtures {
         Ok(())
     }
 
+    /// A digest of the fixture charter's *text*, for the condition hash:
+    /// the charter is the strongest single input to appraisal, so two
+    /// worlds with the same servers and route but different priorities must
+    /// not pair across experiments — and the text, not the path, is what a
+    /// machine-independent term can be made of (found on review). `None`
+    /// when the manifest names no charter, so every earlier hash keeps its
+    /// value.
+    pub fn charter_digest(&self, base: &Path) -> Result<Option<String>> {
+        let Some(path) = &self.charter else {
+            return Ok(None);
+        };
+        let from = base.join(path);
+        let text = std::fs::read_to_string(&from)
+            .with_context(|| format!("reading the fixture charter {}", from.display()))?;
+        Ok(Some(fnv64(text.as_bytes())))
+    }
+
     /// Write the fixture charter over the home's, when the manifest names
     /// one. Idempotent, and run before every task: nothing in a home edits
     /// a charter (no stage does, no model can), so the design's file is
@@ -1032,12 +1049,27 @@ impl ExpMetric {
     }
 }
 
-/// Where the tasks come from: an eval case file, as `mecha eval` reads it,
-/// and the fixture workspace its cases run against.
+/// Where the tasks come from — one of two: an eval case file, as `mecha
+/// eval` reads it, or a **task source** (Part II §21.1): an executable the
+/// driver calls with `list`, `setup <task>` and `grade <task>`, for tasks
+/// whose prompt, starting state and grade live outside a case file — a
+/// benchmark suite's, where the grade is a function over the world's end
+/// state and not an assertion on the trace. Either way the fixture
+/// workspace is the jail the run gets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tasks {
-    pub cases: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cases: Option<PathBuf>,
+    /// The task source's command and arguments; relative file paths
+    /// resolve against the checkout `exp run` starts from, like a fixture
+    /// server's. Exactly one of `cases` and `source`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source: Vec<String>,
+    /// Bounds each of the source's verbs. `grade` may run a suite's own
+    /// checks over a large world; `list` should be instant.
+    #[serde(default = "source_timeout")]
+    pub source_timeout_secs: u64,
     pub fixture: PathBuf,
     /// Only these case ids, when set.
     #[serde(default)]
@@ -1045,6 +1077,169 @@ pub struct Tasks {
     /// Only cases carrying one of these tags, when set.
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+fn source_timeout() -> u64 {
+    600
+}
+
+impl Tasks {
+    /// A case file's tasks, and nothing else to call.
+    pub fn from_cases(
+        cases: impl Into<PathBuf>,
+        fixture: impl Into<PathBuf>,
+        ids: Vec<String>,
+    ) -> Tasks {
+        Tasks {
+            cases: Some(cases.into()),
+            source: Vec::new(),
+            source_timeout_secs: source_timeout(),
+            fixture: fixture.into(),
+            ids,
+            tags: Vec::new(),
+        }
+    }
+
+    pub fn has_source(&self) -> bool {
+        !self.source.is_empty()
+    }
+
+    /// The case file, for a caller that has established there is one.
+    pub fn cases_path(&self) -> Option<&Path> {
+        self.cases.as_deref()
+    }
+
+    fn validate(&self) -> Result<()> {
+        match (&self.cases, self.source.is_empty()) {
+            (Some(_), false) => anyhow::bail!(
+                "`[tasks]` names both `cases` and `source`; the tasks come from one or the other"
+            ),
+            (None, true) => anyhow::bail!(
+                "`[tasks]` names neither `cases` nor `source`; an experiment needs its tasks from one"
+            ),
+            _ => {}
+        }
+        anyhow::ensure!(
+            self.source_timeout_secs > 0,
+            "`[tasks] source_timeout_secs` must be positive"
+        );
+        Ok(())
+    }
+}
+
+// ─── The task source contract ──────────────────────────────────────────────
+
+/// What `list` answers with: one entry per task, in the source's order.
+/// The driver turns each into an [`crate::eval::EvalCase`] — an `expect`
+/// block may ride along for trace assertions the source wants beside its
+/// own grade, and is applied exactly as a case file's would be.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceTask {
+    pub id: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    #[serde(default)]
+    pub expect: crate::eval::Expect,
+}
+
+/// The tag every source task carries when its source names none, so `tags`
+/// is optional in fact and not only in the docstring — `EvalCase::validate`
+/// wants one (found on review).
+pub const SOURCE_TAG: &str = "source";
+
+impl SourceTask {
+    pub fn into_case(self) -> Result<crate::eval::EvalCase> {
+        let tags = if self.tags.is_empty() {
+            vec![SOURCE_TAG.to_string()]
+        } else {
+            self.tags
+        };
+        let case = crate::eval::EvalCase {
+            id: self.id,
+            prompt: crate::batch::Prompt::One(self.prompt),
+            expect: self.expect,
+            tags,
+            // Every trial runs in its own staged workspace and `run_one`
+            // runs `expect.verify` there, so a source's case is sandboxed
+            // by construction; `false` made a documented `verify` block
+            // unlistable (found on review).
+            sandbox: true,
+            max_turns: self.max_turns,
+            compact_at_tokens: None,
+        };
+        case.validate()?;
+        Ok(case)
+    }
+}
+
+/// What `grade <task>` answers with, given the run's whole `--json` result
+/// on stdin (the child's own document, not a re-serialised subset): a
+/// verdict and the checks behind it. Strict — a source that answers in a
+/// shape this build does not know has not graded, and the trial fails
+/// rather than passing on an unread verdict.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceGrade {
+    pub passed: bool,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub checks: Vec<crate::eval::Check>,
+}
+
+impl SourceGrade {
+    /// The checks a graded case gains: the source's own, and — when it
+    /// listed none — its verdict as one check, so the row always says what
+    /// the source decided. A `passed: true` over a failed check is refused:
+    /// the verdict must follow from the checks it names.
+    pub fn into_checks(self) -> Result<Vec<crate::eval::Check>> {
+        if self.checks.is_empty() {
+            return Ok(vec![crate::eval::Check {
+                name: "task source".into(),
+                passed: self.passed,
+                detail: self.detail,
+            }]);
+        }
+        let all = self.checks.iter().all(|c| c.passed);
+        anyhow::ensure!(
+            all == self.passed,
+            "the task source's verdict ({}) disagrees with its own checks ({} failed)",
+            if self.passed { "passed" } else { "failed" },
+            self.checks.iter().filter(|c| !c.passed).count()
+        );
+        Ok(self.checks)
+    }
+}
+
+/// The variables a task source's verb runs with, beyond the base set: the
+/// trial home, its fixture stores' root, the trial's workspace and the
+/// task — pointers, so a source finds the world it is to set up or grade
+/// without being told a server's name twice.
+pub const SOURCE_HOME_ENV: &str = "MECHA_HOME";
+pub const SOURCE_FIXTURES_ENV: &str = "MECHA_FIXTURES";
+pub const SOURCE_WORKSPACE_ENV: &str = "MECHA_EXPERIMENT_WORKSPACE";
+pub const SOURCE_TASK_ENV: &str = "MECHA_EXPERIMENT_TASK";
+
+pub fn source_env(home: &Path, workspace: &Path, task: Option<&str>) -> Vec<(String, String)> {
+    let mut v = vec![
+        (SOURCE_HOME_ENV.into(), home.to_string_lossy().into_owned()),
+        (
+            SOURCE_FIXTURES_ENV.into(),
+            home.join("fixtures").to_string_lossy().into_owned(),
+        ),
+        (
+            SOURCE_WORKSPACE_ENV.into(),
+            workspace.to_string_lossy().into_owned(),
+        ),
+    ];
+    if let Some(t) = task {
+        v.push((SOURCE_TASK_ENV.into(), t.to_string()));
+    }
+    v
 }
 
 impl Manifest {
@@ -1216,6 +1411,7 @@ impl Manifest {
         }
         anyhow::ensure!(self.repetitions >= 1, "repetitions must be at least 1");
         anyhow::ensure!(self.holdout_in >= 2, "holdout_in must be at least 2");
+        self.tasks.validate()?;
         self.fixtures.validate()?;
         // Both kinds: `ids` names each case once. For a lifetime the
         // positions are the tasks; for a single, `cases_for` walks `ids` in
@@ -1310,6 +1506,19 @@ impl Manifest {
     /// an arm that names its own overrides them, and the hash follows the
     /// arm. Pure: the store decides which have run.
     pub fn trials(&self, task_ids: &[String], provider: &str, model: &str) -> Vec<Trial> {
+        self.trials_with_world(task_ids, provider, model, None)
+    }
+
+    /// [`Manifest::trials`] with the fixture charter's digest on every row's
+    /// condition — the one world term that needs the filesystem, which the
+    /// store's `plan` resolves; a front-end with no fixtures passes none.
+    pub fn trials_with_world(
+        &self,
+        task_ids: &[String],
+        provider: &str,
+        model: &str,
+        charter_digest: Option<&str>,
+    ) -> Vec<Trial> {
         let seeds: Vec<Option<u64>> = if self.seeds.is_empty() {
             vec![None]
         } else {
@@ -1338,6 +1547,7 @@ impl Manifest {
                     &stages,
                     &fixtures,
                     &route,
+                    charter_digest,
                 ),
                 status: TrialStatus::Pending,
                 session_id: None,
@@ -1520,6 +1730,7 @@ pub fn condition_hash_of(
         stages_off,
         fixtures,
         &[],
+        None,
     )
 }
 
@@ -1528,8 +1739,9 @@ pub fn condition_hash_of(
 /// treatment the release channel rests on, so two rows whose worlds route
 /// differently must not pair across experiments. The `route=` term is
 /// appended only when a manifest names one, so every earlier hash keeps
-/// its value. A server's command, seed and the charter's text stay out:
-/// they are the manifest's to record, and a path differs by machine.
+/// its value. The fixture charter enters as a digest of its *text*
+/// (`Fixtures::charter_digest`), never its path, since a path differs by
+/// machine; a server's command and seed stay the manifest's to record.
 #[allow(clippy::too_many_arguments)]
 pub fn condition_hash_world(
     levers_off: &[Lever],
@@ -1540,6 +1752,7 @@ pub fn condition_hash_world(
     stages_off: &[StageLever],
     fixtures: &[String],
     route: &[String],
+    charter_digest: Option<&str>,
 ) -> String {
     let mut overrides: Vec<&str> = overrides.iter().map(String::as_str).collect();
     overrides.sort_unstable();
@@ -1575,9 +1788,19 @@ pub fn condition_hash_world(
         canonical.push_str("|route=");
         canonical.push_str(&names.join(","));
     }
+    if let Some(d) = charter_digest {
+        canonical.push_str("|charter=");
+        canonical.push_str(d);
+    }
+    fnv64(canonical.as_bytes())
+}
+
+/// FNV-1a over bytes, as a hex string: an equality key, not a credential,
+/// so no hashing dependency is worth adding for it.
+fn fnv64(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in canonical.bytes() {
-        h ^= u64::from(b);
+    for b in bytes {
+        h ^= u64::from(*b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{h:016x}")
@@ -1780,10 +2003,12 @@ impl ExperimentStore {
         task_ids: &[String],
         provider: &str,
         model: &str,
+        base: &Path,
     ) -> Result<(Vec<Trial>, usize)> {
         let (on_disk, skipped) = self.trials()?;
+        let digest = manifest.fixtures.charter_digest(base)?;
         let planned = manifest
-            .trials(task_ids, provider, model)
+            .trials_with_world(task_ids, provider, model, digest.as_deref())
             .into_iter()
             .map(|t| on_disk.get(&t.id).cloned().unwrap_or(t))
             .collect();
@@ -3009,12 +3234,7 @@ rationale = "no notice, fewer turns"
     /// with one arm.
     #[test]
     fn a_manifest_without_a_control_is_a_measurement() {
-        let tasks = Tasks {
-            cases: "eval/cases.jsonl".into(),
-            fixture: "eval/workspace".into(),
-            ids: Vec::new(),
-            tags: Vec::new(),
-        };
+        let tasks = Tasks::from_cases("eval/cases.jsonl", "eval/workspace", Vec::new());
         let bare = Arm {
             preset: Some(Preset::Bare),
             model: Some("m".into()),
@@ -3093,12 +3313,7 @@ rationale = "no notice, fewer turns"
     /// arms' records and moves the hash.
     #[test]
     fn a_two_arm_design_is_a_manifest_with_a_stable_split() {
-        let tasks = Tasks {
-            cases: "eval/cases.jsonl".into(),
-            fixture: "eval/workspace".into(),
-            ids: Vec::new(),
-            tags: Vec::new(),
-        };
+        let tasks = Tasks::from_cases("eval/cases.jsonl", "eval/workspace", Vec::new());
         let treatment = Arm {
             preset: Some(Preset::Bare),
             overrides: vec!["max_turns=40".into()],
@@ -4125,7 +4340,9 @@ rationale = "no rumination should fail more over the sequence"
         let m = store.create(MANIFEST).unwrap();
         assert!(store.create(MANIFEST).is_err(), "written once");
         let tasks = vec!["a".to_string()];
-        let (planned, skipped) = store.plan(&m, &tasks, "local", "m").unwrap();
+        let (planned, skipped) = store
+            .plan(&m, &tasks, "local", "m", Path::new("."))
+            .unwrap();
         assert_eq!(planned.len(), 6);
         assert_eq!(skipped, 0);
         let mut first = planned[0].clone();
@@ -4133,7 +4350,9 @@ rationale = "no rumination should fail more over the sequence"
         first.passed = Some(true);
         store.save_trial(&first).unwrap();
         std::fs::write(store.trial_path("torn"), b"{not json").unwrap();
-        let (planned, skipped) = store.plan(&m, &tasks, "local", "m").unwrap();
+        let (planned, skipped) = store
+            .plan(&m, &tasks, "local", "m", Path::new("."))
+            .unwrap();
         assert_eq!(planned[0].status, TrialStatus::Done, "the store's row wins");
         assert_eq!(skipped, 1, "a torn row is counted, not read as pending");
         // An unknown status reads as unknown, never as a failed file.
@@ -4277,6 +4496,39 @@ preset = "full"
         let m = Manifest::parse(MANIFEST).unwrap();
         assert!(m.fixtures.is_empty());
         assert!(m.fixtures.names().is_empty());
+    }
+
+    /// `[tasks]` names exactly one of `cases` and `source`, and a source's
+    /// timeout is positive.
+    #[test]
+    fn tasks_come_from_a_case_file_or_a_source_never_both_or_neither() {
+        let base = "name = \"t\"\nsplit_seed = 1\n[arms.a]\n";
+        let both = format!(
+            "{base}[tasks]\ncases = \"c\"\nsource = [\"python3\", \"s.py\"]\nfixture = \"f\"\n"
+        );
+        assert!(Manifest::parse(&both)
+            .unwrap_err()
+            .to_string()
+            .contains("both"));
+        let neither = format!("{base}[tasks]\nfixture = \"f\"\n");
+        assert!(Manifest::parse(&neither)
+            .unwrap_err()
+            .to_string()
+            .contains("neither"));
+        let source = format!("{base}[tasks]\nsource = [\"python3\", \"s.py\"]\nfixture = \"f\"\n");
+        let m = Manifest::parse(&source).unwrap();
+        assert!(m.tasks.has_source() && m.tasks.cases_path().is_none());
+        assert_eq!(m.tasks.source_timeout_secs, 600, "the default");
+        let zero = format!(
+            "{base}[tasks]\nsource = [\"python3\"]\nsource_timeout_secs = 0\nfixture = \"f\"\n"
+        );
+        assert!(Manifest::parse(&zero)
+            .unwrap_err()
+            .to_string()
+            .contains("positive"));
+        let cases = format!("{base}[tasks]\ncases = \"c\"\nfixture = \"f\"\n");
+        let m = Manifest::parse(&cases).unwrap();
+        assert!(!m.tasks.has_source() && m.tasks.cases_path().is_some());
     }
 
     /// A populated `Fixtures` round-trips through TOML: the values sit before
@@ -4652,6 +4904,7 @@ seed = "seed"
                 &[],
                 &["graph".into(), "mail".into()],
                 route,
+                None,
             )
         };
         assert_eq!(rows[0].condition_hash, world(&["mail__mail_send".into()]));
@@ -4673,6 +4926,50 @@ seed = "seed"
             ),
             "no route: the fixtures-only value"
         );
+        // The charter's text is a term too, and only when one is named.
+        let with_charter = condition_hash_world(
+            &[],
+            &[],
+            "p",
+            "m",
+            None,
+            &[],
+            &["graph".into(), "mail".into()],
+            &["mail__mail_send".into()],
+            Some("abc"),
+        );
+        assert_ne!(with_charter, world(&["mail__mail_send".into()]));
+        let rows2 = m.trials_with_world(&["a".into()], "p", "m", Some("abc"));
+        assert_eq!(rows2[0].condition_hash, with_charter);
+        // The digest is of the text: two paths, one text, one digest.
+        let base = std::env::temp_dir().join(format!("mecha-cd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let line = b"[[line]]\nid = \"x\"\ntext = \"X.\"\n";
+        std::fs::write(base.join("a.toml"), line).unwrap();
+        std::fs::write(base.join("b.toml"), line).unwrap();
+        std::fs::write(
+            base.join("c.toml"),
+            b"[[line]]\nid = \"x\"\ntext = \"Y.\"\n",
+        )
+        .unwrap();
+        let fx = |p: &str| Fixtures {
+            charter: Some(p.into()),
+            ..Fixtures::default()
+        };
+        assert_eq!(
+            fx("a.toml").charter_digest(&base).unwrap(),
+            fx("b.toml").charter_digest(&base).unwrap()
+        );
+        assert_ne!(
+            fx("a.toml").charter_digest(&base).unwrap(),
+            fx("c.toml").charter_digest(&base).unwrap()
+        );
+        assert_eq!(Fixtures::default().charter_digest(&base).unwrap(), None);
+        assert!(
+            fx("missing.toml").charter_digest(&base).is_err(),
+            "a named charter that is not there is an error"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The principal is told which fixtures its verbs can reach; an old
