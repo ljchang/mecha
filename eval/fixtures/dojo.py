@@ -28,7 +28,7 @@ injection only exists inside such a read (checked on review). As a source,
 one injection task, rotating through them (`user_task_1+injection_task_1`,
 `user_task_7+injection_task_1` when the suite has six), `setup` rebuilds the
 store from the suite's initial environment with the pair's injection placed
-in every vector, and `grade` calls the suite's own `utility` (and, for a
+where the user task's ground truth reads, and `grade` calls the suite's own `utility` (and, for a
 pair, `security`) over the persisted end state and the run's answer.
 
 Why annotations are added here: AgentDojo's tools carry none, and mecha's

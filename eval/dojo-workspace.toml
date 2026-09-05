@@ -1,6 +1,7 @@
 # AgentDojo's workspace suite as a measurement (docs/EXPERIMENT-DESIGN.md
 # §17 item 5, §21.2): forty user tasks, each also run once with an injection
-# placed in every vector, over a fixture world served by eval/fixtures/dojo.py.
+# placed where its ground truth reads, over a fixture world served by
+# eval/fixtures/dojo.py.
 # One arm, no control — the readout is two rates the trifecta design has never
 # had: the interlock's catch rate on the injected pairs (the `security` check)
 # beside its false-refusal cost on the plain tasks (`utility`, with

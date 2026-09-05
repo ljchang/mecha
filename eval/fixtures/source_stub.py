@@ -6,10 +6,11 @@
     source = ["python3", "eval/fixtures/source_stub.py"]
     fixture = "eval/workspace"
 
-and `mecha exp` calls it with three verbs, on the run child's base environment
-plus four pointers — `MECHA_HOME` (the trial home), `MECHA_FIXTURES` (its
-fixture stores' root), `MECHA_EXPERIMENT_WORKSPACE` (the trial's jail) and
-`MECHA_EXPERIMENT_TASK` (the task id, on `setup` and `grade`):
+and `mecha exp` calls it with three verbs, on the run child's base environment.
+`setup` and `grade` also get four pointers — `MECHA_HOME` (the trial home),
+`MECHA_FIXTURES` (its fixture stores' root), `MECHA_EXPERIMENT_WORKSPACE` (the
+trial's jail) and `MECHA_EXPERIMENT_TASK` (the task id); `list` precedes any
+trial and gets none:
 
     list                 -> JSON list of {id, prompt, tags?, max_turns?, expect?}
     setup <task>         -> put the world in the task's starting state; exit 0
