@@ -847,9 +847,15 @@ pub fn finalize_region_rules(
     // `finalize_rules`, so the text check keeps it from doubling). A
     // disabled rule is neither active nor retired and fell through both
     // filters, which deleted an owner's `enabled = false` the moment any
-    // other region learned (found on review).
+    // other region learned (found on review). And a hand-disabled rule
+    // *inside* the region comes through too: the learner is never shown
+    // one, so its omission from the reply is not a decision to drop it —
+    // without this it left the file with its id and came back enabled
+    // under a fresh one the next time the lesson was derived (found on
+    // review, one region over from the case above).
     for prev in previous {
-        if !rewritable_in(prev, region) && !out.iter().any(|r| r.text == prev.text) {
+        let carried = !rewritable_in(prev, region) || (!prev.enabled && prev.retired_at.is_none());
+        if carried && !out.iter().any(|r| r.text == prev.text) {
             out.push(prev.clone());
         }
     }
@@ -6075,6 +6081,31 @@ mod situation_tests {
             &["y".into()],
             &[run_with(&["mail_send"])],
             "now",
+        );
+        // And a disabled rule *inside* the batched region survives a reply
+        // that omits it — the learner was never shown it, so the omission
+        // is no decision. Fails on the carry-through that handled only
+        // out-of-region rules (found on review).
+        let kept = finalize_region_rules(
+            vec![Rule {
+                text: "Fresh mail rule.".into(),
+                ..Default::default()
+            }],
+            &previous,
+            &run_with(&["mail_send"]),
+            &["z".into()],
+            &[run_with(&["mail_send"])],
+            "now",
+        );
+        let off_in_region = kept
+            .iter()
+            .find(|r| r.text == "Disabled mail rule.")
+            .expect("an in-region disabled rule is carried through");
+        assert!(!off_in_region.enabled);
+        assert_eq!(off_in_region.id.as_deref(), Some("r-off"));
+        assert!(
+            !kept.iter().any(|r| r.text == "Mail rule."),
+            "an active in-region rule the learner omitted is still dropped"
         );
         let off = restated
             .iter()

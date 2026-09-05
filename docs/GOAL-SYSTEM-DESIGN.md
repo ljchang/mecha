@@ -1922,10 +1922,14 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > the region it just shed. A widening that moves a narrowed rule's scope
 > clears that mark, so the whole ledger folds again — a model's "same
 > lesson" may re-widen, but it cannot amnesty the convictions that
-> narrowed. Two more the fifth review pass found: coverage never probes
-> a rule's own source reflection (a self-grade would release probation
-> and close the pair), and the learner is never shown a hand-disabled
-> rule to restate, since `enabled` now rides through a restatement. Three corrections
+> narrowed. Two more the fifth review pass found, and the sixth widened
+> both: coverage never probes a reflection *any* carried rule was
+> distilled from (a row charges every rule in the block, and a
+> self-grade would release probation and close the pair), and the
+> learner is never shown a hand-disabled rule to restate — `enabled`
+> rides through a restatement, and a disabled rule inside the batched
+> region is carried through a reply that omits it, since the learner
+> never saw it to drop it. Three corrections
 > the build recorded: scopes are conjunctive tool sets, so a standing rule
 > clean in `shell` and in `fs_write` and convicted in `http_fetch` cannot
 > say "everywhere but http_fetch" — the clean regions share no tool, the
