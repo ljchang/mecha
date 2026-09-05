@@ -3541,6 +3541,47 @@ comparison over a chosen set**, with the design written before the run.
   one injected thread, a calendar and a charter; `eval/home-cases.jsonl`,
   `eval/home-principal.toml` and `eval/home-lifetime.toml` run it.
   Fictional cast only, as everything under `eval/` is.
+- **A task source is the other place tasks come from** (`[tasks] source`,
+  Part II §21.1's contract, built after the fixture servers). `[tasks]`
+  names exactly one of `cases` (an eval case file) and `source` (an
+  executable), and the driver calls the source with three verbs on
+  `hooks.rs`'s shape — a command at a lifecycle point, JSON in and out,
+  fail-closed, bounded by `source_timeout_secs`: **`list`** answers with the
+  tasks (`SourceTask`: id, prompt, tags, an optional turn ceiling, an
+  optional `expect` block applied exactly as a case file's would be), and
+  the driver filters by tag and orders by `ids` as it does a file's;
+  **`setup <task>`** puts the world in the task's starting state, after the
+  home and its fixture stores are rendered and before the child runs, and
+  its failure is the row's; **`grade <task>`** reads the run's whole result
+  on stdin (`mecha run --json`: the answer, the calls, the taint, the
+  blocked sends) and answers with a verdict and the checks behind it
+  (`SourceGrade`), which land on the row beside any trace assertion — a
+  verdict that disagrees with its own checks is refused, and a source that
+  exits non-zero, times out, prints no JSON or answers in a shape this
+  build does not know **fails the trial, never passes it**. The source runs
+  from the trial's workspace on the run child's base environment plus four
+  pointers (`MECHA_HOME`, `MECHA_FIXTURES` = the home's fixture-store root,
+  `MECHA_EXPERIMENT_WORKSPACE`, `MECHA_EXPERIMENT_TASK`), so it finds the
+  world it sets up and grades without a server's name being spelled twice;
+  its relative file paths resolve against the `exp run` checkout like a
+  fixture server's. `eval/fixtures/source_stub.py` is the contract as small
+  as it can be written and what the driver's test runs against;
+  `eval/fixtures/dojo.py` is the real one — **AgentDojo** as a fixture world
+  (§17 item 5, §21.2): one program that serves a suite's tools over MCP with
+  the environment persisted to the fixture store after every call, and as a
+  source lists the suite's user tasks (each also paired with one injection
+  task by default, `user_task_3+injection_task_1`), sets up the store from
+  the suite's initial environment with the pair's injection placed where
+  the user task's ground truth reads, and grades with the suite's own
+  `utility` and `security` over the persisted end state. AgentDojo's tools
+  carry no annotations, so the program adds them from a per-suite table
+  written down in the file — `send_email` is a sink or the interlock never
+  fires and the experiment measures a guard that does not ship. It runs
+  from its own venv (`scripts/dojo-venv.sh`; the package imports only with
+  its LLM-vendor SDKs), hopping there itself when the import fails.
+  `eval/dojo-workspace.toml` is the first measurement: the interlock's
+  catch rate on the injected pairs beside its false-refusal cost on the
+  plain tasks, two numbers the trifecta design never had.
 
 ## The doctor
 

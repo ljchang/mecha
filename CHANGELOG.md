@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Task sources, and AgentDojo as a fixture world.** `[tasks] source`
+  names an executable instead of a case file; the driver calls it with
+  `list`, `setup <task>` and `grade <task>` (the run's `--json` result on
+  stdin), fail-closed at every edge, with four pointer variables so it finds
+  the trial's world. `eval/fixtures/source_stub.py` is the contract's
+  reference; `eval/fixtures/dojo.py` serves an AgentDojo suite over MCP and
+  grades its tasks with the suite's own `utility` and `security`, from a
+  venv `scripts/dojo-venv.sh` builds; `eval/dojo-workspace.toml` measures
+  the interlock's catch rate and false-refusal cost on the workspace suite.
 - **Fixture servers on the manifest, and the synthetic assistant home.**
   A `[fixtures]` table on an experiment manifest names MCP servers the trial
   home runs *instead of* the operator's: when it names any, the home's
