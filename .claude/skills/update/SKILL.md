@@ -295,7 +295,14 @@ sweep` — a unit still on the two-verb line silently leaves every meeting poll
 at "invites 0/N" forever, with nothing in the repo to say why. And a pick card
 is a `calendar_create_event` draft: `mail__calendar_create_event` must be in
 `[outbox] tools` (it is, by the documented default) or `mecha polls sweep`
-refuses to stage one, per record, per tick.
+refuses to stage one, per record, per tick. The third fact lives in
+`~/.mecha/config.toml`, which no build reaches: `factory__poll_create` and
+`factory__poll_meeting_create` stay in `[outbox] tools` and must **not** be
+in `publish_tools` (ruling 6 of `MEETING-POLL-UX-DESIGN.md` — the card is a
+letter); a config that still lists them there reviews the invitation as a
+publication, refuses `edit` on the owner's own sentence, and hides the
+release from the writing miner. Done 2026-09-05; a fresh clone's config
+example is already right.
 
 Verify — and take a startup line, never `is-active`, since a unit that
 crashes on its first request is active for a while first.

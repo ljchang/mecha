@@ -3583,6 +3583,56 @@ installed and restarted at 18:04 the same day, once a peer's inference run
 had released the model server, and the skill's step-1b probe confirmed the
 new binary from the served page (a `304` naming its `ETag`, not a bare one).
 
+**2026-09-05 — the meeting poll as one conversation: ask once, review
+once, then nothing until it is booked.** The scheduling poll had a
+mechanism (seeded candidates, capability URLs, `rank_poll`/`clean_winner`)
+and no experience: the create took two file paths the model had to
+manufacture, returned URLs it was expected to mail by hand, and — because
+`poll_meeting_create` is outbox-routed and so *executes at release* —
+refused its own freebusy file as over an hour old by the time anyone
+approved it; `~/.mecha/factory/polls/` had never existed on the owner's
+machine. `MEETING-POLL-UX-DESIGN.md` redesigned it from the owner's chair
+and the owner ruled six things in one sitting (`auto_book` = unanimous |
+feasible | manual, every deadline and nudge number in a `[poll]` table,
+candidates recomputed at release, the pick as an outbox calendar draft,
+reject = "no time found" with no mail, the poll creates as `Message`-kind).
+Built across three crates in two repos the same day (mecha #183, sixteen
+review passes; mecha-factory #20, fourteen), deployed 2026-09-05. The
+shape: `poll_meeting_create` takes a title, the people and a duration and
+seeds from what the slots pipeline last saw — `slots push` now writes its
+input, policy included, to `~/.mecha/factory/freebusy/`, which is what
+makes a create staged at five and released at nine possible; the
+invitation rides as a schema `default` so the outbox card *is* the letter;
+the record at `~/.mecha/factory/polls/<id>.json` grows a `lifecycle` block
+that three timer verbs consume in turn — `factory-publish polls sweep`
+(observe the box, queue the one nudge, close on the poll's own terms,
+decide the verdict, close the page with the outcome sentence),
+`mecha-mail polls` (each person their own link from the owner's account,
+the nudge, the event for a clean winner with everyone as attendee,
+re-verified against live freebusy, ledgered in `~/.mecha/mail/polls.jsonl`
+before the record is written), `mecha polls sweep` (a `pick` verdict
+becomes a real `calendar_create_event` draft with the ranking and reasons
+in its description; `p` in `/polls` swaps the loaded slot; a released card
+books, a rejected one closes the poll as no time found). Open polls hold
+their candidates off the booking page until the event exists. What the
+review loop found and the build now holds: no mode books over a silent
+participant *or an empty roster* (which the box serves on a database
+error, vacuously unanimous); a harness-staged card is `Author::Harness` —
+a string on the item, parsed on read — and is invisible to the writing
+miner **and to `review_policy::staged_since`**, without which `/review
+auto` would have released a timer-staged pick card mid-run and booked the
+meeting with no card drawn; each verb re-reads the record at write time
+and merges only the keys it changed, with a pid-unique temp sibling, for
+a file three binaries write; an unreadable box reply, an unknown state, a
+refused close after our own lost write, a torn record, a lost record
+write after a ledgered send, a released orphan card — each is a finding or
+a repair, never a benign state; and a poll whose invitations never all go
+out, or whose event never arrives, is reported every tick and closed as
+`stalled` a day on, releasing its slots. Deferred on purpose (§7.4):
+participants' own freebusy, a web page, `polls extend` — and, refused with
+its reason in §8, the open-link meeting poll: an open link has no
+"everyone" to have answered.
+
 **2026-09-04, evening — a charter sensor reads: each sensored line
 against its store, on every run record, on every owner surface, and in the
 doctor against the owner's own number.** `GOAL-SYSTEM-DESIGN.md` §11.1's
@@ -6033,6 +6083,19 @@ and is what finally exercised the path.)
 
 ### Unattended runs
 
+- **An outbox-routed tool executes at release, not at staging — so any
+  freshness check inside it is checked hours later, against a file nobody
+  refreshed.** `poll_meeting_create` refused a freebusy document over an
+  hour old, which was right for the CLI pipeline that pipes it in and
+  wrong the moment the call was staged: the owner approved the next
+  morning and the tool refused its own input. Nobody hit it because no
+  meeting poll had ever completed the path. The fix moved the input to a
+  cache the slots timer rewrites every two minutes, so it is as fresh at
+  release as at staging. **The general shape: a routed call is a deferred
+  call. Anything it reads from the workspace — a path, a timestamp, a
+  "within the last hour" — is read when a person gets round to it, and the
+  card cannot show what will be true then.**
+
 - **An edit that silently matches nothing ships a false claim.** The fix for
   the startup banner below was written three times before it existed: rustfmt
   had wrapped the `tracing::info!` across lines, a single-line string replace
@@ -6124,6 +6187,27 @@ and is what finally exercised the path.)
   (2026-08-25.)
 
 ### Review process
+
+- **Sixteen review passes on one PR, and four of them were the author's own
+  stale tests, a format miss and a lint nit pushed without gating.** The
+  meeting-poll PRs (2026-09-04/05) were large — ~4,500 lines, a file three
+  binaries write on a timer, a new outbox field, a state machine — and the
+  workflow re-reads the whole diff on every push, so each pass found real
+  things in the new code the last fix added (the auto-release hole in
+  `staged_since` came on pass eleven). That part is the review working.
+  The part that was not: three pushes went out with a test assertion the
+  author had not updated after changing the behaviour it tested, and one
+  with a `cargo fmt` miss — each a full extra cycle of a reviewer's time.
+  **Gate every push on the suite *and* clippy in the same command that
+  commits** (`cargo test && cargo clippy --all-targets -- -D warnings &&
+  git commit …`); a push that fails CI is a review pass spent on nothing —
+  and the gate this lane actually used, `cargo test … | grep -q FAILED &&
+  echo NOT GREEN || git commit …`, fails *open*: it runs no clippy, and a
+  compile error goes to stderr, so a tree that does not build prints no
+  `FAILED` and the commit lands. Every stage load-bearing on its exit
+  status, or it is not a gate. And when a fix adds a *state* — a stall, a
+  handoff, a merge — expect the next pass to find its edges, because it
+  will.
 
 - **Everything after clap's `--` is a positional, so a fix for argv
   injection broke reject completely — under a suite that stayed green
