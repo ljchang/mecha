@@ -11,7 +11,7 @@
 > communication *policy* question; this file holds the instrument that would
 > measure any policy, and §8 is the only part specific to communication.
 >
-> **Part II (§13–§20) added 2026-09-03**, after the appraisal sprint
+> **Part II (§13–§21) added 2026-09-03**, after the appraisal sprint
 > (PRs #140, #141, #147, #151), against `main` at `4a888ad`. It asks the
 > same instrument to measure the appraisal system and to ablate subsystems
 > one at a time, adds two trial kinds and a closed switch set, and reorders
@@ -956,7 +956,7 @@ rumination) can be ablated under without anything in P.
 
 ---
 
-## 21. Where the pieces live — proposed 2026-09-03, not yet ruled
+## 21. Where the pieces live — proposed 2026-09-03; the principal's contract ruled 2026-09-04, the rest not yet
 
 Spitballed with the owner the same day Part II was written; recorded so
 the split is argued once.
@@ -1002,7 +1002,7 @@ chat endpoint over the agent loop, the contract `hyperstudy-agent`
 verifies, so mecha can be a HyperStudy participant in human-plus-agent
 coordination studies without any work on this side.
 
-### 21.1 Who drives a lifetime, and what a task is — recommended, not ruled
+### 21.1 Who drives a lifetime, and what a task is — the principal half ruled and built (2026-09-04, #185); the task-source half still the recommendation
 
 **Recommendation: mecha owns the trial; the scaffolding owns the task
 source and the principal, as executables mecha spawns.** `mecha exp run`
