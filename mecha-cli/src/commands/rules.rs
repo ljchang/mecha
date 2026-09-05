@@ -253,8 +253,9 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
         .collect();
     let support = if seen.len() > 1
         || r.support
-            .first()
-            .is_some_and(|s| !s.is_standing() && Some(s) != r.scope.as_ref())
+            .iter()
+            .find(|s| !s.is_standing())
+            .is_some_and(|s| Some(s) != r.scope.as_ref())
     {
         format!(" · seen in {}", seen.join("; "))
     } else {
@@ -995,6 +996,15 @@ mod tests {
         let line = describe(wide, &tallies);
         assert!(line.contains("loads with http_fetch"), "{line}");
         assert!(line.contains("narrowed "), "{line}");
+        // A widened pre-field rule — support `[standing, shell]`, scope
+        // unset — still says where it was seen (found on review).
+        let pre_field = Rule {
+            support: vec![Situation::default(), sit(&["shell"])],
+            ..rule("Old and widened.", "r-pre")
+        };
+        let pre_line = describe(&pre_field, &tallies);
+        assert!(pre_line.contains("seen in shell"), "{pre_line}");
+        assert!(!pre_line.contains("seen in everywhere"), "{pre_line}");
         assert!(line.contains("by region:"), "{line}");
         assert!(
             line.contains("fs_read, shell 3 graded (3 attributed)"),
