@@ -393,6 +393,32 @@ async fn run_lifetimes(
                             ));
                             trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
                             eprintln!("  failed: {e:#}");
+                            // The refusal is a record, not a local: a resumed
+                            // driver finds the row `Failed`, re-initialises
+                            // its own flag and would ask the principal after
+                            // the task at a position that never had its
+                            // world — unless the ledger already says both
+                            // points were skipped for that reason (found on
+                            // review).
+                            for point in [PrincipalPoint::BeforeTask, PrincipalPoint::AfterTask] {
+                                if !principal_done(&ledger, position, point) {
+                                    let run = unrendered_line(
+                                        &lifetime,
+                                        &trial.arm,
+                                        position,
+                                        ExperimentStore::next_attempt(
+                                            &ledger,
+                                            torn,
+                                            position,
+                                            StageLever::Principal,
+                                        ),
+                                        point,
+                                        &format!("{e:#}"),
+                                    );
+                                    store.record_stage(&run)?;
+                                    ledger.push(run);
+                                }
+                            }
                         } else if !principal_done(&ledger, position, PrincipalPoint::BeforeTask) {
                             let run = principal_call(
                                 store,
@@ -558,6 +584,32 @@ fn skipped_line(
         acts: Vec::new(),
         refusals: Vec::new(),
     }
+}
+
+/// The principal's line for a position whose home could not be rendered:
+/// skipped, with the render's error, at both points — so `principal_done`
+/// holds on every later pass and no owner act is ever asked for at a
+/// position that never had its world.
+fn unrendered_line(
+    lifetime: &str,
+    arm: &str,
+    position: u32,
+    attempt: u32,
+    point: PrincipalPoint,
+    error: &str,
+) -> mecha_core::experiment::StageRun {
+    let mut run = skipped_line(
+        lifetime,
+        arm,
+        StageLever::Principal,
+        position,
+        attempt,
+        Some(point),
+    );
+    run.error = Some(format!(
+        "the home could not be rendered for position {position}, so the principal was not asked: {error}"
+    ));
+    run
 }
 
 /// Whether the ledger shows the principal's call at this point done.
@@ -1848,6 +1900,34 @@ fn export(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A position whose home could not be rendered leaves the principal's
+    /// two points on the ledger as skipped, so a resumed driver — which
+    /// starts with no memory of the failure — sees them done and asks
+    /// nothing there.
+    #[test]
+    fn an_unrendered_position_marks_both_principal_points_done_on_the_ledger() {
+        let mut ledger = Vec::new();
+        assert!(!principal_done(&ledger, 3, PrincipalPoint::AfterTask));
+        for point in [PrincipalPoint::BeforeTask, PrincipalPoint::AfterTask] {
+            let run = unrendered_line("full__r1", "full", 3, 1, point, "seed missing");
+            assert_eq!(run.status, mecha_core::experiment::StageStatus::Skipped);
+            assert_eq!(run.point, Some(point));
+            assert!(run
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("could not be rendered"));
+            assert!(run.acts.is_empty());
+            ledger.push(run);
+        }
+        assert!(principal_done(&ledger, 3, PrincipalPoint::BeforeTask));
+        assert!(principal_done(&ledger, 3, PrincipalPoint::AfterTask));
+        assert!(
+            !principal_done(&ledger, 4, PrincipalPoint::AfterTask),
+            "the next position is its own"
+        );
+    }
 
     /// A release resolves its draft by the CLI's own rule and then requires
     /// it pending: exact or unique prefix, never a namesake, never a draft

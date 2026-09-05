@@ -272,7 +272,10 @@ def mail_search(store, args):
                 if tokens and not all(t in hay for t in tokens):
                     continue
                 rows.append(row(a["name"], th, m))
-    return render_rows(rows[:limit] if len(rows) > limit else rows)
+    # Newest first, then the cap — a cap before the sort returned whichever
+    # matches came first in the file, not the most recent (found on review).
+    rows.sort(key=lambda r: r["date"], reverse=True)
+    return render_rows(rows[:limit])
 
 
 def mail_recent(store, args):
