@@ -286,10 +286,17 @@ struct Tracked {
     /// exactly that door; a reopen counter that read only the live plan
     /// would miss it while the step's second null completion still
     /// counted, deflating one rate and inflating the other (found on
-    /// review). Bounded like `completed`, and by content, so a resumed
-    /// conversation that revises its plan many times keeps a rolling sense
-    /// rather than a full history.
-    ever_completed: Vec<String>,
+    /// review). **Scoped to the run that completed the step** — the same
+    /// scope as the counters it serves — because the lists are keyed by
+    /// workspace and a history keyed by wording alone would make "run the
+    /// tests" in the next, unrelated plan read as a reopen of the last one
+    /// (found on the next review); entries from another run are dropped
+    /// the moment a new one writes. A reopen consumes its entry, so one
+    /// completion yields one reopen however often the step is dropped and
+    /// re-added, and a completion is counted only when no entry exists,
+    /// so a step dropped and re-added as completed is not counted twice.
+    /// Bounded like `completed`.
+    ever_completed: Vec<(u64, String)>,
     /// How many times this tool has been called for this plan — every call,
     /// including one whose input this tool rejects. A rejected write still
     /// touches nothing but this tool's own state, so it is bookkeeping too;
@@ -469,6 +476,16 @@ impl Tracked {
             .iter()
             .map(|i| (i.content.as_str(), i.status))
             .collect();
+        // The run this write belongs to, from the work tracker — the scope
+        // of the completion history. Without a tracker there is no history:
+        // nothing is consulted, nothing is written.
+        let run = work.as_ref().map(|w| w.run);
+        if let Some(run) = run {
+            self.ever_completed.retain(|(r, _)| *r == run);
+        }
+        let in_history = |history: &[(u64, String)], content: &str| {
+            run.is_some_and(|run| history.iter().any(|(r, k)| *r == run && k == content))
+        };
 
         let mut lines = Vec::new();
         // The check freezes on the write that claims completion, and stays
@@ -597,14 +614,14 @@ impl Tracked {
                     // step parked as pending and then resumed is a reopen
                     // through the second (found on review, the third door).
                     let reopened = was == Some(Status::Completed)
-                        || self.ever_completed.contains(&item.content);
+                        || in_history(&self.ever_completed, &item.content);
                     if reopened {
                         // Consumed: this completion has now been restarted,
                         // and the next completion re-pushes the entry.
                         // Without this a reopened step dropped from the plan
                         // and re-added in progress counted a second reopen
                         // for one completion (found on review).
-                        self.ever_completed.retain(|k| k != &item.content);
+                        self.ever_completed.retain(|(_, k)| k != &item.content);
                         if let Some(counts) = step_counts {
                             counts
                                 .reopens
@@ -622,19 +639,29 @@ impl Tracked {
                     }
                 }
                 Status::Completed if was != Some(Status::Completed) => {
-                    self.ever_completed.retain(|k| k != &item.content);
-                    self.ever_completed.push(item.content.clone());
-                    if self.ever_completed.len() > COMPLETED_HISTORY_CAP {
-                        self.ever_completed.remove(0);
-                    }
                     // Counted on the transition, before the span guard below:
                     // a completion with nothing to measure it against is still
                     // a completion, and the denominator must not depend on
-                    // whether a mark existed.
-                    if let Some(counts) = step_counts {
-                        counts
-                            .completions
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    // whether a mark existed. Not counted when the history
+                    // already holds it: a step dropped from the plan and
+                    // re-added as completed is one completion, not two (found
+                    // on review) — a reopen consumed the entry, so a genuine
+                    // second completion after a restart still counts.
+                    let already = in_history(&self.ever_completed, &item.content);
+                    if let Some(run) = run {
+                        if !already {
+                            self.ever_completed.push((run, item.content.clone()));
+                            if self.ever_completed.len() > COMPLETED_HISTORY_CAP {
+                                self.ever_completed.remove(0);
+                            }
+                        }
+                    }
+                    if !already {
+                        if let Some(counts) = step_counts {
+                            counts
+                                .completions
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
                     }
                     let Some(mark) = self.started.remove(&item.content) else {
                         continue;
@@ -2549,6 +2576,72 @@ mod tests {
             (0, 1, 1),
             "a second reopen needs a second completion"
         );
+        // Dropped and re-added as *completed*: one completion in the
+        // denominator, not two (found on review).
+        write(
+            &dropped,
+            &dctx(2, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "in_progress"}]),
+        )
+        .await;
+        write(
+            &dropped,
+            &dctx(2, Some(Outcome::Ok)),
+            json!([{"content": "build", "status": "in_progress"}]),
+        )
+        .await;
+        write(
+            &dropped,
+            &dctx(2, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "in_progress"}]),
+        )
+        .await;
+        assert_eq!(
+            dcounts.snapshot(),
+            (1, 1, 2),
+            "re-completing after the reopen counts once (and, with no call behind it, as a \
+             null); re-adding as completed does not"
+        );
+        // The history is the run's: a step wording completed in one run
+        // does not make its first start in the next run's unrelated plan a
+        // reopen — the lists are keyed by workspace, not by plan (found on
+        // review).
+        let shared = TodoTool::new();
+        let scounts = std::sync::Arc::new(crate::tool::StepCounts::default());
+        let sctx = |run: u64, calls: u32, last: Option<Outcome>| ToolCtx {
+            step_counts: Some(scounts.clone()),
+            ..work_ctx(run, calls, last)
+        };
+        write(
+            &shared,
+            &sctx(10, 0, None),
+            json!([{"content": "run the tests", "status": "in_progress"}]),
+        )
+        .await;
+        write(
+            &shared,
+            &sctx(10, 3, Some(Outcome::Ok)),
+            json!([{"content": "run the tests", "status": "completed"}]),
+        )
+        .await;
+        write(
+            &shared,
+            &sctx(11, 0, None),
+            json!([{"content": "read the file", "status": "in_progress"}]),
+        )
+        .await;
+        write(
+            &shared,
+            &sctx(11, 3, Some(Outcome::Ok)),
+            json!([{"content": "read the file", "status": "completed"}, {"content": "run the tests", "status": "in_progress"}]),
+        )
+        .await;
+        assert_eq!(
+            scounts.snapshot(),
+            (0, 0, 2),
+            "a new run's same-worded step is a first start"
+        );
+
         // The third door: a completed step parked as pending, then resumed,
         // is a reopen too. Fails on the absent-only fallback (found on
         // review).
