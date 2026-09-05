@@ -35,6 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paths (servers, the principal's script and policy) resolve against the
   checkout `exp run` starts from; the home is rendered before position 0's
   `before_task` call so the principal's first verb finds the board.
+- **Learned rules widen on evidence and narrow on conviction, and the
+  validation ledger is per region** (`docs/GOAL-SYSTEM-DESIGN.md` §17.4).
+  A rule carries `support` — the sub-regions its evidence was recorded in
+  — beside `scope`; a learn batch that repeats a rule from another
+  situation word for word widens it to the intersection of the two
+  regions (the harness computes the scope, the learner only claims "same
+  lesson"). Each validation row records the sub-region the probe
+  exercised, `mecha rules` shows the counts by region, probation is
+  released only by rows that exercised the rule, `mecha validate --cover
+  N` spends N probes per (rule, region) pair the ledger has never graded
+  (the nightly passes 1), and `mecha rules propose-retirements` narrows a
+  rule convicted in some of its support regions and clean in others to
+  where it held instead of retiring it, retiring with the reason when no
+  narrower scope excludes the failure.
 - **`mecha exp` — experiments** (`mecha_core::experiment`;
   `docs/EXPERIMENT-DESIGN.md`). A designed comparison over a chosen set of
   runs: `new` writes a manifest once (arms naming a provider and model
