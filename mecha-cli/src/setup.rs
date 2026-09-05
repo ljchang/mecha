@@ -63,6 +63,10 @@ pub struct Prepared {
 /// what an agent *would* have without needing provider credentials.
 pub struct PreparedTools {
     pub registry: Registry,
+    /// The scripted refusals this run was started with, for `build` to
+    /// check against the final registry — the one the subagent profiles
+    /// have joined, which `prepare_tools` has not yet seen.
+    pub denials: Vec<mecha_core::tool::DenialRule>,
     pub sandbox: Arc<mecha_core::sandbox::Sandbox>,
     pub workspace: PathBuf,
     pub config: Config,
@@ -140,6 +144,53 @@ async fn preflight_provider(cfg: &mecha_core::config::Config, opts: &GlobalOpts)
     }
 }
 
+/// A scripted refusal ahead of whatever answers otherwise: the principal's
+/// denial channel, in an experiment's run and no other — a `Deny` is mined
+/// as the owner's correction, and a file exported against the real home
+/// would author corrections nobody made. Loud on any other run, strict on
+/// an unreadable file. **Every approver `prepare` builds goes through
+/// here** — the parent loop's, each subagent's, the one a caller hands
+/// `prepare_with_approver` — or a call the principal refused runs
+/// unrefused wherever the wrapper was skipped (found on review). The
+/// serve and voice surfaces install their own approver after `prepare`
+/// and are not wrapped; both refuse to start under the variable at all,
+/// since neither run is an experiment's.
+fn scripted_refusals(
+    approver: Arc<dyn Approver>,
+) -> Result<(Arc<dyn Approver>, Vec<mecha_core::tool::DenialRule>)> {
+    scripted_refusals_from(
+        approver,
+        std::env::var(mecha_core::tool::DENIALS_FILE_ENV).ok(),
+        std::env::var(mecha_core::session::SESSION_KIND_ENV).ok(),
+    )
+}
+
+/// The testable half: the gate and the wrap over explicit values, so the
+/// three guarantees — any other kind stops the start, the experiment's
+/// kind wraps, no file passes through — are measured without touching the
+/// process's environment (found on review).
+fn scripted_refusals_from(
+    approver: Arc<dyn Approver>,
+    file: Option<String>,
+    kind: Option<String>,
+) -> Result<(Arc<dyn Approver>, Vec<mecha_core::tool::DenialRule>)> {
+    match file {
+        Some(path) if !path.is_empty() => {
+            anyhow::ensure!(
+                mecha_core::tool::denials_file_applies(kind.as_deref()),
+                "{} is an experiment's channel — a scripted refusal is mined as the owner's correction — and this run is not an experiment's; unset it",
+                mecha_core::tool::DENIALS_FILE_ENV
+            );
+            let wrapped =
+                mecha_core::tool::FileDenyApprover::load(std::path::Path::new(&path), approver)
+                    .context("the denials file this run was started with")?;
+            let rules = wrapped.rules().to_vec();
+            Ok((Arc::new(wrapped), rules))
+        }
+        _ => Ok((approver, Vec::new())),
+    }
+}
+
 /// Build an agent that asks a caller-supplied approver.
 ///
 /// The TUI needs this: its approver talks to the event loop over a channel, and
@@ -152,13 +203,14 @@ pub async fn prepare_with_approver(
 ) -> Result<Prepared> {
     let mut tools = prepare_tools(opts, true).await?;
     if tools.config.tools.permission_mode == PermissionMode::Ask {
-        tools.approver = approver;
+        tools.approver = scripted_refusals(approver)?.0;
     }
     preflight_provider(&tools.config, opts).await;
     build(tools, opts)
 }
 
 fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
+    let denials = tools.denials.clone();
     let cfg = tools.config;
 
     let (provider_name, provider_cfg) = cfg.provider(opts.provider.as_deref())?;
@@ -366,6 +418,17 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // that loses it must fail every start rather than ship a surface where
     // the model can close tasks around `mecha tasks set`.
     crate::closure_guard::verify(&registry)?;
+
+    // A scripted refusal that can never fire is measured as an owner who
+    // refused: said here, against the registry the subagent profiles have
+    // joined — the check ran before they had, and called a rule naming one
+    // inert as it fired (found on review).
+    for (rule, why) in mecha_core::tool::inert_rules(&denials, &registry) {
+        eprintln!(
+            "mecha: the scripted refusal of `{}` ({}) {why}, so it will never fire",
+            rule.tool, rule.reason
+        );
+    }
 
     // Learned rules ride at the end of the system prompt — still inside the
     // cached prefix, and they only change at consolidation time. Read-only:
@@ -1195,6 +1258,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
                 mode: cfg.tools.permission_mode,
             })
         };
+    let (approver, denials) = scripted_refusals(approver)?;
 
     // An MCP server may legitimately shadow `todo` (registered after the
     // built-ins, deliberately). The handle would then be live but frozen —
@@ -1218,6 +1282,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
 
     Ok(PreparedTools {
         registry,
+        denials,
         sandbox,
         workspace,
         config: cfg,
@@ -1366,10 +1431,14 @@ fn build_subagent(
     child_cfg.system_prompt = profile.system_prompt.clone();
     child_cfg.system_prompt_file = None;
 
+    // The refusals reach a delegated call too: a subagent built with a
+    // fresh mode approver ran unrefused what the parent could not (found
+    // on review).
+    let (child_approver, _) = scripted_refusals(Arc::new(ModeApprover { mode }))?;
     let mut child = Agent::new(
         mecha_core::provider::build(provider_cfg)?,
         child_registry,
-        Arc::new(ModeApprover { mode }),
+        child_approver,
         ToolCtx {
             workspace: ctx.workspace.clone(),
             shell_timeout: ctx.shell_timeout,
@@ -1635,6 +1704,42 @@ pub fn surface_only_registry() -> Registry {
     )));
     r.insert(Arc::new(crate::slack::show::ShowFileTool::new(0)));
     r
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    /// The denials file wraps only an experiment's run, stops any other
+    /// run's start, and an unnamed file passes the approver through.
+    #[test]
+    fn the_denials_file_gates_on_the_experiment_kind() {
+        let dir = std::env::temp_dir().join(format!("mecha-setup-deny-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("denials.toml");
+        std::fs::write(&path, "[[deny]]\ntool = \"shell\"\nreason = \"no\"\n").unwrap();
+        let inner = || -> Arc<dyn Approver> {
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            })
+        };
+        let file = || Some(path.to_string_lossy().to_string());
+        let (_, rules) =
+            scripted_refusals_from(inner(), file(), Some("experiment".into())).unwrap();
+        assert_eq!(rules.len(), 1, "wrapped under the experiment's kind");
+        for kind in [Some("test"), Some("task"), None] {
+            let e = match scripted_refusals_from(inner(), file(), kind.map(str::to_string)) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{kind:?} must not be wrapped"),
+            };
+            assert!(e.contains("is an experiment's channel"), "{kind:?}: {e}");
+        }
+        let (_, rules) = scripted_refusals_from(inner(), None, Some("test".into())).unwrap();
+        assert!(rules.is_empty(), "no file: the approver passes through");
+        let (_, rules) = scripted_refusals_from(inner(), Some(String::new()), None).unwrap();
+        assert!(rules.is_empty(), "an empty name is no file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

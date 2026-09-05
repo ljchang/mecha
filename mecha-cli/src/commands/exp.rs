@@ -23,6 +23,7 @@ use mecha_core::experiment::{
     judge, ChildInvocation, ExperimentRef, ExperimentStore, Manifest, Trial, TrialKind,
     TrialStatus, EXPERIMENT_REF_ENV,
 };
+use mecha_core::experiment::{PrincipalPoint, StageLever};
 use std::path::{Path, PathBuf};
 
 /// How long a case's `expect.verify` command may run in the trial's
@@ -337,17 +338,53 @@ async fn run_lifetimes(
                 .position
                 .context("a lifetime row without a position")?;
             let mut trial = planned_trial.clone();
+            let case = cases
+                .iter()
+                .find(|c| c.id == trial.task)
+                .expect("planned from these cases");
+            // A due stage — or a principal's act after a task — can run
+            // only while no later position has finished: past that it
+            // would act on sessions its tasks never ran under, and its
+            // success would release the judge's hold on a treatment that
+            // did not occur. Recorded skipped instead.
+            let late = mecha_core::experiment::out_of_sequence(position, rows.iter().copied());
             match trial.status {
                 TrialStatus::Pending | TrialStatus::Running => {
                     if limit.is_some_and(|l| ran >= l) {
                         return Ok(ran);
                     }
-                    let case = cases
-                        .iter()
-                        .find(|c| c.id == trial.task)
-                        .expect("planned from these cases");
                     ran += 1;
                     eprintln!("· {} ({ran}) · {lifetime} position {position}", trial.id);
+                    // The principal first: it may script refusals for this
+                    // task, which the run child reads from the home.
+                    if let Some(principal) = &manifest.principal {
+                        if !principal_done(&ledger, position, PrincipalPoint::BeforeTask) {
+                            let run = principal_call(
+                                store,
+                                mecha,
+                                &home,
+                                &flags,
+                                &passthrough,
+                                manifest,
+                                principal,
+                                arm,
+                                &trial,
+                                case,
+                                &lifetime,
+                                position,
+                                PrincipalPoint::BeforeTask,
+                                ExperimentStore::next_attempt(
+                                    &ledger,
+                                    torn,
+                                    position,
+                                    StageLever::Principal,
+                                ),
+                            )
+                            .await;
+                            store.record_stage(&run)?;
+                            ledger.push(run);
+                        }
+                    }
                     match run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await
                     {
                         Ok(()) => {}
@@ -369,29 +406,61 @@ async fn run_lifetimes(
                     break;
                 }
             }
-            // A due stage can run only while no later position has
-            // finished: past that it would act on sessions its tasks never
-            // ran under, and its success would release the judge's hold on
-            // a treatment that did not occur. Recorded skipped instead.
-            let late = mecha_core::experiment::out_of_sequence(position, rows.iter().copied());
+            // The principal after the task: it judges what the run left and
+            // closes what gold closes. Due while the task has finished and
+            // the ledger lacks its line; skipped, like a stage, once a later
+            // position has finished.
+            if let Some(principal) = &manifest.principal {
+                if matches!(trial.status, TrialStatus::Done | TrialStatus::Failed)
+                    && !principal_done(&ledger, position, PrincipalPoint::AfterTask)
+                {
+                    let attempt = ExperimentStore::next_attempt(
+                        &ledger,
+                        torn,
+                        position,
+                        StageLever::Principal,
+                    );
+                    let run = if late {
+                        skipped_line(
+                            &lifetime,
+                            &trial.arm,
+                            StageLever::Principal,
+                            position,
+                            attempt,
+                            Some(PrincipalPoint::AfterTask),
+                        )
+                    } else {
+                        principal_call(
+                            store,
+                            mecha,
+                            &home,
+                            &flags,
+                            &passthrough,
+                            manifest,
+                            principal,
+                            arm,
+                            &trial,
+                            case,
+                            &lifetime,
+                            position,
+                            PrincipalPoint::AfterTask,
+                            attempt,
+                        )
+                        .await
+                    };
+                    if run.status == mecha_core::experiment::StageStatus::Skipped {
+                        eprintln!(
+                            "  ↳ principal (after_task) · skipped: a later position had already finished"
+                        );
+                    }
+                    store.record_stage(&run)?;
+                    ledger.push(run);
+                }
+            }
             for stage in stages_due(&manifest.schedule, position, &stages_off, &ledger) {
                 let attempt = ExperimentStore::next_attempt(&ledger, torn, position, stage);
                 if late {
-                    let now = chrono::Utc::now().to_rfc3339();
-                    let run = mecha_core::experiment::StageRun {
-                        lifetime: lifetime.clone(),
-                        arm: trial.arm.clone(),
-                        stage,
-                        after_position: position,
-                        attempt,
-                        started_at: now.clone(),
-                        finished_at: now,
-                        status: mecha_core::experiment::StageStatus::Skipped,
-                        exit_code: None,
-                        error: Some(format!(
-                            "a later position had finished before this stage could run after {position}; out of sequence, not run"
-                        )),
-                    };
+                    let run = skipped_line(&lifetime, &trial.arm, stage, position, attempt, None);
                     eprintln!(
                         "  ↳ {} · skipped: a later position had already finished; a stage after {position} cannot run in sequence",
                         stage.as_str()
@@ -420,6 +489,464 @@ async fn run_lifetimes(
         }
     }
     Ok(ran)
+}
+
+/// A ledger line for a stage — or a principal's call — the driver could
+/// no longer run in sequence.
+fn skipped_line(
+    lifetime: &str,
+    arm: &str,
+    stage: StageLever,
+    position: u32,
+    attempt: u32,
+    point: Option<PrincipalPoint>,
+) -> mecha_core::experiment::StageRun {
+    let now = chrono::Utc::now().to_rfc3339();
+    mecha_core::experiment::StageRun {
+        lifetime: lifetime.to_string(),
+        arm: arm.to_string(),
+        stage,
+        after_position: position,
+        attempt,
+        started_at: now.clone(),
+        finished_at: now,
+        status: mecha_core::experiment::StageStatus::Skipped,
+        exit_code: None,
+        error: Some(format!(
+            "a later position had finished before this could run after {position}; out of sequence, not run"
+        )),
+        point,
+        acts: Vec::new(),
+        refusals: Vec::new(),
+    }
+}
+
+/// Whether the ledger shows the principal's call at this point done.
+fn principal_done(
+    ledger: &[mecha_core::experiment::StageRun],
+    position: u32,
+    point: PrincipalPoint,
+) -> bool {
+    ledger.iter().any(|r| {
+        r.stage == StageLever::Principal
+            && r.after_position == position
+            && r.point == Some(point)
+            && matches!(
+                r.status,
+                mecha_core::experiment::StageStatus::Done
+                    | mecha_core::experiment::StageStatus::Skipped
+            )
+    })
+}
+
+/// The principal's call at one point of one position (Part II §16, §21.1):
+/// the trial's state on its stdin — the case, the graded row after the
+/// task, what the run left in the outbox and the question store — and its
+/// answer read back as the owner's verbs to run and the refusals to
+/// script. **The driver runs the verbs**, each a child `mecha` against
+/// the trial home from the closed set `allowed_verb` names, so the
+/// principal is pure and the record is the driver's: every act, with its
+/// exit status, is on the ledger line. Never an `Err`: a principal that
+/// could not act is a failed line, and `stage_health` holds the verdict
+/// over it — a treatment not known to have occurred.
+#[allow(clippy::too_many_arguments)]
+async fn principal_call(
+    store: &ExperimentStore,
+    mecha: &Path,
+    home: &Path,
+    flags: &[String],
+    passthrough: &[String],
+    manifest: &Manifest,
+    principal: &mecha_core::experiment::Principal,
+    arm: &mecha_core::experiment::Arm,
+    trial: &Trial,
+    case: &mecha_core::eval::EvalCase,
+    lifetime: &str,
+    position: u32,
+    point: PrincipalPoint,
+    attempt: u32,
+) -> mecha_core::experiment::StageRun {
+    use mecha_core::experiment::{PrincipalInput, PrincipalOutput, StageRun, StageStatus};
+    let started = std::time::Instant::now();
+    let mut run = StageRun {
+        lifetime: lifetime.to_string(),
+        arm: trial.arm.clone(),
+        stage: StageLever::Principal,
+        after_position: position,
+        attempt,
+        started_at: chrono::Utc::now().to_rfc3339(),
+        finished_at: String::new(),
+        status: StageStatus::Running,
+        exit_code: None,
+        error: None,
+        point: Some(point),
+        acts: Vec::new(),
+        refusals: Vec::new(),
+    };
+    if let Err(e) = store.record_stage(&run) {
+        run.status = StageStatus::Failed;
+        run.error = Some(format!("the ledger could not take the running line: {e:#}"));
+        run.finished_at = chrono::Utc::now().to_rfc3339();
+        return run;
+    }
+    run.status = StageStatus::Failed;
+    let log = store.stage_log(lifetime, position, StageLever::Principal, attempt);
+    let workspace = store.stage_workspace(lifetime);
+    let reference = ExperimentRef {
+        exp_id: manifest.name.clone(),
+        trial_id: lifetime.to_string(),
+        arm: trial.arm.clone(),
+        actor: lifetime.to_string(),
+        role: Some("principal".into()),
+        task: format!("principal:{}", point.as_str()),
+        repetition: trial.repetition,
+        condition_hash: trial.condition_hash.clone(),
+    };
+    // Two environments: the `mecha` children need the provider and search
+    // key variables the run child gets; the principal executable — pure by
+    // contract, never a model call, a third party named by a path — gets
+    // the base set only, on the rule `connect` keeps for MCP servers
+    // (found on review).
+    let env_for = |cmd: &mut tokio::process::Command, keys: &[String]| -> Result<()> {
+        cmd.env_clear();
+        for (k, v) in mecha_core::sandbox::Sandbox::child_env(keys) {
+            cmd.env(k, v);
+        }
+        cmd.env("MECHA_HOME", home)
+            .env(mecha_core::session::SESSION_KIND_ENV, "experiment")
+            .env(EXPERIMENT_REF_ENV, serde_json::to_string(&reference)?)
+            .env("MECHA_BIN", mecha)
+            .current_dir(&workspace);
+        Ok(())
+    };
+    // The open questions, read once: the principal sees them, and an
+    // answer's act is resolved against the same list.
+    let open_questions: Vec<mecha_core::questions::Question> = if home.join("questions").is_dir() {
+        mecha_core::questions::QuestionStore::open(home.join("questions"))
+            .and_then(|s| s.open_items())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let outcome: Result<PrincipalOutput> = async {
+        // First, before anything else can fail: a principal that failed to
+        // answer must not leave the last position's refusals armed for
+        // this task — the failure is on the ledger, but the task would
+        // have run under a treatment nobody asked for (found on review).
+        if point == PrincipalPoint::BeforeTask {
+            mecha_core::experiment::write_denials(home, &[])
+                .context("clearing the last position's refusals")?;
+        }
+        std::fs::create_dir_all(&workspace)?;
+        if let Some(parent) = log.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let input = PrincipalInput {
+            point,
+            experiment: manifest.name.clone(),
+            lifetime: lifetime.to_string(),
+            arm: trial.arm.clone(),
+            position,
+            home: home.to_path_buf(),
+            workspace: workspace.clone(),
+            case: case.clone(),
+            trial: (point == PrincipalPoint::AfterTask).then(|| trial.clone()),
+            // A read: open only what exists, on the doctor's rule that an
+            // examination must not create what it was about to report.
+            pending_outbox: if home.join("outbox").is_dir() {
+                mecha_core::outbox::OutboxStore::open(home.join("outbox"))?
+                    .items()?
+                    .into_iter()
+                    .filter(|i| i.status == "pending")
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            open_questions: open_questions.clone(),
+        };
+        let (exe, args) = principal
+            .command
+            .split_first()
+            .context("the principal names no executable")?;
+        let mut cmd = tokio::process::Command::new(exe);
+        cmd.args(args);
+        env_for(&mut cmd, &[])?;
+        let err =
+            std::fs::File::create(&log).with_context(|| format!("creating {}", log.display()))?;
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::from(err));
+        // One deadline over the whole exchange — the write of the state,
+        // the wait, the read of the answer — driven concurrently, and the
+        // child killed when the deadline drops it: a principal that never
+        // drained a payload past the pipe buffer used to wedge the driver
+        // on a running line with nothing to cancel the write (found on
+        // review).
+        cmd.kill_on_drop(true);
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("spawning the principal `{exe}`"))?;
+        let mut stdin = child.stdin.take().context("the principal's stdin")?;
+        let payload = serde_json::to_string(&input)?;
+        let exchange = async move {
+            use tokio::io::AsyncWriteExt;
+            let write = async move {
+                stdin.write_all(payload.as_bytes()).await?;
+                stdin.shutdown().await?;
+                // Dropped here, not at the end of the exchange: the drop is
+                // what closes the pipe, and a principal reading its state
+                // to end-of-file waits for exactly that (found on smoke).
+                drop(stdin);
+                Ok::<(), std::io::Error>(())
+            };
+            let (written, output) = tokio::join!(write, child.wait_with_output());
+            written.context("handing the principal its state")?;
+            output.context("waiting for the principal")
+        };
+        let output = match tokio::time::timeout(
+            std::time::Duration::from_secs(principal.timeout_secs),
+            exchange,
+        )
+        .await
+        {
+            Ok(o) => o?,
+            Err(_) => anyhow::bail!(
+                "the principal did not answer within {}s; its stderr is at {}",
+                principal.timeout_secs,
+                log.display()
+            ),
+        };
+        anyhow::ensure!(
+            output.status.success(),
+            "the principal exited {}; its stderr is at {}",
+            output.status,
+            log.display()
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        let start = text.find('{').context("the principal printed no JSON")?;
+        serde_json::from_str::<PrincipalOutput>(&text[start..])
+            .context("the principal's answer is not the contract's shape")
+    }
+    .await;
+    match outcome {
+        Err(e) => run.error = Some(format!("{e:#}")),
+        Ok(answer) => {
+            let mut failures = Vec::new();
+            // Refusals for the task about to run, written for the child;
+            // an empty list clears what an earlier position scripted.
+            if point == PrincipalPoint::BeforeTask {
+                if let Err(e) = mecha_core::experiment::write_denials(home, &answer.deny) {
+                    failures.push(format!("the denials file could not be written: {e:#}"));
+                }
+            } else if !answer.deny.is_empty() {
+                failures.push("refusals are scripted before a task, not after it".into());
+            }
+            for request in answer.acts {
+                let mut act = mecha_core::experiment::PrincipalAct::from(request);
+                if !mecha_core::experiment::allowed_verb(&act.verb) {
+                    act.ok = Some(false);
+                    failures.push(format!(
+                        "`{}` is not an owner's verb the principal may run",
+                        act.verb.join(" ")
+                    ));
+                    run.acts.push(act);
+                    continue;
+                }
+                // A question's answer resumes a run whose jail the question
+                // recorded, and the driver's `--workspace` beats the resume's
+                // own fallback — so the act names that jail, and an id no
+                // open question carries is refused rather than resumed
+                // somewhere its run never saw (found on review). Any other
+                // act runs from the point's directory: the lifetime's scratch
+                // workspace before the task (the trial's is not staged yet),
+                // the trial's after it.
+                let resumes = act
+                    .verb
+                    .starts_with(&["questions".to_string(), "answer".to_string()]);
+                let act_workspace: Option<PathBuf> = if resumes {
+                    act.verb
+                        .get(2)
+                        .and_then(|id| open_questions.iter().find(|q| &q.id == id))
+                        .map(|q| {
+                            q.workspace.clone().unwrap_or_else(|| match point {
+                                PrincipalPoint::AfterTask => store.workspace_for(&trial.id),
+                                _ => workspace.clone(),
+                            })
+                        })
+                } else {
+                    Some(match point {
+                        PrincipalPoint::AfterTask => store.workspace_for(&trial.id),
+                        _ => workspace.clone(),
+                    })
+                };
+                let Some(act_workspace) = act_workspace else {
+                    act.ok = Some(false);
+                    failures.push(format!(
+                        "`{}` names no question open at this position",
+                        act.verb.join(" ")
+                    ));
+                    run.acts.push(act);
+                    continue;
+                };
+                let status: Result<std::process::ExitStatus> = async {
+                    let mut cmd = tokio::process::Command::new(mecha);
+                    // The driver's options *before* the verb: they are
+                    // global, and `tasks steer` takes trailing arguments
+                    // that would swallow anything after its text into the
+                    // owner's steering message (found on review). The
+                    // workspace is named because `[tools] workspace` rides
+                    // into the home's config and beats the cwd.
+                    // The trial's own workspace and the run's posture: an
+                    // act may resume the parked run (`questions answer`),
+                    // and a continuation jailed to the scratch directory
+                    // failed every fixture read while exiting 0, and one
+                    // without `--yes` had every call blocked under the
+                    // operator's ask posture — both recorded done (found
+                    // on review). `--workspace` and `--yes` are the
+                    // driver's, so the principal cannot move either.
+                    // Before the task the trial's workspace is not staged
+                    // yet (run_one stages it), so an act runs from the
+                    // lifetime's scratch workspace; after it, from the
+                    // trial's, where the parked continuation lives (found
+                    // on review).
+                    cmd.arg("--workspace")
+                        .arg(&act_workspace)
+                        .arg("--yes")
+                        .args(flags);
+                    // The case's own ceilings, as the run child carries
+                    // them: a verb that resumes the parked run is that task
+                    // continuing, and a compaction case whose continuation
+                    // compacted at the arm's threshold graded the harness
+                    // rather than the arm (found on review). Under the same
+                    // pins — the arm's overrides and the keys the home's
+                    // loop moved.
+                    let moved = mecha_core::experiment::home_moved_keys(home)?;
+                    let pinned = |key: &str| arm_moves(arm, key) || moved.iter().any(|k| k == key);
+                    if let Some(n) = case.max_turns.filter(|_| !pinned("max_turns")) {
+                        cmd.arg("--max-turns").arg(n.to_string());
+                    }
+                    if let Some(n) = case
+                        .compact_at_tokens
+                        .filter(|_| !pinned("compact_at_tokens"))
+                    {
+                        cmd.arg("--compact-at").arg(n.to_string());
+                    }
+                    cmd.args(&act.verb);
+                    env_for(&mut cmd, passthrough)?;
+                    // The refusals scripted for this task reach a verb that
+                    // resumes the parked run (`questions answer`): the
+                    // continuation is the same task under the same
+                    // treatment (found on review).
+                    let denials = mecha_core::experiment::denials_file(home);
+                    if denials.exists() {
+                        cmd.env(mecha_core::tool::DENIALS_FILE_ENV, &denials);
+                    }
+                    let out = std::fs::OpenOptions::new().append(true).open(&log)?;
+                    let err = out.try_clone()?;
+                    cmd.stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::from(out))
+                        .stderr(std::process::Stdio::from(err));
+                    // The principal's deadline bounds each verb too, and
+                    // the child dies with the dropped future: a resumed run
+                    // with no ceiling used to wedge the driver on a running
+                    // line (found on review).
+                    cmd.kill_on_drop(true);
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(principal.timeout_secs),
+                        cmd.status(),
+                    )
+                    .await
+                    {
+                        Ok(status) => status
+                            .with_context(|| format!("running `mecha {}`", act.verb.join(" "))),
+                        Err(_) => anyhow::bail!(
+                            "`mecha {}` did not finish within {}s",
+                            act.verb.join(" "),
+                            principal.timeout_secs
+                        ),
+                    }
+                }
+                .await;
+                match status {
+                    Ok(s) => {
+                        act.exit_code = s.code();
+                        act.ok = Some(s.success());
+                        if !s.success() {
+                            failures.push(format!("`mecha {}` exited {s}", act.verb.join(" ")));
+                        }
+                    }
+                    Err(e) => {
+                        act.ok = Some(false);
+                        failures.push(format!("{e:#}"));
+                    }
+                }
+                run.acts.push(act);
+            }
+            if failures.is_empty() {
+                run.status = StageStatus::Done;
+                run.exit_code = Some(0);
+            } else {
+                run.error = Some(failures.join("; "));
+            }
+        }
+    }
+    // After the acts, not before them: an act may resume the parked run on
+    // the same session, and a refusal the continuation walked into must
+    // count — a refusal that never fired is on the line, and said, rather
+    // than recorded like one that did (found on review, twice).
+    if point == PrincipalPoint::AfterTask {
+        match mecha_core::experiment::read_denials(home) {
+            Ok(rules) if !rules.is_empty() => {
+                // A session that cannot be read is unknown, never zero: a
+                // child that crashed after the model's turns may have
+                // walked into every refusal, and the line fails rather
+                // than claim it did not (found on review).
+                let session_text = trial.session_id.as_ref().and_then(|id| {
+                    std::fs::read_to_string(home.join("sessions").join(format!("{id}.jsonl"))).ok()
+                });
+                run.refusals =
+                    mecha_core::experiment::refusal_outcomes(&rules, session_text.as_deref());
+                if session_text.is_none() {
+                    run.status = StageStatus::Failed;
+                    let note = "the task's session could not be read, so the refusals' firings are unknown".to_string();
+                    run.error = Some(match run.error.take() {
+                        Some(prior) => format!("{prior}; {note}"),
+                        None => note,
+                    });
+                }
+                for r in run.refusals.iter().filter(|r| r.fired == Some(0)) {
+                    eprintln!(
+                        "  ↳ the scripted refusal of `{}` ({}) never fired at position {position}",
+                        r.tool, r.reason
+                    );
+                }
+            }
+            Ok(_) => {}
+            // An unreadable store is a finding: a line that read like a
+            // position where nothing was scripted would be the reading
+            // this field exists to prevent (found on review).
+            Err(e) => {
+                run.status = StageStatus::Failed;
+                let note = format!("the denials file could not be read back: {e:#}");
+                run.error = Some(match run.error.take() {
+                    Some(prior) => format!("{prior}; {note}"),
+                    None => note,
+                });
+            }
+        }
+    }
+    run.finished_at = chrono::Utc::now().to_rfc3339();
+    eprintln!(
+        "  ↳ principal ({}) · {} · {} act(s) · {}s",
+        point.as_str(),
+        match run.status {
+            StageStatus::Done => "ok",
+            _ => "FAILED",
+        },
+        run.acts.len(),
+        started.elapsed().as_secs()
+    );
+    run
 }
 
 /// One loop stage as a child `mecha` verb against the lifetime's home, with
@@ -457,6 +984,9 @@ async fn run_stage(
         status: StageStatus::Running,
         exit_code: None,
         error: None,
+        point: None,
+        acts: Vec::new(),
+        refusals: Vec::new(),
     };
     // The running line first, so a driver killed mid-stage leaves a record
     // and the rerun takes the next attempt number rather than this one's
@@ -496,9 +1026,9 @@ async fn run_stage(
         // the trial home's config verbatim and would beat the cwd, jailing
         // a stage's probes to the operator's project directory instead
         // (found on review).
-        cmd.args(&argv)
-            .arg("--workspace")
+        cmd.arg("--workspace")
             .arg(&workspace)
+            .args(&argv)
             .current_dir(&workspace);
         cmd.env_clear();
         for (k, v) in mecha_core::sandbox::Sandbox::child_env(passthrough) {
@@ -658,8 +1188,24 @@ async fn run_one(
         .env(mecha_core::session::SESSION_KIND_ENV, "experiment")
         .env(EXPERIMENT_REF_ENV, serde_json::to_string(&reference)?)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stdout(std::process::Stdio::piped());
+    // The principal's scripted refusals for this task, when it left any:
+    // the child's approver answers them ahead of its own, as "Denied by
+    // the user" — the owner's word inside the trial home (D12). Armed
+    // only under a manifest that has a principal — the file's existence
+    // is not the design, and a manifest whose principal was dropped would
+    // otherwise resume under the last position's refusals (found on
+    // review); with no principal the file is cleared once.
+    let denials = mecha_core::experiment::denials_file(&home);
+    if manifest.principal.is_some() {
+        if denials.exists() {
+            cmd.env(mecha_core::tool::DENIALS_FILE_ENV, &denials);
+        }
+    } else if denials.exists() {
+        mecha_core::experiment::write_denials(&home, &[])
+            .context("clearing refusals no principal scripted")?;
+    }
+    cmd.stderr(std::process::Stdio::piped());
     let output = cmd.output().await.context("spawning mecha run")?;
     let trial_dir = store.workspace_for(&trial.id);
     let log = trial_dir
@@ -894,13 +1440,15 @@ fn status(name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// A stage's full argv: the verb the nightly runs, then the arm's
-/// CLI-only lever flags (`--no-skills`, `--no-charter`, `--no-mcp`, …),
-/// which are global options and so attach to any verb. `None` for the
+/// A stage's full argv: the arm's CLI-only lever flags (`--no-skills`,
+/// `--no-charter`, `--no-mcp`, …) *first*, then the verb the nightly
+/// runs. The flags are global options and attach before a subcommand as
+/// well as after; before is the placement a trailing-argument verb cannot
+/// swallow, so every child the driver spawns uses it. `None` for the
 /// lever that is a config switch and runs nothing.
 fn stage_argv(stage: mecha_core::experiment::StageLever, flags: &[String]) -> Option<Vec<String>> {
-    let mut argv: Vec<String> = stage.argv()?.iter().map(|s| s.to_string()).collect();
-    argv.extend(flags.iter().cloned());
+    let mut argv: Vec<String> = flags.to_vec();
+    argv.extend(stage.argv()?.iter().map(|s| s.to_string()));
     Some(argv)
 }
 
@@ -1105,13 +1653,54 @@ mod tests {
         let flags = vec!["--no-skills".to_string(), "--no-mcp".to_string()];
         assert_eq!(
             stage_argv(StageLever::Validate, &flags).unwrap(),
-            vec!["validate", "--unprocessed-only", "--no-skills", "--no-mcp"]
+            vec!["--no-skills", "--no-mcp", "validate", "--unprocessed-only"]
         );
         assert_eq!(
             stage_argv(StageLever::Reflect, &[]).unwrap(),
             vec!["reflect"]
         );
         assert_eq!(stage_argv(StageLever::SensorsInBrief, &flags), None);
+    }
+
+    /// Every option the principal's verbs are refused is a global option
+    /// this CLI really defines — a blocklist that named a field rather
+    /// than a flag let the flag through (found on review).
+    #[test]
+    fn the_blocked_options_are_the_clis_global_options() {
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        let mut longs = std::collections::BTreeSet::new();
+        let mut shorts = std::collections::BTreeSet::new();
+        for a in cmd.get_arguments().filter(|a| a.is_global_set()) {
+            if let Some(l) = a.get_long() {
+                longs.insert(format!("--{l}"));
+            }
+            if let Some(s) = a.get_short() {
+                shorts.insert(format!("-{s}"));
+            }
+        }
+        for name in mecha_core::experiment::PRINCIPAL_BLOCKED_OPTIONS {
+            assert!(
+                longs.contains(name) || shorts.contains(name),
+                "`{name}` is on the blocklist but is not a global option the CLI defines"
+            );
+        }
+        assert!(
+            longs.iter().any(|l| l.starts_with("--no-")),
+            "the prefix rule covers something"
+        );
+        // The other direction: every global option is accounted for —
+        // blocked, a `--no-` lever, or on the short list known harmless.
+        use mecha_core::experiment::{PRINCIPAL_BLOCKED_OPTIONS, PRINCIPAL_HARMLESS_OPTIONS};
+        for name in longs.iter().chain(shorts.iter()) {
+            let accounted = PRINCIPAL_BLOCKED_OPTIONS.contains(&name.as_str())
+                || PRINCIPAL_HARMLESS_OPTIONS.contains(&name.as_str())
+                || name.starts_with("--no-");
+            assert!(
+                accounted,
+                "global option `{name}` is neither blocked for a principal's verb nor listed as harmless"
+            );
+        }
     }
 
     /// A manifest's `ids` narrow the case file to the tasks it names, in the

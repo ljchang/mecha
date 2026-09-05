@@ -1471,6 +1471,7 @@ mod tests {
         Surface {
             tools: setup::PreparedTools {
                 registry: mecha_core::tool::Registry::new(),
+                denials: Vec::new(),
                 sandbox: Arc::new(mecha_core::sandbox::Sandbox::new(Default::default())),
                 workspace: std::env::temp_dir(),
                 config: mecha_core::config::Config::default(),
