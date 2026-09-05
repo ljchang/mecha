@@ -1661,6 +1661,47 @@ reading `reflections.jsonl` and the store's `git log`, not the printout
 `learn --auto` argues the region batches those situations put the 37 in.
 **Still owed:** a sensored line on the live charter, which has none.
 
+**2026-09-05 01:51–01:55Z — the meeting-poll lifecycle deployed by
+mecha-26 after mecha #183 (`0f19ae6`) and mecha-factory #20 (`375a3ae`)
+merged; the shared checkout was on `main` at `3f3fb8c`, clean.**
+`~/.cargo/bin/mecha`, `mecha-mail` (with `mecha-docs`/`-google`/`-outlook`)
+reinstalled from that commit and `~/.cargo/bin/factory-publish` from the
+factory's `main` — all three version strings unchanged (0.1.17, 0.2.8), so
+the artifacts were asked instead: `mecha polls --help` lists `list`,
+`sweep`, `pick`; `mecha-mail polls --help` takes `--records`/`--dry-run`;
+`factory-publish polls sweep --help` answers; and the installed
+`factory-publish mcp` lists `poll_meeting_create` with `required:
+["title", "duration_minutes"]` and an `invitation` default. **Two pieces
+of machine state changed that no binary carries:** `~/.mecha/config.toml`
+lost `factory__poll_create` and `factory__poll_meeting_create` from
+`[outbox] publish_tools` (still routed in `tools`; ruling 6 — the card is
+a letter; backup `config.toml.bak-2026-09-05-polls`), and
+`~/.config/systemd/user/mecha-slots.service`'s second `ExecStart` is now
+the five-verb line — `factory-publish drain; mecha-mail bookings --account
+dartmouth; factory-publish polls sweep; mecha-mail polls --account
+dartmouth; mecha polls sweep` — daemon-reloaded, with the old unit beside
+it as `.bak-2026-09-05-polls`. Verified from the timer's next firing at
+01:55Z, not the unit file: the journal shows all five in order (`pushed 105
+slot(s)` · `nothing waiting` · `no new bookings` · `swept: 0 record(s)
+changed` · `nothing due` · `nothing to do`), and `slots push` wrote the
+new freebusy cache `~/.mecha/factory/freebusy/book.json` (0600 under a
+0700 directory; `cached_at` 01:55:04Z, 96 busy intervals, `policy_path`
+the instruments file) — the input a meeting poll now seeds from at
+release. `mecha-slack`, `mecha-triggers`, `mecha-drain`, `mecha-serve`,
+`mecha-voice-worker` restarted at 01:53:18Z, each verified from a journal
+window opened at the restart (the connector's `1 owner(s)`, `1 trigger(s),
+1 enabled`, both `serve` doors, `Uvicorn running on 127.0.0.1:7860`, the
+drain's `Started`). `web/dist` and both graph binaries untouched — neither
+PR touched `web/` or the graph. The `/proc/*/exe` sweep still shows the
+two `mecha-graph-mcp` children from the 19:41Z row (pids 2652610 and
+2947935, the second under this lane's own Claude Code host), executing
+the binary replaced at 15:25Z; left alone — a host's MCP child is the
+host's to restart. New stores, none in any repo: `~/.mecha/factory/polls/`
+(lifecycle records, none yet), `~/.mecha/factory/freebusy/`, and
+`~/.mecha/mail/polls.jsonl` (the send/booking ledger, created on first
+use). No meeting poll has been created on this binary yet; the first one
+is the live test the arc still owes.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -1944,20 +1985,33 @@ redesigned booking page, live `slots.json`, the poll paint grid — is
 committed (`1d531a8` in that repo) and running on the box; the arc is in
 [`HISTORY.md`](HISTORY.md).
 
-- **The calendar→box freshness window is the one real double-booking risk.**
-  Page-versus-page is already atomic — `booking_hold` is one INSERT-where-
-  no-live-row-overlaps statement (factory `db.rs`), and the losing visitor
-  gets the refreshed week; with the front-end pass, an *open tab* also polls
-  `slots.json` and drops a slot the moment someone else holds it. What
-  remains is the calendar side: an event landing *directly on the calendar*
-  only removes its overlapping slots at the next push, up to 15 minutes
-  later; `min_notice_hours = 24` makes a collision rare, not impossible. Two
-  cheap fixes, complementary: tighten the timer (freebusy is one API call —
-  every 1–2 minutes is free, with a hash-unchanged short-circuit so pushes
-  stay rare), and teach `mecha-mail bookings` to re-verify each drained
-  booking against *live* freebusy before creating the event, flagging a
-  conflict loudly instead of proceeding — home always holds fresher truth
-  than the box. The second closes the loop entirely.
+- **The meeting poll runs itself now — live since 2026-09-05, first real
+  poll still owed.** The design authority is
+  [`MEETING-POLL-UX-DESIGN.md`](MEETING-POLL-UX-DESIGN.md) (six rulings in
+  its §6, the decision policy in §5); the build is in
+  [`HISTORY.md`](HISTORY.md) under 2026-09-05. What it replaced: the
+  "auto-book sweep" item that used to sit here, and the whole hand-drafted
+  flow around it. Open, in order: **the first live poll** (create one from
+  chat, watch `/polls` and the timer journal through invitations → nudge
+  → close → booking, and read `mecha polls list` at each step — nothing
+  below is proven until this has happened once); **phase 4 of the design
+  doc**, deliberately not started — subtracting *participants'* freebusy
+  where readable (same-tenant Outlook), a web page for the monitor,
+  `polls extend` to reopen a `no_time` poll with a wider window, and a
+  `link`-audience `times` poll; and the `/polls` row does not mark which
+  candidate is loaded after `p` (the status line does, transiently) —
+  `commands::polls::loaded_index` exists and the modal would need the
+  outbox item to use it. Two deploy facts that no build step checks:
+  the five-verb `ExecStart` line and `publish_tools` minus the two poll
+  creates (both in the `update` skill).
+- **The calendar→box freshness window**: the two cheap fixes this bullet
+  used to ask for are both in — the timer fires `*:0/2` and
+  `mecha-mail bookings` re-verifies every drained booking against *live*
+  freebusy before creating the event (`bookings::busy_overlaps`, the
+  `CONFLICT` branch in the bin's `bookings`), and the meeting poll's
+  booking runs the same re-verify (`mecha-mail polls`, `Job::Book`). Verified
+  in source 2026-09-05; the ship date is not recorded here. Page-versus-page
+  stays atomic (`booking_hold`, factory `db.rs`).
 - **The availability windows are placeholders** (Tue/Thu 13–17, Wed 9–12
   Eastern — invented, not chosen) in **two files that must agree**:
   `~/.mecha/instruments/book-policy.toml` and the `[availability]` section
@@ -1971,12 +2025,12 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
 - **The vanity gate name is deferred by decision.** A redirect
   (`mecha-factory.org/book`-style) upgrades transparently to a gate-alias
   feature later; capability URLs stay minted on the real gate either way.
-- **Poll polish, one piece left:** a deterministic auto-book sweep for the
-  `clean_winner` case — today `polls status --json` hands the typed verdict
-  to the agent, which books and closes. (The tap-to-cycle/drag-paint/heat
-  layer shipped with the front-end pass; the axis-locked touch gesture and
-  a separate Group heatmap tab from `SCHEDULING-DESIGN.md` §5.3 were left
-  out on purpose — inline heat carries most of the value.)
+- **Poll polish:** the tap-to-cycle/drag-paint/heat layer shipped with the
+  front-end pass; the axis-locked touch gesture and a separate Group
+  heatmap tab from `SCHEDULING-DESIGN.md` §5.3 were left out on purpose —
+  inline heat carries most of the value. (The auto-book sweep that used to
+  be listed here shipped 2026-09-05 as `factory-publish polls sweep`; see
+  the meeting-poll item above.)
 - **A poll cannot hold a real picture, because there is no asset endpoint on
   the box.** Questions and options take `media = { src, alt }` as of
   2026-08-10, and the two sources that render are the only two the policy
