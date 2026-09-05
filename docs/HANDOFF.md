@@ -1702,6 +1702,25 @@ host's to restart. New stores, none in any repo: `~/.mecha/factory/polls/`
 use). No meeting poll has been created on this binary yet; the first one
 is the live test the arc still owes.
 
+**2026-09-05 02:04Z — #189 (the sensor form in the web charter editor)
+deployed by mecha-6a from the shared checkout on `main` at `8b7839c`,
+clean; re-verified from this lane before this row was written.**
+`~/.cargo/bin/mecha` reinstalled (file 02:04Z, version string still
+0.1.17; `strings ~/.cargo/bin/mecha | grep -c sensor_kinds` reads 2, 0
+before) and `~/.mecha/web/dist` replaced by `rsync --delete` from a fresh
+build of the same commit — bundle `index-xHihYN7F.js`, where `grep -c
+"choose a kind"` reads 1 (0 on the old bundle); the binary and the dist
+had to move together because the API gained `sensor_kinds` and the page
+reads it. `mecha-slack`, `mecha-triggers`, `mecha-drain`, `mecha-serve`,
+`mecha-voice-worker` restarted together at 02:04:40Z, each verified from
+a journal window opened at the restart, and `stat -L` on the serve
+process's `/proc/<pid>/exe` and the installed file agree (inode
+54800381). `docs.yml` on `8b7839c` succeeded, so the published docs carry
+the appraisal-page change. Untouched, and checked: `mecha-mail`,
+`factory-publish`, both graph binaries, the five-verb `mecha-slots` line
+and the `publish_tools` change from the 01:51Z row — all as that row left
+them. The same two stale `mecha-graph-mcp` children remain.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
