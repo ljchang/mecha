@@ -778,10 +778,14 @@ pub fn finalize_region_rules(
         if let Some(prev) = restated_outside {
             let old_scope = prev.scope.clone().unwrap_or_default().scope();
             let widened_scope = Situation::region([&old_scope, &region.scope()]).scope();
-            // A batch inside the rule's own region adds support and widens
-            // nothing; the scope keeps its previous value — `None` stays
-            // `None`, since "predates the field" is still true of it.
-            if widened_scope != old_scope {
+            // Widen only on a window the old scope does not cover: a batch
+            // whose every window carried the rule's tools is evidence
+            // *inside* its region, whatever the batch's focus was, and a
+            // standing batch with no recorded windows is evidence of
+            // nowhere. Then the scope keeps its previous value — `None`
+            // stays `None`, since "predates the field" is still true.
+            let seen_outside = support.iter().any(|s| !old_scope.matches(s));
+            if widened_scope != old_scope && seen_outside {
                 r.scope = Some(widened_scope);
             }
             // The old scope itself is support when nothing narrower was
@@ -2021,10 +2025,13 @@ pub fn judge_convicted(rule: &Rule, tally: &RuleTally, threshold: u32) -> Verdic
         ));
     }
     // A conviction belongs to every support region its window is inside.
+    // Only rows inside the current scope are placed: a conviction from a
+    // region an earlier narrowing shed was answered by that narrowing and
+    // must not read as "outside every support region" now.
     let convicted_regions: Vec<&crate::situation::Situation> = tally
         .regions
         .values()
-        .filter(|(_, t)| t.attributed_regressions > 0)
+        .filter(|(region, t)| t.attributed_regressions > 0 && scope.matches(region))
         .map(|(region, _)| region)
         .collect();
     let (shed, kept): (Vec<_>, Vec<_>) = rule
@@ -5252,6 +5259,31 @@ mod probation_tests {
         };
         assert_eq!(t["w"].attributed_against(&sit(&["http_fetch"])), 0);
         assert_eq!(judge_convicted(&narrowed, &t["w"], 3), Verdict::Stands);
+        // Convicted again inside the narrowed scope, with the old shed
+        // convictions still in the ledger: those are not "unplaced", and
+        // the rule narrows once more to the sub-region that stayed clean.
+        let twice = Rule {
+            scope: Some(sit(&["http_fetch"])),
+            support: vec![sit(&["http_fetch"]), sit(&["fs_write", "http_fetch"])],
+            ..r("w", false)
+        };
+        let t = rule_tallies(&[
+            convicted_in(&["shell"]),
+            convicted_in(&["shell"]),
+            convicted_in(&["shell"]),
+            convicted_in(&["http_fetch"]),
+            convicted_in(&["http_fetch"]),
+            convicted_in(&["http_fetch"]),
+            clean_in(&["fs_write", "http_fetch"]),
+        ]);
+        assert_eq!(
+            judge_convicted(&twice, &t["w"], 3),
+            Verdict::Narrow {
+                scope: sit(&["fs_write", "http_fetch"]),
+                support: vec![sit(&["fs_write", "http_fetch"])],
+                shed: vec![sit(&["http_fetch"])],
+            }
+        );
 
         // A conviction whose window carried both support tools is in both
         // sub-regions: nothing is left to keep.
@@ -5585,6 +5617,33 @@ mod situation_tests {
         );
         assert_eq!(r.sources, vec!["x"], "the second batch is lineage too");
         assert_eq!(carried_in(&out, &run_with(&["fs_read"])).count(), 1);
+
+        // A batch focused elsewhere whose every window still carried
+        // `shell` is evidence inside the shell region: support grows, the
+        // scope does not. And a standing batch with no windows at all is
+        // evidence of nowhere.
+        for (batch_region, windows) in [
+            (fetch.clone(), vec![run_with(&["http_fetch", "shell"])]),
+            (Situation::default(), Vec::new()),
+        ] {
+            let out = finalize_region_rules(
+                vec![Rule {
+                    text: "Say what you ran.".into(),
+                    ..Default::default()
+                }],
+                &previous,
+                &batch_region,
+                &["v".into()],
+                &windows,
+                "now",
+            );
+            assert_eq!(
+                out[0].scope,
+                Some(shell()),
+                "no window outside shell: no widening"
+            );
+            assert!(out[0].support.contains(&shell()));
+        }
 
         // A restatement inside the rule's own region adds support and
         // widens nothing — the intersection is the scope it had.
