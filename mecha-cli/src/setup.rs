@@ -158,9 +158,24 @@ async fn preflight_provider(cfg: &mecha_core::config::Config, opts: &GlobalOpts)
 fn scripted_refusals(
     approver: Arc<dyn Approver>,
 ) -> Result<(Arc<dyn Approver>, Vec<mecha_core::tool::DenialRule>)> {
-    match std::env::var(mecha_core::tool::DENIALS_FILE_ENV) {
-        Ok(path) if !path.is_empty() => {
-            let kind = std::env::var(mecha_core::session::SESSION_KIND_ENV).ok();
+    scripted_refusals_from(
+        approver,
+        std::env::var(mecha_core::tool::DENIALS_FILE_ENV).ok(),
+        std::env::var(mecha_core::session::SESSION_KIND_ENV).ok(),
+    )
+}
+
+/// The testable half: the gate and the wrap over explicit values, so the
+/// three guarantees — any other kind stops the start, the experiment's
+/// kind wraps, no file passes through — are measured without touching the
+/// process's environment (found on review).
+fn scripted_refusals_from(
+    approver: Arc<dyn Approver>,
+    file: Option<String>,
+    kind: Option<String>,
+) -> Result<(Arc<dyn Approver>, Vec<mecha_core::tool::DenialRule>)> {
+    match file {
+        Some(path) if !path.is_empty() => {
             anyhow::ensure!(
                 mecha_core::tool::denials_file_applies(kind.as_deref()),
                 "{} is an experiment's channel — a scripted refusal is mined as the owner's correction — and this run is not an experiment's; unset it",
@@ -1689,6 +1704,42 @@ pub fn surface_only_registry() -> Registry {
     )));
     r.insert(Arc::new(crate::slack::show::ShowFileTool::new(0)));
     r
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    /// The denials file wraps only an experiment's run, stops any other
+    /// run's start, and an unnamed file passes the approver through.
+    #[test]
+    fn the_denials_file_gates_on_the_experiment_kind() {
+        let dir = std::env::temp_dir().join(format!("mecha-setup-deny-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("denials.toml");
+        std::fs::write(&path, "[[deny]]\ntool = \"shell\"\nreason = \"no\"\n").unwrap();
+        let inner = || -> Arc<dyn Approver> {
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            })
+        };
+        let file = || Some(path.to_string_lossy().to_string());
+        let (_, rules) =
+            scripted_refusals_from(inner(), file(), Some("experiment".into())).unwrap();
+        assert_eq!(rules.len(), 1, "wrapped under the experiment's kind");
+        for kind in [Some("test"), Some("task"), None] {
+            let e = match scripted_refusals_from(inner(), file(), kind.map(str::to_string)) {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{kind:?} must not be wrapped"),
+            };
+            assert!(e.contains("is an experiment's channel"), "{kind:?}: {e}");
+        }
+        let (_, rules) = scripted_refusals_from(inner(), None, Some("test".into())).unwrap();
+        assert!(rules.is_empty(), "no file: the approver passes through");
+        let (_, rules) = scripted_refusals_from(inner(), Some(String::new()), None).unwrap();
+        assert!(rules.is_empty(), "an empty name is no file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

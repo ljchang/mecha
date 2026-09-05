@@ -1473,7 +1473,10 @@ pub struct RefusalOutcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_contains: Option<String>,
     pub reason: String,
-    pub fired: u32,
+    /// How many times the run answered a call with this refusal; `None`
+    /// when the session could not be read — unknown, never zero (found on
+    /// review).
+    pub fired: Option<u32>,
 }
 
 /// The sentence the loop writes for a person's refusal, as `agent.rs`
@@ -1482,11 +1485,12 @@ pub const DENIED_PREFIX: &str = "Denied by the user: ";
 
 /// How often each scripted refusal fired in a session: the count of the
 /// loop's refusal sentence carrying that rule's reason, over the session
-/// file's text. Two rules sharing a reason share a count, and say so is
-/// the principal's job.
+/// file's text — or unknown for every rule when there is no text to read.
+/// Two rules sharing a reason share a count, and saying so is the
+/// principal's job.
 pub fn refusal_outcomes(
     rules: &[crate::tool::DenialRule],
-    session_text: &str,
+    session_text: Option<&str>,
 ) -> Vec<RefusalOutcome> {
     rules
         .iter()
@@ -1498,12 +1502,12 @@ pub fn refusal_outcomes(
             // JSON string, so a quote, a backslash or a newline in the
             // reason is escaped there and a raw needle never matched
             // (found on review).
-            fired: {
+            fired: session_text.map(|text| {
                 let sentence = format!("{DENIED_PREFIX}{}", r.reason);
                 let encoded = serde_json::to_string(&sentence).unwrap_or_default();
                 let needle = encoded.trim_matches('"');
-                session_text.matches(needle).count() as u32
-            },
+                text.matches(needle).count() as u32
+            }),
         })
         .collect()
 }
@@ -3370,8 +3374,13 @@ rationale = "no rumination should fail more over the sequence"
             },
         ];
         let session = "{\"content\":\"Denied by the user: use printf\"}\n{\"x\":1}\n{\"content\":\"Denied by the user: use printf, please\"}\n";
-        let out = refusal_outcomes(&rules, session);
-        assert_eq!((out[0].fired, out[1].fired), (2, 0), "{out:?}");
+        let out = refusal_outcomes(&rules, Some(session));
+        assert_eq!((out[0].fired, out[1].fired), (Some(2), Some(0)), "{out:?}");
+        let unknown = refusal_outcomes(&rules, None);
+        assert!(
+            unknown.iter().all(|r| r.fired.is_none()),
+            "no session to read is unknown, never zero: {unknown:?}"
+        );
         assert_eq!(out[1].tool, "fs_write");
         // A reason with a quote is escaped in the file and still counts.
         let quoted = vec![crate::tool::DenialRule {
@@ -3380,7 +3389,11 @@ rationale = "no rumination should fail more over the sequence"
             reason: "use \"printf\" here".into(),
         }];
         let session = "{\"content\":\"Denied by the user: use \\\"printf\\\" here\"}\n";
-        assert_eq!(refusal_outcomes(&quoted, session)[0].fired, 1, "{session}");
+        assert_eq!(
+            refusal_outcomes(&quoted, Some(session))[0].fired,
+            Some(1),
+            "{session}"
+        );
         write_denials(&home, &rules).unwrap();
         assert_eq!(read_denials(&home).unwrap(), rules);
         let _ = std::fs::remove_dir_all(&home);
