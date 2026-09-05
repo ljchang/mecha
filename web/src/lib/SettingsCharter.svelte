@@ -500,6 +500,17 @@
                     pick what the line watches; the setpoint's unit follows from it
                   {/if}
                 </div>
+                <!-- Containment 5's first guard, where the value is typed:
+                     the reading that still stands for this exact sensor. It
+                     goes quiet the moment the kind or setpoint changes
+                     (`readingStands`), and comes back with the save. -->
+                {#if readingStands(line)}
+                  <div class="sub hint">
+                    reading now: <span class:over={line.reading.state === 'observed' && line.reading.over}>{line.reading.summary}</span>
+                  </div>
+                {:else if line.reading}
+                  <div class="sub hint">reading: not yet, for this setpoint — save to read it</div>
+                {/if}
                 <button class="btn small" onclick={() => removeSensor(line)}>Remove sensor</button>
               {:else}
                 <!-- An older server serves no kinds: the form declines to
