@@ -388,6 +388,7 @@ mod tests {
             step_nulls: 0,
             step_reopens: 0,
             step_completions: 0,
+            step_measured: 0,
             stop_cause: StopCause::Completed,
             compactions: 1,
             cost_usd: None,

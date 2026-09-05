@@ -1312,13 +1312,15 @@ fn health(
         // the denominator named: runs that completed a plan step, not every
         // run since the sensor.
         println!(
-            "  plan steps          {} null and {} reopened of {} completed-step transition(s); a null in {} \
-             and a reopen in {} of the {} run(s) that had one to speak of (of {} that recorded \
-             the sensor)",
+            "  plan steps          {} null of {} measured completion(s) ({} completed in all), {} \
+             reopened; a null in {} of the {} run(s) with a measured completion, a reopen in {} \
+             of the {} with any step activity (of {} that recorded the sensor)",
             steps.nulls,
-            steps.reopens,
+            steps.measured,
             steps.completions,
+            steps.reopens,
             pct(corpus.step_null_rate()),
+            steps.measured_runs,
             pct(corpus.step_reopen_rate()),
             steps.planned,
             steps.sensed
@@ -1394,8 +1396,12 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         "step_null_rate": corpus.step_null_rate(),
         "step_reopen_rate": corpus.step_reopen_rate(),
         "runs_with_step_sensor": steps.sensed,
-        "runs_that_completed_a_step": steps.planned,
+        // The reopen rate's denominator: completed or reopened a step.
+        "runs_with_a_plan_step": steps.planned,
+        // The null rate's denominator: at least one measured completion.
+        "runs_with_a_measured_completion": steps.measured_runs,
         "step_completions": steps.completions,
+        "step_measured": steps.measured,
         "step_nulls": steps.nulls,
         "step_reopens": steps.reopens,
         "cost_usd": cost,

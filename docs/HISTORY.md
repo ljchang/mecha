@@ -3635,7 +3635,16 @@ scoped to the run that completed the step — the counters' own scope,
 from the work tracker's run id — and dropped the moment a new run
 writes; and the completion arm never consulted it, so a step dropped and
 re-added as completed counted twice in the denominator, and now counts
-once.
+once. The fifth pass, on the merge with main, found the denominators
+still one door open each way: a reopen-only run cannot produce a null
+and sat in the null rate's denominator, and a completion whose step was
+started in an earlier turn (every chat and TUI turn is a fresh run) or
+never marked in progress counts a completion but can never be a null.
+So a fourth counter, `step_measured` — completions whose span could be
+measured — is the null rate's denominator, the reopen rate keeps runs
+with any step activity, `StepTotals` names both, and the health JSON
+key that said "completed a step" of a set that includes reopen-only
+runs is `runs_with_a_plan_step`.
 
 **2026-09-05 — a rule widens on evidence from two regions and narrows to
 where it held, and the ledger says which sub-region each probe

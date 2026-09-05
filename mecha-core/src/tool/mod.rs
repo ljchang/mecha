@@ -491,16 +491,25 @@ pub struct StepCounts {
     /// rather than with what its steps did (found on review; a run record
     /// carries no per-tool breakdown, so it could not be recovered later).
     pub completions: std::sync::atomic::AtomicU32,
+    /// Of the completions, those whose span could be measured — the step
+    /// was marked in progress in *this* run, so a null was possible. A
+    /// step written straight to completed, or started in an earlier turn
+    /// (every user turn in chat and the TUI is a fresh run), counts a
+    /// completion and can never count a null; reading the null rate over
+    /// all completions would dilute it with those (found on review). The
+    /// null rate's denominator is a run with at least one of these.
+    pub measured: std::sync::atomic::AtomicU32,
 }
 
 impl StepCounts {
-    /// `(nulls, reopens, completions)` as of now.
-    pub fn snapshot(&self) -> (u32, u32, u32) {
+    /// `(nulls, reopens, completions, measured)` as of now.
+    pub fn snapshot(&self) -> (u32, u32, u32, u32) {
         use std::sync::atomic::Ordering::Relaxed;
         (
             self.nulls.load(Relaxed),
             self.reopens.load(Relaxed),
             self.completions.load(Relaxed),
+            self.measured.load(Relaxed),
         )
     }
 }
