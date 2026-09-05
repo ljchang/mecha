@@ -329,7 +329,10 @@ def kg_task_update(store, args):
     due = parse_due(args["due"]) if isinstance(args.get("due"), str) else "untouched"
     defer = parse_due(args["defer"]) if isinstance(args.get("defer"), str) else "untouched"
     captured = args.get("captured_from")
-    if isinstance(captured, dict):
+    # Validated whenever it is set and not the clearing `""` — the same rule
+    # as create's, so a list or a number cannot land on the board (found on
+    # review).
+    if captured is not None and captured != "":
         check_captured_from(captured)
 
     if status is not None:
