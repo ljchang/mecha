@@ -877,7 +877,17 @@ async fn principal_call(
                 }
             }
             Ok(_) => {}
-            Err(e) => eprintln!("  ↳ the denials file could not be read back: {e:#}"),
+            // An unreadable store is a finding: a line that read like a
+            // position where nothing was scripted would be the reading
+            // this field exists to prevent (found on review).
+            Err(e) => {
+                run.status = StageStatus::Failed;
+                let note = format!("the denials file could not be read back: {e:#}");
+                run.error = Some(match run.error.take() {
+                    Some(prior) => format!("{prior}; {note}"),
+                    None => note,
+                });
+            }
         }
     }
     run.finished_at = chrono::Utc::now().to_rfc3339();
