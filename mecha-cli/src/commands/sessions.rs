@@ -1303,6 +1303,36 @@ fn health(
     } else {
         println!("  went nowhere        — (no run in this corpus recorded the counter)");
     }
+    // The null-step and restart counters §17.7 item 2 wants read before a
+    // mid-run rule delivery is switched on. Unknown before the sensor,
+    // never a dash that reads as zero.
+    let steps = corpus.step_totals();
+    if steps.planned > 0 {
+        // Step totals beside run shares, each labelled as what it is, and
+        // the denominator named: runs that completed a plan step, not every
+        // run since the sensor.
+        println!(
+            "  plan steps          {} null of {} measured completion(s) ({} completed in all), {} \
+             reopened; a null in {} of the {} run(s) with a measured completion, a reopen in {} \
+             of the {} with any step activity (of {} that recorded the sensor)",
+            steps.nulls,
+            steps.measured,
+            steps.completions,
+            steps.reopens,
+            pct(corpus.step_null_rate()),
+            steps.measured_runs,
+            pct(corpus.step_reopen_rate()),
+            steps.planned,
+            steps.sensed
+        );
+    } else if steps.sensed > 0 {
+        println!(
+            "  plan steps          — ({} run(s) recorded the sensor; none completed a plan step)",
+            steps.sensed
+        );
+    } else {
+        println!("  plan steps          — (no run in this corpus recorded the counters)");
+    }
 
     let by_model = corpus.by_model();
     if by_model.len() > 1 {
@@ -1339,6 +1369,7 @@ fn health(
 fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     let (cost, priced) = corpus.cost_usd();
     let (overflows, sensed) = corpus.context_overflows();
+    let steps = corpus.step_totals();
     serde_json::json!({
         "runs": corpus.len(),
         "sessions_read": corpus.sessions_read,
@@ -1360,6 +1391,19 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         "runs_with_overflow_sensor": sensed,
         "overflow_rate": corpus.overflow_rate(),
         "boredom_rate": corpus.boredom_rate(),
+        // §17.7 item 2's precondition, readable: null steps and reopened
+        // steps per sensed run. `null` before any run carried the sensor.
+        "step_null_rate": corpus.step_null_rate(),
+        "step_reopen_rate": corpus.step_reopen_rate(),
+        "runs_with_step_sensor": steps.sensed,
+        // The reopen rate's denominator: completed or reopened a step.
+        "runs_with_a_plan_step": steps.planned,
+        // The null rate's denominator: at least one measured completion.
+        "runs_with_a_measured_completion": steps.measured_runs,
+        "step_completions": steps.completions,
+        "step_measured": steps.measured,
+        "step_nulls": steps.nulls,
+        "step_reopens": steps.reopens,
         "cost_usd": cost,
         "runs_priced": priced,
         "by_model": corpus

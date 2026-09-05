@@ -403,13 +403,7 @@ impl Corpus {
     /// corpus written before the field indistinguishable from one where the
     /// threshold never failed.
     pub fn overflow_rate(&self) -> Option<f64> {
-        let sensed: Vec<u32> = self
-            .rows
-            .iter()
-            .filter_map(|r| r.stats.context_overflows)
-            .collect();
-        (!sensed.is_empty())
-            .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
+        Self::share_positive(self.rows.iter().filter_map(|r| r.stats.context_overflows))
     }
 
     /// Share of runs the harness told at least once that an approach had
@@ -425,11 +419,71 @@ impl Corpus {
     /// before the detector existed and one where nothing ever got stuck are
     /// opposite findings.
     pub fn boredom_rate(&self) -> Option<f64> {
-        let sensed: Vec<u32> = self
-            .rows
+        Self::share_positive(self.rows.iter().filter_map(|r| r.stats.boredom_notices))
+    }
+
+    /// The share of runs in which a plan step completed with no call
+    /// behind it, over the runs in which that could have happened — those
+    /// with at least one *measured* completion (`RunStats::step_measured`:
+    /// started and completed in the same run). Not over every run since
+    /// the sensor shipped, which would track how often the model plans at
+    /// all; not over runs with any completion, since a step written
+    /// straight to completed or started in an earlier turn cannot be a
+    /// null; and not over runs that only reopened a step, for the same
+    /// reason (each found on review). `None` over no such rows, on
+    /// `boredom_rate`'s rule.
+    pub fn step_null_rate(&self) -> Option<f64> {
+        Self::share_positive(self.measured().map(|r| r.stats.step_nulls.unwrap_or(0)))
+    }
+
+    /// The share of runs in which a completed step was reopened, over the
+    /// runs that had a plan step to speak of — completed or reopened one.
+    /// A reopen needs a prior completion but not in the same run: the plan
+    /// outlives the run (`TodoTool::lists` is keyed by workspace, and a
+    /// resume reinstalls completed items), so a run that only restarts a
+    /// step recorded a measured event and counts.
+    pub fn step_reopen_rate(&self) -> Option<f64> {
+        Self::share_positive(self.planned().map(|r| r.stats.step_reopens.unwrap_or(0)))
+    }
+
+    /// Rows that completed or reopened at least one plan step.
+    fn planned(&self) -> impl Iterator<Item = &RunRow> {
+        self.rows.iter().filter(|r| {
+            r.stats.step_completions.is_some_and(|c| c > 0)
+                || r.stats.step_reopens.is_some_and(|c| c > 0)
+        })
+    }
+
+    /// Rows with at least one completion whose span was measured.
+    fn measured(&self) -> impl Iterator<Item = &RunRow> {
+        self.rows
             .iter()
-            .filter_map(|r| r.stats.boredom_notices)
-            .collect();
+            .filter(|r| r.stats.step_measured.is_some_and(|c| c > 0))
+    }
+
+    /// The totals the rates above are over, each denominator named: see
+    /// [`StepTotals`].
+    pub fn step_totals(&self) -> StepTotals {
+        let sum = |f: fn(&crate::session::RunStats) -> Option<u32>| -> u32 {
+            self.planned().map(|r| f(&r.stats).unwrap_or(0)).sum()
+        };
+        StepTotals {
+            sensed: self
+                .rows
+                .iter()
+                .filter(|r| r.stats.step_completions.is_some())
+                .count(),
+            planned: self.planned().count(),
+            measured_runs: self.measured().count(),
+            completions: sum(|s| s.step_completions),
+            measured: sum(|s| s.step_measured),
+            nulls: sum(|s| s.step_nulls),
+            reopens: sum(|s| s.step_reopens),
+        }
+    }
+
+    fn share_positive(sensed: impl Iterator<Item = u32>) -> Option<f64> {
+        let sensed: Vec<u32> = sensed.collect();
         (!sensed.is_empty())
             .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
     }
@@ -582,6 +636,24 @@ fn exhaustive(record: &Record) {
         | Record::Title { .. }
         | Record::Outcome(_) => {}
     }
+}
+
+/// What the step counters sum to over a corpus — see `Corpus::step_totals`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StepTotals {
+    /// Rows that carry the sensor at all.
+    pub sensed: usize,
+    /// Of those, rows that completed or reopened at least one plan step —
+    /// the reopen rate's denominator, and what the counts below sum over.
+    pub planned: usize,
+    /// Rows with at least one measured completion — the null rate's
+    /// denominator.
+    pub measured_runs: usize,
+    pub completions: u32,
+    /// Completions whose span was measured, so a null was possible.
+    pub measured: u32,
+    pub nulls: u32,
+    pub reopens: u32,
 }
 
 #[cfg(test)]
@@ -775,6 +847,10 @@ mod tests {
             boredom_notices: None,
             step_escalations_attempted: None,
             step_escalations_revised: None,
+            step_nulls: None,
+            step_reopens: None,
+            step_completions: None,
+            step_measured: None,
             checks_declared: None,
             checks_passed: None,
             turns: 3,
@@ -853,6 +929,91 @@ mod tests {
         assert_eq!(corpus.context_overflows(), (0, 0));
         assert_eq!(corpus.overflow_rate(), None, "not Some(0.0)");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The step counters are the same shape again: unknown over rows from
+    /// before the sensor, a rate over sensed rows only, totals beside it.
+    #[test]
+    fn step_counters_read_unknown_before_the_sensor_and_as_rates_after() {
+        let dir = tmpdir();
+        let sensed = |nulls: u32, reopens: u32, completions: u32, measured: u32| {
+            let mut st = stats(4, 0, false, StopCause::Completed);
+            st.step_nulls = Some(nulls);
+            st.step_reopens = Some(reopens);
+            st.step_completions = Some(completions);
+            st.step_measured = Some(measured);
+            st
+        };
+        session_with(
+            &dir,
+            "20260905T000000-old",
+            "opus",
+            vec![stats(4, 0, false, StopCause::Completed)],
+        );
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(corpus.step_null_rate(), None, "not Some(0.0)");
+        assert_eq!(corpus.step_reopen_rate(), None);
+        assert_eq!(corpus.step_totals(), StepTotals::default());
+        // A sensed run that never planned records zeros and is not in the
+        // denominator: the rate is over runs that completed a step (found
+        // on review — every run since the sensor is the wrong denominator).
+        session_with(
+            &dir,
+            "20260905T000001-sensed",
+            "opus",
+            vec![
+                sensed(2, 0, 3, 3),
+                sensed(0, 1, 2, 2),
+                sensed(0, 0, 1, 1),
+                sensed(0, 0, 0, 0),
+                // A run that only restarted a step completed in an earlier
+                // run: a measured reopen with no completion of its own. It
+                // counts for the reopen rate and cannot count for the null
+                // rate, since no null was possible (found on review, twice).
+                sensed(0, 1, 0, 0),
+                // A completion whose step was started in an earlier turn:
+                // in the reopen rate's denominator, not the null rate's.
+                sensed(0, 0, 1, 0),
+            ],
+        );
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(
+            corpus.step_null_rate(),
+            Some(1.0 / 3.0),
+            "over the three measured runs"
+        );
+        assert_eq!(
+            corpus.step_reopen_rate(),
+            Some(2.0 / 5.0),
+            "over the five with a step"
+        );
+        assert_eq!(
+            corpus.step_totals(),
+            StepTotals {
+                sensed: 6,
+                planned: 5,
+                measured_runs: 3,
+                completions: 7,
+                measured: 6,
+                nulls: 2,
+                reopens: 2,
+            },
+            "the old row is not sensed; the never-planned one is sensed but not planned"
+        );
+        // Sensed rows that all lack a plan: known, and nothing to rate.
+        let dir2 = tmpdir();
+        session_with(
+            &dir2,
+            "20260905T000002-noplan",
+            "opus",
+            vec![sensed(0, 0, 0, 0)],
+        );
+        let corpus = Corpus::scan(&dir2, &Scan::default()).unwrap();
+        assert_eq!(corpus.step_null_rate(), None);
+        assert_eq!(corpus.step_totals().sensed, 1);
+        assert_eq!(corpus.step_totals().planned, 0);
+        let _ = std::fs::remove_dir_all(&dir2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

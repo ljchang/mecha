@@ -459,6 +459,59 @@ pub struct ToolCtx {
     /// `compact_requested`'s own absence-is-the-off-switch.
     pub step_escalation:
         Option<std::sync::Arc<std::sync::Mutex<Option<crate::step::StepEscalation>>>>,
+    /// What the plan's steps did this run, counted by `todo` as it reads
+    /// each completed span: the null steps (`step::Finding::Null` — a step
+    /// completed with no call behind it) and the reopens (a completed step
+    /// set back to in progress). The two counters `GOAL-SYSTEM-DESIGN.md`
+    /// §17.7 item 2 says must be read before a mid-run rule delivery is
+    /// switched on, since the tree's own evidence is that a nudge makes a
+    /// model restart work it had done — and neither was recorded anywhere,
+    /// so the ruling's precondition could not be met from the store.
+    ///
+    /// A sensor, not a lever: the loop mints one per run unconditionally,
+    /// where `step_escalation`'s presence is the feature's on switch.
+    /// `None` only in a context no run owns (a probe, a CLI that builds a
+    /// tool by hand), where nothing is counted and the record says unknown.
+    pub step_counts: Option<std::sync::Arc<StepCounts>>,
+}
+
+/// Per-run step counters, written by `todo` and read into `RunOutcome` by
+/// the loop. Atomics rather than a mutex because a write is one increment
+/// from inside a tool call and a read is one snapshot at the end of the
+/// run; nothing ever needs both counters at one instant.
+#[derive(Debug, Default)]
+pub struct StepCounts {
+    pub nulls: std::sync::atomic::AtomicU32,
+    pub reopens: std::sync::atomic::AtomicU32,
+    /// Every completed-step transition — the denominator the other two are
+    /// read against. A null needs a completion and a reopen needs a prior
+    /// one, so a run with none had no plan the counters could speak to,
+    /// and without this the rates' denominator would be every run since
+    /// the sensor shipped, moving with how often the model plans at all
+    /// rather than with what its steps did (found on review; a run record
+    /// carries no per-tool breakdown, so it could not be recovered later).
+    pub completions: std::sync::atomic::AtomicU32,
+    /// Of the completions, those whose span could be measured — the step
+    /// was marked in progress in *this* run, so a null was possible. A
+    /// step written straight to completed, or started in an earlier turn
+    /// (every user turn in chat and the TUI is a fresh run), counts a
+    /// completion and can never count a null; reading the null rate over
+    /// all completions would dilute it with those (found on review). The
+    /// null rate's denominator is a run with at least one of these.
+    pub measured: std::sync::atomic::AtomicU32,
+}
+
+impl StepCounts {
+    /// `(nulls, reopens, completions, measured)` as of now.
+    pub fn snapshot(&self) -> (u32, u32, u32, u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.nulls.load(Relaxed),
+            self.reopens.load(Relaxed),
+            self.completions.load(Relaxed),
+            self.measured.load(Relaxed),
+        )
+    }
 }
 
 impl Default for ToolCtx {
@@ -480,6 +533,7 @@ impl Default for ToolCtx {
             work: None,
             compact_requested: None,
             step_escalation: None,
+            step_counts: None,
         }
     }
 }
