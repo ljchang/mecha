@@ -240,6 +240,19 @@ impl Fixtures {
                 "fixture server `{}`: `__` separates a server's name from its tools' and cannot be in the name",
                 s.name
             );
+            // The name is a directory under the home (`fixtures/<name>/`)
+            // that `render` may remove and rebuild, so it must be one plain
+            // component: `..` resolved to the home itself, which carries no
+            // seeded marker, and the first render would have deleted the
+            // whole trial home (found on review) — the jail-rooted-somewhere-
+            // harmless rule, one store over.
+            anyhow::ensure!(
+                Path::new(&s.name).components().count() == 1
+                    && !matches!(s.name.as_str(), "." | "..")
+                    && !s.name.contains(['/', '\\']),
+                "fixture server `{}`: the name is a directory under the home (`fixtures/<name>/`), so it must be a single plain component",
+                s.name
+            );
             anyhow::ensure!(
                 seen.insert(s.name.as_str()),
                 "fixture server `{}` is named twice",
@@ -4195,6 +4208,17 @@ preset = "full"
             .unwrap_err()
             .to_string()
             .contains("__"));
+        // A name is a directory under the home: nothing that escapes it.
+        for bad in ["..", ".", "a/b", "/tmp/x", "../home", "a\\b"] {
+            // TOML literal strings, so a backslash is a backslash and not an
+            // escape the parser reads first.
+            let escaped = FIXTURED.replace("name = \"mail\"", &format!("name = '{bad}'"));
+            let err = Manifest::parse(&escaped).unwrap_err().to_string();
+            assert!(
+                err.contains("single plain component"),
+                "`{bad}` must be refused: {err}"
+            );
+        }
         let nocmd = FIXTURED.replace(
             "command = \"python3\"\nargs = [\"eval/fixtures/mail_server.py\"]",
             "command = \"\"",
