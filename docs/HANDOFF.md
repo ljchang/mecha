@@ -1724,6 +1724,25 @@ the appraisal-page change. Untouched, and checked: `mecha-mail`,
 and the `publish_tools` change from the 01:51Z row — all as that row left
 them. The same two stale `mecha-graph-mcp` children remain.
 
+**2026-09-05 20:19Z — #192 (§17.4 widening, narrowing and per-region
+validation) deployed by mecha-53 from `~/Github/mecha` on `main` at
+`52b8b0b`, fast-forwarded from `efbcab5` (clean, no `MERGE_HEAD` in any
+worktree, no benchmark running).** `~/.cargo/bin/mecha` reinstalled
+(file 20:19:01Z; `strings` carries `since it was narrowed at` and `would
+widen (staged)`, neither in the 02:04Z build; `validate --help` names
+`--cover`). Restarted 20:19:13Z, each verified from its own startup line
+in a journal window opened at the restart and from `/proc/<pid>/exe`:
+mecha-slack (`Connected to cosanlab as mecha. 1 owner(s), 16 thread(s)`),
+mecha-triggers (`1 trigger(s), 1 enabled · ticking every minute`),
+mecha-serve (both doors), mecha-drain (the bash wrapper; its `mecha`
+children exec fresh per iteration). Not restarted, correctly:
+mecha-voice-worker and mecha-parakeet (`scripts/voice/` unchanged in the
+range), and the web dist (`web/` unchanged). The stale-process sweep
+found nothing. `scripts/ruminate.sh` in the checkout now passes
+`validate --cover 1`; the timer's next firing is 03:30Z 2026-09-06, the
+first pass that can write a placed ledger row. Announced to the one live
+peer (mecha-0c).
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2659,20 +2678,34 @@ the mechanism and every decision. What it left standing:
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
 **2026-09-05 — §17.4's consolidation widening and narrowing and the
-per-region half of validation are built on `feat/region-widening`
-(unmerged when written; merging is the owner's call; after merge, the
-`update` skill for the binary — `scripts/ruminate.sh` changed too, and
-the timer execs the checkout's copy).** What it built is in
-`HISTORY.md` under this date: `Rule::support`, widening by verbatim
-restatement in `finalize_region_rules`, `ValidationRecord::region` and
-per-region tallies, exercised-only probation release, `validate --cover`
-(the nightly passes 1), and `judge_convicted` narrowing before
-retirement. **What to expect on this machine:** every row in the live
-ledger predates the region field, so `mecha rules` prints `no region
-recorded N graded` for every rule until the next validate pass writes
-placed rows; the twelve live rules are unscoped, so a widening can only
-happen once a scoped rule exists and a later batch restates it; nothing
-is convicted, so the first scan narrows and retires nothing. **Open from
+per-region half of validation: PR #192 (`feat/region-widening`), merged
+at `52b8b0b` after seven review passes and deployed 20:19Z by mecha-53
+(the machine-state row under §Machine state, dated, has the probes).**
+What it built is in `HISTORY.md` under this date, with the thirteen
+findings the review loop turned up and what each taught: `Rule::support`,
+widening by verbatim restatement in `finalize_region_rules`,
+`ValidationRecord::region` and per-region tallies, exercised-only
+probation release, `validate --cover` (the nightly passes 1), and
+`judge_convicted` narrowing before retirement, with `tally_for` folding
+the ledger since a rule's last narrowing. **What to expect on this
+machine, and one of these is not cosmetic:** every row in the live ledger
+predates the region field, so `mecha rules` prints `no region recorded N
+graded` for every rule until the next validate pass writes placed rows —
+and since probation is released only by *placed* rows, no probationary
+rule can be released by existing evidence until then, while a conviction
+with no region still retires (fail-closed; no live rule is on probation
+today, so it costs nothing yet). The twelve live rules are unscoped, so a
+widening can only happen once a scoped rule exists and a later batch
+restates it; nothing is convicted, so the first scan narrows and retires
+nothing. **Five minors the seventh pass left for the owner:** an
+inconclusive or skipped coverage pick is re-picked every night in id
+order, so a region holding one unmeasurable reflection can absorb the
+`--cover 1` budget (a tiebreak on `observations` would rotate it); the
+roster folds the whole ledger while the scan folds since `narrowed_at`, so
+a narrowed rule prints its old convictions beside `active`; the
+followup-region test asserts a copy of `record`'s predicate rather than
+`record`; `tally_for` refolds the ledger per rule; and the cover pool
+follows `--trigger` now but the flag's doc does not say so. **Open from
 §17.4 now:** mid-run delivery (§17.7 item 2), surface and workspace as
 scope keys, and a disjunctive scope — the split a narrowing cannot
 express, which today retires with the clean regions named. The night of
