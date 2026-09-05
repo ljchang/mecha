@@ -47,16 +47,14 @@ fn unconfined() -> Sandbox {
     Sandbox::new(SandboxConfig::default())
 }
 
-async fn connect(cfg: &McpServerConfig, workspace: &Path) -> Vec<Arc<dyn Tool>> {
+/// The client owns the server process, so the caller holds it for as long
+/// as the tools are used — dropping it kills the server.
+async fn connect(cfg: &McpServerConfig, workspace: &Path) -> (Arc<McpClient>, Vec<Arc<dyn Tool>>) {
     let client = McpClient::connect(cfg, &unconfined(), workspace)
         .await
         .expect("handshake failed");
-    // The client owns the process; keep it alive for as long as the tools.
     let tools = client.list_tools().await.expect("tools/list failed");
-    // Leak the client on purpose: dropping it kills the server, and the
-    // tools hold their own reference to it for the calls below.
-    std::mem::forget(client);
-    tools
+    (client, tools)
 }
 
 fn tool_named(tools: &[Arc<dyn Tool>], name: &str) -> Arc<dyn Tool> {
@@ -151,7 +149,7 @@ async fn the_board_fixture_persists_across_processes_in_the_real_servers_shapes(
     seed_board(&store);
     let cfg = server("graph", "board_server.py", &store, Some(false));
 
-    let tools = connect(&cfg, &dir).await;
+    let (_client, tools) = connect(&cfg, &dir).await;
     let list = tool_named(&tools, "kg_task_list");
     let (err, text) = call(&list, json!({}), &dir).await;
     assert!(!err, "{text}");
@@ -235,7 +233,7 @@ async fn the_board_fixture_persists_across_processes_in_the_real_servers_shapes(
     assert!(err, "an unknown status is refused");
 
     // A second process — the next task's run, or the principal's verb.
-    let again = connect(&cfg, &dir).await;
+    let (_client2, again) = connect(&cfg, &dir).await;
     let list = tool_named(&again, "kg_task_list");
     let (_, text) = call(&list, json!({}), &dir).await;
     let open: Value = serde_json::from_str(&text).unwrap();
@@ -308,7 +306,7 @@ async fn the_mail_fixture_records_every_send_and_delivers_nothing() {
     seed_mail(&store);
     let cfg = server("mail", "mail_server.py", &store, None);
 
-    let tools = connect(&cfg, &dir).await;
+    let (_client, tools) = connect(&cfg, &dir).await;
     let send = tool_named(&tools, "mail__mail_send");
     assert!(
         send.capabilities().external_send,
@@ -368,7 +366,7 @@ async fn the_mail_fixture_records_every_send_and_delivers_nothing() {
     assert_eq!(first["tool"], "mail_reply");
     assert_eq!(first["produced"]["to"][0], "priya.nair@example.edu");
 
-    let again = connect(&cfg, &dir).await;
+    let (_client2, again) = connect(&cfg, &dir).await;
     let thread = tool_named(&again, "mail__mail_get_thread");
     let (err, text) = call(&thread, json!({"thread_id": "t-1"}), &dir).await;
     assert!(!err, "{text}");

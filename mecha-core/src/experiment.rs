@@ -132,7 +132,11 @@ pub struct Fixtures {
     /// copies from the real home before every task. The synthetic
     /// assistant home's owner has their own standing priorities; the
     /// operator's are not the design. The owner's rule survives: a file the
-    /// experimenter wrote, no model authors a line.
+    /// experimenter wrote, no model authors a line. **Optional on
+    /// purpose**: a fixture world with no charter runs under the
+    /// operator's, which is the design when the question is how *this*
+    /// owner's priorities fare against a controlled world — the one case
+    /// refused is a fixture charter over the operator's live servers.
     pub charter: Option<PathBuf>,
     /// The servers. Named like `[[mcp]]` entries, minus what a fixture never
     /// needs (an `env`, a passthrough, a sandbox), plus a `seed`.
@@ -178,6 +182,10 @@ pub struct FixtureServer {
 /// The variable a fixture server reads its store directory from — under
 /// the trial home, set by the driver, never by the manifest.
 pub const FIXTURE_DIR_ENV: &str = "MECHA_FIXTURE_DIR";
+
+/// The marker a seeded fixture store carries, written after the seed
+/// landed; its absence means the store is torn and is rebuilt.
+pub const FIXTURE_SEEDED: &str = ".seeded";
 
 /// Where a fixture server's state lives in a trial home.
 pub fn fixture_dir(home: &Path, name: &str) -> PathBuf {
@@ -291,25 +299,62 @@ impl Fixtures {
     /// with its store directory under the home created (and seeded, the
     /// first time) and handed over as [`FIXTURE_DIR_ENV`]; no passthrough,
     /// no sandbox, no inline secret. `base` resolves the manifest's
-    /// relative paths.
-    pub fn render(&self, home: &Path, base: &Path) -> Result<Vec<crate::config::McpServerConfig>> {
+    /// relative paths. `fresh` drops and re-seeds every store first — a
+    /// `single`'s rule, whose per-arm home is shared by every trial of the
+    /// arm, so without it trial 2 read the mailbox trial 1 edited under the
+    /// same condition hash (found on review); a lifetime never passes it,
+    /// since what one task left is what the next starts from.
+    ///
+    /// **Seeding fails closed.** The store is built in a temporary sibling,
+    /// marked [`FIXTURE_SEEDED`] after the copy, and renamed into place, and
+    /// "already seeded" is the marker, not the directory: the first cut
+    /// created the directory before the seed and keyed the skip on its
+    /// existence, so a seed that failed — a wrong cwd, a partial copy — left
+    /// an empty store the next render treated as seeded, and every later
+    /// position ran against an empty board with one stderr line saying so
+    /// (found on review). A directory without the marker is torn and is
+    /// rebuilt.
+    pub fn render(
+        &self,
+        home: &Path,
+        base: &Path,
+        fresh: bool,
+    ) -> Result<Vec<crate::config::McpServerConfig>> {
         let mut out = Vec::with_capacity(self.mcp.len());
         for s in &self.mcp {
             let dir = fixture_dir(home, &s.name);
+            let seeded = dir.join(FIXTURE_SEEDED).exists();
+            if dir.exists() && (fresh || !seeded) {
+                std::fs::remove_dir_all(&dir)
+                    .with_context(|| format!("clearing {}", dir.display()))?;
+            }
             if !dir.exists() {
-                std::fs::create_dir_all(&dir)
-                    .with_context(|| format!("creating {}", dir.display()))?;
-                if let Some(seed) = &s.seed {
-                    let seed = base.join(seed);
-                    anyhow::ensure!(
-                        seed.is_dir(),
-                        "fixture server `{}`: seed {} is not a directory",
-                        s.name,
-                        seed.display()
-                    );
-                    copy_tree(&seed, &dir).with_context(|| {
-                        format!("seeding {} into {}", seed.display(), dir.display())
-                    })?;
+                let parent = dir.parent().expect("under the home");
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating {}", parent.display()))?;
+                let staging = parent.join(format!(".{}.seeding-{}", s.name, uuid::Uuid::new_v4()));
+                let built: Result<()> = (|| {
+                    std::fs::create_dir_all(&staging)?;
+                    if let Some(seed) = &s.seed {
+                        let seed = base.join(seed);
+                        anyhow::ensure!(
+                            seed.is_dir(),
+                            "fixture server `{}`: seed {} is not a directory",
+                            s.name,
+                            seed.display()
+                        );
+                        copy_tree(&seed, &staging).with_context(|| {
+                            format!("seeding {} into {}", seed.display(), dir.display())
+                        })?;
+                    }
+                    std::fs::write(staging.join(FIXTURE_SEEDED), b"seeded by mecha exp\n")?;
+                    std::fs::rename(&staging, &dir)
+                        .with_context(|| format!("placing {}", dir.display()))?;
+                    Ok(())
+                })();
+                if let Err(e) = built {
+                    let _ = std::fs::remove_dir_all(&staging);
+                    return Err(e);
                 }
             }
             let mut argv = vec![s.command.clone()];
@@ -349,11 +394,12 @@ impl Fixtures {
         config: &mut crate::config::Config,
         home: &Path,
         base: &Path,
+        fresh: bool,
     ) -> Result<()> {
         if self.is_empty() {
             return Ok(());
         }
-        config.mcp = self.render(home, base)?;
+        config.mcp = self.render(home, base, fresh)?;
         config.outbox.tools = self.routed().to_vec();
         config.outbox.publish_tools.clear();
         Ok(())
@@ -4153,7 +4199,7 @@ seed = "seed"
         });
         config.outbox.tools = vec!["mail__mail_send".into(), "factory__bundle_publish".into()];
         config.outbox.publish_tools = vec!["factory__bundle_publish".into()];
-        m.fixtures.apply(&mut config, &home, &base).unwrap();
+        m.fixtures.apply(&mut config, &home, &base, false).unwrap();
         assert_eq!(config.mcp.len(), 1, "the operator's live server is gone");
         assert_eq!(
             config.outbox.tools,
@@ -4207,10 +4253,26 @@ seed = "seed"
             b"{\"tasks\":{\"t\":1}}",
         )
         .unwrap();
-        m.fixtures.apply(&mut config, &home, &base).unwrap();
+        m.fixtures.apply(&mut config, &home, &base, false).unwrap();
         assert_eq!(
             std::fs::read(fixture_dir(&home, "graph").join("board.json")).unwrap(),
             b"{\"tasks\":{\"t\":1}}"
+        );
+        assert!(fixture_dir(&home, "graph").join(FIXTURE_SEEDED).exists());
+        // A `single` starts every trial from the seed (found on review).
+        m.fixtures.apply(&mut config, &home, &base, true).unwrap();
+        assert_eq!(
+            std::fs::read(fixture_dir(&home, "graph").join("board.json")).unwrap(),
+            b"{\"tasks\":{}}",
+            "fresh drops what the last trial did"
+        );
+        // A store without the marker is torn and is rebuilt.
+        std::fs::remove_file(fixture_dir(&home, "graph").join(FIXTURE_SEEDED)).unwrap();
+        std::fs::write(fixture_dir(&home, "graph").join("board.json"), b"torn").unwrap();
+        m.fixtures.apply(&mut config, &home, &base, false).unwrap();
+        assert_eq!(
+            std::fs::read(fixture_dir(&home, "graph").join("board.json")).unwrap(),
+            b"{\"tasks\":{}}"
         );
         // A missing seed is an error, never an empty board.
         let missing = text.replace("seed = \"seed\"", "seed = \"nowhere\"");
@@ -4219,10 +4281,32 @@ seed = "seed"
         std::fs::create_dir_all(&home2).unwrap();
         assert!(m2
             .fixtures
-            .apply(&mut config, &home2, &base)
+            .apply(&mut config, &home2, &base, false)
             .unwrap_err()
             .to_string()
             .contains("not a directory"));
+        // Fails closed: no store is left behind for the next render to
+        // treat as seeded (found on review) — and once the seed is there,
+        // the next render seeds.
+        assert!(
+            !fixture_dir(&home2, "graph").exists(),
+            "a failed seed leaves nothing"
+        );
+        assert!(
+            std::fs::read_dir(home2.join("fixtures"))
+                .map(|d| d.count() == 0)
+                .unwrap_or(true),
+            "no staging directory is left either"
+        );
+        std::fs::create_dir_all(base.join("nowhere")).unwrap();
+        std::fs::write(base.join("nowhere/board.json"), b"{}").unwrap();
+        m2.fixtures
+            .apply(&mut config, &home2, &base, false)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(fixture_dir(&home2, "graph").join("board.json")).unwrap(),
+            b"{}"
+        );
         // No fixtures: the config is untouched, route included.
         let mut live = crate::config::Config::default();
         live.mcp.push(crate::config::McpServerConfig {
@@ -4233,7 +4317,7 @@ seed = "seed"
         Manifest::parse(MANIFEST)
             .unwrap()
             .fixtures
-            .apply(&mut live, &home, &base)
+            .apply(&mut live, &home, &base, false)
             .unwrap();
         assert_eq!(live.mcp.len(), 1);
         assert_eq!(live.outbox.tools.len(), 1);

@@ -375,7 +375,7 @@ async fn run_lifetimes(
                     // failure here is `run_one`'s to record: it renders the
                     // same way and fails the row with the same error.
                     if let Some(principal) = &manifest.principal {
-                        if let Err(e) = render_home(manifest, real, arm, trial.seed, &home) {
+                        if let Err(e) = render_home(manifest, real, arm, trial.seed, &home, false) {
                             eprintln!(
                                 "  the home could not be rendered ahead of the principal: {e:#}"
                             );
@@ -1226,7 +1226,8 @@ struct Rendered {
 /// (`fold_home_overrides`, a lifetime's only), then the manifest's fixtures
 /// — the `[[mcp]]` list becomes exactly the fixture servers, each with its
 /// store under the home created and seeded once — and the fixture charter
-/// over the seeded one. Called by `run_one`, and by the lifetime driver
+/// over the seeded one — every store fresh from its seed when `fresh`, a
+/// `single`'s rule. Called by `run_one`, and by the lifetime driver
 /// **before position 0's `before_task` principal call**: a verb the
 /// principal asks for there runs against the home's config, and until this
 /// wrote one the home had none — so `tasks set` found no board and
@@ -1238,6 +1239,7 @@ fn render_home(
     arm: &mecha_core::experiment::Arm,
     seed: Option<u64>,
     home: &Path,
+    fresh: bool,
 ) -> Result<Rendered> {
     let ChildInvocation {
         mut config,
@@ -1255,7 +1257,7 @@ fn render_home(
     // The manifest's paths are written against the checkout `exp run` is
     // started from; a server is spawned from the trial's workspace.
     let base = std::env::current_dir().context("cannot determine the working directory")?;
-    manifest.fixtures.apply(&mut config, home, &base)?;
+    manifest.fixtures.apply(&mut config, home, &base, fresh)?;
     manifest.fixtures.apply_charter(home, &base)?;
     std::fs::write(home.join("config.toml"), toml::to_string_pretty(&config)?)
         .with_context(|| format!("writing {}", home.join("config.toml").display()))?;
@@ -1292,7 +1294,17 @@ async fn run_one(
         flags,
         passthrough,
         moved,
-    } = render_home(manifest, real, arm, trial.seed, &home)?;
+    } = render_home(
+        manifest,
+        real,
+        arm,
+        trial.seed,
+        &home,
+        // A `single`'s per-arm home is shared by every trial of the arm, so
+        // each starts its fixture stores from the seed; a lifetime carries
+        // what the last task left (found on review).
+        manifest.kind == TrialKind::Single,
+    )?;
     // A knob is pinned for this task if the arm moves it *or* the home's
     // own loop did: the case's ceiling flag below must not override
     // either, since a flag beats the rendered config.

@@ -732,6 +732,11 @@ def serve(store):
                 reply(request_id, text_result(handler(store, params.get("arguments") or {})))
             except ToolError as e:
                 reply(request_id, text_result(str(e), is_error=True))
+            except Exception as e:  # noqa: BLE001 — a fixture absorbs whatever a model sends
+                # The repo's `Ok(ToolOutput { is_error: true })` convention: a
+                # malformed argument is the model's error to recover from,
+                # never a dead server for the rest of the run.
+                reply(request_id, text_result(f"{type(e).__name__}: {e}", is_error=True))
         else:
             fail(request_id, f"unsupported method: {method}")
 
