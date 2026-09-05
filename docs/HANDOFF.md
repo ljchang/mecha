@@ -2677,8 +2677,6 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
-
-
 **2026-09-05 — §17.4's consolidation widening and narrowing and the
 per-region half of validation: PR #192 (`feat/region-widening`), merged
 at `52b8b0b` after seven review passes and deployed 20:19Z by mecha-53
