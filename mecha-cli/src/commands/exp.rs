@@ -238,8 +238,19 @@ async fn source_call(
             Ok::<(), std::io::Error>(())
         };
         let (written, output) = tokio::join!(write, child.wait_with_output());
-        written.context("handing the task source its input")?;
-        output.context("waiting for the task source")
+        // The child's own account first: a source that exits before
+        // draining a large payload closes the pipe, and reporting the
+        // broken pipe ahead of its exit status and stderr lost the
+        // diagnosis (found on review). The write error stands only when
+        // the child itself said nothing was wrong.
+        let output = output.context("waiting for the task source")?;
+        if let Err(e) = written {
+            anyhow::ensure!(
+                !output.status.success(),
+                "the task source exited 0 without reading its input: {e}"
+            );
+        }
+        Ok::<_, anyhow::Error>(output)
     };
     let output = match tokio::time::timeout(
         std::time::Duration::from_secs(tasks.source_timeout_secs),
@@ -1018,8 +1029,16 @@ async fn principal_call(
                 Ok::<(), std::io::Error>(())
             };
             let (written, output) = tokio::join!(write, child.wait_with_output());
-            written.context("handing the principal its state")?;
-            output.context("waiting for the principal")
+            // The principal's own exit status and stderr before the pipe's
+            // complaint, for the same reason as the task source's.
+            let output = output.context("waiting for the principal")?;
+            if let Err(e) = written {
+                anyhow::ensure!(
+                    !output.status.success(),
+                    "the principal exited 0 without reading its state: {e}"
+                );
+            }
+            Ok::<_, anyhow::Error>(output)
         };
         let output = match tokio::time::timeout(
             std::time::Duration::from_secs(principal.timeout_secs),

@@ -3564,10 +3564,12 @@ comparison over a chosen set**, with the design written before the run.
   verdict that disagrees with its own checks is refused, and a source that
   exits non-zero, times out, prints no JSON or answers in a shape this
   build does not know **fails the trial, never passes it**. The source runs
-  from the trial's workspace on the run child's base environment plus four
-  pointers (`MECHA_HOME`, `MECHA_FIXTURES` = the home's fixture-store root,
-  `MECHA_EXPERIMENT_WORKSPACE`, `MECHA_EXPERIMENT_TASK`), so it finds the
-  world it sets up and grades without a server's name being spelled twice;
+  on the run child's base environment; `setup` and `grade` run from the
+  trial's workspace with four pointers beside it (`MECHA_HOME`,
+  `MECHA_FIXTURES` = the home's fixture-store root,
+  `MECHA_EXPERIMENT_WORKSPACE`, `MECHA_EXPERIMENT_TASK`), so a source finds
+  the world it sets up and grades without a server's name being spelled
+  twice, while `list` — which precedes any trial — gets the base set alone;
   its relative file paths resolve against the `exp run` checkout like a
   fixture server's. `eval/fixtures/source_stub.py` is the contract as small
   as it can be written and what the driver's test runs against;
