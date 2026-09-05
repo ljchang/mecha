@@ -3637,8 +3637,13 @@ folds again; and the learner's outside section included hand-disabled
 rules under an instruction to restate them verbatim while `finalize_rules`
 did not carry `enabled`, so one reply re-enabled an owner's off switch —
 disabled rules are no longer shown and `enabled` rides through a
-restatement like `probation` does. A fifth pass is the one that
-counts.
+restatement like `probation` does. The fifth pass found two more of
+the same two shapes: a hand-disabled rule *inside* the batched region
+fell through every carry-through once the learner stopped seeing it, so
+the region finaliser now carries a disabled rule regardless of region;
+and the self-grade guard was one rule wide while a row charges every
+carried rule, so coverage now passes over a reflection *any* rule in the
+surface was distilled from.
 `ValidationRecord::region` is the probed reflection's window (not the
 run's registry, which every run shares), `RuleTally::regions` folds the
 counts per region with `in_scope` and `attributed_against` over them,

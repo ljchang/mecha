@@ -371,11 +371,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut covering: BTreeMap<String, String> = BTreeMap::new();
     if let Some(all) = for_cover {
         let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
-        let pool = select_probe_corpus(
-            all,
-            &[Trigger::Steer.as_str(), Trigger::Denial.as_str()],
-            false,
-        );
+        // The replayable half of what this pass was asked to probe: an
+        // explicit `--trigger` narrows the cover pool too, and a followup
+        // has no replayable point in any case.
+        let replayable: Vec<&str> = wanted_triggers
+            .iter()
+            .copied()
+            .filter(|t| *t != Trigger::Followup.as_str())
+            .collect();
+        let pool = select_probe_corpus(all, &replayable, false);
         let chosen: std::collections::BTreeSet<String> =
             reflexions.iter().map(|r| r.id.clone()).collect();
         for (r, why) in cover_selection(&surface.flat, &tallies, &pool, &chosen, args.cover) {
@@ -849,14 +853,20 @@ fn cover_selection(
                 if n >= per_pair {
                     break;
                 }
-                // Never the rule's own sources: the with-rules arm would
-                // replay the very correction the rule was distilled from,
-                // and one memorised "improved" would both release the D1
-                // leash and close the pair to coverage for good (found on
-                // review). The main pass keeps this out with
+                // Never any rule's source: the row a probe writes charges
+                // every rule carried in the block, not only the one the
+                // pick was made for, so a reflection some rule was distilled
+                // from would have the with-rules arm replay that rule's own
+                // correction — one memorised "improved" would release the
+                // D1 leash and close that rule's pair to coverage for good
+                // (found on review, twice: the first guard was one rule
+                // wide). The main pass keeps this out structurally with
                 // `--unprocessed-only`; lifting that here is for regions
                 // with nothing fresh, not for self-grading.
-                if r.domain != *domain || taken.contains(&r.id) || rule.sources.contains(&r.id) {
+                if r.domain != *domain
+                    || taken.contains(&r.id)
+                    || flat.iter().any(|(_, any)| any.sources.contains(&r.id))
+                {
                     continue;
                 }
                 // The same window `record` would place the row in: one with
@@ -1198,12 +1208,21 @@ mod tests {
             ("behavior".to_string(), other),
         ];
         let shell_only = vec![refl("c-shell", &["shell"], false)];
-        let out = cover_selection(&two, &tallies, &shell_only, &Default::default(), 1);
+        assert!(
+            cover_selection(&two, &tallies, &shell_only, &Default::default(), 1).is_empty(),
+            "a reflection any carried rule was distilled from is never a cover pick — the \
+             row would charge that rule too"
+        );
+        let unrelated = vec![
+            refl("c-shell", &["shell"], false),
+            refl("g-shell", &["shell", "fs_read"], false),
+        ];
+        let out = cover_selection(&two, &tallies, &unrelated, &Default::default(), 1);
         let picks: Vec<(&str, &str)> = out
             .iter()
             .map(|(r, why)| (r.id.as_str(), why.as_str()))
             .collect();
-        assert_eq!(picks, vec![("c-shell", "rule r-sh2 in shell")]);
+        assert_eq!(picks, vec![("g-shell", "rule r-sh in shell")]);
         assert!(
             cover_selection(&flat, &tallies, &pool, &Default::default(), 0).is_empty(),
             "a zero budget adds nothing"

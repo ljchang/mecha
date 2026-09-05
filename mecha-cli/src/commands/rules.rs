@@ -550,7 +550,7 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
                         // or the record reads as though the ordinary
                         // threshold was met.
                         retired.retired_reason =
-                            Some(format!("{why} in the validation ledger{leash}"));
+                            Some(format!("{why}{leash}"));
                         retired
                     }
                     Verdict::Stands => unreachable!("filtered above"),
