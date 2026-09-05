@@ -380,8 +380,9 @@ phase alone makes the tool usable by hand.
    `bookings.rs`: every rule against one clock, each fires once, never
    after the fact.
 3. **`mecha` — the owner's half.** `mecha polls sweep` and `pick`; the
-   `/polls` monitor's lifecycle line and `p` key; the briefing and doctor
-   findings; the timer line; `publish_tools` and the onboarding docs;
+   `/polls` monitor's lifecycle line and `p` key; the timer line (a pick
+   card waiting is already the doctor's outbox-pending finding and the
+   briefing's outbox count, so no finding of its own was added); `publish_tools` and the onboarding docs;
    `website/docs/factory/polls.md`'s times-poll section rewritten around
    the five moments. Tests: the pick edits only the two time fields; a
    sent pick item closes the record; a rejected one resolves it.
