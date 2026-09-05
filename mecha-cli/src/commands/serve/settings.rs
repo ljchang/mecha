@@ -106,6 +106,11 @@ fn charter_state_blocking() -> Json<serde_json::Value> {
             "char_count": charter.char_count(),
             "over_budget": charter.over_budget(),
             "budget": mecha_core::charter::CHARTER_CHAR_BUDGET,
+            // The closed set of sensor kinds the form offers, with each
+            // unit's hint — served, so the select is the parser's list and
+            // not a copy in the page that drifts when a kind joins. No
+            // default kind and no default setpoint: the owner types both.
+            "sensor_kinds": mecha_core::charter::sensor_kinds_json(),
             // What the editor seeds a first charter from — the same
             // comments-only bytes the TUI's `e` writes, served so the two
             // surfaces cannot drift and the browser's first edit never

@@ -2706,10 +2706,20 @@ when touching it:
   kind and setpoint are harness-only (containment 2: every exposed number
   invites the model to reason about it); `mecha charter`, the TUI's detail
   view and the web editor show them, the prompt never does. The web editor
-  *carries* a sensor through a save and does not compose one — a serialiser
-  that dropped the table would delete the owner's sensor on the next re-rank,
-  which is why `charter.rs`'s web-editor sample and
-  `website/scripts/check-charter-toml.mjs` pin a sensored line.
+  *carries* a sensor through a save — a serialiser that dropped the table
+  would delete the owner's sensor on the next re-rank, which is why
+  `charter.rs`'s web-editor sample and
+  `website/scripts/check-charter-toml.mjs` pin a sensored line — and, since
+  2026-09-05, lets the owner **type** one: the author rule is about the
+  author, not the verb, so a form the owner fills is the owner authoring.
+  What keeps it that way is that the page proposes nothing — the select
+  opens on "choose a kind" over the closed set the server serves
+  (`charter::sensor_kinds_json`, never a copy in the page), the setpoint
+  field is empty, and the hint under it is `Unit::hint`, the same sentence
+  the parser's refusal uses, so a form and a rejection cannot disagree. A
+  half-filled sensor is named beside the line (`sensorProblems`) rather
+  than dropped silently by `serialize`, which writes no table for a sensor
+  without a kind.
 - **Attribution is by id, never by delta** (containment 6). `appraisal::
   of_session` maps each error's `Cite` to the store its pointer names —
   `Draft` to the outbox kinds, `Question` to `question_latency`, `Request` to
