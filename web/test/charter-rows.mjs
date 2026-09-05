@@ -24,7 +24,7 @@ const served = [
 
 const out = rows(served, next);
 assert.equal(out.length, 2);
-assert.deepEqual(out[0], { uid: 1, id: 'plain', text: 'No sensor.', sensor: null, reading: null });
+assert.deepEqual(out[0], { uid: 1, id: 'plain', text: 'No sensor.', sensor: null, reading: null, read_for: null });
 assert.deepEqual(out[1].sensor, { kind: 'outbox_age', setpoint: '24h' });
 assert.equal(out[1].reading.summary, '3d, past the 24h setpoint');
 assert.equal(out[1].reading.over, true);
