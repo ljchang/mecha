@@ -146,6 +146,24 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Do what a meeting poll is owed: mail each person their own link,
+    /// send the one nudge the sweep queued, and create the event for a
+    /// clean winner — from the owner's account, with everyone as attendee.
+    /// The mail-and-calendar half of `factory-publish polls sweep`, on the
+    /// same timer; it decides nothing. Idempotent against
+    /// `~/.mecha/mail/polls.jsonl`.
+    Polls {
+        /// The poll records. Defaults to `~/.mecha/factory/polls`.
+        #[arg(long)]
+        records: Option<std::path::PathBuf>,
+        /// The account to send and book from when a record names none.
+        /// Defaults to the configured default account.
+        #[arg(long)]
+        account: Option<String>,
+        /// Report what is due, doing nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Serve MCP over stdio (the default when no subcommand is given).
     Serve,
 }
@@ -217,6 +235,11 @@ async fn run(cli: Cli) -> Result<()> {
             account,
             dry_run,
         }) => bookings(requests, account, dry_run).await,
+        Some(Command::Polls {
+            records,
+            account,
+            dry_run,
+        }) => polls(records, account, dry_run).await,
         Some(Command::Serve) | None => mcp::serve(MailTools::load()?).await,
     }
 }
@@ -485,6 +508,319 @@ async fn cancel_drained(
     }
     if removed > 0 {
         println!("{removed} event(s) withdrawn");
+    }
+    Ok(())
+}
+
+/// One tick of the meeting polls' mail-and-calendar half.
+///
+/// Each job is checked against the ledger, done, ledgered, and written into
+/// the record — in that order, so a crash between any two steps is repaired
+/// by the next tick rather than repeated. One failed job stops only its
+/// own record: a bad address on one poll must not hold up another's
+/// booking.
+async fn polls(
+    records: Option<std::path::PathBuf>,
+    account: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    use mecha_mail::polls as pl;
+
+    let dir = match records {
+        Some(dir) => dir,
+        None => pl::records_dir()?,
+    };
+    if !dir.is_dir() {
+        println!("no poll records at {}; nothing to do", dir.display());
+        return Ok(());
+    }
+    let ledger = pl::ledger_path()?;
+    let _sweep = mecha_mail::bookings::lock_sweep(&ledger)?;
+    let entries = pl::entries(&ledger);
+    let done: std::collections::BTreeSet<_> = entries
+        .iter()
+        .map(|e| (e.poll_id.clone(), e.name.clone(), e.action.clone()))
+        .collect();
+    let (mut records, problems) = pl::scan(&dir)?;
+    for problem in &problems {
+        eprintln!("unreadable: {problem}");
+    }
+    // What the ledger says went but the record never learned — a tick that
+    // sent and could not write — is repaired first, over every record.
+    for record in records.iter_mut() {
+        if pl::reconcile(record, &entries) {
+            if dry_run {
+                println!("{}: record would catch up with the ledger", record.poll_id);
+                continue;
+            }
+            match pl::save(record) {
+                Ok(()) => println!("{}: record caught up with the ledger", record.poll_id),
+                Err(e) => eprintln!("{}: writing the record — {e:#}", record.poll_id),
+            }
+        }
+    }
+
+    let owed: Vec<(pl::PollRecord, Vec<pl::Job>)> = records
+        .into_iter()
+        .map(|r| {
+            let jobs: Vec<_> = pl::jobs_due(&r)
+                .into_iter()
+                .filter(|j| !done.contains(&pl::job_key(&r.poll_id, j)))
+                .collect();
+            (r, jobs)
+        })
+        .filter(|(_, jobs)| !jobs.is_empty())
+        .collect();
+
+    if dry_run {
+        for (record, jobs) in &owed {
+            for job in jobs {
+                match job {
+                    pl::Job::Invite(p) => {
+                        println!("{}: invite {} <{}>", record.poll_id, p.name, p.email)
+                    }
+                    pl::Job::Nudge(p) => {
+                        println!("{}: nudge {} <{}>", record.poll_id, p.name, p.email)
+                    }
+                    pl::Job::Book { start, end } => {
+                        println!("{}: book {start} – {end}", record.poll_id)
+                    }
+                }
+            }
+        }
+        if owed.is_empty() {
+            println!("nothing due");
+        }
+        return Ok(());
+    }
+    if owed.is_empty() {
+        println!("nothing due");
+        return Ok(());
+    }
+
+    let tools = MailTools::load()?;
+    let now = || chrono::Utc::now();
+    // Every failure's text, kept: the aggregate at the end carries them, so
+    // a revoked-token sentinel inside one still reaches `exit_code_for` —
+    // swallowed into a count, `mecha-mail polls` could never exit 77.
+    let mut errors: Vec<String> = Vec::new();
+    let stamp =
+        |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut failures = 0usize;
+    for (mut record, jobs) in owed {
+        let named = record
+            .account()
+            .map(str::to_string)
+            .or_else(|| account.clone());
+        // Two defaults, resolved only when a job needs each: a message leaves
+        // from the mail default like every other send in this crate, the
+        // event lands on the calendar default like every other booking — and
+        // a record with only invitations owed must not fail over an unset
+        // calendar default.
+        let needs_mail = jobs.iter().any(|j| !matches!(j, pl::Job::Book { .. }));
+        let needs_calendar = jobs.iter().any(|j| matches!(j, pl::Job::Book { .. }));
+        let resolve = |what: &str, r: Result<String, String>| match r {
+            Ok(name) => Ok(name),
+            Err(e) => Err(format!("no account to {what} from — {e}")),
+        };
+        let mail_from = if needs_mail {
+            resolve("send", tools.send_account_name(named.as_deref()))
+        } else {
+            Ok(String::new())
+        };
+        let calendar_from = if needs_calendar {
+            resolve("book", tools.create_account_name(named.as_deref()))
+        } else {
+            Ok(String::new())
+        };
+        let (mail_from, calendar_from) = match (mail_from, calendar_from) {
+            (Ok(m), Ok(c)) => (m, c),
+            (Err(e), _) | (_, Err(e)) => {
+                eprintln!("{}: {e}", record.poll_id);
+                errors.push(format!("{}: {e}", record.poll_id));
+                failures += 1;
+                continue;
+            }
+        };
+        let mut nudged: Vec<String> = Vec::new();
+        for name in pl::unresolvable_nudges(&record) {
+            eprintln!(
+                "{}: a nudge is queued for `{name}`, who is not on the record — not sent, \
+                 and kept in the queue",
+                record.poll_id
+            );
+        }
+        for job in &jobs {
+            let outcome: Result<()> = async {
+                match job {
+                    pl::Job::Invite(person) | pl::Job::Nudge(person) => {
+                        let is_nudge = matches!(job, pl::Job::Nudge(_));
+                        let life = record.lifecycle();
+                        let template = |key: &str, fallback: &str| {
+                            life[key]
+                                .as_str()
+                                .filter(|t| !t.trim().is_empty())
+                                .unwrap_or(fallback)
+                                .to_string()
+                        };
+                        let vars = record.vars(person);
+                        let subject = pl::render(&template("subject", pl::DEFAULT_SUBJECT), &vars);
+                        let subject = if is_nudge { format!("Reminder: {subject}") } else { subject };
+                        let body = pl::render(
+                            &if is_nudge {
+                                template("nudge", pl::DEFAULT_NUDGE)
+                            } else {
+                                template("invitation", "")
+                            },
+                            &vars,
+                        );
+                        anyhow::ensure!(
+                            !body.is_empty() && !person.url.is_empty(),
+                            "{} has no invitation text or no link; nothing to send",
+                            person.name
+                        );
+                        tools
+                            .send_mail_quiet(&mail_from, &person.email, &subject, &body)
+                            .await
+                            .map_err(|e| anyhow::anyhow!(e))?;
+                        let at = now();
+                        pl::append(
+                            &ledger,
+                            &pl::LedgerEntry {
+                                poll_id: record.poll_id.clone(),
+                                name: person.name.clone(),
+                                action: if is_nudge { "nudged" } else { "invited" }.into(),
+                                event_id: String::new(),
+                                account: mail_from.clone(),
+                                at: stamp(at),
+                            },
+                        )?;
+                        if is_nudge {
+                            nudged.push(person.name.clone());
+                        } else {
+                            pl::mark_invited(&mut record, &person.name, at);
+                        }
+                        println!(
+                            "✉ {}: {} {} <{}> from `{mail_from}`",
+                            record.poll_id,
+                            if is_nudge { "nudged" } else { "invited" },
+                            person.name,
+                            person.email
+                        );
+                    }
+                    pl::Job::Book { start, end } => {
+                        // Re-verify against live freebusy, as a booking is:
+                        // the poll ran for days, and the owner may have
+                        // accepted something into this slot meanwhile.
+                        let (s, e) = (
+                            chrono::DateTime::parse_from_rfc3339(start)?.with_timezone(&chrono::Utc),
+                            chrono::DateTime::parse_from_rfc3339(end)?.with_timezone(&chrono::Utc),
+                        );
+                        let (busy, partial) = tools
+                            .freebusy(start, end, None)
+                            .await
+                            .map_err(|e| anyhow::anyhow!(e))
+                            .context("re-verifying the winning slot")?;
+                        // `freebusy` returned Ok, so at least one account was
+                        // readable — an all-failed fan-out is its Err path,
+                        // propagated above. Same contract as the bookings
+                        // sweep's two call sites.
+                        match classify_partial(true, &partial) {
+                            PartialCoverage::SkipRevoked(revoked) => {
+                                for failure in &revoked {
+                                    eprintln!("WARNING: {failure} — revoked login skipped in the collision check");
+                                }
+                            }
+                            PartialCoverage::Defer(f) | PartialCoverage::AllRevoked(f) => {
+                                anyhow::bail!("refusing to book without full freebusy:\n{}", f.join("\n"));
+                            }
+                        }
+                        if mecha_mail::bookings::busy_overlaps(&busy, s, e) {
+                            let reason = "your calendar now has something at that time";
+                            pl::mark_conflict(&mut record, reason);
+                            pl::append(
+                                &ledger,
+                                &pl::LedgerEntry {
+                                    poll_id: record.poll_id.clone(),
+                                    name: String::new(),
+                                    action: "conflict".into(),
+                                    event_id: String::new(),
+                                    account: calendar_from.clone(),
+                                    at: stamp(now()),
+                                },
+                            )?;
+                            eprintln!(
+                                "CONFLICT: {} — {reason}; no event created, the pick is yours",
+                                record.poll_id
+                            );
+                            return Ok(());
+                        }
+                        let (title, description) = pl::event_text(&record);
+                        let attendees: Vec<String> =
+                            record.people.iter().map(|p| p.email.clone()).collect();
+                        let (account_name, event_id) = tools
+                            .create_event_with_attendees(
+                                Some(&calendar_from),
+                                &title,
+                                &description,
+                                start,
+                                end,
+                                &attendees,
+                            )
+                            .await
+                            .map_err(|e| anyhow::anyhow!(e))?;
+                        let at = now();
+                        pl::append(
+                            &ledger,
+                            &pl::LedgerEntry {
+                                poll_id: record.poll_id.clone(),
+                                name: String::new(),
+                                action: "booked".into(),
+                                event_id: event_id.clone(),
+                                account: account_name.clone(),
+                                at: stamp(at),
+                            },
+                        )?;
+                        pl::mark_booked(&mut record, &event_id, &account_name, at);
+                        println!(
+                            "✓ {}: booked {start} → event {event_id} on `{account_name}`, {} attendee(s)",
+                            record.poll_id,
+                            attendees.len()
+                        );
+                    }
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = outcome {
+                eprintln!("{}: {e:#}", record.poll_id);
+                errors.push(format!("{}: {e:#}", record.poll_id));
+                failures += 1;
+                // The next job on this record, not the next record: a dead
+                // address must not starve everyone sorted after it.
+                continue;
+            }
+        }
+        // The names that went leave the queue — whether or not another
+        // failed; a failed one stays due, and the ledger keeps the sent
+        // ones from repeating.
+        if !nudged.is_empty() {
+            pl::mark_nudged(&mut record, &nudged, now());
+        }
+        // A write that fails is this record's failure, counted like the
+        // others; the ledger already holds what went, so the next tick
+        // repairs the record rather than repeating the sends.
+        if let Err(e) = pl::save(&record) {
+            eprintln!("{}: writing the record — {e:#}", record.poll_id);
+            errors.push(format!("{}: writing the record — {e:#}", record.poll_id));
+            failures += 1;
+        }
+    }
+    if failures > 0 {
+        bail!(
+            "{failures} job(s) failed; the rest are ledgered and will not repeat:\n{}",
+            errors.join("\n")
+        );
     }
     Ok(())
 }

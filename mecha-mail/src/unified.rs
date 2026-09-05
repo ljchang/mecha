@@ -960,6 +960,14 @@ impl MailTools {
             .map(|p| p[0].name.clone())
     }
 
+    /// The account a plain message leaves from — the *mail* default, as every
+    /// other send in this crate resolves it, which may differ from the
+    /// calendar's.
+    pub fn send_account_name(&self, account: Option<&str>) -> Result<String, String> {
+        self.pick(account, Mode::Create(Surface::Mail))
+            .map(|p| p[0].name.clone())
+    }
+
     /// Create one event with typed arguments — the bookings handler's
     /// path, beside the tool's. Same account resolution (the default, or
     /// instructions to ask), same token machinery. With an attendee, the
@@ -978,8 +986,25 @@ impl MailTools {
         end: &str,
         attendee: Option<&str>,
     ) -> Result<(String, String), String> {
-        let account = self.pick(account, Mode::Create(Surface::Calendar))?[0];
         let attendees: Vec<String> = attendee.map(str::to_string).into_iter().collect();
+        self.create_event_with_attendees(account, title, description, start, end, &attendees)
+            .await
+    }
+
+    /// The same event, with everyone on it — a meeting poll's booking, where
+    /// every participant (the silent ones included) is an attendee and the
+    /// provider's invite is how each of them learns the time.
+    pub async fn create_event_with_attendees(
+        &self,
+        account: Option<&str>,
+        title: &str,
+        description: &str,
+        start: &str,
+        end: &str,
+        attendees: &[String],
+    ) -> Result<(String, String), String> {
+        let account = self.pick(account, Mode::Create(Surface::Calendar))?[0];
+        let attendees: Vec<String> = attendees.to_vec();
         let result = with_token(&account.manager, |t| {
             let (title, description) = (title.to_string(), description.to_string());
             let (start, end) = (start.to_string(), end.to_string());

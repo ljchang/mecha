@@ -2071,6 +2071,72 @@ not in `tools` warns on every start, like a routed name that matches nothing,
 because it means the tool executes unstaged while config reads as though it were
 under review.
 
+## The meeting poll lifecycle
+
+`docs/MEETING-POLL-UX-DESIGN.md` is the authority; the invariants a session is
+likely to trip over from outside:
+
+- **The record is the seam, and each verb writes only its own fields.**
+  `~/.mecha/factory/polls/<id>.json` carries a `lifecycle` block that three
+  timer verbs consume in turn — `factory-publish polls sweep` (observe, nudge,
+  close, verdict), `mecha-mail polls` (invitations, nudge, the booking),
+  `mecha polls sweep` (the pick card, and the decision folded back). The two
+  crates that are not `factory-publish` edit the record **through the JSON it
+  came from**, never through a struct of their own, because a typed round
+  trip drops whatever a newer writer added. Every field defaults on load.
+  **The invariant is the sequence**: the timer runs the three verbs one
+  after another on one `ExecStart` line, and each verb's tick is a whole
+  read-modify-write with no lock held across it. Defence in depth, for the
+  hand run that overlaps the timer: each verb **re-reads the file at write
+  time and merges in only the keys it changed** (`OWNED` in
+  `factory-publish`'s `lifecycle::save`; a `dirty` set on the two
+  `PollRecord`s), so a snapshot taken before a round of box calls or
+  provider sends does not write another verb's answers back over theirs —
+  a lost `invites` entry was a second invitation, a lost `booked` a second
+  calendar event. The merge narrows *which* keys are written, not the
+  window; a rename landing between one verb's re-read and its own rename
+  can still lose that verb's key, and the ledger and `adoptable_card` are
+  what repair it.
+- **`MECHA_HOME` reaches the shared store on both sides, and only there.**
+  `mecha polls` resolves the records through `work::mecha_home()`;
+  `mecha-mail polls` resolves the records *and its `polls.jsonl` ledger*
+  through its own `MECHA_HOME`-first helper, because the ledger that keeps
+  its sends from repeating must live in the same home as the records it is
+  about. The rest of `mecha-mail`'s stores — tokens, accounts, the bookings
+  ledger — still resolve through `dirs::home_dir()`, so an isolated home
+  isolates the poll store and nothing else in that crate.
+- **A pick card is nobody's draft.** It is staged through
+  `OutboxStore::stage_by_harness` with `Author::Harness`, and
+  `OutboxItem::writing_outcome` returns `None` for such an item — so a slot
+  swapped by `p` is never mined as a writing correction and an unswapped
+  release is never counted as a model drafting well. `Author` defaults to
+  `Model` on load, which is what every item before the field was. The same
+  field keeps the card out of `review_policy::staged_since`, so a card the
+  timer stages while a TUI run is in flight is never one of that run's
+  drafts — under `/review auto` it would otherwise have been released with
+  `--yes`, the meeting booked with no card drawn.
+- **No verb decides what another verb owns.** When a poll closes and what
+  wins are the factory sweep's; whether a message goes is the record's
+  (`invites[name]` is null); what a pick is loaded with is the owner's. A
+  clean winner that collides with the owner's live calendar at booking time
+  is written down by `mecha-mail polls` as `conflict` and nothing more — the
+  factory sweep reads it and turns the verdict into a pick over the full
+  ranking, with the collision named on its row. A
+  crash between a provider's answer and the record write is repaired by the
+  ledger (`~/.mecha/mail/polls.jsonl`), consulted before every send.
+- **The freebusy is the pipeline's, not a file the model wrote.** `slots
+  push` records what it saw, policy included, and `create_meeting` reads that
+  when handed nothing — which is what makes an outbox-routed create, executed
+  hours after it was staged, possible at all. The hour-old refusal is
+  unchanged and now names `mecha-slots.timer`.
+- **No mode books over a silent participant**, and an unrecognised
+  `auto_book` reads as `manual`. The pick is a real `calendar_create_event`
+  draft through the normal route; `mecha polls` refuses to stage one when
+  that tool is not outbox-routed, rather than staging a draft nothing
+  releases.
+- **The poll creates are `Message`-kind**, not publications (ruling 6 in the
+  design doc): the reviewable object is a letter in the owner's name.
+
 ## The work directory
 
 `~/.mecha/work/<producer>/` (`work.rs`, `mecha work`) is where a run's generated

@@ -127,7 +127,7 @@ tools = [
 ]
 publish_tools = [
   "factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish",
-  "factory__poll_create", "factory__poll_meeting_create", "factory__type_push",
+  "factory__type_push",
 ]
 ```
 
@@ -144,12 +144,15 @@ pushing a request type. Rendering is not — it is local, cheap and reversible, 
 making every iteration cost a human review is how a review queue stops being
 read.
 
-`poll_close` is routed but is deliberately **not** in `publish_tools`. Its
-`resolution` is prose somebody wrote that lands at the top of a public page, so
-it is exactly the kind of draft a person should be able to edit before release.
-The creation verbs are the other way round: their arguments are ids and file
-paths, editing one is not editing the draft, and mining a changed path as a
-writing lesson is a mistake mecha has a name for.
+The poll verbs are routed but deliberately **not** in `publish_tools`.
+`poll_close`'s `resolution` is prose somebody wrote that lands at the top of a
+public page, and a meeting poll's create carries the invitation each person
+will receive, in the owner's name — both are exactly the kind of draft a person
+should be able to read as prose and edit before release, and an unedited
+release of one is the writing signal it looks like. The bundle verbs and
+`type_push` are the other way round: their arguments are ids and file paths,
+editing one is not editing the draft, and mining a changed path as a writing
+lesson is a mistake mecha has a name for.
 
 ### A name that matches no tool is a warning, on every start
 

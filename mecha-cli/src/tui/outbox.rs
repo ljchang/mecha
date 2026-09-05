@@ -660,6 +660,8 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind) -> OutboxItem {
         OutboxItem {
+            output: None,
+            author: Default::default(),
             filled_defaults: Vec::new(),
             call_id: None,
             id: id.into(),

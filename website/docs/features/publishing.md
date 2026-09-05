@@ -26,9 +26,15 @@ tools = [
 ]
 publish_tools = [
   "factory__bundle_publish", "factory__bundle_alias", "factory__bundle_unpublish",
-  "factory__poll_create", "factory__poll_meeting_create", "factory__type_push",
+  "factory__type_push",
 ]
 ```
+
+The two poll creates are routed but **not** publications, on purpose: what
+the owner approves there is an invitation in their own name, so the card is
+reviewed as a message — readable as prose, editable, and its unedited release
+counted as the writing signal it is. A `publish`-kind card would lead with
+local paths that do not exist and refuse `edit` on the owner's own sentence.
 
 Fifteen tools, in four families:
 
