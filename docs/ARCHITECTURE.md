@@ -3479,11 +3479,18 @@ comparison over a chosen set**, with the design written before the run.
   charter degrades a run to un-chartered with one stderr line, §11.1's
   containment 7), and refused without a fixture server: a fixture owner's
   priorities over the operator's live world would appraise the wrong
-  owner. The fixture names are a term of the condition hash
-  (`condition_hash_of`, appended only when a manifest names any, so every
-  earlier hash keeps its value): a row that ran against a fixture board
-  ran on a different tool surface from one on the operator's, and the
-  two must not pair. **The home is rendered before position 0's
+  owner. The fixture names and the outbox route are terms of the
+  condition hash (`condition_hash_world`, each appended only when a
+  manifest names it, so every earlier hash keeps its value): a row that
+  ran against a fixture board ran on a different tool surface from one on
+  the operator's, and a world whose sends are staged is a different
+  treatment from one whose sends execute, so neither pairs across
+  experiments; a server's command, its seed and the charter's text stay
+  the manifest's to record. A position whose home could not be rendered
+  fails its row, asks the principal at neither point, and skips every
+  stage due after it — all as ledger lines carrying the render's reason,
+  so a resumed driver, which starts with no memory of the failure, reads
+  them as done and the judge holds (found on review, twice). **The home is rendered before position 0's
   `before_task` call** (`render_home`), or the first verb the principal
   asked for ran against a home with no `config.toml` — no board, no
   server — at the one position the fixtures were meant to be reachable

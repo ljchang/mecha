@@ -16,7 +16,10 @@ cast = [
 cast_threads = ["t-aurora-aims", "t-tal-draft", "t-rivera-budget", "t-mara-irb"]
 recipient_keys = ["to", "recipient", "channel", "cc", "bcc", "attendees"]
 # Release a draft to the cast when its tool is a fixture server's: the send
-# lands in the trial home's fixtures/mail/sent.jsonl, nowhere else.
+# lands in the trial home's fixtures/mail/sent.jsonl, nowhere else. A draft
+# with no recipient this policy can read — a calendar update or delete names
+# an event, not a person — is rejected, deliberately: unknown is never clean
+# on a gold verdict, so those two routed tools can only ever be rejected here.
 release = true
 
 [board]

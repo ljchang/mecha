@@ -1290,6 +1290,7 @@ impl Manifest {
         };
         let mut out = Vec::new();
         let fixtures = self.fixtures.names();
+        let route = self.fixtures.routed().to_vec();
         for (arm_name, arm) in &self.arms {
             let resolved = arm.resolve_levers().expect("validated at load");
             let stages = arm.resolve_stages().expect("validated at load");
@@ -1301,7 +1302,7 @@ impl Manifest {
                 task: task.clone(),
                 seed,
                 repetition: rep,
-                condition_hash: condition_hash_of(
+                condition_hash: condition_hash_world(
                     &resolved,
                     &arm.overrides,
                     provider,
@@ -1309,6 +1310,7 @@ impl Manifest {
                     seed,
                     &stages,
                     &fixtures,
+                    &route,
                 ),
                 status: TrialStatus::Pending,
                 session_id: None,
@@ -1482,6 +1484,36 @@ pub fn condition_hash_of(
     stages_off: &[StageLever],
     fixtures: &[String],
 ) -> String {
+    condition_hash_world(
+        levers_off,
+        overrides,
+        provider,
+        model,
+        seed,
+        stages_off,
+        fixtures,
+        &[],
+    )
+}
+
+/// [`condition_hash_of`] with the fixture world's outbox route as well: the
+/// route decides whether a fixture send is staged or executed, which is the
+/// treatment the release channel rests on, so two rows whose worlds route
+/// differently must not pair across experiments. The `route=` term is
+/// appended only when a manifest names one, so every earlier hash keeps
+/// its value. A server's command, seed and the charter's text stay out:
+/// they are the manifest's to record, and a path differs by machine.
+#[allow(clippy::too_many_arguments)]
+pub fn condition_hash_world(
+    levers_off: &[Lever],
+    overrides: &[String],
+    provider: &str,
+    model: &str,
+    seed: Option<u64>,
+    stages_off: &[StageLever],
+    fixtures: &[String],
+    route: &[String],
+) -> String {
     let mut overrides: Vec<&str> = overrides.iter().map(String::as_str).collect();
     overrides.sort_unstable();
     let mut canonical = format!(
@@ -1508,6 +1540,12 @@ pub fn condition_hash_of(
         let mut names: Vec<&str> = fixtures.iter().map(String::as_str).collect();
         names.sort_unstable();
         canonical.push_str("|fixtures=");
+        canonical.push_str(&names.join(","));
+    }
+    if !route.is_empty() {
+        let mut names: Vec<&str> = route.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        canonical.push_str("|route=");
         canonical.push_str(&names.join(","));
     }
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -4554,8 +4592,26 @@ seed = "seed"
         );
         let m = Manifest::parse(FIXTURED).unwrap();
         let rows = m.trials(&["a".into()], "p", "m");
-        assert_eq!(
+        let world = |route: &[String]| {
+            condition_hash_world(
+                &[],
+                &[],
+                "p",
+                "m",
+                None,
+                &[],
+                &["graph".into(), "mail".into()],
+                route,
+            )
+        };
+        assert_eq!(rows[0].condition_hash, world(&["mail__mail_send".into()]));
+        assert_ne!(
             rows[0].condition_hash,
+            world(&[]),
+            "the route is part of the world"
+        );
+        assert_eq!(
+            world(&[]),
             condition_hash_of(
                 &[],
                 &[],
@@ -4564,7 +4620,8 @@ seed = "seed"
                 None,
                 &[],
                 &["graph".into(), "mail".into()]
-            )
+            ),
+            "no route: the fixtures-only value"
         );
     }
 
