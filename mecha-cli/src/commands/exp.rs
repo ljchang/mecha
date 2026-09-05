@@ -861,10 +861,7 @@ async fn principal_call(
                 // confirms on a terminal the driver does not have, and the
                 // principal may not carry the flag itself (found on the
                 // design).
-                if act
-                    .verb
-                    .starts_with(&["outbox".to_string(), "approve".to_string()])
-                {
+                if mecha_core::experiment::is_release(&act.verb) {
                     let refusal = match mecha_core::experiment::release_named(&act.verb) {
                         Err(e) => Some(e),
                         Ok(named) => match release_target(
