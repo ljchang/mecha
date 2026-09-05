@@ -10,6 +10,13 @@
 > file rather than a neighbour — §5 is why. Issue #60 holds the
 > communication *policy* question; this file holds the instrument that would
 > measure any policy, and §8 is the only part specific to communication.
+>
+> **Part II (§13–§21) added 2026-09-03**, after the appraisal sprint
+> (PRs #140, #141, #147, #151), against `main` at `4a888ad`. It asks the
+> same instrument to measure the appraisal system and to ablate subsystems
+> one at a time, adds two trial kinds and a closed switch set, and reorders
+> §11's build so the appraisal questions — none of which need branching —
+> come first. Nothing in it is communication-specific; §8 still is.
 
 ---
 
@@ -541,3 +548,539 @@ we notice.*
 6. **Retention for snapshots.** Per-turn container images have no policy yet,
    and the work store's rule says a policy is required before the pile
    exists, not after.
+
+---
+
+# Part II — Ablation, lifetimes, and the appraisal experiments
+
+Added 2026-09-03. Part I designed an instrument around one programme —
+communication — and left the appraisal system as one more subsystem the
+instrument could in principle measure. This part asks what it would take to
+actually measure it, finds that the answer generalises (the same shape
+covers the learning loop, harness rumination, and any subsystem whose effect
+lands on a *later* run rather than on this one), and changes the build order
+accordingly. The store (D1), the gate (D4), the closed set (D5) and the
+always-on event record (D6) carry over unchanged; §14, §15 and §16 extend
+them.
+
+---
+
+## 13. Three questions, three units of analysis
+
+"Does the appraisal system improve the agent" is three questions with
+different experimental units, and an experiment that does not say which one
+it is asking will answer none of them.
+
+**Q1 — Is the instrument valid?** Does the readout (`appraisal::Valence`,
+`Appraisal::cut_short`, the per-channel signed errors, the `Homeostat`'s
+sensors) agree with an *independent* verdict about how a run went? The unit
+is one run with a ground-truth verdict. No ablation and no runner: it is a
+correlation over records that already exist. It is also the prerequisite
+for everything below — a readout that cannot tell a failed run from a clean
+one cannot improve anything downstream, and the live corpus cannot say
+whether it can (`APPRAISAL-RESEARCH.md` §1: 142 neutral of 143, no task
+ever closed `done`).
+
+**Q2 — Do the consumers change future runs for the better?** Everything the
+appraisal *does* acts across sessions. `worth_a_follow_up` stages a board
+item after a closure. Interventions become reflections (`reflect`, per
+`learning::Trigger`) and reflections become rules in the next run's cached
+prefix (`learn --auto`). The homeostat's aggregates enter the
+diagnostician's brief (`diagnose::Evidence`) and come out as config
+overrides (`harness ruminate`). Prioritised replay by |valence| (§3.9 of the
+appraisal review; a `feat/prioritised-replay` worktree exists at `main`
+with no commits) would decide which sessions those probes spend their
+budget on. None of it is visible inside the run it was computed from. The
+unit is a **lifetime**: an ordered sequence of runs sharing one store, with
+the loop's stages run between them. The dependent variable is the
+trajectory over the sequence, never a point on it.
+
+**Q3 — Do the in-run dispositions help?** Boredom, predictive compaction,
+step escalation, `compact_validate`, carried state, and the audit lane's
+plan re-injection and declared checks when they land. Each acts inside a
+run and is on or off per run. The unit is one run, paired by task and seed
+across arms — the shape `eval --ab-config` and `--ab-rules` already have.
+
+| question | unit | already exists | missing |
+|---|---|---|---|
+| Q1 validity | run + verdict | `appraisal::of_session`, `RunStats`, `Homeostat`; ~170 kept Terminal-Bench sessions with test-script verdicts (§17); 36 owner draft verdicts in the live outbox | the join between a session and its verdict, and the readout run over it |
+| Q2 consumers | lifetime | `MECHA_HOME` isolates a whole store (`work::mecha_home`); every loop stage is a CLI verb | the lifetime driver, the principal (§16), experiment-home admission (§14) |
+| Q3 dispositions | run, paired | `eval --ab-config`, `--ab-rules`, `-k`, `candidate::judge_with` | one switch per disposition, in one closed set, recorded (§15) |
+
+**Why frozen replay answers none of them.** `harness_probe` drops a
+divergent episode rather than scoring it, on the correct argument that
+replay answers from the recording. A disposition is behaviour-visible by
+definition — a nudge that changes no tool call cost its tokens for nothing —
+so every ablation of one diverges, and the regime that was built to grade
+config knobs cannot grade the thing being asked about. Ablations are live
+runs. (Part I §6 already inverts the predicate for communication, for the
+same reason from the other side: there divergence is the dependent variable.)
+
+---
+
+## 14. Trial kinds
+
+A trial is one of three shapes. The store, the manifest, the event record
+and the gate are shared; only the driver differs.
+
+- **`single`** — one run per (arm × task × seed × repetition). `eval`'s
+  shape with the switch set (§15) in place of eval's fixed forcings. Answers
+  Q3.
+- **`lifetime`** — one *home* per (arm × seed × repetition), an ordered task
+  sequence, and a **schedule** of loop stages between tasks: *after every
+  task, `reflect`; after every fifth, `learn --auto` then `validate`; after
+  every tenth, `harness ruminate`.* Sequence and schedule live in the
+  manifest; the store is
+  `~/.mecha/experiments/<exp>/trials/<trial>/home/`. Answers Q2.
+- **`ensemble`** — N actor processes, an isolated mailbox root, topology in
+  the schema: Part I §7–§8, unchanged. Communication.
+
+**D12. Isolation is the whole store, not the mailbox.** Part I isolated the
+mailbox root because that was the contamination `eval`'s `no_messages`
+guards. A lifetime trial runs `learn`, and a rule learned inside a trial that
+landed in `~/.mecha/learning/` would ride every real run's cached prefix
+from then on — a longer half-life than any injection the interlock guards
+against. So the runner sets `MECHA_HOME` to the trial's own home for every
+process it spawns, and **refuses to start if the resolved home is inside
+the real one** — `setup`'s rule for a workspace that contains the mecha
+home, applied to the store. The arm's config *is* the trial home's
+`config.toml`, written from the manifest, so nothing about an arm is
+ambient. Nothing in a trial home is ever copied back.
+
+**D13. A session in an experiment home is `SessionKind::Experiment`.**
+`runlog`'s default admission hides `SessionKind::Test`, so an experiment
+home whose sessions were all marked `test` would have a learning loop that
+reads nothing — and remembering `include_tests` at every reader the runner
+invokes is how counters go unread. The kind travels with the session, so a
+file that leaked into the real store is still hidden where it would
+contaminate, and admitted by default only where `MECHA_HOME` is an
+experiment home. `MECHA_SESSION_KIND=test` stays what it is: the mark for a
+hand smoke test against the real store.
+
+---
+
+## 15. The switch set: what an ablation is here
+
+An ablation is a subsystem that is **structurally absent** from a run —
+chosen by config, recorded on `RunConfig`, hashed into `condition_hash`,
+and never a sentence in a prompt. `force_reproducible` in
+`commands/eval.rs` is already that vocabulary: eleven `no_*` forcings, and
+a test that asserts each one *or a scorecard measures this machine*.
+`harness::OverrideKey` is the knob half. Three things are missing: most
+dispositions have no switch beyond `[agent] boredom` and
+`[agent] step_escalation`; the loop's stages have no switch because nothing
+ever ran them under an experiment; and no record says which switches a run
+carried except by the absence of their effects.
+
+**D14. One closed set of levers, beside the closed set of knobs.** `Lever`
+is on/off; `OverrideKey` carries a value; both are recorded on `RunConfig`
+and both are what D5's "an arm may only vary the closed set" now means.
+`eval`'s forcings become *every lever off except the two eval allows as
+opt-in* (`--mcp`, `--ab-rules`), expressed over the set by the same
+function, so `eval` and `exp` cannot disagree about what "bare" means. An
+unknown lever name in a manifest is a load error, never a skipped line.
+
+Per-run levers:
+
+| lever | today's spelling | what turning it off removes |
+|---|---|---|
+| `learned_rules` | `--no-learned-rules` | the rules block from the cached prefix |
+| `charter` | `--no-charter` | the charter block |
+| `skills` | `--no-skills` | the level-1 skill block |
+| `boredom` | `[agent] boredom` | the in-run notice (`boredom::NOTICE_STEM`) |
+| `step_escalation` | `[agent] step_escalation` | the quarantined revise-the-step pass |
+| `predictive_compaction` | **none** — `pressure.rs` has no off | compacting on the *forecast* of the next request; the threshold stays, because a lever may only remove a disposition above a structural check, never the check (`GOAL-SYSTEM-DESIGN.md` §7.3) |
+| `compact_validate` | `[agent] compact_validate` | the summary check |
+| `carried_state` | **none** — `Tool::carried_state` is unconditional | the plan block surviving compaction |
+| `plan_reinjection` | unbuilt (`AUDIT-RESEARCH.md` §3.11 arm 1) | the periodic re-read |
+| `declared_checks` | unbuilt (arm 2's executor) | the harness running a step's `check` |
+| `appraiser` | `--appraise` on the readout only | the quarantined appraiser pass, wherever it is invoked |
+
+**As built** (`harness::Lever`, 2026-09-04): the closed set is fifteen, not
+the table's eleven — it also carries the seven `force_reproducible` throws
+that the table lacked and D14's equivalence needed: `mcp`, `hooks`,
+`outbox`, `fallback`, `messages`, `compact_tool`, and `approval_rules`,
+which `Lever::bare` never throws (eval lifts it by its own explicit line,
+and a manifest refuses it in either direction). `plan_reinjection`,
+`declared_checks` and `appraiser` are not levers until their switch
+exists. The stage levers as built are `reflect`, `learn`, `validate`,
+`retire`, `ruminate` and `sensors_in_brief` (`experiment::StageLever`).
+
+Loop-stage levers, `lifetime` only:
+
+| stage lever | verb | what turning it off removes |
+|---|---|---|
+| `reflect:<trigger>` | `reflect`, per `learning::Trigger` | one trigger's reflections — the way the follow-up channel (86% of live interventions, never counterfactually probed) gets its first measurement |
+| `learn` | `learn --auto` | consolidation into rules; reflections are still mined |
+| `validate` | `validate` | the probes, probation release, retirement |
+| `ruminate` | `harness ruminate` | config overrides |
+| `followup_staging` | `tasks set` → `worth_a_follow_up` | the board item after a closure |
+| `prioritised_replay` | unbuilt | the \|valence\| ordering; the arm without it draws uniformly, which is `sample.rs` as it stands |
+| `sensors_in_brief` | **none** | the homeostat's and guilt's entry into `diagnose::Evidence` |
+
+**"The whole system off" is the bare arm, and it already exists** — it is
+what `mecha eval` runs. The appraisal *readout* is a pure function of the
+record and cannot be ablated; nor need it be, since it changes nothing by
+being computed. "Appraisal off" is therefore a **preset over levers** — every
+consumer off — and the manifest names presets as such, never as a lever, or
+a reader a month later cannot tell what was actually absent.
+
+**Designs, in order of what they can show.** Full-versus-bare first: the
+effect size that says whether any of this is worth its tokens. Then
+leave-one-out from full, because the audit's non-additivity note applies —
+four re-check mechanisms already stack, and a fifth measured alone against
+bare can read positive while adding nothing to the stack. Add-one-to-bare
+only for a lever with a prior worth testing in isolation (plan re-injection
+is the one replicated positive in the literature). A full factorial over
+these levers is tens of thousands of arms; the manifest should refuse a
+design whose arm count cannot be paired at the gate's minimum within the
+declared budget, rather than run a fraction of it and report the fraction.
+
+---
+
+## 16. The principal simulator
+
+The appraisal's richest channels are the owner's: a rejected draft, an
+edited one, a steer, a denial, a closure. In the live store that is 36
+draft verdicts and zero closures in a month, and every one of them was the
+owner's real time. An experiment that waits for them has no N.
+
+τ²-bench's answer, adopted: a *simulated user* in the loop, with the task
+graded on end state rather than on the conversation. Here it is the
+**principal** — an actor that plays the owner for a lifetime trial: closes
+tasks, releases or rejects drafts, edits, steers, answers questions. Three
+rules:
+
+1. **Verdicts come from gold wherever gold exists, and from a model only
+   where it does not.** A task with a `verify` command is closed `done` when
+   the command passes and `dropped` when the budget is spent. A draft is
+   rejected when a deterministic check on it fails — it names the wrong
+   date, it is addressed to nobody on the fixture cast — and released
+   unchanged otherwise. An edit is a scripted diff. The model-driven
+   principal (τ²'s shape: a persona and hidden information) is the *second*
+   version, for channels no check can express — tone, usefulness — and its
+   variance is a recorded confound, the way the ruminate judge's correlation
+   with the model under test is a recorded one.
+2. **It is a separate process, writing through the owner's own verbs**
+   (`tasks set`, `outbox approve|reject|edit`, `questions answer`), on D3's
+   argument and one more: the appraisal then reads exactly the records it
+   would read from a person, through the same stores. It never writes a
+   session, a reflection or a rule.
+3. **Its interventions classify `Origin::Clean` inside the trial home, and
+   that is the point.** The learning loop treats them as the owner's, and
+   the experiment is asking whether the loop learns from an owner. It is
+   also why D12 is not negotiable: the same interventions against the real
+   home would be a machine authoring the owner's corrections, which is the
+   one thing the charter rule and the provenance gate exist to prevent.
+
+**It drives the CLI, and nothing else.** Every owner channel already has a
+headless verb, because delegated board tasks needed one: the principal
+hands each task to the agent with `mecha tasks work`, closes it with
+`tasks set --status`, redirects it with `tasks steer` (the run marker's
+steer file, which the loop drains exactly once), stops it with
+`tasks stop`, answers a parked question with `questions answer`, and
+judges drafts with `outbox approve|reject|edit` (`edit` honours `$EDITOR`,
+so a scripted editor applies the diff). It reads through `--json`. Those
+runs record as `SessionKind::Task`, the surface the appraisal was built
+for. The TUI is ruled out by its own design — steering there needs one
+owner of stdin and a pty with a size — and Slack and the web surface are
+owner conveniences with nothing the principal needs. **The one channel
+with no headless path is denial**: `Ask` prompts a terminal, `Allow` never
+denies, and a `pre_tool` hook that refuses renders as "Blocked by a hook",
+which is by design never mined as a correction. A principal that denies
+needs an approver that reads its decision from a file the runner owns, on
+the steer file's shape — the only new mechanism the gold-verdict principal
+requires.
+
+What it makes measurable for the first time: `Channel::Commitment` (a board
+task with a `due_at` the principal set), guilt's delta (a backlog the
+principal grows and clears), the follow-up staging gate (closures happen),
+the `Edit` trigger at volume, and the appraiser's yield against a known
+verdict.
+
+---
+
+## 17. Datasets, by the question each answers
+
+What makes a task good *for appraisal* is not what makes it good for a
+model bake-off. Two properties. First, the outcome must sometimes be
+**invisible to the counters**: a run that ends cleanly on a successful call,
+under budget, without compaction, and is wrong. That is the case
+`GOAL-SYSTEM-DESIGN.md` §8.2 says only affect-prioritised replay can reach,
+and a dataset with none of them cannot test the claim. Terminal-Bench has
+them by construction — a test script fails a run the model declared done —
+and the bake-off cases mostly do not, because a substring grader and a
+clean stop cause tend to agree. Second, **the ceiling must have a truth**:
+`cut_short` says the run was cut off, and only a task with a known
+solution length can say whether cutting it off lost anything.
+
+Ranked:
+
+1. **The kept Terminal-Bench sessions.** About 170 session files under
+   `jobs/mecha-arm64-subset/<run>/<task>__<id>/sessions/`, from four runs
+   between 2026-08-07 and 2026-08-11, with Harbor's per-trial verdict beside
+   each. **Q1, offline, today, zero model calls**: run `of_session`, the
+   counters and the homeostat over each, join to the verdict, and report
+   discrimination per channel and for `Valence`; then the appraiser's
+   marginal yield (§3.10 of the appraisal review) on a subset. Caveat:
+   recorded by the 0.1.2–0.1.6 loop, so fields that did not exist read
+   `None` — the correct reading, never to be filled in.
+2. **`eval/cases.jsonl`** — 36 cases, 15 tags, deterministic graders, a
+   minute or two each. Q3 at k=5: the per-run levers, paired. Too small and
+   too clean for Q2.
+3. **A Terminal-Bench subset as a lifetime sequence** — twenty tasks in a
+   fixed order, about four hours per lifetime at the measured rate, a
+   container per task (regime 2 for free, since the container *is* the
+   environment). Q2 for the coding channels: do the intervention rate, the
+   tool-error rate and the pass rate move over the sequence with `learn` on
+   versus off. The principal is trivial here: the test script is the
+   closure.
+4. **A synthetic assistant home** on the fictional cast — mail and calendar
+   fixtures, a board with due dates, an outbox, a charter — the environment
+   the owner channels need and the one nothing in the repo has (the docs
+   site's fixture-backed demo, PR #117, is the nearest seed;
+   `eval/fixtures/` holds workspaces, not homes). Q2 for commitment, guilt,
+   charter and follow-up staging; needs the principal. This is the dataset
+   to *build*, and the one only this project can.
+5. **AgentDojo** — the interlock's false-refusal cost beside its catch rate.
+   A lever set that changes `blocked_sends` is a different experiment, and
+   this is the dataset that prices it.
+6. **The live corpus** — observational only, and the calibration target for
+   the synthetic home: if the principal's rejection rate and the owner's
+   differ by an order of magnitude, the synthetic home is measuring a
+   different owner.
+
+---
+
+## 18. Metrics and analysis
+
+- **Every metric is lower-is-better** (D4), and **no appraisal quantity is
+  ever an objective** (`GOAL-SYSTEM-DESIGN.md` §8.3). Valence, labels,
+  guilt and boredom notices enter a trial record as *covariates*, and as
+  Q1's *predictions*; the gate never sees one as a cost. The reason is the
+  null run: an agent graded on its own appraisal optimises the appraiser.
+- **Q1**: discrimination (AUROC) and calibration per channel against the
+  verdict; the appraiser's added yield over the deterministic record.
+- **Q2's primary outcome is the correction rate over the lifetime** —
+  interventions per run, by trigger, against position in the sequence —
+  which `learning-report` already computes for the real store. Secondary:
+  pass rate and the `Metric` set per position. Report the **slope**, paired
+  across arms by position, not the mean: a loop that learns has a slope, a
+  loop that does not has a mean. Cost includes the loop's own tokens
+  (`reflect`, `learn`, the probes) — a lifetime arm that learns slightly and
+  pays a night's replay every five tasks has a cost the single-run number
+  hides.
+- **Q3**: pass^k at k ≥ 5, paired by (task, seed), the gate's counts. The
+  seed trap `eval` records applies: a pinned seed at `-np 1` replays
+  token-for-token, so repetitions vary the seed and record it.
+- **N.** The gate's floors — eight paired episodes in the selection slice,
+  four in the holdout — are the minimum. A lifetime is one episode per
+  *position*, so five lifetimes of twenty tasks pair a hundred points per
+  arm, enough for a slope. At the measured rates, Q3 over the bake-off set
+  is about six hours per arm at k=5 (36 cases × 5 runs × ~2 min), and one Q2 lifetime pair about
+  forty. Nightly-scale, which is why the runner must resume per trial (the
+  trigger runner's `.running` marker and pid-range check, unchanged).
+- **Confounds** are §9's, plus one: **the loop's stages are model calls on
+  the same server**, so an arm with `learn` on contends for slots with the
+  task runs and its wall clock differs for a reason that is not the
+  treatment. Stages run between tasks, never beside them.
+
+---
+
+## 19. What this changes in the build order
+
+§11 ordered observability → branching → snapshot → runner → analysis,
+because branching is the substrate for message interventions. The appraisal
+questions need none of that: Q1 needs no code, Q3 needs the switch set, Q2
+needs the lifetime driver and the principal. The order becomes:
+
+- **0 — Q1 offline**, on the kept sessions. A script over existing readers
+  (in `scripts/`, on `build-eval-fixtures.py`'s precedent); the result goes
+  into `APPRAISAL-RESEARCH.md` beside its §1 table. **If the readout has no
+  discrimination, stop here and fix the readout** before spending a
+  lifetime on its consumers.
+- **A — Observability**, unchanged, plus `RunConfig` recording the lever
+  set and `SessionKind::Experiment`.
+- **A′ — The switch set.** `Lever`; the per-run switches that are missing
+  (`predictive_compaction`, `carried_state`, `appraiser`, `sensors_in_brief`);
+  `force_reproducible` re-expressed over the set with its test intact.
+- **D₁ — `mecha exp` with `single` and `lifetime`.** The store, the
+  manifest, the isolated home, the stage schedule, resume. Delivers Q3 and
+  the coding half of Q2.
+- **P — The principal**, gold-verdict version, and the synthetic assistant
+  home. Delivers the owner half of Q2.
+- **B, C, D₂, E** as in §11 — branching, snapshot, `ensemble`, analysis.
+  Communication starts here and inherits the store, the levers and the
+  gate.
+
+**Status, 2026-09-05.** 0, A, A′, D₁ (`mecha exp single|lifetime`, PRs
+#157–#178) and P (the gold-verdict principal under §21.1's contract, #185)
+are on main. Two channels the principal names are gated off it until a
+manifest can name fixture servers: release (`outbox approve` executes the
+routed tool for real, and a `full` arm carries the operator's live servers)
+and board closure (the board is the graph's over MCP). B, C, D₂ and E
+remain.
+
+Each step is useful alone, which is still the test of whether the split is
+real: step 0 is a finding by itself, A′ makes today's `eval` honest about
+what it forces, D₁ is a runner other subsystems (the learning loop, harness
+rumination) can be ablated under without anything in P.
+
+---
+
+## 20. Open, and named so it is not rediscovered
+
+- **One enum or two.** `Lever` and `OverrideKey` as one set is D5's
+  spirit; a value-carrying knob and an on/off switch validate differently,
+  and `ConfigChange` already carries a value. Undecided; the recorder is
+  shared either way.
+- **The model-driven principal.** Which model, whether its persona is part
+  of the manifest (it must be, for the artifact to be recoverable), and
+  whether a principal driven by the model under test is the confound the
+  gold version exists to avoid or an acceptable one on the ruminate judge's
+  precedent.
+- **Real scripts or bare verbs for the stages.** `ruminate.sh` carries
+  policy (`validate --unprocessed-only` *before* `learn`, so rules are not
+  graded on their own training data); the verbs are what a lever switches.
+  Probably the verbs, with the script's ordering restated in the manifest
+  schema and a test that the two agree.
+- **Retention for lifetime homes.** Each is a full store. Small at this
+  scale; the work store's rule says a policy before the pile.
+- **Where the synthetic assistant home lives, and who maintains the cast.**
+  The no-real-people rule makes it a fixture that has to be authored, not
+  sampled.
+- **Whether Q1's join belongs in `mecha sessions appraise`** as a
+  `--verdicts <file>` that reports discrimination, or stays a script. A
+  flag makes the validity check repeatable on every corpus; a script keeps
+  the readout's surface from growing a grader.
+
+---
+
+## 21. Where the pieces live — proposed 2026-09-03; the principal's contract ruled 2026-09-04, the rest not yet
+
+Spitballed with the owner the same day Part II was written; recorded so
+the split is argued once.
+
+**The rule.** Anything the harness must *trust or refuse* lives in mecha;
+anything that only *reads* mecha's artifacts or *plays a role outside* the
+loop lives in a separate scaffolding repository. That is §0's premise
+stated as a boundary: an experiment is analysable from artifacts alone, so
+the artifacts are the only interface.
+
+| in mecha | in the scaffolding repo |
+|---|---|
+| `Lever` and its recording on `RunConfig`; `SessionKind::Experiment`; `Record::Event`; the isolated-home refusal (D12); the file-driven approver (§16); `mecha exp`'s core — manifest and trial store, spawn/resume, the stage schedule, `judge` over the gate | task adapters (Terminal-Bench via Harbor, AgentDojo); the principal; the synthetic assistant home and its fake mail/calendar MCP server; analysis past the gate's counts (discrimination, slopes, pass^k); the dashboard. Python, as `bench/mecha_agent.py` and the MCP fixtures already are; `bench/` likely migrates |
+
+A trial record a script could fabricate is not evidence, which is why the
+store's only writer is the binary. **The checkable rule, on
+`mecha-slack`'s precedent: the scaffolding never links `mecha-core`.** It
+drives mecha through the CLI with `--json` and reads the experiment store's
+files; anything it needs beyond that is a missing `mecha exp` verb, never
+an import.
+
+**The dashboard is the scaffolding's, not `mecha serve`'s.** The web
+surface is the owner's page against the real home, and a launch-arms
+control beside the outbox is the wrong neighbour. Svelte 5 runes, tailnet
+only, every mutation a child `mecha exp` process (`/tasks`' rule). Screens:
+experiments with manifest, arms, status and budget; a live trial view (run
+markers, turn and token counts, the session tail, the event timeline); arm
+comparison with the gate's tally and §9's confound panel (compactions per
+arm, `-np`, `n_ctx_slot`, `/props` alias); probe logs per lifetime stage;
+a transcript viewer over session JSONL (chain comparison once §5 lands);
+export as a zip of trial homes plus manifest and results.
+
+**HyperStudy** (the owner's human/agent experiment platform) was weighed
+and kept separate. Its data model matches — experiment, roles, rooms of
+two to five participants, variables, export, analytics, and LLM agent
+participants through `hyperstudy-agent`'s llama-server endpoint; a room is
+the `ensemble` kind — but its runtime is a browser, LiveKit and Firebase
+around synchronised media, which a trial of headless processes writing
+JSONL would carry for nothing. Two things borrowed: its vocabulary, so the
+manifest maps one-to-one and a later bridge is cheap; and the bridge
+itself, which already exists — `mecha voice-serve` is an OpenAI-compatible
+chat endpoint over the agent loop, the contract `hyperstudy-agent`
+verifies, so mecha can be a HyperStudy participant in human-plus-agent
+coordination studies without any work on this side.
+
+### 21.1 Who drives a lifetime, and what a task is — the principal half ruled and built (2026-09-04, #185); the task-source half still the recommendation
+
+**Recommendation: mecha owns the trial; the scaffolding owns the task
+source and the principal, as executables mecha spawns.** `mecha exp run`
+drives a lifetime — isolated home, task order, stage schedule, resume,
+records — because those are what make the trial's artifacts trustworthy
+and they should be recorded by the same binary that enforces them. The
+two things it cannot know are plugged in through a contract, on
+`hooks.rs`'s shape (a command at a lifecycle point, JSON in and out,
+fail-closed):
+
+- a **task source**: `list`, `setup <task> <workspace>`, `grade <task>` →
+  `{passed, detail}`;
+- a **principal**: `act <trial-state>` → the verbs it ran.
+
+Against the alternative — a Python orchestrator that calls `mecha run`
+per task — the costs are honest: Rust iterates slower than Python for
+experiment logic, and the Terminal-Bench backend means mecha spawning a
+container with mecha inside it (the outer is the experimenter, the inner
+the subject; the home is a mounted volume). The Python orchestrator's
+costs are the ones §21's rule exists for: trial records a script can
+write, a stage order the harness never recorded, and a second
+implementation of resume, markers, permits and the isolation refusal —
+the silently-degrading-guard shape, in a language with no compiler to
+find the sites. `permit.rs` is the concrete reason: stages and task runs
+must not contend for llama-server seats (§18), and the seats are mecha's.
+
+This also settles Part I's open question 1 for the appraisal work:
+**mecha drives, and Harbor's runner is used only for leaderboard
+submissions** (`bench/`), where the benchmark must drive for
+comparability. Two drivers, one task format.
+
+**The task format is Harbor's, and the trace graders are mecha's.** There
+is no standard eval interface; there are two de-facto ones for agents and
+everything else is bespoke. Harbor's task directory — `instruction.md`,
+`task.toml` (timeouts, resources, `[environment] mcp_servers`),
+`environment/Dockerfile`, `tests/test.sh`, `solution/` — is the one the
+Terminal-Bench leaderboard runs and the one other terminal datasets are
+being ported to. Inspect AI (`inspect_evals`) is the more general one —
+dataset, solver, scorer, docker sandboxes, dozens of benchmarks including
+AgentDojo — but its agent is a Python solver or a bridge to one, so it
+stays an adapter target (`BENCHMARK-RESEARCH.md`), not the base format.
+τ²-bench, SWE-bench, BFCL and HAL each carry their own.
+
+So: **our own tasks are written in Harbor's format**, which makes them
+runnable by Harbor against other harnesses (little-coder, Terminus) on
+the same model with no extra work — the only payoff of a standard worth
+having here — and by `mecha exp` for lifetimes. `task.toml`'s
+`mcp_servers` is exactly where the synthetic assistant home's fake mail
+and calendar servers are declared, and `tests/test.sh` grades store state
+through `mecha … --json` inside the container. `eval/cases.jsonl` stays
+for what no public format has — assertions on the *trace*: tools called
+and in what order, arguments, `no_tools`, stop cause, taint,
+`blocked_sends`, `min_compactions`, `ended_on_failed_call` — and the
+scaffolding carries one grader that applies the same `expect` block to
+any session JSONL, so a Harbor task can carry trace expectations beside
+its test script. The task source reads both.
+
+### 21.2 AgentDojo is an MCP server away, and it is the assistant environment's seed
+
+Checked 2026-09-03 against its documentation. A suite is a `TaskSuite`
+over a pydantic `TaskEnvironment` loaded from `environment.yaml` with
+injection placeholders; tools are typed Python functions with `Depends`
+for state, executed by `FunctionsRuntime.run_function(env, name, args)`;
+a user task grades with `utility(pre, post, output)` and an injection task
+with `security(pre, post)`. Nothing requires its agent pipeline. So the
+adapter is **one Python MCP server** wrapping a loaded environment —
+schemas from the type hints, one process per task, connected to mecha as
+an untrusted server on `mcp.rs`'s ordinary path so the interlock sees
+exactly what it would see in production — and a task source whose
+`grade` calls the two functions on the end state. That is the second
+task-source backend beside Harbor, and the only one AgentDojo needs.
+
+The larger consequence: the **workspace suite is a synthetic mail,
+calendar and drive environment with fictional data by construction**, and
+its injection vectors are the third-party content the trifecta design is
+about. §17's item 4 — the synthetic assistant home — should start from it
+rather than from a fixture written by hand: AgentDojo's environment
+served over MCP for the world, mecha's own stores in the trial home
+(board, outbox, questions, charter) for the owner channels. Its tool
+schema differs from `mecha-mail`'s, which is a recorded condition, not a
+problem: the appraisal's owner channels never read a mail tool.
