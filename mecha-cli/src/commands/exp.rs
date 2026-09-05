@@ -896,16 +896,24 @@ async fn principal_call(
     if point == PrincipalPoint::AfterTask {
         match mecha_core::experiment::read_denials(home) {
             Ok(rules) if !rules.is_empty() => {
-                let session_text = trial
-                    .session_id
-                    .as_ref()
-                    .and_then(|id| {
-                        std::fs::read_to_string(home.join("sessions").join(format!("{id}.jsonl")))
-                            .ok()
-                    })
-                    .unwrap_or_default();
-                run.refusals = mecha_core::experiment::refusal_outcomes(&rules, &session_text);
-                for r in run.refusals.iter().filter(|r| r.fired == 0) {
+                // A session that cannot be read is unknown, never zero: a
+                // child that crashed after the model's turns may have
+                // walked into every refusal, and the line fails rather
+                // than claim it did not (found on review).
+                let session_text = trial.session_id.as_ref().and_then(|id| {
+                    std::fs::read_to_string(home.join("sessions").join(format!("{id}.jsonl"))).ok()
+                });
+                run.refusals =
+                    mecha_core::experiment::refusal_outcomes(&rules, session_text.as_deref());
+                if session_text.is_none() {
+                    run.status = StageStatus::Failed;
+                    let note = "the task's session could not be read, so the refusals' firings are unknown".to_string();
+                    run.error = Some(match run.error.take() {
+                        Some(prior) => format!("{prior}; {note}"),
+                        None => note,
+                    });
+                }
+                for r in run.refusals.iter().filter(|r| r.fired == Some(0)) {
                     eprintln!(
                         "  ↳ the scripted refusal of `{}` ({}) never fired at position {position}",
                         r.tool, r.reason
