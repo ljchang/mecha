@@ -99,6 +99,222 @@ pub struct Manifest {
     /// carries none.
     #[serde(default)]
     pub schedule: Schedule,
+    /// A `lifetime`'s principal (Part II §16, §21.1): an executable the
+    /// driver calls before and after each task with the trial's state on
+    /// stdin, answering with the owner's verbs to run and the refusals to
+    /// script. The driver runs the verbs — through `mecha` against the
+    /// trial home, from a closed set — and records every act on the
+    /// lifetime's ledger, so the principal is pure and the record is the
+    /// driver's. A `single` refuses one.
+    #[serde(default)]
+    pub principal: Option<Principal>,
+}
+
+/// The principal's contract, on `hooks.rs`'s shape: a command at a
+/// lifecycle point, JSON in and out, fail-closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Principal {
+    /// The executable and its arguments. Runs from the lifetime's scratch
+    /// workspace with the run child's environment allowlist, so name it by
+    /// an absolute path or a command on `PATH`.
+    pub command: Vec<String>,
+    /// Bounds the principal's answer and, separately, each verb the driver
+    /// runs for it — a verb that resumes the parked run is a model run
+    /// with no ceiling of its own.
+    #[serde(default = "principal_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn principal_timeout() -> u64 {
+    600
+}
+
+/// Where in a position the principal is being asked to act.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrincipalPoint {
+    /// Before the task's run: the principal may script refusals for it.
+    BeforeTask,
+    /// After the task ran and was graded, before the loop's stages: the
+    /// principal judges what the run left — drafts, questions — and closes
+    /// what gold closes.
+    AfterTask,
+    /// A point this build cannot name, read off a ledger a later build
+    /// wrote: the line stays readable. Every unknown point shares this one
+    /// identity in `stage_health`, so two points a later build adds at one
+    /// position read as one pair to this build — a limit, stated rather
+    /// than mechanised, since it bites only an older build on a newer
+    /// ledger. Never constructed here, never called at.
+    #[serde(other)]
+    Unknown,
+}
+
+impl PrincipalPoint {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PrincipalPoint::BeforeTask => "before_task",
+            PrincipalPoint::AfterTask => "after_task",
+            PrincipalPoint::Unknown => "unknown",
+        }
+    }
+}
+
+/// What the driver hands the principal on stdin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrincipalInput {
+    pub point: PrincipalPoint,
+    pub experiment: String,
+    pub lifetime: String,
+    pub arm: String,
+    pub position: u32,
+    pub home: PathBuf,
+    pub workspace: PathBuf,
+    /// The eval case at this position, whole: its prompt, its
+    /// expectations (a `verify` command is gold), its tags.
+    pub case: crate::eval::EvalCase,
+    /// After the task: the graded row. `None` before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial: Option<Trial>,
+    /// What the run left staged in the trial home's outbox, still pending.
+    #[serde(default)]
+    pub pending_outbox: Vec<crate::outbox::OutboxItem>,
+    /// Questions the run parked and nobody has answered.
+    #[serde(default)]
+    pub open_questions: Vec<crate::questions::Question>,
+}
+
+/// What the principal answers with.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrincipalOutput {
+    /// The owner's verbs to run, as `mecha` argv after the binary — from
+    /// the closed set `allowed_verb` names, in order.
+    #[serde(default)]
+    pub acts: Vec<PrincipalRequest>,
+    /// Refusals to script for the task about to run (`before_task`):
+    /// written to the trial home's denials file, which the run child's
+    /// approver reads ahead of its own answer.
+    #[serde(default)]
+    pub deny: Vec<crate::tool::DenialRule>,
+}
+
+/// One verb the principal asks for: what it answers with. Strict — an
+/// exit code or a verdict on it is the driver's alone, and a principal
+/// that claims one is off the contract.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PrincipalRequest {
+    pub verb: Vec<String>,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// One verb as the ledger records it: the request, plus how the driver's
+/// run of it went. A separate type from the request on purpose — a single
+/// type that refused the driver's own fields on read made every line with
+/// an act unreadable, torn on the ledger and invisible to `stage_health`
+/// (found on review).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrincipalAct {
+    pub verb: Vec<String>,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+}
+
+impl From<PrincipalRequest> for PrincipalAct {
+    fn from(r: PrincipalRequest) -> Self {
+        PrincipalAct {
+            verb: r.verb,
+            reason: r.reason,
+            exit_code: None,
+            ok: None,
+        }
+    }
+}
+
+/// The owner's verbs a principal may run, by their leading words — the
+/// channels §16 names, and nothing that writes a session, a reflection or
+/// a rule. A verb outside the set is the principal's error, recorded and
+/// never run.
+/// **Release is not here.** `outbox approve` executes the routed tool for
+/// real, and a `full` arm carries the operator's live servers into the
+/// trial home — the store is isolated, the effect is not — so a principal
+/// that released would send real messages from a real account, which in
+/// this repo crosses a human structurally. Release joins the set when a
+/// manifest can name fixture servers, as board closure waits on a fixture
+/// graph (found on review).
+pub const PRINCIPAL_VERBS: [&[&str]; 7] = [
+    &["tasks", "set"],
+    &["tasks", "steer"],
+    &["tasks", "stop"],
+    &["outbox", "reject"],
+    &["outbox", "edit"],
+    &["questions", "answer"],
+    &["questions", "abandon"],
+];
+
+/// The global options a principal's verb may not carry, **as the CLI
+/// spells them** (the first cut named a field, `--tools`, and the real
+/// flag `--tool` passed; found on review): everything that moves the
+/// store, the model, the run's ceilings, the tool surface or the
+/// approvals under the driver, in long and short form. Every `--no-*`
+/// lever flag is refused by prefix. `mecha-cli` tests that each of these
+/// is a global option it really defines.
+pub const PRINCIPAL_BLOCKED_OPTIONS: [&str; 19] = [
+    "--workspace",
+    "-w",
+    "--provider",
+    "-p",
+    "--model",
+    "-m",
+    "--effort",
+    "-e",
+    "--system",
+    "-s",
+    "--tool",
+    "--skill",
+    "--yes",
+    "-y",
+    "--read-only",
+    "--max-turns",
+    "--max-output-tokens",
+    "--max-cost",
+    "--compact-at",
+];
+
+/// The global options a principal's verb *may* carry: the ones that move
+/// nothing about the run. `mecha-cli` walks every global option and fails
+/// on one that is neither here, blocked, nor a `--no-` lever — the
+/// direction a blocklist test has to face, or the next global option
+/// lands unblocked (found on review).
+pub const PRINCIPAL_HARMLESS_OPTIONS: [&str; 6] =
+    ["--verbose", "-v", "--help", "-h", "--version", "-V"];
+
+pub fn allowed_verb(verb: &[String]) -> bool {
+    let head_allowed = PRINCIPAL_VERBS
+        .iter()
+        .any(|lead| verb.len() >= lead.len() && lead.iter().zip(verb).all(|(a, b)| a == b));
+    let moves_the_run = verb.iter().any(|a| {
+        let name = a.split('=').next().unwrap_or(a);
+        // A short group: clap stacks flags (`-vw /tmp`) and lets the last
+        // take the value, so every letter is an option — checking the
+        // first alone read `-vw` as a harmless `-v` (found on review). Any
+        // blocked letter anywhere in the group refuses the group; refusing
+        // more than clap would parse narrows, never widens.
+        if let Some(letters) = name.strip_prefix('-').filter(|s| !s.starts_with('-')) {
+            return letters.chars().any(|c| {
+                let opt = format!("-{c}");
+                PRINCIPAL_BLOCKED_OPTIONS.contains(&opt.as_str())
+            });
+        }
+        PRINCIPAL_BLOCKED_OPTIONS.contains(&name) || name.starts_with("--no-")
+    });
+    head_allowed && !moves_the_run
 }
 
 /// How often each loop stage runs between a lifetime's tasks: every N
@@ -190,6 +406,12 @@ pub enum StageLever {
     /// `rules propose-retirements --apply`; see `Schedule::retire`.
     Retire,
     SensorsInBrief,
+    /// Not a lever: the principal's call at a position, on the same ledger
+    /// so `stage_health` and the judge's hold read it like a stage — a
+    /// principal that failed to act is a treatment not known to have
+    /// occurred. Not in `ALL`, never named in a manifest, runs no verb of
+    /// its own.
+    Principal,
     /// A stage this build cannot name, read off a ledger written by a
     /// build that has one — the closed-enum-on-an-append-only-store rule:
     /// the line reads as a stage run this build cannot name, never as a
@@ -215,6 +437,7 @@ impl StageLever {
             StageLever::Validate => "validate",
             StageLever::Ruminate => "ruminate",
             StageLever::Retire => "retire",
+            StageLever::Principal => "principal",
             StageLever::SensorsInBrief => "sensors_in_brief",
             StageLever::Unknown => "unknown",
         }
@@ -245,7 +468,7 @@ impl StageLever {
             StageLever::Validate => Some(&["validate", "--unprocessed-only"]),
             StageLever::Ruminate => Some(&["harness", "ruminate"]),
             StageLever::Retire => Some(&["rules", "propose-retirements", "--apply"]),
-            StageLever::SensorsInBrief | StageLever::Unknown => None,
+            StageLever::SensorsInBrief | StageLever::Principal | StageLever::Unknown => None,
         }
     }
 }
@@ -483,6 +706,7 @@ impl Manifest {
             split_seed,
             holdout_in,
             schedule: Schedule::default(),
+            principal: None,
         };
         m.validate()?;
         Ok(m)
@@ -518,6 +742,7 @@ impl Manifest {
             split_seed: 0,
             holdout_in: 3,
             schedule: Schedule::default(),
+            principal: None,
         };
         m.validate()?;
         Ok(m)
@@ -580,19 +805,37 @@ impl Manifest {
             );
         }
         match self.kind {
-            TrialKind::Single => anyhow::ensure!(
-                self.schedule == Schedule::default(),
-                "a `[schedule]` is a lifetime's; a single trial runs no stage between tasks"
-            ),
+            TrialKind::Single => {
+                anyhow::ensure!(
+                    self.schedule == Schedule::default(),
+                    "a `[schedule]` is a lifetime's; a single trial runs no stage between tasks"
+                );
+                anyhow::ensure!(
+                    self.principal.is_none(),
+                    "a `[principal]` is a lifetime's; a single trial has no position for one to act at"
+                );
+            }
             // The sequence is the design, and the case file is not: a
             // lifetime that fell back to the file's order kept each
             // finished row's stored position while a changed file moved
             // the walk under it, and nothing on the record said so (found
             // on review).
-            TrialKind::Lifetime => anyhow::ensure!(
-                !self.tasks.ids.is_empty(),
-                "a `lifetime` names its sequence in `[tasks] ids`; the case file's order is not a design"
-            ),
+            TrialKind::Lifetime => {
+                anyhow::ensure!(
+                    !self.tasks.ids.is_empty(),
+                    "a `lifetime` names its sequence in `[tasks] ids`; the case file's order is not a design"
+                );
+                if let Some(p) = &self.principal {
+                    anyhow::ensure!(
+                        !p.command.is_empty(),
+                        "`[principal] command` names no executable"
+                    );
+                    anyhow::ensure!(
+                        p.timeout_secs > 0,
+                        "`[principal] timeout_secs` must be positive"
+                    );
+                }
+            }
         }
         for (name, arm) in &self.arms {
             crate::work::valid_producer(name)
@@ -1208,6 +1451,82 @@ pub struct StageRun {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// A principal line only: which point it was called at, and the verbs
+    /// it asked for, each with how the driver's run of it went.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<PrincipalPoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acts: Vec<PrincipalAct>,
+    /// An `after_task` principal line only: each refusal scripted for the
+    /// task, with how many times the run answered a call with it — read
+    /// off the task's session, where the loop writes the refusal's exact
+    /// sentence. A refusal that never fired is a treatment that did not
+    /// occur at this position, and without this it was recorded like one
+    /// that did (found on review).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refusals: Vec<RefusalOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RefusalOutcome {
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_contains: Option<String>,
+    pub reason: String,
+    /// How many times the run answered a call with this refusal; `None`
+    /// when the session could not be read — unknown, never zero (found on
+    /// review).
+    #[serde(default)]
+    pub fired: Option<u32>,
+}
+
+/// The sentence the loop writes for a person's refusal, as `agent.rs`
+/// renders `Decision::Deny`.
+pub const DENIED_PREFIX: &str = "Denied by the user: ";
+
+/// How often each scripted refusal fired in a session: the count of the
+/// loop's refusal sentence carrying that rule's reason, over the session
+/// file's text — or unknown for every rule when there is no text to read.
+/// Two rules sharing a reason share a count, and saying so is the
+/// principal's job.
+pub fn refusal_outcomes(
+    rules: &[crate::tool::DenialRule],
+    session_text: Option<&str>,
+) -> Vec<RefusalOutcome> {
+    rules
+        .iter()
+        .map(|r| RefusalOutcome {
+            tool: r.tool.clone(),
+            input_contains: r.input_contains.clone(),
+            reason: r.reason.clone(),
+            // Encoded the way the file holds it: the sentence sits in a
+            // JSON string, so a quote, a backslash or a newline in the
+            // reason is escaped there and a raw needle never matched
+            // (found on review).
+            fired: session_text.map(|text| {
+                let sentence = format!("{DENIED_PREFIX}{}", r.reason);
+                let encoded = serde_json::to_string(&sentence).unwrap_or_default();
+                // The encoding's own quotes, and only those: a reason that
+                // ends in a quote must keep it.
+                let needle = &encoded[1..encoded.len().saturating_sub(1).max(1)];
+                text.matches(needle).count() as u32
+            }),
+        })
+        .collect()
+}
+
+/// The refusals the home's denials file holds, for the driver to read
+/// back after the task; none when there is no file.
+pub fn read_denials(home: &Path) -> Result<Vec<crate::tool::DenialRule>> {
+    let path = denials_file(home);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let file: crate::tool::DenialsFile =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    Ok(file.rules)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1264,12 +1583,21 @@ pub fn stage_health(runs: &[StageRun]) -> StageHealth {
     let mut h = StageHealth::default();
     // A later attempt that settled the pair — ran, or was recorded skipped
     // out of sequence — stands for every earlier line of it.
+    // A line's identity is its lifetime, position, stage *and point*: the
+    // two principal calls at one position share the first three, and
+    // `after_task` always takes the higher attempt, so without the point a
+    // failed `before_task` was stood for by the `after_task`'s success
+    // and the hold never fired (found on review).
+    let same_pair = |t: &StageRun, r: &StageRun| {
+        t.lifetime == r.lifetime
+            && t.after_position == r.after_position
+            && t.stage == r.stage
+            && t.point == r.point
+    };
     let later_settled = |r: &StageRun| {
         runs.iter().any(|t| {
             matches!(t.status, StageStatus::Done | StageStatus::Skipped)
-                && t.lifetime == r.lifetime
-                && t.after_position == r.after_position
-                && t.stage == r.stage
+                && same_pair(t, r)
                 && t.attempt > r.attempt
         })
     };
@@ -1293,11 +1621,7 @@ pub fn stage_health(runs: &[StageRun]) -> StageHealth {
                 // the second clause one interrupt pinned every verdict at
                 // propose forever (found on review).
                 let superseded = runs.iter().any(|t| {
-                    t.status != StageStatus::Running
-                        && t.lifetime == r.lifetime
-                        && t.after_position == r.after_position
-                        && t.stage == r.stage
-                        && t.attempt == r.attempt
+                    t.status != StageStatus::Running && same_pair(t, r) && t.attempt == r.attempt
                 }) || later_settled(r);
                 if !superseded {
                     h.interrupted += 1;
@@ -1517,6 +1841,14 @@ pub fn child_invocation(
             server.env.clear();
         }
     }
+    // Every store path is the home's (D12). An operator's `[outbox] dir`
+    // rode in verbatim, so a trial's drafts would have staged into the
+    // real outbox and the principal read a store the verbs it emitted did
+    // not write (found on review); the same for the skills and messages
+    // directories. Cleared, each store resolves under `MECHA_HOME`.
+    config.outbox.dir = None;
+    config.skills.dir = None;
+    config.messages.dir = None;
     let mut flags = Vec::new();
     for lever in levers_off {
         match lever {
@@ -1558,6 +1890,47 @@ pub fn child_invocation(
 
 /// A trial home's own accepted harness overrides, relative to the home.
 pub const HOME_OVERRIDES: &str = "learning/harness/overrides.toml";
+
+/// The principal's scripted refusals for the task about to run, in the
+/// trial home; the run child reads it through `tool::DENIALS_FILE_ENV`.
+pub fn denials_file(home: &Path) -> PathBuf {
+    home.join("principal").join("denials.toml")
+}
+
+/// The keys the home's own loop has moved (`HOME_OVERRIDES`), for a caller
+/// that must treat them as the arm's pins without rendering a config —
+/// the driver's act children carry a case's ceilings under the same rule
+/// the run child does.
+pub fn home_moved_keys(home: &Path) -> Result<Vec<String>> {
+    let path = home.join(HOME_OVERRIDES);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let root = path.parent().expect("under the home");
+    Ok(crate::harness::HarnessStore::open(root)?
+        .overrides()?
+        .into_iter()
+        .map(|o| o.key)
+        .collect())
+}
+
+/// Write the refusals the principal scripted, or remove the file when it
+/// scripted none — a stale file would refuse the next task on the last
+/// one's word.
+pub fn write_denials(home: &Path, rules: &[crate::tool::DenialRule]) -> Result<()> {
+    let path = denials_file(home);
+    if rules.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        }
+        return Ok(());
+    }
+    std::fs::create_dir_all(path.parent().expect("under the home"))?;
+    let file = crate::tool::DenialsFile {
+        rules: rules.to_vec(),
+    };
+    write_atomic(&path, toml::to_string_pretty(&file)?.as_bytes())
+}
 
 /// Fold the home's *own* accepted overrides — what its stages accepted,
 /// never the machine's, which `seed_home` drops — into the config the
@@ -2580,6 +2953,9 @@ rationale = "no rumination should fail more over the sequence"
             status,
             exit_code: Some(0),
             error: None,
+            point: None,
+            acts: Vec::new(),
+            refusals: Vec::new(),
         };
         store
             .record_stage(&run(StageLever::Reflect, 2, StageStatus::Done))
@@ -2762,6 +3138,9 @@ rationale = "no rumination should fail more over the sequence"
             status: StageStatus::Failed,
             exit_code: Some(1),
             error: None,
+            point: None,
+            acts: Vec::new(),
+            refusals: Vec::new(),
         };
         let held = judge(&m, &trials, std::slice::from_ref(&failed), 0);
         let bare_held = held.iter().find(|v| v.arm == "bare").unwrap();
@@ -2803,6 +3182,282 @@ rationale = "no rumination should fail more over the sequence"
             bare_held.judgement.selection, bare.judgement.selection,
             "the tallies are untouched"
         );
+    }
+
+    /// A trial home owns every store path: an operator's explicit outbox,
+    /// skills or messages directory never rides into a child's config.
+    #[test]
+    fn a_child_home_owns_every_store_path() {
+        let mut real = crate::config::Config::default();
+        real.outbox.dir = Some("/home/me/.mecha/outbox".into());
+        real.skills.dir = Some("/home/me/.mecha/skills".into());
+        real.messages.dir = Some("/home/me/.mecha/messages".into());
+        let child = child_invocation(&real, &Arm::default(), None)
+            .unwrap()
+            .config;
+        assert_eq!(
+            child.outbox.dir, None,
+            "the real outbox would take a trial's drafts"
+        );
+        assert_eq!(child.skills.dir, None);
+        assert_eq!(child.messages.dir, None);
+    }
+
+    /// The principal's contract: a `[principal]` is a lifetime's, its
+    /// command is named, the closed verb set admits the owner's channels
+    /// and nothing else, its answer parses strictly, and the refusals it
+    /// scripts land in the home's denials file and clear on an empty list.
+    #[test]
+    fn the_principal_contract_is_closed_and_the_denials_file_follows_it() {
+        let single = MANIFEST.replace("[tasks]", "[principal]\ncommand = [\"/bin/true\"]\n[tasks]");
+        let e = Manifest::parse(&single).unwrap_err().to_string();
+        assert!(e.contains("a `[principal]` is a lifetime's"), "{e}");
+        let life = MANIFEST
+            .replace(
+                "control = \"full\"",
+                "kind = \"lifetime\"\ncontrol = \"full\"",
+            )
+            .replace(
+                "fixture = \"eval/workspace\"",
+                "fixture = \"eval/workspace\"\nids = [\"a\"]",
+            )
+            .replace(
+                "[tasks]",
+                "[principal]\ncommand = [\"/usr/bin/env\", \"python3\", \"/x/gold.py\"]\n[tasks]",
+            );
+        let m = Manifest::parse(&life).unwrap();
+        let p = m.principal.unwrap();
+        assert_eq!(p.command[1], "python3");
+        assert_eq!(p.timeout_secs, 600, "the default");
+        let empty = life.replace(
+            "command = [\"/usr/bin/env\", \"python3\", \"/x/gold.py\"]",
+            "command = []",
+        );
+        assert!(Manifest::parse(&empty).is_err(), "no executable");
+        // The verb set.
+        let v = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert!(
+            !allowed_verb(&v("outbox approve ob-1 --yes")),
+            "a release executes the routed tool for real; it waits on fixture servers"
+        );
+        assert!(allowed_verb(&v("outbox reject ob-1 --reason no")));
+        assert!(allowed_verb(&v("outbox edit ob-1 --body-file draft.txt")));
+        assert!(allowed_verb(&v(
+            "questions answer q-1 --unattended yes please"
+        )));
+        assert!(allowed_verb(&v("tasks set t-1 --status done")));
+        assert!(
+            !allowed_verb(&v("run do something")),
+            "never a session of its own"
+        );
+        assert!(!allowed_verb(&v("learn --auto")), "never a rule");
+        assert!(
+            !allowed_verb(&v("outbox")),
+            "a leading word alone is not a verb"
+        );
+        assert!(!allowed_verb(&[]));
+        assert!(
+            !allowed_verb(&v("outbox reject ob-1 --workspace /tmp")),
+            "the workspace is the driver's"
+        );
+        assert!(!allowed_verb(&v(
+            "tasks set t-1 --status done --provider other"
+        )));
+        assert!(!allowed_verb(&v("questions answer q-1 --model=x yes")));
+        assert!(
+            !allowed_verb(&v("tasks set t-1 --no-learned-rules")),
+            "levers are the arm's"
+        );
+        assert!(
+            !allowed_verb(&v("questions answer q-1 --yes fine")),
+            "-y is the global auto-approval, which widens a resumed run"
+        );
+        assert!(!allowed_verb(&v("outbox reject ob-1 -y")));
+        assert!(
+            !allowed_verb(&v("questions answer q-1 --tool fs_read fine")),
+            "the real flag"
+        );
+        assert!(!allowed_verb(&v("questions answer q-1 --skill s fine")));
+        assert!(
+            !allowed_verb(&v("questions answer q-1 -e high fine")),
+            "the short effort"
+        );
+        assert!(
+            !allowed_verb(&v("tasks set t-1 -w/tmp/x")),
+            "an attached short value"
+        );
+        assert!(!allowed_verb(&v("tasks set t-1 -mx")));
+        assert!(
+            !allowed_verb(&v("tasks set t-1 -vw /tmp/x")),
+            "a stacked short group"
+        );
+        assert!(!allowed_verb(&v("questions answer q-1 -vy fine")));
+        assert!(
+            allowed_verb(&v("tasks set t-1 --status done -v")),
+            "verbose alone is fine"
+        );
+        assert!(!allowed_verb(&v("tasks set t-1 --no-mcp-server graph")));
+        assert!(
+            !allowed_verb(&v("questions answer q-1 --max-cost 999 fine")),
+            "a ceiling the resumed run would honour"
+        );
+        // The answer's shape, strict.
+        let out: PrincipalOutput = serde_json::from_str(
+            r#"{"acts":[{"verb":["outbox","reject","ob-1","--reason","wrong date"],"reason":"gold: the date is not the meeting's"}],"deny":[{"tool":"shell","input_contains":"rm -rf","reason":"no"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(out.acts.len(), 1);
+        assert_eq!(out.deny[0].tool, "shell");
+        assert!(
+            serde_json::from_str::<PrincipalOutput>(r#"{"acts":[],"sessions":[]}"#).is_err(),
+            "an unknown key is the principal's error"
+        );
+        // The denials file.
+        let home = std::env::temp_dir().join(format!("mecha-exp-deny-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        write_denials(&home, &out.deny).unwrap();
+        let text = std::fs::read_to_string(denials_file(&home)).unwrap();
+        assert!(
+            text.contains("[[deny]]") && text.contains("rm -rf"),
+            "{text}"
+        );
+        write_denials(&home, &[]).unwrap();
+        assert!(
+            !denials_file(&home).exists(),
+            "an empty list clears the file"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+        // A failed before_task is not stood for by the after_task's success
+        // at the same position: the point is part of a line's identity.
+        let line = |attempt: u32, point: PrincipalPoint, status: StageStatus| StageRun {
+            lifetime: "full__r1".into(),
+            arm: "full".into(),
+            stage: StageLever::Principal,
+            after_position: 3,
+            attempt,
+            started_at: "t0".into(),
+            finished_at: "t1".into(),
+            status,
+            exit_code: None,
+            error: None,
+            point: Some(point),
+            acts: Vec::new(),
+            refusals: Vec::new(),
+        };
+        let ledger = vec![
+            line(1, PrincipalPoint::BeforeTask, StageStatus::Failed),
+            line(2, PrincipalPoint::AfterTask, StageStatus::Running),
+            line(2, PrincipalPoint::AfterTask, StageStatus::Done),
+        ];
+        let h = stage_health(&ledger);
+        assert_eq!((h.done, h.failed, h.broken()), (1, 1, 1), "{h:?}");
+        let ledger = vec![
+            line(1, PrincipalPoint::BeforeTask, StageStatus::Running),
+            line(2, PrincipalPoint::AfterTask, StageStatus::Done),
+            line(3, PrincipalPoint::BeforeTask, StageStatus::Done),
+        ];
+        let h = stage_health(&ledger);
+        assert_eq!(
+            (h.done, h.interrupted),
+            (2, 0),
+            "an interrupted before_task is stood for only by a later before_task: {h:?}"
+        );
+        // A refusal's firings are counted off the session's own sentence.
+        let rules = vec![
+            crate::tool::DenialRule {
+                tool: "shell".into(),
+                input_contains: Some("echo".into()),
+                reason: "use printf".into(),
+            },
+            crate::tool::DenialRule {
+                tool: "fs_write".into(),
+                input_contains: None,
+                reason: "read only today".into(),
+            },
+        ];
+        let session = "{\"content\":\"Denied by the user: use printf\"}\n{\"x\":1}\n{\"content\":\"Denied by the user: use printf, please\"}\n";
+        let out = refusal_outcomes(&rules, Some(session));
+        assert_eq!((out[0].fired, out[1].fired), (Some(2), Some(0)), "{out:?}");
+        let unknown = refusal_outcomes(&rules, None);
+        assert!(
+            unknown.iter().all(|r| r.fired.is_none()),
+            "no session to read is unknown, never zero: {unknown:?}"
+        );
+        assert_eq!(out[1].tool, "fs_write");
+        // A reason with a quote is escaped in the file and still counts.
+        let quoted = vec![crate::tool::DenialRule {
+            tool: "shell".into(),
+            input_contains: None,
+            reason: "use \"printf\" here".into(),
+        }];
+        let session = "{\"content\":\"Denied by the user: use \\\"printf\\\" here\"}\n";
+        assert_eq!(
+            refusal_outcomes(&quoted, Some(session))[0].fired,
+            Some(1),
+            "{session}"
+        );
+        write_denials(&home, &rules).unwrap();
+        assert_eq!(read_denials(&home).unwrap(), rules);
+        let _ = std::fs::remove_dir_all(&home);
+        // The ledger's stage for it is not a lever.
+        assert!(!StageLever::ALL.contains(&StageLever::Principal));
+        assert_eq!(
+            StageLever::parse("principal"),
+            None,
+            "never named in a manifest"
+        );
+        assert_eq!(StageLever::Principal.argv(), None);
+        let wire: StageLever = serde_json::from_str("\"principal\"").unwrap();
+        assert_eq!(wire, StageLever::Principal);
+        assert_eq!(PrincipalPoint::AfterTask.as_str(), "after_task");
+        let later: PrincipalPoint = serde_json::from_str("\"mid_task\"").unwrap();
+        assert_eq!(
+            later,
+            PrincipalPoint::Unknown,
+            "a point a later build names"
+        );
+        assert!(
+            serde_json::from_str::<PrincipalRequest>(
+                r#"{"verb":["outbox","approve","x","-y"],"exit_code":0,"ok":true}"#,
+            )
+            .is_err(),
+            "an exit code is the driver's alone; a principal that claims one is off the contract"
+        );
+        let plain: PrincipalAct =
+            serde_json::from_str::<PrincipalRequest>(r#"{"verb":["outbox","approve","x","-y"]}"#)
+                .unwrap()
+                .into();
+        assert_eq!((plain.exit_code, plain.ok), (None, None));
+        // The ledger's line, with the driver's fields filled, reads back:
+        // the one type that refused them made every line with an act torn.
+        let dir = std::env::temp_dir().join(format!("mecha-exp-acts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = ExperimentStore::open(&dir, "life").unwrap();
+        let mut filled = plain.clone();
+        filled.exit_code = Some(1);
+        filled.ok = Some(false);
+        let line = StageRun {
+            lifetime: "full__r1".into(),
+            arm: "full".into(),
+            stage: StageLever::Principal,
+            after_position: 2,
+            attempt: 1,
+            started_at: "t0".into(),
+            finished_at: "t1".into(),
+            status: StageStatus::Failed,
+            exit_code: None,
+            error: Some("`mecha outbox approve x -y` exited 1".into()),
+            point: Some(PrincipalPoint::AfterTask),
+            acts: vec![filled.clone()],
+            refusals: Vec::new(),
+        };
+        store.record_stage(&line).unwrap();
+        let (runs, torn) = store.stage_runs("full__r1").unwrap();
+        assert_eq!((runs.len(), torn), (1, 0), "a filled act round-trips");
+        assert_eq!(runs[0].acts, vec![filled]);
+        assert_eq!(stage_health(&runs).failed, 1, "and the hold sees it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// What a stage accepted inside the home reaches the next task: the

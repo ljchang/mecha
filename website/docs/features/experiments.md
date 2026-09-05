@@ -185,9 +185,41 @@ interrupted, or could not be read on either side holds the verdict at
 effect. Read the trajectory, not the mean: a loop that learns has
 a slope.
 
-One limit worth knowing before spending a night on it: every reflection
-trigger today is an owner's act — a steer, a denial, a follow-up, an edited
-draft. A lifetime run without anyone answering produces none, so `reflect` and
-`learn` are exercised but mine nothing; `harness ruminate`, which reads run
-counters, is the one stage with an effect until the principal (the owner's
-simulator) lands.
+## The principal
+
+Every reflection trigger is an owner's act — a steer, a denial, a follow-up,
+an edited draft — and a lifetime run with nobody answering mines nothing. The
+**principal** plays the owner: an executable the manifest names, called
+before and after every task with the trial's state on stdin, answering with
+the owner's verbs to run and the refusals to script.
+
+```toml
+[principal]
+command = ["/home/me/mecha/scripts/principal-gold.py", "/home/me/mecha/eval/principal.toml"]
+timeout_secs = 600
+```
+
+The principal must read its whole state before answering; one that exits
+without draining stdin is a failed call, recorded on the ledger. The
+principal is pure: it never runs a verb itself. The driver runs each one
+as a child `mecha` against the trial home, from a closed set — `tasks
+set|steer|stop`, `outbox reject|edit`, `questions answer|abandon`,
+never a session, a reflection or a rule — and records the call and every act
+with its exit status on the lifetime's ledger, so a principal that could not
+act holds the verdict like a failed stage. Refusals it scripts before a task
+land in the home's `principal/denials.toml`; the run reads them ahead of its
+own approver and renders each as "Denied by the user", which the learning
+loop mines as a correction — the owner's word, inside the trial home. Only an
+experiment's run honours that file; any other run started with it refuses to
+start, since a scripted refusal on your real home would author corrections
+nobody made.
+
+`scripts/principal-gold.py` is the gold-verdict version: a draft addressed off
+the fixture cast is rejected and one on the cast is left pending, a parked
+question is answered from a table, and refusals come from the policy file it
+is given. The principal never releases a draft: `outbox approve` executes the
+routed tool for real, and a `full` arm carries your live servers into the
+trial home, so a release would send from your account. Release joins the
+principal's verbs when a manifest can name fixture servers.
+What it cannot do yet is close board tasks, since the board is the graph's
+and a trial home has no graph server.

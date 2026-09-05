@@ -3195,7 +3195,10 @@ comparison over a chosen set**, with the design written before the run.
   exists to prevent (found on review). The stores a lever left on reads —
   `learning/`, `skills/`, `charter.toml` — are seeded once into the arm's
   home from the real one when it is first created, never written back, so
-  `full` means the harness as this machine had it. The child's
+  `full` means the harness as this machine had it. **Every store path
+  in the rendered config is the home's**: an operator's `[outbox] dir`,
+  skills or messages directory is cleared, or a trial's drafts would
+  stage into the real outbox (found on review). The child's
   environment is an **allowlist** on `Sandbox::child_env`'s shape: the
   base set, the provider key variables, and the three that name the trial
   — `MECHA_HOME` is not the only variable that moves a store, and an
@@ -3333,10 +3336,81 @@ comparison over a chosen set**, with the design written before the run.
   counters stay, because a lever removes a
   disposition, never the record. The stages the design names and nothing
   has built (`followup_staging`, `prioritised_replay`) are not levers: a
-  lever must be a switch that exists. What a lifetime can show today has
-  a ceiling: every `learning::Trigger` but the unfired `Mismatch` is an
-  owner's act, so a sequence run with no principal mines nothing, and
-  `ruminate` is the one stage with an effect until the principal lands.
+  lever must be a switch that exists.
+- **The principal is an executable under a contract, and the driver runs
+  its verbs** (Part II §16, §21.1; the owner's ruling 2026-09-04: the
+  contract, not a subcommand). A lifetime manifest's `[principal]
+  command` is called before and after every task with the trial's state
+  on stdin (`PrincipalInput`: the case, the graded row after the task,
+  the home's pending outbox items and open questions) and answers with
+  `PrincipalOutput`: the owner's verbs to run and the refusals to script.
+  The principal executable runs with the base environment only — no
+  provider or search key reaches it, on the rule `connect` keeps for MCP
+  servers; the `mecha` children that run its verbs get the run child's
+  allowlist. The principal is pure; **the driver runs each verb as a child `mecha`
+  against the trial home, from the closed set `PRINCIPAL_VERBS`**
+  (`tasks set|steer|stop`, `outbox reject|edit`,
+  `questions answer|abandon` — never a session, a reflection or a rule,
+  and **never a release**: `outbox approve` executes the routed tool for
+  real, and a `full` arm carries the operator's live servers into the
+  trial home — the store is isolated, the effect is not — so a
+  principal that released would send from a real account, which crosses
+  a human structurally; release joins the set when a manifest can name
+  fixture servers, as board closure waits on a fixture graph (found on
+  review);
+  a verb may not carry the global options that move the store, the
+  model, the ceilings, the tool surface or the approvals,
+  `PRINCIPAL_BLOCKED_OPTIONS`, named as the CLI spells them and tested
+  against it) with the driver's own options *before* the subcommand,
+  where a trailing-argument verb like `tasks steer` cannot swallow them
+  — the trial's own workspace and `--yes`, since a verb may resume the
+  parked run and a continuation jailed elsewhere or under the ask
+  posture fails every call while exiting 0 —
+  and records the call and every act with its exit status on the
+  lifetime's ledger as a `principal` line, so the record is the driver's
+  and `stage_health` holds the verdict over a principal that could not
+  act. Verdicts come from gold wherever gold exists
+  (`scripts/principal-gold.py`: a draft to a recipient off the cast is
+  rejected, one on the cast is left pending and said so; a question is
+  answered from a table),
+  and the model-driven principal is a later version with its variance
+  recorded. **The denial channel** is the one owner act with no headless
+  path, and it is the one new mechanism: the principal's `deny` rules
+  are written to the home's `principal/denials.toml` before the task and
+  the run child is started with `MECHA_DENIALS_FILE` naming it, where
+  `tool::FileDenyApprover` answers a matching call with
+  `Decision::Deny(reason)` — "Denied by the user", mined as a correction,
+  which is the point: inside a trial home the principal *is* the owner.
+  Two things keep the same file from authoring the real owner's
+  corrections: the variable is honoured **only under the experiment
+  session kind** and stops any other run loudly (a file exported against
+  the real home would be the `ModeApprover` incident in a new costume),
+  and D12 keeps a trial home's learning store from reaching the real
+  one. The approver is strict at load (an unreadable file stops
+  the run), answers on every path a call reaches an approver by —
+  `approve`, the `permit` an allow rule routes to, escalation,
+  consultation; a read-only call reaches none, so a refusal of a
+  read-only tool never fires — hands every unmatched call to the
+  approver beneath it, and the file is cleared *before* each call so a
+  principal that failed to answer leaves no stale refusal armed. Every
+  approver `setup::prepare` builds is wrapped — the parent loop's, each
+  subagent's, the one a front-end hands it; the sites that build their
+  own outside `prepare` (the TUI's mode switch, the probes, replay,
+  eval) are not, and the guarantee there is that no principal verb
+  reaches them and no stage child is handed the file — and the file
+  reaches the verb that
+  resumes a parked run, so the refusals hold for the whole task and
+  every call delegated within it. **A refusal that never fired is on
+  the record**: after the task the driver counts each rule's firings in
+  the session — the loop's own "Denied by the user: <reason>" sentence
+  — onto the `after_task` line as `refusals`, and the run warns at
+  start for a rule naming a tool no registered tool answers to (a
+  read-only tool reaches an approver under a `prompt` rule or the
+  interlock, so its rule is live); a scripted refusal the
+  model never walked into is a position where the owner did not refuse,
+  and it used to read like one where they did. What the principal cannot do yet is close
+  board tasks: the board is the graph's, over MCP, and a trial home has
+  no graph — the closure channel waits on a fixture graph server.
 
 ## The doctor
 
