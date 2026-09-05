@@ -3271,8 +3271,15 @@ comparison over a chosen set**, with the design written before the run.
   servers; the `mecha` children that run its verbs get the run child's
   allowlist. The principal is pure; **the driver runs each verb as a child `mecha`
   against the trial home, from the closed set `PRINCIPAL_VERBS`**
-  (`tasks set|steer|stop`, `outbox approve|reject|edit`,
-  `questions answer|abandon` — never a session, a reflection or a rule;
+  (`tasks set|steer|stop`, `outbox reject|edit`,
+  `questions answer|abandon` — never a session, a reflection or a rule,
+  and **never a release**: `outbox approve` executes the routed tool for
+  real, and a `full` arm carries the operator's live servers into the
+  trial home — the store is isolated, the effect is not — so a
+  principal that released would send from a real account, which crosses
+  a human structurally; release joins the set when a manifest can name
+  fixture servers, as board closure waits on a fixture graph (found on
+  review);
   a verb may not carry the global options that move the store, the
   model, the ceilings, the tool surface or the approvals,
   `PRINCIPAL_BLOCKED_OPTIONS`, named as the CLI spells them and tested
@@ -3286,7 +3293,8 @@ comparison over a chosen set**, with the design written before the run.
   and `stage_health` holds the verdict over a principal that could not
   act. Verdicts come from gold wherever gold exists
   (`scripts/principal-gold.py`: a draft to a recipient off the cast is
-  rejected, otherwise released; a question is answered from a table),
+  rejected, one on the cast is left pending and said so; a question is
+  answered from a table),
   and the model-driven principal is a later version with its variance
   recorded. **The denial channel** is the one owner act with no headless
   path, and it is the one new mechanism: the principal's `deny` rules
@@ -3314,8 +3322,9 @@ comparison over a chosen set**, with the design written before the run.
   the record**: after the task the driver counts each rule's firings in
   the session — the loop's own "Denied by the user: <reason>" sentence
   — onto the `after_task` line as `refusals`, and the run warns at
-  start for a rule naming a tool no registered tool answers to or a
-  read-only one, which reaches no approver; a scripted refusal the
+  start for a rule naming a tool no registered tool answers to (a
+  read-only tool reaches an approver under a `prompt` rule or the
+  interlock, so its rule is live); a scripted refusal the
   model never walked into is a position where the owner did not refuse,
   and it used to read like one where they did. What the principal cannot do yet is close
   board tasks: the board is the graph's, over MCP, and a trial home has
