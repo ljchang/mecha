@@ -468,13 +468,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // provenance, retired rules are carried through untouched. The gate
         // below measures exactly what acceptance would deploy.
         let ids: Vec<String> = reflexions.iter().map(|r| r.id.clone()).collect();
+        // The sub-regions this batch's evidence was recorded in — a new
+        // rule's support, and what a verbatim restatement of an outside
+        // rule widens over (`finalize_region_rules`).
+        let situations: Vec<mecha_core::situation::Situation> = reflexions
+            .iter()
+            .filter_map(|r| r.situation.clone())
+            .collect();
         let mut rules = mecha_core::learning::finalize_region_rules(
             rules,
             &learned_before,
             region,
             &ids,
+            &situations,
             &chrono::Utc::now().to_rfc3339(),
         );
+        for (text, from, to) in widened(&learned_before, &rules) {
+            println!("{domain}: widened — \"{text}\" loaded with {from}, now {to}");
+        }
 
         // Retired rules stay in the file but never render, so they cost the
         // budget nothing. Summed over the whole domain's active set, which
@@ -756,6 +767,27 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     Ok(())
 }
 
+/// The rules whose scope this batch widened: same id, a scope that now
+/// names fewer tools. What the pass prints so a widening is visible in the
+/// log the moment it happens rather than only on the roster.
+fn widened(
+    before: &[mecha_core::learning::Rule],
+    after: &[mecha_core::learning::Rule],
+) -> Vec<(String, String, String)> {
+    let loads = |r: &mecha_core::learning::Rule| match &r.scope {
+        Some(s) if !s.is_standing() => s.describe(),
+        _ => "everywhere".to_string(),
+    };
+    after
+        .iter()
+        .filter_map(|r| {
+            let prev = before.iter().find(|p| p.id.is_some() && p.id == r.id)?;
+            let (from, to) = (loads(prev), loads(r));
+            (from != to).then(|| (r.text.clone(), from, to))
+        })
+        .collect()
+}
+
 /// Whether a proposal already argued exactly this batch of reflections.
 fn already_argued(
     proposals: &[mecha_core::learning::Proposal],
@@ -772,8 +804,45 @@ fn already_argued(
 
 #[cfg(test)]
 mod tests {
-    use super::{already_argued, dispose, hold_out, stamp_probation};
+    use super::{already_argued, dispose, hold_out, stamp_probation, widened};
     use std::collections::BTreeMap;
+
+    /// A widening is reported by id: the same rule, a scope that names
+    /// fewer tools. A new rule, an unchanged one and a pre-identity one are
+    /// not widenings.
+    #[test]
+    fn a_widening_is_reported_by_id_and_nothing_else_is() {
+        use mecha_core::learning::Rule;
+        use mecha_core::situation::Situation;
+        let scoped = |id: &str, tools: &[&str]| Rule {
+            text: format!("Rule {id}."),
+            id: Some(id.into()),
+            scope: Some(Situation::of_run(
+                &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                None,
+            )),
+            ..Default::default()
+        };
+        let before = vec![scoped("a", &["shell"]), scoped("b", &["fs_read"])];
+        let mut after = vec![
+            scoped("a", &[]),
+            scoped("b", &["fs_read"]),
+            scoped("c", &["shell"]),
+        ];
+        after.push(Rule {
+            text: "No id.".into(),
+            ..Default::default()
+        });
+        let out = widened(&before, &after);
+        assert_eq!(
+            out,
+            vec![(
+                "Rule a.".to_string(),
+                "shell".to_string(),
+                "everywhere".to_string()
+            )]
+        );
+    }
 
     /// A `shell` batch on probation stamps its own rules and leaves the
     /// standing rule it carried through on the ordinary leash. Fails on the
@@ -904,31 +973,38 @@ mod tests {
         };
         rules.push(retired);
 
+        // Rows placed in the standing region: a release counts only rows
+        // that exercised the rule, and a row with no region exercises none.
+        let placed = |observations: u32, graded: u32, regressed: u32, attributed: u32| {
+            use mecha_core::learning::RegionTally;
+            use mecha_core::situation::Situation;
+            let counts = RegionTally {
+                observations,
+                graded,
+                improved: 0,
+                regressed,
+                attributed_regressions: attributed,
+            };
+            let mut regions = std::collections::BTreeMap::new();
+            regions.insert(Situation::default().key(), (Situation::default(), counts));
+            RuleTally {
+                observations,
+                graded,
+                regressed,
+                attributed_regressions: attributed,
+                regions,
+                ..Default::default()
+            }
+        };
         let mut tallies = std::collections::BTreeMap::new();
         for id in ["measured", "measured-probationary"] {
-            tallies.insert(
-                id.to_string(),
-                // Graded, not merely covered: release keys on verdicts, and
-                // observations alone would read as four probes that ran and
-                // graded nothing — which releases no leash.
-                RuleTally {
-                    observations: 4,
-                    graded: 4,
-                    ..Default::default()
-                },
-            );
+            // Graded, not merely covered: release keys on verdicts, and
+            // observations alone would read as four probes that ran and
+            // graded nothing — which releases no leash.
+            tallies.insert(id.to_string(), placed(4, 4, 0, 0));
         }
         for id in ["convicted-born-graded", "convicted-probationary"] {
-            tallies.insert(
-                id.to_string(),
-                RuleTally {
-                    observations: 1,
-                    graded: 1,
-                    regressed: 1,
-                    attributed_regressions: 1,
-                    ..Default::default()
-                },
-            );
+            tallies.insert(id.to_string(), placed(1, 1, 1, 1));
         }
 
         stamp_probation(

@@ -3583,6 +3583,49 @@ installed and restarted at 18:04 the same day, once a peer's inference run
 had released the model server, and the skill's step-1b probe confirmed the
 new binary from the served page (a `304` naming its `ETag`, not a bare one).
 
+**2026-09-05 — a rule widens on evidence from two regions and narrows to
+where it held, and the ledger says which sub-region each probe
+exercised.** `GOAL-SYSTEM-DESIGN.md` §17.4's consolidation and validation
+halves (`feat/region-widening`), the item the previous night's session
+named next. `Rule::support` records the sub-regions a rule's evidence was
+recorded in (`distinct_scopes` of the batch's windows); a batch that
+repeats an outside rule word for word — the learner's prompt now asks for
+exactly that when a reflection teaches a lesson another situation already
+holds — widens it in `finalize_region_rules` to the intersection of the
+two regions with the batch's windows added to its support, the model
+claiming only "same lesson" and the harness computing where it loads.
+`ValidationRecord::region` is the probed reflection's window (not the
+run's registry, which every run shares), `RuleTally::regions` folds the
+counts per region with `in_scope` and `attributed_against` over them,
+and `release_probation_when_measured_clean` counts only rows that
+exercised the rule — a `shell` rule carried in an `http_fetch` probe
+used to leave probation on a grade that never tested it. `validate
+--cover N` adds up to N reflections per (rule, region) pair the ledger
+never graded, from inside the region, processed or not, and says so per
+row; `scripts/ruminate.sh` passes `--cover 1`. `judge_convicted` decides
+`Stands | Narrow | Retire` for `rules propose-retirements`: convictions
+against the current scope (unknown-region rows count everywhere), narrow
+when every conviction lies in support regions the rule can shed and one
+is clean, retire with a reason naming the case otherwise — no support,
+an unplaceable or out-of-support conviction, or clean regions that share
+no tool (the conjunctive lattice's limit, stated in the reason so the
+lesson can be re-learned inside one of them). A narrowed rule carries
+`narrowed_at`/`narrowed_reason`, the roster prints `seen in …`,
+`narrowed …` and a `by region:` line, and `rules list --json` carries
+`support`, `narrowed_*` and `regions`. Pinned: a verbatim restatement
+widens by intersection and a restatement inside the rule's region does
+not; a new rule's support is its batch's distinct windows; the
+narrow-or-retire verdict across all seven cases; the scan end to end
+narrowing one rule and retiring another in one pass, with the narrowed
+rule standing on the next; coverage selection in id order skipping
+graded pairs and reflections already in the pass. Three fixtures moved
+with the release rule: a tally with totals only now exercises nothing,
+so the probation tests place their rows in the standing region. Every
+row in the live ledger predates the field, so on this machine every
+tally reads as ride-along until the next validate pass; the live rules
+are unscoped and unconvicted, so nothing narrows or retires on the first
+scan.
+
 **2026-09-05 — the meeting poll as one conversation: ask once, review
 once, then nothing until it is booked.** The scheduling poll had a
 mechanism (seeded candidates, capability URLs, `rank_poll`/`clean_winner`)
