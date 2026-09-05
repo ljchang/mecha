@@ -862,6 +862,29 @@ pub fn finalize_region_rules(
     out
 }
 
+/// New rules in `after` whose normalised text equals an active rule's in
+/// `before` — a copy that missed by a period, a quote or a dash. The
+/// learner is asked to restate an outside rule *word for word* so it
+/// widens; a near miss is instead a new rule with a fresh id scoped to
+/// the batch, a near-duplicate against the cap that nothing else reports.
+/// Reported, never merged: [`normalized_rule_key`] is retirement's brake
+/// on purpose, because a false merge is worse than the miss it prevents.
+/// Each pair is `(new text, existing text)`.
+pub fn near_restatements(before: &[Rule], after: &[Rule]) -> Vec<(String, String)> {
+    let known: HashSet<&str> = before.iter().map(|p| p.text.as_str()).collect();
+    after
+        .iter()
+        .filter(|r| !known.contains(r.text.as_str()))
+        .filter_map(|r| {
+            let key = normalized_rule_key(&r.text);
+            before
+                .iter()
+                .find(|p| p.active() && normalized_rule_key(&p.text) == key)
+                .map(|p| (r.text.clone(), p.text.clone()))
+        })
+        .collect()
+}
+
 /// The distinct scopes among `situations`, in first-seen order — the
 /// sub-regions a batch of evidence spans. A recorded window is reduced to
 /// its scope first, so two windows that differ only in trigger, surface or
@@ -5927,6 +5950,41 @@ mod situation_tests {
         assert_eq!(out.len(), 1);
         assert!(!out[0].active());
         assert_eq!(out[0].scope, Some(shell()), "not widened");
+    }
+
+    /// A copy that missed by punctuation is not a widening but a new rule
+    /// beside the old; the pass says so, and merges nothing.
+    #[test]
+    fn a_near_miss_restatement_is_reported_not_merged() {
+        let previous = vec![
+            rule("Say what you ran.", "r-a", Some(shell())),
+            Rule {
+                retired_at: Some("gone".into()),
+                ..rule("Never guess.", "r-r", None)
+            },
+        ];
+        let after = vec![
+            Rule {
+                text: "Say what you ran".into(),
+                ..Default::default()
+            },
+            Rule {
+                text: "Say what you ran.".into(),
+                ..Default::default()
+            },
+            Rule {
+                text: "never guess".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            near_restatements(&previous, &after),
+            vec![(
+                "Say what you ran".to_string(),
+                "Say what you ran.".to_string()
+            )],
+            "an exact match is identity and a retired match is retirement's"
+        );
     }
 
     /// A new rule's support is each distinct sub-region its batch was

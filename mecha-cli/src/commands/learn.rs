@@ -156,6 +156,12 @@ fn stamp_probation(
         .iter_mut()
         .filter(|r| r.retired_at.is_none() && mecha_core::learning::rewritable_in(r, region))
     {
+        // Read off the totals on purpose, where the release reads
+        // `in_scope`: stamping asks whether the rule was ever graded at
+        // all, and a ride-along grade answers that — the leash it argues
+        // *against* is the stricter one, so stamping on the narrower
+        // predicate would retire measured rules at 2 for an accident of
+        // where their probes fell. The asymmetry survived regions.
         let ever_graded =
             r.id.as_deref()
                 .and_then(|id| tallies.get(id))
@@ -483,9 +489,19 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             &situations,
             &chrono::Utc::now().to_rfc3339(),
         );
-        for (text, from, to) in widened(&learned_before, &rules) {
-            println!("{domain}: widened — \"{text}\" loaded with {from}, now {to}");
+        // What the reply did to the outside rules it was told to restate
+        // verbatim: a widening is announced only where the set is
+        // persisted (below), since the cap, the gate and `--propose` can
+        // each still throw this set away (found on review); a near miss —
+        // a copy off by a period — is a new rule beside the old, said now
+        // because it is true whatever happens to the set.
+        for (new, existing) in mecha_core::learning::near_restatements(&learned_before, &rules) {
+            eprintln!(
+                "{domain}: warning — \"{new}\" restates \"{existing}\" but not word for word, \
+                 so it is a new rule scoped to this batch rather than a widening"
+            );
         }
+        let widenings = widened(&learned_before, &rules);
 
         // Retired rules stay in the file but never render, so they cost the
         // budget nothing. Summed over the whole domain's active set, which
@@ -693,6 +709,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             println!("{evidence}");
             if status == "pending" {
                 println!("review with `mecha proposals show {}`", proposal.id);
+                for (text, from, to) in &widenings {
+                    println!(
+                        "{domain}: would widen (staged) — \"{text}\" loaded with {from}, would \
+                         load {to}"
+                    );
+                }
             }
 
             if applied {
@@ -707,6 +729,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 store.write_learned_rules(domain, &rules)?;
                 store.mark_reflexions_processed(&ids, &run.id)?;
                 store.append_run(&run)?;
+                for (text, from, to) in &widenings {
+                    println!("{domain}: widened — \"{text}\" loaded with {from}, now {to}");
+                }
                 for r in &rules {
                     println!(
                         "  - {}{}",
@@ -746,6 +771,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         store.write_learned_rules(domain, &rules)?;
         store.mark_reflexions_processed(&ids, &run.id)?;
         store.append_run(&run)?;
+        for (text, from, to) in &widenings {
+            println!("{domain}: widened — \"{text}\" loaded with {from}, now {to}");
+        }
 
         println!(
             "{domain}: {} reflection(s) → {} rule(s) (was {})",
