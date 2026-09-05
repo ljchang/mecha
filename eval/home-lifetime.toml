@@ -1,0 +1,81 @@
+# The synthetic assistant home as a lifetime (docs/EXPERIMENT-DESIGN.md
+# Part II §14, §16, §17 item 4). Paths are relative to the checkout `mecha exp
+# run` is started from; the driver resolves them before spawning anything.
+#
+#   mecha exp new eval/home-lifetime.toml
+#   mecha exp run home-loop
+#   mecha exp status home-loop && mecha exp judge home-loop
+
+name = "home-loop"
+kind = "lifetime"
+description = "Six assistant tasks over a fixture board and mailbox, with the gold principal closing tasks and releasing drafts; learn on against learn off."
+control = "full"
+split_seed = 17
+seeds = [1]
+repetitions = 1
+
+[schedule]
+reflect = 1
+validate = 3
+learn = 3
+retire = 3
+ruminate = 0
+
+[tasks]
+cases = "eval/home-cases.jsonl"
+fixture = "eval/workspace"
+ids = [
+  "home-who-is-rivera",
+  "home-reply-priya",
+  "home-archive-newsletter",
+  "home-helpdesk",
+  "home-schedule-checkin",
+  "home-overdue",
+]
+
+[principal]
+command = ["python3", "scripts/principal-gold.py", "eval/home-principal.toml"]
+timeout_secs = 600
+
+[fixtures]
+charter = "eval/fixtures/home/charter.toml"
+# The outbox route of this world — the fixture tools whose calls are staged
+# as drafts for the principal to release or reject. Spelled here, never
+# inherited from the operator's config, whose routed names are live tools.
+outbox_tools = [
+  "mail__mail_send",
+  "mail__mail_reply",
+  "mail__calendar_create_event",
+  "mail__calendar_update_event",
+  "mail__calendar_delete_event",
+]
+
+[[fixtures.mcp]]
+name = "graph"
+command = "python3"
+args = ["eval/fixtures/board_server.py"]
+# Unprefixed, exactly as production runs the graph: the board is `kg_task_*`.
+prefix_tools = false
+seed = "eval/fixtures/home/board"
+[fixtures.mcp.capabilities]
+# The graph holds other people's words; reads must arm the interlock, as the
+# operator's config forces for the real one.
+untrusted_input = true
+
+[[fixtures.mcp]]
+name = "mail"
+command = "python3"
+args = ["eval/fixtures/mail_server.py"]
+seed = "eval/fixtures/home/mail"
+[fixtures.mcp.capabilities]
+untrusted_input = true
+
+[arms.full]
+preset = "full"
+
+[arms.deaf]
+preset = "full"
+stages_off = ["learn", "validate", "retire"]
+[arms.deaf.prediction]
+metric = "failure"
+rationale = "without learn the owner's rejections and closures never become rules, so failures do not fall over the sequence"

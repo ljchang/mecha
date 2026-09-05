@@ -1,0 +1,99 @@
+{
+  "entities": {
+    "person:ada-okafor": {
+      "id": "person:ada-okafor",
+      "kind": "person",
+      "name": "Ada Okafor",
+      "summary": "The owner of this home: a PI running the Aurora grant resubmission and the Halcyon refactor.",
+      "keywords": ["ada", "okafor", "owner", "me"]
+    },
+    "project:aurora": {
+      "id": "project:aurora",
+      "kind": "project",
+      "name": "Aurora grant proposal",
+      "summary": "NIH R01 resubmission. Deadline 2026-09-30. Status: drafting specific aims; budget justification owed to the program officer.",
+      "keywords": ["aurora", "grant", "proposal", "deadline", "r01", "resubmission", "budget", "aims"]
+    },
+    "project:halcyon": {
+      "id": "project:halcyon",
+      "kind": "project",
+      "name": "Halcyon refactor",
+      "summary": "Migrating the analysis pipeline to the new halcyon layout. Status: in progress.",
+      "keywords": ["halcyon", "refactor", "pipeline"]
+    },
+    "person:priya-nair": {
+      "id": "person:priya-nair",
+      "kind": "person",
+      "name": "Priya Nair",
+      "summary": "Postdoc in the lab; collaborator on the Aurora grant proposal. Email priya.nair@example.edu. Last met 2026-07-22 (lab meeting).",
+      "keywords": ["priya", "nair", "postdoc", "collaborator"]
+    },
+    "person:alex-chen": {
+      "id": "person:alex-chen",
+      "kind": "person",
+      "name": "Alex Chen",
+      "summary": "PhD student in the lab. Email alex.chen@example.edu. Last met 2026-07-30 (advising meeting).",
+      "keywords": ["chen", "student", "phd"]
+    },
+    "person:alex-rivera": {
+      "id": "person:alex-rivera",
+      "kind": "person",
+      "name": "Alex Rivera",
+      "summary": "Program officer at the funding agency for the Aurora grant. Email alex.rivera@example.org. Last met 2026-06-12 (site visit).",
+      "keywords": ["rivera", "program", "officer", "agency", "funder"]
+    },
+    "person:mara-lindqvist": {
+      "id": "person:mara-lindqvist",
+      "kind": "person",
+      "name": "Mara Lindqvist",
+      "summary": "Department administrator; handles IRB paperwork and grant submissions. Email mara.lindqvist@example.edu.",
+      "keywords": ["mara", "lindqvist", "admin", "administrator", "irb", "department"]
+    },
+    "person:tal-ben-ami": {
+      "id": "person:tal-ben-ami",
+      "kind": "person",
+      "name": "Tal Ben-Ami",
+      "summary": "Collaborator at another institution; drafting the methods section for the Aurora resubmission. Email tal@example.org.",
+      "keywords": ["tal", "ben-ami", "methods", "collaborator"]
+    }
+  },
+  "facts": {
+    "person:priya-nair": [
+      {"uid": "f-priya-1", "statement": "Priya Nair collaborates on the Aurora grant proposal.", "predicate": "collaborates_with", "polarity": "positive", "confidence": 0.92},
+      {"uid": "f-priya-2", "statement": "Priya Nair is NOT part of the Meridian pilot.", "predicate": "member_of", "polarity": "negative", "confidence": 0.95}
+    ],
+    "person:alex-rivera": [
+      {"uid": "f-rivera-1", "statement": "Alex Rivera is the program officer for the Aurora grant.", "predicate": "has_role", "polarity": "positive", "confidence": 0.9},
+      {"uid": "f-rivera-2", "statement": "Alex Rivera asked for the Aurora budget justification by the end of the week of 2026-08-31.", "predicate": "requested", "polarity": "positive", "confidence": 0.85}
+    ],
+    "project:aurora": [
+      {"uid": "f-aurora-1", "statement": "The Aurora grant proposal is due 2026-09-30.", "predicate": "due", "polarity": "positive", "confidence": 0.98}
+    ],
+    "person:mara-lindqvist": [
+      {"uid": "f-mara-1", "statement": "Mara Lindqvist files the lab's IRB continuing reviews.", "predicate": "has_role", "polarity": "positive", "confidence": 0.9}
+    ],
+    "person:tal-ben-ami": [
+      {"uid": "f-tal-1", "statement": "Tal Ben-Ami is drafting the Aurora methods section.", "predicate": "collaborates_with", "polarity": "positive", "confidence": 0.88}
+    ]
+  },
+  "related": {
+    "project:aurora": ["person:priya-nair", "person:alex-rivera", "person:tal-ben-ami"],
+    "project:halcyon": ["person:alex-chen"],
+    "person:priya-nair": ["project:aurora"],
+    "person:alex-rivera": ["project:aurora"],
+    "person:alex-chen": ["project:halcyon"],
+    "person:mara-lindqvist": [],
+    "person:tal-ben-ami": ["project:aurora"],
+    "person:ada-okafor": ["project:aurora", "project:halcyon"]
+  },
+  "timeline": {
+    "person:priya-nair": ["2026-07-22 lab meeting: discussed Aurora specific aims"],
+    "person:alex-chen": ["2026-07-30 advising meeting: thesis timeline"],
+    "person:alex-rivera": ["2026-06-12 site visit: budget questions", "2026-08-31 email: asked for the budget justification"],
+    "person:mara-lindqvist": ["2026-08-15 email: IRB continuing review is due"],
+    "person:tal-ben-ami": ["2026-08-20 call: agreed Tal drafts the methods section"],
+    "project:aurora": ["2026-07-22 aims discussion with Priya Nair", "2026-08-31 budget justification requested by Alex Rivera"],
+    "project:halcyon": [],
+    "person:ada-okafor": []
+  }
+}
