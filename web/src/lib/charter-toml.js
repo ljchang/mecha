@@ -36,10 +36,12 @@ export const esc = (s) =>
 /// A line's `sensor` (`{kind, setpoint}`, as the server serves it) is written
 /// back as a `[line.sensor]` sub-table with the owner's own setpoint
 /// spelling, always as a string — `setpoint = 3` on disk comes back as
-/// `setpoint = "3"`, which the reader types identically. The editor never
-/// composes a sensor; this exists so a re-rank or a text edit does not
-/// silently delete one (GOAL-SYSTEM-DESIGN §11.1: the parser, this
-/// serialiser and the template move together).
+/// `setpoint = "3"`, which the reader types identically. A sensor reaches
+/// here two ways — read from the file, or typed by the owner in the form —
+/// and is written the same way either way; a sensor without a kind writes
+/// no table, which is why `sensorProblems` names one before a save
+/// (GOAL-SYSTEM-DESIGN §11.1: the parser, this serialiser and the template
+/// move together).
 export function serialize(header, lines) {
   const out = [];
   if (header.trim()) out.push(header, '');
@@ -182,6 +184,7 @@ export function readingStands(line) {
 /// instead, beside the line, before the save is armed.
 export function sensorProblems(lines) {
   const out = [];
+  const seen = new Map();
   for (const [i, l] of lines.entries()) {
     if (!l.sensor) continue;
     const kind = String(l.sensor.kind ?? '').trim();
@@ -189,6 +192,12 @@ export function sensorProblems(lines) {
     if (!kind && !setpoint) out.push(`Line ${i + 1}'s sensor needs a kind and a setpoint, or remove it.`);
     else if (!kind) out.push(`Line ${i + 1}'s sensor has no kind.`);
     else if (!setpoint) out.push(`Line ${i + 1}'s sensor has no setpoint.`);
+    // The parser refuses two lines of one kind (only the higher-ranked
+    // would ever be attributed anything); said here, before the save.
+    if (kind) {
+      if (seen.has(kind)) out.push(`Lines ${seen.get(kind) + 1} and ${i + 1} both carry a ${kind} sensor — keep one.`);
+      else seen.set(kind, i);
+    }
   }
   return out;
 }

@@ -77,4 +77,16 @@ assert.equal(readingStands(withReading), false);
 assert.equal(readingStands(rows([{ id: 'x', text: 'y', sensor: { kind: 'outbox_age', setpoint: '24h' } }], next)[0]), false, 'no reading served');
 assert.equal(readingStands({ sensor: null, reading: null, read_for: null }), false);
 
+
+// Two lines of one kind: the parser refuses the document naming both, and
+// the form says so before the save is armed.
+assert.deepEqual(
+  sensorProblems([
+    { id: 'a', text: 't', sensor: { kind: 'outbox_age', setpoint: '24h' } },
+    { id: 'b', text: 'u', sensor: { kind: 'question_latency', setpoint: '12h' } },
+    { id: 'c', text: 'v', sensor: { kind: 'outbox_age', setpoint: '48h' } },
+  ]),
+  ['Lines 1 and 3 both carry a outbox_age sensor — keep one.']
+);
+
 console.log('charter-rows: ok');

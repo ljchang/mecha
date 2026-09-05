@@ -93,8 +93,8 @@ fn charter_state_blocking() -> Json<serde_json::Value> {
             "exists": path.is_file(),
             "raw": raw,
             // `sensor` rides beside each line so the page's serialiser can
-            // write it back on a save — the editor carries a sensor through
-            // a re-rank, it does not compose one — as `{kind, setpoint}`
+            // write it back on a save — carried through a re-rank, or typed
+            // by the owner in the form — as `{kind, setpoint}`
             // with the owner's own setpoint spelling, and `reading` beside
             // it is the sensor's current value for the page to show
             // (§11.1, containment 5's first guard). Absent on a line
