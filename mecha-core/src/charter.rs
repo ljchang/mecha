@@ -946,6 +946,34 @@ setpoint = 0
         assert!(err.contains("setpoint of zero"), "{err}");
     }
 
+    /// The served list, as JSON, for the far side of the boundary: the
+    /// docs demo's `fixtures.js` carries a hand copy of what
+    /// `sensor_kinds_json` serves, and `website/scripts/check-charter-toml.mjs`
+    /// reads this literal out of the source and asserts the fixture equals
+    /// it, the way it pins the serialiser against `WEB_EDITOR_SAMPLE`. The
+    /// test below asserts the literal equals the function, so a kind that
+    /// joins or a hint that is reworded fails here first and the demo
+    /// second — never neither (found on review).
+    // sensor-kinds:begin
+    const SENSOR_KINDS_JSON: &str = r#"[
+  {"kind":"outbox_waiting","unit":"count","hint":"a whole number","describe":"how many outbox drafts wait on you"},
+  {"kind":"outbox_age","unit":"duration","hint":"a duration like `24h` or `7d`","describe":"how long a staged draft has sat unreviewed"},
+  {"kind":"question_latency","unit":"duration","hint":"a duration like `24h` or `7d`","describe":"how long a parked question waits for your answer"},
+  {"kind":"request_closure","unit":"duration","hint":"a duration like `24h` or `7d`","describe":"how long a front-door request stays open"},
+  {"kind":"intervention_rate","unit":"rate","hint":"a rate like `0.2` or `20%`","describe":"the share of recent runs you stepped into"}
+]"#;
+    // sensor-kinds:end
+
+    #[test]
+    fn the_marked_kinds_literal_is_what_the_server_serves() {
+        let pinned: serde_json::Value = serde_json::from_str(SENSOR_KINDS_JSON).unwrap();
+        assert_eq!(
+            pinned,
+            sensor_kinds_json(),
+            "update the sensor-kinds literal (and the demo fixture) with the served list"
+        );
+    }
+
     /// The list a form offers is every kind, each with its unit's own hint
     /// — the sentence the parser's refusal uses — and no value: a default
     /// in this list would be the page proposing a number.
