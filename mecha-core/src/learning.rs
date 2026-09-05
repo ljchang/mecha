@@ -649,6 +649,13 @@ pub fn finalize_rules(
                 // the D1 hedge evaporated within a session or two while
                 // staying printed and documented.
                 r.probation = prev.probation;
+                // So does the owner's off switch. The reply's rule is built
+                // from `..Default::default()`, which is `enabled: true` by
+                // design, and the carry-through of hand-disabled rules skips
+                // any text already in the reply — so a restatement of a
+                // disabled rule re-enabled it under its own id with nothing
+                // on the roster to say it had been off (found on review).
+                r.enabled = prev.enabled;
                 // The region a rule was learned in survives a restatement;
                 // `finalize_region_rules` assigns a scope only to text the
                 // store has never held. Its support and any narrowing ride
@@ -805,6 +812,18 @@ pub fn finalize_region_rules(
             let seen_outside = support.iter().any(|s| !old_scope.matches(s));
             if widened_scope != old_scope && seen_outside {
                 r.scope = Some(widened_scope);
+                // A widening that moves the scope may put the rule back in a
+                // region a scan narrowed it out of, and `tally_for` folds
+                // only the rows since `narrowed_at` — so the convictions
+                // that shed the region would stay buried while the rule
+                // rode there again, a model claim reversing a ledger ruling
+                // with its evidence amnestied (found on review). Clearing
+                // the mark folds the whole ledger again, and the old
+                // convictions re-convict at the next scan if they still
+                // apply. Fail-closed, and the roster stops saying "narrowed"
+                // of a rule that no longer is.
+                r.narrowed_at = None;
+                r.narrowed_reason = None;
             }
             // The old scope itself is support when nothing narrower was
             // recorded for it — a rule from before the field has only the
@@ -3140,8 +3159,13 @@ impl Learner {
         // Retired rules are context the learner must not rewrite — and must
         // not re-derive: they were measured to make probes worse. Shown so
         // the same lesson cannot come back under new wording every pass.
-        let (active, retired): (Vec<&Rule>, Vec<&Rule>) =
-            learned_rules.iter().partition(|r| r.retired_at.is_none());
+        // A hand-disabled rule is neither: the owner switched it off, and
+        // quoting it back under an instruction to restate verbatim would
+        // be asking the model to switch it on (found on review).
+        let (active, retired): (Vec<&Rule>, Vec<&Rule>) = learned_rules
+            .iter()
+            .filter(|r| r.enabled || r.retired_at.is_some())
+            .partition(|r| r.retired_at.is_none());
         // Rules outside the region are context too: shown so the region's
         // set does not restate them, immutable because the reply replaces
         // only what is inside.
@@ -5835,6 +5859,49 @@ mod situation_tests {
         assert_eq!(out[0].scope, None);
         assert_eq!(out[0].support, vec![Situation::default(), shell()]);
 
+        // A rule a scan narrowed, restated in the region it was narrowed out
+        // of: the widening happens (the evidence is real), but the narrowing
+        // mark goes with it, so the convictions that shed the region fold
+        // again at the next scan instead of staying buried behind
+        // `narrowed_at` (found on review).
+        let narrowed = vec![Rule {
+            narrowed_at: Some("2026-09-05T12:00:00Z".into()),
+            narrowed_reason: Some("3 attributed regression(s) in shell".into()),
+            support: vec![fetch.clone()],
+            ..rule("Say what you ran.", "r-n", Some(fetch.clone()))
+        }];
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "Say what you ran.".into(),
+                ..Default::default()
+            }],
+            &narrowed,
+            &shell(),
+            &["u".into()],
+            std::slice::from_ref(&shell()),
+            "now",
+        );
+        assert_eq!(out[0].scope, Some(Situation::default()));
+        assert_eq!(
+            out[0].narrowed_at, None,
+            "the narrowing it reversed is gone"
+        );
+        assert_eq!(out[0].narrowed_reason, None);
+        // Whereas a restatement that widens nothing keeps the mark.
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "Say what you ran.".into(),
+                ..Default::default()
+            }],
+            &narrowed,
+            &run_with(&["fs_read", "http_fetch"]),
+            &["u".into()],
+            std::slice::from_ref(&run_with(&["fs_read", "http_fetch"])),
+            "now",
+        );
+        assert_eq!(out[0].scope, Some(fetch.clone()));
+        assert!(out[0].narrowed_at.is_some());
+
         // A retired rule restated is retirement's business, not widening's.
         let retired = vec![Rule {
             retired_at: Some("2026-09-01T00:00:00Z".into()),
@@ -5992,6 +6059,35 @@ mod situation_tests {
         assert!(
             !texts.contains(&"Old shell rule."),
             "omitted inside the region: gone"
+        );
+        // A reply that restates the disabled rule word for word — what the
+        // outside section now asks for of a same-lesson rule — does not
+        // switch it back on: `enabled` rides through the restatement like
+        // `probation` and `scope` do. Fails on the finaliser that built the
+        // restated rule from `..Default::default()` (found on review).
+        let restated = finalize_region_rules(
+            vec![Rule {
+                text: "Disabled mail rule.".into(),
+                ..Default::default()
+            }],
+            &previous,
+            &run_with(&["mail_send"]),
+            &["y".into()],
+            &[run_with(&["mail_send"])],
+            "now",
+        );
+        let off = restated
+            .iter()
+            .find(|r| r.text == "Disabled mail rule.")
+            .unwrap();
+        assert!(!off.enabled, "an owner's off switch survives a restatement");
+        assert_eq!(off.id.as_deref(), Some("r-off"));
+        assert_eq!(
+            restated
+                .iter()
+                .filter(|r| r.text == "Disabled mail rule.")
+                .count(),
+            1
         );
         let new = out.iter().find(|r| r.text == "New shell rule.").unwrap();
         assert_eq!(new.scope, Some(shell()));
