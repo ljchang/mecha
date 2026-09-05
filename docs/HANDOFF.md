@@ -1724,6 +1724,25 @@ the appraisal-page change. Untouched, and checked: `mecha-mail`,
 and the `publish_tools` change from the 01:51Z row — all as that row left
 them. The same two stale `mecha-graph-mcp` children remain.
 
+**2026-09-05 20:19Z — #192 (§17.4 widening, narrowing and per-region
+validation) deployed by mecha-53 from `~/Github/mecha` on `main` at
+`52b8b0b`, fast-forwarded from `efbcab5` (clean, no `MERGE_HEAD` in any
+worktree, no benchmark running).** `~/.cargo/bin/mecha` reinstalled
+(file 20:19:01Z; `strings` carries `since it was narrowed at` and `would
+widen (staged)`, neither in the 02:04Z build; `validate --help` names
+`--cover`). Restarted 20:19:13Z, each verified from its own startup line
+in a journal window opened at the restart and from `/proc/<pid>/exe`:
+mecha-slack (`Connected to cosanlab as mecha. 1 owner(s), 16 thread(s)`),
+mecha-triggers (`1 trigger(s), 1 enabled · ticking every minute`),
+mecha-serve (both doors), mecha-drain (the bash wrapper; its `mecha`
+children exec fresh per iteration). Not restarted, correctly:
+mecha-voice-worker and mecha-parakeet (`scripts/voice/` unchanged in the
+range), and the web dist (`web/` unchanged). The stale-process sweep
+found nothing. `scripts/ruminate.sh` in the checkout now passes
+`validate --cover 1`; the timer's next firing is 03:30Z 2026-09-06, the
+first pass that can write a placed ledger row. Announced to the one live
+peer (mecha-0c).
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2660,24 +2679,6 @@ the mechanism and every decision. What it left standing:
 
 
 
-**2026-09-05 20:19Z — #192 (§17.4 widening, narrowing and per-region
-validation) deployed by mecha-53 from `~/Github/mecha` on `main` at
-`52b8b0b`, fast-forwarded from `efbcab5` (clean, no `MERGE_HEAD` in any
-worktree, no benchmark running).** `~/.cargo/bin/mecha` reinstalled
-(file 20:19:01Z; `strings` carries `since it was narrowed at` and `would
-widen (staged)`, neither in the 02:04Z build; `validate --help` names
-`--cover`). Restarted 20:19:13Z, each verified from its own startup line
-in a journal window opened at the restart and from `/proc/<pid>/exe`:
-mecha-slack (`Connected to cosanlab as mecha. 1 owner(s), 16 thread(s)`),
-mecha-triggers (`1 trigger(s), 1 enabled · ticking every minute`),
-mecha-serve (both doors), mecha-drain (the bash wrapper; its `mecha`
-children exec fresh per iteration). Not restarted, correctly:
-mecha-voice-worker and mecha-parakeet (`scripts/voice/` unchanged in the
-range), and the web dist (`web/` unchanged). The stale-process sweep
-found nothing. `scripts/ruminate.sh` in the checkout now passes
-`validate --cover 1`; the timer's next firing is 03:30Z 2026-09-06, the
-first pass that can write a placed ledger row. Announced to the one live
-peer (mecha-0c).
 **2026-09-05 — §17.4's consolidation widening and narrowing and the
 per-region half of validation: PR #192 (`feat/region-widening`), merged
 at `52b8b0b` after seven review passes and deployed 20:19Z by mecha-53
