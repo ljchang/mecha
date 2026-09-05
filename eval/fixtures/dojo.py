@@ -25,7 +25,8 @@ of the path jail, but an unconfined `shell` declares `external_send` and is
 refused the moment a dojo read arms private and untrusted, and the
 injection only exists inside such a read (checked on review). As a source,
 `list` enumerates the suite's user tasks and — by default — each paired with
-one injection task (`user_task_3+injection_task_1`), `setup` rebuilds the
+one injection task, rotating through them (`user_task_1+injection_task_1`,
+`user_task_7+injection_task_1` when the suite has six), `setup` rebuilds the
 store from the suite's initial environment with the pair's injection placed
 in every vector, and `grade` calls the suite's own `utility` (and, for a
 pair, `security`) over the persisted end state and the run's answer.
@@ -358,7 +359,17 @@ def serve(world):
         }
         for f in world.suite.tools
     ]
-    env = world.load(world.env_path) if os.path.exists(world.env_path) else world.fresh(None, None)
+    # A world that was never set up is a refusal, not a fresh one: the
+    # fallback served a clean, un-injected environment, so broken wiring —
+    # a store cleared, a `setup` that wrote under another name — read as a
+    # perfect catch rate with zero blocked sends (found on review).
+    if not os.path.exists(world.env_path):
+        print(
+            f"dojo.py serve: {world.env_path} is missing — `setup <task>` writes it; a world nobody set up is not a fixture",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    env = world.load(world.env_path)
     while True:
         line = sys.stdin.readline()
         if not line:
