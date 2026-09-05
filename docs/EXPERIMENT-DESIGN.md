@@ -696,6 +696,16 @@ Per-run levers:
 | `declared_checks` | unbuilt (arm 2's executor) | the harness running a step's `check` |
 | `appraiser` | `--appraise` on the readout only | the quarantined appraiser pass, wherever it is invoked |
 
+**As built** (`harness::Lever`, 2026-09-04): the closed set is fifteen, not
+the table's eleven — it also carries the seven `force_reproducible` throws
+that the table lacked and D14's equivalence needed: `mcp`, `hooks`,
+`outbox`, `fallback`, `messages`, `compact_tool`, and `approval_rules`,
+which `Lever::bare` never throws (eval lifts it by its own explicit line,
+and a manifest refuses it in either direction). `plan_reinjection`,
+`declared_checks` and `appraiser` are not levers until their switch
+exists. The stage levers as built are `reflect`, `learn`, `validate`,
+`retire`, `ruminate` and `sensors_in_brief` (`experiment::StageLever`).
+
 Loop-stage levers, `lifetime` only:
 
 | stage lever | verb | what turning it off removes |
@@ -752,7 +762,7 @@ rules:
    variance is a recorded confound, the way the ruminate judge's correlation
    with the model under test is a recorded one.
 2. **It is a separate process, writing through the owner's own verbs**
-   (`tasks set`, `outbox release|reject|edit`, `questions answer`), on D3's
+   (`tasks set`, `outbox approve|reject|edit`, `questions answer`), on D3's
    argument and one more: the appraisal then reads exactly the records it
    would read from a person, through the same stores. It never writes a
    session, a reflection or a rule.
@@ -769,7 +779,7 @@ hands each task to the agent with `mecha tasks work`, closes it with
 `tasks set --status`, redirects it with `tasks steer` (the run marker's
 steer file, which the loop drains exactly once), stops it with
 `tasks stop`, answers a parked question with `questions answer`, and
-judges drafts with `outbox release|reject|edit` (`edit` honours `$EDITOR`,
+judges drafts with `outbox approve|reject|edit` (`edit` honours `$EDITOR`,
 so a scripted editor applies the diff). It reads through `--json`. Those
 runs record as `SessionKind::Task`, the surface the appraisal was built
 for. The TUI is ruled out by its own design — steering there needs one
@@ -815,7 +825,7 @@ Ranked:
    marginal yield (§3.10 of the appraisal review) on a subset. Caveat:
    recorded by the 0.1.2–0.1.6 loop, so fields that did not exist read
    `None` — the correct reading, never to be filled in.
-2. **`eval/cases.jsonl`** — 70 cases, 15 tags, deterministic graders, a
+2. **`eval/cases.jsonl`** — 36 cases, 15 tags, deterministic graders, a
    minute or two each. Q3 at k=5: the per-run levers, paired. Too small and
    too clean for Q2.
 3. **A Terminal-Bench subset as a lifetime sequence** — twenty tasks in a
@@ -867,7 +877,7 @@ Ranked:
   four in the holdout — are the minimum. A lifetime is one episode per
   *position*, so five lifetimes of twenty tasks pair a hundred points per
   arm, enough for a slope. At the measured rates, Q3 over the bake-off set
-  is about twelve hours per arm at k=5, and one Q2 lifetime pair about
+  is about six hours per arm at k=5 (36 cases × 5 runs × ~2 min), and one Q2 lifetime pair about
   forty. Nightly-scale, which is why the runner must resume per trial (the
   trigger runner's `.running` marker and pid-range check, unchanged).
 - **Confounds** are §9's, plus one: **the loop's stages are model calls on
@@ -902,6 +912,14 @@ needs the lifetime driver and the principal. The order becomes:
 - **B, C, D₂, E** as in §11 — branching, snapshot, `ensemble`, analysis.
   Communication starts here and inherits the store, the levers and the
   gate.
+
+**Status, 2026-09-05.** 0, A, A′, D₁ (`mecha exp single|lifetime`, PRs
+#157–#178) and P (the gold-verdict principal under §21.1's contract, #185)
+are on main. Two channels the principal names are gated off it until a
+manifest can name fixture servers: release (`outbox approve` executes the
+routed tool for real, and a `full` arm carries the operator's live servers)
+and board closure (the board is the graph's over MCP). B, C, D₂ and E
+remain.
 
 Each step is useful alone, which is still the test of whether the split is
 real: step 0 is a finding by itself, A′ makes today's `eval` honest about
