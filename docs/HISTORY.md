@@ -3611,7 +3611,11 @@ and under `--apply` would have been marked superseded — the twin test
 now asks whether the proposal changes the rule against its own
 `rules_before`; and the standing batch could widen a scoped rule to
 everywhere on a stale followup window, so the standing batch never
-widens and only a window with a focus is support.
+widens and only a window with a focus is support. The second pass found
+the same stale window one file over: a followup probe wrote its window
+as the region it exercised, which would have released probation and
+satisfied `--cover` for a region the probe never touched — the row is
+now placed only when the window has a focus, unknown otherwise.
 `ValidationRecord::region` is the probed reflection's window (not the
 run's registry, which every run shares), `RuleTally::regions` folds the
 counts per region with `in_scope` and `attributed_against` over them,

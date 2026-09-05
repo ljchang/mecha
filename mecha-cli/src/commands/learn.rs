@@ -778,12 +778,15 @@ fn widened(
         Some(s) if !s.is_standing() => s.describe(),
         _ => "everywhere".to_string(),
     };
+    let keys =
+        |r: &mecha_core::learning::Rule| r.scope.as_ref().map_or(0, |s| s.scope().tools.len());
     after
         .iter()
         .filter_map(|r| {
             let prev = before.iter().find(|p| p.id.is_some() && p.id == r.id)?;
-            let (from, to) = (loads(prev), loads(r));
-            (from != to).then(|| (r.text.clone(), from, to))
+            // Fewer keys is wider; a scope that merely changed is not a
+            // widening and must not be announced as one.
+            (keys(r) < keys(prev)).then(|| (r.text.clone(), loads(prev), loads(r)))
         })
         .collect()
 }
@@ -823,9 +826,15 @@ mod tests {
             )),
             ..Default::default()
         };
-        let before = vec![scoped("a", &["shell"]), scoped("b", &["fs_read"])];
+        let before = vec![
+            scoped("a", &["shell"]),
+            scoped("b", &["fs_read"]),
+            scoped("d", &["shell"]),
+        ];
         let mut after = vec![
             scoped("a", &[]),
+            // Narrowed, not widened: a scope change the other way.
+            scoped("d", &["fs_write", "shell"]),
             scoped("b", &["fs_read"]),
             scoped("c", &["shell"]),
         ];
