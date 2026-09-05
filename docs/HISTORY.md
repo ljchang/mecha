@@ -3583,6 +3583,69 @@ installed and restarted at 18:04 the same day, once a peer's inference run
 had released the model server, and the skill's step-1b probe confirmed the
 new binary from the served page (a `304` naming its `ETag`, not a bare one).
 
+**2026-09-05, evening — the null-step and restart counters exist.**
+§17.7 item 2 rules that a mid-run rule delivery stays off until the
+null-step and restart counters are read, and reading the corpus for them
+found neither recorded: `todo` read the null step (`step::Finding::Null`,
+a step completed with no call behind it) into its result line and
+dropped it, and a reopen — a completed step set back to in progress —
+was not read at all, so the precondition could not be met from the store.
+`ToolCtx::step_counts` (`feat/step-counters`) is a pair of atomics the
+loop mints per run unconditionally — a sensor, not a lever, unlike
+`step_escalation` whose presence is the feature's switch — `todo` counts
+both events on the plan's own transitions, `RunOutcome` carries them into
+`RunStats::step_nulls` / `step_reopens` (`Option`, unknown on rows from
+before, on `boredom_notices`'s rule), `RunStats::merge` sums them, and
+`Corpus::step_null_rate` / `step_reopen_rate` / `step_totals` read them
+into `mecha sessions health` as a `plan steps` row and JSON keys. Pinned:
+a null completion counts once, real work counts nothing, a reopen counts
+once and its second null completion again, a first start is not a reopen,
+a context with no slot counts nothing and does not panic, and the corpus
+reads unknown before any sensed row and a rate over sensed rows after.
+Nothing consumes the numbers yet — the ruling asks for them to be *read*,
+and after a few nights they can be. The first review pass found two
+things at the bar, both about whether the number would be true when
+read: a completed step the model dropped from the plan and re-added as
+in progress counted no reopen (the live plan no longer remembered it was
+done) while its second null completion still counted, deflating one rate
+and inflating the other — `ever_completed` now survives the live-plan
+sweep, capped like `completed`; and nothing tested the seam from the
+run-scoped slot to the record, whose failure would be a confident
+`Some(0)` that `step_totals` counts as sensed rather than a dash — a
+scripted run through the real `todo` tool now asserts both counts on the
+outcome and the record. The second pass found the denominator: every
+run since the sensor records `Some(0)` whether or not it ever planned,
+so the rate would have tracked how often the model plans at all — the
+confound a mid-run delivery could introduce in the very reading meant
+to gate it — and no recorded field could recover it later. A third
+counter, `step_completions`, is the denominator now: the rates are over
+runs that completed at least one plan step, `StepTotals` carries sensed,
+planned, completions, nulls and reopens apart, and the health line names
+which is which. With it, a reopen consumes its `ever_completed` entry so
+a step reopened, dropped and re-added counts one reopen per completion.
+The third pass found the last two doors: a reopen needs a prior
+completion but not in the same run — the plan outlives the run and a
+resume reinstalls completed items — so a run that only restarted a step
+was dropped from the denominator with its reopen, and now counts; and a
+completed step parked as `pending` and resumed counted no reopen, and
+now does. The fourth pass found the history's own two faults: keyed by
+wording alone and exempt from the live-plan sweep, it made "run the
+tests" in the next unrelated plan a reopen of the last one, so it is now
+scoped to the run that completed the step — the counters' own scope,
+from the work tracker's run id — and dropped the moment a new run
+writes; and the completion arm never consulted it, so a step dropped and
+re-added as completed counted twice in the denominator, and now counts
+once. The fifth pass, on the merge with main, found the denominators
+still one door open each way: a reopen-only run cannot produce a null
+and sat in the null rate's denominator, and a completion whose step was
+started in an earlier turn (every chat and TUI turn is a fresh run) or
+never marked in progress counts a completion but can never be a null.
+So a fourth counter, `step_measured` — completions whose span could be
+measured — is the null rate's denominator, the reopen rate keeps runs
+with any step activity, `StepTotals` names both, and the health JSON
+key that said "completed a step" of a set that includes reopen-only
+runs is `runs_with_a_plan_step`.
+
 **2026-09-05 — a rule widens on evidence from two regions and narrows to
 where it held, and the ledger says which sub-region each probe
 exercised.** `GOAL-SYSTEM-DESIGN.md` §17.4's consolidation and validation
