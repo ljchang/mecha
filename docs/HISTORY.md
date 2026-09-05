@@ -3623,6 +3623,12 @@ runs that completed at least one plan step, `StepTotals` carries sensed,
 planned, completions, nulls and reopens apart, and the health line names
 which is which. With it, a reopen consumes its `ever_completed` entry so
 a step reopened, dropped and re-added counts one reopen per completion.
+The third pass found the last two doors: a reopen needs a prior
+completion but not in the same run — the plan outlives the run and a
+resume reinstalls completed items — so a run that only restarted a step
+was dropped from the denominator with its reopen, and now counts; and a
+completed step parked as `pending` and resumed counted no reopen, and
+now does.
 
 **2026-09-05 — a rule widens on evidence from two regions and narrows to
 where it held, and the ledger says which sub-region each probe

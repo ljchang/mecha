@@ -430,12 +430,17 @@ impl Corpus {
     /// no step was ever null are opposite findings. Totals beside the
     /// rates, because a rate says how often and not how much.
     ///
-    /// **Over runs that completed at least one plan step**, not over every
-    /// run since the sensor shipped: a run that never planned records
-    /// `Some(0)` for all three, and counting it would make the rate track
-    /// how often the model plans at all rather than what its steps did —
-    /// the confound a mid-run delivery could introduce in the very reading
-    /// meant to gate it (found on review).
+    /// **Over runs that had a plan step to speak of**, not over every run
+    /// since the sensor shipped: a run that never planned records `Some(0)`
+    /// for all three, and counting it would make the rate track how often
+    /// the model plans at all rather than what its steps did — the
+    /// confound a mid-run delivery could introduce in the very reading
+    /// meant to gate it (found on review). A run "had a plan" when it
+    /// completed a step *or* reopened one: a reopen needs a prior
+    /// completion, but not in the same run — the plan outlives the run
+    /// (`TodoTool::lists` is keyed by workspace, and a resume reinstalls
+    /// completed items), so a run that only restarts a step recorded a
+    /// measured event and must not be dropped (found on the next review).
     pub fn step_null_rate(&self) -> Option<f64> {
         Self::share_positive(self.planned().map(|r| r.stats.step_nulls.unwrap_or(0)))
     }
@@ -444,11 +449,13 @@ impl Corpus {
         Self::share_positive(self.planned().map(|r| r.stats.step_reopens.unwrap_or(0)))
     }
 
-    /// Rows that recorded the sensor and completed at least one plan step.
+    /// Rows that recorded the sensor and completed or reopened at least one
+    /// plan step.
     fn planned(&self) -> impl Iterator<Item = &RunRow> {
-        self.rows
-            .iter()
-            .filter(|r| r.stats.step_completions.is_some_and(|c| c > 0))
+        self.rows.iter().filter(|r| {
+            r.stats.step_completions.is_some_and(|c| c > 0)
+                || r.stats.step_reopens.is_some_and(|c| c > 0)
+        })
     }
 
     /// The totals the rates above are over: `sensed` rows carry the sensor
@@ -642,8 +649,8 @@ fn exhaustive(record: &Record) {
 pub struct StepTotals {
     /// Rows that carry the sensor at all.
     pub sensed: usize,
-    /// Of those, rows that completed at least one plan step — the
-    /// denominator of the rates.
+    /// Of those, rows that completed or reopened at least one plan step —
+    /// the denominator of the rates.
     pub planned: usize,
     pub completions: u32,
     pub nulls: u32,
@@ -959,21 +966,26 @@ mod tests {
                 sensed(0, 1, 2),
                 sensed(0, 0, 1),
                 sensed(0, 0, 0),
+                // A run that only restarted a step completed in an earlier
+                // run: a measured reopen with no completion of its own,
+                // and it counts (found on review).
+                sensed(0, 1, 0),
             ],
         );
         let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
-        assert_eq!(corpus.step_null_rate(), Some(1.0 / 3.0));
-        assert_eq!(corpus.step_reopen_rate(), Some(1.0 / 3.0));
+        assert_eq!(corpus.step_null_rate(), Some(1.0 / 4.0));
+        assert_eq!(corpus.step_reopen_rate(), Some(2.0 / 4.0));
         assert_eq!(
             corpus.step_totals(),
             StepTotals {
-                sensed: 4,
-                planned: 3,
+                sensed: 5,
+                planned: 4,
                 completions: 6,
                 nulls: 2,
-                reopens: 1,
+                reopens: 2,
             },
-            "the old row is not sensed; the unplanned one is sensed but not planned"
+            "the old row is not sensed; the never-planned one is sensed but not planned; \
+             the reopen-only one is planned"
         );
         // Sensed rows that all lack a plan: known, and nothing to rate.
         let dir2 = tmpdir();

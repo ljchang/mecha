@@ -1313,8 +1313,8 @@ fn health(
         // run since the sensor.
         println!(
             "  plan steps          {} null and {} reopened of {} completed step(s); a null in {} \
-             and a reopen in {} of the {} run(s) that completed one (of {} that recorded the \
-             sensor)",
+             and a reopen in {} of the {} run(s) that had one to speak of (of {} that recorded \
+             the sensor)",
             steps.nulls,
             steps.reopens,
             steps.completions,
