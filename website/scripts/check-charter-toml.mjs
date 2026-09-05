@@ -112,4 +112,20 @@ eq(slugify('Say no early'), 'say-no-early', 'a slug from typed text');
 eq(slugify('  Punctuation!! and — dashes  '), 'punctuation-and-dashes', 'punctuation collapses');
 eq(slugify('one two three four five six seven'), 'one-two-three-four-five', 'capped at five words');
 
+// --- the sensor kinds the demo offers -----------------------------------
+// `sensor_kinds_json` is served so the real page never carries a copy; the
+// docs demo has to, and a copy nothing pins drifts the moment a kind joins
+// or a hint is reworded, with every test still green. The literal between
+// the markers is asserted equal to the function in Rust; here the demo
+// fixture is asserted equal to the literal, so the chain reaches the demo.
+const kindsMarked = /\/\/ sensor-kinds:begin[\s\S]*?r#"([\s\S]*?)"#;[\s\S]*?\/\/ sensor-kinds:end/.exec(rs);
+if (!kindsMarked) fail('could not find the sensor-kinds markers in mecha-core/src/charter.rs');
+const kindsPinned = JSON.parse(kindsMarked[1]);
+const { charter: demoCharter } = await import('../../web/src/demo/fixtures.js');
+eq(
+  JSON.stringify(demoCharter.sensor_kinds),
+  JSON.stringify(kindsPinned),
+  'the demo fixture offers a sensor-kind list that mecha-core no longer serves'
+);
+
 console.log(`check-charter-toml: ${checks} checks, the serialiser and mecha-core agree on charter.toml`);
