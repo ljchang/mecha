@@ -367,6 +367,7 @@ async fn run_lifetimes(
                                 &passthrough,
                                 manifest,
                                 principal,
+                                arm,
                                 &trial,
                                 case,
                                 &lifetime,
@@ -437,6 +438,7 @@ async fn run_lifetimes(
                             &passthrough,
                             manifest,
                             principal,
+                            arm,
                             &trial,
                             case,
                             &lifetime,
@@ -555,6 +557,7 @@ async fn principal_call(
     passthrough: &[String],
     manifest: &Manifest,
     principal: &mecha_core::experiment::Principal,
+    arm: &mecha_core::experiment::Arm,
     trial: &Trial,
     case: &mecha_core::eval::EvalCase,
     lifetime: &str,
@@ -770,8 +773,26 @@ async fn principal_call(
                     cmd.arg("--workspace")
                         .arg(&act_workspace)
                         .arg("--yes")
-                        .args(flags)
-                        .args(&act.verb);
+                        .args(flags);
+                    // The case's own ceilings, as the run child carries
+                    // them: a verb that resumes the parked run is that task
+                    // continuing, and a compaction case whose continuation
+                    // compacted at the arm's threshold graded the harness
+                    // rather than the arm (found on review). Under the same
+                    // pins — the arm's overrides and the keys the home's
+                    // loop moved.
+                    let moved = mecha_core::experiment::home_moved_keys(home)?;
+                    let pinned = |key: &str| arm_moves(arm, key) || moved.iter().any(|k| k == key);
+                    if let Some(n) = case.max_turns.filter(|_| !pinned("max_turns")) {
+                        cmd.arg("--max-turns").arg(n.to_string());
+                    }
+                    if let Some(n) = case
+                        .compact_at_tokens
+                        .filter(|_| !pinned("compact_at_tokens"))
+                    {
+                        cmd.arg("--compact-at").arg(n.to_string());
+                    }
+                    cmd.args(&act.verb);
                     env_for(&mut cmd, passthrough)?;
                     // The refusals scripted for this task reach a verb that
                     // resumes the parked run (`questions answer`): the
@@ -786,9 +807,25 @@ async fn principal_call(
                     cmd.stdin(std::process::Stdio::null())
                         .stdout(std::process::Stdio::from(out))
                         .stderr(std::process::Stdio::from(err));
-                    cmd.status()
-                        .await
-                        .with_context(|| format!("running `mecha {}`", act.verb.join(" ")))
+                    // The principal's deadline bounds each verb too, and
+                    // the child dies with the dropped future: a resumed run
+                    // with no ceiling used to wedge the driver on a running
+                    // line (found on review).
+                    cmd.kill_on_drop(true);
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(principal.timeout_secs),
+                        cmd.status(),
+                    )
+                    .await
+                    {
+                        Ok(status) => status
+                            .with_context(|| format!("running `mecha {}`", act.verb.join(" "))),
+                        Err(_) => anyhow::bail!(
+                            "`mecha {}` did not finish within {}s",
+                            act.verb.join(" "),
+                            principal.timeout_secs
+                        ),
+                    }
                 }
                 .await;
                 match status {

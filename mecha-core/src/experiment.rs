@@ -119,6 +119,9 @@ pub struct Principal {
     /// workspace with the run child's environment allowlist, so name it by
     /// an absolute path or a command on `PATH`.
     pub command: Vec<String>,
+    /// Bounds the principal's answer and, separately, each verb the driver
+    /// runs for it — a verb that resumes the parked run is a model run
+    /// with no ceiling of its own.
     #[serde(default = "principal_timeout")]
     pub timeout_secs: u64,
 }
@@ -1820,6 +1823,23 @@ pub const HOME_OVERRIDES: &str = "learning/harness/overrides.toml";
 /// trial home; the run child reads it through `tool::DENIALS_FILE_ENV`.
 pub fn denials_file(home: &Path) -> PathBuf {
     home.join("principal").join("denials.toml")
+}
+
+/// The keys the home's own loop has moved (`HOME_OVERRIDES`), for a caller
+/// that must treat them as the arm's pins without rendering a config —
+/// the driver's act children carry a case's ceilings under the same rule
+/// the run child does.
+pub fn home_moved_keys(home: &Path) -> Result<Vec<String>> {
+    let path = home.join(HOME_OVERRIDES);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let root = path.parent().expect("under the home");
+    Ok(crate::harness::HarnessStore::open(root)?
+        .overrides()?
+        .into_iter()
+        .map(|o| o.key)
+        .collect())
 }
 
 /// Write the refusals the principal scripted, or remove the file when it
