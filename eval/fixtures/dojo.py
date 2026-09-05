@@ -41,7 +41,10 @@ axis.
 
 Needs `agentdojo` (0.1.35 measured), which imports only with its LLM-vendor
 SDKs; `scripts/dojo-venv.sh` builds a venv at `~/.mecha/venvs/dojo`, and
-this program re-executes itself there when the import fails. Fictional cast
+this program re-executes itself there when the import fails. Under
+`mecha exp` the venv must be at that default: the driver hands a source and
+a fixture server the base environment only, so `MECHA_DOJO_VENV` reaches
+this program only when it is run by hand. Fictional cast
 by construction (AgentDojo's own). Stdlib plus agentdojo.
 """
 
@@ -131,8 +134,20 @@ def annotations(suite_name, tool_name):
 
 
 def strip_titles(schema):
+    """Drop pydantic's `title` metadata from a schema — but never a parameter
+    *named* `title`: inside `properties` and `$defs` the keys are names, and
+    `create_calendar_event(title, ...)` lost its first argument while
+    `required` still demanded it (found on review)."""
     if isinstance(schema, dict):
-        return {k: strip_titles(v) for k, v in schema.items() if k != "title"}
+        return {
+            k: (
+                {name: strip_titles(sub) for name, sub in v.items()}
+                if k in ("properties", "$defs") and isinstance(v, dict)
+                else strip_titles(v)
+            )
+            for k, v in schema.items()
+            if k != "title"
+        }
     if isinstance(schema, list):
         return [strip_titles(v) for v in schema]
     return schema

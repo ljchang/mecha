@@ -4483,6 +4483,39 @@ preset = "full"
         assert!(m.fixtures.names().is_empty());
     }
 
+    /// `[tasks]` names exactly one of `cases` and `source`, and a source's
+    /// timeout is positive.
+    #[test]
+    fn tasks_come_from_a_case_file_or_a_source_never_both_or_neither() {
+        let base = "name = \"t\"\nsplit_seed = 1\n[arms.a]\n";
+        let both = format!(
+            "{base}[tasks]\ncases = \"c\"\nsource = [\"python3\", \"s.py\"]\nfixture = \"f\"\n"
+        );
+        assert!(Manifest::parse(&both)
+            .unwrap_err()
+            .to_string()
+            .contains("both"));
+        let neither = format!("{base}[tasks]\nfixture = \"f\"\n");
+        assert!(Manifest::parse(&neither)
+            .unwrap_err()
+            .to_string()
+            .contains("neither"));
+        let source = format!("{base}[tasks]\nsource = [\"python3\", \"s.py\"]\nfixture = \"f\"\n");
+        let m = Manifest::parse(&source).unwrap();
+        assert!(m.tasks.has_source() && m.tasks.cases_path().is_none());
+        assert_eq!(m.tasks.source_timeout_secs, 600, "the default");
+        let zero = format!(
+            "{base}[tasks]\nsource = [\"python3\"]\nsource_timeout_secs = 0\nfixture = \"f\"\n"
+        );
+        assert!(Manifest::parse(&zero)
+            .unwrap_err()
+            .to_string()
+            .contains("positive"));
+        let cases = format!("{base}[tasks]\ncases = \"c\"\nfixture = \"f\"\n");
+        let m = Manifest::parse(&cases).unwrap();
+        assert!(!m.tasks.has_source() && m.tasks.cases_path().is_some());
+    }
+
     /// A populated `Fixtures` round-trips through TOML: the values sit before
     /// the table array, or the serialiser refuses (found on review).
     #[test]
