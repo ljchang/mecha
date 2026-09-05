@@ -3826,6 +3826,8 @@ mod tests {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),

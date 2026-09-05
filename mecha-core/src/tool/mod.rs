@@ -459,6 +459,38 @@ pub struct ToolCtx {
     /// `compact_requested`'s own absence-is-the-off-switch.
     pub step_escalation:
         Option<std::sync::Arc<std::sync::Mutex<Option<crate::step::StepEscalation>>>>,
+    /// What the plan's steps did this run, counted by `todo` as it reads
+    /// each completed span: the null steps (`step::Finding::Null` — a step
+    /// completed with no call behind it) and the reopens (a completed step
+    /// set back to in progress). The two counters `GOAL-SYSTEM-DESIGN.md`
+    /// §17.7 item 2 says must be read before a mid-run rule delivery is
+    /// switched on, since the tree's own evidence is that a nudge makes a
+    /// model restart work it had done — and neither was recorded anywhere,
+    /// so the ruling's precondition could not be met from the store.
+    ///
+    /// A sensor, not a lever: the loop mints one per run unconditionally,
+    /// where `step_escalation`'s presence is the feature's on switch.
+    /// `None` only in a context no run owns (a probe, a CLI that builds a
+    /// tool by hand), where nothing is counted and the record says unknown.
+    pub step_counts: Option<std::sync::Arc<StepCounts>>,
+}
+
+/// Per-run step counters, written by `todo` and read into `RunOutcome` by
+/// the loop. Atomics rather than a mutex because a write is one increment
+/// from inside a tool call and a read is one snapshot at the end of the
+/// run; nothing ever needs both counters at one instant.
+#[derive(Debug, Default)]
+pub struct StepCounts {
+    pub nulls: std::sync::atomic::AtomicU32,
+    pub reopens: std::sync::atomic::AtomicU32,
+}
+
+impl StepCounts {
+    /// `(nulls, reopens)` as of now.
+    pub fn snapshot(&self) -> (u32, u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.nulls.load(Relaxed), self.reopens.load(Relaxed))
+    }
 }
 
 impl Default for ToolCtx {
@@ -480,6 +512,7 @@ impl Default for ToolCtx {
             work: None,
             compact_requested: None,
             step_escalation: None,
+            step_counts: None,
         }
     }
 }
