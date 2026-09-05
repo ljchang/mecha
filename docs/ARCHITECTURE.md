@@ -3513,14 +3513,17 @@ comparison over a chosen set**, with the design written before the run.
   charter degrades a run to un-chartered with one stderr line, §11.1's
   containment 7), and refused without a fixture server: a fixture owner's
   priorities over the operator's live world would appraise the wrong
-  owner. The fixture names and the outbox route are terms of the
-  condition hash (`condition_hash_world`, each appended only when a
-  manifest names it, so every earlier hash keeps its value): a row that
-  ran against a fixture board ran on a different tool surface from one on
-  the operator's, and a world whose sends are staged is a different
-  treatment from one whose sends execute, so neither pairs across
-  experiments; a server's command, its seed and the charter's text stay
-  the manifest's to record. A position whose home could not be rendered
+  owner. The fixture names, the outbox route and a digest of the fixture
+  charter's *text* are terms of the condition hash
+  (`condition_hash_world`, each appended only when a manifest names it,
+  so every earlier hash keeps its value): a row that ran against a
+  fixture board ran on a different tool surface from one on the
+  operator's, a world whose sends are staged is a different treatment
+  from one whose sends execute, and the charter is the strongest single
+  input to appraisal, so none of the three pairs across experiments —
+  the text rather than the path, since a path differs by machine
+  (`ExperimentStore::plan` resolves it against the `exp run` checkout); a
+  server's command and its seed stay the manifest's to record. A position whose home could not be rendered
   fails its row, asks the principal at neither point, and skips every
   stage due after it — all as ledger lines carrying the render's reason,
   so a resumed driver, which starts with no memory of the failure, reads

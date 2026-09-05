@@ -319,7 +319,10 @@ async fn run(name: &str, limit: Option<usize>, dry_run: bool) -> Result<()> {
     let real = mecha_core::config::Config::load_global()?;
     let (provider, model) = provider_and_model(&real)?;
     let task_ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
-    let (planned, skipped) = store.plan(&manifest, &task_ids, &provider, &model)?;
+    // The manifest's paths resolve against the checkout `exp run` starts
+    // from, and the fixture charter's text is a term of every row's hash.
+    let base = std::env::current_dir().context("cannot determine the working directory")?;
+    let (planned, skipped) = store.plan(&manifest, &task_ids, &provider, &model, &base)?;
     if skipped > 0 {
         eprintln!(
             "mecha exp: {skipped} trial file(s) could not be read and are counted, not rerun"
@@ -1745,7 +1748,8 @@ async fn status(name: &str, json: bool) -> Result<()> {
         let real = mecha_core::config::Config::load_global()?;
         let (provider, model) = provider_and_model(&real)?;
         let ids: Vec<String> = cases.iter().map(|c| c.id.clone()).collect();
-        store.plan(&manifest, &ids, &provider, &model)
+        let base = std::env::current_dir().context("cannot determine the working directory")?;
+        store.plan(&manifest, &ids, &provider, &model, &base)
     }
     .await;
     let (trials, skipped) = match planned {
