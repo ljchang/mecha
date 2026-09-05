@@ -1144,6 +1144,8 @@ mod tests {
 
     fn item(id: &str, status: &str, created: &str) -> OutboxItem {
         OutboxItem {
+            output: None,
+            author: Default::default(),
             filled_defaults: Vec::new(),
             call_id: None,
             id: id.into(),

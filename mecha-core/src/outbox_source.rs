@@ -456,6 +456,8 @@ mod tests {
     /// so does the drift between the two that made the id necessary.
     fn draft_of(tool: &str, args: Value) -> OutboxItem {
         OutboxItem {
+            output: None,
+            author: Default::default(),
             id: "i1".into(),
             status: "pending".into(),
             tool: tool.into(),

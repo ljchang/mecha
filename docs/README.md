@@ -80,6 +80,7 @@ something shipped.
 | [`LEARNING-AUTONOMY-DESIGN.md`](LEARNING-AUTONOMY-DESIGN.md) | Why learning is ungated per domain, what replaces the gate, and the cost in `behavior`. Read §3 before loosening anything |
 | [`MAIL-UX-DESIGN.md`](MAIL-UX-DESIGN.md) | Mail as a surface you work: the phases, and what each settled |
 | [`NOTES-GRAPH-DESIGN.md`](NOTES-GRAPH-DESIGN.md) | One web surface over the graph: capture, find, edit — the consolidation of the notes and graph tabs |
+| [`MEETING-POLL-UX-DESIGN.md`](MEETING-POLL-UX-DESIGN.md) | The meeting poll from the owner's chair: one call, one card, a deterministic sweep, and the stated decision policy. §6 holds the rulings the build waits on |
 | [`POLL-DESIGN.md`](POLL-DESIGN.md) | Polls as a general-purpose instrument — the six kinds and the lecture mode |
 | [`PUBLIC-SURFACE-DESIGN.md`](PUBLIC-SURFACE-DESIGN.md) | The public surface: what mecha may publish, and under what review |
 | [`REMOTE-CONTROL-DESIGN.md`](REMOTE-CONTROL-DESIGN.md) | One live TUI session and a named Slack thread as the same conversation |

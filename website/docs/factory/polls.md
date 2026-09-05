@@ -338,25 +338,81 @@ body and is stored whole. **There is no upload channel for poll assets yet**, so
 today "poll a set of images" means figures small enough to embed. Photographs
 from a phone are not, and closing that gap needs an asset endpoint on the box.
 
-## The times poll is still its own flow
+## The meeting poll runs itself
 
-`kind = "times"` is the scheduling poll, unchanged. Its candidates are the
-availability engine's earliest feasible slots — already minus your real busy
-time — so they arrive from the freebusy pipeline and never from a spec:
+`kind = "times"` is the scheduling poll, and it is the one flow here that
+does not start from a spec: its candidates are the availability engine's
+earliest feasible slots — already minus your real busy time — drawn from the
+same slots pipeline that keeps your booking page fresh. From the owner's
+chair it is one call, one review, and then nothing until it is booked.
+
+**Ask.** Tell mecha who, how long and what about:
+
+> Find an hour for a lab meeting with Priya and Tal in the next two weeks —
+> before the grant deadline, ideally.
+
+The model makes one `poll_meeting_create` call with a title, the participants,
+a duration, and optionally a window, a deadline and your sentence. It never
+runs a freebusy step or writes a file: the times are drawn at release from
+what `slots push` last saw, so a poll staged at five and released the next
+morning seeds from the morning's calendar.
+
+**Review.** One outbox card, reviewed as a message: your sentence above the
+invitation each person will receive, the recipients, the duration, when
+answers close, and the account it sends from. Edit the text if you like;
+release it. From the CLI the same thing is
 
 ```sh
-mecha-mail freebusy --days 60 --json | \
-  factory-publish polls create book lab-feb --policy book.toml \
-    --title "Lab meeting" --duration 60 \
-    --participant "Priya=priya@example.edu" --participant "Tal=tal@w.edu"
+factory-publish polls create book lab-feb --title "Lab meeting" --duration 60 \
+  --participant "Priya=priya@example.edu" --participant "Tal=tal@w.edu" \
+  --message "Before the grant deadline, ideally."
 ```
 
-`polls status` on a times poll prints the ranking and the auto-book verdict
-rather than per-question tallies, and `polls export` refuses it by name — the
-ranking is what there is to read.
+with no `--policy` and nothing on stdin — the pipeline's cache is the input.
 
-The candidate list is capped small on purpose: a poll a colleague answers in ten
-seconds is the one that gets answered.
+**Wait.** Three deterministic verbs on the timer that already runs the slot
+push carry the poll from here, and no model touches any of them:
+
+| verb | does |
+|---|---|
+| `factory-publish polls sweep` | asks the box for the tally, queues the one nudge, closes the poll on its own terms, decides the verdict |
+| `mecha-mail polls` | mails each person their own link from your account, sends the nudge, creates the event for a clean winner — everyone as attendee, re-verified against your live calendar first |
+| `mecha polls sweep` | stages the pick card when there is judgment to make, and folds your decision back |
+
+`/polls` in the TUI and `mecha polls list` show one line per poll — *invites
+sent*, *needs a pick*, *booked* — and `poll_status` answers "how's
+the lab-meeting poll?" with the lifecycle beside the tally.
+
+**Decide.** The policy is *auto with guardrails*, and the numbers are yours
+to set in the policy file's `[poll]` table:
+
+```toml
+[poll]
+auto_book = "unanimous"     # unanimous | feasible | manual
+deadline_days = 3           # answers close this many days after the invitations
+deadline_hour = 17          # at this hour, in the policy's zone
+nudge_hours_before = 24     # one nudge to the silent; 0 disables it
+nudge_min_lead_hours = 36   # no nudge when the deadline was closer than this at send
+```
+
+The poll closes when everyone has answered or the deadline passes. Under the
+default, a time every participant marked plain *yes* — exactly one of them —
+is booked by itself: a calendar event from your account with every
+participant as attendee, so each receives the provider's native invitation,
+and the poll page closes with *"Booked: Tuesday 9 Sept, 2–3pm"* for anyone
+who revisits their link. `feasible` books the best-ranked slot even when it
+costs someone an if-needed; `manual` never books. Anything the mode does not
+book — a tie, a silent participant at the deadline, nothing feasible for
+everyone — arrives as **one more outbox card**: a calendar-event draft for the
+top-ranked time with the whole ranking and each candidate's reason in its
+description. `p` in `/polls` (or `mecha polls pick <poll> <n>`) loads a
+different candidate into the same card; release books it; reject closes the
+poll as *no time found*. No mode books over someone who never answered.
+
+The candidate list is capped small on purpose: a poll a colleague answers in
+ten seconds is the one that gets answered. And while a poll is open its
+candidates are holds on your booking page, so a stranger cannot book a slot
+your colleagues are still considering.
 
 ## Where to go next
 

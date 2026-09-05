@@ -18,6 +18,7 @@ pub mod google;
 pub mod http;
 pub mod mcp;
 pub mod microsoft;
+pub mod polls;
 pub mod text;
 pub mod time;
 pub mod token;

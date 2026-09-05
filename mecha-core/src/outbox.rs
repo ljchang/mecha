@@ -62,6 +62,52 @@ pub enum OutboxKind {
     Publish,
 }
 
+/// Who wrote the draft: a model in a run (the default, and what every item
+/// before the field existed was), or the harness from its own records.
+///
+/// Decides one thing — whether a release says anything about *drafting*.
+/// A pick card for a meeting poll is a real `calendar_create_event` draft
+/// so that releasing it is the booking through the normal route, but no
+/// model composed it and a keypress rewrites its slot; `writing_outcome`
+/// returns `None` for it. (The appraisal never sees such an item for a
+/// second reason: `Stores::drafts_of` scopes drafts by `session_id`, and a
+/// harness item has none — if unscoped drafts are ever appraised, this
+/// field is the guard that must take over.)
+///
+/// Stored on the item as a **string**, not this enum, and read through
+/// [`OutboxItem::author`]: an item is read-modify-written by `edit`,
+/// `resolve` and `update_args`, and an enum with a catch-all would flatten
+/// a newer binary's value to `"unknown"` on the first such write. An
+/// absent or empty string is the model's — what every item before the
+/// field existed was — and anything this binary does not recognise reads
+/// as [`Author::Unknown`], which the miner treats as not a model's: unknown
+/// is never clean.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Author {
+    #[default]
+    Model,
+    Harness,
+    Unknown,
+}
+
+impl Author {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Author::Model => "model",
+            Author::Harness => "harness",
+            Author::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Author {
+        match raw {
+            "" | "model" => Author::Model,
+            "harness" => Author::Harness,
+            _ => Author::Unknown,
+        }
+    }
+}
+
 impl OutboxKind {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -170,6 +216,15 @@ pub struct OutboxItem {
     /// `pending` — the draft is still good; the delivery was not.
     #[serde(default)]
     pub error: Option<String>,
+    /// Who wrote it, verbatim. See [`Author`] and [`OutboxItem::author`].
+    #[serde(default)]
+    pub author: String,
+    /// What the tool answered when the item was released. Recorded so the
+    /// thing a release made — an event id, a URL — can be read back by
+    /// whatever staged the draft; before it existed a booked meeting poll
+    /// had no handle on its own event. Absent on anything but a `sent`.
+    #[serde(default)]
+    pub output: Option<String>,
     /// The `tool_use` id of the call that staged this, when a call staged it.
     ///
     /// The anchor [`crate::outbox_source`] walks a transcript to find. It used
@@ -209,6 +264,11 @@ pub struct OutboxItem {
 }
 
 impl OutboxItem {
+    /// Who wrote this draft. See [`Author`].
+    pub fn author(&self) -> Author {
+        Author::parse(&self.author)
+    }
+
     /// The pins the reviewer has **not** since changed.
     ///
     /// `filled_defaults` is written once, at staging; `update_args` rewrites
@@ -280,10 +340,20 @@ impl OutboxItem {
     ///
     /// `None` for anything that says nothing about drafting — a pending item
     /// (undecided), a rejected one (never went out, and its reason is the
-    /// record), or a publish (whose diff is a path and a visibility flag, not
-    /// prose).
+    /// record), a publish (whose diff is a path and a visibility flag, not
+    /// prose), **or an item the harness staged from its own records**
+    /// ([`Author::Harness`]: a meeting poll's pick card, built by `mecha
+    /// polls sweep` and moved by a keypress). An edit to that is not a
+    /// correction of any model's voice, and an unedited release is not
+    /// evidence that a model drafted well; before the field existed a pick
+    /// card whose slot had been swapped once was mined as a `writing`
+    /// correction — two machine-generated time stamps diffed into a rule
+    /// that would ride every future prompt's cached prefix.
     pub fn writing_outcome(&self) -> Option<WritingOutcome> {
         if self.kind != OutboxKind::Message || self.status != "sent" {
+            return None;
+        }
+        if self.author() != Author::Model {
             return None;
         }
         Some(match self.edited() {
@@ -453,6 +523,18 @@ impl OutboxStore {
         taint: Taint,
         from: Provenance,
     ) -> Result<OutboxItem> {
+        self.stage_as(Author::Model, tool, kind, args, taint, from)
+    }
+
+    fn stage_as(
+        &self,
+        author: Author,
+        tool: &str,
+        kind: OutboxKind,
+        args: Value,
+        taint: Taint,
+        from: Provenance,
+    ) -> Result<OutboxItem> {
         let Provenance {
             session_id,
             workspace,
@@ -474,11 +556,28 @@ impl OutboxStore {
             resolved_at: None,
             reason: None,
             error: None,
+            author: author.as_str().to_string(),
+            output: None,
             call_id,
             filled_defaults,
         };
         self.write_item(&item)?;
         Ok(item)
+    }
+
+    /// Stage a call the harness composed from its own records — no run, no
+    /// model, a clean taint (the inputs are the owner's files and enum
+    /// answers), and [`Author::Harness`] so its release is never read as
+    /// evidence about drafting. Reviewed and released exactly as any message.
+    pub fn stage_by_harness(&self, tool: &str, args: Value) -> Result<OutboxItem> {
+        self.stage_as(
+            Author::Harness,
+            tool,
+            OutboxKind::Message,
+            args,
+            Taint::default(),
+            Provenance::default(),
+        )
     }
 
     /// Every item, oldest first. A file that fails to parse is skipped with
@@ -611,6 +710,17 @@ impl OutboxStore {
     /// Resolve a pending item as `sent` or `rejected`, in place — the file is
     /// its own audit record, so nothing moves to an archive.
     pub fn resolve(&self, id: &str, status: &str, reason: Option<String>) -> Result<OutboxItem> {
+        self.resolve_with_output(id, status, reason, None)
+    }
+
+    /// Resolve, keeping what the tool answered — the release path's verb.
+    pub fn resolve_with_output(
+        &self,
+        id: &str,
+        status: &str,
+        reason: Option<String>,
+        output: Option<String>,
+    ) -> Result<OutboxItem> {
         let mut item = self.item(id)?;
         anyhow::ensure!(
             item.status == "pending",
@@ -621,6 +731,7 @@ impl OutboxStore {
         item.status = status.to_string();
         item.resolved_at = Some(chrono::Utc::now().to_rfc3339());
         item.reason = reason;
+        item.output = output;
         item.error = None;
         self.write_item(&item)?;
         Ok(item)
@@ -656,6 +767,30 @@ impl OutboxStore {
             return Err(std::io::Error::last_os_error()).context("locking the outbox");
         }
         Ok(OutboxLock { _file: file })
+    }
+
+    /// The same lock, or `None` at once if another process holds it. For
+    /// the callers that must not wait on a person: `outbox send` holds the
+    /// lock across its confirmation prompt and its network calls, so a
+    /// timer's sweep or a TUI keypress that took [`Self::lock`] would park
+    /// behind an unanswered question.
+    pub fn try_lock(&self) -> Result<Option<OutboxLock>> {
+        use std::os::unix::io::AsRawFd;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(".lock"))?;
+        // SAFETY: flock on an fd we own, held open by the returned guard.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let err = std::io::Error::last_os_error();
+            return if err.kind() == std::io::ErrorKind::WouldBlock {
+                Ok(None)
+            } else {
+                Err(err).context("locking the outbox")
+            };
+        }
+        Ok(Some(OutboxLock { _file: file }))
     }
 }
 
@@ -1484,6 +1619,85 @@ mod tests {
         assert_eq!(items[0].call_id, None);
         assert!(items[0].filled_defaults.is_empty());
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What the harness staged from its own records is nobody's draft:
+    /// released as written or with its slot swapped, it says nothing about
+    /// drafting — while the same item read by an older binary, or an older
+    /// item read by this one, stays the model's draft it defaults to.
+    /// `try_lock` answers at once while another holder has the lock, and
+    /// takes it once they let go.
+    #[test]
+    fn try_lock_never_waits() {
+        let root = scratch("try-lock");
+        let store = OutboxStore::open(&root).unwrap();
+        let held = store.lock().unwrap();
+        assert!(
+            store.try_lock().unwrap().is_none(),
+            "held elsewhere: at once, none"
+        );
+        drop(held);
+        assert!(store.try_lock().unwrap().is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_harness_staged_item_is_invisible_to_the_writing_miner() {
+        let root = scratch("harness-author");
+        let store = OutboxStore::open(&root).unwrap();
+        let staged = store
+            .stage_by_harness("mail__calendar_create_event", json!({"start_time": "a"}))
+            .unwrap();
+        assert_eq!(staged.author(), Author::Harness);
+        assert_eq!(staged.kind, OutboxKind::Message, "reviewed as a message");
+        assert!(!staged.taint.trifecta_armed(), "the owner's records: clean");
+        assert_eq!(staged.session_id, None);
+        assert_eq!(staged.call_id, None);
+        let mut sent = store.item(&staged.id).unwrap();
+        sent.status = "sent".into();
+        assert_eq!(sent.writing_outcome(), None, "unswapped");
+        sent.args = json!({"start_time": "b"});
+        assert!(sent.edited());
+        assert_eq!(sent.writing_outcome(), None, "swapped");
+        assert!(!sent.mineable_as_writing());
+        assert_eq!(WritingTally::of([&sent]).sent(), 0);
+
+        let legacy: OutboxItem = serde_json::from_value(json!({
+            "id": "20260101-000000-abc", "status": "sent", "tool": "mail__send",
+            "args_before": {"body": "a"}, "args": {"body": "b"},
+            "summary": "mail__send", "created_at": "2026-01-01T00:00:00Z",
+        }))
+        .unwrap();
+        assert_eq!(legacy.author(), Author::Model);
+        assert!(legacy.mineable_as_writing());
+
+        // A value from a newer binary loads, is nobody's draft, and survives
+        // this binary's own read-modify-write verbatim.
+        let root2 = scratch("harness-author-future");
+        let store2 = OutboxStore::open(&root2).unwrap();
+        let staged = store2
+            .stage(
+                "x__send",
+                OutboxKind::Message,
+                json!({}),
+                Taint::default(),
+                Provenance::default(),
+            )
+            .unwrap();
+        let path = root2.join(format!("{}.json", staged.id));
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        raw["author"] = json!("scheduler");
+        std::fs::write(&path, raw.to_string()).unwrap();
+        let sent = store2
+            .resolve_with_output(&staged.id, "sent", None, Some("created event ev1".into()))
+            .unwrap();
+        assert_eq!(sent.author, "scheduler", "kept verbatim across a write");
+        assert_eq!(sent.author(), Author::Unknown);
+        assert_eq!(sent.writing_outcome(), None);
+        assert_eq!(sent.output.as_deref(), Some("created event ev1"));
+        let _ = std::fs::remove_dir_all(&root2);
         let _ = std::fs::remove_dir_all(&root);
     }
 

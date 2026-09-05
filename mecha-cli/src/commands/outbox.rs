@@ -675,11 +675,14 @@ fn edit(store: &OutboxStore, id: &str, json: bool, body_file: Option<&Path>) -> 
 
     let _lock = store.lock()?;
     let updated = store.update_args(&item.id, args)?;
-    if updated.edited() {
+    if updated.edited() && updated.author() == mecha_core::outbox::Author::Model {
         println!(
             "edited; `send` will use the new text, and `mecha reflect` \
                   will mine the diff as a writing lesson once sent"
         );
+    } else if updated.edited() {
+        // A harness-authored card: the miner structurally never sees it.
+        println!("edited; `send` will use the new text");
     } else {
         println!("no change");
     }
@@ -795,7 +798,11 @@ impl Surface {
             store.record_error(&item.id, &output.content)?;
             bail!("the tool reported failure: {}", output.content);
         }
-        store.resolve(&item.id, "sent", None)?;
+        // Kept for whatever staged the draft to read back (a poll sweep wants
+        // the event id), and bounded: the store is parsed whole on every
+        // lookup, so a page-sized answer must not ride every sent item.
+        let kept: String = output.content.chars().take(16_384).collect();
+        store.resolve_with_output(&item.id, "sent", None, Some(kept))?;
         Ok(output.content.trim().to_string())
     }
 }
@@ -948,7 +955,7 @@ async fn send(
                 if !output.is_empty() {
                     println!("{}", indent(&output));
                 }
-                if item.edited() {
+                if item.edited() && item.author() == mecha_core::outbox::Author::Model {
                     println!(
                         "  the draft was edited before sending — `mecha reflect` will \
                          mine the diff as a writing lesson"
@@ -1123,6 +1130,8 @@ mod tests {
 
     fn item(id: &str, status: &str, kind: OutboxKind, tool: &str) -> OutboxItem {
         OutboxItem {
+            output: None,
+            author: Default::default(),
             filled_defaults: Vec::new(),
             call_id: None,
             id: id.into(),

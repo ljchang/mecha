@@ -27,6 +27,11 @@ pub struct PollRow {
     pub deadline: String,
     pub created_at: String,
     pub screen_url: Option<String>,
+    /// Where a meeting poll's lifecycle stands, from the record at home —
+    /// "invites 2/3", "needs a pick", "booked". A general poll has none.
+    pub lifecycle: Option<String>,
+    /// The ranked candidates with reasons, when the verdict is a pick.
+    pub ranked: Vec<String>,
     /// The gate's last answer, once fetched.
     pub live: Option<Live>,
 }
@@ -106,7 +111,7 @@ impl PollsModal {
         match &self.status {
             Some(s) => format!(" polls · {s} "),
             None => format!(
-                " {} poll(s) · enter tallies · r refresh · c close · e export · s screen url · esc ",
+                " {} poll(s) · enter tallies · r refresh · p pick · c close · e export · s screen url · esc ",
                 self.rows.len()
             ),
         }
@@ -140,10 +145,11 @@ impl PollsModal {
                         None => "· enter fetches the tally".into(),
                     };
                     let text = format!(
-                        "{marker} {:<18} {:<10} {:<22} {}",
+                        "{marker} {:<18} {:<10} {:<22} {:<20} {}",
                         row.poll_id,
                         row.audience,
                         row.title_short(),
+                        row.lifecycle.as_deref().unwrap_or("—"),
                         live,
                     );
                     let unreachable = row.live.as_ref().is_some_and(|l| !l.ok);
@@ -228,6 +234,18 @@ impl PollRow {
         ];
         if let Some(screen) = &self.screen_url {
             body.push(Line::styled(format!("projector: {screen}"), grey));
+        }
+        if let Some(lifecycle) = &self.lifecycle {
+            body.push(Line::styled(format!("lifecycle: {lifecycle}"), header));
+            if !self.ranked.is_empty() {
+                body.push(Line::styled(
+                    "the pick, ranked — p loads the next into the outbox card".to_string(),
+                    grey,
+                ));
+                for (i, candidate) in self.ranked.iter().enumerate() {
+                    body.push(Line::styled(format!("  {}. {candidate}", i + 1), white));
+                }
+            }
         }
         body.push(Line::raw(""));
         match &self.live {
@@ -329,6 +347,27 @@ fn row(record: &serde_json::Value) -> Option<PollRow> {
             None => "?".into(),
         },
     };
+    let life = &record["lifecycle"];
+    let (lifecycle, ranked) = if life.is_object() {
+        let tz = life["timezone"].as_str().unwrap_or("UTC");
+        let ranked = life["ranked"]
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .map(|c| {
+                        format!(
+                            "{} — {}",
+                            crate::commands::polls::local_range(c, tz),
+                            c["reason"].as_str().unwrap_or("")
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (Some(crate::commands::polls::summary(life)), ranked)
+    } else {
+        (None, Vec::new())
+    };
     Some(PollRow {
         instrument: record["instrument"].as_str().unwrap_or("book").to_string(),
         poll_id,
@@ -337,6 +376,8 @@ fn row(record: &serde_json::Value) -> Option<PollRow> {
         deadline: record["deadline"].as_str().unwrap_or("—").to_string(),
         created_at: record["created_at"].as_str().unwrap_or("").to_string(),
         screen_url: record["screen_url"].as_str().map(str::to_string),
+        lifecycle,
+        ranked,
         live: None,
     })
 }
@@ -376,6 +417,7 @@ mod tests {
         for key in [
             "enter",
             "r refresh",
+            "p pick",
             "c close",
             "e export",
             "s screen",
@@ -388,6 +430,28 @@ mod tests {
             ..modal
         };
         assert!(done.title().contains("closed psyc60-mid"));
+    }
+
+    /// A meeting poll's row carries its lifecycle and, for a pick, the
+    /// ranking with reasons; a general poll's carries neither.
+    #[test]
+    fn a_meeting_poll_row_shows_where_its_lifecycle_stands() {
+        assert!(row(&record()).unwrap().lifecycle.is_none());
+        let mut meeting = record();
+        meeting["lifecycle"] = serde_json::json!({
+            "verdict": "pick",
+            "timezone": "America/New_York",
+            "ranked": [{"start": "2030-02-05T18:00:00Z", "end": "2030-02-05T19:00:00Z", "reason": "Tal if needed"}],
+        });
+        let row = row(&meeting).unwrap();
+        assert_eq!(row.lifecycle.as_deref(), Some("needs a pick"));
+        assert_eq!(
+            row.ranked,
+            vec!["Tue 5 Feb, 1:00 PM–2:00 PM EST — Tal if needed"]
+        );
+        let detail = text(&row.detail_lines());
+        assert!(detail.contains("lifecycle: needs a pick"), "{detail}");
+        assert!(detail.contains("1. Tue 5 Feb"), "{detail}");
     }
 
     #[test]

@@ -114,13 +114,28 @@ pub fn auto_releases(mode: ReviewMode, tainted: bool, finished_clean: bool) -> b
 /// No baseline means no diff, and no diff means nothing is offered: a surface
 /// that could not read the store before the run must not guess afterwards
 /// that everything pending is new.
+///
+/// **And an item the harness staged is never a run's draft**, whatever the
+/// baseline says. A meeting poll's pick card is staged by `mecha polls
+/// sweep` on a timer, clean-tainted, into the same store; one that landed
+/// while a run was in flight would otherwise pass this diff and, under
+/// `/review auto`, be released with `--yes` — the booking made and every
+/// participant mailed with no card ever drawn. Releasing that card *is* the
+/// owner's decision (MEETING-POLL-UX-DESIGN.md ruling 4), so it leaves only
+/// through a review surface. The author is the field for this, not the
+/// session id: a person's `mecha mail compose` has no session either and is
+/// still theirs to release from here.
 pub fn staged_since(
     items: Vec<mecha_core::outbox::OutboxItem>,
     baseline: &std::collections::HashSet<String>,
 ) -> Vec<mecha_core::outbox::OutboxItem> {
     items
         .into_iter()
-        .filter(|i| i.status == "pending" && !baseline.contains(&i.id))
+        .filter(|i| {
+            i.status == "pending"
+                && !baseline.contains(&i.id)
+                && i.author() == mecha_core::outbox::Author::Model
+        })
         .collect()
 }
 
@@ -334,6 +349,47 @@ pub fn speakable(kind: mecha_core::outbox::OutboxKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A card the harness staged is never a run's draft: with an empty
+    /// baseline — everything pending would otherwise count as new — it is
+    /// still not offered, so `/review auto` can never release it unseen.
+    #[test]
+    fn a_harness_staged_card_is_never_a_runs_draft() {
+        use mecha_core::outbox::{OutboxKind, OutboxStore, Provenance};
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("mecha-staged-since-{}-{nanos}", std::process::id()));
+        let store = OutboxStore::open(&root).unwrap();
+        let model = store
+            .stage(
+                "mail__mail_send",
+                OutboxKind::Message,
+                serde_json::json!({"to": "a@b"}),
+                mecha_core::agent::Taint::default(),
+                Provenance::default(),
+            )
+            .unwrap();
+        let harness = store
+            .stage_by_harness(
+                "mail__calendar_create_event",
+                serde_json::json!({"title": "Lab meeting"}),
+            )
+            .unwrap();
+        let offered = staged_since(store.items().unwrap(), &std::collections::HashSet::new());
+        let ids: Vec<&str> = offered.iter().map(|i| i.id.as_str()).collect();
+        assert!(
+            ids.contains(&model.id.as_str()),
+            "the model's draft is the run's"
+        );
+        assert!(
+            !ids.contains(&harness.id.as_str()),
+            "the harness's card is nobody's run's"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     const MODES: [ReviewMode; 3] = [ReviewMode::Now, ReviewMode::Later, ReviewMode::Auto];
 

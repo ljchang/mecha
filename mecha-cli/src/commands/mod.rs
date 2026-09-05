@@ -17,6 +17,7 @@ pub mod learning_report;
 pub mod mail;
 pub mod msg;
 pub mod outbox;
+pub mod polls;
 pub mod proposals;
 pub mod questions;
 pub mod reflect;
