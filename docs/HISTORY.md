@@ -3603,7 +3603,17 @@ once and its second null completion again, a first start is not a reopen,
 a context with no slot counts nothing and does not panic, and the corpus
 reads unknown before any sensed row and a rate over sensed rows after.
 Nothing consumes the numbers yet — the ruling asks for them to be *read*,
-and after a few nights they can be.
+and after a few nights they can be. The first review pass found two
+things at the bar, both about whether the number would be true when
+read: a completed step the model dropped from the plan and re-added as
+in progress counted no reopen (the live plan no longer remembered it was
+done) while its second null completion still counted, deflating one rate
+and inflating the other — `ever_completed` now survives the live-plan
+sweep, capped like `completed`; and nothing tested the seam from the
+run-scoped slot to the record, whose failure would be a confident
+`Some(0)` that `step_totals` counts as sensed rather than a dash — a
+scripted run through the real `todo` tool now asserts both counts on the
+outcome and the record.
 
 **2026-09-05 — a rule widens on evidence from two regions and narrows to
 where it held, and the ledger says which sub-region each probe

@@ -4046,16 +4046,6 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// `slack/pump.rs` already reads `compactions` off this same event.
 ///
 /// One place, because the loop emits `Done` from five of them.
-/// The run's step counters as of now — `(nulls, reopens)` — or zeros for a
-/// context with no sensor, which `run_in` never produces.
-fn step_counts_of(cx: &RunContext) -> (u32, u32) {
-    cx.tools
-        .step_counts
-        .as_ref()
-        .map(|c| c.snapshot())
-        .unwrap_or((0, 0))
-}
-
 fn emit_done(
     events: &Option<UnboundedSender<AgentEvent>>,
     outcome: &mut RunOutcome,
@@ -4071,6 +4061,16 @@ fn emit_done(
     outcome.step_escalations_revised = step_escalations_revised;
     (outcome.step_nulls, outcome.step_reopens) = step_counts;
     emit(events, AgentEvent::Done(Box::new(outcome.clone())));
+}
+
+/// The run's step counters as of now — `(nulls, reopens)` — or zeros for a
+/// context with no sensor, which `run_in` never produces.
+fn step_counts_of(cx: &RunContext) -> (u32, u32) {
+    cx.tools
+        .step_counts
+        .as_ref()
+        .map(|c| c.snapshot())
+        .unwrap_or((0, 0))
 }
 
 fn emit(events: &Option<UnboundedSender<AgentEvent>>, event: AgentEvent) {
@@ -7332,6 +7332,51 @@ mod tests {
             .messages
             .iter()
             .all(|m| !m.text().contains("too broad")));
+    }
+
+    /// The seam from the run-scoped slot to the record: the real `todo`
+    /// tool, driven by a scripted model through a step that completes with
+    /// no call behind it and is then reopened, and the outcome carries both
+    /// counts. Fails on the tree before the sensor, and — because
+    /// `RunStats::from` writes `Some(o.step_nulls)` unconditionally — on
+    /// any regression that drops the slot from the run scope, which would
+    /// otherwise record a confident zero where the `Option` was added to
+    /// produce a dash (found on review).
+    #[tokio::test]
+    async fn the_run_outcome_carries_the_null_step_and_reopen_counts() {
+        let todo_call = |id: &str, items: serde_json::Value| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "todo".into(),
+                    input: json!({ "items": items }),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, _) = agent_with_tools(
+            vec![
+                todo_call(
+                    "t0",
+                    json!([{"content": "decide", "status": "in_progress"}]),
+                ),
+                todo_call("t1", json!([{"content": "decide", "status": "completed"}])),
+                todo_call(
+                    "t2",
+                    json!([{"content": "decide", "status": "in_progress"}]),
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(crate::tool::todo::TodoTool::new())],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.step_nulls, 1, "completed with no call behind it");
+        assert_eq!(outcome.step_reopens, 1, "then set back to in progress");
+        let stats = crate::session::RunStats::from(&outcome);
+        assert_eq!(stats.step_nulls, Some(1));
+        assert_eq!(stats.step_reopens, Some(1));
     }
 
     /// The review finding: the escalation's own thresholds are argued, not

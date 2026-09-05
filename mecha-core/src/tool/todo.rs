@@ -278,6 +278,18 @@ struct Tracked {
     /// Steps already reported on, so a second identical reading escalates
     /// instead of asking for the same revision again (§5.5's bound).
     flagged: std::collections::HashSet<String>,
+    /// Every step this plan has ever completed, most recent last, **not**
+    /// pruned to the live plan the way `started`, `flagged` and `completed`
+    /// are — so a completed step the model drops from the plan and later
+    /// re-adds as in progress is still known to have been done, and counts
+    /// as a reopen. The check-freeze code above exists because models take
+    /// exactly that door; a reopen counter that read only the live plan
+    /// would miss it while the step's second null completion still
+    /// counted, deflating one rate and inflating the other (found on
+    /// review). Bounded like `completed`, and by content, so a resumed
+    /// conversation that revises its plan many times keeps a rolling sense
+    /// rather than a full history.
+    ever_completed: Vec<String>,
     /// How many times this tool has been called for this plan — every call,
     /// including one whose input this tool rejects. A rejected write still
     /// touches nothing but this tool's own state, so it is bookkeeping too;
@@ -576,8 +588,13 @@ impl Tracked {
                     // A completed step set back to in progress is a reopen —
                     // the restart §17.7 item 2 wants counted before any
                     // nudge is delivered mid-run. Counted on the transition
-                    // the plan itself records, not on any reading of why.
-                    if was == Some(Status::Completed) {
+                    // the plan itself records, not on any reading of why —
+                    // and a step the plan dropped after completing it and
+                    // now holds again as in progress is the same event by
+                    // another door (`ever_completed`).
+                    let reopened = was == Some(Status::Completed)
+                        || (was.is_none() && self.ever_completed.contains(&item.content));
+                    if reopened {
                         if let Some(counts) = step_counts {
                             counts
                                 .reopens
@@ -595,6 +612,11 @@ impl Tracked {
                     }
                 }
                 Status::Completed if was != Some(Status::Completed) => {
+                    self.ever_completed.retain(|k| k != &item.content);
+                    self.ever_completed.push(item.content.clone());
+                    if self.ever_completed.len() > COMPLETED_HISTORY_CAP {
+                        self.ever_completed.remove(0);
+                    }
                     let Some(mark) = self.started.remove(&item.content) else {
                         continue;
                     };
@@ -2449,6 +2471,46 @@ mod tests {
         )
         .await;
         assert_eq!(counts.snapshot(), (2, 1));
+        // The door the check-freeze code names: a completed step dropped
+        // from the plan and re-added as in progress is a reopen too, even
+        // though the live plan no longer remembers it was done. Fails on the
+        // live-plan-only reading (found on review).
+        let dropped = TodoTool::new();
+        let dcounts = std::sync::Arc::new(crate::tool::StepCounts::default());
+        let dctx = |calls: u32, last: Option<Outcome>| ToolCtx {
+            step_counts: Some(dcounts.clone()),
+            ..work_ctx(3, calls, last)
+        };
+        write(
+            &dropped,
+            &dctx(0, None),
+            json!([{"content": "decide", "status": "in_progress"}]),
+        )
+        .await;
+        write(
+            &dropped,
+            &dctx(2, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "completed"}]),
+        )
+        .await;
+        write(
+            &dropped,
+            &dctx(2, Some(Outcome::Ok)),
+            json!([{"content": "build", "status": "in_progress"}]),
+        )
+        .await;
+        assert_eq!(
+            dcounts.snapshot(),
+            (0, 0),
+            "dropping a done step is not a reopen"
+        );
+        write(
+            &dropped,
+            &dctx(2, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "in_progress"}, {"content": "build", "status": "in_progress"}]),
+        )
+        .await;
+        assert_eq!(dcounts.snapshot(), (0, 1), "re-adding it in progress is");
         // No slot: nothing counted, nothing panics.
         let bare = TodoTool::new();
         write(
