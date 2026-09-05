@@ -768,9 +768,10 @@ async fn principal_call(
                         .get(2)
                         .and_then(|id| open_questions.iter().find(|q| &q.id == id))
                         .map(|q| {
-                            q.workspace
-                                .clone()
-                                .unwrap_or_else(|| store.workspace_for(&trial.id))
+                            q.workspace.clone().unwrap_or_else(|| match point {
+                                PrincipalPoint::AfterTask => store.workspace_for(&trial.id),
+                                _ => workspace.clone(),
+                            })
                         })
                 } else {
                     Some(match point {
