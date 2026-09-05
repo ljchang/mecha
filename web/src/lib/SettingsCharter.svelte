@@ -768,6 +768,9 @@
   .sensorform .hint {
     font-size: 11.5px;
   }
+  .sensorform .over {
+    color: var(--warn, #e0a458);
+  }
   .idbtn {
     font-family: var(--mono);
     font-size: 11.5px;

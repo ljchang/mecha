@@ -156,31 +156,6 @@ impl RawSetpoint {
     }
 }
 
-/// What a sensored line watches — **a closed set the owner picks from**,
-/// never an expression, a command or a path, so the file stays a wire format
-/// `Charter::load` can refuse exactly as it refuses an unknown key. Every
-/// kind here is an observable a store already holds *with an id per item*
-/// that a run's own trace can touch, because attribution
-/// (`appraisal::of_session`) joins on that id, never on a before/after delta
-/// of the store (§11.1, containment 6) — and **every kind here does
-/// something today**: each is a key in `sensor_kinds_for`'s table. §11.1
-/// also names `board_overdue` and `cost`, which are store- and run-level
-/// numbers with no item a trace touches; they can only ever be *reading*
-/// sensors, and the readings are the section's unbuilt phase. They are
-/// deliberately not variants yet: a kind that parses, validates its setpoint
-/// and then does nothing is the failure `RawLine`'s `deny_unknown_fields`
-/// exists to refuse, one field down (found on review). They join when a
-/// reader does.
-///
-/// A kind this binary does not know is a load error, which is the
-/// fail-closed direction the charter already has. On an older binary that
-/// is **not** a startup refusal — `setup.rs` catches every `Charter::load`
-/// error, prints one stderr line (covered by the TUI's alternate screen) and
-/// runs *un-chartered*, so a sensored line authored here silently costs a
-/// machine on the previous release its whole charter until `mecha doctor`
-/// reports it, which it does at the severity it deserves. The fix is the
-/// `update` skill, not a lenient parser; §11.1's containment 7 says
-/// "refusal" and is corrected here.
 /// One list declares the variants, [`SensorKind::ALL`] and
 /// [`SensorKind::wire`] together, so a kind that joins the enum is in the
 /// list a surface offers by construction — `ALL` used to be a hand-written
@@ -190,7 +165,8 @@ impl RawSetpoint {
 /// review). The wire word is spelled here as well as by `serde`'s
 /// `snake_case`, and a test holds the two spellings equal.
 macro_rules! sensor_kinds {
-    ($( $(#[$doc:meta])* $name:ident => $wire:literal ),* $(,)?) => {
+    ($(#[$enum_doc:meta])* ; $( $(#[$doc:meta])* $name:ident => $wire:literal ),* $(,)?) => {
+        $(#[$enum_doc])*
         #[derive(
             Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, Deserialize,
         )]
@@ -217,6 +193,32 @@ macro_rules! sensor_kinds {
 }
 
 sensor_kinds! {
+    /// What a sensored line watches — **a closed set the owner picks from**,
+    /// never an expression, a command or a path, so the file stays a wire format
+    /// `Charter::load` can refuse exactly as it refuses an unknown key. Every
+    /// kind here is an observable a store already holds *with an id per item*
+    /// that a run's own trace can touch, because attribution
+    /// (`appraisal::of_session`) joins on that id, never on a before/after delta
+    /// of the store (§11.1, containment 6) — and **every kind here does
+    /// something today**: each is a key in `sensor_kinds_for`'s table. §11.1
+    /// also names `board_overdue` and `cost`, which are store- and run-level
+    /// numbers with no item a trace touches; they can only ever be *reading*
+    /// sensors, and the readings are the section's unbuilt phase. They are
+    /// deliberately not variants yet: a kind that parses, validates its setpoint
+    /// and then does nothing is the failure `RawLine`'s `deny_unknown_fields`
+    /// exists to refuse, one field down (found on review). They join when a
+    /// reader does.
+    ///
+    /// A kind this binary does not know is a load error, which is the
+    /// fail-closed direction the charter already has. On an older binary that
+    /// is **not** a startup refusal — `setup.rs` catches every `Charter::load`
+    /// error, prints one stderr line (covered by the TUI's alternate screen) and
+    /// runs *un-chartered*, so a sensored line authored here silently costs a
+    /// machine on the previous release its whole charter until `mecha doctor`
+    /// reports it, which it does at the severity it deserves. The fix is the
+    /// `update` skill, not a lenient parser; §11.1's containment 7 says
+    /// "refusal" and is corrected here.
+    ;
     /// How many outbox drafts are waiting on the owner. A count.
     OutboxWaiting => "outbox_waiting",
     /// How long a staged draft has sat unreviewed. A duration.
