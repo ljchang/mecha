@@ -612,6 +612,31 @@ pub fn permitted_verb(verb: &[String], fixtures_named: bool) -> std::result::Res
     Ok(())
 }
 
+/// The one draft a release names, or why the request is refused: `--all`
+/// (the principal names each draft and the driver vets each), or anything
+/// but exactly one non-flag argument after the verb — an option's *value*
+/// counts as a name and is refused with it, which narrows, never widens
+/// (the gate a future `Selection` edit could otherwise widen silently;
+/// lifted out of the driver so it is testable, found on review).
+pub fn release_named(verb: &[String]) -> std::result::Result<String, String> {
+    if verb.iter().any(|a| a == "--all") {
+        return Err("a release names its draft; `--all` is refused".into());
+    }
+    let named: Vec<&String> = verb
+        .iter()
+        .skip(2)
+        .filter(|a| !a.starts_with('-'))
+        .collect();
+    match named.as_slice() {
+        [one] => Ok((*one).clone()),
+        _ => Err(format!(
+            "a release names exactly one draft; `{}` names {}",
+            verb.join(" "),
+            named.len()
+        )),
+    }
+}
+
 /// Whether a draft's tool is one a fixture server exposes, by the
 /// `<name>__` prefix the registry gives every tool of a prefixed server.
 /// A builtin (`http_fetch`, `web_search`) and an unprefixed server's tool
@@ -4398,6 +4423,31 @@ seed = "seed"
         assert!(permitted_verb(&v("run do it"), true)
             .unwrap_err()
             .contains("not an owner's verb"));
+    }
+
+    /// A release names exactly one draft, never the queue.
+    #[test]
+    fn a_release_names_exactly_one_draft_never_the_queue() {
+        let v = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(release_named(&v("outbox approve ob-1")).unwrap(), "ob-1");
+        assert_eq!(
+            release_named(&v("outbox approve --via=mail ob-1")).unwrap(),
+            "ob-1",
+            "an attached filter value is not a name"
+        );
+        assert!(release_named(&v("outbox approve --all"))
+            .unwrap_err()
+            .contains("--all"));
+        assert!(release_named(&v("outbox approve ob-1 --all")).is_err());
+        assert!(
+            release_named(&v("outbox approve --kind message ob-1")).is_err(),
+            "a detached option value counts as a second name and refuses"
+        );
+        assert!(release_named(&v("outbox approve ob-1 ob-2")).is_err());
+        assert!(
+            release_named(&v("outbox approve")).is_err(),
+            "no draft named"
+        );
     }
 
     /// A release lands where the draft's tool does: a fixture server's tool
