@@ -309,7 +309,7 @@ impl SensorKind {
             Unit::Count => text
                 .parse::<u64>()
                 .map(Setpoint::Count)
-                .map_err(|_| anyhow::anyhow!("`{text}` is not a whole number"))?,
+                .map_err(|_| anyhow::anyhow!("`{text}` is not {}", Unit::Count.hint()))?,
             Unit::Rate => {
                 let (body, scale) = match text.strip_suffix('%') {
                     Some(pct) => (pct.trim(), 0.01),
@@ -317,7 +317,7 @@ impl SensorKind {
                 };
                 let n: f64 = body
                     .parse()
-                    .map_err(|_| anyhow::anyhow!("`{text}` is not a rate like `0.2` or `20%`"))?;
+                    .map_err(|_| anyhow::anyhow!("`{text}` is not {}", Unit::Rate.hint()))?;
                 let rate = n * scale;
                 if !(0.0..=1.0).contains(&rate) {
                     bail!("`{text}` is not a share between 0 and 1");
@@ -354,7 +354,7 @@ fn parse_duration(text: &str) -> Result<std::time::Duration> {
         }
         let n: u64 = digits
             .parse()
-            .map_err(|_| anyhow::anyhow!("`{text}` is not a duration like `24h` or `7d`"))?;
+            .map_err(|_| anyhow::anyhow!("`{text}` is not {}", Unit::Duration.hint()))?;
         digits.clear();
         let per = match c {
             's' => 1,
@@ -371,7 +371,10 @@ fn parse_duration(text: &str) -> Result<std::time::Duration> {
         saw_token = true;
     }
     if !digits.is_empty() || !saw_token {
-        bail!("`{text}` is not a duration like `24h` or `7d` — every number needs a unit");
+        bail!(
+            "`{text}` is not {} — every number needs a unit",
+            Unit::Duration.hint()
+        );
     }
     Ok(std::time::Duration::from_secs(total))
 }
@@ -992,7 +995,14 @@ setpoint = 0
                 "[[line]]\nid = \"x\"\ntext = \"t\"\n[line.sensor]\nkind = \"{}\"\nsetpoint = \"nonsense\"\n",
                 k.wire()
             )).unwrap_err());
-            assert!(err.contains(k.unit().hint()), "{err}");
+            // In both halves of the message — the outer context and the
+            // inner parse error, which used to carry its own copy of the
+            // words and could have drifted from the hint alone.
+            assert_eq!(err.matches(k.unit().hint()).count(), 2, "{err}");
+            assert_eq!(
+                k.parse_setpoint("nonsense").unwrap_err().to_string(),
+                format!("`nonsense` is not {}", k.unit().hint())
+            );
         }
     }
 
