@@ -1,6 +1,14 @@
 <script>
   import { tick } from 'svelte';
-  import { rows, serialize as toToml, slugify, splitHeader } from './charter-toml.js';
+  import {
+    readingStands,
+    rows,
+    sensorProblems,
+    sensorsWouldDrop,
+    serialize as toToml,
+    slugify,
+    splitHeader,
+  } from './charter-toml.js';
 
   // The charter pane. The lines are edited in place — tap one to open it,
   // drag its grip to re-rank — and nothing reaches disk until an explicit
@@ -72,9 +80,9 @@
     const split = splitHeader(raw);
     header = split.header;
     blocked = split.blocked;
-    // `sensor` is carried, never edited here: the list editor re-ranks and
-    // rewrites text, and a save must write the owner's sensor back exactly
-    // as it was read (see `serialize`). Editing one is the TOML editor's.
+    // `sensor` is carried through a re-rank exactly as it was read, and the
+    // form under an open line may change it — the owner typing, which is
+    // the author rule's whole condition (see `serialize`, `addSensor`).
     // `reading` rides beside it for display only — see `rows`.
     lines = rows(c.lines, () => ++uidSeq);
     original = snapshot();
@@ -143,8 +151,28 @@
       else if (seen.has(id)) out.push(`Two lines share the id “${id}”.`);
       else seen.set(id, i);
     }
+    out.push(...sensorProblems(lines));
     return out;
   });
+
+  // The closed set the server offers, with each unit's hint. Absent on an
+  // older server, in which case the form stands down and says so — the
+  // page never carries its own copy of the list, so a kind the binary does
+  // not know cannot be offered here.
+  const sensorKinds = $derived(charter?.sensor_kinds ?? null);
+  const kindInfo = (kind) => sensorKinds?.find((k) => k.kind === kind) ?? null;
+
+  // A sensor is the owner's, typed here exactly as it would be typed in the
+  // TOML: the page fills in neither the kind nor the setpoint, and the hint
+  // beside the field is the parser's own sentence for the unit, not a value.
+  function addSensor(line) {
+    line.sensor = { kind: '', setpoint: '' };
+  }
+  function removeSensor(line) {
+    line.sensor = null;
+    line.reading = null;
+    line.read_for = null;
+  }
 
   const budget = $derived(charter?.budget ?? 2000);
 
@@ -167,7 +195,7 @@
   });
 
   function addLine() {
-    const line = { uid: ++uidSeq, id: '', text: '', sensor: null, reading: null };
+    const line = { uid: ++uidSeq, id: '', text: '', sensor: null, reading: null, read_for: null };
     lines = [...lines, line];
     editing = line.uid;
     savedNote = null;
@@ -443,8 +471,65 @@
             placeholder="What this priority actually asks for."
             aria-label="the priority, in your own words"
           ></textarea>
+          {#if line.sensor}
+            <!-- The sensor form. Author rule, not verb rule: the owner types
+                 the kind and the setpoint, and the page proposes neither —
+                 the select opens on "choose a kind", the setpoint field is
+                 empty, and the hint under it is the parser's own unit
+                 sentence. The server validates with the same reader every
+                 run loads through, and a refused save keeps the draft. -->
+            <div class="sensorform">
+              {#if sensorKinds}
+                <select class="idfield" bind:value={line.sensor.kind} aria-label="what the sensor watches">
+                  <option value="">choose a kind</option>
+                  {#each sensorKinds as k (k.kind)}
+                    <option value={k.kind}>{k.kind} — {k.describe}</option>
+                  {/each}
+                </select>
+                <input
+                  class="idfield"
+                  bind:value={line.sensor.setpoint}
+                  spellcheck="false"
+                  autocapitalize="off"
+                  placeholder="setpoint"
+                  aria-label="the setpoint, in the kind's unit"
+                />
+                <div class="sub hint">
+                  {#if kindInfo(line.sensor.kind)}
+                    setpoint: {kindInfo(line.sensor.kind).hint} — what the line means by "short" or "few"
+                  {:else}
+                    pick what the line watches; the setpoint's unit follows from it
+                  {/if}
+                </div>
+                <!-- Containment 5's first guard, where the value is typed:
+                     the reading that still stands for this exact sensor. It
+                     goes quiet the moment the kind or setpoint changes
+                     (`readingStands`), and comes back with the save. -->
+                {#if readingStands(line)}
+                  <div class="sub hint">
+                    reading now: <span class:over={line.reading.state === 'observed' && line.reading.over}>{line.reading.summary}</span>
+                  </div>
+                {:else if line.reading}
+                  <div class="sub hint">reading: not yet, for this setpoint — save to read it</div>
+                {/if}
+                <button class="btn small" onclick={() => removeSensor(line)}>Remove sensor</button>
+              {:else}
+                <!-- An older server serves no kinds: the form declines to
+                     compose, so it must not delete blind either. The sensor
+                     is shown as it is, and the TOML editor is the way to
+                     change it. -->
+                <div class="sub hint">
+                  sensor · {line.sensor.kind || 'no kind'} · setpoint {line.sensor.setpoint || '—'} — this
+                  server offers no sensor kinds here; edit the sensor as TOML
+                </div>
+              {/if}
+            </div>
+          {/if}
           <div class="row-actions">
             <button class="btn small" onclick={() => (editing = null)}>Done</button>
+            {#if !line.sensor && sensorKinds}
+              <button class="btn small" onclick={() => addSensor(line)}>+ Add sensor</button>
+            {/if}
             <button
               class="btn small danger"
               class:armed={deleteArmed === line.uid}
@@ -458,19 +543,19 @@
             {line.text || 'Empty — tap to write it.'}
           </button>
         {/if}
-        {#if line.sensor}
-          <!-- Read-only here: the owner's own setpoint, in their spelling,
-               kept across a save by `serialize`. Changing or adding one is
-               the TOML editor's job — a form for it would be this page
-               proposing a number. The current reading beside it is §11.1
-               containment 5's first guard: a setpoint in the wrong unit
-               shows as always past it, here, where the owner is editing. -->
+        {#if line.sensor && editing !== line.uid}
+          <!-- The owner's own setpoint, in their spelling, kept across a
+               save by `serialize`; tap the line to change it. The current
+               reading beside it is §11.1 containment 5's first guard: a
+               setpoint in the wrong unit shows as always past it, here,
+               where the owner is editing. -->
           <div class="sensor" title="an observable mecha reads from its own stores; runs that touch what it watches are attributed to this line — the reading never enters a prompt">
-            sensor · {line.sensor.kind} · setpoint {line.sensor.setpoint}
-            {#if line.reading}
+            sensor · {line.sensor.kind || 'no kind yet'} · setpoint {line.sensor.setpoint || '—'}
+            {#if readingStands(line)}
               · <span class:over={line.reading.state === 'observed' && line.reading.over}>reading {line.reading.summary}</span>
+            {:else if line.reading}
+              · reading: not yet, for this setpoint — save to read it
             {/if}
-            · edit as TOML to change
           </div>
         {/if}
       </div>
@@ -520,9 +605,16 @@
     {:else}
       <span class="count">&nbsp;</span>
     {/if}
+    <!-- The handoff serialises the list, and `serialize` writes no table
+         for a sensor without a kind — so a half-filled sensor would be
+         dropped from the draft at the moment the notice naming it
+         disappears, and the raw editor's save has no problems gate. The
+         same gate as the list save, then: fix the line first (found on
+         review). -->
     <button
       class="btn"
       class:ghost={!blocked}
+      disabled={!blocked && dirty && sensorsWouldDrop(lines).length > 0}
       onclick={() => {
         // Carry unsaved list edits across rather than silently reverting to
         // what is on disk.
@@ -531,6 +623,16 @@
         saveError = null;
       }}>Edit as TOML</button
     >
+    {#if !blocked && dirty && sensorsWouldDrop(lines).length > 0}
+      <!-- Said here, not in a title: a disabled button swallows its title in
+           every engine. Only a sensor `serialize` would drop gates the
+           hatch — a kindless one; an empty id, text or setpoint and two
+           lines of one kind serialise faithfully and the server refuses
+           them with the draft kept, so those keep the hatch open. -->
+      <span class="sub hint">
+        line{sensorsWouldDrop(lines).length === 1 ? '' : 's'} {sensorsWouldDrop(lines).join(', ')}: give the sensor a kind or remove it — the TOML draft would drop it
+      </span>
+    {/if}
   </div>
 
   {#if charter?.over_budget && !dirty}
@@ -649,6 +751,24 @@
     margin-top: 4px;
   }
   .sensor .over {
+    color: var(--warn, #e0a458);
+  }
+  .sensorform {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 8px;
+    margin: 6px 0 4px 36px;
+    align-items: center;
+  }
+  .sensorform .hint,
+  .sensorform .btn {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  .sensorform .hint {
+    font-size: 11.5px;
+  }
+  .sensorform .over {
     color: var(--warn, #e0a458);
   }
   .idbtn {

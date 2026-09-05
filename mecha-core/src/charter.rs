@@ -156,45 +156,80 @@ impl RawSetpoint {
     }
 }
 
-/// What a sensored line watches — **a closed set the owner picks from**,
-/// never an expression, a command or a path, so the file stays a wire format
-/// `Charter::load` can refuse exactly as it refuses an unknown key. Every
-/// kind here is an observable a store already holds *with an id per item*
-/// that a run's own trace can touch, because attribution
-/// (`appraisal::of_session`) joins on that id, never on a before/after delta
-/// of the store (§11.1, containment 6) — and **every kind here does
-/// something today**: each is a key in `sensor_kinds_for`'s table. §11.1
-/// also names `board_overdue` and `cost`, which are store- and run-level
-/// numbers with no item a trace touches; they can only ever be *reading*
-/// sensors, and the readings are the section's unbuilt phase. They are
-/// deliberately not variants yet: a kind that parses, validates its setpoint
-/// and then does nothing is the failure `RawLine`'s `deny_unknown_fields`
-/// exists to refuse, one field down (found on review). They join when a
-/// reader does.
-///
-/// A kind this binary does not know is a load error, which is the
-/// fail-closed direction the charter already has. On an older binary that
-/// is **not** a startup refusal — `setup.rs` catches every `Charter::load`
-/// error, prints one stderr line (covered by the TUI's alternate screen) and
-/// runs *un-chartered*, so a sensored line authored here silently costs a
-/// machine on the previous release its whole charter until `mecha doctor`
-/// reports it, which it does at the severity it deserves. The fix is the
-/// `update` skill, not a lenient parser; §11.1's containment 7 says
-/// "refusal" and is corrected here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SensorKind {
+/// One list declares the variants, [`SensorKind::ALL`] and
+/// [`SensorKind::wire`] together, so a kind that joins the enum is in the
+/// list a surface offers by construction — `ALL` used to be a hand-written
+/// array beside the enum, and a sixth variant wired through every
+/// exhaustive match but forgotten there would have compiled, parsed in
+/// TOML, and been silently absent from the web form's select (found on
+/// review). The wire word is spelled here as well as by `serde`'s
+/// `snake_case`, and a test holds the two spellings equal.
+macro_rules! sensor_kinds {
+    ($(#[$enum_doc:meta])* ; $( $(#[$doc:meta])* $name:ident => $wire:literal ),* $(,)?) => {
+        $(#[$enum_doc])*
+        #[derive(
+            Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, Deserialize,
+        )]
+        #[serde(rename_all = "snake_case")]
+        pub enum SensorKind {
+            $( $(#[$doc])* $name, )*
+        }
+
+        impl SensorKind {
+            /// Every kind, in declaration order, for a surface that lists
+            /// what an owner may pick from.
+            pub const ALL: [SensorKind; [$(SensorKind::$name),*].len()] =
+                [$(SensorKind::$name),*];
+
+            /// The wire word — `serde`'s own `snake_case` spelling, for a
+            /// message or a JSON field that wants a bare `&str`.
+            pub fn wire(self) -> &'static str {
+                match self {
+                    $( SensorKind::$name => $wire, )*
+                }
+            }
+        }
+    };
+}
+
+sensor_kinds! {
+    /// What a sensored line watches — **a closed set the owner picks from**,
+    /// never an expression, a command or a path, so the file stays a wire format
+    /// `Charter::load` can refuse exactly as it refuses an unknown key. Every
+    /// kind here is an observable a store already holds *with an id per item*
+    /// that a run's own trace can touch, because attribution
+    /// (`appraisal::of_session`) joins on that id, never on a before/after delta
+    /// of the store (§11.1, containment 6) — and **every kind here does
+    /// something today**: each is a key in `sensor_kinds_for`'s table. §11.1
+    /// also names `board_overdue` and `cost`, which are store- and run-level
+    /// numbers with no item a trace touches; they can only ever be *reading*
+    /// sensors, and the readings are the section's unbuilt phase. They are
+    /// deliberately not variants yet: a kind that parses, validates its setpoint
+    /// and then does nothing is the failure `RawLine`'s `deny_unknown_fields`
+    /// exists to refuse, one field down (found on review). They join when a
+    /// reader does.
+    ///
+    /// A kind this binary does not know is a load error, which is the
+    /// fail-closed direction the charter already has. On an older binary that
+    /// is **not** a startup refusal — `setup.rs` catches every `Charter::load`
+    /// error, prints one stderr line (covered by the TUI's alternate screen) and
+    /// runs *un-chartered*, so a sensored line authored here silently costs a
+    /// machine on the previous release its whole charter until `mecha doctor`
+    /// reports it, which it does at the severity it deserves. The fix is the
+    /// `update` skill, not a lenient parser; §11.1's containment 7 says
+    /// "refusal" and is corrected here.
+    ;
     /// How many outbox drafts are waiting on the owner. A count.
-    OutboxWaiting,
+    OutboxWaiting => "outbox_waiting",
     /// How long a staged draft has sat unreviewed. A duration.
-    OutboxAge,
+    OutboxAge => "outbox_age",
     /// How long a parked question waits for the owner's answer. A duration.
-    QuestionLatency,
+    QuestionLatency => "question_latency",
     /// How long a front-door request stays open before it is closed or
     /// answered. A duration.
-    RequestClosure,
+    RequestClosure => "request_closure",
     /// The share of runs in which the owner had to step in. A rate.
-    InterventionRate,
+    InterventionRate => "intervention_rate",
 }
 
 /// The unit a kind's setpoint is read in — fixed by the kind, never chosen
@@ -204,6 +239,28 @@ pub enum Unit {
     Duration,
     Count,
     Rate,
+}
+
+impl Unit {
+    /// The wire word, for a surface that lists what an owner may pick from.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Unit::Duration => "duration",
+            Unit::Count => "count",
+            Unit::Rate => "rate",
+        }
+    }
+
+    /// How a setpoint in this unit is spelled — the one sentence the parse
+    /// error and the web form's hint both use, so the form never proposes
+    /// a number and the refusal never disagrees with the hint.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Unit::Duration => "a duration like `24h` or `7d`",
+            Unit::Count => "a whole number",
+            Unit::Rate => "a rate like `0.2` or `20%`",
+        }
+    }
 }
 
 /// A setpoint typed by its kind.
@@ -226,27 +283,6 @@ impl Setpoint {
 }
 
 impl SensorKind {
-    /// Every kind, for a surface that lists what an owner may pick from.
-    pub const ALL: [SensorKind; 5] = [
-        SensorKind::OutboxWaiting,
-        SensorKind::OutboxAge,
-        SensorKind::QuestionLatency,
-        SensorKind::RequestClosure,
-        SensorKind::InterventionRate,
-    ];
-
-    /// The wire word — `serde`'s own `snake_case` spelling, for a message
-    /// or a JSON field that wants a bare `&str`.
-    pub fn wire(self) -> &'static str {
-        match self {
-            SensorKind::OutboxWaiting => "outbox_waiting",
-            SensorKind::OutboxAge => "outbox_age",
-            SensorKind::QuestionLatency => "question_latency",
-            SensorKind::RequestClosure => "request_closure",
-            SensorKind::InterventionRate => "intervention_rate",
-        }
-    }
-
     pub fn unit(self) -> Unit {
         match self {
             SensorKind::OutboxAge | SensorKind::QuestionLatency | SensorKind::RequestClosure => {
@@ -254,6 +290,18 @@ impl SensorKind {
             }
             SensorKind::OutboxWaiting => Unit::Count,
             SensorKind::InterventionRate => Unit::Rate,
+        }
+    }
+
+    /// What the kind watches, in one line, for a surface that offers the
+    /// closed set to the owner — the variant docs above, as prose.
+    pub fn describe(self) -> &'static str {
+        match self {
+            SensorKind::OutboxWaiting => "how many outbox drafts wait on you",
+            SensorKind::OutboxAge => "how long a staged draft has sat unreviewed",
+            SensorKind::QuestionLatency => "how long a parked question waits for your answer",
+            SensorKind::RequestClosure => "how long a front-door request stays open",
+            SensorKind::InterventionRate => "the share of recent runs you stepped into",
         }
     }
 
@@ -275,7 +323,7 @@ impl SensorKind {
             Unit::Count => text
                 .parse::<u64>()
                 .map(Setpoint::Count)
-                .map_err(|_| anyhow::anyhow!("`{text}` is not a whole number"))?,
+                .map_err(|_| anyhow::anyhow!("`{text}` is not {}", Unit::Count.hint()))?,
             Unit::Rate => {
                 let (body, scale) = match text.strip_suffix('%') {
                     Some(pct) => (pct.trim(), 0.01),
@@ -283,7 +331,7 @@ impl SensorKind {
                 };
                 let n: f64 = body
                     .parse()
-                    .map_err(|_| anyhow::anyhow!("`{text}` is not a rate like `0.2` or `20%`"))?;
+                    .map_err(|_| anyhow::anyhow!("`{text}` is not {}", Unit::Rate.hint()))?;
                 let rate = n * scale;
                 if !(0.0..=1.0).contains(&rate) {
                     bail!("`{text}` is not a share between 0 and 1");
@@ -320,7 +368,7 @@ fn parse_duration(text: &str) -> Result<std::time::Duration> {
         }
         let n: u64 = digits
             .parse()
-            .map_err(|_| anyhow::anyhow!("`{text}` is not a duration like `24h` or `7d`"))?;
+            .map_err(|_| anyhow::anyhow!("`{text}` is not {}", Unit::Duration.hint()))?;
         digits.clear();
         let per = match c {
             's' => 1,
@@ -337,7 +385,10 @@ fn parse_duration(text: &str) -> Result<std::time::Duration> {
         saw_token = true;
     }
     if !digits.is_empty() || !saw_token {
-        bail!("`{text}` is not a duration like `24h` or `7d` — every number needs a unit");
+        bail!(
+            "`{text}` is not {} — every number needs a unit",
+            Unit::Duration.hint()
+        );
     }
     Ok(std::time::Duration::from_secs(total))
 }
@@ -498,13 +549,9 @@ impl Charter {
                         let setpoint =
                             raw.kind.parse_setpoint(&setpoint_text).with_context(|| {
                                 format!(
-                                    "charter line `{id}`: sensor `{}` reads its setpoint as a {}",
+                                    "charter line `{id}`: sensor `{}` reads its setpoint as {}",
                                     raw.kind.wire(),
-                                    match raw.kind.unit() {
-                                        Unit::Duration => "duration like `24h` or `7d`",
-                                        Unit::Count => "whole number",
-                                        Unit::Rate => "rate like `0.2` or `20%`",
-                                    }
+                                    raw.kind.unit().hint()
                                 )
                             })?;
                         Some(Sensor {
@@ -593,6 +640,28 @@ impl Charter {
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
     }
+}
+
+/// The closed set of sensor kinds as a surface offers them to the owner —
+/// `[{kind, unit, hint, describe}]` in `SensorKind::ALL`'s order. Served by
+/// the web settings endpoint so the form's select is this list and not a
+/// copy that drifts; the hint is the parser's own unit sentence, and there
+/// is deliberately no default kind and no default setpoint in it — the page
+/// proposes nothing, the owner types both (§11.1's author rule).
+pub fn sensor_kinds_json() -> serde_json::Value {
+    serde_json::Value::Array(
+        SensorKind::ALL
+            .iter()
+            .map(|k| {
+                serde_json::json!({
+                    "kind": k.wire(),
+                    "unit": k.unit().wire(),
+                    "hint": k.unit().hint(),
+                    "describe": k.describe(),
+                })
+            })
+            .collect(),
+    )
 }
 
 /// The comments-only template a surface may write when no charter exists
@@ -892,6 +961,74 @@ setpoint = 0
         let err = format!("{:#}", Charter::parse(raw).unwrap_err());
         assert!(err.contains("charter line `waits`"), "{err}");
         assert!(err.contains("setpoint of zero"), "{err}");
+    }
+
+    /// The served list, as JSON, for the far side of the boundary: the
+    /// docs demo's `fixtures.js` carries a hand copy of what
+    /// `sensor_kinds_json` serves, and `website/scripts/check-charter-toml.mjs`
+    /// reads this literal out of the source and asserts the fixture equals
+    /// it, the way it pins the serialiser against `WEB_EDITOR_SAMPLE`. The
+    /// test below asserts the literal equals the function, so a kind that
+    /// joins or a hint that is reworded fails here first and the demo
+    /// second — never neither (found on review).
+    // sensor-kinds:begin
+    const SENSOR_KINDS_JSON: &str = r#"[
+  {"kind":"outbox_waiting","unit":"count","hint":"a whole number","describe":"how many outbox drafts wait on you"},
+  {"kind":"outbox_age","unit":"duration","hint":"a duration like `24h` or `7d`","describe":"how long a staged draft has sat unreviewed"},
+  {"kind":"question_latency","unit":"duration","hint":"a duration like `24h` or `7d`","describe":"how long a parked question waits for your answer"},
+  {"kind":"request_closure","unit":"duration","hint":"a duration like `24h` or `7d`","describe":"how long a front-door request stays open"},
+  {"kind":"intervention_rate","unit":"rate","hint":"a rate like `0.2` or `20%`","describe":"the share of recent runs you stepped into"}
+]"#;
+    // sensor-kinds:end
+
+    /// The macro's wire word and `serde`'s `snake_case` are two spellings
+    /// of one name; every kind round-trips through both.
+    #[test]
+    fn every_kinds_wire_word_is_its_serde_spelling() {
+        for k in SensorKind::ALL {
+            let json = serde_json::to_string(&k).unwrap();
+            assert_eq!(json, format!("\"{}\"", k.wire()));
+            assert_eq!(serde_json::from_str::<SensorKind>(&json).unwrap(), k);
+        }
+    }
+
+    #[test]
+    fn the_marked_kinds_literal_is_what_the_server_serves() {
+        let pinned: serde_json::Value = serde_json::from_str(SENSOR_KINDS_JSON).unwrap();
+        assert_eq!(
+            pinned,
+            sensor_kinds_json(),
+            "update the sensor-kinds literal (and the demo fixture) with the served list"
+        );
+    }
+
+    /// The list a form offers is every kind, each with its unit's own hint
+    /// — the sentence the parser's refusal uses — and no value: a default
+    /// in this list would be the page proposing a number.
+    #[test]
+    fn the_kinds_a_form_offers_are_every_kind_with_the_parsers_own_hint_and_no_default() {
+        let kinds = sensor_kinds_json();
+        let arr = kinds.as_array().unwrap();
+        assert_eq!(arr.len(), SensorKind::ALL.len());
+        for (v, k) in arr.iter().zip(SensorKind::ALL) {
+            assert_eq!(v["kind"], k.wire());
+            assert_eq!(v["unit"], k.unit().wire());
+            assert_eq!(v["hint"], k.unit().hint());
+            assert!(v.get("setpoint").is_none() && v.get("default").is_none());
+            // The refusal names the same hint the form shows.
+            let err = format!("{:#}", Charter::parse(&format!(
+                "[[line]]\nid = \"x\"\ntext = \"t\"\n[line.sensor]\nkind = \"{}\"\nsetpoint = \"nonsense\"\n",
+                k.wire()
+            )).unwrap_err());
+            // In both halves of the message — the outer context and the
+            // inner parse error, which used to carry its own copy of the
+            // words and could have drifted from the hint alone.
+            assert_eq!(err.matches(k.unit().hint()).count(), 2, "{err}");
+            assert_eq!(
+                k.parse_setpoint("nonsense").unwrap_err().to_string(),
+                format!("`nonsense` is not {}", k.unit().hint())
+            );
+        }
     }
 
     #[test]

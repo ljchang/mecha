@@ -36,10 +36,12 @@ export const esc = (s) =>
 /// A line's `sensor` (`{kind, setpoint}`, as the server serves it) is written
 /// back as a `[line.sensor]` sub-table with the owner's own setpoint
 /// spelling, always as a string — `setpoint = 3` on disk comes back as
-/// `setpoint = "3"`, which the reader types identically. The editor never
-/// composes a sensor; this exists so a re-rank or a text edit does not
-/// silently delete one (GOAL-SYSTEM-DESIGN §11.1: the parser, this
-/// serialiser and the template move together).
+/// `setpoint = "3"`, which the reader types identically. A sensor reaches
+/// here two ways — read from the file, or typed by the owner in the form —
+/// and is written the same way either way; a sensor without a kind writes
+/// no table, which is why `sensorProblems` names one before a save
+/// (GOAL-SYSTEM-DESIGN §11.1: the parser, this serialiser and the template
+/// move together).
 export function serialize(header, lines) {
   const out = [];
   if (header.trim()) out.push(header, '');
@@ -153,5 +155,62 @@ export function rows(lines, nextUid) {
     text: l.text,
     sensor: l.sensor ? { kind: l.sensor.kind, setpoint: l.sensor.setpoint } : null,
     reading: l.reading ?? null,
+    // The sensor the reading was computed against, kept apart from the
+    // editable `sensor` so an in-place edit cannot leave a reading beside
+    // a setpoint it never saw (`readingStands`).
+    read_for: l.sensor && l.reading ? { kind: l.sensor.kind, setpoint: l.sensor.setpoint } : null,
   }));
+}
+
+/// Does the row's reading still describe the row's sensor? The server
+/// computes `reading.summary` and `reading.over` against the *saved* kind and
+/// setpoint; once the owner changes either in the form, the reading is about
+/// a sensor that no longer exists on the row, and showing it would let
+/// containment 5's guard — the reading beside the value being typed —
+/// reassure about the old value (found on review). Same kind and the same
+/// setpoint spelling, or the reading stands down until the next save.
+export function readingStands(line) {
+  if (!line?.reading || !line.sensor || !line.read_for) return false;
+  return (
+    String(line.sensor.kind ?? '').trim() === String(line.read_for.kind ?? '').trim() &&
+    String(line.sensor.setpoint ?? '').trim() === String(line.read_for.setpoint ?? '').trim()
+  );
+}
+
+/// What a half-filled sensor would cost silently: `serialize` writes no table
+/// for a sensor without a kind, so a form the owner opened and left empty
+/// would vanish on save with nothing said, and a kind with no setpoint would
+/// reach the server only to be refused after the two-tap save. Said here
+/// instead, beside the line, before the save is armed.
+export function sensorProblems(lines) {
+  const out = [];
+  const seen = new Map();
+  for (const [i, l] of lines.entries()) {
+    if (!l.sensor) continue;
+    const kind = String(l.sensor.kind ?? '').trim();
+    const setpoint = String(l.sensor.setpoint ?? '').trim();
+    if (!kind && !setpoint) out.push(`Line ${i + 1}'s sensor needs a kind and a setpoint, or remove it.`);
+    else if (!kind) out.push(`Line ${i + 1}'s sensor has no kind.`);
+    else if (!setpoint) out.push(`Line ${i + 1}'s sensor has no setpoint.`);
+    // The parser refuses two lines of one kind (only the higher-ranked
+    // would ever be attributed anything); said here, before the save.
+    if (kind) {
+      if (seen.has(kind)) out.push(`Lines ${seen.get(kind) + 1} and ${i + 1} both carry a ${kind} sensor — keep one.`);
+      else seen.set(kind, i);
+    }
+  }
+  return out;
+}
+
+/// The one shape `serialize` loses: a sensor with no kind writes no table.
+/// Kept apart from `sensorProblems`, which also names what the *server*
+/// refuses with the draft kept — an empty setpoint, two lines of one kind —
+/// because only a drop should close the TOML escape hatch; the rest keep
+/// it open exactly as an empty id or text does (found on review: the hatch
+/// was gated on every sensor problem, and a duplicate kind told the owner a
+/// half-filled sensor would be dropped when nothing would).
+export function sensorsWouldDrop(lines) {
+  return lines
+    .map((l, i) => (l.sensor && !String(l.sensor.kind ?? '').trim() ? i + 1 : null))
+    .filter((n) => n !== null);
 }

@@ -153,8 +153,12 @@ day — and doctor says both, because it cannot tell. A setpoint of zero is
 refused at load for the same reason: nothing could ever be within it. The
 sensor's kind, setpoint and reading never enter a prompt; the line's text
 does, exactly as an unsensored line's does. The web editor shows a sensor
-beside its line and carries it through a re-rank; to add or change one, edit
-the TOML.
+beside its line with its current reading, carries it through a re-rank, and
+lets you add or change one under the open line: pick what it watches from
+the closed set, type the setpoint in that kind's unit (the hint beside the
+field says which), and save. Nothing is prefilled — the page never proposes
+a number — and a setpoint the file would refuse is refused at the save, with
+the line named. The TOML editor is still there for anything else.
 
 **Order is rank, and there is no priority field.** Value conflict — *protect the
 owner* against *don't let a colleague down* — is the measured cause of goal
