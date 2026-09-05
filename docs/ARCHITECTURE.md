@@ -472,12 +472,35 @@ exists would pin nearly every rule to the one workspace most reflections
 come from. `Situation::scope` and `Situation::matches` are pinned together
 by a test so a key cannot join one without the other. The incident: 42 of
 45 reflections were `behavior`, and a lesson about `shell` refused in one
-run rode in every prompt as a universal rule. What is *not* built: mid-run
-delivery of a rule when its condition recurs (§17.4 *Delivery*, ruled
-off-by-default in §17.7 item 2 until the restart counters are read), and
-widening a rule's region over sub-regions that agree (§17.4
-*Consolidation*), so a rule stays as narrow as its batch until then. A
-consequence worth knowing: the store's view (`mecha rules`,
+run rode in every prompt as a universal rule. **A rule widens by verbatim restatement and narrows by conviction, and
+both are the harness's arithmetic over recorded situations** (built
+2026-09-05, §17.4 *Consolidation* and *Validation*). Beside `scope` a rule
+carries `support`, the sub-regions its evidence was recorded in; the
+learner is told to repeat an outside rule word for word when a batch
+teaches the same lesson, and `finalize_region_rules` answers a verbatim
+restatement from another region by re-scoping the rule to the
+intersection of the two regions and adding the batch's windows to its
+support — the model claims "same lesson", the scope follows from two
+batches of recorded evidence, and a restatement inside the rule's own
+region adds support and widens nothing. Each ledger row records the
+sub-region the probe *exercised* (`ValidationRecord::region`: the
+reflection's window, not the run's registry) and `RuleTally` folds per
+region beside the totals; probation is released only by rows that
+exercised the rule, `validate --cover N` buys N probes per (rule,
+region) pair nobody has graded from inside that region (the nightly
+passes 1), and `rules propose-retirements` asks `judge_convicted` before
+retiring: convictions counted against the current scope, and a rule
+convicted in some support regions and clean in others sheds the failing
+ones and re-scopes to the intersection of the rest (`narrowed_at`,
+`narrowed_reason`), its shed convictions no longer counting. It retires,
+with the reason, when it has no recorded support, when a conviction has
+no region or lies outside every support region, or when the clean
+regions share no tool — a conjunctive scope cannot say "everywhere but
+here", and the reason names the clean regions so the lesson can be
+re-learned inside one. What is *not* built: mid-run delivery of a rule
+when its condition recurs (§17.4 *Delivery*, ruled off-by-default in
+§17.7 item 2 until the restart counters are read), and a disjunctive
+scope. A consequence worth knowing: the store's view (`mecha rules`,
 `rules_prompt_block_for`) is now a set no single run has, which is why
 `validate` renders the measured block per probe from the replayed
 session's own `RunConfig::tools` — over `RUN_DOMAINS` only, never the

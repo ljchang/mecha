@@ -2658,6 +2658,29 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
+**2026-09-05 — §17.4's consolidation widening and narrowing and the
+per-region half of validation are built on `feat/region-widening`
+(unmerged when written; merging is the owner's call; after merge, the
+`update` skill for the binary — `scripts/ruminate.sh` changed too, and
+the timer execs the checkout's copy).** What it built is in
+`HISTORY.md` under this date: `Rule::support`, widening by verbatim
+restatement in `finalize_region_rules`, `ValidationRecord::region` and
+per-region tallies, exercised-only probation release, `validate --cover`
+(the nightly passes 1), and `judge_convicted` narrowing before
+retirement. **What to expect on this machine:** every row in the live
+ledger predates the region field, so `mecha rules` prints `no region
+recorded N graded` for every rule until the next validate pass writes
+placed rows; the twelve live rules are unscoped, so a widening can only
+happen once a scoped rule exists and a later batch restates it; nothing
+is convicted, so the first scan narrows and retires nothing. **Open from
+§17.4 now:** mid-run delivery (§17.7 item 2), surface and workspace as
+scope keys, and a disjunctive scope — the split a narrowing cannot
+express, which today retires with the clean regions named. The night of
+2026-09-05's rumination was deferred (the model server was in its PATH
+restart loop until 14:44Z), so the "argue the backfilled regions" pass
+the previous session named as this item's precondition has still not
+happened; `learn --dry-run` that afternoon found one unprocessed reflection.
+
 **2026-09-04, evening — §11.1's readings phase is built as PR #176
 (`feat/charter-readings`, rebased onto `bc562a8`; unmerged when written,
 the review loop's state is on the PR, and merging is the owner's call).**

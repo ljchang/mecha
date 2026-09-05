@@ -96,8 +96,10 @@ echo "· reflect (catches whatever the session_end hook missed; live mining is l
 echo "· distill (episodes → the knowledge graph; catches whatever a hook missed)"
 "$MECHA" distill -p "$PROVIDER"
 
-echo "· validate (the measurement: held-out + fresh, before learn consumes them)"
-"$MECHA" validate -p "$PROVIDER" --judge-provider "$JUDGE" --unprocessed-only
+echo "· validate (the measurement: held-out + fresh, before learn consumes them;"
+echo "  --cover 1 buys one probe per (rule, region) pair the ledger has never graded,"
+echo "  so a widened rule is measured in each sub-region it widened over)"
+"$MECHA" validate -p "$PROVIDER" --judge-provider "$JUDGE" --unprocessed-only --cover 1
 
 echo "· learn (sweep: live consolidation runs per session, this catches the remainder;"
 echo "  --auto measures the candidate and applies it, or refuses it, without staging)"
