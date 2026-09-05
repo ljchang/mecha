@@ -1495,9 +1495,16 @@ pub fn refusal_outcomes(
             tool: r.tool.clone(),
             input_contains: r.input_contains.clone(),
             reason: r.reason.clone(),
-            fired: session_text
-                .matches(&format!("{DENIED_PREFIX}{}", r.reason))
-                .count() as u32,
+            // Encoded the way the file holds it: the sentence sits in a
+            // JSON string, so a quote, a backslash or a newline in the
+            // reason is escaped there and a raw needle never matched
+            // (found on review).
+            fired: {
+                let sentence = format!("{DENIED_PREFIX}{}", r.reason);
+                let encoded = serde_json::to_string(&sentence).unwrap_or_default();
+                let needle = encoded.trim_matches('"');
+                session_text.matches(needle).count() as u32
+            },
         })
         .collect()
 }
@@ -3366,6 +3373,14 @@ rationale = "no rumination should fail more over the sequence"
         let out = refusal_outcomes(&rules, session);
         assert_eq!((out[0].fired, out[1].fired), (2, 0), "{out:?}");
         assert_eq!(out[1].tool, "fs_write");
+        // A reason with a quote is escaped in the file and still counts.
+        let quoted = vec![crate::tool::DenialRule {
+            tool: "shell".into(),
+            input_contains: None,
+            reason: "use \"printf\" here".into(),
+        }];
+        let session = "{\"content\":\"Denied by the user: use \\\"printf\\\" here\"}\n";
+        assert_eq!(refusal_outcomes(&quoted, session)[0].fired, 1, "{session}");
         write_denials(&home, &rules).unwrap();
         assert_eq!(read_denials(&home).unwrap(), rules);
         let _ = std::fs::remove_dir_all(&home);
