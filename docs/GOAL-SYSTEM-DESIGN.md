@@ -1869,7 +1869,8 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > everywhere, as they did, until the standing batch rewrites them.
 
 > **Built 2026-09-05: consolidation's widening and narrowing, and the
-> per-region half of validation** (`feat/region-widening`). A rule now
+> per-region half of validation** (`feat/region-widening`, PR #192,
+> merged at `52b8b0b` and deployed the same evening). A rule now
 > carries `support` beside `scope` — the sub-regions its evidence was
 > recorded in, one scope per distinct window in the batch — and the two
 > differ exactly when a widening dropped a key. **Widening is
@@ -2058,7 +2059,8 @@ follow from facts in the tree and stand as written. None is built.
    posture, and the null-step and restart counters are read before it is
    turned on: the tree's own evidence is that a nudge makes a model restart
    work it had done. *The counters exist since 2026-09-05*
-   (`feat/step-counters`): neither was recorded anywhere before — the
+   (`feat/step-counters`, PR #194, merged at `87645f9` and deployed the
+   same evening): neither was recorded anywhere before — the
    null step was read by `todo` into its result line and dropped, and a
    reopen was not read at all — so the precondition could not be met from
    the store. `ToolCtx::step_counts` is minted per run by the loop (a
