@@ -3628,9 +3628,10 @@ refused close after our own lost write, a torn record, a lost record
 write after a ledgered send, a released orphan card — each is a finding or
 a repair, never a benign state; and a poll whose invitations never all go
 out, or whose event never arrives, is reported every tick and closed as
-`stalled` a day on, releasing its slots. Deferred on purpose (§8):
-participants' own freebusy, a web page, `polls extend`, the open-link
-meeting poll — an open link has no "everyone" to have answered.
+`stalled` a day on, releasing its slots. Deferred on purpose (§7.4):
+participants' own freebusy, a web page, `polls extend` — and, refused with
+its reason in §8, the open-link meeting poll: an open link has no
+"everyone" to have answered.
 
 **2026-09-04, evening — a charter sensor reads: each sensored line
 against its store, on every run record, on every owner surface, and in the

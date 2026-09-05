@@ -1680,9 +1680,12 @@ a letter; backup `config.toml.bak-2026-09-05-polls`), and
 the five-verb line — `factory-publish drain; mecha-mail bookings --account
 dartmouth; factory-publish polls sweep; mecha-mail polls --account
 dartmouth; mecha polls sweep` — daemon-reloaded, with the old unit beside
-it as `.bak-2026-09-05-polls`. Verified from the timer's next firing at
-01:55Z, not the unit file: the journal shows all five in order (`pushed 105
-slot(s)` · `nothing waiting` · `no new bookings` · `swept: 0 record(s)
+it as `.bak-2026-09-05-polls`. Verified from the timer's next firing, not
+the unit file — the timer is `OnCalendar=*:0/2` with
+`RandomizedDelaySec=15s`, so the firing was the 01:54Z one and the stamps
+below are the freebusy document's own, taken when its API call returned:
+the journal shows all five verbs in order (`pushed 105 slot(s) … generated
+01:55:03Z` · `nothing waiting` · `no new bookings` · `swept: 0 record(s)
 changed` · `nothing due` · `nothing to do`), and `slots push` wrote the
 new freebusy cache `~/.mecha/factory/freebusy/book.json` (0600 under a
 0700 directory; `cached_at` 01:55:04Z, 96 busy intervals, `policy_path`
@@ -2020,11 +2023,13 @@ committed (`1d531a8` in that repo) and running on the box; the arc is in
   `link`-audience `times` poll; and the `/polls` row does not mark which
   candidate is loaded after `p` (the status line does, transiently) —
   `commands::polls::loaded_index` exists and the modal would need the
-  outbox item to use it. Two deploy facts that no build step checks:
-  the five-verb `ExecStart` line and `publish_tools` minus the two poll
-  creates (both in the `update` skill).
+  outbox item to use it. Three deploy facts that no build step checks,
+  all recorded in the `update` skill's timer paragraph: the five-verb
+  `ExecStart` line, `mail__calendar_create_event` routed in `[outbox]
+  tools`, and `publish_tools` minus the two poll creates.
 - **The calendar→box freshness window**: the two cheap fixes this bullet
-  used to ask for are both in — the timer fires `*:0/2` and
+  used to ask for are both in — the timer is `OnCalendar=*:0/2` with
+  `RandomizedDelaySec=15s` (read from the unit 2026-09-05) and
   `mecha-mail bookings` re-verifies every drained booking against *live*
   freebusy before creating the event (`bookings::busy_overlaps`, the
   `CONFLICT` branch in the bin's `bookings`), and the meeting poll's
