@@ -367,6 +367,7 @@ async fn run_lifetimes(
             // position that never had its world is a line the ledger must
             // not carry.
             let mut world_ready = true;
+            let mut world_error = String::new();
             match trial.status {
                 TrialStatus::Pending | TrialStatus::Running => {
                     if limit.is_some_and(|l| ran >= l) {
@@ -387,6 +388,7 @@ async fn run_lifetimes(
                     if let Some(principal) = &manifest.principal {
                         if let Err(e) = render_home(manifest, real, arm, trial.seed, &home, false) {
                             world_ready = false;
+                            world_error = format!("{e:#}");
                             trial.status = TrialStatus::Failed;
                             trial.error = Some(format!(
                                 "the home could not be rendered for this position: {e:#}"
@@ -524,6 +526,25 @@ async fn run_lifetimes(
             }
             for stage in stages_due(&manifest.schedule, position, &stages_off, &ledger) {
                 let attempt = ExperimentStore::next_attempt(&ledger, torn, position, stage);
+                // A stage after a position whose home was never rendered would
+                // run against a home with no config for it — at position 0,
+                // with no config at all — and record `Done`; skipped with the
+                // render's reason instead, which holds the judge, as a stage
+                // that did not run must (found on review).
+                if !world_ready {
+                    let mut run =
+                        skipped_line(&lifetime, &trial.arm, stage, position, attempt, None);
+                    run.error = Some(format!(
+                        "the home could not be rendered for position {position}, so the stage was not run: {world_error}"
+                    ));
+                    eprintln!(
+                        "  ↳ {} · skipped: the home could not be rendered for this position",
+                        stage.as_str()
+                    );
+                    store.record_stage(&run)?;
+                    ledger.push(run);
+                    continue;
+                }
                 if late {
                     let run = skipped_line(&lifetime, &trial.arm, stage, position, attempt, None);
                     eprintln!(
