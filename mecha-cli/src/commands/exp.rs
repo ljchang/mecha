@@ -278,7 +278,10 @@ fn source_json<'a>(text: &'a str, verb: &str) -> Result<&'a str> {
 async fn source_list(
     tasks: &mecha_core::experiment::Tasks,
 ) -> Result<Vec<mecha_core::eval::EvalCase>> {
-    let scratch = std::env::temp_dir().join("mecha-exp-source-list");
+    // A directory of this process's own: two drivers listing at once shared
+    // one (found on review).
+    let scratch =
+        std::env::temp_dir().join(format!("mecha-exp-source-list-{}", std::process::id()));
     let text = source_call(tasks, &["list"], &[], &scratch, None).await?;
     let listed: Vec<mecha_core::experiment::SourceTask> =
         serde_json::from_str(source_json(&text, "list")?)
@@ -2160,6 +2163,12 @@ mod tests {
             .map(|o| !o.status.success())
             .unwrap_or(true)
         {
+            // A skip reads like a pass in CI; the repo's answer is the
+            // variable that turns it into a failure (found on review).
+            assert!(
+                std::env::var("MECHA_TEST_REQUIRE_BACKENDS").is_err(),
+                "python3 is unavailable, and MECHA_TEST_REQUIRE_BACKENDS is set"
+            );
             eprintln!("SKIPPED: python3 is unavailable");
             return;
         }
