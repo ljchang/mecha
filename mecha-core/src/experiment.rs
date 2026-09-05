@@ -432,6 +432,23 @@ impl Fixtures {
         Ok(())
     }
 
+    /// A digest of the fixture charter's *text*, for the condition hash:
+    /// the charter is the strongest single input to appraisal, so two
+    /// worlds with the same servers and route but different priorities must
+    /// not pair across experiments — and the text, not the path, is what a
+    /// machine-independent term can be made of (found on review). `None`
+    /// when the manifest names no charter, so every earlier hash keeps its
+    /// value.
+    pub fn charter_digest(&self, base: &Path) -> Result<Option<String>> {
+        let Some(path) = &self.charter else {
+            return Ok(None);
+        };
+        let from = base.join(path);
+        let text = std::fs::read_to_string(&from)
+            .with_context(|| format!("reading the fixture charter {}", from.display()))?;
+        Ok(Some(fnv64(text.as_bytes())))
+    }
+
     /// Write the fixture charter over the home's, when the manifest names
     /// one. Idempotent, and run before every task: nothing in a home edits
     /// a charter (no stage does, no model can), so the design's file is
@@ -1474,6 +1491,19 @@ impl Manifest {
     /// an arm that names its own overrides them, and the hash follows the
     /// arm. Pure: the store decides which have run.
     pub fn trials(&self, task_ids: &[String], provider: &str, model: &str) -> Vec<Trial> {
+        self.trials_with_world(task_ids, provider, model, None)
+    }
+
+    /// [`Manifest::trials`] with the fixture charter's digest on every row's
+    /// condition — the one world term that needs the filesystem, which the
+    /// store's `plan` resolves; a front-end with no fixtures passes none.
+    pub fn trials_with_world(
+        &self,
+        task_ids: &[String],
+        provider: &str,
+        model: &str,
+        charter_digest: Option<&str>,
+    ) -> Vec<Trial> {
         let seeds: Vec<Option<u64>> = if self.seeds.is_empty() {
             vec![None]
         } else {
@@ -1502,6 +1532,7 @@ impl Manifest {
                     &stages,
                     &fixtures,
                     &route,
+                    charter_digest,
                 ),
                 status: TrialStatus::Pending,
                 session_id: None,
@@ -1684,6 +1715,7 @@ pub fn condition_hash_of(
         stages_off,
         fixtures,
         &[],
+        None,
     )
 }
 
@@ -1692,8 +1724,9 @@ pub fn condition_hash_of(
 /// treatment the release channel rests on, so two rows whose worlds route
 /// differently must not pair across experiments. The `route=` term is
 /// appended only when a manifest names one, so every earlier hash keeps
-/// its value. A server's command, seed and the charter's text stay out:
-/// they are the manifest's to record, and a path differs by machine.
+/// its value. The fixture charter enters as a digest of its *text*
+/// (`Fixtures::charter_digest`), never its path, since a path differs by
+/// machine; a server's command and seed stay the manifest's to record.
 #[allow(clippy::too_many_arguments)]
 pub fn condition_hash_world(
     levers_off: &[Lever],
@@ -1704,6 +1737,7 @@ pub fn condition_hash_world(
     stages_off: &[StageLever],
     fixtures: &[String],
     route: &[String],
+    charter_digest: Option<&str>,
 ) -> String {
     let mut overrides: Vec<&str> = overrides.iter().map(String::as_str).collect();
     overrides.sort_unstable();
@@ -1739,9 +1773,19 @@ pub fn condition_hash_world(
         canonical.push_str("|route=");
         canonical.push_str(&names.join(","));
     }
+    if let Some(d) = charter_digest {
+        canonical.push_str("|charter=");
+        canonical.push_str(d);
+    }
+    fnv64(canonical.as_bytes())
+}
+
+/// FNV-1a over bytes, as a hex string: an equality key, not a credential,
+/// so no hashing dependency is worth adding for it.
+fn fnv64(bytes: &[u8]) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in canonical.bytes() {
-        h ^= u64::from(b);
+    for b in bytes {
+        h ^= u64::from(*b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{h:016x}")
@@ -1944,10 +1988,12 @@ impl ExperimentStore {
         task_ids: &[String],
         provider: &str,
         model: &str,
+        base: &Path,
     ) -> Result<(Vec<Trial>, usize)> {
         let (on_disk, skipped) = self.trials()?;
+        let digest = manifest.fixtures.charter_digest(base)?;
         let planned = manifest
-            .trials(task_ids, provider, model)
+            .trials_with_world(task_ids, provider, model, digest.as_deref())
             .into_iter()
             .map(|t| on_disk.get(&t.id).cloned().unwrap_or(t))
             .collect();
@@ -4279,7 +4325,9 @@ rationale = "no rumination should fail more over the sequence"
         let m = store.create(MANIFEST).unwrap();
         assert!(store.create(MANIFEST).is_err(), "written once");
         let tasks = vec!["a".to_string()];
-        let (planned, skipped) = store.plan(&m, &tasks, "local", "m").unwrap();
+        let (planned, skipped) = store
+            .plan(&m, &tasks, "local", "m", Path::new("."))
+            .unwrap();
         assert_eq!(planned.len(), 6);
         assert_eq!(skipped, 0);
         let mut first = planned[0].clone();
@@ -4287,7 +4335,9 @@ rationale = "no rumination should fail more over the sequence"
         first.passed = Some(true);
         store.save_trial(&first).unwrap();
         std::fs::write(store.trial_path("torn"), b"{not json").unwrap();
-        let (planned, skipped) = store.plan(&m, &tasks, "local", "m").unwrap();
+        let (planned, skipped) = store
+            .plan(&m, &tasks, "local", "m", Path::new("."))
+            .unwrap();
         assert_eq!(planned[0].status, TrialStatus::Done, "the store's row wins");
         assert_eq!(skipped, 1, "a torn row is counted, not read as pending");
         // An unknown status reads as unknown, never as a failed file.
@@ -4806,6 +4856,7 @@ seed = "seed"
                 &[],
                 &["graph".into(), "mail".into()],
                 route,
+                None,
             )
         };
         assert_eq!(rows[0].condition_hash, world(&["mail__mail_send".into()]));
@@ -4827,6 +4878,50 @@ seed = "seed"
             ),
             "no route: the fixtures-only value"
         );
+        // The charter's text is a term too, and only when one is named.
+        let with_charter = condition_hash_world(
+            &[],
+            &[],
+            "p",
+            "m",
+            None,
+            &[],
+            &["graph".into(), "mail".into()],
+            &["mail__mail_send".into()],
+            Some("abc"),
+        );
+        assert_ne!(with_charter, world(&["mail__mail_send".into()]));
+        let rows2 = m.trials_with_world(&["a".into()], "p", "m", Some("abc"));
+        assert_eq!(rows2[0].condition_hash, with_charter);
+        // The digest is of the text: two paths, one text, one digest.
+        let base = std::env::temp_dir().join(format!("mecha-cd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let line = b"[[line]]\nid = \"x\"\ntext = \"X.\"\n";
+        std::fs::write(base.join("a.toml"), line).unwrap();
+        std::fs::write(base.join("b.toml"), line).unwrap();
+        std::fs::write(
+            base.join("c.toml"),
+            b"[[line]]\nid = \"x\"\ntext = \"Y.\"\n",
+        )
+        .unwrap();
+        let fx = |p: &str| Fixtures {
+            charter: Some(p.into()),
+            ..Fixtures::default()
+        };
+        assert_eq!(
+            fx("a.toml").charter_digest(&base).unwrap(),
+            fx("b.toml").charter_digest(&base).unwrap()
+        );
+        assert_ne!(
+            fx("a.toml").charter_digest(&base).unwrap(),
+            fx("c.toml").charter_digest(&base).unwrap()
+        );
+        assert_eq!(Fixtures::default().charter_digest(&base).unwrap(), None);
+        assert!(
+            fx("missing.toml").charter_digest(&base).is_err(),
+            "a named charter that is not there is an error"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The principal is told which fixtures its verbs can reach; an old
