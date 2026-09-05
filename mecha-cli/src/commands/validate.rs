@@ -70,6 +70,15 @@ pub struct Args {
     /// Regressions are still recorded in the ledger, just unattributed.
     #[arg(long)]
     pub no_attribute: bool,
+
+    /// Also probe up to this many reflections per (rule, region) pair the
+    /// ledger has never graded — the replay budget that goes to sessions
+    /// inside a rule's region rather than to whatever is unprocessed
+    /// (`GOAL-SYSTEM-DESIGN.md` §17.4). A widened rule is thereby probed in
+    /// each sub-region it widened over. Coverage reflections may already be
+    /// processed, and the report says so; `0` adds none.
+    #[arg(long, default_value_t = 0)]
+    pub cover: usize,
 }
 
 /// The active learned rules as a flat list, with what a bisection needs to
@@ -347,8 +356,44 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     } else {
         args.trigger.iter().map(String::as_str).collect()
     };
-    let reflexions: Vec<_> =
-        select_probe_corpus(store.reflexions()?, &wanted_triggers, args.unprocessed_only);
+    let all = store.reflexions()?;
+    // The cover pool needs the corpus again; every other pass does not.
+    let for_cover = (args.cover > 0).then(|| all.clone());
+    let mut reflexions: Vec<_> = select_probe_corpus(all, &wanted_triggers, args.unprocessed_only);
+    // What every ledger row this run charges its observation to. Loaded once:
+    // the block was rendered from this same state, and a mid-run rules change
+    // would make rows describe a set that was never measured.
+    let surface = RuleSurface::load(&store)?;
+    // Coverage: rows for (rule, region) pairs nobody has graded. Chosen
+    // from the replayable pool regardless of processed-state, since the
+    // point is the region, and marked so the report can tell a row bought
+    // for coverage from one on fresh evidence.
+    let mut covering: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(all) = for_cover {
+        let tallies = mecha_core::learning::rule_tallies(&store.validations()?);
+        // The replayable half of what this pass was asked to probe: an
+        // explicit `--trigger` narrows the cover pool too, and a followup
+        // has no replayable point in any case.
+        let replayable: Vec<&str> = wanted_triggers
+            .iter()
+            .copied()
+            .filter(|t| *t != Trigger::Followup.as_str())
+            .collect();
+        let pool = select_probe_corpus(all, &replayable, false);
+        let chosen: std::collections::BTreeSet<String> =
+            reflexions.iter().map(|r| r.id.clone()).collect();
+        for (r, why) in cover_selection(&surface.flat, &tallies, &pool, &chosen, args.cover) {
+            covering.insert(r.id.clone(), why);
+            reflexions.push(r);
+        }
+        if !covering.is_empty() {
+            println!(
+                "{} reflection(s) added for coverage of (rule, region) pairs the ledger has \
+                 never graded",
+                covering.len()
+            );
+        }
+    }
     if reflexions.is_empty() {
         println!("no reflections to probe");
         return Ok(());
@@ -410,10 +455,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut skipped = 0u32;
     let mut recorded_rows = 0u32;
 
-    // What every ledger row this run charges its observation to. Loaded once:
-    // the block was rendered from this same state, and a mid-run rules change
-    // would make rows describe a set that was never measured.
-    let surface = RuleSurface::load(&store)?;
     let mut record = |r: &mecha_core::learning::Reflexion,
                       carried: &[usize],
                       run: &Situation,
@@ -438,12 +479,36 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             attributed_rule_id: attributed,
             model: model.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
+            // The sub-region exercised: the window around the intervention,
+            // not the registry — see `ValidationRecord::region`. Only a
+            // window with a focus is evidence of where: a followup's is
+            // from an earlier turn and a front-end focus names whatever ran
+            // before it (`Situation::focus`), and a row placed on one would
+            // release probation and satisfy `--cover` for a region the
+            // probe never touched (found on review). Unknown instead.
+            region: r
+                .situation
+                .as_ref()
+                .filter(|s| s.focus().is_some())
+                .map(|s| s.scope()),
         })?;
         recorded_rows += 1;
         Ok(())
     };
 
     for r in &reflexions {
+        if let Some(why) = covering.get(&r.id) {
+            println!(
+                "· {} [{}] for coverage: {why}{}",
+                r.id,
+                r.trigger,
+                if r.is_processed {
+                    " (already consumed by a learn pass — the rule may have seen it)"
+                } else {
+                    ""
+                }
+            );
+        }
         let path = match Session::find(&sessions_dir, &r.session_id) {
             Ok(p) => p,
             Err(_) => {
@@ -736,6 +801,100 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Reflections to add to a pass so every (rule, support region) pair the
+/// ledger has never graded gets exercised: up to `per_pair` replayable
+/// reflections whose recorded window is inside the region, in id order,
+/// skipping any already in the pass. A rule's regions are its `support`
+/// when it has any — each sub-region it was seen in, which after a widening
+/// is each sub-region it widened over — and otherwise its scope alone.
+/// Returns each reflection with the pair it covers, for the report.
+///
+/// Deterministic on purpose, like `hold_out`: a coverage set that moved
+/// between nights would grade a moving target. Reflections the learn pass
+/// already consumed are eligible — the question is whether the rule holds
+/// *here*, and a region with nothing unprocessed in it would otherwise
+/// stay ungraded forever — and the caller says so beside the row.
+fn cover_selection(
+    flat: &[(String, Rule)],
+    tallies: &BTreeMap<String, mecha_core::learning::RuleTally>,
+    pool: &[Reflexion],
+    already: &std::collections::BTreeSet<String>,
+    per_pair: usize,
+) -> Vec<(Reflexion, String)> {
+    let mut taken: std::collections::BTreeSet<String> = already.clone();
+    let mut out = Vec::new();
+    let mut pool: Vec<&Reflexion> = pool.iter().collect();
+    pool.sort_by(|a, b| a.id.cmp(&b.id));
+    // One probe's row charges every rule its window exercises, so a pick
+    // made for one pair covers every other (rule, region) that window is
+    // inside — counted here before it is graded, or twelve standing rules
+    // on an unplaced ledger would each buy their own probe of the same
+    // fact. `already` is not credited: those reflections may be followups
+    // or fail to prepare, and a promise from a row not yet written is
+    // exactly what this pass exists to avoid.
+    let mut picked_windows: Vec<Situation> = Vec::new();
+    for (domain, rule) in flat {
+        let Some(id) = rule.id.as_deref() else {
+            continue;
+        };
+        let regions: Vec<Situation> = if rule.support.is_empty() {
+            vec![rule.scope.clone().unwrap_or_default().scope()]
+        } else {
+            rule.support.clone()
+        };
+        for region in regions {
+            let graded = tallies.get(id).map_or(0, |t| t.in_scope(&region).graded);
+            let credited = picked_windows.iter().filter(|w| region.matches(w)).count();
+            if graded > 0 || credited >= per_pair {
+                continue;
+            }
+            let mut n = credited;
+            for r in &pool {
+                if n >= per_pair {
+                    break;
+                }
+                // Never any rule's source: the row a probe writes charges
+                // every rule carried in the block, not only the one the
+                // pick was made for, so a reflection some rule was distilled
+                // from would have the with-rules arm replay that rule's own
+                // correction — one memorised "improved" would release the
+                // D1 leash and close that rule's pair to coverage for good
+                // (found on review, twice: the first guard was one rule
+                // wide). The main pass keeps this out structurally with
+                // `--unprocessed-only`; lifting that here is for regions
+                // with nothing fresh, not for self-grading.
+                if r.domain != *domain
+                    || taken.contains(&r.id)
+                    || flat.iter().any(|(_, any)| any.sources.contains(&r.id))
+                {
+                    continue;
+                }
+                // The same window `record` would place the row in: one with
+                // a focus, or none — a pick whose row lands unplaced spends
+                // the probe, leaves the pair ungraded to be re-picked every
+                // night, and credits windows nothing measured (found on
+                // review).
+                let Some(window) = r
+                    .situation
+                    .as_ref()
+                    .filter(|s| s.focus().is_some())
+                    .map(|s| s.scope())
+                else {
+                    continue;
+                };
+                if !region.matches(&window) {
+                    continue;
+                }
+                taken.insert(r.id.clone());
+                picked_windows.push(window);
+                out.push(((*r).clone(), format!("rule {id} in {}", region.describe())));
+                n += 1;
+            }
+        }
+    }
+    out
+}
+
 /// The ledger's outcome vocabulary for a trace-graded probe pair.
 fn outcome_str(baseline: &ProbeVerdict, with: &ProbeVerdict) -> &'static str {
     match (baseline, with) {
@@ -880,6 +1039,194 @@ mod tests {
 
         assert_eq!(selected.len(), 1, "the dropped reflection must be excluded");
         assert_eq!(selected[0].intervention, kept.intervention);
+    }
+
+    /// A row's region is the exercised window, and a followup's window is
+    /// not one: `Situation::focus` is `None` for it, so the row is placed
+    /// nowhere. Pinned on the same expression `record` uses, since the
+    /// closure itself needs a store and a model (found on review: a
+    /// followup row placed in `{shell}` released a shell rule's probation
+    /// from a probe that never touched shell).
+    #[test]
+    fn a_followup_row_is_placed_in_no_region() {
+        let region_of = |r: &Reflexion| {
+            r.situation
+                .as_ref()
+                .filter(|s| s.focus().is_some())
+                .map(|s| s.scope())
+        };
+        let window = |trigger: &str| {
+            Some(Situation::recorded(
+                &["fs_read".into(), "shell".into()],
+                trigger,
+                None,
+                None,
+            ))
+        };
+        let mut followup = reflexion("be briefer", Origin::Clean);
+        followup.trigger = Trigger::Followup.as_str().into();
+        followup.situation = window("followup");
+        assert_eq!(region_of(&followup), None);
+        let mut steer = reflexion("use tabs", Origin::Clean);
+        steer.situation = window("steer");
+        assert_eq!(
+            region_of(&steer),
+            Some(Situation::of_run(&["fs_read".into(), "shell".into()], None))
+        );
+        let mut front_end = reflexion("ask first", Origin::Clean);
+        front_end.situation = Some(Situation::recorded(
+            &["shell".into(), "ask_user".into()],
+            "denial",
+            None,
+            None,
+        ));
+        assert_eq!(region_of(&front_end), None);
+    }
+
+    /// **The replay budget goes to the region.** A (rule, support region)
+    /// pair the ledger has never graded gets up to `per_pair` reflections
+    /// whose window is inside that region — processed or not, in id order,
+    /// never one already in the pass — and a graded pair gets none. A rule
+    /// with no support is covered on its scope alone.
+    #[test]
+    fn coverage_picks_reflections_inside_each_ungraded_region() {
+        use mecha_core::learning::{RegionTally, RuleTally};
+        let sit = |tools: &[&str]| {
+            Situation::of_run(
+                &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                None,
+            )
+        };
+        let refl = |id: &str, tools: &[&str], processed: bool| Reflexion {
+            id: id.into(),
+            is_processed: processed,
+            situation: Some(Situation::recorded(
+                &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                "steer",
+                None,
+                None,
+            )),
+            ..reflexion("steer text", Origin::Clean)
+        };
+        let widened = Rule {
+            scope: Some(Situation::default()),
+            support: vec![sit(&["shell"]), sit(&["http_fetch"])],
+            ..rule("Widened.", Some("r-w"))
+        };
+        let scoped = Rule {
+            scope: Some(sit(&["fs_write"])),
+            ..rule("Scoped.", Some("r-s"))
+        };
+        let flat = vec![
+            ("behavior".to_string(), widened),
+            ("behavior".to_string(), scoped),
+            ("writing".to_string(), rule("Other domain.", Some("r-o"))),
+            // Standing and ungraded: any pick above exercises it, so it
+            // buys no probe of its own.
+            ("behavior".to_string(), rule("Standing.", Some("r-std"))),
+        ];
+        // r-w is graded in shell already; http_fetch is the uncovered half.
+        let mut tallies: BTreeMap<String, RuleTally> = BTreeMap::new();
+        let mut t = RuleTally::default();
+        t.regions.insert(
+            sit(&["shell"]).key(),
+            (
+                sit(&["shell"]),
+                RegionTally {
+                    observations: 1,
+                    graded: 1,
+                    ..Default::default()
+                },
+            ),
+        );
+        tallies.insert("r-w".into(), t);
+        let pool = vec![
+            refl("b-fetch", &["http_fetch", "fs_read"], true),
+            refl("a-fetch", &["http_fetch"], false),
+            refl("c-shell", &["shell"], false),
+            refl("d-write", &["fs_write", "shell"], true),
+            refl("e-none", &["mail_send"], false),
+        ];
+        let already: std::collections::BTreeSet<String> = ["a-fetch".to_string()].into();
+
+        let out = cover_selection(&flat, &tallies, &pool, &already, 1);
+        let picked: Vec<(&str, &str)> = out
+            .iter()
+            .map(|(r, why)| (r.id.as_str(), why.as_str()))
+            .collect();
+        assert_eq!(
+            picked,
+            vec![
+                // a-fetch is already in the pass; the next in id order.
+                ("b-fetch", "rule r-w in http_fetch"),
+                // The scoped rule, ungraded, on its scope alone.
+                ("d-write", "rule r-s in fs_write"),
+            ]
+        );
+        // The budget is per pair: two per pair takes the standing-domain
+        // reflection too, and still nothing from the graded shell region.
+        let out = cover_selection(&flat, &tallies, &pool, &Default::default(), 2);
+        let ids: Vec<&str> = out.iter().map(|(r, _)| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["a-fetch", "b-fetch", "d-write"]);
+        assert!(
+            !ids.contains(&"c-shell"),
+            "shell is graded for r-w, and r-std is credited by the picks above"
+        );
+        assert!(!ids.contains(&"e-none"), "outside every region");
+        // Alone, the standing rule does buy one — the credit needs a pick.
+        let alone = vec![("behavior".to_string(), rule("Standing.", Some("r-std")))];
+        let out = cover_selection(&alone, &tallies, &pool, &Default::default(), 1);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0.id, "a-fetch");
+        // A window whose last tool is a front-end tool has no focus: its
+        // row would land in no region, so it covers nothing and is not
+        // picked — the trigger filter alone does not exclude it. Fails on
+        // the unfiltered `scope()` (found on review).
+        let shell_rule = Rule {
+            scope: Some(sit(&["shell"])),
+            ..rule("Shell.", Some("r-sh"))
+        };
+        let only = vec![("behavior".to_string(), shell_rule)];
+        let asked = vec![refl("f-ask", &["shell", "ask_user"], false)];
+        assert!(cover_selection(&only, &tallies, &asked, &Default::default(), 1).is_empty());
+        let out = cover_selection(&only, &tallies, &pool, &Default::default(), 1);
+        assert_eq!(out[0].0.id, "c-shell");
+        // A rule's own source reflection is passed over for that rule — a
+        // probe replaying the correction it was distilled from grades
+        // nothing — and stays eligible for another rule. Fails on the
+        // unfiltered pool (found on review).
+        let from_c = Rule {
+            sources: vec!["c-shell".into()],
+            ..only[0].1.clone()
+        };
+        let other = Rule {
+            scope: Some(sit(&["shell"])),
+            ..rule("Other shell.", Some("r-sh2"))
+        };
+        let two = vec![
+            ("behavior".to_string(), from_c),
+            ("behavior".to_string(), other),
+        ];
+        let shell_only = vec![refl("c-shell", &["shell"], false)];
+        assert!(
+            cover_selection(&two, &tallies, &shell_only, &Default::default(), 1).is_empty(),
+            "a reflection any carried rule was distilled from is never a cover pick — the \
+             row would charge that rule too"
+        );
+        let unrelated = vec![
+            refl("c-shell", &["shell"], false),
+            refl("g-shell", &["shell", "fs_read"], false),
+        ];
+        let out = cover_selection(&two, &tallies, &unrelated, &Default::default(), 1);
+        let picks: Vec<(&str, &str)> = out
+            .iter()
+            .map(|(r, why)| (r.id.as_str(), why.as_str()))
+            .collect();
+        assert_eq!(picks, vec![("g-shell", "rule r-sh in shell")]);
+        assert!(
+            cover_selection(&flat, &tallies, &pool, &Default::default(), 0).is_empty(),
+            "a zero budget adds nothing"
+        );
     }
 
     #[test]

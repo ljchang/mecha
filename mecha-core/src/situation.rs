@@ -171,6 +171,14 @@ impl Situation {
         self.scope() == Situation::default()
     }
 
+    /// The canonical name of a region: its scope's tools, sorted and joined
+    /// by a comma, and empty for standing. What a per-region tally is keyed
+    /// on, so two windows that touched the same tools in another order fold
+    /// into one row.
+    pub fn key(&self) -> String {
+        self.scope().tools.join(",")
+    }
+
     /// Whether a rule scoped to `self` belongs in `run`'s prefix. Every
     /// scope key `self` sets must hold in `run`; a key `self` does not set
     /// constrains nothing. The one key today: every tool the scope names is
@@ -330,6 +338,17 @@ mod tests {
         assert_eq!(followup.tools, vec!["shell"]);
         assert_eq!(followup.focus(), None);
         assert!(s(&["ask_user"]).scope().is_standing());
+    }
+
+    /// A region's key is its scope, so two windows that differ in order,
+    /// trigger, surface or a front-end tool fold into one tally row, and
+    /// standing is the empty key.
+    #[test]
+    fn the_key_is_the_scope_and_nothing_else() {
+        assert_eq!(s(&["shell", "fs_read"]).key(), "fs_read,shell");
+        assert_eq!(s(&["fs_read", "shell", "ask_user"]).key(), "fs_read,shell");
+        assert_eq!(Situation::default().key(), "");
+        assert_eq!(s(&["ask_user"]).key(), "");
     }
 
     #[test]

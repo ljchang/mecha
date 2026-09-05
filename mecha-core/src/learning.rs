@@ -527,6 +527,27 @@ pub struct Rule {
     /// [`matches`]: crate::situation::Situation::matches
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<crate::situation::Situation>,
+    /// The sub-regions the evidence for this rule was recorded in — one
+    /// scope per distinct window among the reflections it was learned from,
+    /// and, after a widening, the region of every batch that restated it
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §17.4). `scope` is the region the rule
+    /// *applies* in; `support` is where it was *seen to hold*, and the two
+    /// differ exactly when a widening dropped a key. Narrowing reads it:
+    /// a rule convicted in one support region and clean in the others
+    /// sheds the failing region and re-scopes to what remains
+    /// (`judge_convicted`). Empty on a rule from before the field, or one
+    /// whose batch recorded no situation — no support means nothing to
+    /// narrow to, so such a rule retires like any other.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub support: Vec<crate::situation::Situation>,
+    /// When a retirement scan narrowed this rule's scope instead of retiring
+    /// it, and why — the sub-region it failed in. The mirror of
+    /// `retired_at`: a flag on the record, never a rewrite of history, so
+    /// the roster can say a rule used to load more widely than it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrowed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narrowed_reason: Option<String>,
 }
 
 impl Rule {
@@ -557,6 +578,9 @@ impl Default for Rule {
             // measured rules early.
             probation: false,
             scope: None,
+            support: Vec::new(),
+            narrowed_at: None,
+            narrowed_reason: None,
         }
     }
 }
@@ -625,10 +649,21 @@ pub fn finalize_rules(
                 // the D1 hedge evaporated within a session or two while
                 // staying printed and documented.
                 r.probation = prev.probation;
+                // So does the owner's off switch. The reply's rule is built
+                // from `..Default::default()`, which is `enabled: true` by
+                // design, and the carry-through of hand-disabled rules skips
+                // any text already in the reply — so a restatement of a
+                // disabled rule re-enabled it under its own id with nothing
+                // on the roster to say it had been off (found on review).
+                r.enabled = prev.enabled;
                 // The region a rule was learned in survives a restatement;
                 // `finalize_region_rules` assigns a scope only to text the
-                // store has never held.
+                // store has never held. Its support and any narrowing ride
+                // with it: they are facts about the evidence, not the text.
                 r.scope = prev.scope.clone();
+                r.support = prev.support.clone();
+                r.narrowed_at = prev.narrowed_at.clone();
+                r.narrowed_reason = prev.narrowed_reason.clone();
             }
             // Retirement survives a reworded re-derivation, which exact text
             // equality above does not catch. Checked only against *retired*
@@ -650,6 +685,7 @@ pub fn finalize_rules(
                     r.id = prev.id.clone();
                     r.created_at = prev.created_at.clone();
                     r.scope = prev.scope.clone();
+                    r.support = prev.support.clone();
                 }
             }
             if r.id.is_none() {
@@ -702,18 +738,108 @@ pub fn rewritable_in(rule: &Rule, region: &Situation) -> bool {
 /// keys the batch's reflections share, computed by [`batches_by_region`]
 /// from the closed sets the miner recorded; a scope the model could name
 /// would be a scope an injection could widen.
+///
+/// **Widening is the one way a scope gets wider, and it is evidence-keyed
+/// too** (`docs/GOAL-SYSTEM-DESIGN.md` §17.4). The learner is told that a
+/// lesson already stated by a rule from another situation is to be repeated
+/// *word for word* rather than rewritten; a reply that does so names the
+/// same lesson in a second region, and the harness — not the learner —
+/// drops the keys the two regions do not share: the rule's scope becomes
+/// the intersection of its old scope and `region`, its `support` gains this
+/// batch's sub-regions, and its sources gain the batch. What the model can
+/// claim is only "same lesson"; where the rule then loads follows from two
+/// batches of recorded situations, which is the support-in-more-than-one-
+/// sub-region condition the design asks for. A restatement inside the
+/// rule's own region is the ordinary identity carry and widens nothing.
+///
+/// `batch_support` is the distinct scopes of the batch's reflections — a
+/// new rule's `support`, the sub-regions its evidence came from. Within a
+/// batch the region is already their intersection, so a new rule never
+/// applies wider than its own evidence agrees on: the widening rule holds
+/// by construction one level down, and the cross-region case above is the
+/// only step that needs an explicit check.
 pub fn finalize_region_rules(
     new_rules: Vec<Rule>,
     previous: &[Rule],
     region: &Situation,
     batch_sources: &[String],
+    batch_support: &[Situation],
     now: &str,
 ) -> Vec<Rule> {
     let known: HashSet<&str> = previous.iter().map(|p| p.text.as_str()).collect();
+    // Only a window with a focus is evidence of where: a followup's window
+    // is from an earlier turn and a front-end focus names whatever ran
+    // before it — the same members `batches_by_region` refuses to fold
+    // into a region (found on review). They are recorded on the reflection
+    // and count for nothing here.
+    let support: Vec<Situation> = distinct_scopes(
+        &batch_support
+            .iter()
+            .filter(|s| s.focus().is_some())
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     let mut out = finalize_rules(new_rules, previous, batch_sources, now);
     for r in &mut out {
         if r.scope.is_none() && !known.contains(r.text.as_str()) {
             r.scope = Some(region.scope());
+            r.support = support.clone();
+            continue;
+        }
+        // The standing batch never widens: its region is standing by
+        // definition, not by intersection of any evidence, so a scoped rule
+        // restated there would ride in every prompt again — the §17.3
+        // incident scoping exists to prevent — on one learner reply.
+        if region.is_standing() {
+            continue;
+        }
+        // A verbatim restatement of an active rule from *another* region:
+        // the learner's only way to say "same lesson here too". Widen by
+        // intersection, and record where the second batch of evidence was.
+        let restated_outside = previous
+            .iter()
+            .find(|p| p.text == r.text)
+            .filter(|p| p.active() && !rewritable_in(p, region));
+        if let Some(prev) = restated_outside {
+            let old_scope = prev.scope.clone().unwrap_or_default().scope();
+            let widened_scope = Situation::region([&old_scope, &region.scope()]).scope();
+            // Widen only on a window the old scope does not cover: a batch
+            // whose every window carried the rule's tools is evidence
+            // *inside* its region, whatever the batch's focus was, and a
+            // standing batch with no recorded windows is evidence of
+            // nowhere. Then the scope keeps its previous value — `None`
+            // stays `None`, since "predates the field" is still true.
+            let seen_outside = support.iter().any(|s| !old_scope.matches(s));
+            if widened_scope != old_scope && seen_outside {
+                r.scope = Some(widened_scope);
+                // A widening that moves the scope may put the rule back in a
+                // region a scan narrowed it out of, and `tally_for` folds
+                // only the rows since `narrowed_at` — so the convictions
+                // that shed the region would stay buried while the rule
+                // rode there again, a model claim reversing a ledger ruling
+                // with its evidence amnestied (found on review). Clearing
+                // the mark folds the whole ledger again, and the old
+                // convictions re-convict at the next scan if they still
+                // apply. Fail-closed, and the roster stops saying "narrowed"
+                // of a rule that no longer is.
+                r.narrowed_at = None;
+                r.narrowed_reason = None;
+            }
+            // The old scope itself is support when nothing narrower was
+            // recorded for it — a rule from before the field has only the
+            // region it was learned for as evidence of where it held.
+            let mut widened = if prev.support.is_empty() {
+                vec![old_scope]
+            } else {
+                prev.support.clone()
+            };
+            widened.extend(support.iter().cloned());
+            r.support = distinct_scopes(&widened);
+            for id in batch_sources {
+                if !r.sources.contains(id) {
+                    r.sources.push(id.clone());
+                }
+            }
         }
     }
     // Everything outside the region comes through as it was — active,
@@ -721,10 +847,54 @@ pub fn finalize_region_rules(
     // `finalize_rules`, so the text check keeps it from doubling). A
     // disabled rule is neither active nor retired and fell through both
     // filters, which deleted an owner's `enabled = false` the moment any
-    // other region learned (found on review).
+    // other region learned (found on review). And a hand-disabled rule
+    // *inside* the region comes through too: the learner is never shown
+    // one, so its omission from the reply is not a decision to drop it —
+    // without this it left the file with its id and came back enabled
+    // under a fresh one the next time the lesson was derived (found on
+    // review, one region over from the case above).
     for prev in previous {
-        if !rewritable_in(prev, region) && !out.iter().any(|r| r.text == prev.text) {
+        let carried = !rewritable_in(prev, region) || (!prev.enabled && prev.retired_at.is_none());
+        if carried && !out.iter().any(|r| r.text == prev.text) {
             out.push(prev.clone());
+        }
+    }
+    out
+}
+
+/// New rules in `after` whose normalised text equals an active rule's in
+/// `before` — a copy that missed by a period, a quote or a dash. The
+/// learner is asked to restate an outside rule *word for word* so it
+/// widens; a near miss is instead a new rule with a fresh id scoped to
+/// the batch, a near-duplicate against the cap that nothing else reports.
+/// Reported, never merged: [`normalized_rule_key`] is retirement's brake
+/// on purpose, because a false merge is worse than the miss it prevents.
+/// Each pair is `(new text, existing text)`.
+pub fn near_restatements(before: &[Rule], after: &[Rule]) -> Vec<(String, String)> {
+    let known: HashSet<&str> = before.iter().map(|p| p.text.as_str()).collect();
+    after
+        .iter()
+        .filter(|r| !known.contains(r.text.as_str()))
+        .filter_map(|r| {
+            let key = normalized_rule_key(&r.text);
+            before
+                .iter()
+                .find(|p| p.active() && normalized_rule_key(&p.text) == key)
+                .map(|p| (r.text.clone(), p.text.clone()))
+        })
+        .collect()
+}
+
+/// The distinct scopes among `situations`, in first-seen order — the
+/// sub-regions a batch of evidence spans. A recorded window is reduced to
+/// its scope first, so two windows that differ only in trigger, surface or
+/// order are one sub-region, as they are one region to the loader.
+pub fn distinct_scopes(situations: &[Situation]) -> Vec<Situation> {
+    let mut out: Vec<Situation> = Vec::new();
+    for s in situations {
+        let scope = s.scope();
+        if !out.contains(&scope) {
+            out.push(scope);
         }
     }
     out
@@ -1662,6 +1832,19 @@ pub struct ValidationRecord {
     /// The model the probe drove — tallies are only comparable within one.
     pub model: String,
     pub created_at: String,
+    /// The sub-region this probe exercised: the scope of the probed
+    /// reflection's recorded situation — the tools in play around the
+    /// intervention, not the replayed run's whole registry, which nearly
+    /// every run shares. A rule rides in the block whenever the registry
+    /// matches its scope, but it is *exercised* only when the window did
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §17.4, *Validation*); the two are
+    /// kept apart in [`RuleTally`] so a `shell` rule riding along in a
+    /// probe that never touched `shell` cannot leave probation on it.
+    /// `None` on a row from before the field or on a reflection with no
+    /// situation: unknown, which never counts as exercised and always
+    /// counts as a conviction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<crate::situation::Situation>,
 }
 
 /// Stable content hash of a rendered rules block. FNV-1a written out here
@@ -1675,6 +1858,27 @@ pub fn rules_hash(block: &str) -> String {
         h = h.wrapping_mul(0x100000001b3);
     }
     format!("{h:016x}")
+}
+
+/// The ledger's verdict counts in one sub-region — the per-region half of
+/// [`RuleTally`], keyed by [`Situation::key`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RegionTally {
+    pub observations: u32,
+    pub graded: u32,
+    pub improved: u32,
+    pub regressed: u32,
+    pub attributed_regressions: u32,
+}
+
+impl RegionTally {
+    fn add(&mut self, other: &RegionTally) {
+        self.observations += other.observations;
+        self.graded += other.graded;
+        self.improved += other.improved;
+        self.regressed += other.regressed;
+        self.attributed_regressions += other.attributed_regressions;
+    }
 }
 
 /// What the ledger says about one rule, folded from its rows.
@@ -1694,6 +1898,55 @@ pub struct RuleTally {
     /// retirement argues from.
     pub attributed_regressions: u32,
     pub last_validated: Option<String>,
+    /// The same counts split by the sub-region each probe exercised
+    /// ([`ValidationRecord::region`]), in key order. The totals above
+    /// include every row; these cover only rows that named a region.
+    pub regions: std::collections::BTreeMap<String, (crate::situation::Situation, RegionTally)>,
+    /// Rows that named no region — from before the field, or from a
+    /// reflection with no situation. Counted apart because unknown is
+    /// neither exercised nor clean.
+    pub unknown_region: RegionTally,
+}
+
+impl RuleTally {
+    /// The rows that *exercised* a rule scoped to `scope`: those whose
+    /// probed window carried every tool the scope names. A standing scope
+    /// is exercised by every row with a known region; an unknown region
+    /// exercises nothing.
+    pub fn in_scope(&self, scope: &crate::situation::Situation) -> RegionTally {
+        let mut out = RegionTally::default();
+        for (region, tally) in self.regions.values() {
+            if scope.matches(region) {
+                out.add(tally);
+            }
+        }
+        out
+    }
+}
+
+/// The ledger folded for one rule: every row that charged it, or — for a
+/// rule a scan has narrowed — only the rows written since the narrowing.
+///
+/// A rule loads by *registry* match (`carried_in`) and a row is placed by
+/// the probe's *window*, so a rule scoped to `shell` is convicted in
+/// `http_fetch` windows whenever the run also registered `shell` — and
+/// shedding a region never stops it riding there. Every placed conviction
+/// therefore counts against the rule wherever it lies (found on review:
+/// counting only in-scope rows let a bisection-proven regression read as
+/// clean at any count). What a narrowing answers is the *evidence before
+/// it*: those rows argued for the scope it now has, and folding them again
+/// would retire the narrowed rule on the next scan for the region it just
+/// shed. Rows since are new evidence against the narrowed rule. `None` when
+/// the ledger never charged the rule, or the rule has no id.
+pub fn tally_for(rule: &Rule, records: &[ValidationRecord]) -> Option<RuleTally> {
+    let id = rule.id.as_deref()?;
+    let since = rule.narrowed_at.as_deref();
+    let rows: Vec<ValidationRecord> = records
+        .iter()
+        .filter(|r| since.is_none_or(|s| r.created_at.as_str() >= s))
+        .cloned()
+        .collect();
+    rule_tallies(&rows).remove(id)
 }
 
 /// One line per active rule, carrying what the validation ledger measured
@@ -1776,14 +2029,151 @@ pub fn release_probation_when_measured_clean(
     for r in rules.iter_mut().filter(|r| r.probation) {
         // Every attributed row is itself graded, so `graded > attributed` is
         // exactly "some grade exists that is not one of its convictions".
+        // Counted over the rows that *exercised* the rule — whose probed
+        // window carried its tools — and never over rows it merely rode
+        // along in, or a `shell` rule would leave probation on a probe
+        // about `http_fetch` in which `shell` was registered and idle. A
+        // row with no region is not exercise (§17.4, *Validation*).
+        let scope = r.scope.clone().unwrap_or_default().scope();
         let released =
             r.id.as_deref()
                 .and_then(|id| tallies.get(id))
+                .map(|t| t.in_scope(&scope))
                 .is_some_and(|t| t.graded > t.attributed_regressions);
         if released {
             r.probation = false;
         }
     }
+}
+
+/// What a retirement scan does with a rule the ledger convicts: retire it,
+/// or narrow it to the sub-regions where it still holds
+/// (`docs/GOAL-SYSTEM-DESIGN.md` §17.4: *a rule that fails in one
+/// sub-region narrows rather than retires*).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// Below the threshold; nothing to do.
+    Stands,
+    /// The convictions all lie in support regions the rule can shed, and
+    /// shedding them changes where it loads: re-scope to what remains.
+    Narrow {
+        /// The rule's new scope: the intersection of the remaining support.
+        scope: crate::situation::Situation,
+        /// The support regions kept.
+        support: Vec<crate::situation::Situation>,
+        /// The support regions shed — where it was convicted.
+        shed: Vec<crate::situation::Situation>,
+    },
+    /// Nothing narrower excludes where it failed; `why` says which case.
+    Retire { why: String },
+}
+
+/// Decide narrowing or retirement for one rule from its tally.
+///
+/// Every attributed regression in the tally counts, wherever its row was
+/// placed: a rule rides in every run whose registry matches its scope,
+/// whatever window the probe had, so a conviction outside the scope is
+/// still a conviction of this rule. The caller hands in the ledger since
+/// the rule's last narrowing ([`tally_for`]), which is how a narrowing
+/// settles the rows that argued for it without hiding any that came
+/// after. Below the threshold the rule stands.
+///
+/// Narrowing needs three things, and each missing one is a retirement with
+/// its own reason: recorded support (a rule from before the field has
+/// nowhere narrower to go); every conviction placeable in some support
+/// region and at least one support region with no conviction (a rule that
+/// fails everywhere it was seen has no clean region to keep); and a
+/// remaining intersection that actually differs from the current scope.
+/// The last is the lattice's limit stated rather than hidden: scopes are
+/// conjunctive tool sets, so a standing rule seen to hold in `shell` and
+/// in `fs_write` and convicted in `http_fetch` cannot say "everywhere but
+/// http_fetch" — the two clean regions share no tool, the intersection is
+/// standing again, and narrowing would change nothing. It retires, and the
+/// reason names the clean regions so the lesson can be re-learned inside
+/// one of them.
+pub fn judge_convicted(rule: &Rule, tally: &RuleTally, threshold: u32) -> Verdict {
+    let scope = rule.scope.clone().unwrap_or_default().scope();
+    let convictions = tally.attributed_regressions;
+    if convictions < threshold {
+        return Verdict::Stands;
+    }
+    let retire = |why: String| Verdict::Retire { why };
+    if rule.support.is_empty() {
+        return retire(format!(
+            "{convictions} attributed regression(s) and no recorded support to narrow to"
+        ));
+    }
+    if tally.unknown_region.attributed_regressions > 0 {
+        return retire(format!(
+            "{convictions} attributed regression(s), {} of them in no known region",
+            tally.unknown_region.attributed_regressions
+        ));
+    }
+    // A conviction belongs to every support region its window is inside;
+    // one inside none of them is `unplaced` below and retires the rule,
+    // because the rule was convicted somewhere its evidence never covered
+    // and no support region can be shed to answer it.
+    let convicted_regions: Vec<&crate::situation::Situation> = tally
+        .regions
+        .values()
+        .filter(|(_, t)| t.attributed_regressions > 0)
+        .map(|(region, _)| region)
+        .collect();
+    let (shed, kept): (Vec<_>, Vec<_>) = rule
+        .support
+        .iter()
+        .cloned()
+        .partition(|s| convicted_regions.iter().any(|r| s.matches(r)));
+    let unplaced = convicted_regions
+        .iter()
+        .any(|r| !rule.support.iter().any(|s| s.matches(r)));
+    if unplaced {
+        return retire(format!(
+            "{convictions} attributed regression(s), some outside every recorded support region"
+        ));
+    }
+    if kept.is_empty() {
+        return retire(format!(
+            "{convictions} attributed regression(s) across every region it was seen in ({})",
+            describe_all(&shed)
+        ));
+    }
+    let narrowed = crate::situation::Situation::region(kept.iter()).scope();
+    if narrowed == scope {
+        return retire(format!(
+            "{convictions} attributed regression(s) in {}; the clean regions ({}) share no \
+             tool, so no scope excludes where it failed",
+            describe_all(&shed),
+            describe_all(&kept)
+        ));
+    }
+    // The claim a narrowing makes is that the rule no longer loads where it
+    // was convicted, so that is what is checked — not merely that the scope
+    // moved. Support `{fs_read, shell}` and `{fs_read, http_fetch}` kept
+    // against a conviction in `{fs_read, mail_send}` narrows to `{fs_read}`,
+    // which still matches the convicting window (found on review).
+    if convicted_regions.iter().any(|r| narrowed.matches(r)) {
+        return retire(format!(
+            "{convictions} attributed regression(s) in {}; the clean regions ({}) narrow to \
+             `{}`, which still loads where it failed, so no scope excludes it",
+            describe_all(&shed),
+            describe_all(&kept),
+            narrowed.describe()
+        ));
+    }
+    Verdict::Narrow {
+        scope: narrowed,
+        support: kept,
+        shed,
+    }
+}
+
+fn describe_all(regions: &[crate::situation::Situation]) -> String {
+    regions
+        .iter()
+        .map(crate::situation::Situation::describe)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Attributed regressions before an ordinary rule is retired.
@@ -1817,31 +2207,60 @@ pub fn retire_threshold_for(rule: &Rule, ordinary: u32) -> u32 {
 /// Fold ledger rows into per-rule tallies.
 pub fn rule_tallies(records: &[ValidationRecord]) -> std::collections::BTreeMap<String, RuleTally> {
     let mut out: std::collections::BTreeMap<String, RuleTally> = Default::default();
+    // One row's contribution, folded once and added to the total and to
+    // the row's region alike, so the two can never disagree on a verdict.
+    let row_of = |rec: &ValidationRecord| {
+        let mut r = RegionTally {
+            observations: 1,
+            ..Default::default()
+        };
+        // An unknown outcome string is a row from a future vocabulary —
+        // wire format, so it degrades to "ran, graded nothing" rather
+        // than failing the fold or counting as a verdict.
+        match rec.outcome.as_str() {
+            "improved" => {
+                r.improved += 1;
+                r.graded += 1;
+            }
+            "regressed" => {
+                r.regressed += 1;
+                r.graded += 1;
+            }
+            "unchanged_pass" | "unchanged_fail" => r.graded += 1,
+            _ => {}
+        }
+        r
+    };
+    fn region_slot<'a>(t: &'a mut RuleTally, rec: &ValidationRecord) -> &'a mut RegionTally {
+        match &rec.region {
+            Some(region) => {
+                let scope = region.scope();
+                &mut t
+                    .regions
+                    .entry(scope.key())
+                    .or_insert_with(|| (scope, RegionTally::default()))
+                    .1
+            }
+            None => &mut t.unknown_region,
+        }
+    }
     for rec in records {
+        let row = row_of(rec);
         for id in &rec.rule_ids {
             let t = out.entry(id.clone()).or_default();
-            t.observations += 1;
-            // An unknown outcome string is a row from a future vocabulary —
-            // wire format, so it degrades to "ran, graded nothing" rather
-            // than failing the fold or counting as a verdict.
-            match rec.outcome.as_str() {
-                "improved" => {
-                    t.improved += 1;
-                    t.graded += 1;
-                }
-                "regressed" => {
-                    t.regressed += 1;
-                    t.graded += 1;
-                }
-                "unchanged_pass" | "unchanged_fail" => t.graded += 1,
-                _ => {}
-            }
+            t.observations += row.observations;
+            t.graded += row.graded;
+            t.improved += row.improved;
+            t.regressed += row.regressed;
+            region_slot(t, rec).add(&row);
             if t.last_validated.as_deref() < Some(rec.created_at.as_str()) {
                 t.last_validated = Some(rec.created_at.clone());
             }
         }
         if let Some(id) = &rec.attributed_rule_id {
-            out.entry(id.clone()).or_default().attributed_regressions += 1;
+            let t = out.entry(id.clone()).or_default();
+            t.attributed_regressions += 1;
+            region_slot(t, rec).attributed_regressions += 1;
         }
     }
     out
@@ -2769,8 +3188,13 @@ impl Learner {
         // Retired rules are context the learner must not rewrite — and must
         // not re-derive: they were measured to make probes worse. Shown so
         // the same lesson cannot come back under new wording every pass.
-        let (active, retired): (Vec<&Rule>, Vec<&Rule>) =
-            learned_rules.iter().partition(|r| r.retired_at.is_none());
+        // A hand-disabled rule is neither: the owner switched it off, and
+        // quoting it back under an instruction to restate verbatim would
+        // be asking the model to switch it on (found on review).
+        let (active, retired): (Vec<&Rule>, Vec<&Rule>) = learned_rules
+            .iter()
+            .filter(|r| r.enabled || r.retired_at.is_some())
+            .partition(|r| r.retired_at.is_none());
         // Rules outside the region are context too: shown so the region's
         // set does not restate them, immutable because the reply replaces
         // only what is inside.
@@ -2780,8 +3204,11 @@ impl Learner {
             String::new()
         } else {
             format!(
-                "## Learned rules for other situations (IMMUTABLE, context only — each applies \
-                 where its own tools are in play; never restate or contradict them)\n{}\n\n",
+                "## Learned rules for other situations (IMMUTABLE — each applies where its own \
+                 tools are in play. If a reflection below teaches the same lesson as one of \
+                 them, repeat that rule WORD FOR WORD in your set and it will be widened to \
+                 cover this situation too; never restate one in other words, and never \
+                 contradict one)\n{}\n\n",
                 outside
                     .iter()
                     .map(|r| format!(
@@ -3613,6 +4040,9 @@ mod tests {
             retired_reason: None,
             probation: false,
             scope: None,
+            support: Vec::new(),
+            narrowed_at: None,
+            narrowed_reason: None,
         }
     }
 
@@ -4495,6 +4925,7 @@ mod tests {
             attributed_rule_id: attributed.map(Into::into),
             model: "qwen".into(),
             created_at: at.into(),
+            region: None,
         };
         store
             .append_validation(&rec("improved", None, "2026-08-05T01:00:00Z"))
@@ -4729,6 +5160,8 @@ mod ledger_in_the_learner_tests {
                 regressed: 6,
                 attributed_regressions: 3,
                 last_validated: Some("2026-08-29T00:00:00Z".into()),
+                regions: Default::default(),
+                unknown_region: Default::default(),
             },
         );
 
@@ -4772,8 +5205,11 @@ mod probation_tests {
         }
     }
 
+    /// A tally whose rows all exercised the standing region — the shape
+    /// every row had before regions were recorded, *placed*, since a row
+    /// with no region exercises nothing (`in_scope`).
     fn tally(graded: u32, attributed: u32) -> RuleTally {
-        RuleTally {
+        let counts = RegionTally {
             // Every graded row is an observation; inconclusive-only coverage
             // is built by the caller passing graded 0 with its own count.
             observations: graded.max(attributed).max(1),
@@ -4781,8 +5217,317 @@ mod probation_tests {
             improved: 0,
             regressed: attributed,
             attributed_regressions: attributed,
+        };
+        let mut regions = std::collections::BTreeMap::new();
+        regions.insert(
+            Situation::default().key(),
+            (Situation::default(), counts.clone()),
+        );
+        RuleTally {
+            observations: counts.observations,
+            graded,
+            improved: 0,
+            regressed: attributed,
+            attributed_regressions: attributed,
             last_validated: None,
+            regions,
+            unknown_region: Default::default(),
         }
+    }
+
+    /// **Riding along is not being exercised.** A `shell` rule in the block
+    /// of a probe whose window never touched `shell` was carried, not
+    /// tested, and a clean grade there must not release its probation —
+    /// the row that does is one whose window carried the tool. Rows with no
+    /// region are neither, and release nothing. Fails on the pre-region
+    /// release, which read the totals.
+    #[test]
+    fn only_a_row_that_exercised_the_rule_releases_probation() {
+        let shell = Situation::of_run(&["shell".into()], None);
+        let row = |tools: &[&str], outcome: &str| ValidationRecord {
+            reflexion_id: "refl".into(),
+            trigger: "steer".into(),
+            domain: "behavior".into(),
+            rules_hash: rules_hash("block"),
+            rule_ids: vec!["p".into()],
+            outcome: outcome.into(),
+            attributed_rule_id: None,
+            model: "qwen".into(),
+            created_at: "2026-09-05T00:00:00Z".into(),
+            region: (!tools.is_empty()).then(|| {
+                Situation::of_run(
+                    &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                    None,
+                )
+            }),
+        };
+        let scoped = || Rule {
+            probation: true,
+            scope: Some(shell.clone()),
+            ..r("p", true)
+        };
+
+        // Carried in an fs_read probe: graded in total, exercised nowhere.
+        let mut rules = vec![scoped()];
+        let tallies = rule_tallies(&[row(&["fs_read"], "unchanged_pass")]);
+        assert_eq!(
+            tallies["p"].graded, 1,
+            "the total still counts the ride-along"
+        );
+        assert_eq!(tallies["p"].in_scope(&shell).graded, 0);
+        release_probation_when_measured_clean(&mut rules, &tallies);
+        assert!(rules[0].probation, "a ride-along grade is not exercise");
+
+        // A row with no region is unknown, and unknown releases nothing.
+        let mut rules = vec![scoped()];
+        release_probation_when_measured_clean(
+            &mut rules,
+            &rule_tallies(&[row(&[], "unchanged_pass")]),
+        );
+        assert!(rules[0].probation);
+
+        // A probe whose window carried shell (and more) exercised it.
+        let mut rules = vec![scoped()];
+        release_probation_when_measured_clean(
+            &mut rules,
+            &rule_tallies(&[row(&["fs_read", "shell"], "unchanged_pass")]),
+        );
+        assert!(!rules[0].probation, "exercised and clean releases");
+
+        // A standing rule is exercised by every row with a known region.
+        let mut rules = vec![r("p", true)];
+        release_probation_when_measured_clean(
+            &mut rules,
+            &rule_tallies(&[row(&["fs_read"], "unchanged_pass")]),
+        );
+        assert!(!rules[0].probation);
+    }
+
+    /// **§17.4: a rule that fails in one sub-region narrows rather than
+    /// retires** — and every way narrowing cannot be done is a retirement
+    /// with its reason, never a rule left loading where it was convicted.
+    #[test]
+    fn a_convicted_rule_narrows_to_where_it_held_or_retires_with_the_reason() {
+        let sit = |tools: &[&str]| {
+            Situation::of_run(
+                &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                None,
+            )
+        };
+        let dated = |region: Option<Situation>, outcome: &str, attributed: bool, at: &str| {
+            ValidationRecord {
+                reflexion_id: "refl".into(),
+                trigger: "steer".into(),
+                domain: "behavior".into(),
+                rules_hash: rules_hash("block"),
+                rule_ids: vec!["w".into()],
+                outcome: outcome.into(),
+                attributed_rule_id: attributed.then(|| "w".into()),
+                model: "qwen".into(),
+                created_at: at.into(),
+                region,
+            }
+        };
+        let row = |region: Option<Situation>, outcome: &str, attributed: bool| {
+            dated(region, outcome, attributed, "2026-09-05T00:00:00Z")
+        };
+        let convicted_in = |tools: &[&str]| row(Some(sit(tools)), "regressed", true);
+        let clean_in = |tools: &[&str]| row(Some(sit(tools)), "unchanged_pass", false);
+        let widened = || Rule {
+            scope: Some(Situation::default()),
+            support: vec![sit(&["shell"]), sit(&["http_fetch"])],
+            ..r("w", false)
+        };
+
+        // Below the threshold the rule stands, whatever the regions say.
+        let t = rule_tallies(&[convicted_in(&["shell"]), clean_in(&["http_fetch"])]);
+        assert_eq!(judge_convicted(&widened(), &t["w"], 3), Verdict::Stands);
+
+        // Convicted three times inside `shell` (windows that carried it),
+        // clean in `http_fetch`: shed shell, keep http_fetch, re-scope.
+        let t = rule_tallies(&[
+            convicted_in(&["shell", "fs_read"]),
+            convicted_in(&["shell"]),
+            convicted_in(&["shell", "fs_write"]),
+            clean_in(&["http_fetch"]),
+        ]);
+        assert_eq!(
+            judge_convicted(&widened(), &t["w"], 3),
+            Verdict::Narrow {
+                scope: sit(&["http_fetch"]),
+                support: vec![sit(&["http_fetch"])],
+                shed: vec![sit(&["shell"])],
+            }
+        );
+        // Narrowed, the rows that argued for it are answered: `tally_for`
+        // folds only what came after `narrowed_at`, so the same ledger
+        // convicts nothing — while the *whole* ledger still would, since a
+        // conviction counts wherever its row lies (the rule still rides in
+        // any run registering http_fetch, shell window or not).
+        let narrowed = Rule {
+            scope: Some(sit(&["http_fetch"])),
+            support: vec![sit(&["http_fetch"])],
+            narrowed_at: Some("2026-09-05T12:00:00Z".into()),
+            ..r("w", false)
+        };
+        let records = [
+            convicted_in(&["shell", "fs_read"]),
+            convicted_in(&["shell"]),
+            convicted_in(&["shell", "fs_write"]),
+            clean_in(&["http_fetch"]),
+        ];
+        assert!(
+            tally_for(&narrowed, &records).is_none(),
+            "nothing since the narrowing"
+        );
+        assert!(matches!(
+            judge_convicted(&narrowed, &rule_tallies(&records)["w"], 3),
+            Verdict::Retire { .. }
+        ));
+        // Convicted again after the narrowing, inside the scope it kept,
+        // with the old rows still on file: only the new rows fold, and the
+        // rule narrows once more to the sub-region that stayed clean.
+        let twice = Rule {
+            support: vec![sit(&["http_fetch"]), sit(&["fs_write", "http_fetch"])],
+            ..narrowed.clone()
+        };
+        let later = "2026-09-06T00:00:00Z";
+        let records = [
+            convicted_in(&["shell"]),
+            convicted_in(&["shell"]),
+            convicted_in(&["shell"]),
+            dated(Some(sit(&["http_fetch"])), "regressed", true, later),
+            dated(Some(sit(&["http_fetch"])), "regressed", true, later),
+            dated(Some(sit(&["http_fetch"])), "regressed", true, later),
+            dated(
+                Some(sit(&["fs_write", "http_fetch"])),
+                "unchanged_pass",
+                false,
+                later,
+            ),
+        ];
+        let t = tally_for(&twice, &records).unwrap();
+        assert_eq!(
+            t.attributed_regressions, 3,
+            "the three before the narrowing are settled"
+        );
+        assert_eq!(
+            judge_convicted(&twice, &t, 3),
+            Verdict::Narrow {
+                scope: sit(&["fs_write", "http_fetch"]),
+                support: vec![sit(&["fs_write", "http_fetch"])],
+                shed: vec![sit(&["http_fetch"])],
+            }
+        );
+        // A conviction placed outside the rule's scope counts: a `shell`
+        // rule rides in every run that registers shell, and a bisection
+        // that names it in an `http_fetch`-window probe convicted *it*.
+        // Fails on the in-scope count, which read this as clean forever
+        // (found on review).
+        let shell_rule = Rule {
+            scope: Some(sit(&["shell"])),
+            support: vec![sit(&["shell"])],
+            ..r("w", false)
+        };
+        let t = rule_tallies(&[
+            convicted_in(&["http_fetch"]),
+            convicted_in(&["http_fetch"]),
+            convicted_in(&["http_fetch"]),
+        ]);
+        assert!(matches!(
+            judge_convicted(&shell_rule, &t["w"], 3),
+            Verdict::Retire { why } if why.contains("outside every recorded support")
+        ));
+
+        // A conviction whose window carried both support tools is in both
+        // sub-regions: nothing is left to keep.
+        let t = rule_tallies(&[
+            convicted_in(&["http_fetch", "shell"]),
+            convicted_in(&["http_fetch", "shell"]),
+            convicted_in(&["http_fetch", "shell"]),
+        ]);
+        assert!(matches!(
+            judge_convicted(&widened(), &t["w"], 3),
+            Verdict::Retire { why } if why.contains("every region")
+        ));
+
+        // No recorded support: nowhere narrower to go.
+        let bare = r("w", false);
+        let t = rule_tallies(&vec![convicted_in(&["shell"]); 3]);
+        assert!(matches!(
+            judge_convicted(&bare, &t["w"], 3),
+            Verdict::Retire { why } if why.contains("no recorded support")
+        ));
+
+        // A conviction with no region cannot be placed, so it cannot be
+        // narrowed away — fail-closed.
+        let t = rule_tallies(&[
+            convicted_in(&["shell"]),
+            convicted_in(&["shell"]),
+            row(None, "regressed", true),
+            clean_in(&["http_fetch"]),
+        ]);
+        assert!(matches!(
+            judge_convicted(&widened(), &t["w"], 3),
+            Verdict::Retire { why } if why.contains("no known region")
+        ));
+
+        // A narrowing that moves the scope but still covers the convicting
+        // window is no narrowing: support `{fs_read, shell}` and
+        // `{fs_read, http_fetch}` kept against a conviction in
+        // `{fs_read, mail_send}` would re-scope to `{fs_read}`, which the
+        // convicting window matches. Retire, naming the scope it would
+        // have taken (found on review).
+        let overlapping = Rule {
+            support: vec![
+                sit(&["fs_read", "shell"]),
+                sit(&["fs_read", "http_fetch"]),
+                sit(&["mail_send"]),
+            ],
+            ..widened()
+        };
+        let t = rule_tallies(&[
+            convicted_in(&["fs_read", "mail_send"]),
+            convicted_in(&["fs_read", "mail_send"]),
+            convicted_in(&["fs_read", "mail_send"]),
+            clean_in(&["fs_read", "shell"]),
+        ]);
+        assert!(matches!(
+            judge_convicted(&overlapping, &t["w"], 3),
+            Verdict::Retire { why } if why.contains("still loads where it failed") && why.contains("`fs_read`")
+        ));
+
+        // The lattice's limit: clean in `http_fetch` and `fs_write`, which
+        // share no tool, so no conjunctive scope excludes `shell`. Retire,
+        // and say which regions were clean.
+        let three = Rule {
+            support: vec![sit(&["shell"]), sit(&["http_fetch"]), sit(&["fs_write"])],
+            ..widened()
+        };
+        let t = rule_tallies(&[
+            convicted_in(&["shell"]),
+            convicted_in(&["shell"]),
+            convicted_in(&["shell"]),
+            clean_in(&["http_fetch"]),
+            clean_in(&["fs_write"]),
+        ]);
+        assert!(matches!(
+            judge_convicted(&three, &t["w"], 3),
+            Verdict::Retire { why } if why.contains("share no tool") && why.contains("fs_write")
+        ));
+
+        // A conviction outside every support region: the rule loaded
+        // somewhere its evidence never covered, and cannot shed it.
+        let t = rule_tallies(&[
+            convicted_in(&["mail_send"]),
+            convicted_in(&["mail_send"]),
+            convicted_in(&["mail_send"]),
+            clean_in(&["http_fetch"]),
+        ]);
+        assert!(matches!(
+            judge_convicted(&widened(), &t["w"], 3),
+            Verdict::Retire { why } if why.contains("outside every recorded support")
+        ));
     }
 
     /// **A probationary rule retires sooner**, which is the entire hedge
@@ -4877,6 +5622,7 @@ mod probation_tests {
             attributed_rule_id: None,
             model: "qwen".into(),
             created_at: "2026-08-30T00:00:00Z".into(),
+            region: None,
         }];
         let tallies = rule_tallies(&records);
         assert_eq!(tallies["p"].observations, 1, "the probe ran");
@@ -5007,6 +5753,279 @@ mod situation_tests {
         )
     }
 
+    /// **§17.4's widening: a lesson restated word for word from another
+    /// region drops the keys the two regions do not share, and only then.**
+    /// The learner can claim "same lesson"; the scope that follows is the
+    /// intersection of two batches of recorded situations, computed here.
+    /// Fails on the pre-widening finaliser, which carried the old scope
+    /// through any restatement, so a `shell` lesson restated in an
+    /// `http_fetch` batch stayed loaded with `shell` only — and its
+    /// `http_fetch` evidence was simply lost.
+    #[test]
+    fn a_verbatim_restatement_from_another_region_widens_by_intersection() {
+        let previous = vec![rule("Say what you ran.", "r-shell", Some(shell()))];
+        let fetch = run_with(&["http_fetch"]);
+        let reply = vec![Rule {
+            text: "Say what you ran.".into(),
+            ..Default::default()
+        }];
+        let out = finalize_region_rules(
+            reply,
+            &previous,
+            &fetch,
+            &["x".into()],
+            &[run_with(&["fs_read", "http_fetch"])],
+            "now",
+        );
+        assert_eq!(
+            out.len(),
+            1,
+            "one rule, not a duplicate scoped to the batch"
+        );
+        let r = &out[0];
+        assert_eq!(r.id.as_deref(), Some("r-shell"), "identity survives");
+        assert_eq!(
+            r.scope,
+            Some(Situation::default()),
+            "shell ∩ http_fetch is standing"
+        );
+        assert_eq!(
+            r.support,
+            vec![shell(), run_with(&["fs_read", "http_fetch"])],
+            "the old scope stands in for unrecorded support; the batch's window is added"
+        );
+        assert_eq!(r.sources, vec!["x"], "the second batch is lineage too");
+        assert_eq!(carried_in(&out, &run_with(&["fs_read"])).count(), 1);
+
+        // A batch focused elsewhere whose every window still carried
+        // `shell` is evidence inside the shell region: support grows, the
+        // scope does not. And the standing batch never widens — not with
+        // no windows, and not with a stale followup window naming another
+        // tool, which `batches_by_region` already refuses as evidence
+        // (found on review: this widened a shell rule to everywhere).
+        let stale = Situation::recorded(&["http_fetch".into()], "followup", None, None);
+        for (batch_region, windows) in [
+            (fetch.clone(), vec![run_with(&["http_fetch", "shell"])]),
+            (Situation::default(), Vec::new()),
+            (
+                Situation::default(),
+                vec![stale.clone(), run_with(&["fs_read"])],
+            ),
+        ] {
+            let out = finalize_region_rules(
+                vec![Rule {
+                    text: "Say what you ran.".into(),
+                    ..Default::default()
+                }],
+                &previous,
+                &batch_region,
+                &["v".into()],
+                &windows,
+                "now",
+            );
+            assert_eq!(
+                out[0].scope,
+                Some(shell()),
+                "no window outside shell: no widening"
+            );
+            if batch_region.is_standing() {
+                assert_eq!(out[0].support, previous[0].support, "untouched");
+            } else {
+                assert!(out[0].support.contains(&shell()));
+            }
+            assert!(
+                !out[0].support.contains(&run_with(&["http_fetch"])),
+                "a followup's window is not support"
+            );
+        }
+        // And a new rule from a batch whose only windows lack a focus has
+        // no support at all — evidence of nowhere, honestly recorded.
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "Followup lesson.".into(),
+                ..Default::default()
+            }],
+            &[],
+            &Situation::default(),
+            &["f".into()],
+            std::slice::from_ref(&stale),
+            "now",
+        );
+        assert_eq!(out[0].scope, Some(Situation::default()));
+        assert!(out[0].support.is_empty());
+
+        // A restatement inside the rule's own region adds support and
+        // widens nothing — the intersection is the scope it had.
+        let inside = run_with(&["fs_write", "shell"]);
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "Say what you ran.".into(),
+                ..Default::default()
+            }],
+            &previous,
+            &inside,
+            &["y".into()],
+            std::slice::from_ref(&inside),
+            "now",
+        );
+        assert_eq!(out[0].scope, Some(shell()));
+        assert_eq!(out[0].support, vec![shell(), inside.clone()]);
+
+        // An unscoped rule (from before the field) keeps `None`: it already
+        // loads everywhere, and "predates scoping" is still the fact.
+        let old = vec![rule("Old.", "r-old", None)];
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "Old.".into(),
+                ..Default::default()
+            }],
+            &old,
+            &shell(),
+            &["z".into()],
+            &[shell()],
+            "now",
+        );
+        assert_eq!(out[0].scope, None);
+        assert_eq!(out[0].support, vec![Situation::default(), shell()]);
+
+        // A rule a scan narrowed, restated in the region it was narrowed out
+        // of: the widening happens (the evidence is real), but the narrowing
+        // mark goes with it, so the convictions that shed the region fold
+        // again at the next scan instead of staying buried behind
+        // `narrowed_at` (found on review).
+        let narrowed = vec![Rule {
+            narrowed_at: Some("2026-09-05T12:00:00Z".into()),
+            narrowed_reason: Some("3 attributed regression(s) in shell".into()),
+            support: vec![fetch.clone()],
+            ..rule("Say what you ran.", "r-n", Some(fetch.clone()))
+        }];
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "Say what you ran.".into(),
+                ..Default::default()
+            }],
+            &narrowed,
+            &shell(),
+            &["u".into()],
+            std::slice::from_ref(&shell()),
+            "now",
+        );
+        assert_eq!(out[0].scope, Some(Situation::default()));
+        assert_eq!(
+            out[0].narrowed_at, None,
+            "the narrowing it reversed is gone"
+        );
+        assert_eq!(out[0].narrowed_reason, None);
+        // Whereas a restatement that widens nothing keeps the mark.
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "Say what you ran.".into(),
+                ..Default::default()
+            }],
+            &narrowed,
+            &run_with(&["fs_read", "http_fetch"]),
+            &["u".into()],
+            std::slice::from_ref(&run_with(&["fs_read", "http_fetch"])),
+            "now",
+        );
+        assert_eq!(out[0].scope, Some(fetch.clone()));
+        assert!(out[0].narrowed_at.is_some());
+
+        // A retired rule restated is retirement's business, not widening's.
+        let retired = vec![Rule {
+            retired_at: Some("2026-09-01T00:00:00Z".into()),
+            ..rule("Gone.", "r-gone", Some(shell()))
+        }];
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "Gone.".into(),
+                ..Default::default()
+            }],
+            &retired,
+            &fetch,
+            &["w".into()],
+            std::slice::from_ref(&fetch),
+            "now",
+        );
+        assert_eq!(out.len(), 1);
+        assert!(!out[0].active());
+        assert_eq!(out[0].scope, Some(shell()), "not widened");
+    }
+
+    /// A copy that missed by punctuation is not a widening but a new rule
+    /// beside the old; the pass says so, and merges nothing.
+    #[test]
+    fn a_near_miss_restatement_is_reported_not_merged() {
+        let previous = vec![
+            rule("Say what you ran.", "r-a", Some(shell())),
+            Rule {
+                retired_at: Some("gone".into()),
+                ..rule("Never guess.", "r-r", None)
+            },
+        ];
+        let after = vec![
+            Rule {
+                text: "Say what you ran".into(),
+                ..Default::default()
+            },
+            Rule {
+                text: "Say what you ran.".into(),
+                ..Default::default()
+            },
+            Rule {
+                text: "never guess".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            near_restatements(&previous, &after),
+            vec![(
+                "Say what you ran".to_string(),
+                "Say what you ran.".to_string()
+            )],
+            "an exact match is identity and a retired match is retirement's"
+        );
+    }
+
+    /// A new rule's support is each distinct sub-region its batch was
+    /// recorded in, reduced to scopes; the region is their intersection, so
+    /// a rule never applies wider than its own evidence agrees on — the
+    /// widening condition holds within a batch by construction.
+    #[test]
+    fn a_new_rule_records_the_sub_regions_its_evidence_spans() {
+        let windows = [
+            Situation::recorded(&["shell".into(), "fs_read".into()], "denial", None, None),
+            // Same scope as the first, in another order with another trigger.
+            Situation::recorded(&["fs_read".into(), "shell".into()], "steer", None, None),
+            Situation::recorded(&["shell".into(), "http_fetch".into()], "denial", None, None),
+        ];
+        let region = Situation::region(windows.iter()).scope();
+        assert_eq!(region, shell());
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "New.".into(),
+                ..Default::default()
+            }],
+            &[],
+            &region,
+            &["a".into()],
+            &windows,
+            "now",
+        );
+        assert_eq!(out[0].scope, Some(shell()));
+        assert_eq!(
+            out[0].support,
+            vec![
+                run_with(&["fs_read", "shell"]),
+                run_with(&["http_fetch", "shell"])
+            ]
+        );
+        assert!(out[0]
+            .support
+            .iter()
+            .all(|s| s.matches(&region) || region.matches(s)));
+    }
+
     /// §17.6 item 3's exit: a rule learned from a denial on one tool is
     /// scoped to that tool, and rides only where that tool is registered.
     /// Fails on the old path (`finalize_rules`, `domain_rules_section`),
@@ -5036,7 +6055,8 @@ mod situation_tests {
             r#"{"rules":[{"rule":"Ask before a destructive shell command.","confidence":0.9,"based_on_count":2}]}"#,
         )
         .unwrap();
-        let rules = finalize_region_rules(learned, &[], region, &["a".into(), "c".into()], "now");
+        let rules =
+            finalize_region_rules(learned, &[], region, &["a".into(), "c".into()], &[], "now");
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].scope, Some(shell()));
 
@@ -5083,7 +6103,7 @@ mod situation_tests {
             text: "New shell rule.".into(),
             ..Default::default()
         }];
-        let out = finalize_region_rules(reply, &previous, &shell(), &["x".into()], "now");
+        let out = finalize_region_rules(reply, &previous, &shell(), &["x".into()], &[], "now");
         let texts: Vec<&str> = out.iter().map(|r| r.text.as_str()).collect();
         assert!(texts.contains(&"New shell rule."));
         assert!(
@@ -5104,6 +6124,60 @@ mod situation_tests {
             !texts.contains(&"Old shell rule."),
             "omitted inside the region: gone"
         );
+        // A reply that restates the disabled rule word for word — what the
+        // outside section now asks for of a same-lesson rule — does not
+        // switch it back on: `enabled` rides through the restatement like
+        // `probation` and `scope` do. Fails on the finaliser that built the
+        // restated rule from `..Default::default()` (found on review).
+        let restated = finalize_region_rules(
+            vec![Rule {
+                text: "Disabled mail rule.".into(),
+                ..Default::default()
+            }],
+            &previous,
+            &run_with(&["mail_send"]),
+            &["y".into()],
+            &[run_with(&["mail_send"])],
+            "now",
+        );
+        // And a disabled rule *inside* the batched region survives a reply
+        // that omits it — the learner was never shown it, so the omission
+        // is no decision. Fails on the carry-through that handled only
+        // out-of-region rules (found on review).
+        let kept = finalize_region_rules(
+            vec![Rule {
+                text: "Fresh mail rule.".into(),
+                ..Default::default()
+            }],
+            &previous,
+            &run_with(&["mail_send"]),
+            &["z".into()],
+            &[run_with(&["mail_send"])],
+            "now",
+        );
+        let off_in_region = kept
+            .iter()
+            .find(|r| r.text == "Disabled mail rule.")
+            .expect("an in-region disabled rule is carried through");
+        assert!(!off_in_region.enabled);
+        assert_eq!(off_in_region.id.as_deref(), Some("r-off"));
+        assert!(
+            !kept.iter().any(|r| r.text == "Mail rule."),
+            "an active in-region rule the learner omitted is still dropped"
+        );
+        let off = restated
+            .iter()
+            .find(|r| r.text == "Disabled mail rule.")
+            .unwrap();
+        assert!(!off.enabled, "an owner's off switch survives a restatement");
+        assert_eq!(off.id.as_deref(), Some("r-off"));
+        assert_eq!(
+            restated
+                .iter()
+                .filter(|r| r.text == "Disabled mail rule.")
+                .count(),
+            1
+        );
         let new = out.iter().find(|r| r.text == "New shell rule.").unwrap();
         assert_eq!(new.scope, Some(shell()));
         assert_eq!(new.sources, vec!["x"]);
@@ -5119,7 +6193,7 @@ mod situation_tests {
             text: "Standing.".into(),
             ..Default::default()
         }];
-        let out = finalize_region_rules(reply, &previous, &shell(), &["x".into()], "now");
+        let out = finalize_region_rules(reply, &previous, &shell(), &["x".into()], &[], "now");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id.as_deref(), Some("r-standing"));
         assert_eq!(out[0].scope, None);
@@ -5145,6 +6219,7 @@ mod situation_tests {
             std::slice::from_ref(&scoped),
             &Situation::default(),
             &["x".into()],
+            &[],
             "now",
         );
         assert_eq!(out.len(), 1);
