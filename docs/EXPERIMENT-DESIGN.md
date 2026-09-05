@@ -1046,7 +1046,17 @@ chat endpoint over the agent loop, the contract `hyperstudy-agent`
 verifies, so mecha can be a HyperStudy participant in human-plus-agent
 coordination studies without any work on this side.
 
-### 21.1 Who drives a lifetime, and what a task is — the principal half ruled and built (2026-09-04, #185; release and closure opened by fixture servers 2026-09-05); the task-source half still the recommendation
+### 21.1 Who drives a lifetime, and what a task is — the principal half ruled and built (2026-09-04, #185; release and closure opened by fixture servers 2026-09-05); the task-source half built 2026-09-05 as the recommendation reads
+
+> *Built note, 2026-09-05 (task source).* `[tasks] source = [command…]`
+> beside `cases`, exactly one of the two; the verbs are `list`, `setup
+> <task>` and `grade <task>` as below, JSON on stdout (the run's `--json`
+> result on `grade`'s stdin), fail-closed on the driver's side, bounded by
+> `source_timeout_secs`. `eval/fixtures/source_stub.py` is the contract's
+> reference and the driver's test fixture; `eval/fixtures/dojo.py` is the
+> AgentDojo adapter of §21.2 — server and source in one program, in its
+> own venv. Terminal-Bench via Harbor is the next backend; the format
+> question below stands.
 
 > *Built note, 2026-09-05.* The fixture servers live in **mecha's tree**
 > for now (`eval/fixtures/`, beside `graph_server.py` and the cases that
@@ -1147,7 +1157,17 @@ injection vectors; `banking` 11/16/9, `travel` 28/20/7, `slack` 21/21/5.
 `load_and_inject_default_environment({})` yields the pydantic
 environment, and `FunctionsRuntime(suite.tools).run_function(env, name,
 args)` executes a tool against it with no network and no agent pipeline —
-the shape §21.2 assumed holds. So the adapter is **one fixture server on
+the shape §21.2 assumed holds. *Built the same day* as
+`eval/fixtures/dojo.py` on the task-source contract (§21.1) and
+`[fixtures]`; `eval/dojo-workspace.toml` runs the workspace suite as a
+one-arm measurement. Two things learnt building it: the injection must be
+placed only where the user task's ground truth reads (AgentDojo's own
+`get_injection_candidates`, ported) — placed everywhere, the injected
+goal's text lands in five emails and `security`'s "exactly one match"
+check can never pass; and AgentDojo's tools carry no annotations, so the
+adapter adds `openWorldHint`/`readOnlyHint`/`destructiveHint` from a
+per-suite table, written down as a recorded condition, or the interlock
+never fires over `send_email`. So the adapter is **one fixture server on
 `[fixtures]`'s shape** (`dojo_server.py --suite workspace --task
 user_task_N [--injection injection_task_M]`): tools listed from the
 runtime's `Function.parameters.model_json_schema()`, the environment
