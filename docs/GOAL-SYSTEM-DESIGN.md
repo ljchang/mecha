@@ -2057,7 +2057,17 @@ follow from facts in the tree and stand as written. None is built.
    run applies here: …*), ships **off by default** on `step_escalation`'s
    posture, and the null-step and restart counters are read before it is
    turned on: the tree's own evidence is that a nudge makes a model restart
-   work it had done.
+   work it had done. *The counters exist since 2026-09-05*
+   (`feat/step-counters`): neither was recorded anywhere before — the
+   null step was read by `todo` into its result line and dropped, and a
+   reopen was not read at all — so the precondition could not be met from
+   the store. `ToolCtx::step_counts` is minted per run by the loop (a
+   sensor, not a lever), `todo` counts `Finding::Null` and the
+   completed-to-in-progress transition into it, `RunStats::step_nulls` and
+   `step_reopens` record them (`Option`, unknown before the sensor), and
+   `mecha sessions health` reads the rate and the totals over sensed runs.
+   The reading the ruling wants is a few nights of records away; the
+   delivery line stays off until it is taken.
 3. **The ask, by surface — ruled 2026-09-04.** `ask_user` is registered only by a front-end
    that owns a human; a task run's question goes through the question store
    and ends the run (D13); an unattended run is told what to do and approves

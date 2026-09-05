@@ -449,6 +449,7 @@ impl Tracked {
         step_escalation: Option<
             &std::sync::Arc<std::sync::Mutex<Option<crate::step::StepEscalation>>>,
         >,
+        step_counts: Option<&std::sync::Arc<crate::tool::StepCounts>>,
     ) -> Vec<String> {
         let before: HashMap<&str, Status> = self
             .plan
@@ -572,6 +573,17 @@ impl Tracked {
                 // would carry the failed attempt's work into the retry's
                 // verdict.
                 Status::InProgress if was != Some(Status::InProgress) => {
+                    // A completed step set back to in progress is a reopen —
+                    // the restart §17.7 item 2 wants counted before any
+                    // nudge is delivered mid-run. Counted on the transition
+                    // the plan itself records, not on any reading of why.
+                    if was == Some(Status::Completed) {
+                        if let Some(counts) = step_counts {
+                            counts
+                                .reopens
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
                     if let Some(work) = work {
                         self.started.insert(
                             item.content.clone(),
@@ -596,6 +608,13 @@ impl Tracked {
                         continue;
                     };
                     let finding = crate::step::appraise(span);
+                    if finding == crate::step::Finding::Null {
+                        if let Some(counts) = step_counts {
+                            counts
+                                .nulls
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
                     match finding.line(&item.content, self.flagged.contains(&item.content)) {
                         Some(line) => {
                             self.flagged.insert(item.content.clone());
@@ -1485,6 +1504,7 @@ impl Tool for TodoTool {
                 own_calls_before,
                 last_real,
                 ctx.step_escalation.as_ref(),
+                ctx.step_counts.as_ref(),
             );
             (findings, Self::render(&tracked.plan))
         };
@@ -2364,6 +2384,86 @@ mod tests {
             ..ToolCtx::default()
         };
         (ctx, slot)
+    }
+
+    /// The two counters `GOAL-SYSTEM-DESIGN.md` §17.7 item 2 wants read
+    /// before a mid-run delivery is switched on: a step completed with no
+    /// call behind it is a null step, and a completed step set back to in
+    /// progress is a reopen. Counted on the plan's own transitions, in the
+    /// run-scoped slot the loop mints; a context with no slot counts
+    /// nothing and does not panic. Fails on the tree before the sensor,
+    /// where neither number was recorded anywhere.
+    #[tokio::test]
+    async fn null_steps_and_reopens_are_counted_into_the_run_scoped_slot() {
+        let tool = TodoTool::new();
+        let counts = std::sync::Arc::new(crate::tool::StepCounts::default());
+        let ctx = |calls: u32, last: Option<Outcome>| ToolCtx {
+            step_counts: Some(counts.clone()),
+            ..work_ctx(1, calls, last)
+        };
+        // A step that completes with no call behind it: null.
+        write(
+            &tool,
+            &ctx(0, None),
+            json!([{"content": "decide", "status": "in_progress"}]),
+        )
+        .await;
+        write(
+            &tool,
+            &ctx(0, None),
+            json!([{"content": "decide", "status": "completed"}]),
+        )
+        .await;
+        assert_eq!(counts.snapshot(), (1, 0));
+        // A step with real work behind it: neither.
+        write(&tool, &ctx(0, None), json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "in_progress"}])).await;
+        write(
+            &tool,
+            &ctx(3, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "completed"}]),
+        )
+        .await;
+        assert_eq!(counts.snapshot(), (1, 0));
+        // The completed step set back to in progress: a reopen — and its
+        // second completion, again with no call, a second null.
+        write(
+            &tool,
+            &ctx(3, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "in_progress"}]),
+        )
+        .await;
+        assert_eq!(counts.snapshot(), (1, 1));
+        write(
+            &tool,
+            &ctx(3, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "completed"}]),
+        )
+        .await;
+        assert_eq!(counts.snapshot(), (2, 1));
+        // A pending step brought in progress for the first time is not a
+        // reopen.
+        write(
+            &tool,
+            &ctx(3, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "completed"}, {"content": "ship", "status": "in_progress"}]),
+        )
+        .await;
+        assert_eq!(counts.snapshot(), (2, 1));
+        // No slot: nothing counted, nothing panics.
+        let bare = TodoTool::new();
+        write(
+            &bare,
+            &work_ctx(2, 0, None),
+            json!([{"content": "x", "status": "in_progress"}]),
+        )
+        .await;
+        write(
+            &bare,
+            &work_ctx(2, 0, None),
+            json!([{"content": "x", "status": "completed"}]),
+        )
+        .await;
+        assert_eq!(counts.snapshot(), (2, 1), "another run's slot is untouched");
     }
 
     /// A run whose escalation slot is `None` — the feature off — behaves

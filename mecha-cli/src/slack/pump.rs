@@ -259,6 +259,8 @@ mod tests {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
             homeostat: None,
             text: String::new(),
             stop_reason: mecha_core::message::StopReason::EndTurn,

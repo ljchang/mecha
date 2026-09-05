@@ -434,6 +434,40 @@ impl Corpus {
             .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
     }
 
+    /// The share of sensed runs in which a plan step completed with no call
+    /// behind it, and the share in which a completed step was reopened —
+    /// the two readings `GOAL-SYSTEM-DESIGN.md` §17.7 item 2 wants before
+    /// a mid-run delivery is switched on. `None` over no sensed rows, on
+    /// `boredom_rate`'s rule: a corpus from before the sensor and one where
+    /// no step was ever null are opposite findings. Totals beside the
+    /// rates, because a rate says how often and not how much.
+    pub fn step_null_rate(&self) -> Option<f64> {
+        Self::share_positive(self.rows.iter().filter_map(|r| r.stats.step_nulls))
+    }
+
+    pub fn step_reopen_rate(&self) -> Option<f64> {
+        Self::share_positive(self.rows.iter().filter_map(|r| r.stats.step_reopens))
+    }
+
+    /// `(sensed runs, null steps, reopened steps)` — the totals the rates
+    /// above are over. Sensed is the count of rows carrying either field.
+    pub fn step_totals(&self) -> (usize, u32, u32) {
+        let sensed = self
+            .rows
+            .iter()
+            .filter(|r| r.stats.step_nulls.is_some() || r.stats.step_reopens.is_some())
+            .count();
+        let nulls = self.rows.iter().filter_map(|r| r.stats.step_nulls).sum();
+        let reopens = self.rows.iter().filter_map(|r| r.stats.step_reopens).sum();
+        (sensed, nulls, reopens)
+    }
+
+    fn share_positive(sensed: impl Iterator<Item = u32>) -> Option<f64> {
+        let sensed: Vec<u32> = sensed.collect();
+        (!sensed.is_empty())
+            .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
+    }
+
     /// The share of runs the owner stepped into — as the `intervention_rate`
     /// charter sensor reads it (`GOAL-SYSTEM-DESIGN.md` §11.1).
     ///
@@ -775,6 +809,8 @@ mod tests {
             boredom_notices: None,
             step_escalations_attempted: None,
             step_escalations_revised: None,
+            step_nulls: None,
+            step_reopens: None,
             checks_declared: None,
             checks_passed: None,
             turns: 3,
@@ -853,6 +889,40 @@ mod tests {
         assert_eq!(corpus.context_overflows(), (0, 0));
         assert_eq!(corpus.overflow_rate(), None, "not Some(0.0)");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The step counters are the same shape again: unknown over rows from
+    /// before the sensor, a rate over sensed rows only, totals beside it.
+    #[test]
+    fn step_counters_read_unknown_before_the_sensor_and_as_rates_after() {
+        let dir = tmpdir();
+        let sensed = |nulls: u32, reopens: u32| {
+            let mut st = stats(4, 0, false, StopCause::Completed);
+            st.step_nulls = Some(nulls);
+            st.step_reopens = Some(reopens);
+            st
+        };
+        session_with(
+            &dir,
+            "20260905T000000-old",
+            "opus",
+            vec![stats(4, 0, false, StopCause::Completed)],
+        );
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(corpus.step_null_rate(), None, "not Some(0.0)");
+        assert_eq!(corpus.step_reopen_rate(), None);
+        assert_eq!(corpus.step_totals(), (0, 0, 0));
+        session_with(
+            &dir,
+            "20260905T000001-sensed",
+            "opus",
+            vec![sensed(2, 0), sensed(0, 1), sensed(0, 0)],
+        );
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(corpus.step_null_rate(), Some(1.0 / 3.0));
+        assert_eq!(corpus.step_reopen_rate(), Some(1.0 / 3.0));
+        assert_eq!(corpus.step_totals(), (3, 2, 1), "the old row is not sensed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

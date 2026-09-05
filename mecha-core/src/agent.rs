@@ -1179,6 +1179,13 @@ pub struct RunOutcome {
     /// the same "not every fired check was right" question the appraiser's
     /// sign/agency split asks elsewhere.
     pub step_escalations_revised: u32,
+    /// Plan steps completed with no call behind them (`step::Finding::Null`),
+    /// and completed steps set back to in progress — the null-step and
+    /// restart counters `GOAL-SYSTEM-DESIGN.md` §17.7 item 2 wants read
+    /// before a mid-run delivery is switched on. Counted by `todo` into
+    /// `ToolCtx::step_counts`, minted per run.
+    pub step_nulls: u32,
+    pub step_reopens: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -1456,7 +1463,10 @@ impl Agent {
         // with a destructive take, so two runs sharing one `Mutex` would let
         // one run's candidate be read — and cleared — by another.
         let run_scoped;
-        let cx = if cx.tools.compact_requested.is_some() || cx.tools.step_escalation.is_some() {
+        // Always cloned now: the step counters are minted per run
+        // unconditionally — a sensor, not a lever — so two concurrent runs
+        // on one agent cannot add into one pair of counters.
+        let cx = {
             let mut tools = (*cx.tools).clone();
             if tools.compact_requested.is_some() {
                 tools.compact_requested = Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
@@ -1464,13 +1474,12 @@ impl Agent {
             if tools.step_escalation.is_some() {
                 tools.step_escalation = Some(Arc::new(std::sync::Mutex::new(None)));
             }
+            tools.step_counts = Some(Arc::new(crate::tool::StepCounts::default()));
             run_scoped = RunContext {
                 tools: Arc::new(tools),
                 ..cx.clone()
             };
             &run_scoped
-        } else {
-            cx
         };
         // Counted here rather than by the builders, for the same reason the
         // snapshot below is: the loop returns from six places, and the count
@@ -1682,6 +1691,7 @@ impl Agent {
                     boredom.notices(),
                     step_escalations_used,
                     step_escalations_revised,
+                    step_counts_of(cx),
                 );
                 return Ok(outcome);
             }
@@ -1999,6 +2009,8 @@ impl Agent {
                     boredom_notices: 0,
                     step_escalations_attempted: 0,
                     step_escalations_revised: 0,
+                    step_nulls: 0,
+                    step_reopens: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -2025,6 +2037,7 @@ impl Agent {
                     boredom.notices(),
                     step_escalations_used,
                     step_escalations_revised,
+                    step_counts_of(cx),
                 );
                 return Ok(outcome);
             }
@@ -2168,6 +2181,7 @@ impl Agent {
                         boredom.notices(),
                         step_escalations_used,
                         step_escalations_revised,
+                        step_counts_of(cx),
                     );
                     return Ok(outcome);
                 }
@@ -2322,6 +2336,7 @@ impl Agent {
                             boredom.notices(),
                             step_escalations_used,
                             step_escalations_revised,
+                            step_counts_of(cx),
                         );
                         return Ok(outcome);
                     }
@@ -2494,6 +2509,7 @@ impl Agent {
                         boredom.notices(),
                         step_escalations_used,
                         step_escalations_revised,
+                        step_counts_of(cx),
                     );
                     return Ok(outcome);
                 }
@@ -2986,6 +3002,8 @@ impl Agent {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -3127,6 +3145,8 @@ impl Agent {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
             stop_cause,
             compactions,
             cost_usd: self.cost(&usage),
@@ -4026,6 +4046,16 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// `slack/pump.rs` already reads `compactions` off this same event.
 ///
 /// One place, because the loop emits `Done` from five of them.
+/// The run's step counters as of now — `(nulls, reopens)` — or zeros for a
+/// context with no sensor, which `run_in` never produces.
+fn step_counts_of(cx: &RunContext) -> (u32, u32) {
+    cx.tools
+        .step_counts
+        .as_ref()
+        .map(|c| c.snapshot())
+        .unwrap_or((0, 0))
+}
+
 fn emit_done(
     events: &Option<UnboundedSender<AgentEvent>>,
     outcome: &mut RunOutcome,
@@ -4033,11 +4063,13 @@ fn emit_done(
     boredom_notices: u32,
     step_escalations_attempted: u32,
     step_escalations_revised: u32,
+    step_counts: (u32, u32),
 ) {
     outcome.context_overflows = context_overflows;
     outcome.boredom_notices = boredom_notices;
     outcome.step_escalations_attempted = step_escalations_attempted;
     outcome.step_escalations_revised = step_escalations_revised;
+    (outcome.step_nulls, outcome.step_reopens) = step_counts;
     emit(events, AgentEvent::Done(Box::new(outcome.clone())));
 }
 
@@ -6555,6 +6587,8 @@ mod tests {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
             ..outcome.clone()
         });
         assert_eq!(clean.context_overflows, Some(0));

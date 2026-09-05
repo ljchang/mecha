@@ -3583,6 +3583,28 @@ installed and restarted at 18:04 the same day, once a peer's inference run
 had released the model server, and the skill's step-1b probe confirmed the
 new binary from the served page (a `304` naming its `ETag`, not a bare one).
 
+**2026-09-05, evening — the null-step and restart counters exist.**
+§17.7 item 2 rules that a mid-run rule delivery stays off until the
+null-step and restart counters are read, and reading the corpus for them
+found neither recorded: `todo` read the null step (`step::Finding::Null`,
+a step completed with no call behind it) into its result line and
+dropped it, and a reopen — a completed step set back to in progress —
+was not read at all, so the precondition could not be met from the store.
+`ToolCtx::step_counts` (`feat/step-counters`) is a pair of atomics the
+loop mints per run unconditionally — a sensor, not a lever, unlike
+`step_escalation` whose presence is the feature's switch — `todo` counts
+both events on the plan's own transitions, `RunOutcome` carries them into
+`RunStats::step_nulls` / `step_reopens` (`Option`, unknown on rows from
+before, on `boredom_notices`'s rule), `RunStats::merge` sums them, and
+`Corpus::step_null_rate` / `step_reopen_rate` / `step_totals` read them
+into `mecha sessions health` as a `plan steps` row and JSON keys. Pinned:
+a null completion counts once, real work counts nothing, a reopen counts
+once and its second null completion again, a first start is not a reopen,
+a context with no slot counts nothing and does not panic, and the corpus
+reads unknown before any sensed row and a rate over sensed rows after.
+Nothing consumes the numbers yet — the ruling asks for them to be *read*,
+and after a few nights they can be.
+
 **2026-09-05 — a rule widens on evidence from two regions and narrows to
 where it held, and the ledger says which sub-region each probe
 exercised.** `GOAL-SYSTEM-DESIGN.md` §17.4's consolidation and validation

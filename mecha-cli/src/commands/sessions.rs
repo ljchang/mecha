@@ -1303,6 +1303,20 @@ fn health(
     } else {
         println!("  went nowhere        — (no run in this corpus recorded the counter)");
     }
+    // The null-step and restart counters §17.7 item 2 wants read before a
+    // mid-run rule delivery is switched on. Unknown before the sensor,
+    // never a dash that reads as zero.
+    let (sensed_steps, nulls, reopens) = corpus.step_totals();
+    if sensed_steps > 0 {
+        println!(
+            "  plan steps          {nulls} completed with no call ({}), {reopens} reopened after \
+             completion ({}) — over {sensed_steps} run(s) that recorded it",
+            pct(corpus.step_null_rate()),
+            pct(corpus.step_reopen_rate())
+        );
+    } else {
+        println!("  plan steps          — (no run in this corpus recorded the counters)");
+    }
 
     let by_model = corpus.by_model();
     if by_model.len() > 1 {
@@ -1360,6 +1374,13 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         "runs_with_overflow_sensor": sensed,
         "overflow_rate": corpus.overflow_rate(),
         "boredom_rate": corpus.boredom_rate(),
+        // §17.7 item 2's precondition, readable: null steps and reopened
+        // steps per sensed run. `null` before any run carried the sensor.
+        "step_null_rate": corpus.step_null_rate(),
+        "step_reopen_rate": corpus.step_reopen_rate(),
+        "runs_with_step_sensor": corpus.step_totals().0,
+        "step_nulls": corpus.step_totals().1,
+        "step_reopens": corpus.step_totals().2,
         "cost_usd": cost,
         "runs_priced": priced,
         "by_model": corpus

@@ -600,6 +600,16 @@ pub struct RunStats {
     /// Of those, how many came back `revise_plan`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_escalations_revised: Option<u32>,
+    /// Plan steps completed with no call behind them, and completed steps
+    /// set back to in progress — the null-step and restart counters
+    /// `GOAL-SYSTEM-DESIGN.md` §17.7 item 2 says must be read before a
+    /// mid-run rule delivery is switched on. `Option` on `boredom_notices`'s
+    /// rule: a row from before the sensor knows nothing and must not read
+    /// as a run with none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_nulls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_reopens: Option<u32>,
     /// Learned rules the harness delivered *during* the run, by id and the
     /// turn they landed on (not the voice facade's `delivered`, which says a
     /// reply's words reached the socket) — the situational half of what the run carried,
@@ -779,6 +789,14 @@ impl RunStats {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
+        self.step_nulls = match (self.step_nulls, other.step_nulls) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+        self.step_reopens = match (self.step_reopens, other.step_reopens) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
         self.delivered = match (self.delivered.take(), &other.delivered) {
             (Some(mut a), Some(b)) => {
                 a.extend(b.iter().cloned());
@@ -838,6 +856,8 @@ impl RunStats {
             boredom_notices: Some(o.boredom_notices),
             step_escalations_attempted: Some(o.step_escalations_attempted),
             step_escalations_revised: Some(o.step_escalations_revised),
+            step_nulls: Some(o.step_nulls),
+            step_reopens: Some(o.step_reopens),
             // `Some(empty)`, and written by this build on purpose: the loop
             // delivers no rule mid-run yet, and a record that says so is what
             // keeps a later replay from reading the absence as unknown.
@@ -1785,6 +1805,8 @@ mod homeostat_record_tests {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),
@@ -2776,6 +2798,8 @@ mod tests {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
             text: "done".into(),
             stop_reason: StopReason::EndTurn,
             usage: Usage {
@@ -2844,6 +2868,8 @@ mod tests {
                 boredom_notices: 0,
                 step_escalations_attempted: 0,
                 step_escalations_revised: 0,
+                step_nulls: 0,
+                step_reopens: 0,
                 text: String::new(),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage {
@@ -2948,6 +2974,8 @@ mod tests {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
             text: String::new(),
             stop_reason: StopReason::Other,
             usage: Usage::default(),
@@ -3360,6 +3388,8 @@ mod tests {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),
