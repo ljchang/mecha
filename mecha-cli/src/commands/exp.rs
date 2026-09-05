@@ -361,6 +361,12 @@ async fn run_lifetimes(
             // success would release the judge's hold on a treatment that
             // did not occur. Recorded skipped instead.
             let late = mecha_core::experiment::out_of_sequence(position, rows.iter().copied());
+            // Whether this position's home was rendered for it. False only
+            // when the render ahead of the principal failed: the row fails
+            // and neither principal point is asked, since an owner act at a
+            // position that never had its world is a line the ledger must
+            // not carry.
+            let mut world_ready = true;
             match trial.status {
                 TrialStatus::Pending | TrialStatus::Running => {
                     if limit.is_some_and(|l| ran >= l) {
@@ -372,15 +378,22 @@ async fn run_lifetimes(
                     // task, which the run child reads from the home — and
                     // its verbs run against the home's config, so the home
                     // is rendered for this task before it is asked. A
-                    // failure here is `run_one`'s to record: it renders the
-                    // same way and fails the row with the same error.
+                    // failure here **fails the row and asks the principal
+                    // nothing at this position**: the first cut printed and
+                    // went on, so the owner's verbs ran against a home that
+                    // was still the last position's, and the ledger carried
+                    // an owner act at a position that never had its world
+                    // (found on review).
                     if let Some(principal) = &manifest.principal {
                         if let Err(e) = render_home(manifest, real, arm, trial.seed, &home, false) {
-                            eprintln!(
-                                "  the home could not be rendered ahead of the principal: {e:#}"
-                            );
-                        }
-                        if !principal_done(&ledger, position, PrincipalPoint::BeforeTask) {
+                            world_ready = false;
+                            trial.status = TrialStatus::Failed;
+                            trial.error = Some(format!(
+                                "the home could not be rendered for this position: {e:#}"
+                            ));
+                            trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
+                            eprintln!("  failed: {e:#}");
+                        } else if !principal_done(&ledger, position, PrincipalPoint::BeforeTask) {
                             let run = principal_call(
                                 store,
                                 mecha,
@@ -407,14 +420,17 @@ async fn run_lifetimes(
                             ledger.push(run);
                         }
                     }
-                    match run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await
-                    {
-                        Ok(()) => {}
-                        Err(e) => {
-                            trial.status = TrialStatus::Failed;
-                            trial.error = Some(format!("{e:#}"));
-                            trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
-                            eprintln!("  failed: {e:#}");
+                    if world_ready {
+                        match run_one(store, manifest, mecha, real, arm, case, &home, &mut trial)
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(e) => {
+                                trial.status = TrialStatus::Failed;
+                                trial.error = Some(format!("{e:#}"));
+                                trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
+                                eprintln!("  failed: {e:#}");
+                            }
                         }
                     }
                     store.save_trial(&trial)?;
@@ -433,7 +449,8 @@ async fn run_lifetimes(
             // the ledger lacks its line; skipped, like a stage, once a later
             // position has finished.
             if let Some(principal) = &manifest.principal {
-                if matches!(trial.status, TrialStatus::Done | TrialStatus::Failed)
+                if world_ready
+                    && matches!(trial.status, TrialStatus::Done | TrialStatus::Failed)
                     && !principal_done(&ledger, position, PrincipalPoint::AfterTask)
                 {
                     let attempt = ExperimentStore::next_attempt(
@@ -848,20 +865,12 @@ async fn principal_call(
                     .verb
                     .starts_with(&["outbox".to_string(), "approve".to_string()])
                 {
-                    let named: Vec<&String> = act.verb[2..]
-                        .iter()
-                        .filter(|a| !a.starts_with('-'))
-                        .collect();
-                    let refusal = if act.verb.iter().any(|a| a == "--all") {
-                        Some("a release names its draft; `--all` is refused".to_string())
-                    } else if named.len() != 1 {
-                        Some(format!(
-                            "a release names exactly one draft; `{}` names {}",
-                            act.verb.join(" "),
-                            named.len()
-                        ))
-                    } else {
-                        match release_target(outbox_items.as_deref().unwrap_or(&[]), named[0]) {
+                    let refusal = match mecha_core::experiment::release_named(&act.verb) {
+                        Err(e) => Some(e),
+                        Ok(named) => match release_target(
+                            outbox_items.as_deref().unwrap_or(&[]),
+                            &named,
+                        ) {
                             Err(e) => Some(e),
                             Ok(item)
                                 if !mecha_core::experiment::release_target_is_fixture(
@@ -881,7 +890,7 @@ async fn principal_call(
                                 ))
                             }
                             Ok(_) => None,
-                        }
+                        },
                     };
                     if let Some(reason) = refusal {
                         act.ok = Some(false);
