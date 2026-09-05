@@ -300,6 +300,19 @@ async fn run_lifetimes(
     use mecha_core::experiment::stages_due;
     // Rows are contiguous per lifetime and in position order as planned;
     // grouped here without reordering so the walk is the design's.
+    if !manifest.fixtures.is_empty() {
+        let routed = manifest.fixtures.routed();
+        eprintln!(
+            "mecha exp: fixture world {} · outbox route: {}",
+            manifest.fixtures.names().join(", "),
+            if routed.is_empty() {
+                "none — every fixture send executes unrouted into its store, and no draft will pend"
+                    .to_string()
+            } else {
+                routed.join(", ")
+            }
+        );
+    }
     let mut lifetimes: Vec<(String, Vec<&Trial>)> = Vec::new();
     for t in planned {
         let Some(id) = &t.lifetime else {
@@ -348,6 +361,13 @@ async fn run_lifetimes(
             // success would release the judge's hold on a treatment that
             // did not occur. Recorded skipped instead.
             let late = mecha_core::experiment::out_of_sequence(position, rows.iter().copied());
+            // Whether this position's home was rendered for it. False only
+            // when the render ahead of the principal failed: the row fails
+            // and neither principal point is asked, since an owner act at a
+            // position that never had its world is a line the ledger must
+            // not carry.
+            let mut world_ready = true;
+            let mut world_error = String::new();
             match trial.status {
                 TrialStatus::Pending | TrialStatus::Running => {
                     if limit.is_some_and(|l| ran >= l) {
@@ -356,8 +376,57 @@ async fn run_lifetimes(
                     ran += 1;
                     eprintln!("· {} ({ran}) · {lifetime} position {position}", trial.id);
                     // The principal first: it may script refusals for this
-                    // task, which the run child reads from the home.
-                    if let Some(principal) = &manifest.principal {
+                    // task, which the run child reads from the home — and
+                    // its verbs run against the home's config, so the home
+                    // is rendered for this task before it is asked. A
+                    // failure here **fails the row and asks the principal
+                    // nothing at this position**: the first cut printed and
+                    // went on, so the owner's verbs ran against a home that
+                    // was still the last position's, and the ledger carried
+                    // an owner act at a position that never had its world
+                    // (found on review).
+                    // Rendered here for every lifetime, principal or not: a
+                    // render that failed only inside `run_one` left the
+                    // stages running against a home with no config for the
+                    // position (found on review).
+                    if let Err(e) = render_home(manifest, real, arm, trial.seed, &home, false) {
+                        world_ready = false;
+                        world_error = format!("{e:#}");
+                        trial.status = TrialStatus::Failed;
+                        trial.error = Some(format!(
+                            "the home could not be rendered for this position: {e:#}"
+                        ));
+                        trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
+                        eprintln!("  failed: {e:#}");
+                        // The refusal is a record, not a local: a resumed
+                        // driver finds the row `Failed`, re-initialises
+                        // its own flag and would ask the principal after
+                        // the task at a position that never had its
+                        // world — unless the ledger already says both
+                        // points were skipped for that reason (found on
+                        // review).
+                        for point in [PrincipalPoint::BeforeTask, PrincipalPoint::AfterTask] {
+                            if manifest.principal.is_some()
+                                && !principal_done(&ledger, position, point)
+                            {
+                                let run = unrendered_line(
+                                    &lifetime,
+                                    &trial.arm,
+                                    position,
+                                    ExperimentStore::next_attempt(
+                                        &ledger,
+                                        torn,
+                                        position,
+                                        StageLever::Principal,
+                                    ),
+                                    point,
+                                    &format!("{e:#}"),
+                                );
+                                store.record_stage(&run)?;
+                                ledger.push(run);
+                            }
+                        }
+                    } else if let Some(principal) = &manifest.principal {
                         if !principal_done(&ledger, position, PrincipalPoint::BeforeTask) {
                             let run = principal_call(
                                 store,
@@ -385,14 +454,17 @@ async fn run_lifetimes(
                             ledger.push(run);
                         }
                     }
-                    match run_one(store, manifest, mecha, real, arm, case, &home, &mut trial).await
-                    {
-                        Ok(()) => {}
-                        Err(e) => {
-                            trial.status = TrialStatus::Failed;
-                            trial.error = Some(format!("{e:#}"));
-                            trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
-                            eprintln!("  failed: {e:#}");
+                    if world_ready {
+                        match run_one(store, manifest, mecha, real, arm, case, &home, &mut trial)
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(e) => {
+                                trial.status = TrialStatus::Failed;
+                                trial.error = Some(format!("{e:#}"));
+                                trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
+                                eprintln!("  failed: {e:#}");
+                            }
                         }
                     }
                     store.save_trial(&trial)?;
@@ -411,7 +483,8 @@ async fn run_lifetimes(
             // the ledger lacks its line; skipped, like a stage, once a later
             // position has finished.
             if let Some(principal) = &manifest.principal {
-                if matches!(trial.status, TrialStatus::Done | TrialStatus::Failed)
+                if world_ready
+                    && matches!(trial.status, TrialStatus::Done | TrialStatus::Failed)
                     && !principal_done(&ledger, position, PrincipalPoint::AfterTask)
                 {
                     let attempt = ExperimentStore::next_attempt(
@@ -459,6 +532,25 @@ async fn run_lifetimes(
             }
             for stage in stages_due(&manifest.schedule, position, &stages_off, &ledger) {
                 let attempt = ExperimentStore::next_attempt(&ledger, torn, position, stage);
+                // A stage after a position whose home was never rendered would
+                // run against a home with no config for it — at position 0,
+                // with no config at all — and record `Done`; skipped with the
+                // render's reason instead, which holds the judge, as a stage
+                // that did not run must (found on review).
+                if !world_ready {
+                    let mut run =
+                        skipped_line(&lifetime, &trial.arm, stage, position, attempt, None);
+                    run.error = Some(format!(
+                        "the home could not be rendered for position {position}, so the stage was not run: {world_error}"
+                    ));
+                    eprintln!(
+                        "  ↳ {} · skipped: the home could not be rendered for this position",
+                        stage.as_str()
+                    );
+                    store.record_stage(&run)?;
+                    ledger.push(run);
+                    continue;
+                }
                 if late {
                     let run = skipped_line(&lifetime, &trial.arm, stage, position, attempt, None);
                     eprintln!(
@@ -521,6 +613,32 @@ fn skipped_line(
     }
 }
 
+/// The principal's line for a position whose home could not be rendered:
+/// skipped, with the render's error, at both points — so `principal_done`
+/// holds on every later pass and no owner act is ever asked for at a
+/// position that never had its world.
+fn unrendered_line(
+    lifetime: &str,
+    arm: &str,
+    position: u32,
+    attempt: u32,
+    point: PrincipalPoint,
+    error: &str,
+) -> mecha_core::experiment::StageRun {
+    let mut run = skipped_line(
+        lifetime,
+        arm,
+        StageLever::Principal,
+        position,
+        attempt,
+        Some(point),
+    );
+    run.error = Some(format!(
+        "the home could not be rendered for position {position}, so the principal was not asked: {error}"
+    ));
+    run
+}
+
 /// Whether the ledger shows the principal's call at this point done.
 fn principal_done(
     ledger: &[mecha_core::experiment::StageRun],
@@ -537,6 +655,32 @@ fn principal_done(
                     | mecha_core::experiment::StageStatus::Skipped
             )
     })
+}
+
+/// The draft a release names, resolved by **the CLI's own selection rule**
+/// (`outbox::select`, over every item in the store as `outbox approve`
+/// itself resolves it) and then required to be pending — so the item the
+/// driver vets is the item the verb will act on, and there is one rule,
+/// not a mirror of it (the first cut hand-mirrored the prefix rule, and
+/// nothing would have caught the two drifting apart; found on review).
+fn release_target(
+    items: &[mecha_core::outbox::OutboxItem],
+    named: &str,
+) -> std::result::Result<mecha_core::outbox::OutboxItem, String> {
+    let selection = crate::commands::outbox::Selection {
+        ids: vec![named.to_string()],
+        ..Default::default()
+    };
+    let chosen = crate::commands::outbox::select(items.to_vec(), &selection)
+        .map_err(|e| format!("{e:#}"))?;
+    match chosen.as_slice() {
+        [one] if one.status == "pending" => Ok(one.clone()),
+        [one] => Err(format!(
+            "`{named}` names draft {}, which is {} rather than pending",
+            one.id, one.status
+        )),
+        _ => Err(format!("`{named}` names {} drafts; name one", chosen.len())),
+    }
 }
 
 /// The principal's call at one point of one position (Part II §16, §21.1):
@@ -628,6 +772,41 @@ async fn principal_call(
     } else {
         Vec::new()
     };
+    // The pending drafts, read once for the same reason: a release names
+    // one, and the driver checks the draft it names against this list. The
+    // snapshot predates the principal's answer, and that is safe only
+    // because `outbox edit` rewrites a draft's args and never its tool, and
+    // a draft resolved between here and the act is refused by the CLI's own
+    // pending check — an edit verb that could move a draft's tool would
+    // invalidate this vet (found on review). A
+    // read: open only what exists, on the doctor's rule that an
+    // examination must not create what it was about to report. An
+    // unreadable store is a failed call, never an empty queue.
+    let outbox_items: Result<Vec<mecha_core::outbox::OutboxItem>> = if home.join("outbox").is_dir()
+    {
+        mecha_core::outbox::OutboxStore::open(home.join("outbox")).and_then(|s| s.items())
+    } else {
+        Ok(Vec::new())
+    };
+    let pending_outbox: Result<Vec<mecha_core::outbox::OutboxItem>> = outbox_items
+        .as_ref()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|i| i.status == "pending")
+                .cloned()
+                .collect()
+        })
+        .map_err(|e| anyhow::anyhow!("{e:#}"));
+    // The fixture servers this arm's verbs can reach: the manifest's, or
+    // none when the arm has MCP off — `--no-mcp` rides on every verb the
+    // driver runs for the principal, so the board and the mailbox are out
+    // of reach for that arm and the principal is told so.
+    let fixtures: Vec<String> = if flags.iter().any(|f| f == "--no-mcp") {
+        Vec::new()
+    } else {
+        manifest.fixtures.names()
+    };
     let outcome: Result<PrincipalOutput> = async {
         // First, before anything else can fail: a principal that failed to
         // answer must not leave the last position's refusals armed for
@@ -651,21 +830,22 @@ async fn principal_call(
             workspace: workspace.clone(),
             case: case.clone(),
             trial: (point == PrincipalPoint::AfterTask).then(|| trial.clone()),
-            // A read: open only what exists, on the doctor's rule that an
-            // examination must not create what it was about to report.
-            pending_outbox: if home.join("outbox").is_dir() {
-                mecha_core::outbox::OutboxStore::open(home.join("outbox"))?
-                    .items()?
-                    .into_iter()
-                    .filter(|i| i.status == "pending")
-                    .collect()
-            } else {
-                Vec::new()
-            },
+            pending_outbox: pending_outbox
+                .as_ref()
+                .map(|v| v.clone())
+                .map_err(|e| anyhow::anyhow!("the home's outbox could not be read: {e:#}"))?,
             open_questions: open_questions.clone(),
+            fixtures: fixtures.clone(),
         };
-        let (exe, args) = principal
-            .command
+        // The manifest's relative file paths — the script, its policy —
+        // are written against the checkout `exp run` is started from, and
+        // the principal runs from the lifetime's scratch workspace, where
+        // they name nothing. Resolved the way a fixture server's are; a
+        // command on `PATH` and an absolute path are left alone.
+        let mut command = principal.command.clone();
+        let base = std::env::current_dir().context("cannot determine the working directory")?;
+        mecha_core::experiment::resolve_file_args(&mut command, &base);
+        let (exe, args) = command
             .split_first()
             .context("the principal names no executable")?;
         let mut cmd = tokio::process::Command::new(exe);
@@ -743,14 +923,63 @@ async fn principal_call(
             }
             for request in answer.acts {
                 let mut act = mecha_core::experiment::PrincipalAct::from(request);
-                if !mecha_core::experiment::allowed_verb(&act.verb) {
+                // The arm's fixtures, not the manifest's: under `--no-mcp`
+                // the arm reaches none, and both server verbs read the same
+                // word off the same scope (found on review).
+                if let Err(reason) =
+                    mecha_core::experiment::permitted_verb(&act.verb, !fixtures.is_empty())
+                {
                     act.ok = Some(false);
-                    failures.push(format!(
-                        "`{}` is not an owner's verb the principal may run",
-                        act.verb.join(" ")
-                    ));
+                    failures.push(reason);
                     run.acts.push(act);
                     continue;
+                }
+                // A release is checked against the draft it names: the
+                // draft must be pending in this home and its tool must be a
+                // fixture server's, by prefix — a builtin sink (`http_fetch`)
+                // or an unprefixed server's tool lands somewhere the driver
+                // cannot see, so it is refused. `--all` is refused with them:
+                // the principal names each draft, and the driver vets each.
+                // And the release runs under the *local* `--yes`, the
+                // driver's word: a draft written in a tainted conversation
+                // confirms on a terminal the driver does not have, and the
+                // principal may not carry the flag itself (found on the
+                // design).
+                if mecha_core::experiment::is_release(&act.verb) {
+                    let refusal = match mecha_core::experiment::release_named(&act.verb) {
+                        Err(e) => Some(e),
+                        Ok(named) => match release_target(
+                            outbox_items.as_deref().unwrap_or(&[]),
+                            &named,
+                        ) {
+                            Err(e) => Some(e),
+                            Ok(item)
+                                if !mecha_core::experiment::release_target_is_fixture(
+                                    &item.tool,
+                                    &fixtures,
+                                ) =>
+                            {
+                                Some(format!(
+                                    "draft {} would execute `{}`, which is not a fixture server's tool ({})",
+                                    item.id,
+                                    item.tool,
+                                    if fixtures.is_empty() {
+                                        "this arm reaches none".to_string()
+                                    } else {
+                                        format!("fixtures: {}", fixtures.join(", "))
+                                    }
+                                ))
+                            }
+                            Ok(_) => None,
+                        },
+                    };
+                    if let Some(reason) = refusal {
+                        act.ok = Some(false);
+                        failures.push(reason);
+                        run.acts.push(act);
+                        continue;
+                    }
+                    act.verb.push("--yes".into());
                 }
                 // A question's answer resumes a run whose jail the question
                 // recorded, and the driver's `--workspace` beats the resume's
@@ -832,6 +1061,13 @@ async fn principal_call(
                         cmd.arg("--compact-at").arg(n.to_string());
                     }
                     cmd.args(&act.verb);
+                    // `env_for` also sets the child's cwd: the lifetime's
+                    // scratch workspace beside the ledger, an empty directory
+                    // the driver made, so `Config::load` finds no project
+                    // `mecha.toml` there and nothing can replace the home's
+                    // `[[mcp]]` under a vetted release — stricter than the
+                    // trial's staged workspace, which is a fixture's copy
+                    // (questioned on review; the cwd is set, here).
                     env_for(&mut cmd, passthrough)?;
                     // The refusals scripted for this task reach a verb that
                     // resumes the parked run (`questions answer`): the
@@ -1073,6 +1309,62 @@ async fn run_stage(
     run
 }
 
+/// What rendering a trial home for one task leaves the caller: the arm's
+/// CLI-only levers as flags, the key variables the child needs, and the
+/// knobs the home's own loop moved.
+struct Rendered {
+    flags: Vec<String>,
+    passthrough: Vec<String>,
+    moved: Vec<String>,
+}
+
+/// Render the home's `config.toml` for the task about to run: the arm
+/// (`child_invocation`), then what the home's own stages accepted
+/// (`fold_home_overrides`, a lifetime's only), then the manifest's fixtures
+/// — the `[[mcp]]` list becomes exactly the fixture servers, each with its
+/// store under the home created and seeded once — and the fixture charter
+/// over the seeded one — every store fresh from its seed when `fresh`, a
+/// `single`'s rule. Called by `run_one`, and by the lifetime driver
+/// **before position 0's `before_task` principal call**: a verb the
+/// principal asks for there runs against the home's config, and until this
+/// wrote one the home had none — so `tasks set` found no board and
+/// `outbox approve` no server, at the one position where the fixtures were
+/// meant to be reachable first (found on the design).
+fn render_home(
+    manifest: &Manifest,
+    real: &mecha_core::config::Config,
+    arm: &mecha_core::experiment::Arm,
+    seed: Option<u64>,
+    home: &Path,
+    fresh: bool,
+) -> Result<Rendered> {
+    let ChildInvocation {
+        mut config,
+        flags,
+        passthrough,
+    } = mecha_core::experiment::child_invocation(real, arm, seed)?;
+    // What the home's own stages accepted rides into the next task, under
+    // the arm's pins — or a lifetime's `ruminate` would measure as nothing.
+    // A single runs no stage and folds nothing.
+    let moved = if manifest.kind == TrialKind::Lifetime {
+        mecha_core::experiment::fold_home_overrides(&mut config, home, arm)?
+    } else {
+        Vec::new()
+    };
+    // The manifest's paths are written against the checkout `exp run` is
+    // started from; a server is spawned from the trial's workspace.
+    let base = std::env::current_dir().context("cannot determine the working directory")?;
+    manifest.fixtures.apply(&mut config, home, &base, fresh)?;
+    manifest.fixtures.apply_charter(home, &base)?;
+    std::fs::write(home.join("config.toml"), toml::to_string_pretty(&config)?)
+        .with_context(|| format!("writing {}", home.join("config.toml").display()))?;
+    Ok(Rendered {
+        flags,
+        passthrough,
+        moved,
+    })
+}
+
 /// One trial: the arm's home and config, a fresh workspace, the child, the
 /// grade, the stats. Everything the trial learned is on its row when this
 /// returns; a failure anywhere is the row's `error`, never a missing row.
@@ -1095,25 +1387,25 @@ async fn run_one(
         ),
     };
     let home = home.to_path_buf();
-    let ChildInvocation {
-        mut config,
+    let Rendered {
         flags,
         passthrough,
-    } = mecha_core::experiment::child_invocation(real, arm, trial.seed)?;
-    // What the home's own stages accepted rides into the next task, under
-    // the arm's pins — or a lifetime's `ruminate` would measure as nothing.
-    // A single runs no stage and folds nothing.
-    let moved = if manifest.kind == TrialKind::Lifetime {
-        mecha_core::experiment::fold_home_overrides(&mut config, &home, arm)?
-    } else {
-        Vec::new()
-    };
+        moved,
+    } = render_home(
+        manifest,
+        real,
+        arm,
+        trial.seed,
+        &home,
+        // A `single`'s per-arm home is shared by every trial of the arm, so
+        // each starts its fixture stores from the seed; a lifetime carries
+        // what the last task left (found on review).
+        manifest.kind == TrialKind::Single,
+    )?;
     // A knob is pinned for this task if the arm moves it *or* the home's
     // own loop did: the case's ceiling flag below must not override
     // either, since a flag beats the rendered config.
     let pinned = |key: &str| arm_moves(arm, key) || moved.iter().any(|k| k == key);
-    std::fs::write(home.join("config.toml"), toml::to_string_pretty(&config)?)
-        .with_context(|| format!("writing {}", home.join("config.toml").display()))?;
 
     let workspace = store.workspace_for(&trial.id);
     if workspace.exists() {
@@ -1359,9 +1651,28 @@ fn status(name: &str, json: bool) -> Result<()> {
                 "arms": rows,
                 "lifetimes": lifetimes,
                 "unreadable_trials": skipped,
+                // The world the trials ran in: on the readout for the same
+                // reason it is in the condition hash.
+                "fixtures": manifest.fixtures.names(),
+                "outbox_route": manifest.fixtures.routed(),
             }))?
         );
         return Ok(());
+    }
+    // The world the trials ran in, when it was not the operator's. Below
+    // the JSON early return: a prose line ahead of the document is a
+    // readout that no longer parses (found on review).
+    if !manifest.fixtures.is_empty() {
+        let routed = manifest.fixtures.routed();
+        println!(
+            "fixtures: {} (the operator's servers are not in these homes) · outbox route: {}",
+            manifest.fixtures.names().join(", "),
+            if routed.is_empty() {
+                "none".to_string()
+            } else {
+                routed.join(", ")
+            }
+        );
     }
     println!(
         "{} ({:?}, {})",
@@ -1628,6 +1939,73 @@ fn export(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A position whose home could not be rendered leaves the principal's
+    /// two points on the ledger as skipped, so a resumed driver — which
+    /// starts with no memory of the failure — sees them done and asks
+    /// nothing there.
+    #[test]
+    fn an_unrendered_position_marks_both_principal_points_done_on_the_ledger() {
+        let mut ledger = Vec::new();
+        assert!(!principal_done(&ledger, 3, PrincipalPoint::AfterTask));
+        for point in [PrincipalPoint::BeforeTask, PrincipalPoint::AfterTask] {
+            let run = unrendered_line("full__r1", "full", 3, 1, point, "seed missing");
+            assert_eq!(run.status, mecha_core::experiment::StageStatus::Skipped);
+            assert_eq!(run.point, Some(point));
+            assert!(run
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("could not be rendered"));
+            assert!(run.acts.is_empty());
+            ledger.push(run);
+        }
+        assert!(principal_done(&ledger, 3, PrincipalPoint::BeforeTask));
+        assert!(principal_done(&ledger, 3, PrincipalPoint::AfterTask));
+        assert!(
+            !principal_done(&ledger, 4, PrincipalPoint::AfterTask),
+            "the next position is its own"
+        );
+    }
+
+    /// A release resolves its draft by the CLI's own rule and then requires
+    /// it pending: exact or unique prefix, never a namesake, never a draft
+    /// already resolved.
+    #[test]
+    fn a_release_names_one_pending_draft_by_the_clis_own_rule() {
+        let item = |id: &str, status: &str| -> mecha_core::outbox::OutboxItem {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "status": status, "tool": "mail__mail_send",
+                "args_before": {}, "args": {}, "summary": "s", "created_at": "2026-09-05T00:00:00Z"
+            }))
+            .unwrap()
+        };
+        let items = vec![
+            item("20260905T1-aaaa", "pending"),
+            item("20260905T2-bbbb", "pending"),
+            item("20260905T3-cccc", "sent"),
+        ];
+        assert_eq!(
+            release_target(&items, "20260905T1-aaaa").unwrap().id,
+            "20260905T1-aaaa"
+        );
+        assert_eq!(
+            release_target(&items, "20260905T2").unwrap().id,
+            "20260905T2-bbbb",
+            "a unique prefix"
+        );
+        let err = release_target(&items, "20260905T").unwrap_err();
+        assert!(
+            err.contains("matches 3"),
+            "ambiguous over the whole store, as the CLI sees it: {err}"
+        );
+        let err = release_target(&items, "20260905T3").unwrap_err();
+        assert!(err.contains("sent rather than pending"), "{err}");
+        assert!(release_target(&items, "nope")
+            .unwrap_err()
+            .contains("no outbox item"));
+        assert!(release_target(&[], "x").is_err());
+    }
 
     /// A case's own knob is passed to the child unless the arm moves that
     /// knob — then the arm is the treatment and wins.
