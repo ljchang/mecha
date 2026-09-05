@@ -812,6 +812,7 @@ async fn polls(
         // repairs the record rather than repeating the sends.
         if let Err(e) = pl::save(&record) {
             eprintln!("{}: writing the record — {e:#}", record.poll_id);
+            errors.push(format!("{}: writing the record — {e:#}", record.poll_id));
             failures += 1;
         }
     }

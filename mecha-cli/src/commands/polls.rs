@@ -686,6 +686,18 @@ fn step(
                     )));
                 }
             };
+            // As strict as `pick_card`: `pick_item` is a field on a file three
+            // binaries write, and acting on a mismatched id — a `sent` mail
+            // draft, say — would close the poll as booked with no event and
+            // no slot, terminally.
+            if item.author() != mecha_core::outbox::Author::Harness
+                || item.tool.rsplit("__").next() != Some("calendar_create_event")
+            {
+                return Ok(Some(format!(
+                    "pick_item {} is not a pick card (`{}`, {}); left alone",
+                    item.id, item.tool, item.author
+                )));
+            }
             match item.status.as_str() {
                 "sent" => {
                     let (start, end) = (
