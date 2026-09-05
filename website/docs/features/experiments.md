@@ -215,11 +215,71 @@ start, since a scripted refusal on your real home would author corrections
 nobody made.
 
 `scripts/principal-gold.py` is the gold-verdict version: a draft addressed off
-the fixture cast is rejected and one on the cast is left pending, a parked
-question is answered from a table, and refusals come from the policy file it
-is given. The principal never releases a draft: `outbox approve` executes the
-routed tool for real, and a `full` arm carries your live servers into the
-trial home, so a release would send from your account. Release joins the
-principal's verbs when a manifest can name fixture servers.
-What it cannot do yet is close board tasks, since the board is the graph's
-and a trial home has no graph server.
+the fixture cast is rejected and one on the cast is released, a board task
+is closed by the task's grade, a parked question is answered from a table,
+and refusals come from the policy file it is given.
+
+Two of the principal's verbs reach a server — `outbox approve` executes the
+routed tool for real, and `tasks set` writes the board, which lives in the
+knowledge graph over MCP. A `full` arm carries your live servers into the
+trial home, so without more a release would send from your account and a
+closure would close a real task. The driver therefore permits those two
+verbs **only under a manifest that names fixture servers**, and vets a
+release against the draft it names: the draft's tool must be a fixture
+server's, by its `<name>__` prefix.
+
+## Fixture servers
+
+A manifest may carry a `[fixtures]` table naming MCP servers the trial home
+runs **instead of** yours. When it names any, the home's `[[mcp]]` is
+exactly that list, for every arm — no live server reaches it — and each
+server keeps its state under the home (`fixtures/<name>/`, handed to it as
+`MECHA_FIXTURE_DIR`), seeded once from a directory you name. The outbox
+route is the world's too: `outbox_tools` names the fixture tools whose calls
+are staged as drafts, and it must be spelled — your own `[outbox] tools`
+names live tools that are not in this world, so it is not inherited.
+Relative paths are resolved against the checkout you run `mecha exp` from.
+
+```toml
+[fixtures]
+charter = "eval/fixtures/home/charter.toml"   # written over the home's before every task
+outbox_tools = ["mail__mail_send", "mail__mail_reply"]   # the world's staged sinks; required, [] for none
+
+[[fixtures.mcp]]
+name = "graph"
+command = "python3"
+args = ["eval/fixtures/board_server.py"]
+prefix_tools = false                          # the board is kg_task_*, as in production
+seed = "eval/fixtures/home/board"
+[fixtures.mcp.capabilities]
+untrusted_input = true
+
+[[fixtures.mcp]]
+name = "mail"
+command = "python3"
+args = ["eval/fixtures/mail_server.py"]
+seed = "eval/fixtures/home/mail"
+[fixtures.mcp.capabilities]
+untrusted_input = true
+```
+
+Two fixture servers ship with the repository, stateful where the eval
+rig's `graph_server.py` is deliberately not: `board_server.py` is the graph's
+task board with the real server's argument and answer shapes (what `mecha
+tasks` parses) plus the canned graph reads, and `mail_server.py` is the mail
+and calendar surface, with every send a line in `sent.jsonl` and nothing
+delivered. Both refuse to start without a store directory — a board that
+forgets is not a fixture. The fixture names are part of every row's
+condition hash, so a trial against a fixture board never pairs with one
+against your live graph.
+
+`eval/fixtures/home/` is a **synthetic assistant home** built on them: a
+board with a task per case, a mailbox on a fictional cast (including one
+message that tries to instruct the assistant), a calendar and a charter.
+`eval/home-lifetime.toml` runs it as a lifetime with the gold principal
+releasing drafts to the cast and closing each case's task by its grade:
+
+```
+mecha exp new eval/home-lifetime.toml
+mecha exp run home-loop
+```
