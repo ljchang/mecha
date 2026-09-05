@@ -929,10 +929,10 @@ fn strings_in(value: &Value) -> Box<dyn Iterator<Item = &str> + '_> {
 /// An approver that answers a scripted refusal ahead of the one beneath
 /// it — on every path a call reaches an approver by: `approve`, the
 /// `permit` an approval rule's allow routes to, an escalation, a
-/// consultation — and hands every other call to that one unchanged.
-/// **A rule naming a read-only tool can never fire**: the loop consults
-/// no approver for a read-only call, so a refusal of `fs_read` or
-/// `http_fetch` is a rule the run never sees. Strict at load: a denials file that
+/// consultation — and hands every other call to that one unchanged. A
+/// read-only call reaches an approver only when a `prompt` approval rule
+/// or the trifecta interlock puts it in front of someone; a refusal of
+/// `fs_read` or `http_fetch` fires there and nowhere else. Strict at load: a denials file that
 /// cannot be read stops the run, because a run that silently allowed what
 /// its owner scripted a refusal for would be measured as an owner who
 /// never refused.
@@ -963,9 +963,11 @@ impl FileDenyApprover {
 
     /// The rules that can never fire in this run because they name a tool
     /// no registered tool answers to — a typo, or a tool an arm's lever
-    /// removed — or a read-only tool, which reaches no approver. Warned
-    /// about at load: a refusal that is inert is measured as an owner who
-    /// refused (found on review).
+    /// removed. Nothing narrower: a read-only tool reaches an approver
+    /// under a `prompt` rule or the interlock, and calling its rule inert
+    /// told an operator to delete a live one (found on review). Checked
+    /// against the *final* registry: a refusal that is inert is measured
+    /// as an owner who refused.
     pub fn inert_rules<'a>(
         &'a self,
         registry: &'a Registry,
@@ -976,9 +978,6 @@ impl FileDenyApprover {
             }
             match registry.get(&r.tool) {
                 None => Some((r, "names no tool in this run")),
-                Some(t) if t.read_only() => {
-                    Some((r, "names a read-only tool, which reaches no approver"))
-                }
                 Some(_) => None,
             }
         })

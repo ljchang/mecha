@@ -63,6 +63,10 @@ pub struct Prepared {
 /// what an agent *would* have without needing provider credentials.
 pub struct PreparedTools {
     pub registry: Registry,
+    /// The scripted refusals this run was started with, for `build` to
+    /// check against the final registry — the one the subagent profiles
+    /// have joined, which `prepare_tools` has not yet seen.
+    pub denials: Vec<mecha_core::tool::DenialRule>,
     pub sandbox: Arc<mecha_core::sandbox::Sandbox>,
     pub workspace: PathBuf,
     pub config: Config,
@@ -153,8 +157,7 @@ async fn preflight_provider(cfg: &mecha_core::config::Config, opts: &GlobalOpts)
 /// since neither run is an experiment's.
 fn scripted_refusals(
     approver: Arc<dyn Approver>,
-    registry: &Registry,
-) -> Result<Arc<dyn Approver>> {
+) -> Result<(Arc<dyn Approver>, Vec<mecha_core::tool::DenialRule>)> {
     match std::env::var(mecha_core::tool::DENIALS_FILE_ENV) {
         Ok(path) if !path.is_empty() => {
             let kind = std::env::var(mecha_core::session::SESSION_KIND_ENV).ok();
@@ -166,17 +169,10 @@ fn scripted_refusals(
             let wrapped =
                 mecha_core::tool::FileDenyApprover::load(std::path::Path::new(&path), approver)
                     .context("the denials file this run was started with")?;
-            // A refusal that can never fire is measured as an owner who
-            // refused: said at start, where the registry is in hand.
-            for (rule, why) in wrapped.inert_rules(registry) {
-                eprintln!(
-                    "mecha: the scripted refusal of `{}` ({}) {why}, so it will never fire in this run",
-                    rule.tool, rule.reason
-                );
-            }
-            Ok(Arc::new(wrapped))
+            let rules = wrapped.rules().to_vec();
+            Ok((Arc::new(wrapped), rules))
         }
-        _ => Ok(approver),
+        _ => Ok((approver, Vec::new())),
     }
 }
 
@@ -192,13 +188,14 @@ pub async fn prepare_with_approver(
 ) -> Result<Prepared> {
     let mut tools = prepare_tools(opts, true).await?;
     if tools.config.tools.permission_mode == PermissionMode::Ask {
-        tools.approver = scripted_refusals(approver, &tools.registry)?;
+        tools.approver = scripted_refusals(approver)?.0;
     }
     preflight_provider(&tools.config, opts).await;
     build(tools, opts)
 }
 
 fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
+    let denials = tools.denials.clone();
     let cfg = tools.config;
 
     let (provider_name, provider_cfg) = cfg.provider(opts.provider.as_deref())?;
@@ -406,6 +403,19 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // that loses it must fail every start rather than ship a surface where
     // the model can close tasks around `mecha tasks set`.
     crate::closure_guard::verify(&registry)?;
+
+    // A scripted refusal that can never fire is measured as an owner who
+    // refused: said here, against the registry the subagent profiles have
+    // joined — the check ran before they had, and called a rule naming one
+    // inert as it fired (found on review).
+    for rule in &denials {
+        if rule.tool != "*" && registry.get(&rule.tool).is_none() {
+            eprintln!(
+                "mecha: the scripted refusal of `{}` ({}) names no tool in this run, so it will never fire",
+                rule.tool, rule.reason
+            );
+        }
+    }
 
     // Learned rules ride at the end of the system prompt — still inside the
     // cached prefix, and they only change at consolidation time. Read-only:
@@ -1235,7 +1245,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
                 mode: cfg.tools.permission_mode,
             })
         };
-    let approver = scripted_refusals(approver, &registry)?;
+    let (approver, denials) = scripted_refusals(approver)?;
 
     // An MCP server may legitimately shadow `todo` (registered after the
     // built-ins, deliberately). The handle would then be live but frozen —
@@ -1259,6 +1269,7 @@ pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<Prepa
 
     Ok(PreparedTools {
         registry,
+        denials,
         sandbox,
         workspace,
         config: cfg,
@@ -1410,7 +1421,7 @@ fn build_subagent(
     // The refusals reach a delegated call too: a subagent built with a
     // fresh mode approver ran unrefused what the parent could not (found
     // on review).
-    let child_approver = scripted_refusals(Arc::new(ModeApprover { mode }), &child_registry)?;
+    let (child_approver, _) = scripted_refusals(Arc::new(ModeApprover { mode }))?;
     let mut child = Agent::new(
         mecha_core::provider::build(provider_cfg)?,
         child_registry,
