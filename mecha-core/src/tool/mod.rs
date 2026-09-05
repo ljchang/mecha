@@ -483,13 +483,25 @@ pub struct ToolCtx {
 pub struct StepCounts {
     pub nulls: std::sync::atomic::AtomicU32,
     pub reopens: std::sync::atomic::AtomicU32,
+    /// Every completed-step transition — the denominator the other two are
+    /// read against. A null needs a completion and a reopen needs a prior
+    /// one, so a run with none had no plan the counters could speak to,
+    /// and without this the rates' denominator would be every run since
+    /// the sensor shipped, moving with how often the model plans at all
+    /// rather than with what its steps did (found on review; a run record
+    /// carries no per-tool breakdown, so it could not be recovered later).
+    pub completions: std::sync::atomic::AtomicU32,
 }
 
 impl StepCounts {
-    /// `(nulls, reopens)` as of now.
-    pub fn snapshot(&self) -> (u32, u32) {
+    /// `(nulls, reopens, completions)` as of now.
+    pub fn snapshot(&self) -> (u32, u32, u32) {
         use std::sync::atomic::Ordering::Relaxed;
-        (self.nulls.load(Relaxed), self.reopens.load(Relaxed))
+        (
+            self.nulls.load(Relaxed),
+            self.reopens.load(Relaxed),
+            self.completions.load(Relaxed),
+        )
     }
 }
 

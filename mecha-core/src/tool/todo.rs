@@ -595,6 +595,12 @@ impl Tracked {
                     let reopened = was == Some(Status::Completed)
                         || (was.is_none() && self.ever_completed.contains(&item.content));
                     if reopened {
+                        // Consumed: this completion has now been restarted,
+                        // and the next completion re-pushes the entry.
+                        // Without this a reopened step dropped from the plan
+                        // and re-added in progress counted a second reopen
+                        // for one completion (found on review).
+                        self.ever_completed.retain(|k| k != &item.content);
                         if let Some(counts) = step_counts {
                             counts
                                 .reopens
@@ -616,6 +622,15 @@ impl Tracked {
                     self.ever_completed.push(item.content.clone());
                     if self.ever_completed.len() > COMPLETED_HISTORY_CAP {
                         self.ever_completed.remove(0);
+                    }
+                    // Counted on the transition, before the span guard below:
+                    // a completion with nothing to measure it against is still
+                    // a completion, and the denominator must not depend on
+                    // whether a mark existed.
+                    if let Some(counts) = step_counts {
+                        counts
+                            .completions
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     let Some(mark) = self.started.remove(&item.content) else {
                         continue;
@@ -2436,7 +2451,7 @@ mod tests {
             json!([{"content": "decide", "status": "completed"}]),
         )
         .await;
-        assert_eq!(counts.snapshot(), (1, 0));
+        assert_eq!(counts.snapshot(), (1, 0, 1));
         // A step with real work behind it: neither.
         write(&tool, &ctx(0, None), json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "in_progress"}])).await;
         write(
@@ -2445,7 +2460,7 @@ mod tests {
             json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "completed"}]),
         )
         .await;
-        assert_eq!(counts.snapshot(), (1, 0));
+        assert_eq!(counts.snapshot(), (1, 0, 2));
         // The completed step set back to in progress: a reopen — and its
         // second completion, again with no call, a second null.
         write(
@@ -2454,14 +2469,14 @@ mod tests {
             json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "in_progress"}]),
         )
         .await;
-        assert_eq!(counts.snapshot(), (1, 1));
+        assert_eq!(counts.snapshot(), (1, 1, 2));
         write(
             &tool,
             &ctx(3, Some(Outcome::Ok)),
             json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "completed"}]),
         )
         .await;
-        assert_eq!(counts.snapshot(), (2, 1));
+        assert_eq!(counts.snapshot(), (2, 1, 3));
         // A pending step brought in progress for the first time is not a
         // reopen.
         write(
@@ -2470,7 +2485,7 @@ mod tests {
             json!([{"content": "decide", "status": "completed"}, {"content": "build", "status": "completed"}, {"content": "ship", "status": "in_progress"}]),
         )
         .await;
-        assert_eq!(counts.snapshot(), (2, 1));
+        assert_eq!(counts.snapshot(), (2, 1, 3));
         // The door the check-freeze code names: a completed step dropped
         // from the plan and re-added as in progress is a reopen too, even
         // though the live plan no longer remembers it was done. Fails on the
@@ -2501,7 +2516,7 @@ mod tests {
         .await;
         assert_eq!(
             dcounts.snapshot(),
-            (0, 0),
+            (0, 0, 1),
             "dropping a done step is not a reopen"
         );
         write(
@@ -2510,7 +2525,26 @@ mod tests {
             json!([{"content": "decide", "status": "in_progress"}, {"content": "build", "status": "in_progress"}]),
         )
         .await;
-        assert_eq!(dcounts.snapshot(), (0, 1), "re-adding it in progress is");
+        assert_eq!(dcounts.snapshot(), (0, 1, 1), "re-adding it in progress is");
+        // Reopened, dropped again, re-added again: one completion, one
+        // reopen — the entry was consumed by the first (found on review).
+        write(
+            &dropped,
+            &dctx(2, Some(Outcome::Ok)),
+            json!([{"content": "build", "status": "in_progress"}]),
+        )
+        .await;
+        write(
+            &dropped,
+            &dctx(2, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "in_progress"}, {"content": "build", "status": "in_progress"}]),
+        )
+        .await;
+        assert_eq!(
+            dcounts.snapshot(),
+            (0, 1, 1),
+            "a second reopen needs a second completion"
+        );
         // No slot: nothing counted, nothing panics.
         let bare = TodoTool::new();
         write(
@@ -2525,7 +2559,11 @@ mod tests {
             json!([{"content": "x", "status": "completed"}]),
         )
         .await;
-        assert_eq!(counts.snapshot(), (2, 1), "another run's slot is untouched");
+        assert_eq!(
+            counts.snapshot(),
+            (2, 1, 3),
+            "another run's slot is untouched"
+        );
     }
 
     /// A run whose escalation slot is `None` — the feature off — behaves

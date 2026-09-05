@@ -3613,7 +3613,16 @@ sweep, capped like `completed`; and nothing tested the seam from the
 run-scoped slot to the record, whose failure would be a confident
 `Some(0)` that `step_totals` counts as sensed rather than a dash — a
 scripted run through the real `todo` tool now asserts both counts on the
-outcome and the record.
+outcome and the record. The second pass found the denominator: every
+run since the sensor records `Some(0)` whether or not it ever planned,
+so the rate would have tracked how often the model plans at all — the
+confound a mid-run delivery could introduce in the very reading meant
+to gate it — and no recorded field could recover it later. A third
+counter, `step_completions`, is the denominator now: the rates are over
+runs that completed at least one plan step, `StepTotals` carries sensed,
+planned, completions, nulls and reopens apart, and the health line names
+which is which. With it, a reopen consumes its `ever_completed` entry so
+a step reopened, dropped and re-added counts one reopen per completion.
 
 **2026-09-05 — a rule widens on evidence from two regions and narrows to
 where it held, and the ledger says which sub-region each probe

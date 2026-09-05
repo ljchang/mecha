@@ -9,12 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **The run record counts null steps and reopened steps** — a plan step
-  completed with no call behind it, and a completed step set back to in
-  progress — counted by the `todo` tool into a per-run sensor and read by
-  `mecha sessions health` as a rate and totals over the runs that carried
-  it (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 2's precondition, now
-  readable from the store).
+- **The run record counts null steps, reopened steps and completed
+  steps** — a plan step completed with no call behind it, a completed step
+  set back to in progress, and the completions both are read against —
+  counted by the `todo` tool into a per-run sensor and read by `mecha
+  sessions health` as rates over the runs that completed a plan step, with
+  the totals beside (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 2's
+  precondition, now readable from the store).
 - **Learned rules widen on evidence and narrow on conviction, and the
   validation ledger is per region** (`docs/GOAL-SYSTEM-DESIGN.md` §17.4).
   A rule carries `support` — the sub-regions its evidence was recorded in
