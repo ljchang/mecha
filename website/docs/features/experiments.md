@@ -203,7 +203,7 @@ The principal must read its whole state before answering; one that exits
 without draining stdin is a failed call, recorded on the ledger. The
 principal is pure: it never runs a verb itself. The driver runs each one
 as a child `mecha` against the trial home, from a closed set — `tasks
-set|steer|stop`, `outbox approve|reject|edit`, `questions answer|abandon`,
+set|steer|stop`, `outbox reject|edit`, `questions answer|abandon`,
 never a session, a reflection or a rule — and records the call and every act
 with its exit status on the lifetime's ledger, so a principal that could not
 act holds the verdict like a failed stage. Refusals it scripts before a task
@@ -215,7 +215,11 @@ start, since a scripted refusal on your real home would author corrections
 nobody made.
 
 `scripts/principal-gold.py` is the gold-verdict version: a draft addressed off
-the fixture cast is rejected and any other released, a parked question is
-answered from a table, and refusals come from the policy file it is given.
+the fixture cast is rejected and one on the cast is left pending, a parked
+question is answered from a table, and refusals come from the policy file it
+is given. The principal never releases a draft: `outbox approve` executes the
+routed tool for real, and a `full` arm carries your live servers into the
+trial home, so a release would send from your account. Release joins the
+principal's verbs when a manifest can name fixture servers.
 What it cannot do yet is close board tasks, since the board is the graph's
 and a trial home has no graph server.

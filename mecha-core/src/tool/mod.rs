@@ -961,34 +961,34 @@ impl FileDenyApprover {
         &self.rules
     }
 
-    /// The rules that can never fire in this run because they name a tool
-    /// no registered tool answers to — a typo, or a tool an arm's lever
-    /// removed. Nothing narrower: a read-only tool reaches an approver
-    /// under a `prompt` rule or the interlock, and calling its rule inert
-    /// told an operator to delete a live one (found on review). Checked
-    /// against the *final* registry: a refusal that is inert is measured
-    /// as an owner who refused.
-    pub fn inert_rules<'a>(
-        &'a self,
-        registry: &'a Registry,
-    ) -> impl Iterator<Item = (&'a DenialRule, &'static str)> {
-        self.rules.iter().filter_map(|r| {
-            if r.tool == "*" {
-                return None;
-            }
-            match registry.get(&r.tool) {
-                None => Some((r, "names no tool in this run")),
-                Some(_) => None,
-            }
-        })
-    }
-
     fn scripted(&self, tool: &dyn Tool, input: &Value) -> Option<Decision> {
         self.rules
             .iter()
             .find(|r| r.matches(tool.name(), input))
             .map(|r| Decision::Deny(r.reason.clone()))
     }
+}
+
+/// The rules that can never fire in a run because they name a tool no
+/// registered tool answers to — a typo, or a tool an arm's lever removed.
+/// Nothing narrower: a read-only tool reaches an approver under a `prompt`
+/// rule or the interlock, and calling its rule inert told an operator to
+/// delete a live one (found on review). Checked by `setup::build` against
+/// the *final* registry, the one the subagent profiles have joined: a
+/// refusal that is inert is measured as an owner who refused.
+pub fn inert_rules<'a>(
+    rules: &'a [DenialRule],
+    registry: &'a Registry,
+) -> impl Iterator<Item = (&'a DenialRule, &'static str)> {
+    rules.iter().filter_map(|r| {
+        if r.tool == "*" {
+            return None;
+        }
+        match registry.get(&r.tool) {
+            None => Some((r, "names no tool in this run")),
+            Some(_) => None,
+        }
+    })
 }
 
 #[async_trait]
@@ -1340,11 +1340,11 @@ mod denial_tests {
             quoted.approve(&Echo, &call).await,
             Decision::Deny("no".into())
         );
-        // Inert rules: a tool not in the registry, or a read-only one.
+        // Inert rules: a tool not in the registry, and nothing narrower.
         let mut registry = Registry::new();
         registry.insert(Arc::new(Echo));
-        let inert: Vec<_> = FileDenyApprover::with_rules(
-            vec![
+        let inert: Vec<_> = inert_rules(
+            &[
                 DenialRule {
                     tool: "shell".into(),
                     input_contains: None,
@@ -1361,11 +1361,8 @@ mod denial_tests {
                     reason: "c".into(),
                 },
             ],
-            Arc::new(ModeApprover {
-                mode: PermissionMode::Allow,
-            }),
+            &registry,
         )
-        .inert_rules(&registry)
         .map(|(r, why)| (r.reason.clone(), why))
         .collect();
         assert_eq!(inert, vec![("b".to_string(), "names no tool in this run")]);

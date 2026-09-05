@@ -619,6 +619,15 @@ async fn principal_call(
             .current_dir(&workspace);
         Ok(())
     };
+    // The open questions, read once: the principal sees them, and an
+    // answer's act is resolved against the same list.
+    let open_questions: Vec<mecha_core::questions::Question> = if home.join("questions").is_dir() {
+        mecha_core::questions::QuestionStore::open(home.join("questions"))
+            .and_then(|s| s.open_items())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let outcome: Result<PrincipalOutput> = async {
         // First, before anything else can fail: a principal that failed to
         // answer must not leave the last position's refusals armed for
@@ -653,11 +662,7 @@ async fn principal_call(
             } else {
                 Vec::new()
             },
-            open_questions: if home.join("questions").is_dir() {
-                mecha_core::questions::QuestionStore::open(home.join("questions"))?.open_items()?
-            } else {
-                Vec::new()
-            },
+            open_questions: open_questions.clone(),
         };
         let (exe, args) = principal
             .command
@@ -747,6 +752,41 @@ async fn principal_call(
                     run.acts.push(act);
                     continue;
                 }
+                // A question's answer resumes a run whose jail the question
+                // recorded, and the driver's `--workspace` beats the resume's
+                // own fallback — so the act names that jail, and an id no
+                // open question carries is refused rather than resumed
+                // somewhere its run never saw (found on review). Any other
+                // act runs from the point's directory: the lifetime's scratch
+                // workspace before the task (the trial's is not staged yet),
+                // the trial's after it.
+                let resumes = act
+                    .verb
+                    .starts_with(&["questions".to_string(), "answer".to_string()]);
+                let act_workspace: Option<PathBuf> = if resumes {
+                    act.verb
+                        .get(2)
+                        .and_then(|id| open_questions.iter().find(|q| &q.id == id))
+                        .map(|q| {
+                            q.workspace
+                                .clone()
+                                .unwrap_or_else(|| store.workspace_for(&trial.id))
+                        })
+                } else {
+                    Some(match point {
+                        PrincipalPoint::AfterTask => store.workspace_for(&trial.id),
+                        _ => workspace.clone(),
+                    })
+                };
+                let Some(act_workspace) = act_workspace else {
+                    act.ok = Some(false);
+                    failures.push(format!(
+                        "`{}` names no question open at this position",
+                        act.verb.join(" ")
+                    ));
+                    run.acts.push(act);
+                    continue;
+                };
                 let status: Result<std::process::ExitStatus> = async {
                     let mut cmd = tokio::process::Command::new(mecha);
                     // The driver's options *before* the verb: they are
@@ -768,10 +808,6 @@ async fn principal_call(
                     // lifetime's scratch workspace; after it, from the
                     // trial's, where the parked continuation lives (found
                     // on review).
-                    let act_workspace = match point {
-                        PrincipalPoint::AfterTask => store.workspace_for(&trial.id),
-                        _ => workspace.clone(),
-                    };
                     cmd.arg("--workspace")
                         .arg(&act_workspace)
                         .arg("--yes")

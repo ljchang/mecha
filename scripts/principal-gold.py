@@ -12,7 +12,9 @@ Verdicts come from gold wherever gold exists (§16 rule 1):
 - a pending draft (an outbox `message`) is REJECTED when a deterministic
   check on it fails — a recipient not on the fixture cast, or no recipient
   this policy can read at all (unknown is never clean on a gold verdict) —
-  and RELEASED unchanged otherwise;
+  and LEFT PENDING otherwise: a release executes the routed tool for real,
+  and a trial home may carry live servers, so the principal never sends;
+  release joins its verbs when a manifest can name fixture servers;
 - an open question is ANSWERED from the policy's table, by substring, with
   its default when nothing matches;
 - refusals are scripted (`before_task`) from the policy's `[[deny]]` list:
@@ -98,10 +100,11 @@ def judge_drafts(state, policy):
                 "reason": "gold: recipient not on the cast",
             })
         else:
-            acts.append({
-                "verb": ["outbox", "approve", item["id"], "--yes"],
-                "reason": "gold: every recipient is on the cast",
-            })
+            # Every recipient is on the cast: the draft would be released
+            # unchanged, and it stays pending instead — a release sends for
+            # real, and the driver refuses the verb until fixture servers
+            # exist. Said on stderr so the ledger's log carries it.
+            print(f"draft {item['id']}: on the cast; would release, left pending (release waits on fixture servers)", file=sys.stderr)
     return acts
 
 

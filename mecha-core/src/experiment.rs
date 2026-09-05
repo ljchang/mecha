@@ -241,11 +241,17 @@ impl From<PrincipalRequest> for PrincipalAct {
 /// channels §16 names, and nothing that writes a session, a reflection or
 /// a rule. A verb outside the set is the principal's error, recorded and
 /// never run.
-pub const PRINCIPAL_VERBS: [&[&str]; 8] = [
+/// **Release is not here.** `outbox approve` executes the routed tool for
+/// real, and a `full` arm carries the operator's live servers into the
+/// trial home — the store is isolated, the effect is not — so a principal
+/// that released would send real messages from a real account, which in
+/// this repo crosses a human structurally. Release joins the set when a
+/// manifest can name fixture servers, as board closure waits on a fixture
+/// graph (found on review).
+pub const PRINCIPAL_VERBS: [&[&str]; 7] = [
     &["tasks", "set"],
     &["tasks", "steer"],
     &["tasks", "stop"],
-    &["outbox", "approve"],
     &["outbox", "reject"],
     &["outbox", "edit"],
     &["questions", "answer"],
@@ -293,10 +299,6 @@ pub fn allowed_verb(verb: &[String]) -> bool {
     let head_allowed = PRINCIPAL_VERBS
         .iter()
         .any(|lead| verb.len() >= lead.len() && lead.iter().zip(verb).all(|(a, b)| a == b));
-    // `outbox approve` owns a `-y`/`--yes` of its own (release without the
-    // review prompt); everywhere else the spelling is the global
-    // auto-approval, which would widen a resumed run.
-    let approve = verb.starts_with(&["outbox".to_string(), "approve".to_string()]);
     let moves_the_run = verb.iter().any(|a| {
         let name = a.split('=').next().unwrap_or(a);
         // A short group: clap stacks flags (`-vw /tmp`) and lets the last
@@ -307,11 +309,8 @@ pub fn allowed_verb(verb: &[String]) -> bool {
         if let Some(letters) = name.strip_prefix('-').filter(|s| !s.starts_with('-')) {
             return letters.chars().any(|c| {
                 let opt = format!("-{c}");
-                !(approve && opt == "-y") && PRINCIPAL_BLOCKED_OPTIONS.contains(&opt.as_str())
+                PRINCIPAL_BLOCKED_OPTIONS.contains(&opt.as_str())
             });
-        }
-        if approve && name == "--yes" {
-            return false;
         }
         PRINCIPAL_BLOCKED_OPTIONS.contains(&name) || name.starts_with("--no-")
     });
@@ -3230,7 +3229,12 @@ rationale = "no rumination should fail more over the sequence"
         assert!(Manifest::parse(&empty).is_err(), "no executable");
         // The verb set.
         let v = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
-        assert!(allowed_verb(&v("outbox approve ob-1 --yes")));
+        assert!(
+            !allowed_verb(&v("outbox approve ob-1 --yes")),
+            "a release executes the routed tool for real; it waits on fixture servers"
+        );
+        assert!(allowed_verb(&v("outbox reject ob-1 --reason no")));
+        assert!(allowed_verb(&v("outbox edit ob-1 --body-file draft.txt")));
         assert!(allowed_verb(&v(
             "questions answer q-1 --unattended yes please"
         )));
@@ -3246,7 +3250,7 @@ rationale = "no rumination should fail more over the sequence"
         );
         assert!(!allowed_verb(&[]));
         assert!(
-            !allowed_verb(&v("outbox approve ob-1 --workspace /tmp")),
+            !allowed_verb(&v("outbox reject ob-1 --workspace /tmp")),
             "the workspace is the driver's"
         );
         assert!(!allowed_verb(&v(
@@ -3258,14 +3262,10 @@ rationale = "no rumination should fail more over the sequence"
             "levers are the arm's"
         );
         assert!(
-            allowed_verb(&v("outbox approve ob-1 -y")),
-            "approve's own -y is fine"
-        );
-        assert!(allowed_verb(&v("outbox approve ob-1 --yes")));
-        assert!(
             !allowed_verb(&v("questions answer q-1 --yes fine")),
-            "elsewhere -y widens"
+            "-y is the global auto-approval, which widens a resumed run"
         );
+        assert!(!allowed_verb(&v("outbox reject ob-1 -y")));
         assert!(
             !allowed_verb(&v("questions answer q-1 --tool fs_read fine")),
             "the real flag"

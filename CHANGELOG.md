@@ -66,7 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   graded row, the home's pending drafts and open questions — and answers
   with the owner's verbs to run and the refusals to script. The driver
   runs each verb as a child `mecha` against the trial home from a closed
-  set (`tasks set|steer|stop`, `outbox approve|reject|edit`,
+  set (`tasks set|steer|stop`, `outbox reject|edit` — never a release,
+  which executes the routed tool for real,
   `questions answer|abandon`) and records the call and every act on the
   lifetime's ledger as a `principal` line, held like a stage. New with
   it: `MECHA_DENIALS_FILE` and `tool::FileDenyApprover` — scripted

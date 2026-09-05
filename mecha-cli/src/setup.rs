@@ -408,13 +408,11 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // refused: said here, against the registry the subagent profiles have
     // joined — the check ran before they had, and called a rule naming one
     // inert as it fired (found on review).
-    for rule in &denials {
-        if rule.tool != "*" && registry.get(&rule.tool).is_none() {
-            eprintln!(
-                "mecha: the scripted refusal of `{}` ({}) names no tool in this run, so it will never fire",
-                rule.tool, rule.reason
-            );
-        }
+    for (rule, why) in mecha_core::tool::inert_rules(&denials, &registry) {
+        eprintln!(
+            "mecha: the scripted refusal of `{}` ({}) {why}, so it will never fire",
+            rule.tool, rule.reason
+        );
     }
 
     // Learned rules ride at the end of the system prompt — still inside the
