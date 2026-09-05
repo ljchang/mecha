@@ -10,7 +10,8 @@ experience to be true.*
 > **Status: ruled 2026-09-04, built and deployed 2026-09-05** (mecha #183,
 > mecha-factory #20; the arc is in `HISTORY.md` under 2026-09-05). §6
 > records the six rulings; §7 is the build order — phases 1–3 shipped,
-> phase 4 deliberately not started; the first live poll is still owed. Everything in §2 is measured against the tree at `mecha` 5e85ce5 and
+> phase 4 deliberately not started; the first live poll is still owed.
+> Everything in §2 is measured against the tree at `mecha` 5e85ce5 and
 > `mecha-factory` fdfbb7b, before the build. Two things the build settled
 > beyond the text: a clean winner is **re-verified against live freebusy**
 > before the event is made, and a collision flips the verdict to a pick with
