@@ -93,8 +93,8 @@ fn charter_state_blocking() -> Json<serde_json::Value> {
             "exists": path.is_file(),
             "raw": raw,
             // `sensor` rides beside each line so the page's serialiser can
-            // write it back on a save — the editor carries a sensor through
-            // a re-rank, it does not compose one — as `{kind, setpoint}`
+            // write it back on a save — carried through a re-rank, or typed
+            // by the owner in the form — as `{kind, setpoint}`
             // with the owner's own setpoint spelling, and `reading` beside
             // it is the sensor's current value for the page to show
             // (§11.1, containment 5's first guard). Absent on a line
@@ -106,6 +106,11 @@ fn charter_state_blocking() -> Json<serde_json::Value> {
             "char_count": charter.char_count(),
             "over_budget": charter.over_budget(),
             "budget": mecha_core::charter::CHARTER_CHAR_BUDGET,
+            // The closed set of sensor kinds the form offers, with each
+            // unit's hint — served, so the select is the parser's list and
+            // not a copy in the page that drifts when a kind joins. No
+            // default kind and no default setpoint: the owner types both.
+            "sensor_kinds": mecha_core::charter::sensor_kinds_json(),
             // What the editor seeds a first charter from — the same
             // comments-only bytes the TUI's `e` writes, served so the two
             // surfaces cannot drift and the browser's first edit never

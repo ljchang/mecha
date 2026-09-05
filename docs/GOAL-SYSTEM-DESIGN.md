@@ -1115,6 +1115,17 @@ charter is `Prose` class and cannot be cheaply A/B tested:
 > is drawn first and uniformly, and a priority may never reach it (§8.1).
 > |goal error| as a priority in its own right is still not this — the rank
 > breaks ties, `Metric::headroom` still decides.
+>
+> **The web form, 2026-09-05** (`feat/sensor-form`): the owner authored the
+> first live sensor the night before and found the editor could only carry
+> one, not compose one. The author rule is about the author, not the verb,
+> so the settings page now offers a sensor form under an open line — a
+> select over the closed set the server serves (`sensor_kinds_json`), an
+> empty setpoint field, and `Unit::hint` under it, the parser's own unit
+> sentence. Nothing is prefilled: the page proposes no kind and no number.
+> The same `Charter::parse` refuses a bad setpoint at the save and names the
+> line. The "page proposing a number" worry this section's built note
+> recorded was about defaults, and a form with none is the owner typing.
 
 The owner ruled that a charter line may carry a **sensor**: an observable
 the harness reads from its own stores, with a setpoint the owner wrote. It

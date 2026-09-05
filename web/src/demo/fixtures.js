@@ -622,6 +622,16 @@ text = "A refusal on Monday is a kindness. A refusal on Friday is a problem I ha
   template: '',
   exists: true,
   path: '~/.mecha/charter.toml',
+  // The closed set the form offers, in the shape `charter_state` serves it —
+  // `mecha_core::charter::sensor_kinds_json`, each kind with its unit's hint
+  // and no default value.
+  sensor_kinds: [
+    { kind: 'outbox_waiting', unit: 'count', hint: 'a whole number', describe: 'how many outbox drafts wait on you' },
+    { kind: 'outbox_age', unit: 'duration', hint: 'a duration like `24h` or `7d`', describe: 'how long a staged draft has sat unreviewed' },
+    { kind: 'question_latency', unit: 'duration', hint: 'a duration like `24h` or `7d`', describe: 'how long a parked question waits for your answer' },
+    { kind: 'request_closure', unit: 'duration', hint: 'a duration like `24h` or `7d`', describe: 'how long a front-door request stays open' },
+    { kind: 'intervention_rate', unit: 'rate', hint: 'a rate like `0.2` or `20%`', describe: 'the share of recent runs you stepped into' },
+  ],
   // `id` is the line's slug, as the route derives it from the name — a bare
   // ordinal here renders as "1. 1" beside the list marker, which is not what
   // the page does on a box.
