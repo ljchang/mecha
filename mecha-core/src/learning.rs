@@ -1874,14 +1874,31 @@ impl RuleTally {
         }
         out
     }
+}
 
-    /// Attributed regressions that count against a rule scoped to `scope`:
-    /// those inside the scope, plus every row whose region is unknown —
-    /// fail-closed, because a conviction that cannot be placed cannot be
-    /// narrowed away either.
-    pub fn attributed_against(&self, scope: &crate::situation::Situation) -> u32 {
-        self.in_scope(scope).attributed_regressions + self.unknown_region.attributed_regressions
-    }
+/// The ledger folded for one rule: every row that charged it, or — for a
+/// rule a scan has narrowed — only the rows written since the narrowing.
+///
+/// A rule loads by *registry* match (`carried_in`) and a row is placed by
+/// the probe's *window*, so a rule scoped to `shell` is convicted in
+/// `http_fetch` windows whenever the run also registered `shell` — and
+/// shedding a region never stops it riding there. Every placed conviction
+/// therefore counts against the rule wherever it lies (found on review:
+/// counting only in-scope rows let a bisection-proven regression read as
+/// clean at any count). What a narrowing answers is the *evidence before
+/// it*: those rows argued for the scope it now has, and folding them again
+/// would retire the narrowed rule on the next scan for the region it just
+/// shed. Rows since are new evidence against the narrowed rule. `None` when
+/// the ledger never charged the rule, or the rule has no id.
+pub fn tally_for(rule: &Rule, records: &[ValidationRecord]) -> Option<RuleTally> {
+    let id = rule.id.as_deref()?;
+    let since = rule.narrowed_at.as_deref();
+    let rows: Vec<ValidationRecord> = records
+        .iter()
+        .filter(|r| since.is_none_or(|s| r.created_at.as_str() >= s))
+        .cloned()
+        .collect();
+    rule_tallies(&rows).remove(id)
 }
 
 /// One line per active rule, carrying what the validation ledger measured
@@ -2005,11 +2022,13 @@ pub enum Verdict {
 
 /// Decide narrowing or retirement for one rule from its tally.
 ///
-/// The threshold is counted against the rule's *current* scope
-/// ([`RuleTally::attributed_against`]): a conviction from a region the rule
-/// no longer loads in was already answered by the narrowing that shed it,
-/// while a conviction with no region counts wherever the rule is. Below
-/// the threshold the rule stands.
+/// Every attributed regression in the tally counts, wherever its row was
+/// placed: a rule rides in every run whose registry matches its scope,
+/// whatever window the probe had, so a conviction outside the scope is
+/// still a conviction of this rule. The caller hands in the ledger since
+/// the rule's last narrowing ([`tally_for`]), which is how a narrowing
+/// settles the rows that argued for it without hiding any that came
+/// after. Below the threshold the rule stands.
 ///
 /// Narrowing needs three things, and each missing one is a retirement with
 /// its own reason: recorded support (a rule from before the field has
@@ -2026,7 +2045,7 @@ pub enum Verdict {
 /// one of them.
 pub fn judge_convicted(rule: &Rule, tally: &RuleTally, threshold: u32) -> Verdict {
     let scope = rule.scope.clone().unwrap_or_default().scope();
-    let convictions = tally.attributed_against(&scope);
+    let convictions = tally.attributed_regressions;
     if convictions < threshold {
         return Verdict::Stands;
     }
@@ -2042,14 +2061,14 @@ pub fn judge_convicted(rule: &Rule, tally: &RuleTally, threshold: u32) -> Verdic
             tally.unknown_region.attributed_regressions
         ));
     }
-    // A conviction belongs to every support region its window is inside.
-    // Only rows inside the current scope are placed: a conviction from a
-    // region an earlier narrowing shed was answered by that narrowing and
-    // must not read as "outside every support region" now.
+    // A conviction belongs to every support region its window is inside;
+    // one inside none of them is `unplaced` below and retires the rule,
+    // because the rule was convicted somewhere its evidence never covered
+    // and no support region can be shed to answer it.
     let convicted_regions: Vec<&crate::situation::Situation> = tally
         .regions
         .values()
-        .filter(|(region, t)| t.attributed_regressions > 0 && scope.matches(region))
+        .filter(|(_, t)| t.attributed_regressions > 0)
         .map(|(region, _)| region)
         .collect();
     let (shed, kept): (Vec<_>, Vec<_>) = rule
@@ -5242,17 +5261,22 @@ mod probation_tests {
                 None,
             )
         };
-        let row = |region: Option<Situation>, outcome: &str, attributed: bool| ValidationRecord {
-            reflexion_id: "refl".into(),
-            trigger: "steer".into(),
-            domain: "behavior".into(),
-            rules_hash: rules_hash("block"),
-            rule_ids: vec!["w".into()],
-            outcome: outcome.into(),
-            attributed_rule_id: attributed.then(|| "w".into()),
-            model: "qwen".into(),
-            created_at: "2026-09-05T00:00:00Z".into(),
-            region,
+        let dated = |region: Option<Situation>, outcome: &str, attributed: bool, at: &str| {
+            ValidationRecord {
+                reflexion_id: "refl".into(),
+                trigger: "steer".into(),
+                domain: "behavior".into(),
+                rules_hash: rules_hash("block"),
+                rule_ids: vec!["w".into()],
+                outcome: outcome.into(),
+                attributed_rule_id: attributed.then(|| "w".into()),
+                model: "qwen".into(),
+                created_at: at.into(),
+                region,
+            }
+        };
+        let row = |region: Option<Situation>, outcome: &str, attributed: bool| {
+            dated(region, outcome, attributed, "2026-09-05T00:00:00Z")
         };
         let convicted_in = |tools: &[&str]| row(Some(sit(tools)), "regressed", true);
         let clean_in = |tools: &[&str]| row(Some(sit(tools)), "unchanged_pass", false);
@@ -5282,40 +5306,85 @@ mod probation_tests {
                 shed: vec![sit(&["shell"])],
             }
         );
-        // Narrowed, the old convictions no longer count against it: they
-        // lie outside the scope it now loads in.
+        // Narrowed, the rows that argued for it are answered: `tally_for`
+        // folds only what came after `narrowed_at`, so the same ledger
+        // convicts nothing — while the *whole* ledger still would, since a
+        // conviction counts wherever its row lies (the rule still rides in
+        // any run registering http_fetch, shell window or not).
         let narrowed = Rule {
             scope: Some(sit(&["http_fetch"])),
             support: vec![sit(&["http_fetch"])],
+            narrowed_at: Some("2026-09-05T12:00:00Z".into()),
             ..r("w", false)
         };
-        assert_eq!(t["w"].attributed_against(&sit(&["http_fetch"])), 0);
-        assert_eq!(judge_convicted(&narrowed, &t["w"], 3), Verdict::Stands);
-        // Convicted again inside the narrowed scope, with the old shed
-        // convictions still in the ledger: those are not "unplaced", and
-        // the rule narrows once more to the sub-region that stayed clean.
+        let records = [
+            convicted_in(&["shell", "fs_read"]),
+            convicted_in(&["shell"]),
+            convicted_in(&["shell", "fs_write"]),
+            clean_in(&["http_fetch"]),
+        ];
+        assert!(
+            tally_for(&narrowed, &records).is_none(),
+            "nothing since the narrowing"
+        );
+        assert!(matches!(
+            judge_convicted(&narrowed, &rule_tallies(&records)["w"], 3),
+            Verdict::Retire { .. }
+        ));
+        // Convicted again after the narrowing, inside the scope it kept,
+        // with the old rows still on file: only the new rows fold, and the
+        // rule narrows once more to the sub-region that stayed clean.
         let twice = Rule {
-            scope: Some(sit(&["http_fetch"])),
             support: vec![sit(&["http_fetch"]), sit(&["fs_write", "http_fetch"])],
-            ..r("w", false)
+            ..narrowed.clone()
         };
-        let t = rule_tallies(&[
+        let later = "2026-09-06T00:00:00Z";
+        let records = [
             convicted_in(&["shell"]),
             convicted_in(&["shell"]),
             convicted_in(&["shell"]),
-            convicted_in(&["http_fetch"]),
-            convicted_in(&["http_fetch"]),
-            convicted_in(&["http_fetch"]),
-            clean_in(&["fs_write", "http_fetch"]),
-        ]);
+            dated(Some(sit(&["http_fetch"])), "regressed", true, later),
+            dated(Some(sit(&["http_fetch"])), "regressed", true, later),
+            dated(Some(sit(&["http_fetch"])), "regressed", true, later),
+            dated(
+                Some(sit(&["fs_write", "http_fetch"])),
+                "unchanged_pass",
+                false,
+                later,
+            ),
+        ];
+        let t = tally_for(&twice, &records).unwrap();
         assert_eq!(
-            judge_convicted(&twice, &t["w"], 3),
+            t.attributed_regressions, 3,
+            "the three before the narrowing are settled"
+        );
+        assert_eq!(
+            judge_convicted(&twice, &t, 3),
             Verdict::Narrow {
                 scope: sit(&["fs_write", "http_fetch"]),
                 support: vec![sit(&["fs_write", "http_fetch"])],
                 shed: vec![sit(&["http_fetch"])],
             }
         );
+        // A conviction placed outside the rule's scope counts: a `shell`
+        // rule rides in every run that registers shell, and a bisection
+        // that names it in an `http_fetch`-window probe convicted *it*.
+        // Fails on the in-scope count, which read this as clean forever
+        // (found on review).
+        let shell_rule = Rule {
+            scope: Some(sit(&["shell"])),
+            support: vec![sit(&["shell"])],
+            ..r("w", false)
+        };
+        let t = rule_tallies(&[
+            convicted_in(&["http_fetch"]),
+            convicted_in(&["http_fetch"]),
+            convicted_in(&["http_fetch"]),
+        ]);
+        assert!(matches!(
+            judge_convicted(&shell_rule, &t["w"], 3),
+            Verdict::Retire { why } if why.contains("outside every recorded support")
+        ));
 
         // A conviction whose window carried both support tools is in both
         // sub-regions: nothing is left to keep.

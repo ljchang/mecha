@@ -3615,7 +3615,18 @@ widens and only a window with a focus is support. The second pass found
 the same stale window one file over: a followup probe wrote its window
 as the region it exercised, which would have released probation and
 satisfied `--cover` for a region the probe never touched — the row is
-now placed only when the window has a focus, unknown otherwise.
+now placed only when the window has a focus, unknown otherwise. The
+third pass found three: counting convictions only inside the rule's
+scope let a bisection-proven regression in an out-of-scope window read
+as clean at any count — a rule loads by registry match and a row is
+placed by window, so every placed conviction now counts and a scan folds
+the ledger since the rule's last narrowing (`tally_for`), which is what
+"the narrowing answered those rows" honestly means; `cover_selection`
+lacked the focus filter `record` had, so a window ending in a front-end
+tool would have bought a probe whose row landed unplaced, forever; and
+the twin test on "scope changed" matched a pending learn proposal that
+had *widened* the convicted rule, so it now asks whether the proposal
+makes the verdict's own change.
 `ValidationRecord::region` is the probed reflection's window (not the
 run's registry, which every run shares), `RuleTally::regions` folds the
 counts per region with `in_scope` and `attributed_against` over them,

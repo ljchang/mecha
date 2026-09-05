@@ -495,10 +495,15 @@ passes 1), and `rules propose-retirements` asks `judge_convicted` before
 retiring: convictions counted against the current scope, and a rule
 convicted in some support regions and clean in others sheds the failing
 ones and re-scopes to the intersection of the rest — a scope checked to
-exclude every convicting window (`narrowed_at`, `narrowed_reason`), its
-shed convictions no longer counting; the twin check that keeps the
-nightly from re-staging asks whether a pending proposal *changes* the
-rule against its own `rules_before`, never whether a flag is set. It retires,
+exclude every convicting window (`narrowed_at`, `narrowed_reason`); every
+placed conviction counts wherever its row lies, since a rule loads by
+registry match and a row is placed by the probe's window, and a scan
+folds only the ledger since the rule's last narrowing (`tally_for`) —
+the rows before it were the evidence it answered; the twin check that
+keeps the nightly from re-staging asks whether a pending proposal makes
+the *same* change the verdict would (a retirement, or a narrowing to the
+same scope) against its own `rules_before`, never whether a flag is set
+or the scope merely moved, since a widening is a scope move too. It retires,
 with the reason, when it has no recorded support, when a conviction has
 no region or lies outside every support region, or when the clean
 regions share no tool — a conjunctive scope cannot say "everywhere but
