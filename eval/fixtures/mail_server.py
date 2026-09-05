@@ -286,6 +286,11 @@ def mail_recent(store, args):
             if th["account"] != a["name"] or not visible(th, inbox_only=True):
                 continue
             for m in th["messages"]:
+                # The inbox, as the real `in:inbox` is: a message this account
+                # sent is not in it, so a released reply does not become the
+                # newest thing the next position reads (found on review).
+                if m.get("from_address") == a["address"]:
+                    continue
                 rows.append(row(a["name"], th, m))
     rows.sort(key=lambda r: r["date"], reverse=True)
     return render_rows(rows[:limit])
