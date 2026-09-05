@@ -592,8 +592,12 @@ impl Tracked {
                     // and a step the plan dropped after completing it and
                     // now holds again as in progress is the same event by
                     // another door (`ever_completed`).
+                    // `was` is never `InProgress` in this arm, so the only
+                    // other doors are absent and pending — and a completed
+                    // step parked as pending and then resumed is a reopen
+                    // through the second (found on review, the third door).
                     let reopened = was == Some(Status::Completed)
-                        || (was.is_none() && self.ever_completed.contains(&item.content));
+                        || self.ever_completed.contains(&item.content);
                     if reopened {
                         // Consumed: this completion has now been restarted,
                         // and the next completion re-pushes the entry.
@@ -2545,6 +2549,41 @@ mod tests {
             (0, 1, 1),
             "a second reopen needs a second completion"
         );
+        // The third door: a completed step parked as pending, then resumed,
+        // is a reopen too. Fails on the absent-only fallback (found on
+        // review).
+        let parked = TodoTool::new();
+        let pcounts = std::sync::Arc::new(crate::tool::StepCounts::default());
+        let pctx = |calls: u32, last: Option<Outcome>| ToolCtx {
+            step_counts: Some(pcounts.clone()),
+            ..work_ctx(4, calls, last)
+        };
+        write(
+            &parked,
+            &pctx(0, None),
+            json!([{"content": "decide", "status": "in_progress"}]),
+        )
+        .await;
+        write(
+            &parked,
+            &pctx(3, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "completed"}]),
+        )
+        .await;
+        write(
+            &parked,
+            &pctx(3, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "pending"}]),
+        )
+        .await;
+        assert_eq!(pcounts.snapshot(), (0, 0, 1), "parking is not yet a reopen");
+        write(
+            &parked,
+            &pctx(3, Some(Outcome::Ok)),
+            json!([{"content": "decide", "status": "in_progress"}]),
+        )
+        .await;
+        assert_eq!(pcounts.snapshot(), (0, 1, 1), "resuming it is");
         // No slot: nothing counted, nothing panics.
         let bare = TodoTool::new();
         write(
