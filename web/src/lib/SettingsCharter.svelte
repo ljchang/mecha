@@ -604,9 +604,19 @@
     {:else}
       <span class="count">&nbsp;</span>
     {/if}
+    <!-- The handoff serialises the list, and `serialize` writes no table
+         for a sensor without a kind — so a half-filled sensor would be
+         dropped from the draft at the moment the notice naming it
+         disappears, and the raw editor's save has no problems gate. The
+         same gate as the list save, then: fix the line first (found on
+         review). -->
     <button
       class="btn"
       class:ghost={!blocked}
+      disabled={!blocked && dirty && problems.length > 0}
+      title={!blocked && dirty && problems.length > 0
+        ? 'fix the lines named below first — the TOML draft would drop a half-filled sensor'
+        : null}
       onclick={() => {
         // Carry unsaved list edits across rather than silently reverting to
         // what is on disk.
