@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
 - **Fixture servers on the manifest, and the synthetic assistant home.**
   A `[fixtures]` table on an experiment manifest names MCP servers the trial
   home runs *instead of* the operator's: when it names any, the home's
@@ -31,9 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paths (servers, the principal's script and policy) resolve against the
   checkout `exp run` starts from; the home is rendered before position 0's
   `before_task` call so the principal's first verb finds the board.
-
-### Added
-
 - **`mecha exp` — experiments** (`mecha_core::experiment`;
   `docs/EXPERIMENT-DESIGN.md`). A designed comparison over a chosen set of
   runs: `new` writes a manifest once (arms naming a provider and model

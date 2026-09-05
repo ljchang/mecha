@@ -189,10 +189,17 @@ pub fn fixture_dir(home: &Path, name: &str) -> PathBuf {
 /// checkout `mecha exp run` is started from, and a server is spawned from
 /// the run's workspace, where `eval/fixtures/board_server.py` names
 /// nothing (eval's `--mcp-file` learnt this the same way). Anything else is
-/// left alone: a flag, a name on `PATH`, a path that is not there yet.
+/// left alone: a flag, a name on `PATH`, a path that is not there yet. The
+/// command itself (`argv[0]`) is resolved only when it is spelled as a
+/// path — `eval/fixtures/x.py`, never a bare `python3` — so a checkout
+/// that happened to hold a file named like the interpreter could not
+/// rewrite the executable (found on review).
 pub fn resolve_file_args(argv: &mut [String], base: &Path) {
-    for a in argv.iter_mut() {
+    for (i, a) in argv.iter_mut().enumerate() {
         let p = Path::new(a.as_str());
+        if i == 0 && p.components().count() < 2 {
+            continue;
+        }
         if p.is_relative() {
             let joined = base.join(p);
             if joined.is_file() {
@@ -4165,6 +4172,21 @@ seed = "seed"
             srv.args[0]
         );
         assert_eq!(srv.args[1], "--flag", "a flag is left alone");
+        assert_eq!(
+            srv.command, "python3",
+            "a bare command is a PATH lookup, never resolved"
+        );
+        std::fs::write(base.join("python3"), b"#!/bin/sh\n").unwrap();
+        let mut argv = vec!["python3".to_string(), "srv/board.py".to_string()];
+        resolve_file_args(&mut argv, &base);
+        assert_eq!(argv[0], "python3", "even beside a file of that name");
+        assert!(argv[1].ends_with("srv/board.py") && Path::new(&argv[1]).is_absolute());
+        let mut argv = vec!["srv/board.py".to_string()];
+        resolve_file_args(&mut argv, &base);
+        assert!(
+            Path::new(&argv[0]).is_absolute(),
+            "a command spelled as a path is resolved"
+        );
         assert_eq!(
             srv.args[2], "not/a/file.py",
             "a path that is not there is left alone"
