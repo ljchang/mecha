@@ -79,9 +79,9 @@
     const split = splitHeader(raw);
     header = split.header;
     blocked = split.blocked;
-    // `sensor` is carried, never edited here: the list editor re-ranks and
-    // rewrites text, and a save must write the owner's sensor back exactly
-    // as it was read (see `serialize`). Editing one is the TOML editor's.
+    // `sensor` is carried through a re-rank exactly as it was read, and the
+    // form under an open line may change it — the owner typing, which is
+    // the author rule's whole condition (see `serialize`, `addSensor`).
     // `reading` rides beside it for display only — see `rows`.
     lines = rows(c.lines, () => ++uidSeq);
     original = snapshot();
@@ -613,10 +613,7 @@
     <button
       class="btn"
       class:ghost={!blocked}
-      disabled={!blocked && dirty && problems.length > 0}
-      title={!blocked && dirty && problems.length > 0
-        ? 'fix the lines named below first — the TOML draft would drop a half-filled sensor'
-        : null}
+      disabled={!blocked && dirty && sensorProblems(lines).length > 0}
       onclick={() => {
         // Carry unsaved list edits across rather than silently reverting to
         // what is on disk.
@@ -625,6 +622,13 @@
         saveError = null;
       }}>Edit as TOML</button
     >
+    {#if !blocked && dirty && sensorProblems(lines).length > 0}
+      <!-- Said here, not in a title: a disabled button swallows its title in
+           every engine. Only the sensor problems gate the hatch — an empty
+           id or text serialises faithfully and the server refuses it with
+           the draft kept, so those keep the hatch open. -->
+      <span class="sub hint">fix the half-filled sensor first — the TOML draft would drop it</span>
+    {/if}
   </div>
 
   {#if charter?.over_budget && !dirty}
