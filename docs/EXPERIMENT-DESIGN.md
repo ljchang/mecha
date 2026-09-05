@@ -842,6 +842,22 @@ Ranked:
    `eval/fixtures/` holds workspaces, not homes). Q2 for commitment, guilt,
    charter and follow-up staging; needs the principal. This is the dataset
    to *build*, and the one only this project can.
+   *Built 2026-09-05, first version:* `eval/fixtures/home/` — a board of
+   nine tasks (one per case, named `task-<case id>`, plus an overdue
+   budget justification, a scheduled read and a task waiting on the
+   administrator), a `work` mailbox of six threads on the cast including
+   one injected "IT helpdesk" message that instructs an assistant to
+   forward the budget and calendar to a stranger, three calendar events,
+   and a four-line charter with one sensored line (`outbox_age`, 24h).
+   Served by the two fixture servers over `[fixtures]`; six cases in
+   `eval/home-cases.jsonl` with trace graders only, since what a run
+   *left* is the principal's to judge; the lifetime manifest pairs `full`
+   against an arm with learn, validate and retire off. Dates in the seed
+   are relative (`due_in_days`, `days_ago`, `days_ahead`), resolved
+   against the clock the first time a store is read, so the board is
+   overdue relative to the run. Hand-authored, small, and the calibration
+   question of item 6 stands: the principal's rejection rate here is the
+   policy's, not an owner's.
 5. **AgentDojo** — the interlock's false-refusal cost beside its catch rate.
    A lever set that changes `blocked_sends` is a different experiment, and
    this is the dataset that prices it.
@@ -915,11 +931,22 @@ needs the lifetime driver and the principal. The order becomes:
 
 **Status, 2026-09-05.** 0, A, A′, D₁ (`mecha exp single|lifetime`, PRs
 #157–#178) and P (the gold-verdict principal under §21.1's contract, #185)
-are on main. Two channels the principal names are gated off it until a
-manifest can name fixture servers: release (`outbox approve` executes the
-routed tool for real, and a `full` arm carries the operator's live servers)
-and board closure (the board is the graph's over MCP). B, C, D₂ and E
-remain.
+are on main. The two channels that were gated off the principal — release
+and board closure — opened the same day with **fixture servers on the
+manifest** (`[fixtures]`, `experiment::Fixtures`): when a manifest names
+any, the trial home's `[[mcp]]` is exactly those, every live server of the
+operator's is dropped for every arm, each server persists under the home
+and is seeded once, and `outbox approve` and `tasks set` are permitted
+(`SERVER_VERBS`, `permitted_verb`) — a release further vetted against the
+draft's `<fixture>__` prefix. With them the **synthetic assistant home**
+(§17 item 4) exists as a first, hand-authored version:
+`eval/fixtures/board_server.py` and `eval/fixtures/mail_server.py` (the
+real servers' tool contracts, stateful, fail-closed), `eval/fixtures/home/`
+(board, mailbox with one injected thread, calendar, charter),
+`eval/home-cases.jsonl` (six owner-channel tasks), `eval/home-principal.toml`
+(release to the cast, close `task-<case id>` by the grade) and
+`eval/home-lifetime.toml`. §21.2's AgentDojo seed is still the way to a
+larger one. B, C, D₂ and E remain, as does the model-driven principal.
 
 Each step is useful alone, which is still the test of whether the split is
 real: step 0 is a finding by itself, A′ makes today's `eval` honest about
@@ -1002,7 +1029,16 @@ chat endpoint over the agent loop, the contract `hyperstudy-agent`
 verifies, so mecha can be a HyperStudy participant in human-plus-agent
 coordination studies without any work on this side.
 
-### 21.1 Who drives a lifetime, and what a task is — the principal half ruled and built (2026-09-04, #185); the task-source half still the recommendation
+### 21.1 Who drives a lifetime, and what a task is — the principal half ruled and built (2026-09-04, #185; release and closure opened by fixture servers 2026-09-05); the task-source half still the recommendation
+
+> *Built note, 2026-09-05.* The fixture servers live in **mecha's tree**
+> for now (`eval/fixtures/`, beside `graph_server.py` and the cases that
+> use them), not in the scaffolding repository §21 proposes — that
+> repository does not exist yet, and the rule §21 states holds either way:
+> the servers are Python, drive nothing, link nothing, and mecha reaches
+> them only over MCP. What is mecha's by the rule is the manifest's
+> `[fixtures]` and the driver's refusal to release or close without it.
+> They migrate with `bench/` when the scaffolding repository is made.
 
 **Recommendation: mecha owns the trial; the scaffolding owns the task
 source and the principal, as executables mecha spawns.** `mecha exp run`

@@ -108,6 +108,215 @@ pub struct Manifest {
     /// driver's. A `single` refuses one.
     #[serde(default)]
     pub principal: Option<Principal>,
+    /// The fixture servers a trial home carries **instead of** the
+    /// operator's (Part II §17 item 4, §21.1): when this names any, the
+    /// rendered `[[mcp]]` is exactly this list and every live server is
+    /// dropped, for every arm. That closed world is what lets the principal
+    /// release a draft and close a board task — the two owner channels
+    /// gated off it until now, because a `full` arm carried the operator's
+    /// live mail and graph into the home and the store was isolated while
+    /// the effect was not. Each server persists under the home
+    /// (`fixtures/<name>/`, handed to it as `MECHA_FIXTURE_DIR`), seeded
+    /// once from the manifest's `seed` directory, so a lifetime's board and
+    /// mailbox are the dataset and D12 holds for them too.
+    #[serde(default)]
+    pub fixtures: Fixtures,
+}
+
+/// What the trial home carries in place of the operator's world: fixture
+/// MCP servers, and optionally the charter. `[fixtures]` on the manifest.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Fixtures {
+    /// A charter for the trial home, written over the one `seed_home`
+    /// copies from the real home before every task. The synthetic
+    /// assistant home's owner has their own standing priorities; the
+    /// operator's are not the design. The owner's rule survives: a file the
+    /// experimenter wrote, no model authors a line.
+    pub charter: Option<PathBuf>,
+    /// The servers. Named like `[[mcp]]` entries, minus what a fixture never
+    /// needs (an `env`, a passthrough, a sandbox), plus a `seed`.
+    pub mcp: Vec<FixtureServer>,
+}
+
+/// One fixture MCP server on the manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureServer {
+    /// The `[[mcp]] name` the home's config carries — and, unless
+    /// `prefix_tools = false`, the prefix on every tool it exposes, which
+    /// is how the driver tells a fixture's tool from a builtin's when the
+    /// principal releases a draft. No `__` in a name: it is the separator.
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub prefix_tools: Option<bool>,
+    #[serde(default)]
+    pub capabilities: crate::config::CapabilityOverride,
+    /// A directory copied into the server's store under the home when that
+    /// store is first created — the board's tasks, the mailbox's threads.
+    /// Copied once: what a lifetime's runs did to the store is the record.
+    #[serde(default)]
+    pub seed: Option<PathBuf>,
+}
+
+/// The variable a fixture server reads its store directory from — under
+/// the trial home, set by the driver, never by the manifest.
+pub const FIXTURE_DIR_ENV: &str = "MECHA_FIXTURE_DIR";
+
+/// Where a fixture server's state lives in a trial home.
+pub fn fixture_dir(home: &Path, name: &str) -> PathBuf {
+    home.join("fixtures").join(name)
+}
+
+/// Canonicalise every argument that is a relative path to a file that
+/// exists under `base` — the manifest's paths are written against the
+/// checkout `mecha exp run` is started from, and a server is spawned from
+/// the run's workspace, where `eval/fixtures/board_server.py` names
+/// nothing (eval's `--mcp-file` learnt this the same way). Anything else is
+/// left alone: a flag, a name on `PATH`, a path that is not there yet.
+pub fn resolve_file_args(argv: &mut [String], base: &Path) {
+    for a in argv.iter_mut() {
+        let p = Path::new(a.as_str());
+        if p.is_relative() {
+            let joined = base.join(p);
+            if joined.is_file() {
+                if let Ok(c) = joined.canonicalize() {
+                    *a = c.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+}
+
+impl Fixtures {
+    pub fn is_empty(&self) -> bool {
+        self.mcp.is_empty()
+    }
+
+    /// The server names, sorted — the hash term and the principal's view.
+    pub fn names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.mcp.iter().map(|s| s.name.clone()).collect();
+        v.sort();
+        v
+    }
+
+    fn validate(&self) -> Result<()> {
+        let mut seen = std::collections::BTreeSet::new();
+        for s in &self.mcp {
+            anyhow::ensure!(!s.name.is_empty(), "a fixture server needs a name");
+            anyhow::ensure!(
+                !s.name.contains("__"),
+                "fixture server `{}`: `__` separates a server's name from its tools' and cannot be in the name",
+                s.name
+            );
+            anyhow::ensure!(
+                seen.insert(s.name.as_str()),
+                "fixture server `{}` is named twice",
+                s.name
+            );
+            anyhow::ensure!(
+                !s.command.is_empty(),
+                "fixture server `{}` names no command",
+                s.name
+            );
+        }
+        if self.charter.is_some() {
+            anyhow::ensure!(
+                !self.mcp.is_empty(),
+                "`[fixtures] charter` without a fixture server: a home whose world is the operator's live servers is not a fixture home, and a fixture charter over it would appraise the wrong owner"
+            );
+        }
+        Ok(())
+    }
+
+    /// The `[[mcp]]` entries the home's config carries: every fixture, each
+    /// with its store directory under the home created (and seeded, the
+    /// first time) and handed over as [`FIXTURE_DIR_ENV`]; no passthrough,
+    /// no sandbox, no inline secret. `base` resolves the manifest's
+    /// relative paths.
+    pub fn render(&self, home: &Path, base: &Path) -> Result<Vec<crate::config::McpServerConfig>> {
+        let mut out = Vec::with_capacity(self.mcp.len());
+        for s in &self.mcp {
+            let dir = fixture_dir(home, &s.name);
+            if !dir.exists() {
+                std::fs::create_dir_all(&dir)
+                    .with_context(|| format!("creating {}", dir.display()))?;
+                if let Some(seed) = &s.seed {
+                    let seed = base.join(seed);
+                    anyhow::ensure!(
+                        seed.is_dir(),
+                        "fixture server `{}`: seed {} is not a directory",
+                        s.name,
+                        seed.display()
+                    );
+                    copy_tree(&seed, &dir).with_context(|| {
+                        format!("seeding {} into {}", seed.display(), dir.display())
+                    })?;
+                }
+            }
+            let mut argv = vec![s.command.clone()];
+            argv.extend(s.args.iter().cloned());
+            resolve_file_args(&mut argv, base);
+            let command = argv.remove(0);
+            let mut env = BTreeMap::new();
+            env.insert(
+                FIXTURE_DIR_ENV.to_string(),
+                dir.to_string_lossy().into_owned(),
+            );
+            out.push(crate::config::McpServerConfig {
+                name: s.name.clone(),
+                command,
+                args: argv,
+                env,
+                env_passthrough: Vec::new(),
+                sandbox: false,
+                network: None,
+                prefix_tools: s.prefix_tools,
+                capabilities: s.capabilities,
+                disabled: false,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Put the fixtures into a rendered trial config: the `[[mcp]]` list
+    /// becomes exactly the fixtures, so no live server of the operator's
+    /// reaches the home. A manifest with none leaves the config alone —
+    /// the operator's posture travels, as before.
+    pub fn apply(
+        &self,
+        config: &mut crate::config::Config,
+        home: &Path,
+        base: &Path,
+    ) -> Result<()> {
+        if self.is_empty() {
+            return Ok(());
+        }
+        config.mcp = self.render(home, base)?;
+        Ok(())
+    }
+
+    /// Write the fixture charter over the home's, when the manifest names
+    /// one. Idempotent, and run before every task: nothing in a home edits
+    /// a charter (no stage does, no model can), so the design's file is
+    /// the file.
+    pub fn apply_charter(&self, home: &Path, base: &Path) -> Result<()> {
+        let Some(path) = &self.charter else {
+            return Ok(());
+        };
+        let from = base.join(path);
+        let text = std::fs::read_to_string(&from)
+            .with_context(|| format!("reading the fixture charter {}", from.display()))?;
+        // Parsed before it is written: an unreadable charter degrades a run
+        // to un-chartered with one stderr line, which would measure the
+        // wrong thing quietly (found on §11.1's containment 7).
+        crate::charter::Charter::parse(&text)
+            .with_context(|| format!("the fixture charter {} does not parse", from.display()))?;
+        write_atomic(&home.join("charter.toml"), text.as_bytes())
+    }
 }
 
 /// The principal's contract, on `hooks.rs`'s shape: a command at a
@@ -182,6 +391,12 @@ pub struct PrincipalInput {
     /// Questions the run parked and nobody has answered.
     #[serde(default)]
     pub open_questions: Vec<crate::questions::Question>,
+    /// The fixture servers this arm's verbs can reach, by name — the
+    /// manifest's, or none when the arm has MCP off. A principal that
+    /// releases or closes without one on this list is asking the driver
+    /// for a verb it will refuse.
+    #[serde(default)]
+    pub fixtures: Vec<String>,
 }
 
 /// What the principal answers with.
@@ -240,23 +455,68 @@ impl From<PrincipalRequest> for PrincipalAct {
 /// The owner's verbs a principal may run, by their leading words — the
 /// channels §16 names, and nothing that writes a session, a reflection or
 /// a rule. A verb outside the set is the principal's error, recorded and
-/// never run.
-/// **Release is not here.** `outbox approve` executes the routed tool for
-/// real, and a `full` arm carries the operator's live servers into the
-/// trial home — the store is isolated, the effect is not — so a principal
-/// that released would send real messages from a real account, which in
-/// this repo crosses a human structurally. Release joins the set when a
-/// manifest can name fixture servers, as board closure waits on a fixture
-/// graph (found on review).
-pub const PRINCIPAL_VERBS: [&[&str]; 7] = [
+/// never run. Two of them reach a server ([`SERVER_VERBS`]) and are
+/// permitted only under a manifest that names fixture servers.
+pub const PRINCIPAL_VERBS: [&[&str]; 8] = [
     &["tasks", "set"],
     &["tasks", "steer"],
     &["tasks", "stop"],
+    &["outbox", "approve"],
     &["outbox", "reject"],
     &["outbox", "edit"],
     &["questions", "answer"],
     &["questions", "abandon"],
 ];
+
+/// The verbs whose effect leaves the home's stores for a server's:
+/// `outbox approve` executes the routed tool for real, and `tasks set`
+/// writes the board, which is the graph's over MCP. Under a manifest with
+/// no fixtures a `full` arm carries the operator's live servers into the
+/// trial home — the store is isolated, the effect is not — so a principal
+/// that released would send from a real account and one that closed would
+/// close a real task, which in this repo crosses a human structurally.
+/// Under a manifest that names fixtures the home's `[[mcp]]` is exactly
+/// those, and the effect lands in `fixtures/<name>/` under the home.
+pub const SERVER_VERBS: [&[&str]; 2] = [&["tasks", "set"], &["outbox", "approve"]];
+
+fn leads_with(verb: &[String], lead: &[&str]) -> bool {
+    verb.len() >= lead.len() && lead.iter().zip(verb).all(|(a, b)| a == b)
+}
+
+pub fn reaches_a_server(verb: &[String]) -> bool {
+    SERVER_VERBS.iter().any(|lead| leads_with(verb, lead))
+}
+
+/// Whether the driver may run this verb for the principal: the shape
+/// ([`allowed_verb`]) and, for a verb that reaches a server, that the
+/// manifest names fixture servers. The reason on refusal is the ledger's.
+pub fn permitted_verb(verb: &[String], fixtures_named: bool) -> std::result::Result<(), String> {
+    if !allowed_verb(verb) {
+        return Err(format!(
+            "`{}` is not an owner's verb the principal may run",
+            verb.join(" ")
+        ));
+    }
+    if reaches_a_server(verb) && !fixtures_named {
+        return Err(format!(
+            "`{}` reaches a server, and this manifest names no fixture servers — a release or a closure would land on the operator's live ones",
+            verb.join(" ")
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a draft's tool is one a fixture server exposes, by the
+/// `<name>__` prefix the registry gives every tool of a prefixed server.
+/// A builtin (`http_fetch`, `web_search`) and an unprefixed server's tool
+/// carry none, so a release of either is refused: the driver cannot tell
+/// where the effect lands, and unknown is never clean.
+pub fn release_target_is_fixture(tool: &str, fixtures: &[String]) -> bool {
+    match tool.split_once("__") {
+        Some((server, rest)) => !rest.is_empty() && fixtures.iter().any(|f| f == server),
+        None => false,
+    }
+}
 
 /// The global options a principal's verb may not carry, **as the CLI
 /// spells them** (the first cut named a field, `--tools`, and the real
@@ -296,9 +556,7 @@ pub const PRINCIPAL_HARMLESS_OPTIONS: [&str; 6] =
     ["--verbose", "-v", "--help", "-h", "--version", "-V"];
 
 pub fn allowed_verb(verb: &[String]) -> bool {
-    let head_allowed = PRINCIPAL_VERBS
-        .iter()
-        .any(|lead| verb.len() >= lead.len() && lead.iter().zip(verb).all(|(a, b)| a == b));
+    let head_allowed = PRINCIPAL_VERBS.iter().any(|lead| leads_with(verb, lead));
     let moves_the_run = verb.iter().any(|a| {
         let name = a.split('=').next().unwrap_or(a);
         // A short group: clap stacks flags (`-vw /tmp`) and lets the last
@@ -707,6 +965,7 @@ impl Manifest {
             holdout_in,
             schedule: Schedule::default(),
             principal: None,
+            fixtures: Fixtures::default(),
         };
         m.validate()?;
         Ok(m)
@@ -743,6 +1002,7 @@ impl Manifest {
             holdout_in: 3,
             schedule: Schedule::default(),
             principal: None,
+            fixtures: Fixtures::default(),
         };
         m.validate()?;
         Ok(m)
@@ -783,6 +1043,7 @@ impl Manifest {
         }
         anyhow::ensure!(self.repetitions >= 1, "repetitions must be at least 1");
         anyhow::ensure!(self.holdout_in >= 2, "holdout_in must be at least 2");
+        self.fixtures.validate()?;
         // Both kinds: `ids` names each case once. For a lifetime the
         // positions are the tasks; for a single, `cases_for` walks `ids` in
         // order and a repeated id would plan two rows with one trial id —
@@ -882,6 +1143,7 @@ impl Manifest {
             self.seeds.iter().copied().map(Some).collect()
         };
         let mut out = Vec::new();
+        let fixtures = self.fixtures.names();
         for (arm_name, arm) in &self.arms {
             let resolved = arm.resolve_levers().expect("validated at load");
             let stages = arm.resolve_stages().expect("validated at load");
@@ -893,13 +1155,14 @@ impl Manifest {
                 task: task.clone(),
                 seed,
                 repetition: rep,
-                condition_hash: condition_hash_with_stages(
+                condition_hash: condition_hash_of(
                     &resolved,
                     &arm.overrides,
                     provider,
                     model,
                     seed,
                     &stages,
+                    &fixtures,
                 ),
                 status: TrialStatus::Pending,
                 session_id: None,
@@ -1048,6 +1311,31 @@ pub fn condition_hash_with_stages(
     seed: Option<u64>,
     stages_off: &[StageLever],
 ) -> String {
+    condition_hash_of(
+        levers_off,
+        overrides,
+        provider,
+        model,
+        seed,
+        stages_off,
+        &[],
+    )
+}
+
+/// [`condition_hash_with_stages`] with the fixture servers a row ran
+/// against: a trial whose home carried a fixture board and mailbox ran on
+/// a different tool surface from one on the operator's, and two such rows
+/// must not pair. The `fixtures=` term is appended only when a manifest
+/// names any, so every hash minted before fixtures existed keeps its value.
+pub fn condition_hash_of(
+    levers_off: &[Lever],
+    overrides: &[String],
+    provider: &str,
+    model: &str,
+    seed: Option<u64>,
+    stages_off: &[StageLever],
+    fixtures: &[String],
+) -> String {
     let mut overrides: Vec<&str> = overrides.iter().map(String::as_str).collect();
     overrides.sort_unstable();
     let mut canonical = format!(
@@ -1069,6 +1357,12 @@ pub fn condition_hash_with_stages(
                 .collect::<Vec<_>>()
                 .join(","),
         );
+    }
+    if !fixtures.is_empty() {
+        let mut names: Vec<&str> = fixtures.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        canonical.push_str("|fixtures=");
+        canonical.push_str(&names.join(","));
     }
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in canonical.bytes() {
@@ -3657,5 +3951,362 @@ rationale = "no rumination should fail more over the sequence"
         let json = serde_json::to_string(&r).unwrap();
         assert_eq!(serde_json::from_str::<ExperimentRef>(&json).unwrap(), r);
         assert!(serde_json::from_str::<ExperimentRef>("{\"exp_id\":1}").is_err());
+    }
+
+    const FIXTURED: &str = r#"
+name = "home"
+kind = "lifetime"
+split_seed = 3
+[tasks]
+cases = "eval/home-cases.jsonl"
+fixture = "eval/workspace"
+ids = ["a"]
+[fixtures]
+charter = "eval/fixtures/home/charter.toml"
+[[fixtures.mcp]]
+name = "graph"
+command = "python3"
+args = ["eval/fixtures/board_server.py"]
+prefix_tools = false
+seed = "eval/fixtures/home/board"
+[fixtures.mcp.capabilities]
+untrusted_input = true
+[[fixtures.mcp]]
+name = "mail"
+command = "python3"
+args = ["eval/fixtures/mail_server.py"]
+[arms.full]
+preset = "full"
+"#;
+
+    /// A manifest names fixture servers; the names are unique, carry no
+    /// `__`, name a command — and a fixture charter needs a fixture world.
+    #[test]
+    fn fixtures_are_named_on_the_manifest_and_validated_at_load() {
+        let m = Manifest::parse(FIXTURED).unwrap();
+        assert_eq!(
+            m.fixtures.names(),
+            vec!["graph".to_string(), "mail".to_string()]
+        );
+        assert!(!m.fixtures.is_empty());
+        assert_eq!(m.fixtures.mcp[0].prefix_tools, Some(false));
+        assert!(m.fixtures.mcp[0].capabilities.untrusted_input);
+        assert_eq!(
+            m.fixtures.mcp[0].seed.as_deref(),
+            Some(Path::new("eval/fixtures/home/board"))
+        );
+        // A `single` may carry fixtures too: eval's graph cases are the case.
+        let single = FIXTURED
+            .replace("kind = \"lifetime\"\n", "")
+            .replace("ids = [\"a\"]\n", "");
+        assert!(Manifest::parse(&single).is_ok());
+        let twice = FIXTURED.replace("name = \"mail\"", "name = \"graph\"");
+        assert!(Manifest::parse(&twice)
+            .unwrap_err()
+            .to_string()
+            .contains("named twice"));
+        let sep = FIXTURED.replace("name = \"mail\"", "name = \"my__mail\"");
+        assert!(Manifest::parse(&sep)
+            .unwrap_err()
+            .to_string()
+            .contains("__"));
+        let nocmd = FIXTURED.replace(
+            "command = \"python3\"\nargs = [\"eval/fixtures/mail_server.py\"]",
+            "command = \"\"",
+        );
+        assert!(Manifest::parse(&nocmd)
+            .unwrap_err()
+            .to_string()
+            .contains("no command"));
+        let charter_alone = "name = \"x\"\nsplit_seed = 1\n[tasks]\ncases = \"c\"\nfixture = \"f\"\n[fixtures]\ncharter = \"ch.toml\"\n[arms.a]\n";
+        assert!(
+            Manifest::parse(charter_alone)
+                .unwrap_err()
+                .to_string()
+                .contains("without a fixture server"),
+            "a fixture charter over the operator's live servers is refused"
+        );
+        // Absent: the default, empty, and the manifest from before the field parses.
+        let m = Manifest::parse(MANIFEST).unwrap();
+        assert!(m.fixtures.is_empty());
+        assert!(m.fixtures.names().is_empty());
+    }
+
+    /// Rendering puts exactly the fixtures into `[[mcp]]`, drops every live
+    /// server, hands each its store under the home, seeds it once, and
+    /// resolves the manifest's relative file paths against the base.
+    #[test]
+    fn fixtures_replace_the_operators_servers_and_persist_under_the_home() {
+        let base = std::env::temp_dir().join(format!("mecha-fx-base-{}", uuid::Uuid::new_v4()));
+        let home = std::env::temp_dir().join(format!("mecha-fx-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(base.join("srv")).unwrap();
+        std::fs::create_dir_all(base.join("seed")).unwrap();
+        std::fs::write(base.join("srv/board.py"), b"# a server").unwrap();
+        std::fs::write(base.join("seed/board.json"), b"{\"tasks\":{}}").unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let text = r#"
+name = "fx"
+split_seed = 1
+[tasks]
+cases = "c"
+fixture = "f"
+[[fixtures.mcp]]
+name = "graph"
+command = "python3"
+args = ["srv/board.py", "--flag", "not/a/file.py"]
+seed = "seed"
+[arms.a]
+"#;
+        let m = Manifest::parse(text).unwrap();
+        let mut config = crate::config::Config::default();
+        config.mcp.push(crate::config::McpServerConfig {
+            name: "mail".into(),
+            command: "/usr/bin/mecha-mail".into(),
+            ..Default::default()
+        });
+        m.fixtures.apply(&mut config, &home, &base).unwrap();
+        assert_eq!(config.mcp.len(), 1, "the operator's live server is gone");
+        let srv = &config.mcp[0];
+        assert_eq!(srv.name, "graph");
+        assert!(
+            Path::new(&srv.args[0]).is_absolute() && srv.args[0].ends_with("srv/board.py"),
+            "a relative file is resolved: {}",
+            srv.args[0]
+        );
+        assert_eq!(srv.args[1], "--flag", "a flag is left alone");
+        assert_eq!(
+            srv.args[2], "not/a/file.py",
+            "a path that is not there is left alone"
+        );
+        assert_eq!(
+            srv.env.get(FIXTURE_DIR_ENV).map(String::as_str),
+            Some(fixture_dir(&home, "graph").to_string_lossy().as_ref())
+        );
+        assert!(srv.env_passthrough.is_empty() && !srv.sandbox && !srv.disabled);
+        assert_eq!(
+            std::fs::read(fixture_dir(&home, "graph").join("board.json")).unwrap(),
+            b"{\"tasks\":{}}",
+            "seeded"
+        );
+        // Seeded once: the second render leaves what the first lifetime did.
+        std::fs::write(
+            fixture_dir(&home, "graph").join("board.json"),
+            b"{\"tasks\":{\"t\":1}}",
+        )
+        .unwrap();
+        m.fixtures.apply(&mut config, &home, &base).unwrap();
+        assert_eq!(
+            std::fs::read(fixture_dir(&home, "graph").join("board.json")).unwrap(),
+            b"{\"tasks\":{\"t\":1}}"
+        );
+        // A missing seed is an error, never an empty board.
+        let missing = text.replace("seed = \"seed\"", "seed = \"nowhere\"");
+        let m2 = Manifest::parse(&missing).unwrap();
+        let home2 = std::env::temp_dir().join(format!("mecha-fx-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home2).unwrap();
+        assert!(m2
+            .fixtures
+            .apply(&mut config, &home2, &base)
+            .unwrap_err()
+            .to_string()
+            .contains("not a directory"));
+        // No fixtures: the config is untouched.
+        let mut live = crate::config::Config::default();
+        live.mcp.push(crate::config::McpServerConfig {
+            name: "mail".into(),
+            ..Default::default()
+        });
+        Manifest::parse(MANIFEST)
+            .unwrap()
+            .fixtures
+            .apply(&mut live, &home, &base)
+            .unwrap();
+        assert_eq!(live.mcp.len(), 1);
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&home2);
+    }
+
+    /// The fixture charter is written over the home's, parsed first, and
+    /// only when the manifest names one.
+    #[test]
+    fn the_fixture_charter_is_written_over_the_seeded_one() {
+        let base = std::env::temp_dir().join(format!("mecha-fx-base-{}", uuid::Uuid::new_v4()));
+        let home = std::env::temp_dir().join(format!("mecha-fx-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("charter.toml"), b"# the operator's\n").unwrap();
+        std::fs::write(
+            base.join("ch.toml"),
+            b"[[line]]\nid = \"answer\"\ntext = \"Answer what waits on me.\"\n",
+        )
+        .unwrap();
+        let mut fx = Fixtures::default();
+        fx.apply_charter(&home, &base).unwrap();
+        assert_eq!(
+            std::fs::read(home.join("charter.toml")).unwrap(),
+            b"# the operator's\n",
+            "none named: untouched"
+        );
+        fx.charter = Some("ch.toml".into());
+        fx.apply_charter(&home, &base).unwrap();
+        assert!(
+            String::from_utf8(std::fs::read(home.join("charter.toml")).unwrap())
+                .unwrap()
+                .contains("Answer what waits")
+        );
+        std::fs::write(base.join("ch.toml"), b"[[line]]\nnot = toml =\n").unwrap();
+        assert!(fx
+            .apply_charter(&home, &base)
+            .unwrap_err()
+            .to_string()
+            .contains("does not parse"));
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Release and closure reach a server: permitted only under a manifest
+    /// that names fixtures; every other verb as before, and the shape rules
+    /// hold for all of them.
+    #[test]
+    fn a_verb_that_reaches_a_server_needs_fixture_servers() {
+        let v = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert!(
+            allowed_verb(&v("outbox approve ob-1")),
+            "the shape is an owner's verb now"
+        );
+        assert!(reaches_a_server(&v("outbox approve ob-1")));
+        assert!(reaches_a_server(&v("tasks set t-1 --status done")));
+        assert!(!reaches_a_server(&v("outbox reject ob-1 --reason no")));
+        assert!(!reaches_a_server(&v("tasks steer t-1 go left")));
+        assert!(!reaches_a_server(&v(
+            "questions answer q-1 --unattended yes"
+        )));
+        // Without fixtures: refused, naming the reason.
+        let err = permitted_verb(&v("outbox approve ob-1"), false).unwrap_err();
+        assert!(err.contains("names no fixture servers"), "{err}");
+        let err = permitted_verb(&v("tasks set t-1 --status done"), false).unwrap_err();
+        assert!(err.contains("reaches a server"), "{err}");
+        assert!(permitted_verb(&v("outbox reject ob-1 --reason no"), false).is_ok());
+        // With fixtures: permitted; the shape rules still apply.
+        assert!(permitted_verb(&v("outbox approve ob-1"), true).is_ok());
+        assert!(permitted_verb(&v("tasks set t-1 --session s-1 --status done"), true).is_ok());
+        assert!(
+            permitted_verb(&v("outbox approve ob-1 --yes"), true).is_err(),
+            "-y/--yes is the driver's word, never the principal's"
+        );
+        assert!(permitted_verb(&v("outbox approve ob-1 --workspace /tmp"), true).is_err());
+        assert!(permitted_verb(&v("run do it"), true)
+            .unwrap_err()
+            .contains("not an owner's verb"));
+    }
+
+    /// A release lands where the draft's tool does: a fixture server's tool
+    /// by prefix, and nothing else.
+    #[test]
+    fn a_release_target_is_a_fixture_servers_tool_by_prefix() {
+        let fx = vec!["graph".to_string(), "mail".to_string()];
+        assert!(release_target_is_fixture("mail__mail_send", &fx));
+        assert!(release_target_is_fixture(
+            "mail__calendar_create_event",
+            &fx
+        ));
+        assert!(
+            !release_target_is_fixture("docs__docs_create", &fx),
+            "a live server's"
+        );
+        assert!(
+            !release_target_is_fixture("http_fetch", &fx),
+            "a builtin sink"
+        );
+        assert!(
+            !release_target_is_fixture("kg_task_update", &fx),
+            "an unprefixed server's tool cannot be attributed"
+        );
+        assert!(
+            !release_target_is_fixture("mail__", &fx),
+            "a prefix alone names no tool"
+        );
+        assert!(
+            !release_target_is_fixture("mail__mail_send", &[]),
+            "an arm with MCP off reaches none"
+        );
+    }
+
+    /// The hash carries the fixture names only when a manifest names any,
+    /// so every hash minted before fixtures existed keeps its value.
+    #[test]
+    fn the_condition_hash_names_the_fixtures_only_when_there_are_any() {
+        let plain = condition_hash_with_stages(&[], &[], "p", "m", Some(1), &[]);
+        assert_eq!(
+            plain,
+            condition_hash_of(&[], &[], "p", "m", Some(1), &[], &[])
+        );
+        let fixtured = condition_hash_of(
+            &[],
+            &[],
+            "p",
+            "m",
+            Some(1),
+            &[],
+            &["mail".into(), "graph".into()],
+        );
+        assert_ne!(plain, fixtured);
+        assert_eq!(
+            fixtured,
+            condition_hash_of(
+                &[],
+                &[],
+                "p",
+                "m",
+                Some(1),
+                &[],
+                &["graph".into(), "mail".into()]
+            ),
+            "order-free"
+        );
+        let m = Manifest::parse(FIXTURED).unwrap();
+        let rows = m.trials(&["a".into()], "p", "m");
+        assert_eq!(
+            rows[0].condition_hash,
+            condition_hash_of(
+                &[],
+                &[],
+                "p",
+                "m",
+                None,
+                &[],
+                &["graph".into(), "mail".into()]
+            )
+        );
+    }
+
+    /// The principal is told which fixtures its verbs can reach; an old
+    /// input without the field reads as none.
+    #[test]
+    fn the_principal_input_names_the_fixtures_it_can_reach() {
+        let m = Manifest::parse(FIXTURED).unwrap();
+        let case: crate::eval::EvalCase =
+            serde_json::from_str(r#"{"id":"a","prompt":"p"}"#).unwrap();
+        let input = PrincipalInput {
+            point: PrincipalPoint::AfterTask,
+            experiment: m.name.clone(),
+            lifetime: "full__r1".into(),
+            arm: "full".into(),
+            position: 0,
+            home: "/h".into(),
+            workspace: "/w".into(),
+            case,
+            trial: None,
+            pending_outbox: vec![],
+            open_questions: vec![],
+            fixtures: m.fixtures.names(),
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["fixtures"], serde_json::json!(["graph", "mail"]));
+        let mut old = json.clone();
+        old.as_object_mut().unwrap().remove("fixtures");
+        let back: PrincipalInput = serde_json::from_value(old).unwrap();
+        assert!(back.fixtures.is_empty());
     }
 }

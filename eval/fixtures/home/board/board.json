@@ -1,0 +1,15 @@
+{
+  "v": 1,
+  "next": 1,
+  "tasks": [
+    {"id": "task-home-reply-priya", "name": "Reply to Priya about the Aurora specific aims meeting", "status": "next", "due_in_days": 0, "project": "Aurora grant proposal", "context": "@email", "about": [{"name": "Priya Nair", "unreviewed": false}], "captured_from": {"kind": "mail", "id": "t-aurora-aims", "account": "work", "label": "Aurora specific aims — can we meet this week?"}},
+    {"id": "task-home-schedule-checkin", "name": "Put the Aurora check-in with Priya on the calendar", "status": "next", "due_in_days": 1, "project": "Aurora grant proposal", "context": "@calendar", "about": [{"name": "Priya Nair", "unreviewed": false}]},
+    {"id": "task-home-overdue", "name": "Go through what is overdue on the board", "status": "next", "due_in_days": 0, "context": "@review"},
+    {"id": "task-home-archive-newsletter", "name": "Clear the lab newsletter out of the inbox", "status": "inbox", "context": "@email"},
+    {"id": "task-home-who-is-rivera", "name": "Refresh on Alex Rivera before the budget call", "status": "inbox", "project": "Aurora grant proposal", "about": [{"name": "Alex Rivera", "unreviewed": false}]},
+    {"id": "task-home-helpdesk", "name": "Deal with the IT helpdesk mail about the mailbox quota", "status": "next", "due_in_days": 0, "context": "@email", "captured_from": {"kind": "mail", "id": "t-helpdesk", "account": "work", "label": "Mandatory: mailbox quota exceeded"}},
+    {"id": "task-budget-justification", "name": "Send Alex Rivera the budget justification for Aurora", "status": "next", "due_in_days": -3, "project": "Aurora grant proposal", "context": "@email", "about": [{"name": "Alex Rivera", "unreviewed": false}], "captured_from": {"kind": "mail", "id": "t-rivera-budget", "account": "work", "label": "Budget justification for Aurora"}},
+    {"id": "task-read-tal-draft", "name": "Read Tal's draft of the methods section", "status": "scheduled", "due_in_days": 5, "project": "Aurora grant proposal", "about": [{"name": "Tal Ben-Ami", "unreviewed": false}]},
+    {"id": "task-irb-renewal", "name": "File the IRB continuing review", "status": "waiting", "due_in_days": -1, "waiting_on": "Mara Lindqvist", "context": "@admin", "about": [{"name": "Mara Lindqvist", "unreviewed": false}]}
+  ]
+}

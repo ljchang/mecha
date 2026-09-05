@@ -356,8 +356,17 @@ async fn run_lifetimes(
                     ran += 1;
                     eprintln!("· {} ({ran}) · {lifetime} position {position}", trial.id);
                     // The principal first: it may script refusals for this
-                    // task, which the run child reads from the home.
+                    // task, which the run child reads from the home — and
+                    // its verbs run against the home's config, so the home
+                    // is rendered for this task before it is asked. A
+                    // failure here is `run_one`'s to record: it renders the
+                    // same way and fails the row with the same error.
                     if let Some(principal) = &manifest.principal {
+                        if let Err(e) = render_home(manifest, real, arm, trial.seed, &home) {
+                            eprintln!(
+                                "  the home could not be rendered ahead of the principal: {e:#}"
+                            );
+                        }
                         if !principal_done(&ledger, position, PrincipalPoint::BeforeTask) {
                             let run = principal_call(
                                 store,
@@ -539,6 +548,28 @@ fn principal_done(
     })
 }
 
+/// The pending draft a release names, by exact id or a unique prefix — the
+/// CLI's own selection rule, applied here so the driver vets the draft the
+/// verb will act on and not a namesake.
+fn release_target<'a>(
+    pending: &'a [mecha_core::outbox::OutboxItem],
+    named: &str,
+) -> std::result::Result<&'a mecha_core::outbox::OutboxItem, String> {
+    if let Some(exact) = pending.iter().find(|i| i.id == named) {
+        return Ok(exact);
+    }
+    let by_prefix: Vec<&mecha_core::outbox::OutboxItem> =
+        pending.iter().filter(|i| i.id.starts_with(named)).collect();
+    match by_prefix.as_slice() {
+        [one] => Ok(one),
+        [] => Err(format!("`{named}` names no pending draft in this home")),
+        many => Err(format!(
+            "`{named}` names {} pending drafts; name one",
+            many.len()
+        )),
+    }
+}
+
 /// The principal's call at one point of one position (Part II §16, §21.1):
 /// the trial's state on its stdin — the case, the graded row after the
 /// task, what the run left in the outbox and the question store — and its
@@ -628,6 +659,31 @@ async fn principal_call(
     } else {
         Vec::new()
     };
+    // The pending drafts, read once for the same reason: a release names
+    // one, and the driver checks the draft it names against this list. A
+    // read: open only what exists, on the doctor's rule that an
+    // examination must not create what it was about to report. An
+    // unreadable store is a failed call, never an empty queue.
+    let pending_outbox: Result<Vec<mecha_core::outbox::OutboxItem>> =
+        if home.join("outbox").is_dir() {
+            mecha_core::outbox::OutboxStore::open(home.join("outbox")).and_then(|s| {
+                Ok(s.items()?
+                    .into_iter()
+                    .filter(|i| i.status == "pending")
+                    .collect())
+            })
+        } else {
+            Ok(Vec::new())
+        };
+    // The fixture servers this arm's verbs can reach: the manifest's, or
+    // none when the arm has MCP off — `--no-mcp` rides on every verb the
+    // driver runs for the principal, so the board and the mailbox are out
+    // of reach for that arm and the principal is told so.
+    let fixtures: Vec<String> = if flags.iter().any(|f| f == "--no-mcp") {
+        Vec::new()
+    } else {
+        manifest.fixtures.names()
+    };
     let outcome: Result<PrincipalOutput> = async {
         // First, before anything else can fail: a principal that failed to
         // answer must not leave the last position's refusals armed for
@@ -651,21 +707,22 @@ async fn principal_call(
             workspace: workspace.clone(),
             case: case.clone(),
             trial: (point == PrincipalPoint::AfterTask).then(|| trial.clone()),
-            // A read: open only what exists, on the doctor's rule that an
-            // examination must not create what it was about to report.
-            pending_outbox: if home.join("outbox").is_dir() {
-                mecha_core::outbox::OutboxStore::open(home.join("outbox"))?
-                    .items()?
-                    .into_iter()
-                    .filter(|i| i.status == "pending")
-                    .collect()
-            } else {
-                Vec::new()
-            },
+            pending_outbox: pending_outbox
+                .as_ref()
+                .map(|v| v.clone())
+                .map_err(|e| anyhow::anyhow!("the home's outbox could not be read: {e:#}"))?,
             open_questions: open_questions.clone(),
+            fixtures: fixtures.clone(),
         };
-        let (exe, args) = principal
-            .command
+        // The manifest's relative file paths — the script, its policy —
+        // are written against the checkout `exp run` is started from, and
+        // the principal runs from the lifetime's scratch workspace, where
+        // they name nothing. Resolved the way a fixture server's are; a
+        // command on `PATH` and an absolute path are left alone.
+        let mut command = principal.command.clone();
+        let base = std::env::current_dir().context("cannot determine the working directory")?;
+        mecha_core::experiment::resolve_file_args(&mut command, &base);
+        let (exe, args) = command
             .split_first()
             .context("the principal names no executable")?;
         let mut cmd = tokio::process::Command::new(exe);
@@ -743,14 +800,71 @@ async fn principal_call(
             }
             for request in answer.acts {
                 let mut act = mecha_core::experiment::PrincipalAct::from(request);
-                if !mecha_core::experiment::allowed_verb(&act.verb) {
+                if let Err(reason) =
+                    mecha_core::experiment::permitted_verb(&act.verb, !manifest.fixtures.is_empty())
+                {
                     act.ok = Some(false);
-                    failures.push(format!(
-                        "`{}` is not an owner's verb the principal may run",
-                        act.verb.join(" ")
-                    ));
+                    failures.push(reason);
                     run.acts.push(act);
                     continue;
+                }
+                // A release is checked against the draft it names: the
+                // draft must be pending in this home and its tool must be a
+                // fixture server's, by prefix — a builtin sink (`http_fetch`)
+                // or an unprefixed server's tool lands somewhere the driver
+                // cannot see, so it is refused. `--all` is refused with them:
+                // the principal names each draft, and the driver vets each.
+                // And the release runs under the *local* `--yes`, the
+                // driver's word: a draft written in a tainted conversation
+                // confirms on a terminal the driver does not have, and the
+                // principal may not carry the flag itself (found on the
+                // design).
+                if act
+                    .verb
+                    .starts_with(&["outbox".to_string(), "approve".to_string()])
+                {
+                    let named: Vec<&String> = act.verb[2..]
+                        .iter()
+                        .filter(|a| !a.starts_with('-'))
+                        .collect();
+                    let refusal = if act.verb.iter().any(|a| a == "--all") {
+                        Some("a release names its draft; `--all` is refused".to_string())
+                    } else if named.len() != 1 {
+                        Some(format!(
+                            "a release names exactly one draft; `{}` names {}",
+                            act.verb.join(" "),
+                            named.len()
+                        ))
+                    } else {
+                        match release_target(pending_outbox.as_deref().unwrap_or(&[]), named[0]) {
+                            Err(e) => Some(e),
+                            Ok(item)
+                                if !mecha_core::experiment::release_target_is_fixture(
+                                    &item.tool,
+                                    &fixtures,
+                                ) =>
+                            {
+                                Some(format!(
+                                    "draft {} would execute `{}`, which is not a fixture server's tool ({})",
+                                    item.id,
+                                    item.tool,
+                                    if fixtures.is_empty() {
+                                        "this arm reaches none".to_string()
+                                    } else {
+                                        format!("fixtures: {}", fixtures.join(", "))
+                                    }
+                                ))
+                            }
+                            Ok(_) => None,
+                        }
+                    };
+                    if let Some(reason) = refusal {
+                        act.ok = Some(false);
+                        failures.push(reason);
+                        run.acts.push(act);
+                        continue;
+                    }
+                    act.verb.push("--yes".into());
                 }
                 // A question's answer resumes a run whose jail the question
                 // recorded, and the driver's `--workspace` beats the resume's
@@ -1073,6 +1187,60 @@ async fn run_stage(
     run
 }
 
+/// What rendering a trial home for one task leaves the caller: the arm's
+/// CLI-only levers as flags, the key variables the child needs, and the
+/// knobs the home's own loop moved.
+struct Rendered {
+    flags: Vec<String>,
+    passthrough: Vec<String>,
+    moved: Vec<String>,
+}
+
+/// Render the home's `config.toml` for the task about to run: the arm
+/// (`child_invocation`), then what the home's own stages accepted
+/// (`fold_home_overrides`, a lifetime's only), then the manifest's fixtures
+/// — the `[[mcp]]` list becomes exactly the fixture servers, each with its
+/// store under the home created and seeded once — and the fixture charter
+/// over the seeded one. Called by `run_one`, and by the lifetime driver
+/// **before position 0's `before_task` principal call**: a verb the
+/// principal asks for there runs against the home's config, and until this
+/// wrote one the home had none — so `tasks set` found no board and
+/// `outbox approve` no server, at the one position where the fixtures were
+/// meant to be reachable first (found on the design).
+fn render_home(
+    manifest: &Manifest,
+    real: &mecha_core::config::Config,
+    arm: &mecha_core::experiment::Arm,
+    seed: Option<u64>,
+    home: &Path,
+) -> Result<Rendered> {
+    let ChildInvocation {
+        mut config,
+        flags,
+        passthrough,
+    } = mecha_core::experiment::child_invocation(real, arm, seed)?;
+    // What the home's own stages accepted rides into the next task, under
+    // the arm's pins — or a lifetime's `ruminate` would measure as nothing.
+    // A single runs no stage and folds nothing.
+    let moved = if manifest.kind == TrialKind::Lifetime {
+        mecha_core::experiment::fold_home_overrides(&mut config, home, arm)?
+    } else {
+        Vec::new()
+    };
+    // The manifest's paths are written against the checkout `exp run` is
+    // started from; a server is spawned from the trial's workspace.
+    let base = std::env::current_dir().context("cannot determine the working directory")?;
+    manifest.fixtures.apply(&mut config, home, &base)?;
+    manifest.fixtures.apply_charter(home, &base)?;
+    std::fs::write(home.join("config.toml"), toml::to_string_pretty(&config)?)
+        .with_context(|| format!("writing {}", home.join("config.toml").display()))?;
+    Ok(Rendered {
+        flags,
+        passthrough,
+        moved,
+    })
+}
+
 /// One trial: the arm's home and config, a fresh workspace, the child, the
 /// grade, the stats. Everything the trial learned is on its row when this
 /// returns; a failure anywhere is the row's `error`, never a missing row.
@@ -1095,25 +1263,15 @@ async fn run_one(
         ),
     };
     let home = home.to_path_buf();
-    let ChildInvocation {
-        mut config,
+    let Rendered {
         flags,
         passthrough,
-    } = mecha_core::experiment::child_invocation(real, arm, trial.seed)?;
-    // What the home's own stages accepted rides into the next task, under
-    // the arm's pins — or a lifetime's `ruminate` would measure as nothing.
-    // A single runs no stage and folds nothing.
-    let moved = if manifest.kind == TrialKind::Lifetime {
-        mecha_core::experiment::fold_home_overrides(&mut config, &home, arm)?
-    } else {
-        Vec::new()
-    };
+        moved,
+    } = render_home(manifest, real, arm, trial.seed, &home)?;
     // A knob is pinned for this task if the arm moves it *or* the home's
     // own loop did: the case's ceiling flag below must not override
     // either, since a flag beats the rendered config.
     let pinned = |key: &str| arm_moves(arm, key) || moved.iter().any(|k| k == key);
-    std::fs::write(home.join("config.toml"), toml::to_string_pretty(&config)?)
-        .with_context(|| format!("writing {}", home.join("config.toml").display()))?;
 
     let workspace = store.workspace_for(&trial.id);
     if workspace.exists() {
@@ -1296,6 +1454,13 @@ fn status(name: &str, json: bool) -> Result<()> {
         }
     };
     let mut by_arm: std::collections::BTreeMap<&str, [usize; 5]> = Default::default();
+    // The world the trials ran in, when it was not the operator's.
+    if !manifest.fixtures.is_empty() {
+        println!(
+            "fixtures: {} (the operator's servers are not in these homes)",
+            manifest.fixtures.names().join(", ")
+        );
+    }
     for arm in manifest.arms.keys() {
         by_arm.insert(arm.as_str(), [0; 5]);
     }
