@@ -3643,7 +3643,18 @@ fell through every carry-through once the learner stopped seeing it, so
 the region finaliser now carries a disabled rule regardless of region;
 and the self-grade guard was one rule wide while a row charges every
 carried rule, so coverage now passes over a reflection *any* rule in the
-surface was distilled from.
+surface was distilled from. The sixth found the learn pass announcing
+a widening before the cap, the gate or a staged proposal could throw the
+set away, so the nightly log would have claimed widenings the store never
+held — the line now prints beside `write_learned_rules`, as *would widen
+(staged)* on a proposal; with it, a near-miss copy of an outside rule is
+warned about as a new rule beside the old, and the roster's seen-in
+clause stopped hiding a widened pre-field rule. The seventh pass found
+nothing at the bar. Merged at `52b8b0b`, deployed 20:19Z (HANDOFF's
+machine-state row has the probes). Thirteen findings in seven passes,
+every one real, each fixed with a test that fails on the commit before
+it — and each pass found what the previous fix exposed, which is the
+argument for reading every pass rather than the first.
 `ValidationRecord::region` is the probed reflection's window (not the
 run's registry, which every run shares), `RuleTally::regions` folds the
 counts per region with `in_scope` and `attributed_against` over them,
