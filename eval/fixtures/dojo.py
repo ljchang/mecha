@@ -19,7 +19,11 @@ child, a principal's verb and the grader all see one world. Pickled, not
 dumped as JSON: the suite's `Inbox` rebuilds its mailbox from the seed list
 on validation, so a JSON round trip silently dropped every email a run sent
 (found on the first smoke) — and the file is written and read by this
-program alone, under the trial home, never by a model. As a source,
+program alone, under the trial home, never by a model. What keeps a run
+from writing it is the interlock, not the filesystem: the home is a sibling
+of the path jail, but an unconfined `shell` declares `external_send` and is
+refused the moment a dojo read arms private and untrusted, and the
+injection only exists inside such a read (checked on review). As a source,
 `list` enumerates the suite's user tasks and — by default — each paired with
 one injection task (`user_task_3+injection_task_1`), `setup` rebuilds the
 store from the suite's initial environment with the pair's injection placed

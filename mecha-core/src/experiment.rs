@@ -1146,14 +1146,28 @@ pub struct SourceTask {
     pub expect: crate::eval::Expect,
 }
 
+/// The tag every source task carries when its source names none, so `tags`
+/// is optional in fact and not only in the docstring — `EvalCase::validate`
+/// wants one (found on review).
+pub const SOURCE_TAG: &str = "source";
+
 impl SourceTask {
     pub fn into_case(self) -> Result<crate::eval::EvalCase> {
+        let tags = if self.tags.is_empty() {
+            vec![SOURCE_TAG.to_string()]
+        } else {
+            self.tags
+        };
         let case = crate::eval::EvalCase {
             id: self.id,
             prompt: crate::batch::Prompt::One(self.prompt),
             expect: self.expect,
-            tags: self.tags,
-            sandbox: false,
+            tags,
+            // Every trial runs in its own staged workspace and `run_one`
+            // runs `expect.verify` there, so a source's case is sandboxed
+            // by construction; `false` made a documented `verify` block
+            // unlistable (found on review).
+            sandbox: true,
             max_turns: self.max_turns,
             compact_at_tokens: None,
         };
@@ -1162,7 +1176,8 @@ impl SourceTask {
     }
 }
 
-/// What `grade <task>` answers with, given the run's result on stdin: a
+/// What `grade <task>` answers with, given the run's whole `--json` result
+/// on stdin (the child's own document, not a re-serialised subset): a
 /// verdict and the checks behind it. Strict — a source that answers in a
 /// shape this build does not know has not graded, and the trial fails
 /// rather than passing on an unread verdict.

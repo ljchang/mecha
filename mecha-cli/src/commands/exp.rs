@@ -1703,7 +1703,11 @@ async fn run_one(
             &["grade", &case.id],
             &env,
             &workspace,
-            Some(serde_json::to_string(&result)?),
+            // The child's own document, whole — `session`, `model`, `cost_usd`
+            // and the rest that `BatchResult` does not model — so a source
+            // that grades against the transcript can find it (found on
+            // review).
+            Some(value.to_string()),
         )
         .await
         .with_context(|| format!("the task source could not grade `{}`", case.id))?;
@@ -2186,6 +2190,19 @@ mod tests {
         };
         let cases = source_list(&tasks).await.unwrap();
         assert_eq!(cases.len(), 2);
+        assert!(
+            cases.iter().all(|c| c.sandbox),
+            "a source's case is jailed by construction"
+        );
+        let bare: mecha_core::experiment::SourceTask =
+            serde_json::from_str(r#"{"id":"t","prompt":"p","expect":{"verify":"true"}}"#).unwrap();
+        let case = bare
+            .into_case()
+            .expect("no tags and a verify block both list");
+        assert_eq!(
+            case.tags,
+            vec![mecha_core::experiment::SOURCE_TAG.to_string()]
+        );
         assert_eq!(cases[0].id, "say-hello");
         assert_eq!(
             cases[1].tags,
