@@ -385,43 +385,49 @@ async fn run_lifetimes(
                     // was still the last position's, and the ledger carried
                     // an owner act at a position that never had its world
                     // (found on review).
-                    if let Some(principal) = &manifest.principal {
-                        if let Err(e) = render_home(manifest, real, arm, trial.seed, &home, false) {
-                            world_ready = false;
-                            world_error = format!("{e:#}");
-                            trial.status = TrialStatus::Failed;
-                            trial.error = Some(format!(
-                                "the home could not be rendered for this position: {e:#}"
-                            ));
-                            trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
-                            eprintln!("  failed: {e:#}");
-                            // The refusal is a record, not a local: a resumed
-                            // driver finds the row `Failed`, re-initialises
-                            // its own flag and would ask the principal after
-                            // the task at a position that never had its
-                            // world — unless the ledger already says both
-                            // points were skipped for that reason (found on
-                            // review).
-                            for point in [PrincipalPoint::BeforeTask, PrincipalPoint::AfterTask] {
-                                if !principal_done(&ledger, position, point) {
-                                    let run = unrendered_line(
-                                        &lifetime,
-                                        &trial.arm,
+                    // Rendered here for every lifetime, principal or not: a
+                    // render that failed only inside `run_one` left the
+                    // stages running against a home with no config for the
+                    // position (found on review).
+                    if let Err(e) = render_home(manifest, real, arm, trial.seed, &home, false) {
+                        world_ready = false;
+                        world_error = format!("{e:#}");
+                        trial.status = TrialStatus::Failed;
+                        trial.error = Some(format!(
+                            "the home could not be rendered for this position: {e:#}"
+                        ));
+                        trial.finished_at = Some(chrono::Utc::now().to_rfc3339());
+                        eprintln!("  failed: {e:#}");
+                        // The refusal is a record, not a local: a resumed
+                        // driver finds the row `Failed`, re-initialises
+                        // its own flag and would ask the principal after
+                        // the task at a position that never had its
+                        // world — unless the ledger already says both
+                        // points were skipped for that reason (found on
+                        // review).
+                        for point in [PrincipalPoint::BeforeTask, PrincipalPoint::AfterTask] {
+                            if manifest.principal.is_some()
+                                && !principal_done(&ledger, position, point)
+                            {
+                                let run = unrendered_line(
+                                    &lifetime,
+                                    &trial.arm,
+                                    position,
+                                    ExperimentStore::next_attempt(
+                                        &ledger,
+                                        torn,
                                         position,
-                                        ExperimentStore::next_attempt(
-                                            &ledger,
-                                            torn,
-                                            position,
-                                            StageLever::Principal,
-                                        ),
-                                        point,
-                                        &format!("{e:#}"),
-                                    );
-                                    store.record_stage(&run)?;
-                                    ledger.push(run);
-                                }
+                                        StageLever::Principal,
+                                    ),
+                                    point,
+                                    &format!("{e:#}"),
+                                );
+                                store.record_stage(&run)?;
+                                ledger.push(run);
                             }
-                        } else if !principal_done(&ledger, position, PrincipalPoint::BeforeTask) {
+                        }
+                    } else if let Some(principal) = &manifest.principal {
+                        if !principal_done(&ledger, position, PrincipalPoint::BeforeTask) {
                             let run = principal_call(
                                 store,
                                 mecha,

@@ -758,10 +758,12 @@ def main():
         )
         return 2
     if not os.path.isdir(root):
-        if opts.ephemeral:
-            print(f"mail_server.py: {root} is not a directory", file=sys.stderr)
-            return 2
-        os.makedirs(root, exist_ok=True)
+        # Refused, never created: `mecha exp` creates and seeds the store before
+        # spawning, so a missing directory here is a moved or cleaned home, and
+        # serving a mailbox from nothing would read as a clean world (found on
+        # review — the same shape as the `.seeded` marker one layer up).
+        print(f"mail_server.py: {root} is not a directory; `mecha exp` creates and seeds it", file=sys.stderr)
+        return 2
     serve(Store(root, opts.ephemeral))
     return 0
 
