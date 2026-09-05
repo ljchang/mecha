@@ -1476,6 +1476,7 @@ pub struct RefusalOutcome {
     /// How many times the run answered a call with this refusal; `None`
     /// when the session could not be read — unknown, never zero (found on
     /// review).
+    #[serde(default)]
     pub fired: Option<u32>,
 }
 
@@ -1505,7 +1506,9 @@ pub fn refusal_outcomes(
             fired: session_text.map(|text| {
                 let sentence = format!("{DENIED_PREFIX}{}", r.reason);
                 let encoded = serde_json::to_string(&sentence).unwrap_or_default();
-                let needle = encoded.trim_matches('"');
+                // The encoding's own quotes, and only those: a reason that
+                // ends in a quote must keep it.
+                let needle = &encoded[1..encoded.len().saturating_sub(1).max(1)];
                 text.matches(needle).count() as u32
             }),
         })

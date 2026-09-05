@@ -3315,8 +3315,12 @@ comparison over a chosen set**, with the design written before the run.
   read-only tool never fires — hands every unmatched call to the
   approver beneath it, and the file is cleared *before* each call so a
   principal that failed to answer leaves no stale refusal armed. Every
-  approver a run builds is wrapped — the parent loop's, each
-  subagent's, a front-end's — and the file reaches the verb that
+  approver `setup::prepare` builds is wrapped — the parent loop's, each
+  subagent's, the one a front-end hands it; the sites that build their
+  own outside `prepare` (the TUI's mode switch, the probes, replay,
+  eval) are not, and the guarantee there is that no principal verb
+  reaches them and no stage child is handed the file — and the file
+  reaches the verb that
   resumes a parked run, so the refusals hold for the whole task and
   every call delegated within it. **A refusal that never fired is on
   the record**: after the task the driver counts each rule's firings in
