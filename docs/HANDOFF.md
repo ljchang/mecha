@@ -1748,7 +1748,11 @@ and measured plan steps on the run record) deployed by mecha-53 from
 `~/Github/mecha` on `main` at `87645f9`, fast-forwarded from `5d52fac`
 (clean, no `MERGE_HEAD` in any worktree, no benchmark running).**
 `~/.cargo/bin/mecha` reinstalled (file 21:58:31Z; `strings` carries
-`runs_with_a_measured_completion`, which the 20:19Z build did not).
+`runs_with_a_measured_completion`, which the 20:19Z build did not). The
+range also carried #191 (`feat/exp-fixture-servers`, merged at `5d52fac`
+by mecha-0c), so this is the first install with the fixture servers —
+mecha-0c verified its own literal (`names servers but no`) in the same
+file and closed the deploy it had listed as owed.
 Restarted 21:58:41Z, each verified from its own startup line in a journal
 window opened at the restart and from `/proc/<pid>/exe`: mecha-slack
 (`Connected to cosanlab as mecha. 1 owner(s), 16 thread(s)`),
