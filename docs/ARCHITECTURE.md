@@ -3554,8 +3554,10 @@ comparison over a chosen set**, with the design written before the run.
   optional `expect` block applied exactly as a case file's would be), and
   the driver filters by tag and orders by `ids` as it does a file's;
   **`setup <task>`** puts the world in the task's starting state, after the
-  home and its fixture stores are rendered and before the child runs, and
-  its failure is the row's; **`grade <task>`** reads the run's whole result
+  home and its fixture stores are rendered and before the child runs —
+  before *every* task, a lifetime's included, so a source whose world
+  should carry across a sequence makes it idempotent over what is there —
+  and its failure is the row's; **`grade <task>`** reads the run's whole result
   on stdin (`mecha run --json`: the answer, the calls, the taint, the
   blocked sends) and answers with a verdict and the checks behind it
   (`SourceGrade`), which land on the row beside any trace assertion — a
@@ -3573,7 +3575,8 @@ comparison over a chosen set**, with the design written before the run.
   (§17 item 5, §21.2): one program that serves a suite's tools over MCP with
   the environment persisted to the fixture store after every call, and as a
   source lists the suite's user tasks (each also paired with one injection
-  task by default, `user_task_3+injection_task_1`), sets up the store from
+  task by default, rotating: `user_task_1+injection_task_1`), sets up the
+  store from
   the suite's initial environment with the pair's injection placed where
   the user task's ground truth reads, and grades with the suite's own
   `utility` and `security` over the persisted end state. AgentDojo's tools

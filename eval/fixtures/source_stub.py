@@ -13,6 +13,9 @@ fixture stores' root), `MECHA_EXPERIMENT_WORKSPACE` (the trial's jail) and
 
     list                 -> JSON list of {id, prompt, tags?, max_turns?, expect?}
     setup <task>         -> put the world in the task's starting state; exit 0
+                            (called before EVERY task, a lifetime's included — a
+                            source whose world should carry across a sequence
+                            makes it idempotent over what is already there)
     grade <task>         -> stdin: the run's result JSON (`mecha run --json`);
                             stdout: {passed, detail?, checks?: [{name, passed, detail}]}
 
