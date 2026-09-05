@@ -153,7 +153,26 @@ export function rows(lines, nextUid) {
     text: l.text,
     sensor: l.sensor ? { kind: l.sensor.kind, setpoint: l.sensor.setpoint } : null,
     reading: l.reading ?? null,
+    // The sensor the reading was computed against, kept apart from the
+    // editable `sensor` so an in-place edit cannot leave a reading beside
+    // a setpoint it never saw (`readingStands`).
+    read_for: l.sensor && l.reading ? { kind: l.sensor.kind, setpoint: l.sensor.setpoint } : null,
   }));
+}
+
+/// Does the row's reading still describe the row's sensor? The server
+/// computes `reading.summary` and `reading.over` against the *saved* kind and
+/// setpoint; once the owner changes either in the form, the reading is about
+/// a sensor that no longer exists on the row, and showing it would let
+/// containment 5's guard — the reading beside the value being typed —
+/// reassure about the old value (found on review). Same kind and the same
+/// setpoint spelling, or the reading stands down until the next save.
+export function readingStands(line) {
+  if (!line?.reading || !line.sensor || !line.read_for) return false;
+  return (
+    String(line.sensor.kind ?? '').trim() === String(line.read_for.kind ?? '').trim() &&
+    String(line.sensor.setpoint ?? '').trim() === String(line.read_for.setpoint ?? '').trim()
+  );
 }
 
 /// What a half-filled sensor would cost silently: `serialize` writes no table

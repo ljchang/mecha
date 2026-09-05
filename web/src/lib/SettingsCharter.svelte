@@ -1,6 +1,13 @@
 <script>
   import { tick } from 'svelte';
-  import { rows, sensorProblems, serialize as toToml, slugify, splitHeader } from './charter-toml.js';
+  import {
+    readingStands,
+    rows,
+    sensorProblems,
+    serialize as toToml,
+    slugify,
+    splitHeader,
+  } from './charter-toml.js';
 
   // The charter pane. The lines are edited in place — tap one to open it,
   // drag its grip to re-rank — and nothing reaches disk until an explicit
@@ -163,6 +170,7 @@
   function removeSensor(line) {
     line.sensor = null;
     line.reading = null;
+    line.read_for = null;
   }
 
   const budget = $derived(charter?.budget ?? 2000);
@@ -186,7 +194,7 @@
   });
 
   function addLine() {
-    const line = { uid: ++uidSeq, id: '', text: '', sensor: null, reading: null };
+    const line = { uid: ++uidSeq, id: '', text: '', sensor: null, reading: null, read_for: null };
     lines = [...lines, line];
     editing = line.uid;
     savedNote = null;
@@ -492,10 +500,17 @@
                     pick what the line watches; the setpoint's unit follows from it
                   {/if}
                 </div>
+                <button class="btn small" onclick={() => removeSensor(line)}>Remove sensor</button>
               {:else}
-                <div class="sub hint">this server offers no sensor kinds here — edit the sensor as TOML</div>
+                <!-- An older server serves no kinds: the form declines to
+                     compose, so it must not delete blind either. The sensor
+                     is shown as it is, and the TOML editor is the way to
+                     change it. -->
+                <div class="sub hint">
+                  sensor · {line.sensor.kind || 'no kind'} · setpoint {line.sensor.setpoint || '—'} — this
+                  server offers no sensor kinds here; edit the sensor as TOML
+                </div>
               {/if}
-              <button class="btn small" onclick={() => removeSensor(line)}>Remove sensor</button>
             </div>
           {/if}
           <div class="row-actions">
@@ -524,8 +539,10 @@
                where the owner is editing. -->
           <div class="sensor" title="an observable mecha reads from its own stores; runs that touch what it watches are attributed to this line — the reading never enters a prompt">
             sensor · {line.sensor.kind || 'no kind yet'} · setpoint {line.sensor.setpoint || '—'}
-            {#if line.reading}
+            {#if readingStands(line)}
               · <span class:over={line.reading.state === 'observed' && line.reading.over}>reading {line.reading.summary}</span>
+            {:else if line.reading}
+              · reading: not yet, for this setpoint — save to read it
             {/if}
           </div>
         {/if}
