@@ -300,6 +300,19 @@ async fn run_lifetimes(
     use mecha_core::experiment::stages_due;
     // Rows are contiguous per lifetime and in position order as planned;
     // grouped here without reordering so the walk is the design's.
+    if !manifest.fixtures.is_empty() {
+        let routed = manifest.fixtures.routed();
+        eprintln!(
+            "mecha exp: fixture world {} · outbox route: {}",
+            manifest.fixtures.names().join(", "),
+            if routed.is_empty() {
+                "none — every fixture send executes unrouted into its store, and no draft will pend"
+                    .to_string()
+            } else {
+                routed.join(", ")
+            }
+        );
+    }
     let mut lifetimes: Vec<(String, Vec<&Trial>)> = Vec::new();
     for t in planned {
         let Some(id) = &t.lifetime else {
@@ -548,25 +561,29 @@ fn principal_done(
     })
 }
 
-/// The pending draft a release names, by exact id or a unique prefix — the
-/// CLI's own selection rule, applied here so the driver vets the draft the
-/// verb will act on and not a namesake.
-fn release_target<'a>(
-    pending: &'a [mecha_core::outbox::OutboxItem],
+/// The draft a release names, resolved by **the CLI's own selection rule**
+/// (`outbox::select`, over every item in the store as `outbox approve`
+/// itself resolves it) and then required to be pending — so the item the
+/// driver vets is the item the verb will act on, and there is one rule,
+/// not a mirror of it (the first cut hand-mirrored the prefix rule, and
+/// nothing would have caught the two drifting apart; found on review).
+fn release_target(
+    items: &[mecha_core::outbox::OutboxItem],
     named: &str,
-) -> std::result::Result<&'a mecha_core::outbox::OutboxItem, String> {
-    if let Some(exact) = pending.iter().find(|i| i.id == named) {
-        return Ok(exact);
-    }
-    let by_prefix: Vec<&mecha_core::outbox::OutboxItem> =
-        pending.iter().filter(|i| i.id.starts_with(named)).collect();
-    match by_prefix.as_slice() {
-        [one] => Ok(one),
-        [] => Err(format!("`{named}` names no pending draft in this home")),
-        many => Err(format!(
-            "`{named}` names {} pending drafts; name one",
-            many.len()
+) -> std::result::Result<mecha_core::outbox::OutboxItem, String> {
+    let selection = crate::commands::outbox::Selection {
+        ids: vec![named.to_string()],
+        ..Default::default()
+    };
+    let chosen = crate::commands::outbox::select(items.to_vec(), &selection)
+        .map_err(|e| format!("{e:#}"))?;
+    match chosen.as_slice() {
+        [one] if one.status == "pending" => Ok(one.clone()),
+        [one] => Err(format!(
+            "`{named}` names draft {}, which is {} rather than pending",
+            one.id, one.status
         )),
+        _ => Err(format!("`{named}` names {} drafts; name one", chosen.len())),
     }
 }
 
@@ -664,17 +681,22 @@ async fn principal_call(
     // read: open only what exists, on the doctor's rule that an
     // examination must not create what it was about to report. An
     // unreadable store is a failed call, never an empty queue.
-    let pending_outbox: Result<Vec<mecha_core::outbox::OutboxItem>> =
-        if home.join("outbox").is_dir() {
-            mecha_core::outbox::OutboxStore::open(home.join("outbox")).and_then(|s| {
-                Ok(s.items()?
-                    .into_iter()
-                    .filter(|i| i.status == "pending")
-                    .collect())
-            })
-        } else {
-            Ok(Vec::new())
-        };
+    let outbox_items: Result<Vec<mecha_core::outbox::OutboxItem>> = if home.join("outbox").is_dir()
+    {
+        mecha_core::outbox::OutboxStore::open(home.join("outbox")).and_then(|s| s.items())
+    } else {
+        Ok(Vec::new())
+    };
+    let pending_outbox: Result<Vec<mecha_core::outbox::OutboxItem>> = outbox_items
+        .as_ref()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|i| i.status == "pending")
+                .cloned()
+                .collect()
+        })
+        .map_err(|e| anyhow::anyhow!("{e:#}"));
     // The fixture servers this arm's verbs can reach: the manifest's, or
     // none when the arm has MCP off — `--no-mcp` rides on every verb the
     // driver runs for the principal, so the board and the mailbox are out
@@ -800,8 +822,11 @@ async fn principal_call(
             }
             for request in answer.acts {
                 let mut act = mecha_core::experiment::PrincipalAct::from(request);
+                // The arm's fixtures, not the manifest's: under `--no-mcp`
+                // the arm reaches none, and both server verbs read the same
+                // word off the same scope (found on review).
                 if let Err(reason) =
-                    mecha_core::experiment::permitted_verb(&act.verb, !manifest.fixtures.is_empty())
+                    mecha_core::experiment::permitted_verb(&act.verb, !fixtures.is_empty())
                 {
                     act.ok = Some(false);
                     failures.push(reason);
@@ -836,7 +861,7 @@ async fn principal_call(
                             named.len()
                         ))
                     } else {
-                        match release_target(pending_outbox.as_deref().unwrap_or(&[]), named[0]) {
+                        match release_target(outbox_items.as_deref().unwrap_or(&[]), named[0]) {
                             Err(e) => Some(e),
                             Ok(item)
                                 if !mecha_core::experiment::release_target_is_fixture(
@@ -1456,9 +1481,15 @@ fn status(name: &str, json: bool) -> Result<()> {
     let mut by_arm: std::collections::BTreeMap<&str, [usize; 5]> = Default::default();
     // The world the trials ran in, when it was not the operator's.
     if !manifest.fixtures.is_empty() {
+        let routed = manifest.fixtures.routed();
         println!(
-            "fixtures: {} (the operator's servers are not in these homes)",
-            manifest.fixtures.names().join(", ")
+            "fixtures: {} (the operator's servers are not in these homes) · outbox route: {}",
+            manifest.fixtures.names().join(", "),
+            if routed.is_empty() {
+                "none".to_string()
+            } else {
+                routed.join(", ")
+            }
         );
     }
     for arm in manifest.arms.keys() {
@@ -1793,6 +1824,45 @@ fn export(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A release resolves its draft by the CLI's own rule and then requires
+    /// it pending: exact or unique prefix, never a namesake, never a draft
+    /// already resolved.
+    #[test]
+    fn a_release_names_one_pending_draft_by_the_clis_own_rule() {
+        let item = |id: &str, status: &str| -> mecha_core::outbox::OutboxItem {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "status": status, "tool": "mail__mail_send",
+                "args_before": {}, "args": {}, "summary": "s", "created_at": "2026-09-05T00:00:00Z"
+            }))
+            .unwrap()
+        };
+        let items = vec![
+            item("20260905T1-aaaa", "pending"),
+            item("20260905T2-bbbb", "pending"),
+            item("20260905T3-cccc", "sent"),
+        ];
+        assert_eq!(
+            release_target(&items, "20260905T1-aaaa").unwrap().id,
+            "20260905T1-aaaa"
+        );
+        assert_eq!(
+            release_target(&items, "20260905T2").unwrap().id,
+            "20260905T2-bbbb",
+            "a unique prefix"
+        );
+        let err = release_target(&items, "20260905T").unwrap_err();
+        assert!(
+            err.contains("matches 3"),
+            "ambiguous over the whole store, as the CLI sees it: {err}"
+        );
+        let err = release_target(&items, "20260905T3").unwrap_err();
+        assert!(err.contains("sent rather than pending"), "{err}");
+        assert!(release_target(&items, "nope")
+            .unwrap_err()
+            .contains("no outbox item"));
+        assert!(release_target(&[], "x").is_err());
+    }
 
     /// A case's own knob is passed to the child unless the arm moves that
     /// knob — then the arm is the treatment and wins.

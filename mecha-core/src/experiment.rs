@@ -137,6 +137,19 @@ pub struct Fixtures {
     /// The servers. Named like `[[mcp]]` entries, minus what a fixture never
     /// needs (an `env`, a passthrough, a sandbox), plus a `seed`.
     pub mcp: Vec<FixtureServer>,
+    /// The outbox route of this world: the fixture tools whose calls are
+    /// **staged, not executed** (`[outbox] tools`' meaning, on the closed
+    /// world's names). **Spelled, never inherited**: the operator's route
+    /// names live tools that are not in a fixture home, and inheriting it
+    /// made whether a fixture send was staged — the precondition for the
+    /// release channel — depend on the operator's config happening to spell
+    /// `mail__mail_send`; on a machine with the default empty route every
+    /// send executed unrouted into the fixture store, no draft ever pended,
+    /// and every position read clean (found on review). So a manifest that
+    /// names fixtures must name the route too — `[]` for a world with no
+    /// staged sink, said out loud — and each name must be a prefixed
+    /// fixture's tool, since a release is permitted only for those.
+    pub outbox_tools: Option<Vec<String>>,
 }
 
 /// One fixture MCP server on the manifest.
@@ -229,7 +242,42 @@ impl Fixtures {
                 "`[fixtures] charter` without a fixture server: a home whose world is the operator's live servers is not a fixture home, and a fixture charter over it would appraise the wrong owner"
             );
         }
+        match &self.outbox_tools {
+            None if !self.mcp.is_empty() => anyhow::bail!(
+                "`[fixtures]` names servers but no `outbox_tools`: the route is not inherited from the operator's config (its names are live tools that are not in this world), so name the fixture tools whose calls are staged — or `outbox_tools = []` for a world with no staged sink"
+            ),
+            Some(_) if self.mcp.is_empty() => anyhow::bail!(
+                "`[fixtures] outbox_tools` without a fixture server: the route is the fixture world's, and this manifest has none"
+            ),
+            Some(tools) => {
+                let prefixed: Vec<&str> = self
+                    .mcp
+                    .iter()
+                    .filter(|s| s.prefix_tools != Some(false))
+                    .map(|s| s.name.as_str())
+                    .collect();
+                for tool in tools {
+                    anyhow::ensure!(
+                        tool.split_once("__")
+                            .is_some_and(|(server, rest)| !rest.is_empty() && prefixed.contains(&server)),
+                        "`[fixtures] outbox_tools` names `{tool}`, which is not a prefixed fixture server's tool (prefixed fixtures: {}); an unprefixed server's tool cannot be told from a builtin, and a release is permitted only for a fixture's",
+                        if prefixed.is_empty() {
+                            "none".to_string()
+                        } else {
+                            prefixed.join(", ")
+                        }
+                    );
+                }
+            }
+            None => {}
+        }
         Ok(())
+    }
+
+    /// The route, as the rendered config carries it: the manifest's, or
+    /// nothing. Only meaningful once `validate` passed.
+    pub fn routed(&self) -> &[String] {
+        self.outbox_tools.as_deref().unwrap_or(&[])
     }
 
     /// The `[[mcp]]` entries the home's config carries: every fixture, each
@@ -284,7 +332,10 @@ impl Fixtures {
 
     /// Put the fixtures into a rendered trial config: the `[[mcp]]` list
     /// becomes exactly the fixtures, so no live server of the operator's
-    /// reaches the home. A manifest with none leaves the config alone —
+    /// reaches the home, and the outbox route becomes exactly
+    /// `outbox_tools` — the operator's routed names are live tools with
+    /// nothing behind them here, and the publish set is emptied because no
+    /// fixture publishes. A manifest with none leaves the config alone —
     /// the operator's posture travels, as before.
     pub fn apply(
         &self,
@@ -296,6 +347,8 @@ impl Fixtures {
             return Ok(());
         }
         config.mcp = self.render(home, base)?;
+        config.outbox.tools = self.routed().to_vec();
+        config.outbox.publish_tools.clear();
         Ok(())
     }
 
@@ -3963,6 +4016,7 @@ fixture = "eval/workspace"
 ids = ["a"]
 [fixtures]
 charter = "eval/fixtures/home/charter.toml"
+outbox_tools = ["mail__mail_send"]
 [[fixtures.mcp]]
 name = "graph"
 command = "python3"
@@ -4026,6 +4080,30 @@ preset = "full"
                 .contains("without a fixture server"),
             "a fixture charter over the operator's live servers is refused"
         );
+        // The route is spelled, never inherited (found on review): absent
+        // is refused, `[]` is a decision, and every name is a prefixed
+        // fixture's tool.
+        let route = "outbox_tools = [\"mail__mail_send\"]";
+        let unrouted = FIXTURED.replace(&format!("{route}\n"), "");
+        let err = Manifest::parse(&unrouted).unwrap_err().to_string();
+        assert!(err.contains("no `outbox_tools`"), "{err}");
+        let none = FIXTURED.replace(route, "outbox_tools = []");
+        assert!(Manifest::parse(&none).unwrap().fixtures.routed().is_empty());
+        let board = FIXTURED.replace(route, "outbox_tools = [\"kg_task_update\"]");
+        let err = Manifest::parse(&board).unwrap_err().to_string();
+        assert!(
+            err.contains("not a prefixed fixture server's tool"),
+            "an unprefixed server's tool: {err}"
+        );
+        let live = FIXTURED.replace(route, "outbox_tools = [\"docs__docs_create\"]");
+        assert!(Manifest::parse(&live).is_err(), "a live server's tool");
+        let bare = FIXTURED.replace(route, "outbox_tools = [\"mail__\"]");
+        assert!(Manifest::parse(&bare).is_err(), "a prefix alone");
+        let route_alone = "name = \"x\"\nsplit_seed = 1\n[tasks]\ncases = \"c\"\nfixture = \"f\"\n[fixtures]\noutbox_tools = []\n[arms.a]\n";
+        assert!(Manifest::parse(route_alone)
+            .unwrap_err()
+            .to_string()
+            .contains("without a fixture server"));
         // Absent: the default, empty, and the manifest from before the field parses.
         let m = Manifest::parse(MANIFEST).unwrap();
         assert!(m.fixtures.is_empty());
@@ -4050,6 +4128,8 @@ split_seed = 1
 [tasks]
 cases = "c"
 fixture = "f"
+[fixtures]
+outbox_tools = ["graph__kg_upsert"]
 [[fixtures.mcp]]
 name = "graph"
 command = "python3"
@@ -4064,8 +4144,19 @@ seed = "seed"
             command: "/usr/bin/mecha-mail".into(),
             ..Default::default()
         });
+        config.outbox.tools = vec!["mail__mail_send".into(), "factory__bundle_publish".into()];
+        config.outbox.publish_tools = vec!["factory__bundle_publish".into()];
         m.fixtures.apply(&mut config, &home, &base).unwrap();
         assert_eq!(config.mcp.len(), 1, "the operator's live server is gone");
+        assert_eq!(
+            config.outbox.tools,
+            vec!["graph__kg_upsert".to_string()],
+            "the route is the world's, not the operator's"
+        );
+        assert!(
+            config.outbox.publish_tools.is_empty(),
+            "no fixture publishes"
+        );
         let srv = &config.mcp[0];
         assert_eq!(srv.name, "graph");
         assert!(
@@ -4110,18 +4201,20 @@ seed = "seed"
             .unwrap_err()
             .to_string()
             .contains("not a directory"));
-        // No fixtures: the config is untouched.
+        // No fixtures: the config is untouched, route included.
         let mut live = crate::config::Config::default();
         live.mcp.push(crate::config::McpServerConfig {
             name: "mail".into(),
             ..Default::default()
         });
+        live.outbox.tools = vec!["mail__mail_send".into()];
         Manifest::parse(MANIFEST)
             .unwrap()
             .fixtures
             .apply(&mut live, &home, &base)
             .unwrap();
         assert_eq!(live.mcp.len(), 1);
+        assert_eq!(live.outbox.tools.len(), 1);
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&home2);

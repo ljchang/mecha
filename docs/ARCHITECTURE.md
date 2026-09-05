@@ -3370,12 +3370,17 @@ comparison over a chosen set**, with the design written before the run.
   would send from a real account and one that closed would close a real
   task, which crosses a human structurally (found on review). A release
   is vetted further against the draft it names: the draft must be pending
-  in this home, named singly (`--all` refused), and its tool must carry a
-  fixture server's `<name>__` prefix (`release_target_is_fixture`) — a
-  builtin sink or an unprefixed server's tool lands where the driver
-  cannot see, and unknown is never clean; the driver then adds the
-  *local* `--yes` itself, since a tainted draft confirms on a terminal
-  the driver does not have and the principal may not carry the flag;
+  in this home and resolved by **the CLI's own selection rule**
+  (`outbox::select`, over the whole store — one rule, never a mirror of
+  it), named singly (`--all` refused), and its tool must carry a fixture
+  server's `<name>__` prefix (`release_target_is_fixture`) — a builtin
+  sink or an unprefixed server's tool lands where the driver cannot see,
+  and unknown is never clean; the driver then adds the *local* `--yes`
+  itself, since a tainted draft confirms on a terminal the driver does
+  not have and the principal may not carry the flag. Both server verbs
+  read the **arm's** fixture list — none under `--no-mcp` — so a verb the
+  arm cannot reach is refused with the reason rather than failing at
+  the board;
   a verb may not carry the global options that move the store, the
   model, the ceilings, the tool surface or the approvals,
   `PRINCIPAL_BLOCKED_OPTIONS`, named as the CLI spells them and tested
@@ -3438,7 +3443,18 @@ comparison over a chosen set**, with the design written before the run.
   names any, the rendered trial config's `[[mcp]]` is **exactly that
   list**, for every arm: no live server of the operator's reaches the
   home, which is what makes the two server-reaching verbs safe to
-  permit. Each server persists under the home (`fixtures/<name>/`,
+  permit. **The outbox route is the world's too, and it is spelled, never
+  inherited** (`[fixtures] outbox_tools`, required once a server is named
+  — `[]` for a world with no staged sink, said out loud; each name a
+  prefixed fixture's tool, since only those may be released): the
+  operator's `[outbox] tools` names live tools with nothing behind them
+  in a fixture home, and inheriting it made whether a fixture send was
+  *staged* — the precondition for the whole release channel — depend on
+  the operator's config happening to spell `mail__mail_send`; on the
+  default empty route every send executed unrouted into the fixture
+  store, no draft pended, and every position read clean (found on
+  review). `publish_tools` is emptied, since no fixture publishes, and
+  `exp run` says what the world routes at start. Each server persists under the home (`fixtures/<name>/`,
   handed over as `MECHA_FIXTURE_DIR`, no passthrough, no inline secret),
   seeded once from the manifest's directory when first created and never
   again — what a lifetime's runs did to the board is the record, and the

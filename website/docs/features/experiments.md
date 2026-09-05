@@ -234,12 +234,16 @@ A manifest may carry a `[fixtures]` table naming MCP servers the trial home
 runs **instead of** yours. When it names any, the home's `[[mcp]]` is
 exactly that list, for every arm — no live server reaches it — and each
 server keeps its state under the home (`fixtures/<name>/`, handed to it as
-`MECHA_FIXTURE_DIR`), seeded once from a directory you name. Relative paths
-are resolved against the checkout you run `mecha exp` from.
+`MECHA_FIXTURE_DIR`), seeded once from a directory you name. The outbox
+route is the world's too: `outbox_tools` names the fixture tools whose calls
+are staged as drafts, and it must be spelled — your own `[outbox] tools`
+names live tools that are not in this world, so it is not inherited.
+Relative paths are resolved against the checkout you run `mecha exp` from.
 
 ```toml
 [fixtures]
 charter = "eval/fixtures/home/charter.toml"   # written over the home's before every task
+outbox_tools = ["mail__mail_send", "mail__mail_reply"]   # the world's staged sinks; required, [] for none
 
 [[fixtures.mcp]]
 name = "graph"

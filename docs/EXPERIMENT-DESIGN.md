@@ -966,6 +966,23 @@ rumination) can be ablated under without anything in P.
   whether a principal driven by the model under test is the confound the
   gold version exists to avoid or an acceptable one on the ruminate judge's
   precedent.
+  *Proposed 2026-09-05, for the owner to rule:* it is a **second
+  executable under the same contract**, not a mode of the gold one —
+  `scripts/principal-model.py <policy.toml>`, where the policy carries the
+  persona (who the owner is, what they know that the assistant does not,
+  how strict they are) and a `[model] url`/`model` naming an
+  OpenAI-compatible endpoint, the local server by default. The driver
+  changes in one place: the manifest's `[principal]` records a
+  **content hash of the command's files** (`principal_hash`, over the
+  script and every argument that names a file) on each trial's row beside
+  the condition hash — a persona edited mid-lifetime is otherwise
+  invisible a week later, exactly the failure the manifest exists to
+  prevent. The model is a recorded confound, the ruminate judge's
+  precedent: the row carries the principal's model alias read from the
+  endpoint's `/props`, never asserted. Gold stays first: the model-driven
+  principal is called only for what gold cannot express — the policy names
+  the channels it may judge (`tone`, `usefulness`), and a verdict gold
+  already gave is never overturned by it.
 - **Real scripts or bare verbs for the stages.** `ruminate.sh` carries
   policy (`validate --unprocessed-only` *before* `learn`, so rules are not
   graded on their own training data); the verbs are what a lever switches.
@@ -1120,3 +1137,28 @@ served over MCP for the world, mecha's own stores in the trial home
 (board, outbox, questions, charter) for the owner channels. Its tool
 schema differs from `mecha-mail`'s, which is a recorded condition, not a
 problem: the appraisal's owner channels never read a mail tool.
+
+*Measured 2026-09-05* (agentdojo 0.1.35, Python 3.12, a scratch venv):
+the package imports only with its LLM-vendor SDKs installed (`task_suite`
+pulls `agent_pipeline`, which imports `anthropic`), 233 MB all told, so
+the adapter runs in its own venv rather than the system interpreter. Once
+loaded: `workspace` has 24 tools, 40 user tasks, 6 injection tasks and 16
+injection vectors; `banking` 11/16/9, `travel` 28/20/7, `slack` 21/21/5.
+`load_and_inject_default_environment({})` yields the pydantic
+environment, and `FunctionsRuntime(suite.tools).run_function(env, name,
+args)` executes a tool against it with no network and no agent pipeline —
+the shape §21.2 assumed holds. So the adapter is **one fixture server on
+`[fixtures]`'s shape** (`dojo_server.py --suite workspace --task
+user_task_N [--injection injection_task_M]`): tools listed from the
+runtime's `Function.parameters.model_json_schema()`, the environment
+pickled to `MECHA_FIXTURE_DIR` after every call so the run child, the
+principal's verbs and the grader see one state, injections applied at
+load from the task's vectors. Two things it needs from mecha that the
+hand-authored home did not: a **second task source** — `[tasks]` today
+takes only an eval case file, and a Dojo task's prompt, setup and grade
+live in the suite, which is exactly §21.1's `list` / `setup` / `grade`
+contract, unbuilt — and a grader that calls `utility(pre, post, output)`
+and `security(pre, post)` on the persisted environment, which is the task
+source's `grade`. Cast rule: AgentDojo's cast is fictional by
+construction (Emma Johnson at Blue Sparrow Tech), so it passes the
+no-real-people rule as it is.
