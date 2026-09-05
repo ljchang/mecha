@@ -3628,7 +3628,14 @@ completion but not in the same run — the plan outlives the run and a
 resume reinstalls completed items — so a run that only restarted a step
 was dropped from the denominator with its reopen, and now counts; and a
 completed step parked as `pending` and resumed counted no reopen, and
-now does.
+now does. The fourth pass found the history's own two faults: keyed by
+wording alone and exempt from the live-plan sweep, it made "run the
+tests" in the next unrelated plan a reopen of the last one, so it is now
+scoped to the run that completed the step — the counters' own scope,
+from the work tracker's run id — and dropped the moment a new run
+writes; and the completion arm never consulted it, so a step dropped and
+re-added as completed counted twice in the denominator, and now counts
+once.
 
 **2026-09-05 — a rule widens on evidence from two regions and narrows to
 where it held, and the ledger says which sub-region each probe

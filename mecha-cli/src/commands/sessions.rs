@@ -1312,7 +1312,7 @@ fn health(
         // the denominator named: runs that completed a plan step, not every
         // run since the sensor.
         println!(
-            "  plan steps          {} null and {} reopened of {} completed step(s); a null in {} \
+            "  plan steps          {} null and {} reopened of {} completed-step transition(s); a null in {} \
              and a reopen in {} of the {} run(s) that had one to speak of (of {} that recorded \
              the sensor)",
             steps.nulls,
