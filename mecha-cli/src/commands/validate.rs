@@ -851,7 +851,17 @@ fn cover_selection(
                 if r.domain != *domain || taken.contains(&r.id) {
                     continue;
                 }
-                let Some(window) = r.situation.as_ref().map(|s| s.scope()) else {
+                // The same window `record` would place the row in: one with
+                // a focus, or none — a pick whose row lands unplaced spends
+                // the probe, leaves the pair ungraded to be re-picked every
+                // night, and credits windows nothing measured (found on
+                // review).
+                let Some(window) = r
+                    .situation
+                    .as_ref()
+                    .filter(|s| s.focus().is_some())
+                    .map(|s| s.scope())
+                else {
                     continue;
                 };
                 if !region.matches(&window) {
@@ -1150,6 +1160,19 @@ mod tests {
         let out = cover_selection(&alone, &tallies, &pool, &Default::default(), 1);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0.id, "a-fetch");
+        // A window whose last tool is a front-end tool has no focus: its
+        // row would land in no region, so it covers nothing and is not
+        // picked — the trigger filter alone does not exclude it. Fails on
+        // the unfiltered `scope()` (found on review).
+        let shell_rule = Rule {
+            scope: Some(sit(&["shell"])),
+            ..rule("Shell.", Some("r-sh"))
+        };
+        let only = vec![("behavior".to_string(), shell_rule)];
+        let asked = vec![refl("f-ask", &["shell", "ask_user"], false)];
+        assert!(cover_selection(&only, &tallies, &asked, &Default::default(), 1).is_empty());
+        let out = cover_selection(&only, &tallies, &pool, &Default::default(), 1);
+        assert_eq!(out[0].0.id, "c-shell");
         assert!(
             cover_selection(&flat, &tallies, &pool, &Default::default(), 0).is_empty(),
             "a zero budget adds nothing"

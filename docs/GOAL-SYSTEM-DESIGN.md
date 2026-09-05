@@ -1905,14 +1905,21 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > than a recency window; the nightly passes `--cover 1`, so a widened rule
 > is measured in each sub-region it widened over. **A convicted rule
 > narrows rather than retires where the lattice allows it**
-> (`judge_convicted`, read by `rules propose-retirements`): convictions
-> counted against the rule's current scope, unknown-region rows counting
-> everywhere; if every conviction lies in support regions the rule can shed
-> and at least one support region is clean, the rule re-scopes to the
-> intersection of what remains — checked to exclude every convicting
-> window, not merely to differ from the old scope — stamped
-> `narrowed_at`/`narrowed_reason`, and the shed convictions stop counting
-> against it. Three corrections
+> (`judge_convicted`, read by `rules propose-retirements`): every placed
+> conviction counts wherever its row lies, because a rule loads by
+> *registry* match and a row is placed by the probe's *window*, so a
+> `shell` rule is convicted in `http_fetch` windows whenever the run also
+> registered `shell` and shedding a region never stops it riding there
+> (the fourth review pass found an in-scope count that let a
+> bisection-proven regression read as clean at any count); if every
+> conviction lies in support regions the rule can shed and at least one
+> support region is clean, the rule re-scopes to the intersection of what
+> remains — checked to exclude every convicting window, not merely to
+> differ from the old scope — stamped `narrowed_at`/`narrowed_reason`,
+> and the scan thereafter folds only the ledger since the narrowing
+> (`tally_for`): the rows before it were the evidence it answered, and
+> folding them again would retire the narrowed rule on the next scan for
+> the region it just shed. Three corrections
 > the build recorded: scopes are conjunctive tool sets, so a standing rule
 > clean in `shell` and in `fs_write` and convicted in `http_fetch` cannot
 > say "everywhere but http_fetch" — the clean regions share no tool, the

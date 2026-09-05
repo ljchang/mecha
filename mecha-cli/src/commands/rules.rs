@@ -22,8 +22,8 @@
 
 use anyhow::{bail, Result};
 use mecha_core::learning::{
-    judge_convicted, retire_threshold_for, rule_tallies, LeapRun, LearningStore, Proposal, Rule,
-    RuleTally, ValidationRecord, Verdict,
+    judge_convicted, retire_threshold_for, rule_tallies, tally_for, LeapRun, LearningStore,
+    Proposal, Rule, RuleTally, ValidationRecord, Verdict,
 };
 use mecha_core::session::Session;
 use std::collections::BTreeMap;
@@ -181,19 +181,28 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Whether `p` proposes to retire or re-scope rule `id`: its entry in
-/// `rules` differs from its entry in `rules_before` on `retired_at` or
-/// `scope`. A proposal that merely carries the rule forward — every learn
-/// proposal does, for the whole domain — proposes nothing about it.
-fn proposal_changes_rule(p: &Proposal, id: &str) -> bool {
+/// Whether `p` already proposes the *same* change to rule `id` that
+/// `verdict` would make: retirement, or a narrowing to the same scope,
+/// relative to the proposal's own `rules_before`. A proposal that merely
+/// carries the rule forward — every learn proposal does, for the whole
+/// domain — proposes nothing about it; and one that *widened* it is a
+/// scope change in the other direction, which a scope-changed test read as
+/// a twin and would have superseded under `--apply` (found on review).
+fn proposal_matches_verdict(p: &Proposal, id: &str, verdict: &Verdict) -> bool {
     let after = p.rules.iter().find(|r| r.id.as_deref() == Some(id));
     let before = p.rules_before.iter().find(|r| r.id.as_deref() == Some(id));
-    match (before, after) {
-        (Some(b), Some(a)) => a.retired_at != b.retired_at || a.scope != b.scope,
-        // Absent before and present after is a new rule, not a change to
-        // this one; absent after is the whole-rewrite drop, which is not
-        // a retirement either.
-        _ => false,
+    // Absent before and present after is a new rule, not a change to this
+    // one; absent after is the whole-rewrite drop, which is not a
+    // retirement either.
+    let (Some(b), Some(a)) = (before, after) else {
+        return false;
+    };
+    match verdict {
+        Verdict::Retire { .. } => a.retired_at.is_some() && b.retired_at.is_none(),
+        Verdict::Narrow { scope, .. } => {
+            a.retired_at.is_none() && a.scope.as_ref() == Some(scope) && b.scope != a.scope
+        }
+        Verdict::Stands => false,
     }
 }
 
@@ -427,8 +436,10 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
                 // Per-rule, not per-pass: a probationary rule went live
                 // ungraded and answers to a shorter leash.
                 let threshold = retire_threshold_for(r, min_attributed);
-                let tally = tallies.get(r.id.as_deref()?)?;
-                match judge_convicted(r, tally, threshold) {
+                // The ledger since the rule's last narrowing (`tally_for`):
+                // the rows before it were the evidence it answered.
+                let tally = tally_for(r, &records)?;
+                match judge_convicted(r, &tally, threshold) {
                     Verdict::Stands => None,
                     v => Some((r, v)),
                 }
@@ -457,7 +468,10 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
             .filter(|p| {
                 p.status == "pending"
                     && p.domain == domain
-                    && convicted_ids.iter().all(|id| proposal_changes_rule(p, id))
+                    && verdicts.iter().all(|(r, v)| {
+                        r.id.as_deref()
+                            .is_some_and(|id| proposal_matches_verdict(p, id, v))
+                    })
             })
             .cloned()
             .collect();
@@ -478,15 +492,17 @@ fn propose(store: &LearningStore, min_attributed: u32, apply: bool) -> Result<()
                 else {
                     return r.clone();
                 };
-                let t = &tallies[r.id.as_deref().unwrap()];
-                let scope = r.scope.clone().unwrap_or_default().scope();
-                let against = t.attributed_against(&scope);
+                let t = tally_for(r, &records).expect("convicted, so charged");
+                let against = t.attributed_regressions;
                 evidence_lines.push(format!(
-                    "{}: {} attributed regression(s) against its scope ({} in all) across {} \
+                    "{}: {} attributed regression(s) {} across {} \
                      probe(s) ({} improved, {} regressed at block level); last validated {}\n  rule: {}",
                     r.id.as_deref().unwrap(),
                     against,
-                    t.attributed_regressions,
+                    match &r.narrowed_at {
+                        Some(at) => format!("since it was narrowed at {at}"),
+                        None => "in the validation ledger".to_string(),
+                    },
                     t.observations,
                     t.improved,
                     t.regressed,
@@ -1020,16 +1036,18 @@ mod tests {
         // forward unchanged — with a `narrowed_at` from an earlier scan —
         // and proposes nothing about it: not a twin, and the scan must
         // still stage. Fails on the flag-based twin test (found on review).
-        let mut carried = store.learned_rules("behavior").unwrap();
-        carried[0].narrowed_at = Some("2026-09-01T00:00:00Z".into());
-        store.write_learned_rules("behavior", &carried).unwrap();
+        // ... and one that *widened* it is a scope change the other way,
+        // not this scan's narrowing (found on the fourth review pass).
+        let carried = store.learned_rules("behavior").unwrap();
+        let mut was_narrower = carried.clone();
+        was_narrower[0].scope = Some(sit(&["fs_read"]));
         store
             .write_proposal(&mecha_core::learning::Proposal {
                 id: "learn-pending".into(),
                 domain: "behavior".into(),
                 status: "pending".into(),
                 reflexion_ids: vec!["refl-claimed".into()],
-                rules_before: carried.clone(),
+                rules_before: was_narrower,
                 rules: carried.clone(),
                 evidence: String::new(),
                 created_at: "2026-09-02T00:00:00Z".into(),
