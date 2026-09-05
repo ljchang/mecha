@@ -3644,7 +3644,11 @@ So a fourth counter, `step_measured` — completions whose span could be
 measured — is the null rate's denominator, the reopen rate keeps runs
 with any step activity, `StepTotals` names both, and the health JSON
 key that said "completed a step" of a set that includes reopen-only
-runs is `runs_with_a_plan_step`.
+runs is `runs_with_a_plan_step`. The sixth pass found nothing at the
+bar. Merged at `87645f9`, deployed 21:58Z (HANDOFF's machine-state row
+has the probes). Ten findings in five passes, every one about whether
+the number would be true when read, and each one a denominator or a
+door the previous fix had left — the shape a sensor's review takes.
 
 **2026-09-05 — a rule widens on evidence from two regions and narrows to
 where it held, and the ledger says which sub-region each probe

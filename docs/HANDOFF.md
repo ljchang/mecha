@@ -1743,6 +1743,23 @@ found nothing. `scripts/ruminate.sh` in the checkout now passes
 first pass that can write a placed ledger row. Announced to the one live
 peer (mecha-0c).
 
+**2026-09-05 21:58Z — #194 (the step counters: null, reopened, completed
+and measured plan steps on the run record) deployed by mecha-53 from
+`~/Github/mecha` on `main` at `87645f9`, fast-forwarded from `5d52fac`
+(clean, no `MERGE_HEAD` in any worktree, no benchmark running).**
+`~/.cargo/bin/mecha` reinstalled (file 21:58:31Z; `strings` carries
+`runs_with_a_measured_completion`, which the 20:19Z build did not).
+Restarted 21:58:41Z, each verified from its own startup line in a journal
+window opened at the restart and from `/proc/<pid>/exe`: mecha-slack
+(`Connected to cosanlab as mecha. 1 owner(s), 16 thread(s)`),
+mecha-triggers (`1 trigger(s), 1 enabled · ticking every minute`),
+mecha-serve (both doors), mecha-drain (`Started`). Not restarted,
+correctly: mecha-voice-worker, mecha-parakeet, the web dist — the range
+from `52b8b0b` touches Rust only. The stale-process sweep found nothing.
+`mecha sessions health` on the live corpus prints `plan steps — (no run in
+this corpus recorded the counters)`; the first rows carrying them are the
+runs from 21:58Z on. Announced to the one live peer (mecha-0c).
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2676,6 +2693,33 @@ the mechanism and every decision. What it left standing:
   and voice goes deaf with no error text anywhere.
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
+
+**2026-09-05, later — §17.7 item 2's precondition is recordable: PR #194
+(`feat/step-counters`), merged at `87645f9` after five review passes and
+deployed 21:58Z by mecha-53 (the machine-state row under §Machine state,
+dated, has the probes).** What it built is in `HISTORY.md` under this
+date: four `Option<u32>` counters on `RunStats` — `step_nulls`,
+`step_reopens`, `step_completions`, `step_measured` — counted by `todo`
+into `ToolCtx::step_counts` (minted per run by the loop, a sensor not a
+lever), and read by `mecha sessions health` as a `plan steps` row and
+JSON keys. **The lesson the five passes taught, five times:** a rate is
+true only over runs in which the event could have happened — the null
+rate over runs with at least one *measured* completion (started and
+completed in the same run), the reopen rate over runs with any step
+activity, never over every run since the sensor, or the number moves with
+how often the model plans at all. **Nothing consumes the numbers yet**:
+the ruling asks for them to be read, and after a few nights of records
+`mecha sessions health --json` (`step_null_rate`, `step_reopen_rate`,
+`runs_with_a_measured_completion`, `runs_with_a_plan_step`) can be. The
+delivery line stays off until then. **Five minors the fifth pass left for
+the owner:** the six-to-five comment edit at `run_in` left "attached at
+five is worse than none" behind; the no-slot todo test measures only
+no-panic (a leak test would give the bare tool its own slot); two
+concurrent runs on one workspace share `TodoTool`'s plan state, so the
+run-scoped history claim holds serially only (pre-existing, larger than
+the counters); the no-plan health branch says "completed" of a set that
+includes reopens; and `emit_done`'s positional four-tuple would be safer
+as a named struct if a fifth counter ever lands.
 
 **2026-09-05 — §17.4's consolidation widening and narrowing and the
 per-region half of validation: PR #192 (`feat/region-widening`), merged
