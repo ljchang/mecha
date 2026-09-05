@@ -475,8 +475,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             model: model.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
             // The sub-region exercised: the window around the intervention,
-            // not the registry — see `ValidationRecord::region`.
-            region: r.situation.as_ref().map(|s| s.scope()),
+            // not the registry — see `ValidationRecord::region`. Only a
+            // window with a focus is evidence of where: a followup's is
+            // from an earlier turn and a front-end focus names whatever ran
+            // before it (`Situation::focus`), and a row placed on one would
+            // release probation and satisfy `--cover` for a region the
+            // probe never touched (found on review). Unknown instead.
+            region: r
+                .situation
+                .as_ref()
+                .filter(|s| s.focus().is_some())
+                .map(|s| s.scope()),
         })?;
         recorded_rows += 1;
         Ok(())
@@ -1002,6 +1011,48 @@ mod tests {
 
         assert_eq!(selected.len(), 1, "the dropped reflection must be excluded");
         assert_eq!(selected[0].intervention, kept.intervention);
+    }
+
+    /// A row's region is the exercised window, and a followup's window is
+    /// not one: `Situation::focus` is `None` for it, so the row is placed
+    /// nowhere. Pinned on the same expression `record` uses, since the
+    /// closure itself needs a store and a model (found on review: a
+    /// followup row placed in `{shell}` released a shell rule's probation
+    /// from a probe that never touched shell).
+    #[test]
+    fn a_followup_row_is_placed_in_no_region() {
+        let region_of = |r: &Reflexion| {
+            r.situation
+                .as_ref()
+                .filter(|s| s.focus().is_some())
+                .map(|s| s.scope())
+        };
+        let window = |trigger: &str| {
+            Some(Situation::recorded(
+                &["fs_read".into(), "shell".into()],
+                trigger,
+                None,
+                None,
+            ))
+        };
+        let mut followup = reflexion("be briefer", Origin::Clean);
+        followup.trigger = Trigger::Followup.as_str().into();
+        followup.situation = window("followup");
+        assert_eq!(region_of(&followup), None);
+        let mut steer = reflexion("use tabs", Origin::Clean);
+        steer.situation = window("steer");
+        assert_eq!(
+            region_of(&steer),
+            Some(Situation::of_run(&["fs_read".into(), "shell".into()], None))
+        );
+        let mut front_end = reflexion("ask first", Origin::Clean);
+        front_end.situation = Some(Situation::recorded(
+            &["shell".into(), "ask_user".into()],
+            "denial",
+            None,
+            None,
+        ));
+        assert_eq!(region_of(&front_end), None);
     }
 
     /// **The replay budget goes to the region.** A (rule, support region)
