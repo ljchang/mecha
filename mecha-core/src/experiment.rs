@@ -593,6 +593,21 @@ pub fn reaches_a_server(verb: &[String]) -> bool {
     SERVER_VERBS.iter().any(|lead| leads_with(verb, lead))
 }
 
+/// The one server verb that is a release, and so gets the release vetting
+/// (one named draft, pending, a fixture's tool, the driver's `--yes`). One
+/// predicate for the gate and the vet: the driver used to re-spell
+/// `["outbox", "approve"]` beside `SERVER_VERBS`, and adding the CLI's
+/// `send` alias to the tables would have permitted the verb while the vet
+/// never fired (found on review).
+pub fn is_release(verb: &[String]) -> bool {
+    leads_with(verb, &["outbox", "approve"])
+}
+
+/// The board closure, the other server verb.
+pub fn is_closure(verb: &[String]) -> bool {
+    leads_with(verb, &["tasks", "set"])
+}
+
 /// Whether the driver may run this verb for the principal: the shape
 /// ([`allowed_verb`]) and, for a verb that reaches a server, that the
 /// manifest names fixture servers. The reason on refusal is the ledger's.
@@ -4423,6 +4438,29 @@ seed = "seed"
         assert!(permitted_verb(&v("run do it"), true)
             .unwrap_err()
             .contains("not an owner's verb"));
+    }
+
+    /// Every verb that reaches a server declares which vetting it gets: a
+    /// new entry in `SERVER_VERBS` that is neither a release nor a closure
+    /// fails here rather than running unvetted.
+    #[test]
+    fn every_server_verb_is_a_release_or_a_closure() {
+        for lead in SERVER_VERBS {
+            let verb: Vec<String> = lead.iter().map(|s| s.to_string()).collect();
+            assert!(
+                is_release(&verb) ^ is_closure(&verb),
+                "`{}` reaches a server but declares no vetting",
+                verb.join(" ")
+            );
+        }
+        let v = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert!(is_release(&v("outbox approve ob-1")));
+        assert!(
+            !is_release(&v("outbox send ob-1")),
+            "the alias is not a verb here"
+        );
+        assert!(!is_release(&v("outbox reject ob-1")));
+        assert!(is_closure(&v("tasks set t-1 --status done")));
     }
 
     /// A release names exactly one draft, never the queue.
