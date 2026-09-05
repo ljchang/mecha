@@ -181,9 +181,16 @@ pub fn load(path: &Path) -> Result<Option<PollRecord>> {
     if !value["lifecycle"].is_object() {
         return Ok(None);
     }
+    // A lifecycle record with no id is an error, as it is on the mail side:
+    // an empty id would give two such records one shared card marker.
+    let poll_id = value["poll_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .context("a lifecycle record with no `poll_id`")?
+        .to_string();
     Ok(Some(PollRecord {
         path: path.to_path_buf(),
-        poll_id: value["poll_id"].as_str().unwrap_or_default().to_string(),
+        poll_id,
         title: value["title"].as_str().unwrap_or("Meeting").to_string(),
         value,
         dirty: BTreeSet::new(),
@@ -494,17 +501,20 @@ pub fn poll_marker(poll_id: &str) -> String {
     format!("poll: {poll_id}")
 }
 
-/// A pending pick card for this poll already in the store — staged by a
-/// tick that then failed to write `pick_item` — or nothing. Without this
-/// the gap between `stage` and `save` orphaned a releasable calendar draft
-/// and the next tick staged a second, which is two events for one poll.
+/// A pick card for this poll already in the store — staged by a tick that
+/// then failed to write `pick_item` — or nothing. Pending *or already
+/// released*: an orphan the owner has since approved is a booking the
+/// record must learn, not a reason to stage a second card and book twice.
+/// Only a rejected one is nobody's. Without this the gap between `stage`
+/// and `save` orphaned a releasable calendar draft and the next tick
+/// staged another, which is two events for one poll.
 fn adoptable_card(store: &OutboxStore, tool: &str, poll_id: &str) -> Result<Option<OutboxItem>> {
     let marker = poll_marker(poll_id);
     // The strict walk: an item this binary cannot read is an error here,
     // not a shorter list — a shorter list is how the orphan goes unseen and
     // a second card gets staged, the exact outcome this guards against.
     Ok(store.items_strict()?.into_iter().find(|item| {
-        item.status == "pending"
+        item.status != "rejected"
             && item.author() == mecha_core::outbox::Author::Harness
             && item.tool == tool
             && item.args["description"]
@@ -659,8 +669,15 @@ fn step(
             if let Some(orphan) = adoptable_card(store, &tool, &record.poll_id)? {
                 record.set("pick_item", json!(orphan.id));
                 return Ok(Some(format!(
-                    "adopted pick card {} staged by an earlier tick that could not write the record",
-                    orphan.id
+                    "adopted pick card {} ({}) staged by an earlier tick that could not write \
+                     the record{}",
+                    orphan.id,
+                    orphan.status,
+                    if orphan.status == "sent" {
+                        " — released since; reconciled next tick"
+                    } else {
+                        ""
+                    }
                 )));
             }
             let args = pick_args(record, 0)?;
@@ -994,9 +1011,15 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.path().join("c.json"), "{").unwrap();
+        std::fs::write(
+            dir.path().join("d.json"),
+            json!({"poll_id": "", "lifecycle": {}}).to_string(),
+        )
+        .unwrap();
         let (records, problems) = scan(dir.path()).unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(problems.len(), 1);
+        assert_eq!(problems.len(), 2, "unreadable, and no id");
+        assert!(problems[1].contains("no `poll_id`"), "{}", problems[1]);
         let (none, no_problems) = scan(&dir.path().join("absent")).unwrap();
         assert!(none.is_empty() && no_problems.is_empty());
     }
@@ -1101,6 +1124,8 @@ mod tests {
 
         // Rejected: no time found, with the owner's reason.
         let mut r = record(json!({"verdict": "pick", "ranked": ranked(), "timezone": "UTC"}));
+        r.poll_id = "lab-r".into();
+        r.value["poll_id"] = json!("lab-r");
         step(&mut r, &store, &cfg).unwrap();
         let item_id = r.lifecycle()["pick_item"].as_str().unwrap().to_string();
         store
@@ -1113,25 +1138,49 @@ mod tests {
         // A tick that staged and lost the write: the next one adopts the
         // card rather than staging a second.
         let mut r = record(json!({"verdict": "pick", "ranked": ranked(), "timezone": "UTC"}));
+        r.poll_id = "lab-b".into();
+        r.value["poll_id"] = json!("lab-b");
         step(&mut r, &store, &cfg).unwrap();
         let staged = r.lifecycle()["pick_item"].as_str().unwrap().to_string();
         let mut lost = record(json!({"verdict": "pick", "ranked": ranked(), "timezone": "UTC"}));
+        lost.poll_id = "lab-b".into();
+        lost.value["poll_id"] = json!("lab-b");
         let line = step(&mut lost, &store, &cfg).unwrap().expect("adopted");
         assert!(line.contains("adopted"), "{line}");
         assert_eq!(lost.lifecycle()["pick_item"], staged);
+
+        // …and an orphan the owner has since released is adopted too, then
+        // reconciled as the booking it is — never a second card.
+        store
+            .resolve_with_output(
+                &staged,
+                "sent",
+                None,
+                Some("created in `w`:\n{\"event_id\": \"ev1\"}".into()),
+            )
+            .unwrap();
+        let mut lost = record(json!({"verdict": "pick", "ranked": ranked(), "timezone": "UTC"}));
+        lost.poll_id = "lab-b".into();
+        lost.value["poll_id"] = json!("lab-b");
+        let line = step(&mut lost, &store, &cfg).unwrap().expect("adopted");
+        assert!(line.contains("released since"), "{line}");
+        assert_eq!(lost.lifecycle()["pick_item"], staged);
+        let line = step(&mut lost, &store, &cfg).unwrap().expect("reconciled");
+        assert!(line.contains("booked"), "{line}");
+        assert_eq!(lost.lifecycle()["booked"]["event_id"], "ev1");
         let pending = store
             .items()
             .unwrap()
             .into_iter()
             .filter(|i| {
-                i.status == "pending"
+                i.status != "rejected"
                     && i.args["description"]
                         .as_str()
                         .unwrap_or("")
-                        .contains("poll: lab-20300128")
+                        .contains("poll: lab-b")
             })
             .count();
-        assert_eq!(pending, 1, "one card for one poll");
+        assert_eq!(pending, 1, "one card for one poll, adopted twice");
 
         // Unrouted: refused, not staged somewhere nothing releases.
         let mut r = record(json!({"verdict": "pick", "ranked": ranked()}));
