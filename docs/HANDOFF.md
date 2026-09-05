@@ -2659,6 +2659,7 @@ the mechanism and every decision. What it left standing:
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
 
+
 **2026-09-05 20:19Z — #192 (§17.4 widening, narrowing and per-region
 validation) deployed by mecha-53 from `~/Github/mecha` on `main` at
 `52b8b0b`, fast-forwarded from `efbcab5` (clean, no `MERGE_HEAD` in any
@@ -2679,7 +2680,7 @@ first pass that can write a placed ledger row. Announced to the one live
 peer (mecha-0c).
 **2026-09-05 — §17.4's consolidation widening and narrowing and the
 per-region half of validation: PR #192 (`feat/region-widening`), merged
-at `52b8b0b` after eight review passes and deployed 20:19Z by mecha-53
+at `52b8b0b` after seven review passes and deployed 20:19Z by mecha-53
 (the machine-state row under §Machine state, dated, has the probes).**
 What it built is in `HISTORY.md` under this date, with the thirteen
 findings the review loop turned up and what each taught: `Rule::support`,
@@ -2697,7 +2698,7 @@ with no region still retires (fail-closed; no live rule is on probation
 today, so it costs nothing yet). The twelve live rules are unscoped, so a
 widening can only happen once a scoped rule exists and a later batch
 restates it; nothing is convicted, so the first scan narrows and retires
-nothing. **Five minors the eighth pass left for the owner:** an
+nothing. **Five minors the seventh pass left for the owner:** an
 inconclusive or skipped coverage pick is re-picked every night in id
 order, so a region holding one unmeasurable reflection can absorb the
 `--cover 1` budget (a tiebreak on `observations` would rotate it); the
