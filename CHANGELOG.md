@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grades its tasks with the suite's own `utility` and `security`, from a
   venv `scripts/dojo-venv.sh` builds; `eval/dojo-workspace.toml` measures
   the interlock's catch rate and false-refusal cost on the workspace suite.
+- **The run record counts null steps, reopened steps and completed
+  steps** — a plan step completed with no call behind it, a completed step
+  set back to in progress, and the completions both are read against —
+  counted by the `todo` tool into a per-run sensor and read by `mecha
+  sessions health` as rates, each over the runs in which the event could
+  have happened — a null over runs with a completion whose span was
+  measured, a reopen over runs with any step activity — with the totals
+  beside (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 2's precondition, now
+  readable from the store).
 - **Fixture servers on the manifest, and the synthetic assistant home.**
   A `[fixtures]` table on an experiment manifest names MCP servers the trial
   home runs *instead of* the operator's: when it names any, the home's

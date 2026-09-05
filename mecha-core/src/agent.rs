@@ -1179,6 +1179,19 @@ pub struct RunOutcome {
     /// the same "not every fired check was right" question the appraiser's
     /// sign/agency split asks elsewhere.
     pub step_escalations_revised: u32,
+    /// Plan steps completed with no call behind them (`step::Finding::Null`),
+    /// and completed steps set back to in progress — the null-step and
+    /// restart counters `GOAL-SYSTEM-DESIGN.md` §17.7 item 2 wants read
+    /// before a mid-run delivery is switched on. Counted by `todo` into
+    /// `ToolCtx::step_counts`, minted per run.
+    pub step_nulls: u32,
+    pub step_reopens: u32,
+    /// Completed-step transitions — the denominator the two above are read
+    /// against; a run with none had no plan the counters could speak to.
+    pub step_completions: u32,
+    /// Of those, completions whose span could be measured — the null
+    /// rate's denominator; see `tool::StepCounts::measured`.
+    pub step_measured: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -1456,7 +1469,10 @@ impl Agent {
         // with a destructive take, so two runs sharing one `Mutex` would let
         // one run's candidate be read — and cleared — by another.
         let run_scoped;
-        let cx = if cx.tools.compact_requested.is_some() || cx.tools.step_escalation.is_some() {
+        // Always cloned now: the step counters are minted per run
+        // unconditionally — a sensor, not a lever — so two concurrent runs
+        // on one agent cannot add into one pair of counters.
+        let cx = {
             let mut tools = (*cx.tools).clone();
             if tools.compact_requested.is_some() {
                 tools.compact_requested = Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
@@ -1464,16 +1480,15 @@ impl Agent {
             if tools.step_escalation.is_some() {
                 tools.step_escalation = Some(Arc::new(std::sync::Mutex::new(None)));
             }
+            tools.step_counts = Some(Arc::new(crate::tool::StepCounts::default()));
             run_scoped = RunContext {
                 tools: Arc::new(tools),
                 ..cx.clone()
             };
             &run_scoped
-        } else {
-            cx
         };
         // Counted here rather than by the builders, for the same reason the
-        // snapshot below is: the loop returns from six places, and the count
+        // snapshot below is: the loop returns from five places, and the count
         // lives in a local behind all of them.
         let started = std::time::Instant::now();
         let mut context_overflows = 0u32;
@@ -1498,7 +1513,7 @@ impl Agent {
         let mut outcome = ran?;
         outcome.duration_secs = Some(started.elapsed().as_secs_f64());
         outcome.context_overflows = context_overflows;
-        // One place, after every exit. The loop returns from six of them, and
+        // One place, after every exit. The loop returns from five of them, and
         // a snapshot attached at five is worse than one attached at none —
         // a field that is present for most runs reads as a sampling failure
         // for the rest rather than as the plumbing gap it is.
@@ -1682,6 +1697,7 @@ impl Agent {
                     boredom.notices(),
                     step_escalations_used,
                     step_escalations_revised,
+                    step_counts_of(cx),
                 );
                 return Ok(outcome);
             }
@@ -1999,6 +2015,10 @@ impl Agent {
                     boredom_notices: 0,
                     step_escalations_attempted: 0,
                     step_escalations_revised: 0,
+                    step_nulls: 0,
+                    step_reopens: 0,
+                    step_completions: 0,
+                    step_measured: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -2025,6 +2045,7 @@ impl Agent {
                     boredom.notices(),
                     step_escalations_used,
                     step_escalations_revised,
+                    step_counts_of(cx),
                 );
                 return Ok(outcome);
             }
@@ -2168,6 +2189,7 @@ impl Agent {
                         boredom.notices(),
                         step_escalations_used,
                         step_escalations_revised,
+                        step_counts_of(cx),
                     );
                     return Ok(outcome);
                 }
@@ -2322,6 +2344,7 @@ impl Agent {
                             boredom.notices(),
                             step_escalations_used,
                             step_escalations_revised,
+                            step_counts_of(cx),
                         );
                         return Ok(outcome);
                     }
@@ -2494,6 +2517,7 @@ impl Agent {
                         boredom.notices(),
                         step_escalations_used,
                         step_escalations_revised,
+                        step_counts_of(cx),
                     );
                     return Ok(outcome);
                 }
@@ -2976,7 +3000,7 @@ impl Agent {
             blocked_sends,
             taint,
             // Filled by `run_in` once, rather than by every builder: the loop
-            // has six exit points and a field set at five of them is worse
+            // has five exit points and a field set at four of them is worse
             // than one set at none. `context_overflows` rides the same seam,
             // and for a second reason — it would arrive here as a tenth
             // positional `u32` immediately after `compactions`, where a
@@ -2986,6 +3010,10 @@ impl Agent {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
+            step_completions: 0,
+            step_measured: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -3127,6 +3155,10 @@ impl Agent {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
+            step_completions: 0,
+            step_measured: 0,
             stop_cause,
             compactions,
             cost_usd: self.cost(&usage),
@@ -4033,12 +4065,30 @@ fn emit_done(
     boredom_notices: u32,
     step_escalations_attempted: u32,
     step_escalations_revised: u32,
+    step_counts: (u32, u32, u32, u32),
 ) {
     outcome.context_overflows = context_overflows;
     outcome.boredom_notices = boredom_notices;
     outcome.step_escalations_attempted = step_escalations_attempted;
     outcome.step_escalations_revised = step_escalations_revised;
+    (
+        outcome.step_nulls,
+        outcome.step_reopens,
+        outcome.step_completions,
+        outcome.step_measured,
+    ) = step_counts;
     emit(events, AgentEvent::Done(Box::new(outcome.clone())));
+}
+
+/// The run's step counters as of now — `(nulls, reopens, completions,
+/// measured)` — or zeros for a context with no sensor, which `run_in`
+/// never produces.
+fn step_counts_of(cx: &RunContext) -> (u32, u32, u32, u32) {
+    cx.tools
+        .step_counts
+        .as_ref()
+        .map(|c| c.snapshot())
+        .unwrap_or((0, 0, 0, 0))
 }
 
 fn emit(events: &Option<UnboundedSender<AgentEvent>>, event: AgentEvent) {
@@ -6555,6 +6605,10 @@ mod tests {
             boredom_notices: 0,
             step_escalations_attempted: 0,
             step_escalations_revised: 0,
+            step_nulls: 0,
+            step_reopens: 0,
+            step_completions: 0,
+            step_measured: 0,
             ..outcome.clone()
         });
         assert_eq!(clean.context_overflows, Some(0));
@@ -7298,6 +7352,58 @@ mod tests {
             .messages
             .iter()
             .all(|m| !m.text().contains("too broad")));
+    }
+
+    /// The seam from the run-scoped slot to the record: the real `todo`
+    /// tool, driven by a scripted model through a step that completes with
+    /// no call behind it and is then reopened, and the outcome carries both
+    /// counts. Fails on the tree before the sensor, and — because
+    /// `RunStats::from` writes `Some(o.step_nulls)` unconditionally — on
+    /// any regression that drops the slot from the run scope, which would
+    /// otherwise record a confident zero where the `Option` was added to
+    /// produce a dash (found on review).
+    #[tokio::test]
+    async fn the_run_outcome_carries_the_null_step_and_reopen_counts() {
+        let todo_call = |id: &str, items: serde_json::Value| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "todo".into(),
+                    input: json!({ "items": items }),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, _) = agent_with_tools(
+            vec![
+                todo_call(
+                    "t0",
+                    json!([{"content": "decide", "status": "in_progress"}]),
+                ),
+                todo_call("t1", json!([{"content": "decide", "status": "completed"}])),
+                todo_call(
+                    "t2",
+                    json!([{"content": "decide", "status": "in_progress"}]),
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(crate::tool::todo::TodoTool::new())],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(outcome.step_nulls, 1, "completed with no call behind it");
+        assert_eq!(outcome.step_reopens, 1, "then set back to in progress");
+        assert_eq!(outcome.step_completions, 1, "one completed-step transition");
+        assert_eq!(
+            outcome.step_measured, 1,
+            "started and completed in this run"
+        );
+        let stats = crate::session::RunStats::from(&outcome);
+        assert_eq!(stats.step_nulls, Some(1));
+        assert_eq!(stats.step_reopens, Some(1));
+        assert_eq!(stats.step_completions, Some(1));
+        assert_eq!(stats.step_measured, Some(1));
     }
 
     /// The review finding: the escalation's own thresholds are argued, not
