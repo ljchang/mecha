@@ -773,7 +773,12 @@ async fn principal_call(
         Vec::new()
     };
     // The pending drafts, read once for the same reason: a release names
-    // one, and the driver checks the draft it names against this list. A
+    // one, and the driver checks the draft it names against this list. The
+    // snapshot predates the principal's answer, and that is safe only
+    // because `outbox edit` rewrites a draft's args and never its tool, and
+    // a draft resolved between here and the act is refused by the CLI's own
+    // pending check — an edit verb that could move a draft's tool would
+    // invalidate this vet (found on review). A
     // read: open only what exists, on the doctor's rule that an
     // examination must not create what it was about to report. An
     // unreadable store is a failed call, never an empty queue.
@@ -1056,6 +1061,13 @@ async fn principal_call(
                         cmd.arg("--compact-at").arg(n.to_string());
                     }
                     cmd.args(&act.verb);
+                    // `env_for` also sets the child's cwd: the lifetime's
+                    // scratch workspace beside the ledger, an empty directory
+                    // the driver made, so `Config::load` finds no project
+                    // `mecha.toml` there and nothing can replace the home's
+                    // `[[mcp]]` under a vetted release — stricter than the
+                    // trial's staged workspace, which is a fixture's copy
+                    // (questioned on review; the cwd is set, here).
                     env_for(&mut cmd, passthrough)?;
                     // The refusals scripted for this task reach a verb that
                     // resumes the parked run (`questions answer`): the

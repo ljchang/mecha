@@ -138,9 +138,6 @@ pub struct Fixtures {
     /// owner's priorities fare against a controlled world — the one case
     /// refused is a fixture charter over the operator's live servers.
     pub charter: Option<PathBuf>,
-    /// The servers. Named like `[[mcp]]` entries, minus what a fixture never
-    /// needs (an `env`, a passthrough, a sandbox), plus a `seed`.
-    pub mcp: Vec<FixtureServer>,
     /// The outbox route of this world: the fixture tools whose calls are
     /// **staged, not executed** (`[outbox] tools`' meaning, on the closed
     /// world's names). **Spelled, never inherited**: the operator's route
@@ -154,6 +151,12 @@ pub struct Fixtures {
     /// staged sink, said out loud — and each name must be a prefixed
     /// fixture's tool, since a release is permitted only for those.
     pub outbox_tools: Option<Vec<String>>,
+    /// Last, after every plain value: TOML writes a table array only after
+    /// the values of its parent, and a populated `Fixtures` serialised with
+    /// `mcp` first would fail to render (found on review).
+    /// The servers. Named like `[[mcp]]` entries, minus what a fixture never
+    /// needs (an `env`, a passthrough, a sandbox), plus a `seed`.
+    pub mcp: Vec<FixtureServer>,
 }
 
 /// One fixture MCP server on the manifest.
@@ -334,6 +337,17 @@ impl Fixtures {
         fresh: bool,
     ) -> Result<Vec<crate::config::McpServerConfig>> {
         let mut out = Vec::with_capacity(self.mcp.len());
+        // A crash between staging and the rename leaves `.<name>.seeding-*`
+        // behind; swept here, so the store is self-healing rather than
+        // accumulating invisible siblings (found on review).
+        if let Ok(entries) = std::fs::read_dir(home.join("fixtures")) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') && name.contains(".seeding-") {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
         for s in &self.mcp {
             let dir = fixture_dir(home, &s.name);
             let seeded = dir.join(FIXTURE_SEEDED).exists();
@@ -4263,6 +4277,18 @@ preset = "full"
         let m = Manifest::parse(MANIFEST).unwrap();
         assert!(m.fixtures.is_empty());
         assert!(m.fixtures.names().is_empty());
+    }
+
+    /// A populated `Fixtures` round-trips through TOML: the values sit before
+    /// the table array, or the serialiser refuses (found on review).
+    #[test]
+    fn a_populated_fixtures_table_serialises_and_reloads() {
+        let m = Manifest::parse(FIXTURED).unwrap();
+        let text = toml::to_string_pretty(&m).expect("a manifest with fixtures renders");
+        let back = Manifest::parse(&text).unwrap();
+        assert_eq!(back.fixtures.names(), m.fixtures.names());
+        assert_eq!(back.fixtures.routed(), m.fixtures.routed());
+        assert_eq!(back.fixtures.charter, m.fixtures.charter);
     }
 
     /// Rendering puts exactly the fixtures into `[[mcp]]`, drops every live
