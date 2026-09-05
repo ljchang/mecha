@@ -1308,9 +1308,11 @@ fn health(
     // never a dash that reads as zero.
     let (sensed_steps, nulls, reopens) = corpus.step_totals();
     if sensed_steps > 0 {
+        // A step total beside a run share, each labelled as what it is: the
+        // boredom line above keeps one denominator, this one has two.
         println!(
-            "  plan steps          {nulls} completed with no call ({}), {reopens} reopened after \
-             completion ({}) — over {sensed_steps} run(s) that recorded it",
+            "  plan steps          {nulls} null step(s) in {} of runs, {reopens} reopened step(s) \
+             in {} of runs — over {sensed_steps} run(s) that recorded it",
             pct(corpus.step_null_rate()),
             pct(corpus.step_reopen_rate())
         );

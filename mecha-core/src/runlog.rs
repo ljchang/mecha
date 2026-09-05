@@ -403,13 +403,7 @@ impl Corpus {
     /// corpus written before the field indistinguishable from one where the
     /// threshold never failed.
     pub fn overflow_rate(&self) -> Option<f64> {
-        let sensed: Vec<u32> = self
-            .rows
-            .iter()
-            .filter_map(|r| r.stats.context_overflows)
-            .collect();
-        (!sensed.is_empty())
-            .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
+        Self::share_positive(self.rows.iter().filter_map(|r| r.stats.context_overflows))
     }
 
     /// Share of runs the harness told at least once that an approach had
@@ -425,13 +419,7 @@ impl Corpus {
     /// before the detector existed and one where nothing ever got stuck are
     /// opposite findings.
     pub fn boredom_rate(&self) -> Option<f64> {
-        let sensed: Vec<u32> = self
-            .rows
-            .iter()
-            .filter_map(|r| r.stats.boredom_notices)
-            .collect();
-        (!sensed.is_empty())
-            .then(|| sensed.iter().filter(|n| **n > 0).count() as f64 / sensed.len() as f64)
+        Self::share_positive(self.rows.iter().filter_map(|r| r.stats.boredom_notices))
     }
 
     /// The share of sensed runs in which a plan step completed with no call
@@ -462,6 +450,10 @@ impl Corpus {
         (sensed, nulls, reopens)
     }
 
+    /// The share of sensed rows with a positive count — the one rule every
+    /// per-run counter's rate follows, in one place: `None` over no sensed
+    /// rows, never `Some(0.0)`, because a corpus from before a sensor and
+    /// one where it never fired are opposite findings.
     fn share_positive(sensed: impl Iterator<Item = u32>) -> Option<f64> {
         let sensed: Vec<u32> = sensed.collect();
         (!sensed.is_empty())
