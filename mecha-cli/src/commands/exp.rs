@@ -1479,19 +1479,6 @@ fn status(name: &str, json: bool) -> Result<()> {
         }
     };
     let mut by_arm: std::collections::BTreeMap<&str, [usize; 5]> = Default::default();
-    // The world the trials ran in, when it was not the operator's.
-    if !manifest.fixtures.is_empty() {
-        let routed = manifest.fixtures.routed();
-        println!(
-            "fixtures: {} (the operator's servers are not in these homes) · outbox route: {}",
-            manifest.fixtures.names().join(", "),
-            if routed.is_empty() {
-                "none".to_string()
-            } else {
-                routed.join(", ")
-            }
-        );
-    }
     for arm in manifest.arms.keys() {
         by_arm.insert(arm.as_str(), [0; 5]);
     }
@@ -1555,9 +1542,28 @@ fn status(name: &str, json: bool) -> Result<()> {
                 "arms": rows,
                 "lifetimes": lifetimes,
                 "unreadable_trials": skipped,
+                // The world the trials ran in: on the readout for the same
+                // reason it is in the condition hash.
+                "fixtures": manifest.fixtures.names(),
+                "outbox_route": manifest.fixtures.routed(),
             }))?
         );
         return Ok(());
+    }
+    // The world the trials ran in, when it was not the operator's. Below
+    // the JSON early return: a prose line ahead of the document is a
+    // readout that no longer parses (found on review).
+    if !manifest.fixtures.is_empty() {
+        let routed = manifest.fixtures.routed();
+        println!(
+            "fixtures: {} (the operator's servers are not in these homes) · outbox route: {}",
+            manifest.fixtures.names().join(", "),
+            if routed.is_empty() {
+                "none".to_string()
+            } else {
+                routed.join(", ")
+            }
+        );
     }
     println!(
         "{} ({:?}, {})",
