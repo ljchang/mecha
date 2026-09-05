@@ -128,6 +128,18 @@ through the one write path nobody watches. **A stale MCP binary is worse
 than a stale CLI**, because everything mecha does at runtime goes through
 it and nothing about it announces its version.
 
+**A probe literal must be one the range *added*, or it proves only that
+the file exists.** `strings ~/.cargo/bin/mecha | grep -c '<literal>'` is
+the check CLAUDE.md prescribes because the version string cannot tell
+builds apart — but it discriminates only if the string was not in the
+previous build. Take it from the diff's added lines
+(`git diff <installed>..<target> | grep '^+'`), never from memory of the
+code: on 2026-09-05 a probe on `cannot determine the working directory`
+printed 8 before and 8 after a reinstall, and would have called a failed
+install current. And state a count only for a command you ran verbatim,
+or say present/absent — a peer will re-run it, and a wrong number makes a
+correct deploy look wrong.
+
 Verify: `mecha --version` matches mecha's workspace `Cargo.toml`, and the
 graph server answers from the *installed* path:
 
