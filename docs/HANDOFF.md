@@ -1886,6 +1886,52 @@ sensor)* — the expected reading until a run under this binary
 plans under a confirmed goal. Installed binary and `main` agree at
 `67fb55e`; nothing is owed on this machine from this merge.
 
+**2026-09-06 17:10–17:19Z — patch releases for all three repositories,
+then the update skill end to end (mecha-53, on the owner's word "run the
+patch releases for anything that needs them and then run update skill").**
+Releases, each a bump commit straight on `main` and an annotated tag with
+the same subject, the shape every previous bump had (no PR, no branch
+protection; each `release.yml` refuses a tag that disagrees with the
+workspace version): **mecha v0.1.18** (`a3d3dfc`, "0.1.18 — a run knows
+what it is for"; 28 changelog entries retitled from Unreleased; the
+workflow's own checks re-run here first — `cargo test --workspace` green,
+`RUSTFLAGS=-D warnings cargo clippy --all-targets` clean; the workflow
+published all four crates and the GitHub release — crates.io answers
+0.1.18 for `mecha-cli`, `mecha-core`, `mecha-mail`, `mecha-slack`);
+**mecha-graph v0.1.5** (`a807885`, "0.1.5 — a task's association outlives
+the task"; the first tag since v0.1.2 — 0.1.3 and 0.1.4 bumped the version
+without a tag — no release workflow there, and its crates were last
+hand-published at 0.1.0, so nothing was published; the roster gate ran
+clean on the push); **mecha-factory v0.2.9** (`5359783`, "Release 0.2.9";
+the workflow attached `factory-x86_64-linux-musl.tar.gz` + `.sha256` and
+published the three crates — crates.io answers 0.2.9). Then the update
+skill: `cargo install --path` for mecha-cli, mecha-mail, mecha-graph,
+mecha-graph-mcp and mecha-factory-publish, each confirmed by cargo's own
+*Replaced package … vOLD with … vNEW* line; `mecha --version` 0.1.18,
+`mecha-graph --version` 0.1.5, `factory-publish --version` 0.2.9, and the
+installed `mecha-graph-mcp` answers `tools/list` with 13 tools;
+`~/Github/mecha-graph/target/release/mecha-graph` rebuilt 17:11 (the
+01:30 nightly's binary); `target-musl/release/mecha` rebuilt 17:19 —
+statically linked, `--version` 0.1.18 (it was Sep 3, so any scorecard
+between would have measured 0.1.17 code); the sandbox image's cargo
+matches the host's (1.97.1), no rebuild. Restarted 17:15:46Z, each
+verified from its startup line: mecha-slack (`Connected to cosanlab as
+mecha. 1 owner(s), 16 thread(s)`), mecha-triggers (`1 trigger(s), 1
+enabled`), mecha-serve (both doors; `/api/queue` 200), mecha-drain
+(`Started`); their graph MCP children are the new binary. Not restarted,
+correctly: mecha-voice-worker (started 2026-09-05 06:16 after the reboot,
+`worker.py` last changed 2026-09-04) and mecha-parakeet; the web dist
+(`web/` unchanged since the served bundle's commit `53f087f`). **The
+stale-process sweep found three `mecha-graph-mcp (deleted)` children,
+none a unit's:** Hermes (pid 3616) and two Claude Code sessions — mecha-d4
+(parent 1584424, confirmed by that session) and this one (parent 450110).
+A host keeps its MCP child until it reconnects (`/mcp`) or restarts; not
+killed, per the skill. **The droplet still serves factory 0.2.8** (read-only
+check: `factory --version`, `mecha-factory.service` active, binary and
+`.prev` both Aug 29); `factory-deploy v0.2.9` is production and waits for
+the owner's word. Installed binaries and each repo's `main` agree at the
+tagged commits; nothing else is owed on this machine.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail

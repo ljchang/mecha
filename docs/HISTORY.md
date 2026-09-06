@@ -4126,6 +4126,22 @@ passes followed (`HANDOFF.md`'s goal section has the tally and what they
 changed), then merged at `67fb55e` on the owner's word and deployed 05:07Z
 the same morning (binary only, four units restarted).
 
+**2026-09-06 — 0.1.18, and patch releases across the three repositories.**
+mecha v0.1.18 ("a run knows what it is for") carries the goal system's
+producers and its first sensor, `mecha exp`, the widening and narrowing
+of learned rules, the step counters, per-command approval rules and the
+rest of the twenty-eight entries since 0.1.17 six days earlier; the tag
+published the four crates and the GitHub release. mecha-graph v0.1.5
+("a task's association outlives the task") is that repository's first tag
+since v0.1.2 — two versions had been bumped without one. mecha-factory
+v0.2.9 carries the meeting-poll lifecycle and attached its musl binary.
+Each was a bump commit straight on `main` with an annotated tag, the
+shape every previous bump had. The update skill then ran end to end —
+five installs, the graph's nightly binary, the benchmark's musl binary
+(which had been three days stale), four unit restarts — with the record
+in `HANDOFF.md`'s machine state; the droplet was left on 0.2.8 for the
+owner's word.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
