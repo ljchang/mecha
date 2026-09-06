@@ -2805,8 +2805,10 @@ when touching it:
   changed pointer, no goal at all is unnamed, and the two are never one
   number — the rate is over changed pointers alone). The record carries
   the anchor and the three counts, `Option` and unknown before the sensor;
-  the corpus rate is over runs that planned under an anchor, keyed on the
-  count so a row whose anchor kind a build cannot read keeps its drift. Nothing re-asks or narrows on it — off until read, on
+  the corpus rate is over runs that *named* a goal on at least one write
+  under an anchor (a run whose writes all named nothing cannot have
+  changed the pointer and is kept out of the denominator), keyed on the
+  counts so a row whose anchor kind a build cannot read keeps its drift. Nothing re-asks or narrows on it — off until read, on
   item 2's posture. The anchor is the confirmed pointer, not the owner's
   prose, and the doc on `GoalTrack` says so.
 - **A reading is five facts, and only one of them is a number.**
