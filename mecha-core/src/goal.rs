@@ -13,11 +13,16 @@
 //! module deliberately holds no title, status or due date. A second copy of
 //! somebody else's record is the thing that can disagree with it.
 //!
-//! **Three kinds, because there are three horizons** — a standing commitment,
-//! a current concern, a homeostatic setpoint. `Task` and `Charter` have stores
-//! behind them; `Setpoint` is named here because the wire format below has to
-//! survive its arrival, and because a reference whose kinds are invented one
-//! at a time acquires a fourth spelling of the same idea.
+//! **Four kinds, because there are four horizons** — a standing commitment,
+//! a project, a current concern, a homeostatic setpoint. `Task`, `Project`
+//! and `Charter` have stores behind them; `Setpoint` is named here because
+//! the wire format below has to survive its arrival, and because a reference
+//! whose kinds are invented one at a time acquires a fifth spelling of the
+//! same idea. `Project` arrived last (`docs/GOAL-SYSTEM-DESIGN.md` §17.7
+//! item 5): the board already files a task under a project the graph holds
+//! as a parent node, so the persistent tier between the charter and a task
+//! is a pointer to that node — no new store, and the tiers read charter →
+//! project → task → step.
 //!
 //! ## The wire format, and why parsing has two policies
 //!
@@ -57,6 +62,10 @@ pub enum GoalRef {
     /// anybody maintains, because a second statement of urgency disagrees with
     /// the first the moment either is edited.
     Charter(String),
+    /// A project on the GTD board, by the graph's own node id — the parent
+    /// a task's `project` field names. The persistent tier: a goal that
+    /// outlives any one task, closed when the owner closes its last one.
+    Project(String),
     /// A task on the GTD board, by the graph's own uid.
     Task(String),
     /// A homeostatic setpoint, by name. No store yet.
@@ -68,6 +77,7 @@ impl GoalRef {
     pub fn kind(&self) -> &'static str {
         match self {
             GoalRef::Charter(_) => "charter",
+            GoalRef::Project(_) => "project",
             GoalRef::Task(_) => "task",
             GoalRef::Setpoint(_) => "setpoint",
         }
@@ -76,7 +86,10 @@ impl GoalRef {
     /// The identifier this points at, without its kind.
     pub fn id(&self) -> &str {
         match self {
-            GoalRef::Charter(id) | GoalRef::Task(id) | GoalRef::Setpoint(id) => id,
+            GoalRef::Charter(id)
+            | GoalRef::Project(id)
+            | GoalRef::Task(id)
+            | GoalRef::Setpoint(id) => id,
         }
     }
 
@@ -140,6 +153,53 @@ impl fmt::Display for GoalRef {
     }
 }
 
+/// What a run took its goal to be, as it put it to the owner.
+///
+/// `docs/GOAL-SYSTEM-DESIGN.md` §17.3: the goal is the one key of a situation
+/// that is *inferred*, so it is the one the owner can confirm, and **the
+/// confirmation is a question, not a gate**. This is the question's goal
+/// half — the model's sentence and the reference it names — carried on the
+/// `ask_user` call (`tool::ask`) and stored on the parked [`crate::questions::
+/// Question`] beside the owner's answer, which is the confirmation: the
+/// owner's own words, arming no taint, like the charter.
+///
+/// **The sentence is prose, and it reaches nothing but the owner's screen.**
+/// It is model-authored, so no harness reader parses it, matches on it, or
+/// puts it in a prompt; the pointer beside it is what the appraisal joins on,
+/// and the pointer is checked against the store it names (`appraisal::
+/// of_session` drops a charter id the charter does not contain). What makes
+/// the record a *record* is the answer, and the answer is never here — it is
+/// the question's, written by the store when the owner speaks.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GoalHypothesis {
+    /// One sentence: what the run takes the goal to be.
+    pub sentence: String,
+    /// What the sentence says the work serves, when it named one. Lenient on
+    /// read, on the module's record policy: a kind this binary has not heard
+    /// of costs the reference and keeps the question.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub serves: Option<GoalRef>,
+}
+
+impl GoalHypothesis {
+    /// The line the owner reads above the question it was folded into — one
+    /// sentence, the reference in the harness's own spelling after it, so
+    /// the owner sees exactly what the record will hold.
+    pub fn render(&self) -> String {
+        match &self.serves {
+            Some(serves) => format!(
+                "I take the goal to be: {} (serves {serves})",
+                self.sentence.trim()
+            ),
+            None => format!("I take the goal to be: {}", self.sentence.trim()),
+        }
+    }
+}
+
 /// Why a string was not a goal reference, phrased for whoever wrote it — which
 /// is usually a model reading the message back out of a `ToolOutput`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,10 +233,11 @@ impl FromStr for GoalRef {
         }
         match kind.trim() {
             "charter" => Ok(GoalRef::Charter(id.to_string())),
+            "project" => Ok(GoalRef::Project(id.to_string())),
             "task" => Ok(GoalRef::Task(id.to_string())),
             "setpoint" => Ok(GoalRef::Setpoint(id.to_string())),
             other => Err(ParseGoalRefError(format!(
-                "`{other}` is not a kind of goal; expected charter, task or setpoint"
+                "`{other}` is not a kind of goal; expected charter, project, task or setpoint"
             ))),
         }
     }
@@ -190,6 +251,7 @@ mod tests {
     fn a_reference_round_trips_through_its_wire_form() {
         for original in [
             GoalRef::Task("01J8ZK".into()),
+            GoalRef::Project("proj-teaching".into()),
             GoalRef::Charter("do-no-harm".into()),
             GoalRef::Setpoint("attention-debt".into()),
         ] {
@@ -222,6 +284,25 @@ mod tests {
     /// The record-facing direction: the same inputs are simply absent. A
     /// transcript written by a newer binary naming a kind this one has never
     /// heard of must cost the reference and nothing else.
+    /// The fourth kind is a pointer like `Task`: the id is the board's, and
+    /// nothing here holds the project's name or state (§17.7 item 5).
+    #[test]
+    fn a_project_is_a_fourth_kind_of_pointer() {
+        let r: GoalRef = "project:proj-teaching".parse().unwrap();
+        assert_eq!(r, GoalRef::Project("proj-teaching".into()));
+        assert_eq!(r.kind(), "project");
+        assert_eq!(r.id(), "proj-teaching");
+        assert_eq!(
+            GoalRef::parse_lenient("project:x"),
+            Some(GoalRef::Project("x".into()))
+        );
+        let msg = "epic:7".parse::<GoalRef>().unwrap_err().to_string();
+        assert!(
+            msg.contains("project"),
+            "the refusal names every kind: {msg}"
+        );
+    }
+
     #[test]
     fn a_record_with_an_unknown_kind_degrades_to_no_reference() {
         assert_eq!(GoalRef::parse_lenient("epic:7"), None);
@@ -231,6 +312,35 @@ mod tests {
             GoalRef::parse_lenient("task:7"),
             Some(GoalRef::Task("7".into()))
         );
+    }
+
+    /// The hypothesis is one line to the owner, and its pointer survives a
+    /// record round trip in the reference's one wire spelling.
+    #[test]
+    fn a_hypothesis_renders_as_one_line_and_round_trips() {
+        let h = GoalHypothesis {
+            sentence: " get Dirk's approval on the Psych 62 syllabus ".into(),
+            serves: Some(GoalRef::Task("t1".into())),
+        };
+        assert_eq!(
+            h.render(),
+            "I take the goal to be: get Dirk's approval on the Psych 62 syllabus (serves task:t1)"
+        );
+        let json = serde_json::to_string(&h).unwrap();
+        assert!(json.contains("\"serves\":\"task:t1\""), "{json}");
+        assert_eq!(serde_json::from_str::<GoalHypothesis>(&json).unwrap(), h);
+
+        let bare = GoalHypothesis {
+            sentence: "tidy the inbox".into(),
+            serves: None,
+        };
+        assert_eq!(bare.render(), "I take the goal to be: tidy the inbox");
+        assert!(!serde_json::to_string(&bare).unwrap().contains("serves"));
+        // A newer kind on a stored question costs the pointer, not the record.
+        let newer: GoalHypothesis =
+            serde_json::from_str(r#"{"sentence":"x","serves":"epic:7"}"#).unwrap();
+        assert_eq!(newer.serves, None);
+        assert_eq!(newer.sentence, "x");
     }
 
     #[test]

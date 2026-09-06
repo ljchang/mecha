@@ -2018,6 +2018,9 @@
     font-size: 15px;
     font-weight: 500;
     line-height: 1.4;
+    /* A goal put beside a question arrives as two paragraphs; collapsing
+       the break would run the hypothesis into the question it introduces. */
+    white-space: pre-line;
   }
   .qfields {
     display: grid;

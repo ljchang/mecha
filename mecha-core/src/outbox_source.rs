@@ -172,6 +172,49 @@ pub fn for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<SourceRead> {
     from_messages(item, &Session::messages_ever(&text))
 }
 
+/// What the drafting run's plan served when it staged this draft — the
+/// `serves:` on its `todo` list as of the staging call, or nothing.
+///
+/// `docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 3's third case: a run with
+/// nobody to ask never asks, the goal it is assuming *rides in the note on
+/// the artifact it stages*, and the owner's release of that artifact is the
+/// confirmation. The note is derived here at review time rather than
+/// stamped on the item at staging, on D15's rule (the plan rehydrates from
+/// the transcript, never a second store) and because the loop must not
+/// learn which tool keeps the plan: the plan's own reader walks the
+/// transcript up to and including the staging call, so a `serves` the run
+/// set *after* staging does not retroactively claim the draft. A pointer
+/// only — the charter line's text is the owner's and is looked up by the
+/// surface that renders it; the model's sentence about the goal is never
+/// on this path.
+///
+/// `None` is honest absence: no plan, a plan that named nothing, or a
+/// staging call this walk cannot find (a draft no tool call produced, or
+/// one staged before `call_id` whose arguments the loop has since pinned).
+pub fn serves_at_staging(item: &OutboxItem, messages: &[Message]) -> Option<crate::goal::GoalRef> {
+    let staged_in = messages.iter().position(|m| {
+        m.role == Role::Assistant
+            && m.content.iter().any(|b| match b {
+                Block::ToolUse { id, name, input } => match &item.call_id {
+                    Some(call_id) => id == call_id,
+                    None => name == &item.tool && input == &item.args_before,
+                },
+                _ => false,
+            })
+    })?;
+    crate::tool::todo::TodoTool::plan_from_transcript(&messages[..=staged_in]).and_then(|p| p.goal)
+}
+
+/// [`serves_at_staging`] over the drafting session on disk, best-effort
+/// like [`for_item`]: a missing or unreadable transcript is an absent note,
+/// never a failed review.
+pub fn serves_for_item(item: &OutboxItem, sessions_dir: &Path) -> Option<crate::goal::GoalRef> {
+    let id = item.session_id.as_deref()?;
+    let path = Session::find(sessions_dir, id).ok()?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    serves_at_staging(item, &Session::messages_ever(&text))
+}
+
 /// The pure half, so the join is unit-tested rather than trialled against a
 /// live store — the same split as [`crate::compact`], for the same reason:
 /// getting it wrong is silent, and the symptom is a reviewer reading the
@@ -867,5 +910,54 @@ mod tests {
         // by returning nothing is the honest answer rather than a failure.
         let item = draft(json!({"to": "a@b.c", "subject": "hi", "body_markdown": "Hello"}));
         assert!(from_messages(&item, &[]).is_empty());
+    }
+
+    /// §17.7 item 3's note on the artifact: the plan's `serves` as of the
+    /// staging call, and not one the run set afterwards — a draft is not
+    /// retroactively claimed for a goal the run named once it was staged.
+    #[test]
+    fn the_note_is_the_plan_goal_at_staging_never_a_later_one() {
+        let args = json!({"to": "a@b.c", "subject": "hi", "body_markdown": "Hello"});
+        let mut item = draft(args.clone());
+        item.call_id = Some("m1".into());
+        let plan = |serves: &str| json!({"items": [{"content": "write it", "status": "in_progress"}], "serves": serves});
+        let messages = vec![
+            call("p1", "todo", plan("charter:answer-what-waits-on-me")),
+            result("p1", "(not a whole echo)"),
+            call("m1", "mail__mail_reply", args.clone()),
+            result("m1", "Drafted, not sent"),
+            call("p2", "todo", plan("charter:something-else")),
+            result("p2", "(not a whole echo)"),
+        ];
+        assert_eq!(
+            serves_at_staging(&item, &messages),
+            Some(crate::goal::GoalRef::Charter(
+                "answer-what-waits-on-me".into()
+            ))
+        );
+        // No plan before the staging call: nothing, not the later plan.
+        assert_eq!(serves_at_staging(&item, &messages[2..]), None);
+        // A staging call the walk cannot find is honest absence.
+        item.call_id = Some("nope".into());
+        assert_eq!(serves_at_staging(&item, &messages), None);
+        // The content-match fallback, for a draft staged before `call_id`.
+        item.call_id = None;
+        assert_eq!(
+            serves_at_staging(&item, &messages),
+            Some(crate::goal::GoalRef::Charter(
+                "answer-what-waits-on-me".into()
+            ))
+        );
+        // A plan that named nothing is nothing.
+        let unnamed = vec![
+            call(
+                "p1",
+                "todo",
+                json!({"items": [{"content": "x", "status": "pending"}]}),
+            ),
+            result("p1", "(not a whole echo)"),
+            call("m1", "mail__mail_reply", args),
+        ];
+        assert_eq!(serves_at_staging(&item, &unnamed), None);
     }
 }

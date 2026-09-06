@@ -2710,7 +2710,8 @@ charter's order *is* the content.
 **Loading a charter arms no taint**, and `charter.rs` has no dependency on
 `agent::Taint` at all — the absence is the enforcement. It renders straight into
 the system prompt (no progressive disclosure, no tool), so it is in the cached
-prefix: `CHARTER_CHAR_BUDGET` is 2,000 and doctor reports crossing it rather
+prefix: `CHARTER_CHAR_BUDGET` is 2,500 (2,000 until the goal-sentence ask of
+2026-09-06 grew the block's fixed prose) and doctor reports crossing it rather
 than refusing, because the cost is prefix bytes on every request.
 
 **A line may carry a sensor, and the sensor never reaches a prompt**
@@ -2773,6 +2774,25 @@ when touching it:
   predicate `with_builtins` registers by) — the skills block's rule, one block
   over: a prompt naming a tool the surface lacks costs a turn on a call that
   can only fail.
+- **The goal sentence rides on the one question, and the block that asks
+  for it names no asker** (`GOAL-SYSTEM-DESIGN.md` §17.7 item 3, built
+  2026-09-06). `ask_user` takes `goal` and `serves`, strict like `todo`'s
+  `serves`, renders them above the question as one text and hands the
+  typed `GoalHypothesis` to `Asker::ask_about`; only `ParkingAsker` keeps
+  it, on the `Question` beside the owner's answer — the two together are
+  the goal record, and no reader recovers either from prose. The charter
+  block asks every surface for the sentence in words that name no tool,
+  because `setup` cannot see which asker a front-end installs after
+  `prepare` returns (`serve` prepares with `interactive = false` and then
+  installs `ask_user`), and the delegated seed says on the user turn where
+  its sentence goes — fold it into the ask-first call, never a question of
+  its own. The unattended run's note is derived, not stamped:
+  `outbox_source::serves_at_staging` reads the plan's `serves` as of the
+  staging call, and `outbox show` / the web detail print it with the
+  charter line's own text, so releasing the draft confirms the goal. The
+  appraisal reads the ask's `serves` as a second producer of a named goal,
+  after the plan's. `CHARTER_CHAR_BUDGET` moved to 2,500 with the block's
+  fixed prose.
 - **A reading is five facts, and only one of them is a number.**
   `reading::Reading` is `Unread` (the store could not be read), `Deferred`
   (this reader does not scan that store), `Nothing` (nothing waits — the

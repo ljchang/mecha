@@ -2725,6 +2725,24 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
+**2026-09-06 — §17.7 items 3 and 5 are built on `feat/goal-sentence`
+(unmerged when written; merging is the owner's call).** `HISTORY.md`'s
+2026-09-06 entry has what and why; the design doc's built notes under
+§17.7 items 3 and 5 have the shape. What to expect on this machine after
+it lands: `sessions appraise` prints a new line — *N put a goal to the
+owner on a question; M had it answered* — both zero until a delegated run
+asks with the new seed; `mecha questions show` prints a `goal` row on a
+question that carried one; `outbox show` prints `serves charter:<id> —
+<text>` under a draft whose run's plan named a line at staging; and the
+charter block is ~480 characters longer, so the budget moved to 2,500 and
+the live charter (2,256 rendered) stays under it. **Deploy = binary +
+`web/dist` together**: the outbox page reads `serves` off the detail JSON
+and the chat question card keeps its newline. **Open from §17.7 now:**
+item 2 (mid-run delivery, off until the step counters are read — zero
+runs recorded when this was written), item 4 (structural distance, which
+now has a goal record to measure against), item 8; a chat confirmation is
+recorded in the transcript and read by nothing yet.
+
 **2026-09-05, later — §17.7 item 2's precondition is recordable: PR #194
 (`feat/step-counters`), merged at `87645f9` after six review passes and
 deployed 21:58Z by mecha-53 (the machine-state row under §Machine state,

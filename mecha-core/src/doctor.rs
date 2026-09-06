@@ -2649,6 +2649,7 @@ mod tests {
             asked_at: asked_at.into(),
             answered_at: None,
             answer: None,
+            goal: None,
         };
         std::fs::write(
             dir.join(format!("{id}.json")),

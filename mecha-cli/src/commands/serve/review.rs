@@ -182,17 +182,38 @@ pub async fn detail(State(state): St, UrlPath(id): UrlPath<String>) -> Response 
         (Some(dir), OutboxKind::Message) => outbox_source::for_item(&item, dir),
         _ => Vec::new(),
     };
-    Json(detail_json(&item, &sources)).into_response()
+    // The goal note rides on every kind: a published page serves a line as
+    // much as a message does, and releasing either confirms it.
+    let serves = state
+        .review
+        .sessions_dir
+        .as_ref()
+        .and_then(|dir| outbox_source::serves_for_item(&item, dir));
+    Json(detail_json(&item, &sources, serves.as_ref())).into_response()
 }
 
 /// Pure, so the nothing-is-dropped property is a unit test rather than a
 /// hope: every argument lands in headers, body, or other — and the exact
 /// bytes ride along for the confirm sheet, which is the check, not the read.
-fn detail_json(item: &OutboxItem, sources: &[outbox_source::SourceRead]) -> serde_json::Value {
+fn detail_json(
+    item: &OutboxItem,
+    sources: &[outbox_source::SourceRead],
+    serves: Option<&mecha_core::goal::GoalRef>,
+) -> serde_json::Value {
     let view = DraftView::of(&item.args);
     let (headline, _) = headline_and_snippet(&item.args);
     serde_json::json!({
         "id": item.id,
+        // What the drafting run's plan served when it staged this (§17.7
+        // item 3's note on the artifact): the pointer, and for a charter
+        // line the owner's own text beside it. `null` when the run named
+        // nothing — absence, not a claim.
+        "serves": serves.map(|g| serde_json::json!({
+            "ref": g.to_string(),
+            "kind": g.kind(),
+            "id": g.id(),
+            "text": crate::commands::outbox::charter_text(g),
+        })),
         "tool": item.tool,
         "label": label_for(&item.tool),
         "headline": headline,
@@ -1269,7 +1290,7 @@ mod tests {
     #[test]
     fn detail_drops_nothing_every_arg_key_is_visible() {
         let item = item("x", "pending", "2026-08-24T10:00:00Z");
-        let detail = detail_json(&item, &[]);
+        let detail = detail_json(&item, &[], None);
         let shown: Vec<String> = detail["headers"]
             .as_array()
             .unwrap()
@@ -1301,13 +1322,13 @@ mod tests {
         // dropping one key from a payload is invisible in review.
         let mut item = item("x", "pending", "2026-08-24T10:00:00Z");
         assert_eq!(
-            detail_json(&item, &[])["error"],
+            detail_json(&item, &[], None)["error"],
             serde_json::Value::Null,
             "an untried item has no failure to report"
         );
         item.error = Some("no default account is set".into());
         assert_eq!(
-            detail_json(&item, &[])["error"],
+            detail_json(&item, &[], None)["error"],
             "no default account is set"
         );
     }
