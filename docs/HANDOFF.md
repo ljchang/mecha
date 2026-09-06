@@ -2838,16 +2838,21 @@ the mechanism and every decision. What it left standing:
 
 **2026-09-06, later — §17.7 item 4's sensor half: PR #202
 (`feat/goal-distance`), merged at `67fb55e` on the owner's word after
-nine review passes, counted from the PR's comment record (findings at
-the medium bar in passes 1, 2 and 4 — the web asker parking per question,
-the docs naming a removed API, and the one-counter-for-two-causes and
-untested-web-asker pair; minors, observations and record nits in the
+nine review passes, counted from the PR's comment record (labelled
+mediums in passes 1 and 2 — the web asker parking per question, the docs
+naming a removed API; pass 4 headlined two findings "below the major
+bar" and kept its nits in a separate list — the one-counter-for-two-
+causes split and the untested web asker — which one later pass read as
+the medium bar and another as below it, so this record says what the
+pass said and not which; minors, observations and record nits in the
 rest; the ninth landed 22 seconds before the merge, after the last
 commit, and raised two minors left standing — `WebAsker::ask_in`'s
 `Reply`-to-text flatten, which nothing in production reaches, and
-`scratch_park`'s unswept temp dir — so the untaken set is those two plus
-a test for the web asker's shown-then-abandoned branch, which needs the
-ask timeout made injectable; the first version of this clause said "then
+`scratch_park`'s unswept temp dir. The untaken set is four: those two,
+pass 5's positional four-tuple from `GoalTrack::snapshot` destructured in
+`agent.rs` (the one whose regression would be a wrong number), and a test
+for the web asker's shown-then-abandoned branch, which needs the ask
+timeout made injectable. The first version of this clause said "then
 only minors" and "raised nothing", written before that ninth pass was
 read — corrected the same morning), and deployed the same morning (the
 machine-state row under §Machine state, dated, has the probes).** `HISTORY.md`'s entry of
