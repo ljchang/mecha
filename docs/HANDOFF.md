@@ -1791,6 +1791,31 @@ correctly: mecha-voice-worker, mecha-parakeet, the web dist. The
 stale-process sweep found nothing. The installed binary and `main` agree
 at `9246ea0`; nothing is owed on this machine from today's merges.
 
+**2026-09-06 02:32Z — #198 (the goal on the question; §17.7 items 3 and
+5) deployed by mecha-53 from main at `53f087f`, on the owner's word to
+merge.** Preflight: `~/Github/mecha` on `main`, `status --porcelain`
+empty, five behind origin (all #198's); no `deployed-local` tag; no build
+or benchmark running; served bundle `index-xHihYN7F.js` (the #189 deploy).
+Then `git pull --ff-only` and `cargo install --path mecha-cli --locked
+--force` from the shared checkout; the probe is from this range's added
+lines — `strings ~/.cargo/bin/mecha | grep -c 'put a goal to the owner on
+a question'` read **0 before and 1 after** (`mecha --version` is 0.1.17
+both sides, as always). `web/`: `npm ci && npm run build` from the same
+checkout, `rsync -a --delete` into `~/.mecha/web/dist` — bundle now
+`index-Cc_EcD2C.js`, and the 63242 door answers 200 with that hash under
+the owner header. Restarted 02:32:56Z, each verified from its own startup
+line in a journal window opened at the restart: mecha-slack (`Connected to
+cosanlab as mecha. 1 owner(s), 16 thread(s)`), mecha-triggers (`1
+trigger(s), 1 enabled · ticking every minute`), mecha-serve (both doors),
+mecha-drain (`Started`). Not restarted, correctly: mecha-voice-worker and
+mecha-parakeet — `git diff --quiet c10244a3 53f087f1 -- scripts/voice
+scripts/*.service` is clean. mecha-mail and mecha-graph binaries untouched
+(nothing in the range). The stale-process sweep found nothing. The
+installed `mecha sessions appraise` prints the new line: *0 put a goal to
+the owner on a question; 0 had it answered* — the expected zero until a
+delegated run asks under the new seed. Installed binary and `main` agree
+at `53f087f`; nothing is owed on this machine from this merge.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2741,11 +2766,22 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
-**2026-09-06 — §17.7 items 3 and 5 are built on `feat/goal-sentence`
-(unmerged when written; merging is the owner's call).** `HISTORY.md`'s
-2026-09-06 entry has what and why; the design doc's built notes under
-§17.7 items 3 and 5 have the shape. What to expect on this machine after
-it lands: `sessions appraise` prints a new line — *N put a goal to the
+**2026-09-06 — §17.7 items 3 and 5: PR #198 (`feat/goal-sentence`),
+merged at `53f087f` on the owner's word after three review passes (2
+mediums + 3 minors, then 1 medium + 5 below the bar, then 2 minors + 2
+observations — every finding taken except two named on the PR), and
+deployed 02:32Z the same night (the machine-state row under §Machine
+state, dated, has the probes).** `HISTORY.md`'s 2026-09-06 entry has what
+and why; the design doc's built notes under §17.7 items 3 and 5 have the
+shape. What the review loop added to the design: an id is one token
+(`GoalRef::from_str` refuses whitespace and control characters, and
+`Charter::validate` refuses a line id no run could cite — a migration for
+a hand-edited charter with spaced ids, though the live one and every
+editor-produced one are slugs), and a goal sentence is one line
+(`hypothesis_of` collapses whitespace runs), both because a model-written
+string now prints beside owner text on the pages where a draft is released
+or a question answered. What to expect on this machine now: `sessions
+appraise` prints a new line — *N put a goal to the
 owner on a question; M had it answered* — both zero until a delegated run
 asks with the new seed; `mecha questions show` prints a `goal` row on a
 question that carried one; `outbox show` prints `serves charter:<id> —
