@@ -7475,6 +7475,15 @@ mod tests {
             async fn ask(&self, _q: &str, _o: &[String]) -> Option<String> {
                 Some("yes".into())
             }
+            async fn ask_about(
+                &self,
+                _ctx: &crate::tool::ToolCtx,
+                _q: &str,
+                _o: &[String],
+                _goal: Option<&crate::goal::GoalHypothesis>,
+            ) -> Option<crate::tool::ask::Reply> {
+                Some(crate::tool::ask::Reply::Answered("yes".into()))
+            }
         }
         let call = |id: &str, name: &str, input: serde_json::Value| {
             assistant(

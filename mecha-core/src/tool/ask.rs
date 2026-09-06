@@ -70,14 +70,19 @@ pub trait Asker: Send + Sync {
     ///
     /// `question` already carries the rendered goal line above the model's
     /// own sentence, so a front-end that shows text and returns text needs
-    /// nothing from the third argument — the default forwards and wraps
-    /// the text as [`Reply::Answered`]. An asker that *parks* — stores the
-    /// question and ends the run — must override this, hand the goal to
-    /// its store, and answer [`Reply::Parked`]: its text is a note to the
-    /// model, not a person's words, and the tool must not anchor the run
-    /// on it. Per answer, not per asker (found on review): the web asker
-    /// shows a card and parks only when nobody answers it, so the same
-    /// asker answers both ways.
+    /// nothing from the third argument beyond wrapping what `ask_in` gave
+    /// it as [`Reply::Answered`]. An asker that *parks* — stores the
+    /// question and ends the run — hands the goal to its store and answers
+    /// [`Reply::Parked`]: its text is a note to the model, not a person's
+    /// words, and the tool must not anchor the run on it. Per answer, not
+    /// per asker: the web asker shows a card and parks only when nobody
+    /// answers it, so the same asker answers both ways (found on review).
+    ///
+    /// **No default, on purpose.** `Reply` is a provenance judgement — did
+    /// a person confirm this? — and a default that resolved an asker this
+    /// trait has never met to *a person* would be the fail-open shape
+    /// `CLAUDE.md` names: unknown is never clean (found on review). Every
+    /// asker says which it is.
     ///
     /// [`ask_in`]: Asker::ask_in
     async fn ask_about(
@@ -86,12 +91,7 @@ pub trait Asker: Send + Sync {
         question: &str,
         options: &[String],
         goal: Option<&GoalHypothesis>,
-    ) -> Option<Reply> {
-        let _ = goal;
-        self.ask_in(ctx, question, options)
-            .await
-            .map(Reply::Answered)
-    }
+    ) -> Option<Reply>;
 }
 
 /// What came back from an [`Asker`] — the text the tool hands the model
@@ -367,6 +367,17 @@ mod tests {
                 .unwrap()
                 .push((question.to_string(), options.to_vec()));
             self.answer.clone()
+        }
+        async fn ask_about(
+            &self,
+            ctx: &ToolCtx,
+            question: &str,
+            options: &[String],
+            _goal: Option<&GoalHypothesis>,
+        ) -> Option<Reply> {
+            self.ask_in(ctx, question, options)
+                .await
+                .map(Reply::Answered)
         }
     }
 
