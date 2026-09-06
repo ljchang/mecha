@@ -461,6 +461,54 @@ impl Corpus {
             .filter(|r| r.stats.step_measured.is_some_and(|c| c > 0))
     }
 
+    /// Rows that ran with a confirmed goal anchor.
+    fn anchored(&self) -> impl Iterator<Item = &RunRow> {
+        self.rows.iter().filter(|r| r.stats.goal_anchor.is_some())
+    }
+
+    /// Rows that ran with an anchor *and* wrote a plan while it stood — the
+    /// only rows in which a drift could have been counted.
+    fn anchored_and_planned(&self) -> impl Iterator<Item = &RunRow> {
+        self.anchored()
+            .filter(|r| r.stats.goal_plan_writes.is_some_and(|w| w > 0))
+    }
+
+    /// The share of runs whose plan drifted off the goal the owner had
+    /// confirmed, over the runs in which that could have happened — an
+    /// anchor stood and at least one plan write was judged against it
+    /// (`GOAL-SYSTEM-DESIGN.md` §17.7 item 4, the sensor half). Not over
+    /// every anchored run: a run that confirmed a goal and never wrote a
+    /// plan could not drift. `None` over no such rows, on `boredom_rate`'s
+    /// rule.
+    pub fn goal_drift_rate(&self) -> Option<f64> {
+        Self::share_positive(
+            self.anchored_and_planned()
+                .map(|r| r.stats.goal_drift_writes.unwrap_or(0)),
+        )
+    }
+
+    /// The totals [`goal_drift_rate`](Self::goal_drift_rate) is over, each
+    /// denominator named: see [`GoalTotals`].
+    pub fn goal_totals(&self) -> GoalTotals {
+        GoalTotals {
+            sensed: self
+                .rows
+                .iter()
+                .filter(|r| r.stats.goal_plan_writes.is_some())
+                .count(),
+            anchored: self.anchored().count(),
+            planned: self.anchored_and_planned().count(),
+            plan_writes: self
+                .anchored()
+                .map(|r| r.stats.goal_plan_writes.unwrap_or(0))
+                .sum(),
+            drift_writes: self
+                .anchored()
+                .map(|r| r.stats.goal_drift_writes.unwrap_or(0))
+                .sum(),
+        }
+    }
+
     /// The totals the rates above are over, each denominator named: see
     /// [`StepTotals`].
     pub fn step_totals(&self) -> StepTotals {
@@ -639,6 +687,20 @@ fn exhaustive(record: &Record) {
 }
 
 /// What the step counters sum to over a corpus — see `Corpus::step_totals`.
+/// The goal-anchor sensor's totals (`GOAL-SYSTEM-DESIGN.md` §17.7 item 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GoalTotals {
+    /// Rows that carry the sensor at all.
+    pub sensed: usize,
+    /// Of those, rows that ran with a confirmed goal anchor.
+    pub anchored: usize,
+    /// Of those, rows that wrote a plan while the anchor stood — the drift
+    /// rate's denominator, and what the counts below sum over.
+    pub planned: usize,
+    pub plan_writes: u32,
+    pub drift_writes: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StepTotals {
     /// Rows that carry the sensor at all.
@@ -851,6 +913,9 @@ mod tests {
             step_reopens: None,
             step_completions: None,
             step_measured: None,
+            goal_anchor: None,
+            goal_plan_writes: None,
+            goal_drift_writes: None,
             checks_declared: None,
             checks_passed: None,
             turns: 3,
@@ -930,6 +995,59 @@ mod tests {
         assert_eq!(corpus.overflow_rate(), None, "not Some(0.0)");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §17.7 item 4's sensor, the same shape: unknown before the sensor,
+    /// a rate over the runs in which a drift could have been counted —
+    /// an anchor stood *and* a plan was written under it — and totals
+    /// beside it. An anchored run that never planned is not in the
+    /// denominator; a sensed run with no anchor is not either.
+    #[test]
+    fn goal_drift_reads_unknown_before_the_sensor_and_over_anchored_planned_runs_after() {
+        use crate::goal::GoalRef;
+        let dir = tmpdir();
+        let sensed = |anchor: Option<&str>, writes: u32, drifted: u32| {
+            let mut st = stats(4, 0, false, StopCause::Completed);
+            st.goal_anchor = anchor.map(|a| GoalRef::Task(a.into()));
+            st.goal_plan_writes = Some(writes);
+            st.goal_drift_writes = Some(drifted);
+            st
+        };
+        session_with(
+            &dir,
+            "20260906T000000-old",
+            "opus",
+            vec![stats(4, 0, false, StopCause::Completed)],
+        );
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        assert_eq!(corpus.goal_drift_rate(), None, "not Some(0.0)");
+        assert_eq!(corpus.goal_totals(), GoalTotals::default());
+
+        session_with(
+            &dir,
+            "20260906T000001-sensed",
+            "opus",
+            vec![
+                sensed(None, 0, 0),
+                sensed(Some("t1"), 0, 0),
+                sensed(Some("t1"), 3, 1),
+                sensed(Some("t2"), 2, 0),
+            ],
+        );
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        let totals = corpus.goal_totals();
+        assert_eq!(
+            totals,
+            GoalTotals {
+                sensed: 4,
+                anchored: 3,
+                planned: 2,
+                plan_writes: 5,
+                drift_writes: 1,
+            }
+        );
+        // One of the two anchored-and-planned runs drifted.
+        assert_eq!(corpus.goal_drift_rate(), Some(0.5));
     }
 
     /// The step counters are the same shape again: unknown over rows from

@@ -622,6 +622,21 @@ pub struct RunStats {
     /// have registered a null and must not dilute it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_measured: Option<u32>,
+    /// The goal the owner confirmed for this run, and the plan writes
+    /// judged against it — `GOAL-SYSTEM-DESIGN.md` §17.7 item 4's sensor.
+    /// The anchor is lenient on read like every goal reference in a record;
+    /// the counts are `Option` on `step_nulls`'s rule, so a row from before
+    /// the sensor reads unknown and never as a run that never drifted.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::goal::de_lenient"
+    )]
+    pub goal_anchor: Option<crate::goal::GoalRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_plan_writes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_drift_writes: Option<u32>,
     /// Learned rules the harness delivered *during* the run, by id and the
     /// turn they landed on (not the voice facade's `delivered`, which says a
     /// reply's words reached the socket) — the situational half of what the run carried,
@@ -817,6 +832,19 @@ impl RunStats {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
+        // The later run's anchor stands: an answer re-anchors, and the
+        // resume that carries it is the later run by construction.
+        if other.goal_anchor.is_some() {
+            self.goal_anchor = other.goal_anchor.clone();
+        }
+        self.goal_plan_writes = match (self.goal_plan_writes, other.goal_plan_writes) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
+        self.goal_drift_writes = match (self.goal_drift_writes, other.goal_drift_writes) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
         self.delivered = match (self.delivered.take(), &other.delivered) {
             (Some(mut a), Some(b)) => {
                 a.extend(b.iter().cloned());
@@ -880,6 +908,9 @@ impl RunStats {
             step_reopens: Some(o.step_reopens),
             step_completions: Some(o.step_completions),
             step_measured: Some(o.step_measured),
+            goal_anchor: o.goal_anchor.clone(),
+            goal_plan_writes: Some(o.goal_plan_writes),
+            goal_drift_writes: Some(o.goal_drift_writes),
             // `Some(empty)`, and written by this build on purpose: the loop
             // delivers no rule mid-run yet, and a record that says so is what
             // keeps a later replay from reading the absence as unknown.
@@ -1831,6 +1862,9 @@ mod homeostat_record_tests {
             step_reopens: 0,
             step_completions: 0,
             step_measured: 0,
+            goal_anchor: None,
+            goal_plan_writes: 0,
+            goal_drift_writes: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),
@@ -2826,6 +2860,9 @@ mod tests {
             step_reopens: 0,
             step_completions: 0,
             step_measured: 0,
+            goal_anchor: None,
+            goal_plan_writes: 0,
+            goal_drift_writes: 0,
             text: "done".into(),
             stop_reason: StopReason::EndTurn,
             usage: Usage {
@@ -2898,6 +2935,9 @@ mod tests {
                 step_reopens: 0,
                 step_completions: 0,
                 step_measured: 0,
+                goal_anchor: None,
+                goal_plan_writes: 0,
+                goal_drift_writes: 0,
                 text: String::new(),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage {
@@ -3006,6 +3046,9 @@ mod tests {
             step_reopens: 0,
             step_completions: 0,
             step_measured: 0,
+            goal_anchor: None,
+            goal_plan_writes: 0,
+            goal_drift_writes: 0,
             text: String::new(),
             stop_reason: StopReason::Other,
             usage: Usage::default(),
@@ -3280,6 +3323,57 @@ mod tests {
         }
     }
 
+    /// §17.7 item 4's fields on the record: the anchor is lenient on read
+    /// like every goal reference, the counts are unknown before the sensor,
+    /// and a fold keeps the later run's anchor while summing the counts.
+    #[test]
+    fn the_goal_anchor_and_drift_counts_round_trip_fold_and_degrade_leniently() {
+        use crate::goal::GoalRef;
+        let a = RunStats {
+            goal_anchor: Some(GoalRef::Task("t1".into())),
+            goal_plan_writes: Some(2),
+            goal_drift_writes: Some(1),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(json.contains("\"goal_anchor\":\"task:t1\""), "{json}");
+        let back: RunStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.goal_anchor, a.goal_anchor);
+        assert_eq!(back.goal_plan_writes, Some(2));
+
+        // Before the sensor: absent on the wire, unknown on read.
+        let old: RunStats = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.goal_anchor, None);
+        assert_eq!(old.goal_plan_writes, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("goal_"));
+
+        // A newer kind costs the anchor, not the row.
+        let newer: RunStats =
+            serde_json::from_str(r#"{"goal_anchor":"epic:7","goal_plan_writes":1}"#).unwrap();
+        assert_eq!(newer.goal_anchor, None);
+        assert_eq!(newer.goal_plan_writes, Some(1));
+
+        // The fold: the later anchor stands, counts sum, unknown stays out.
+        let b = RunStats {
+            goal_anchor: Some(GoalRef::Charter("do-no-harm".into())),
+            goal_plan_writes: Some(3),
+            goal_drift_writes: Some(0),
+            ..Default::default()
+        };
+        let mut folded = a.clone();
+        folded.merge(&b);
+        assert_eq!(folded.goal_anchor, b.goal_anchor);
+        assert_eq!(folded.goal_plan_writes, Some(5));
+        assert_eq!(folded.goal_drift_writes, Some(1));
+        let mut kept = a.clone();
+        kept.merge(&RunStats::default());
+        assert_eq!(
+            kept.goal_anchor, a.goal_anchor,
+            "an anchorless later run keeps it"
+        );
+        assert_eq!(kept.goal_plan_writes, Some(2));
+    }
+
     #[test]
     fn a_kind_round_trips_on_the_wire_in_snake_case() {
         for kind in SessionKind::ALL {
@@ -3422,6 +3516,9 @@ mod tests {
             step_reopens: 0,
             step_completions: 0,
             step_measured: 0,
+            goal_anchor: None,
+            goal_plan_writes: 0,
+            goal_drift_writes: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),

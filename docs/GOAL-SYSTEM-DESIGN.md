@@ -2128,6 +2128,30 @@ note below.
    whose `serves` does not trace to the anchor, plus a term for turns since
    the last confirmation. A kind or id change re-asks; a fraction above one
    half logs a drift event. No embedding model in a run, ever (§4.3, §4.5).
+   *Sensor half built 2026-09-06* (`feat/goal-distance`), on item 2's
+   posture — count first, act after a few nights are read. The anchor is
+   `tool::GoalTrack`, minted per run by the loop like the step counters
+   and carrying forward the anchor a caller seeded: a question resume
+   seeds the `serves` of the question the owner just answered
+   (`questions answer`), and `ask_user` sets it in-run when a *present*
+   human answers a question carrying `serves` (`Asker::parks` tells the
+   tool a park note from an answer). `todo` judges every plan write
+   against it: the same pointer is not drift; a different kind, a
+   different id, or no `serves` at all once an anchor stands is
+   (`goal::drifts_from`) — the plan carries one goal for the whole list,
+   so the item-fraction term has one term today and the distance is a bit
+   per write. `RunOutcome` and `RunStats` carry `goal_anchor`,
+   `goal_plan_writes` and `goal_drift_writes` (`Option`, unknown before
+   the sensor; the fold keeps the later run's anchor and sums the
+   counts); `runlog::Corpus::goal_drift_rate` is the share of runs that
+   drifted over runs that planned *under an anchor*, never every anchored
+   run and never every run since the sensor; `mecha sessions health`
+   prints the line and the JSON keys. Named, not built: the re-ask on a
+   kind or id change and the drift *event* (both off until the rate is
+   read); the turns-since-confirmation term (no calibration to write it
+   against); and the anchor's own limit — it is the pointer the owner
+   confirmed, not the owner's words, so a correction in the answer's
+   prose moves nothing until the next question is answered.
 5. **The persistent tier is the board's project.** `tasks` already takes
    `project: Option<String>`, a parent node the graph holds. *Proposed:*
    `GoalRef::Project(node_id)` as a fourth kind, a pointer like `Task`,

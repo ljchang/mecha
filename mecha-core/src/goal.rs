@@ -152,6 +152,14 @@ where
         .collect())
 }
 
+/// Has the plan moved off the anchor? `GOAL-SYSTEM-DESIGN.md` §17.7 item 4:
+/// the distance is 1 when the goal's kind or id changed — and a plan that
+/// names nothing once a goal has been confirmed has moved just as far, since
+/// nothing in it traces to the anchor any more. A pure bit, no model.
+pub fn drifts_from(anchor: &GoalRef, current: Option<&GoalRef>) -> bool {
+    current != Some(anchor)
+}
+
 impl fmt::Display for GoalRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.kind(), self.id())
@@ -339,6 +347,17 @@ mod tests {
         assert!("charter:answer-what-waits-on-me".parse::<GoalRef>().is_ok());
         assert!("task:urn:uid:7".parse::<GoalRef>().is_ok());
         assert!("project:proj.teaching".parse::<GoalRef>().is_ok());
+    }
+
+    /// §17.7 item 4's bit: a changed kind, a changed id, or no goal at all
+    /// is drift; the same pointer is not.
+    #[test]
+    fn drift_is_a_changed_kind_or_id_or_no_goal_at_all() {
+        let anchor = GoalRef::Task("t1".into());
+        assert!(!drifts_from(&anchor, Some(&GoalRef::Task("t1".into()))));
+        assert!(drifts_from(&anchor, Some(&GoalRef::Task("t2".into()))));
+        assert!(drifts_from(&anchor, Some(&GoalRef::Project("t1".into()))));
+        assert!(drifts_from(&anchor, None));
     }
 
     /// The fourth kind is a pointer like `Task`: the id is the board's, and
