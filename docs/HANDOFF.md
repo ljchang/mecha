@@ -1816,6 +1816,40 @@ the owner on a question; 0 had it answered* — the expected zero until a
 delegated run asks under the new seed. Installed binary and `main` agree
 at `53f087f`; nothing is owed on this machine from this merge.
 
+**2026-09-06 ~02:49Z — the web app's graph pages had been 502 since the
+2026-09-05 reboot, and four installed units were stale copies of the
+repo's (mecha-53, on the owner's report).** The owner saw *"`mecha-graph`
+not found — install mecha-graph, or set MECHA_GRAPH_BIN"* on the web
+app. The binary was installed (`~/.cargo/bin/mecha-graph`, Sep 4) and the
+MCP spawn is by absolute path in `config.toml`; what failed was the bare
+`mecha-graph` the review and proposals readers spawn (`/api/queue` and
+`/api/queue/shadow` answered 502, `/api/proposals` carried the message on
+its entity row). Cause: the installed `~/.config/systemd/user/mecha-serve.service`
+had no `Environment=PATH` line — the repo's `scripts/voice/mecha-serve.service`
+does, and the installed file was an older copy — so since the
+2026-09-05 06:16Z reboot the process ran on the user manager's PATH
+(no `~/.cargo/bin`, no `~/.local/bin`; the `llama-local` incident one
+day earlier, one unit over), through every restart since, including
+02:32Z's. `ExecStart` names `mecha` by absolute path, which is why the
+unit itself started cleanly and only its children failed. Fix: a
+drop-in `mecha-serve.service.d/path.conf` (the llama units' shape, with
+the incident in its comment), `daemon-reload`, restart — verified from
+`/proc/<pid>/environ`, both startup lines, and `/api/queue` +
+`/api/proposals` HTTP 200 with zero "not found". Then the sweep: `diff`
+of every installed `mecha-*.service` against its `scripts/` copy found
+mecha-frontdoor, mecha-mail-classify, mecha-ruminate and mecha-serve each
+differing by exactly the missing PATH line (mecha-voice-serve too, but it
+is disabled and inactive; mecha-voice-worker and mecha-parakeet have no
+such line in the repo either and exec a venv by absolute path); the four
+repo copies were installed over them and the manager reloaded — the three
+timer-fired oneshots pick the change up at their next firing (frontdoor
+03:04Z, ruminate 03:30Z, mail-classify 05:34Z), no restart needed. Their
+journals since the reboot hold no "not found", so nothing was lost there;
+the serve pages were the only casualty. The rule this adds to the update
+skill: **an installed unit is a copy, and copies drift — when a unit's
+child says "not found", diff the installed unit against `scripts/` before
+anything else.**
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
