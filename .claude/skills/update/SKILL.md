@@ -187,15 +187,18 @@ only then diff the file to find out *why*:
 ```bash
 # a running unit: the PATH its process really holds (manager inheritance
 # and EnvironmentFile= included, which `show -p Environment` does not see)
-for u in mecha-serve mecha-slack mecha-triggers mecha-drain; do
-  pid=$(systemctl --user show -p MainPID --value "$u.service")
+# every installed mecha unit, from the manager rather than a list kept by hand
+for u in $(systemctl --user list-unit-files 'mecha-*.service' --no-legend | awk '{print $1}'); do
+  pid=$(systemctl --user show -p MainPID --value "$u")
   printf '%s: ' "$u"
-  { [ "$pid" != 0 ] && tr '\0' '\n' < /proc/$pid/environ | grep '^PATH='; } \
-    || echo '(no PATH in the process environment — or not running)'
-done
-# an inactive oneshot has no pid: the Environment= assignments, drop-ins merged
-for u in mecha-frontdoor mecha-mail-classify mecha-ruminate; do
-  printf '%s: ' "$u"; systemctl --user show "$u.service" -p Environment
+  if [ "$pid" != 0 ]; then
+    tr '\0' '\n' < /proc/$pid/environ | grep '^PATH=' \
+      || echo '(running with no PATH in its environment)'
+  else
+    # not running (a timer-fired oneshot between firings): the Environment=
+    # assignments, drop-ins merged — inheritance from the manager is invisible here
+    systemctl --user show "$u" -p Environment
+  fi
 done
 # then, for a unit whose PATH is wrong or missing, find out why:
 #   systemctl --user cat <unit>          # main file + drop-ins
@@ -205,6 +208,12 @@ done
 #   cp scripts[/voice]/<unit>.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 #   then restart a long-running unit; a timer-fired oneshot picks it up at its next firing.
 ```
+
+`mecha-serve` carries the line twice on this machine — the installed unit
+and `mecha-serve.service.d/path.conf` — and the drop-in is the one to
+keep: it adds `~/.local/bin` and holds the incident's record, and the
+later assignment wins, so `cat` showing both is the expected state, not
+drift.
 
 A silent line is the trap the loop guards against: a unit with no PATH
 must print *that*, not let its label run into the next unit's value.
