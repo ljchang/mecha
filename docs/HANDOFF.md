@@ -1864,6 +1864,28 @@ skill: **an installed unit is a copy, and copies drift — when a unit's
 child says "not found", diff the installed unit against `scripts/` before
 anything else.**
 
+**2026-09-06 05:07Z — #202 (the goal anchor and drift sensor; §17.7 item
+4's sensor half) deployed by mecha-53 from main at `67fb55e`, on the
+owner's word to merge.** Preflight: `~/Github/mecha` on `main`, clean, no
+build or benchmark running, no `deployed-local` tag. `git pull --ff-only`
+then `cargo install --path mecha-cli --locked --force` from the shared
+checkout; the probe is a literal from this range's added lines —
+`strings ~/.cargo/bin/mecha | grep -c 'named a goal under an anchor'`
+read **0 before and 1 after**. Restarted 05:07:07Z, each verified from
+its own startup line in a journal window opened at the restart:
+mecha-slack (`Connected to cosanlab as mecha. 1 owner(s), 16 thread(s)`),
+mecha-triggers (`1 trigger(s), 1 enabled · ticking every minute`),
+mecha-serve (both doors; its process PATH still leads with
+`~/.cargo/bin`, so the 02:49Z fix held through the unit-file install),
+mecha-drain (`Started`). Not restarted, correctly: mecha-voice-worker,
+mecha-parakeet, the web dist — `git diff --quiet c8a3a740 67fb55ef --
+scripts/voice scripts/*.service web/` is clean. The stale-process sweep
+found nothing. The installed binary's `sessions health` prints the new
+line as *goal drift          — (no run in this corpus recorded the
+sensor)* — the expected reading until a run under this binary
+plans under a confirmed goal. Installed binary and `main` agree at
+`67fb55e`; nothing is owed on this machine from this merge.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2814,12 +2836,24 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
-**2026-09-06, later — §17.7 item 4's sensor half is built on
-`feat/goal-distance` (unmerged when written; merging is the owner's
-call).** `HISTORY.md`'s entry of the same date has what and why; the
-design doc's built note under item 4 has the shape and what is named
-rather than built (the re-ask, the drift event, the turns term). What to
-expect on this machine after it lands: `sessions health` prints a `goal
+**2026-09-06, later — §17.7 item 4's sensor half: PR #202
+(`feat/goal-distance`), merged at `67fb55e` on the owner's word after
+nine review passes, counted from the PR's comment record (one medium in
+each of the first two, then only minors, observations and record nits;
+the ninth landed 22 seconds before the merge and raised nothing —
+every one taken except a test for
+the web asker's shown-then-abandoned branch, which needs the ask timeout
+made injectable), and deployed the same morning (the machine-state row
+under §Machine state, dated, has the probes).** `HISTORY.md`'s entry of
+the same date has what and why; the design doc's built note under item 4
+has the shape and what is named rather than built (the re-ask, the drift
+event, the turns term). What the review loop changed: an answer says
+what it is (`Reply::{Answered, Parked}`, no default — the web asker parks
+per question, not per asker, so a per-asker flag was wrong on the one
+production path it was written for); a changed pointer and a plan that
+named nothing are two counts, never one number; the drift rate is over
+runs that *named* a goal at least once under an anchor; and the anchor
+lives for one run. What to expect on this machine now: `sessions health` prints a `goal
 drift` line reading *no run in this corpus recorded the sensor* until the
 first run under the new binary, then *N run(s) recorded the sensor; none
 had a confirmed goal* until a delegated run's question is answered or a
