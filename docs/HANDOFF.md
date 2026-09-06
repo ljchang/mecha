@@ -1891,8 +1891,9 @@ then the update skill end to end (mecha-53, on the owner's word "run the
 patch releases for anything that needs them and then run update skill").**
 Releases, each a bump commit straight on `main` and an annotated tag with
 the same subject, the shape every previous bump had (no PR, no branch
-protection; each `release.yml` refuses a tag that disagrees with the
-workspace version): **mecha v0.1.18** (`a3d3dfc`, "0.1.18 — a run knows
+protection; mecha's and mecha-factory's `release.yml` refuse a tag that
+disagrees with the workspace version — mecha-graph has no workflow, so its
+tag had no gate behind it at all): **mecha v0.1.18** (`a3d3dfc`, "0.1.18 — a run knows
 what it is for"; 28 changelog entries retitled from Unreleased; the
 workflow's own checks re-run here first — `cargo test --workspace` green,
 `RUSTFLAGS=-D warnings cargo clippy --all-targets` clean; the workflow
@@ -1990,6 +1991,14 @@ is recoverable without the checkout's cwd. Record:
 ---
 
 ## What to do next
+
+- **The droplet is one release behind, and only the owner deploys it
+  (2026-09-06).** `gate.mecha-factory.ai` serves factory 0.2.8 while
+  v0.2.9's musl asset is attached to its GitHub release; `factory-deploy
+  v0.2.9` over the deploy key (the `update` skill, §6) downloads, checksums,
+  proves, swaps and health-checks, and `--rollback` restores `factory.prev`.
+  It is production for people who are not the owner, so it waits for the
+  owner's word rather than for "update everything".
 
 - **Machine state as of 2026-09-04 10:04, verified surface by surface
   (mecha-26).** `main` is `188b823`; the shared checkout `~/Github/mecha` is
