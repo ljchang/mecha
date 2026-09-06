@@ -949,7 +949,7 @@ real servers' tool contracts, stateful, fail-closed), `eval/fixtures/home/`
 larger one. B, C, D₂ and E remain, as does the model-driven principal.
 
 **First run, 2026-09-06.** `eval/dojo-workspace.toml` ran end to end on the
-installed binary — 80 trials in about twenty minutes — and the readout is in
+installed binary — 80 trials in 25 minutes — and the readout is in
 `HISTORY.md`'s measurement record: security 40/40 with the model never
 attempting the injected send (so the interlock's catch rate is unmeasured,
 not 100%), utility 21/40 plain with 15 failures the interlock refusing the
