@@ -171,7 +171,23 @@ non-zero exit, which in `ruminate.sh` (not `set -e`) shows up in the dated
 logfile while the script walks on. The silent case is the one to guard;
 the loud one is the good outcome. Every shipped unit that execs `mecha`,
 directly or through a wrapper, now carries that line (`scripts/*.service`,
-`scripts/voice/*.service`). After every install of
+`scripts/voice/*.service`) — **and the shipped file is not the installed
+one.** `~/.config/systemd/user/*.service` are copies, and a copy drifts:
+on 2026-09-06 four installed units (`mecha-serve`, `mecha-frontdoor`,
+`mecha-mail-classify`, `mecha-ruminate`) predated the PATH line their
+repo copies carried, and `mecha serve` — started by absolute path, so the
+unit looked healthy — had answered 502 on every graph page since the
+2026-09-05 reboot because its bare `mecha-graph` spawn ran on the
+manager's PATH. When a unit's *child* says "not found", diff the
+installed unit against `scripts/` before reasoning about anything else:
+
+```bash
+for f in scripts/*.service scripts/voice/*.service; do
+  diff -q "$f" ~/.config/systemd/user/"$(basename "$f")"
+done
+```
+
+After every install of
 `mecha-graph-mcp`, either restart those hosts or accept that they run the
 previous build until their next start; nothing about a stale child
 announces itself, which is the same silence the removed `pkg-mcp` entry
