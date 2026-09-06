@@ -512,6 +512,24 @@ impl Charter {
                     );
                 }
             }
+            // One token, like every id a `GoalRef` may carry: a cite has to
+            // be able to name this line, and `GoalRef::from_str` refuses an
+            // id with whitespace or a control character in it so a review
+            // surface can print an id beside the owner's own text. The web
+            // editor slugifies and the template shows slugs, so this refuses
+            // nothing an editor produces.
+            if line
+                .id
+                .trim()
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+            {
+                anyhow::bail!(
+                    "charter line id `{}` has whitespace in it; an id is one token, like \
+                     `answer-what-waits-on-me`, so a run can cite it as `charter:<id>`",
+                    line.id.trim()
+                );
+            }
             if line.id.trim().is_empty() {
                 bail!("a charter line has an empty `id`");
             }
@@ -1270,6 +1288,19 @@ priority = 1
             .unwrap_err()
             .to_string();
         assert!(e.contains("used more than once"), "{e}");
+    }
+
+    /// An id with whitespace inside it cannot be cited (`GoalRef::from_str`
+    /// refuses it), so the charter refuses it at the door rather than
+    /// carrying a line no run can name; surrounding whitespace is trimmed
+    /// as before.
+    #[test]
+    fn an_id_with_whitespace_inside_is_refused_because_no_run_could_cite_it() {
+        let e = Charter::validate(vec![line("my line", "one")]).unwrap_err();
+        assert!(e.to_string().contains("one token"), "{e:#}");
+        let e = Charter::validate(vec![line("a\nb", "one")]).unwrap_err();
+        assert!(e.to_string().contains("one token"), "{e:#}");
+        assert!(Charter::validate(vec![line(" x ", "one")]).is_ok());
     }
 
     #[test]

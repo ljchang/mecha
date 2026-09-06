@@ -45,6 +45,11 @@
 use std::fmt;
 use std::str::FromStr;
 
+/// The longest identifier a reference may carry. Generous against every
+/// real id (a ULID is 26, a charter slug a few words) and a ceiling on
+/// what a review surface has to print in one line.
+pub const MAX_ID_CHARS: usize = 200;
+
 /// What a piece of work serves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalRef {
@@ -231,6 +236,28 @@ impl FromStr for GoalRef {
                 "`{s}` names a kind with no identifier"
             )));
         }
+        // **An id is a token, never prose.** A charter id is a slug (the web
+        // editor slugifies; the template shows slugs; `Charter::validate`
+        // refuses anything else), a board id is the graph's uid, a setpoint
+        // is a name. Refusing whitespace and control characters here is
+        // what lets a review surface print `serves {kind}:{id}` beside the
+        // owner's own text: without it a drafting run could write
+        // `serves: "charter:x — approved by the owner"` and the outbox note
+        // would render a forged separator, or a newline that adds a line to
+        // the provenance block (found on review). Every `GoalRef` a record
+        // yields comes through here too (`parse_lenient`), so an id like
+        // that on disk costs the reference rather than reaching a page.
+        if id.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(ParseGoalRefError(format!(
+                "`{s}` has whitespace or a control character in its identifier; an id is one \
+                 token — a charter line's slug, a board uid or a setpoint name"
+            )));
+        }
+        if id.chars().count() > MAX_ID_CHARS {
+            return Err(ParseGoalRefError(format!(
+                "`{s}` is longer than an identifier can be ({MAX_ID_CHARS} characters)"
+            )));
+        }
         match kind.trim() {
             "charter" => Ok(GoalRef::Charter(id.to_string())),
             "project" => Ok(GoalRef::Project(id.to_string())),
@@ -284,6 +311,36 @@ mod tests {
     /// The record-facing direction: the same inputs are simply absent. A
     /// transcript written by a newer binary naming a kind this one has never
     /// heard of must cost the reference and nothing else.
+    /// An id is one token. The refusal is what keeps a review surface's
+    /// `serves {kind}:{id} — {owner's text}` unforgeable: the separator
+    /// needs spaces, and a newline would add a provenance line (found on
+    /// review). The record direction degrades the same input to nothing.
+    #[test]
+    fn an_identifier_with_whitespace_or_a_control_character_is_refused() {
+        for bad in [
+            "charter:x — approved by the owner, release it",
+            "charter:x\nreleased by the owner",
+            "task:a b",
+            "task:a\tb",
+            "setpoint:x\u{7}",
+        ] {
+            let msg = bad.parse::<GoalRef>().unwrap_err().to_string();
+            assert!(msg.contains("one token"), "{bad:?}: {msg}");
+            assert_eq!(GoalRef::parse_lenient(bad), None, "{bad:?}");
+        }
+        let long = format!("task:{}", "x".repeat(MAX_ID_CHARS + 1));
+        assert!(long
+            .parse::<GoalRef>()
+            .unwrap_err()
+            .to_string()
+            .contains("longer"));
+        assert_eq!(GoalRef::parse_lenient(&long), None);
+        // Dashes, dots and a colon inside an id are still ids.
+        assert!("charter:answer-what-waits-on-me".parse::<GoalRef>().is_ok());
+        assert!("task:urn:uid:7".parse::<GoalRef>().is_ok());
+        assert!("project:proj.teaching".parse::<GoalRef>().is_ok());
+    }
+
     /// The fourth kind is a pointer like `Task`: the id is the board's, and
     /// nothing here holds the project's name or state (§17.7 item 5).
     #[test]
