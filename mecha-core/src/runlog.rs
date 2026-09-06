@@ -461,15 +461,23 @@ impl Corpus {
             .filter(|r| r.stats.step_measured.is_some_and(|c| c > 0))
     }
 
-    /// Rows that ran with a confirmed goal anchor.
+    /// Rows that ran with a confirmed goal anchor this build can read.
     fn anchored(&self) -> impl Iterator<Item = &RunRow> {
         self.rows.iter().filter(|r| r.stats.goal_anchor.is_some())
     }
 
-    /// Rows that ran with an anchor *and* wrote a plan while it stood — the
-    /// only rows in which a drift could have been counted.
-    fn anchored_and_planned(&self) -> impl Iterator<Item = &RunRow> {
-        self.anchored()
+    /// Rows that wrote a plan while an anchor stood — the only rows in which
+    /// a drift could have been counted. Keyed on the count, not on the
+    /// anchor: a plan write is only ever counted under an anchor, and the
+    /// anchor is read leniently while the counts are not, so a row written
+    /// by a build with a kind this one cannot read comes back anchorless
+    /// with its counts intact — and a degrade that dropped it here would
+    /// turn a run that provably drifted into one that had no goal (found
+    /// on review). The degrade costs `anchored`, the field that is
+    /// genuinely unknown for such a row, and nothing else.
+    fn planned_under_an_anchor(&self) -> impl Iterator<Item = &RunRow> {
+        self.rows
+            .iter()
             .filter(|r| r.stats.goal_plan_writes.is_some_and(|w| w > 0))
     }
 
@@ -482,7 +490,7 @@ impl Corpus {
     /// rule.
     pub fn goal_drift_rate(&self) -> Option<f64> {
         Self::share_positive(
-            self.anchored_and_planned()
+            self.planned_under_an_anchor()
                 .map(|r| r.stats.goal_drift_writes.unwrap_or(0)),
         )
     }
@@ -497,13 +505,13 @@ impl Corpus {
                 .filter(|r| r.stats.goal_plan_writes.is_some())
                 .count(),
             anchored: self.anchored().count(),
-            planned: self.anchored_and_planned().count(),
+            planned: self.planned_under_an_anchor().count(),
             plan_writes: self
-                .anchored()
+                .planned_under_an_anchor()
                 .map(|r| r.stats.goal_plan_writes.unwrap_or(0))
                 .sum(),
             drift_writes: self
-                .anchored()
+                .planned_under_an_anchor()
                 .map(|r| r.stats.goal_drift_writes.unwrap_or(0))
                 .sum(),
         }
@@ -693,11 +701,13 @@ pub struct GoalTotals {
     pub sensed: usize,
     /// Of those, rows that ran with a confirmed goal anchor.
     pub anchored: usize,
-    /// Of those, rows that wrote a plan while the anchor stood — the drift
-    /// rate's denominator.
+    /// Rows that wrote a plan while an anchor stood — the drift rate's
+    /// denominator, and what the counts below sum over. Keyed on the
+    /// count rather than the anchor, so a row whose anchor this build
+    /// cannot read still counts here (see `Corpus::planned_under_an_anchor`);
+    /// it may therefore exceed `anchored` on a corpus written by a newer
+    /// build.
     pub planned: usize,
-    /// Summed over every anchored row; a row that never wrote a plan
-    /// contributes zero to both.
     pub plan_writes: u32,
     pub drift_writes: u32,
 }
@@ -1050,6 +1060,39 @@ mod tests {
         );
         // One of the two anchored-and-planned runs drifted.
         assert_eq!(corpus.goal_drift_rate(), Some(0.5));
+
+        // A row from a newer build whose anchor kind this one cannot read:
+        // the anchor degrades, the measured drift does not — the row is
+        // still in the denominator and its counts still sum (found on
+        // review). Written as raw JSON because no `GoalRef` can spell it.
+        let header = std::fs::read_to_string(dir.join("20260906T000001-sensed.jsonl"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .replace("20260906T000001-sensed", "20260906T000002-newer");
+        let outcome =
+            serde_json::to_string(&crate::session::Record::Outcome(sensed(Some("t1"), 2, 2)))
+                .unwrap()
+                .replace("\"goal_anchor\":\"task:t1\"", "\"goal_anchor\":\"epic:7\"");
+        assert!(outcome.contains("epic:7"), "{outcome}");
+        std::fs::write(
+            dir.join("20260906T000002-newer.jsonl"),
+            format!("{header}\n{outcome}\n"),
+        )
+        .unwrap();
+        let corpus = Corpus::scan(&dir, &Scan::default()).unwrap();
+        let totals = corpus.goal_totals();
+        assert_eq!(
+            totals.anchored, 3,
+            "the degraded anchor is not counted as one"
+        );
+        assert_eq!(
+            totals.planned, 3,
+            "the row that drifted is still in the denominator"
+        );
+        assert_eq!((totals.plan_writes, totals.drift_writes), (7, 3));
+        assert_eq!(corpus.goal_drift_rate(), Some(2.0 / 3.0));
     }
 
     /// The step counters are the same shape again: unknown over rows from
