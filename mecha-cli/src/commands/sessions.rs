@@ -1379,12 +1379,14 @@ fn health(
         // the re-ask decision is taken on the first alone.
         println!(
             "  goal drift          of {} plan write(s) under a confirmed goal, {} changed the \
-             pointer and {} named nothing; a changed pointer in {} of the {} run(s) that planned \
-             under an anchor ({} anchored, of {} that recorded the sensor)",
+             pointer and {} named nothing; a changed pointer in {} of the {} run(s) that named a \
+             goal under an anchor ({} planned under one, {} anchored, of {} that recorded the \
+             sensor)",
             goals.plan_writes,
             goals.drift_writes,
             goals.unnamed_writes,
             pct(corpus.goal_drift_rate()),
+            goals.named,
             goals.planned,
             goals.anchored,
             goals.sensed
@@ -1479,6 +1481,8 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         "runs_with_goal_sensor": goals.sensed,
         "runs_with_a_goal_anchor": goals.anchored,
         "runs_planned_under_an_anchor": goals.planned,
+        // The drift rate's denominator: named a goal at least once under it.
+        "runs_named_under_an_anchor": goals.named,
         "goal_plan_writes": goals.plan_writes,
         "goal_drift_writes": goals.drift_writes,
         "goal_unnamed_writes": goals.unnamed_writes,

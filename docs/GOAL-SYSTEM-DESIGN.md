@@ -2152,8 +2152,11 @@ note below.
    `goal_unnamed_writes` (`Option`, unknown before
    the sensor; the fold keeps the later run's anchor and sums the
    counts); `runlog::Corpus::goal_drift_rate` is the share of runs that
-   drifted over runs that planned *under an anchor*, never every anchored
-   run and never every run since the sensor; `mecha sessions health`
+   changed the pointer over runs that *named a goal under an anchor* —
+   never every anchored run, never every run that planned (a run whose
+   writes all named nothing could not have changed the pointer and would
+   dilute the rate from the side the numerator deliberately excludes),
+   never every run since the sensor; `mecha sessions health`
    prints the line and the JSON keys. Named, not built: the re-ask on a
    kind or id change and the drift *event* (both off until the rate is
    read); the turns-since-confirmation term (no calibration to write it
