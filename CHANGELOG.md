@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The run record knows the goal the owner confirmed and whether the
+  plan left it.** A question resume anchors the run on the answered
+  question's `serves`, and a present human's answer to `ask_user` anchors
+  it in-run; `todo` counts every plan write made under an anchor and every
+  one whose `serves` named a different kind or id, or nothing. `RunStats`
+  carries `goal_anchor`, `goal_plan_writes` and `goal_drift_writes`
+  (unknown before the sensor), and `mecha sessions health` prints a
+  `goal drift` line and JSON keys whose rate is over runs that planned
+  under an anchor (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 4, the sensor
+  half; the re-ask stays off until it is read).
 - **The goal rides on the question, and a project is a kind of goal.**
   `ask_user` takes `goal` (one sentence) and `serves` (`charter:<id>`,
   `task:<id>`, `project:<id>`), shows them above the question as one text,

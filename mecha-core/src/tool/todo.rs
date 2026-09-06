@@ -1558,6 +1558,11 @@ impl Tool for TodoTool {
             }
         };
 
+        // §17.7 item 4's sensor: every plan write is judged against the
+        // goal the owner last confirmed, before the tracker reshapes it.
+        if let Some(track) = &ctx.goal_track {
+            track.note_plan(goal.as_ref());
+        }
         let plan = Plan { goal, items };
         // What the steps that just finished actually did, against the run's
         // own record of what it has done. The harness computes the fact; the
@@ -2459,6 +2464,52 @@ mod tests {
             ..ToolCtx::default()
         };
         (ctx, slot)
+    }
+
+    /// §17.7 item 4's sensor: every plan write is judged against the goal
+    /// the owner confirmed — the same pointer is not drift, a different id,
+    /// a different kind or no goal at all is — and nothing is counted while
+    /// no anchor stands, so the denominator is runs that planned under one.
+    /// A context with no track counts nothing and does not panic.
+    #[tokio::test]
+    async fn plan_writes_are_judged_against_the_confirmed_goal() {
+        use crate::goal::GoalRef;
+        let tool = TodoTool::new();
+        let track = std::sync::Arc::new(crate::tool::GoalTrack::carrying(Some(GoalRef::Task(
+            "t1".into(),
+        ))));
+        let ctx = || ToolCtx {
+            goal_track: Some(track.clone()),
+            ..work_ctx(1, 0, None)
+        };
+        let plan = |serves: Option<&str>| {
+            let mut input = json!({"items": [{"content": "decide", "status": "in_progress"}]});
+            if let Some(s) = serves {
+                input["serves"] = json!(s);
+            }
+            input
+        };
+        tool.call(plan(Some("task:t1")), &ctx()).await.unwrap();
+        assert_eq!((track.snapshot().1, track.snapshot().2), (1, 0));
+        tool.call(plan(Some("task:t2")), &ctx()).await.unwrap();
+        tool.call(plan(Some("project:t1")), &ctx()).await.unwrap();
+        tool.call(plan(None), &ctx()).await.unwrap();
+        let (anchor, writes, drifted) = track.snapshot();
+        assert_eq!(anchor, Some(GoalRef::Task("t1".into())));
+        assert_eq!((writes, drifted), (4, 3));
+
+        // No anchor: the writes are not counted at all.
+        let bare = std::sync::Arc::new(crate::tool::GoalTrack::default());
+        let bctx = ToolCtx {
+            goal_track: Some(bare.clone()),
+            ..work_ctx(2, 0, None)
+        };
+        tool.call(plan(Some("task:t9")), &bctx).await.unwrap();
+        assert_eq!(bare.snapshot(), (None, 0, 0));
+        // No track: nothing to count into, and no panic.
+        tool.call(plan(Some("task:t9")), &work_ctx(3, 0, None))
+            .await
+            .unwrap();
     }
 
     /// The two counters `GOAL-SYSTEM-DESIGN.md` §17.7 item 2 wants read

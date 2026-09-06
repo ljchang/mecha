@@ -4093,6 +4093,27 @@ with a test that drives the forged string. Merged at `53f087f` on the
 owner's word and deployed 02:32Z the same night (binary and `web/dist`,
 four units restarted).
 
+**2026-09-06, later — the goal anchor and the drift count, a sensor.**
+`GOAL-SYSTEM-DESIGN.md` §17.7 item 4's sensor half, built as
+`feat/goal-distance` straight after #198 landed, because item 3 had just
+produced the record item 4 measures against. `tool::GoalTrack` is minted
+per run by the loop on the step counters' pattern, carrying forward the
+anchor a caller seeded: `questions answer` seeds the `serves` of the
+question the owner just answered, and `ask_user` sets it in-run when a
+present human answers a question that carried a pointer — a new
+`Asker::parks` lets the tool tell a park note from an answer, which is what
+keeps a delegated run's question from anchoring on its own note. `todo`
+judges every plan write against the anchor (`goal::drifts_from`: a changed
+kind or id, or no goal once one is confirmed); `RunOutcome` and `RunStats`
+carry the anchor and both counts, unknown before the sensor and folded
+with the later anchor winning; `Corpus::goal_drift_rate` is over runs that
+planned under an anchor, the denominator lesson applied a sixth time; and
+`sessions health` prints the line. The re-ask the design names for a
+changed kind or id is off, on item 2's posture, until the line has been
+read across a few nights. On this machine when written: *no run in this
+corpus recorded the sensor*, the expected reading until the next run under
+the new binary. Nothing installed or restarted when written.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own

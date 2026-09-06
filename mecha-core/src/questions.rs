@@ -517,6 +517,11 @@ impl ParkingAsker {
 
 #[async_trait::async_trait]
 impl crate::tool::ask::Asker for ParkingAsker {
+    /// The park note is not an answer: no anchor is set from it.
+    fn parks(&self) -> bool {
+        true
+    }
+
     /// The context-free path: no jail to record and no token to cancel with,
     /// so the question is stored and the run carries on. Reachable only from a
     /// caller that never routes through `ask_in`, which no front-end here does.

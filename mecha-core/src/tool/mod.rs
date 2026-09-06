@@ -473,6 +473,89 @@ pub struct ToolCtx {
     /// `None` only in a context no run owns (a probe, a CLI that builds a
     /// tool by hand), where nothing is counted and the record says unknown.
     pub step_counts: Option<std::sync::Arc<StepCounts>>,
+    /// The run's goal anchor and the drift counted against it —
+    /// `GOAL-SYSTEM-DESIGN.md` §17.7 item 4's sensor half. Minted per run
+    /// by the loop like `step_counts`, carrying forward the anchor a caller
+    /// seeded (a question resume knows the goal the owner just answered);
+    /// `ask_user` sets it in-run on a present human's answer, `todo` counts
+    /// each plan write against it. A sensor: nothing re-asks on it yet.
+    pub goal_track: Option<std::sync::Arc<GoalTrack>>,
+}
+
+/// The last confirmed goal, and how the plan has moved against it.
+///
+/// `GOAL-SYSTEM-DESIGN.md` §17.3 carries a *distance* between the current
+/// hypothesis and the anchor — the last goal the owner confirmed — and
+/// §17.7 item 4 makes it structural: 1 if the goal's kind or id changed,
+/// otherwise a fraction of plan items that no longer trace to the anchor.
+/// The plan carries one goal for the whole list (`todo::Plan::goal`), so
+/// today the fraction has one term and the distance is a bit per write:
+/// **drifted** when the plan's `serves` names a different kind or id than
+/// the anchor, or names nothing at all once an anchor exists. Counted here
+/// and read into the run record; the re-ask the design names for a kind or
+/// id change is deliberately not built — like mid-run delivery (item 2), it
+/// is off until the count has been read across a few nights.
+///
+/// **The anchor is the pointer the owner confirmed, not the owner's words.**
+/// The answer is prose the harness never interprets, so a correction in it
+/// ("no — the other project") does not move the anchor; what moves it is
+/// the next question the owner answers. Named rather than solved: the
+/// structural anchor is an approximation, and its error is one the owner
+/// can see on `questions show`.
+#[derive(Debug, Default)]
+pub struct GoalTrack {
+    anchor: std::sync::Mutex<Option<crate::goal::GoalRef>>,
+    /// Plan writes seen while an anchor stood — the denominator.
+    pub plan_writes: std::sync::atomic::AtomicU32,
+    /// Of those, writes whose `serves` did not trace to the anchor.
+    pub drifted_writes: std::sync::atomic::AtomicU32,
+}
+
+impl GoalTrack {
+    /// A fresh track carrying a caller's anchor and no counts — what the
+    /// loop mints per run, so two runs on one agent never share counters
+    /// while a resume's anchor still reaches the run it was answered for.
+    pub fn carrying(anchor: Option<crate::goal::GoalRef>) -> Self {
+        GoalTrack {
+            anchor: std::sync::Mutex::new(anchor),
+            ..Default::default()
+        }
+    }
+
+    pub fn anchor(&self) -> Option<crate::goal::GoalRef> {
+        self.anchor.lock().map(|a| a.clone()).unwrap_or(None)
+    }
+
+    /// The owner confirmed a goal: it is the anchor from here on.
+    pub fn set_anchor(&self, goal: crate::goal::GoalRef) {
+        if let Ok(mut a) = self.anchor.lock() {
+            *a = Some(goal);
+        }
+    }
+
+    /// A plan write, judged against the anchor. Nothing is counted while
+    /// no anchor stands — a plan with no confirmed goal cannot drift from
+    /// one, and counting it would make the denominator every planned run.
+    pub fn note_plan(&self, serves: Option<&crate::goal::GoalRef>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let Some(anchor) = self.anchor() else {
+            return;
+        };
+        self.plan_writes.fetch_add(1, Relaxed);
+        if crate::goal::drifts_from(&anchor, serves) {
+            self.drifted_writes.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// `(anchor, plan writes, drifted writes)` as of now.
+    pub fn snapshot(&self) -> (Option<crate::goal::GoalRef>, u32, u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (
+            self.anchor(),
+            self.plan_writes.load(Relaxed),
+            self.drifted_writes.load(Relaxed),
+        )
+    }
 }
 
 /// Per-run step counters, written by `todo` and read into `RunOutcome` by
@@ -534,6 +617,7 @@ impl Default for ToolCtx {
             compact_requested: None,
             step_escalation: None,
             step_counts: None,
+            goal_track: None,
         }
     }
 }
@@ -1905,5 +1989,35 @@ mod jail_tests {
 
         std::fs::remove_dir_all(&workspace).ok();
         std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// §17.7 item 4's sensor cell: the anchor a caller seeds is carried
+    /// with fresh counters, a plan write is judged only while an anchor
+    /// stands, and the snapshot reads all three at once.
+    #[test]
+    fn a_goal_track_counts_writes_only_under_an_anchor() {
+        use crate::goal::GoalRef;
+        let t1 = GoalRef::Task("t1".into());
+        let bare = GoalTrack::default();
+        bare.note_plan(Some(&t1));
+        bare.note_plan(None);
+        assert_eq!(bare.snapshot(), (None, 0, 0), "no anchor, nothing counted");
+
+        let track = GoalTrack::carrying(Some(t1.clone()));
+        assert_eq!(track.snapshot(), (Some(t1.clone()), 0, 0));
+        track.note_plan(Some(&t1));
+        track.note_plan(Some(&GoalRef::Task("t2".into())));
+        track.note_plan(None);
+        assert_eq!(track.snapshot(), (Some(t1.clone()), 3, 2));
+
+        // An answer re-anchors; the counts already taken stand.
+        let t2 = GoalRef::Charter("do-no-harm".into());
+        track.set_anchor(t2.clone());
+        track.note_plan(Some(&t2));
+        assert_eq!(track.snapshot(), (Some(t2), 4, 2));
+
+        // A fresh track carrying the anchor shares no counters with it.
+        let carried = GoalTrack::carrying(track.anchor());
+        assert_eq!(carried.snapshot().1, 0);
     }
 }

@@ -1192,6 +1192,14 @@ pub struct RunOutcome {
     /// Of those, completions whose span could be measured — the null
     /// rate's denominator; see `tool::StepCounts::measured`.
     pub step_measured: u32,
+    /// The goal the owner last confirmed for this run, if any, and how the
+    /// plan moved against it — `GOAL-SYSTEM-DESIGN.md` §17.7 item 4's
+    /// sensor, read off `ToolCtx::goal_track`. `goal_plan_writes` counts
+    /// plan writes made while an anchor stood; `goal_drift_writes` those
+    /// whose `serves` did not trace to it. Both zero with no anchor.
+    pub goal_anchor: Option<crate::goal::GoalRef>,
+    pub goal_plan_writes: u32,
+    pub goal_drift_writes: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -1481,6 +1489,12 @@ impl Agent {
                 tools.step_escalation = Some(Arc::new(std::sync::Mutex::new(None)));
             }
             tools.step_counts = Some(Arc::new(crate::tool::StepCounts::default()));
+            // Fresh counters, the caller's anchor: a question resume seeds
+            // the goal the owner just answered, and it must reach this run
+            // and no other on the same agent.
+            tools.goal_track = Some(Arc::new(crate::tool::GoalTrack::carrying(
+                tools.goal_track.as_ref().and_then(|t| t.anchor()),
+            )));
             run_scoped = RunContext {
                 tools: Arc::new(tools),
                 ..cx.clone()
@@ -1697,7 +1711,7 @@ impl Agent {
                     boredom.notices(),
                     step_escalations_used,
                     step_escalations_revised,
-                    step_counts_of(cx),
+                    sensors_of(cx),
                 );
                 return Ok(outcome);
             }
@@ -2019,6 +2033,9 @@ impl Agent {
                     step_reopens: 0,
                     step_completions: 0,
                     step_measured: 0,
+                    goal_anchor: None,
+                    goal_plan_writes: 0,
+                    goal_drift_writes: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -2045,7 +2062,7 @@ impl Agent {
                     boredom.notices(),
                     step_escalations_used,
                     step_escalations_revised,
-                    step_counts_of(cx),
+                    sensors_of(cx),
                 );
                 return Ok(outcome);
             }
@@ -2189,7 +2206,7 @@ impl Agent {
                         boredom.notices(),
                         step_escalations_used,
                         step_escalations_revised,
-                        step_counts_of(cx),
+                        sensors_of(cx),
                     );
                     return Ok(outcome);
                 }
@@ -2344,7 +2361,7 @@ impl Agent {
                             boredom.notices(),
                             step_escalations_used,
                             step_escalations_revised,
-                            step_counts_of(cx),
+                            sensors_of(cx),
                         );
                         return Ok(outcome);
                     }
@@ -2517,7 +2534,7 @@ impl Agent {
                         boredom.notices(),
                         step_escalations_used,
                         step_escalations_revised,
-                        step_counts_of(cx),
+                        sensors_of(cx),
                     );
                     return Ok(outcome);
                 }
@@ -3014,6 +3031,9 @@ impl Agent {
             step_reopens: 0,
             step_completions: 0,
             step_measured: 0,
+            goal_anchor: None,
+            goal_plan_writes: 0,
+            goal_drift_writes: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -3159,6 +3179,9 @@ impl Agent {
             step_reopens: 0,
             step_completions: 0,
             step_measured: 0,
+            goal_anchor: None,
+            goal_plan_writes: 0,
+            goal_drift_writes: 0,
             stop_cause,
             compactions,
             cost_usd: self.cost(&usage),
@@ -4065,7 +4088,7 @@ fn emit_done(
     boredom_notices: u32,
     step_escalations_attempted: u32,
     step_escalations_revised: u32,
-    step_counts: (u32, u32, u32, u32),
+    sensors: Sensors,
 ) {
     outcome.context_overflows = context_overflows;
     outcome.boredom_notices = boredom_notices;
@@ -4076,8 +4099,38 @@ fn emit_done(
         outcome.step_reopens,
         outcome.step_completions,
         outcome.step_measured,
-    ) = step_counts;
+    ) = sensors.step_counts;
+    (
+        outcome.goal_anchor,
+        outcome.goal_plan_writes,
+        outcome.goal_drift_writes,
+    ) = sensors.goal_track;
     emit(events, AgentEvent::Done(Box::new(outcome.clone())));
+}
+
+/// What the run's per-run sensor cells read at the end — named, so the
+/// five `emit_done` sites cannot hand the tuples over in the wrong order
+/// (a review note on the step counters, taken when the second sensor
+/// arrived).
+struct Sensors {
+    /// `(nulls, reopens, completions, measured)`.
+    step_counts: (u32, u32, u32, u32),
+    /// `(anchor, plan writes, drifted writes)`.
+    goal_track: (Option<crate::goal::GoalRef>, u32, u32),
+}
+
+/// Both sensors as of now, or zeros for a context with none — which
+/// `run_in` never produces.
+fn sensors_of(cx: &RunContext) -> Sensors {
+    Sensors {
+        step_counts: step_counts_of(cx),
+        goal_track: cx
+            .tools
+            .goal_track
+            .as_ref()
+            .map(|t| t.snapshot())
+            .unwrap_or((None, 0, 0)),
+    }
 }
 
 /// The run's step counters as of now — `(nulls, reopens, completions,
@@ -6609,6 +6662,9 @@ mod tests {
             step_reopens: 0,
             step_completions: 0,
             step_measured: 0,
+            goal_anchor: None,
+            goal_plan_writes: 0,
+            goal_drift_writes: 0,
             ..outcome.clone()
         });
         assert_eq!(clean.context_overflows, Some(0));
@@ -7404,6 +7460,75 @@ mod tests {
         assert_eq!(stats.step_reopens, Some(1));
         assert_eq!(stats.step_completions, Some(1));
         assert_eq!(stats.step_measured, Some(1));
+    }
+
+    /// §17.7 item 4's sensor, end to end in one run: a present human's
+    /// answer to a question carrying `serves` anchors the run, the plan
+    /// writes after it are judged against that anchor, and the outcome and
+    /// the run record carry the anchor and both counts. Fails on the tree
+    /// before the sensor, where no run knew what the owner had confirmed.
+    #[tokio::test]
+    async fn the_run_outcome_carries_the_goal_anchor_and_the_drift_count() {
+        struct Yes;
+        #[async_trait]
+        impl crate::tool::ask::Asker for Yes {
+            async fn ask(&self, _q: &str, _o: &[String]) -> Option<String> {
+                Some("yes".into())
+            }
+        }
+        let call = |id: &str, name: &str, input: serde_json::Value| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: name.into(),
+                    input,
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, _) = agent_with_tools(
+            vec![
+                // Before the anchor: not counted.
+                call(
+                    "t0",
+                    "todo",
+                    json!({"items": [{"content": "a", "status": "in_progress"}], "serves": "task:t9"}),
+                ),
+                call(
+                    "a0",
+                    "ask_user",
+                    json!({"question": "which?", "goal": "ship it", "serves": "task:t1"}),
+                ),
+                call(
+                    "t1",
+                    "todo",
+                    json!({"items": [{"content": "a", "status": "in_progress"}], "serves": "task:t1"}),
+                ),
+                call(
+                    "t2",
+                    "todo",
+                    json!({"items": [{"content": "a", "status": "in_progress"}], "serves": "task:t2"}),
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![
+                Arc::new(crate::tool::todo::TodoTool::new()),
+                Arc::new(crate::tool::ask::AskUserTool::new(Arc::new(Yes))),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(
+            outcome.goal_anchor,
+            Some(crate::goal::GoalRef::Task("t1".into()))
+        );
+        assert_eq!(outcome.goal_plan_writes, 2, "only writes under the anchor");
+        assert_eq!(outcome.goal_drift_writes, 1, "task:t2 left it");
+        let stats = crate::session::RunStats::from(&outcome);
+        assert_eq!(stats.goal_anchor, outcome.goal_anchor);
+        assert_eq!(stats.goal_plan_writes, Some(2));
+        assert_eq!(stats.goal_drift_writes, Some(1));
     }
 
     /// The review finding: the escalation's own thresholds are argued, not
