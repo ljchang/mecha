@@ -84,7 +84,14 @@ use std::path::{Path, PathBuf};
 /// short enough for a person to hold in mind at once. Argued, not measured:
 /// there is no corpus yet of how many lines a charter needs before it stops
 /// being read carefully.
-pub const CHARTER_CHAR_BUDGET: usize = 2000;
+///
+/// **The budget bounds the rendering, fixed prose included**, so it moves
+/// when the block's own words do: 2,000 until 2026-09-06, then 2,500 when
+/// the goal-sentence ask (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 3) added
+/// ~480 characters of harness prose to every block — the owner's share is
+/// what it was, and a charter that was under budget the day before must
+/// not start warning on every run because the harness grew.
+pub const CHARTER_CHAR_BUDGET: usize = 2500;
 
 /// One standing priority.
 ///
@@ -505,6 +512,24 @@ impl Charter {
                     );
                 }
             }
+            // One token, like every id a `GoalRef` may carry: a cite has to
+            // be able to name this line, and `GoalRef::from_str` refuses an
+            // id with whitespace or a control character in it so a review
+            // surface can print an id beside the owner's own text. The web
+            // editor slugifies and the template shows slugs, so this refuses
+            // nothing an editor produces.
+            if line
+                .id
+                .trim()
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+            {
+                anyhow::bail!(
+                    "charter line id `{}` has whitespace in it; an id is one token, like \
+                     `answer-what-waits-on-me`, so a run can cite it as `charter:<id>`",
+                    line.id.trim()
+                );
+            }
             if line.id.trim().is_empty() {
                 bail!("a charter line has an empty `id`");
             }
@@ -751,12 +776,29 @@ pub fn prompt_block_for(charter: &Charter, todo_in_surface: bool) -> Option<Stri
     for (i, line) in charter.lines().iter().enumerate() {
         out.push_str(&format!("{}. `{}` — {}\n", i + 1, line.id, line.text));
     }
+    // §17.7 item 3, the goal sentence by surface. One instruction for every
+    // surface, because `setup` cannot see which asker a front-end will
+    // register after it returns — `serve` prepares non-interactively and
+    // then installs `ask_user`; a trigger never does — so this names no
+    // tool: a run with a way to ask has `ask_user` in its list and its
+    // schema says how the goal rides on a question, and a run without one
+    // is told what to do instead. The delegated seed (`tasks work`) says on
+    // the user turn where its sentence goes, which is the instruction a run
+    // obeys last.
+    out.push_str(
+        "\nBefore work that will take more than a step or two, say in one sentence what \
+         you take the goal to be and which of these lines — or which task on the board — \
+         it serves. If you are not sure of it and you have a way to ask, ask first, \
+         with your best one-sentence reading as the question's `goal`; if you have no way \
+         to ask, state the goal you are assuming and carry on.\n",
+    );
     if todo_in_surface {
         out.push_str(
             "\nWhen you write a plan with the `todo` tool, say which line the work serves: \
              `serves: charter:<id>` with the line's id from this list, or `task:<id>` when \
              the work serves a task on the board. Name the one line it most serves, and \
-             leave `serves` out when none applies.\n",
+             leave `serves` out when none applies. What your plan serves is shown beside \
+             anything you stage for review, so the owner confirms it by releasing the draft.\n",
         );
     }
     Some(out.trim_end().to_string())
@@ -1172,11 +1214,32 @@ weight = 2
         assert!(with.contains("serves: charter:<id>"), "{with}");
         assert!(with.contains("`todo`"), "{with}");
         let without = prompt_block_for(&charter, false).unwrap();
-        assert!(!without.contains("serves"), "{without}");
+        assert!(!without.contains("serves:"), "{without}");
+        assert!(!without.contains("`todo`"), "{without}");
         assert!(without.contains("`a` — one"), "the lines render either way");
         // `prompt_block` is the with-cite rendering, which is what
         // `char_count` measures.
         assert_eq!(prompt_block(&charter), Some(with));
+    }
+
+    /// §17.7 item 3: every surface is asked for the goal sentence, and the
+    /// asking names no tool — `setup` cannot know which asker a front-end
+    /// installs after it returns, and a prompt naming a tool the surface
+    /// lacks costs a turn on a call that can only fail. The two postures the
+    /// ruling separates (ask where someone can answer; state and carry on
+    /// where nobody can) are both in the one sentence.
+    #[test]
+    fn the_block_asks_for_the_goal_sentence_on_every_surface_and_names_no_asker() {
+        let charter = Charter::validate(vec![line("a", "one")]).unwrap();
+        for block in [
+            prompt_block_for(&charter, true).unwrap(),
+            prompt_block_for(&charter, false).unwrap(),
+        ] {
+            assert!(block.contains("what you take the goal to be"), "{block}");
+            assert!(block.contains("the question's `goal`"), "{block}");
+            assert!(block.contains("no way to ask"), "{block}");
+            assert!(!block.contains("ask_user"), "names no asker: {block}");
+        }
     }
 
     #[test]
@@ -1225,6 +1288,19 @@ priority = 1
             .unwrap_err()
             .to_string();
         assert!(e.contains("used more than once"), "{e}");
+    }
+
+    /// An id with whitespace inside it cannot be cited (`GoalRef::from_str`
+    /// refuses it), so the charter refuses it at the door rather than
+    /// carrying a line no run can name; surrounding whitespace is trimmed
+    /// as before.
+    #[test]
+    fn an_id_with_whitespace_inside_is_refused_because_no_run_could_cite_it() {
+        let e = Charter::validate(vec![line("my line", "one")]).unwrap_err();
+        assert!(e.to_string().contains("one token"), "{e:#}");
+        let e = Charter::validate(vec![line("a\nb", "one")]).unwrap_err();
+        assert!(e.to_string().contains("one token"), "{e:#}");
+        assert!(Charter::validate(vec![line(" x ", "one")]).is_ok());
     }
 
     #[test]

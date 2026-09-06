@@ -439,8 +439,13 @@ fn row(item: &OutboxItem) -> OutboxRow {
         error: item.error.clone(),
         // Read once here, never per frame: `detail` is prebuilt so drawing
         // is a scroll and nothing else, and the source read is a file the
-        // renderer must not touch sixty times a second.
-        detail: detail_lines(item, &crate::commands::outbox::source_reads(item)),
+        // renderer must not touch sixty times a second. One read serves
+        // both the source join and the goal note.
+        detail: {
+            let crate::commands::outbox::ReviewReads { reads, serves } =
+                crate::commands::outbox::review_reads(item);
+            detail_lines(item, &reads, serves.as_ref())
+        },
         raw: raw_lines(item),
     }
 }
@@ -461,7 +466,11 @@ fn row(item: &OutboxItem) -> OutboxRow {
 /// What is *not* dropped: the taint warning and a failed send stay on top in
 /// red, every argument still appears (`DraftView` guarantees it), and the
 /// exact bytes are one `J` away.
-fn detail_lines(item: &OutboxItem, reads: &[SourceRead]) -> Vec<Line<'static>> {
+fn detail_lines(
+    item: &OutboxItem,
+    reads: &[SourceRead],
+    serves: Option<&crate::commands::outbox::ServesNote>,
+) -> Vec<Line<'static>> {
     let mut body: Vec<Line<'static>> = Vec::new();
     let white = Style::new().fg(Color::White);
     let grey = Style::new().fg(Color::DarkGray);
@@ -566,7 +575,7 @@ fn detail_lines(item: &OutboxItem, reads: &[SourceRead]) -> Vec<Line<'static>> {
     }
 
     body.push(Line::raw(""));
-    for line in provenance(item) {
+    for line in provenance(item, serves) {
         body.push(Line::styled(line, grey));
     }
     body
@@ -574,13 +583,21 @@ fn detail_lines(item: &OutboxItem, reads: &[SourceRead]) -> Vec<Line<'static>> {
 
 /// Where the draft came from, in grey and at the bottom. True, worth keeping,
 /// and not the question a reviewer is answering.
-fn provenance(item: &OutboxItem) -> Vec<String> {
+fn provenance(
+    item: &OutboxItem,
+    serves: Option<&crate::commands::outbox::ServesNote>,
+) -> Vec<String> {
     let mut out = vec![
         format!("{} · {} · {}", item.kind.as_str(), item.tool, item.status),
         format!("created {}", item.created_at),
     ];
     if let Some(session) = &item.session_id {
         out.push(format!("drafted by session {session}"));
+    }
+    // The goal note, where `outbox show` puts it: releasing from this pane
+    // confirms it, so this pane must show it (§17.7 item 3).
+    if let Some(note) = serves {
+        out.push(note.line());
     }
     if let Some(workspace) = &item.workspace {
         out.push(format!("jailed to {}", workspace.display()));
@@ -806,7 +823,7 @@ mod tests {
     #[test]
     fn the_detail_leads_with_the_letter_and_ends_with_the_provenance() {
         let item = item("aaa1", "pending", OutboxKind::Message);
-        let body = text(&detail_lines(&item, &[]));
+        let body = text(&detail_lines(&item, &[], None));
         let letter = body.find("hi").expect("the body is shown");
         let created = body.find("created").expect("the provenance is kept");
         assert!(letter < created, "the draft comes first:\n{body}");
@@ -820,6 +837,31 @@ mod tests {
         assert!(raw.contains("\"body\""), "{raw}");
     }
 
+    /// The goal note lands in this pane's provenance exactly as `outbox
+    /// show` prints it: releasing from here confirms the goal, so this is
+    /// the surface that must show it (found on review — it did not).
+    #[test]
+    fn the_serves_note_is_shown_where_outbox_show_puts_it() {
+        let item = item("aaa1", "pending", OutboxKind::Message);
+        let note = crate::commands::outbox::ServesNote {
+            goal: mecha_core::goal::GoalRef::Charter("answer-what-waits-on-me".into()),
+            text: Some("Keep what waits on me short.".into()),
+        };
+        let body = text(&detail_lines(&item, &[], Some(&note)));
+        assert!(
+            body.contains("serves charter:answer-what-waits-on-me — Keep what waits on me short."),
+            "{body}"
+        );
+        let created = body.find("created ").expect("provenance");
+        let serves = body.find("serves charter:").unwrap();
+        assert!(
+            serves > created,
+            "in the provenance block, as `outbox show`:\n{body}"
+        );
+        let without = text(&detail_lines(&item, &[], None));
+        assert!(!without.contains("serves "), "{without}");
+    }
+
     /// The prose is shown with its own line breaks. Rendering a paragraph
     /// break as `\n` is what made a draft something to decode rather than
     /// read.
@@ -827,13 +869,13 @@ mod tests {
     fn the_body_keeps_its_newlines() {
         let mut item = item("aaa1", "pending", OutboxKind::Message);
         item.args = json!({"to": "a@example.com", "body_markdown": "Dear A,\n\nHello.\n\nLuke"});
-        let body = text(&detail_lines(&item, &[]));
+        let body = text(&detail_lines(&item, &[], None));
         assert!(body.contains("\nDear A,\n\nHello.\n\nLuke\n"), "{body}");
     }
 
     #[test]
     fn the_detail_shows_the_release_arguments_and_the_taint_warning() {
-        let clean = detail_lines(&item("aaa1", "pending", OutboxKind::Message), &[]);
+        let clean = detail_lines(&item("aaa1", "pending", OutboxKind::Message), &[], None);
         let body = text(&clean);
         assert!(body.contains("a@example.com"), "{body}");
         assert!(
@@ -846,7 +888,7 @@ mod tests {
             private: true,
             untrusted: true,
         };
-        let body = text(&detail_lines(&tainted, &[]));
+        let body = text(&detail_lines(&tainted, &[], None));
         assert!(body.contains("attacker"), "{body}");
     }
 
@@ -861,6 +903,7 @@ mod tests {
         let body = text(&detail_lines(
             &item("aaa1", "pending", OutboxKind::Message),
             std::slice::from_ref(&read),
+            None,
         ));
         // Split on the shared heading rather than on a literal, so a reworded
         // lead cannot make this assert against a string no surface prints.
@@ -884,7 +927,7 @@ mod tests {
     fn an_edited_item_shows_the_diff_the_learning_capture_will_mine() {
         let mut edited = item("aaa1", "pending", OutboxKind::Message);
         edited.args = json!({"to": "a@example.com", "body": "hello"});
-        let body = text(&detail_lines(&edited, &[]));
+        let body = text(&detail_lines(&edited, &[], None));
         assert!(body.contains("edited since drafting"), "{body}");
         assert!(body.contains("hello"), "{body}");
     }
@@ -895,7 +938,7 @@ mod tests {
     fn a_publish_detail_leads_with_the_page_and_warns_when_it_is_gone() {
         let mut publish = item("bbb1", "pending", OutboxKind::Publish);
         publish.args = json!({"bundle": "/nonexistent/bundle-dir", "visibility": "public"});
-        let body = text(&detail_lines(&publish, &[]));
+        let body = text(&detail_lines(&publish, &[], None));
         assert!(
             body.contains("rendered bundle: /nonexistent/bundle-dir"),
             "{body}"

@@ -4048,6 +4048,42 @@ and the `update` skill the fix; the rung 10 table row that called `Pride`
 open; and `ARCHITECTURE.md`'s "label range is `Neutral` alone". Nothing
 installed or restarted.
 
+**2026-09-06 — the goal rides on the one question; a project is a kind of
+goal.** `GOAL-SYSTEM-DESIGN.md` §17.7 items 3 and 5, built as
+`feat/goal-sentence`. Item 3 had been ruled on 2026-09-04 and was the
+missing producer: the only writer of a goal reference was the `serves:`
+cite inside `todo`, which fires in a minority of runs and had fired in none
+(0 of 152 sessions on 2026-09-06). Now `ask_user` takes `goal` and
+`serves`, strict on the way in like `todo`'s `serves` — a pointer with no
+sentence is refused, so is an unknown kind — renders them above the
+question as one text and hands a typed `GoalHypothesis` to a new
+default-forwarding `Asker::ask_about`; `ParkingAsker` is the one asker that
+keeps it, on the parked `Question` beside the owner's answer, which is the
+goal record §17.3 asks for (the owner's own words, arming no taint). The
+three surfaces: the delegated seed's last bullet on asking folds the goal
+into the ask-first call with this task's id and says never to ask about
+the goal alone; the charter block asks every surface for the sentence in
+words that name no tool — found while building: `setup` cannot know which
+asker a front-end installs after `prepare` returns, and `serve` prepares
+with `interactive = false` then installs `ask_user`, so `interactive` is
+not a proxy for "someone can answer" — and a run with no way to ask is
+told to state the goal it is assuming; the unattended note is derived at
+review time by `outbox_source::serves_at_staging` (the plan's `serves` as
+of the staging call, on D15's rule and so a later `serves` cannot claim
+the draft) and printed by `outbox show` and the web detail with the
+charter line's own text. `GoalRef::Project` is the fourth kind, a pointer
+the charter check leaves alone. The appraisal reads the ask's `serves` as
+a second producer of a named goal after the plan's; `sessions appraise`
+counts sessions that put a goal to the owner and had it answered, from the
+question store. Two things the build moved beside it: the TUI question
+modal rendered a question as one `Line`, so a two-paragraph question would
+have lost its break — it now renders one line per line and counts the
+rows; and `CHARTER_CHAR_BUDGET` went from 2,000 to 2,500 because it bounds
+the rendering and the block's fixed prose grew by ~480 characters — the
+live charter measured 1,777 before and 2,256 after, so an unchanged
+budget would have warned on every run from the first start. Nothing
+installed or restarted when written.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own

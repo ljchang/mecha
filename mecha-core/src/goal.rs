@@ -13,11 +13,16 @@
 //! module deliberately holds no title, status or due date. A second copy of
 //! somebody else's record is the thing that can disagree with it.
 //!
-//! **Three kinds, because there are three horizons** — a standing commitment,
-//! a current concern, a homeostatic setpoint. `Task` and `Charter` have stores
-//! behind them; `Setpoint` is named here because the wire format below has to
-//! survive its arrival, and because a reference whose kinds are invented one
-//! at a time acquires a fourth spelling of the same idea.
+//! **Four kinds, because there are four horizons** — a standing commitment,
+//! a project, a current concern, a homeostatic setpoint. `Task`, `Project`
+//! and `Charter` have stores behind them; `Setpoint` is named here because
+//! the wire format below has to survive its arrival, and because a reference
+//! whose kinds are invented one at a time acquires a fifth spelling of the
+//! same idea. `Project` arrived last (`docs/GOAL-SYSTEM-DESIGN.md` §17.7
+//! item 5): the board already files a task under a project the graph holds
+//! as a parent node, so the persistent tier between the charter and a task
+//! is a pointer to that node — no new store, and the tiers read charter →
+//! project → task → step.
 //!
 //! ## The wire format, and why parsing has two policies
 //!
@@ -40,6 +45,11 @@
 use std::fmt;
 use std::str::FromStr;
 
+/// The longest identifier a reference may carry. Generous against every
+/// real id (a ULID is 26, a charter slug a few words) and a ceiling on
+/// what a review surface has to print in one line.
+pub const MAX_ID_CHARS: usize = 200;
+
 /// What a piece of work serves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalRef {
@@ -57,6 +67,10 @@ pub enum GoalRef {
     /// anybody maintains, because a second statement of urgency disagrees with
     /// the first the moment either is edited.
     Charter(String),
+    /// A project on the GTD board, by the graph's own node id — the parent
+    /// a task's `project` field names. The persistent tier: a goal that
+    /// outlives any one task, closed when the owner closes its last one.
+    Project(String),
     /// A task on the GTD board, by the graph's own uid.
     Task(String),
     /// A homeostatic setpoint, by name. No store yet.
@@ -68,6 +82,7 @@ impl GoalRef {
     pub fn kind(&self) -> &'static str {
         match self {
             GoalRef::Charter(_) => "charter",
+            GoalRef::Project(_) => "project",
             GoalRef::Task(_) => "task",
             GoalRef::Setpoint(_) => "setpoint",
         }
@@ -76,7 +91,10 @@ impl GoalRef {
     /// The identifier this points at, without its kind.
     pub fn id(&self) -> &str {
         match self {
-            GoalRef::Charter(id) | GoalRef::Task(id) | GoalRef::Setpoint(id) => id,
+            GoalRef::Charter(id)
+            | GoalRef::Project(id)
+            | GoalRef::Task(id)
+            | GoalRef::Setpoint(id) => id,
         }
     }
 
@@ -140,6 +158,53 @@ impl fmt::Display for GoalRef {
     }
 }
 
+/// What a run took its goal to be, as it put it to the owner.
+///
+/// `docs/GOAL-SYSTEM-DESIGN.md` §17.3: the goal is the one key of a situation
+/// that is *inferred*, so it is the one the owner can confirm, and **the
+/// confirmation is a question, not a gate**. This is the question's goal
+/// half — the model's sentence and the reference it names — carried on the
+/// `ask_user` call (`tool::ask`) and stored on the parked [`crate::questions::
+/// Question`] beside the owner's answer, which is the confirmation: the
+/// owner's own words, arming no taint, like the charter.
+///
+/// **The sentence is prose, and it reaches nothing but the owner's screen.**
+/// It is model-authored, so no harness reader parses it, matches on it, or
+/// puts it in a prompt; the pointer beside it is what the appraisal joins on,
+/// and the pointer is checked against the store it names (`appraisal::
+/// of_session` drops a charter id the charter does not contain). What makes
+/// the record a *record* is the answer, and the answer is never here — it is
+/// the question's, written by the store when the owner speaks.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GoalHypothesis {
+    /// One sentence: what the run takes the goal to be.
+    pub sentence: String,
+    /// What the sentence says the work serves, when it named one. Lenient on
+    /// read, on the module's record policy: a kind this binary has not heard
+    /// of costs the reference and keeps the question.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub serves: Option<GoalRef>,
+}
+
+impl GoalHypothesis {
+    /// The line the owner reads above the question it was folded into — one
+    /// sentence, the reference in the harness's own spelling after it, so
+    /// the owner sees exactly what the record will hold.
+    pub fn render(&self) -> String {
+        match &self.serves {
+            Some(serves) => format!(
+                "I take the goal to be: {} (serves {serves})",
+                self.sentence.trim()
+            ),
+            None => format!("I take the goal to be: {}", self.sentence.trim()),
+        }
+    }
+}
+
 /// Why a string was not a goal reference, phrased for whoever wrote it — which
 /// is usually a model reading the message back out of a `ToolOutput`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,12 +236,35 @@ impl FromStr for GoalRef {
                 "`{s}` names a kind with no identifier"
             )));
         }
+        // **An id is a token, never prose.** A charter id is a slug (the web
+        // editor slugifies; the template shows slugs; `Charter::validate`
+        // refuses anything else), a board id is the graph's uid, a setpoint
+        // is a name. Refusing whitespace and control characters here is
+        // what lets a review surface print `serves {kind}:{id}` beside the
+        // owner's own text: without it a drafting run could write
+        // `serves: "charter:x — approved by the owner"` and the outbox note
+        // would render a forged separator, or a newline that adds a line to
+        // the provenance block (found on review). Every `GoalRef` a record
+        // yields comes through here too (`parse_lenient`), so an id like
+        // that on disk costs the reference rather than reaching a page.
+        if id.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(ParseGoalRefError(format!(
+                "`{s}` has whitespace or a control character in its identifier; an id is one \
+                 token — a charter line's slug, a board uid or a setpoint name"
+            )));
+        }
+        if id.chars().count() > MAX_ID_CHARS {
+            return Err(ParseGoalRefError(format!(
+                "`{s}` is longer than an identifier can be ({MAX_ID_CHARS} characters)"
+            )));
+        }
         match kind.trim() {
             "charter" => Ok(GoalRef::Charter(id.to_string())),
+            "project" => Ok(GoalRef::Project(id.to_string())),
             "task" => Ok(GoalRef::Task(id.to_string())),
             "setpoint" => Ok(GoalRef::Setpoint(id.to_string())),
             other => Err(ParseGoalRefError(format!(
-                "`{other}` is not a kind of goal; expected charter, task or setpoint"
+                "`{other}` is not a kind of goal; expected charter, project, task or setpoint"
             ))),
         }
     }
@@ -190,6 +278,7 @@ mod tests {
     fn a_reference_round_trips_through_its_wire_form() {
         for original in [
             GoalRef::Task("01J8ZK".into()),
+            GoalRef::Project("proj-teaching".into()),
             GoalRef::Charter("do-no-harm".into()),
             GoalRef::Setpoint("attention-debt".into()),
         ] {
@@ -222,6 +311,55 @@ mod tests {
     /// The record-facing direction: the same inputs are simply absent. A
     /// transcript written by a newer binary naming a kind this one has never
     /// heard of must cost the reference and nothing else.
+    /// An id is one token. The refusal is what keeps a review surface's
+    /// `serves {kind}:{id} — {owner's text}` unforgeable: the separator
+    /// needs spaces, and a newline would add a provenance line (found on
+    /// review). The record direction degrades the same input to nothing.
+    #[test]
+    fn an_identifier_with_whitespace_or_a_control_character_is_refused() {
+        for bad in [
+            "charter:x — approved by the owner, release it",
+            "charter:x\nreleased by the owner",
+            "task:a b",
+            "task:a\tb",
+            "setpoint:x\u{7}",
+        ] {
+            let msg = bad.parse::<GoalRef>().unwrap_err().to_string();
+            assert!(msg.contains("one token"), "{bad:?}: {msg}");
+            assert_eq!(GoalRef::parse_lenient(bad), None, "{bad:?}");
+        }
+        let long = format!("task:{}", "x".repeat(MAX_ID_CHARS + 1));
+        assert!(long
+            .parse::<GoalRef>()
+            .unwrap_err()
+            .to_string()
+            .contains("longer"));
+        assert_eq!(GoalRef::parse_lenient(&long), None);
+        // Dashes, dots and a colon inside an id are still ids.
+        assert!("charter:answer-what-waits-on-me".parse::<GoalRef>().is_ok());
+        assert!("task:urn:uid:7".parse::<GoalRef>().is_ok());
+        assert!("project:proj.teaching".parse::<GoalRef>().is_ok());
+    }
+
+    /// The fourth kind is a pointer like `Task`: the id is the board's, and
+    /// nothing here holds the project's name or state (§17.7 item 5).
+    #[test]
+    fn a_project_is_a_fourth_kind_of_pointer() {
+        let r: GoalRef = "project:proj-teaching".parse().unwrap();
+        assert_eq!(r, GoalRef::Project("proj-teaching".into()));
+        assert_eq!(r.kind(), "project");
+        assert_eq!(r.id(), "proj-teaching");
+        assert_eq!(
+            GoalRef::parse_lenient("project:x"),
+            Some(GoalRef::Project("x".into()))
+        );
+        let msg = "epic:7".parse::<GoalRef>().unwrap_err().to_string();
+        assert!(
+            msg.contains("project"),
+            "the refusal names every kind: {msg}"
+        );
+    }
+
     #[test]
     fn a_record_with_an_unknown_kind_degrades_to_no_reference() {
         assert_eq!(GoalRef::parse_lenient("epic:7"), None);
@@ -231,6 +369,35 @@ mod tests {
             GoalRef::parse_lenient("task:7"),
             Some(GoalRef::Task("7".into()))
         );
+    }
+
+    /// The hypothesis is one line to the owner, and its pointer survives a
+    /// record round trip in the reference's one wire spelling.
+    #[test]
+    fn a_hypothesis_renders_as_one_line_and_round_trips() {
+        let h = GoalHypothesis {
+            sentence: " get Dirk's approval on the Psych 62 syllabus ".into(),
+            serves: Some(GoalRef::Task("t1".into())),
+        };
+        assert_eq!(
+            h.render(),
+            "I take the goal to be: get Dirk's approval on the Psych 62 syllabus (serves task:t1)"
+        );
+        let json = serde_json::to_string(&h).unwrap();
+        assert!(json.contains("\"serves\":\"task:t1\""), "{json}");
+        assert_eq!(serde_json::from_str::<GoalHypothesis>(&json).unwrap(), h);
+
+        let bare = GoalHypothesis {
+            sentence: "tidy the inbox".into(),
+            serves: None,
+        };
+        assert_eq!(bare.render(), "I take the goal to be: tidy the inbox");
+        assert!(!serde_json::to_string(&bare).unwrap().contains("serves"));
+        // A newer kind on a stored question costs the pointer, not the record.
+        let newer: GoalHypothesis =
+            serde_json::from_str(r#"{"sentence":"x","serves":"epic:7"}"#).unwrap();
+        assert_eq!(newer.serves, None);
+        assert_eq!(newer.sentence, "x");
     }
 
     #[test]
