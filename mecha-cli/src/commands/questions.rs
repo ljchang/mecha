@@ -128,7 +128,9 @@ fn list(all: bool) -> Result<()> {
 fn show(id: &str) -> Result<()> {
     let q = store()?.find(id)?;
     warn_if_tainted(&q);
-    println!("{}\n", q.question.trim());
+    // The question without the goal line rendered above it — the goal is
+    // printed once, as its typed row below, rather than twice.
+    println!("{}\n", q.asked());
     for opt in &q.options {
         println!("  - {opt}");
     }
@@ -140,6 +142,23 @@ fn show(id: &str) -> Result<()> {
     println!("asked    {}", q.asked_at);
     if let Some(t) = &q.task_id {
         println!("task     {t}");
+    }
+    // The goal the run put up for confirmation, as the typed record beside
+    // the prose above — so a reader can see that answering this *is* the
+    // confirmation the appraisal will read, and what pointer it confirms.
+    // One line, whatever a stored record holds: the tool collapses the
+    // sentence at the door, and a record written by anything else must not
+    // be able to add an `answered …` row to this block (found on review).
+    if let Some(goal) = &q.goal {
+        let sentence = goal
+            .sentence
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        match &goal.serves {
+            Some(serves) => println!("goal     {sentence} (serves {serves})"),
+            None => println!("goal     {sentence}"),
+        }
     }
     println!("session  {}", q.session_id);
     if let Some(a) = &q.answer {

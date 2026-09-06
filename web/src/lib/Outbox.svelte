@@ -198,6 +198,13 @@
       <div class="provenance">
         staged {age(detail.created_at)}{detail.session_id ? ` · session ${detail.session_id}` : ''}{detail.edited ? ' · edited' : ''}
       </div>
+      {#if detail.serves}
+        <!-- What the drafting run's plan served when it staged this: a
+             pointer from the run, the line's text from the owner's own
+             charter. Approving the draft is what confirms it, so it sits
+             beside the buttons rather than in the header. -->
+        <div class="serves">serves <span class="serves-ref">{detail.serves.ref}</span>{detail.serves.text ? ` — ${detail.serves.text}` : ''}</div>
+      {/if}
 
       {#if !editing}
         <div class="btnrow">
@@ -307,6 +314,8 @@
     overflow-wrap: anywhere;
   }
   .provenance { font-family: var(--mono); font-size: 10px; color: var(--accent-700); }
+  .serves { font-size: 12px; color: var(--text-muted); line-height: 1.45; margin-top: 6px; }
+  .serves-ref { font-family: var(--mono); color: var(--accent-700); }
   .btnrow { display: flex; gap: 10px; }
   .btn { flex: 1; min-height: 48px; background: var(--bg); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; }
   .btn.primary { background: var(--accent-400); color: var(--void); font-weight: 500; border: none; }

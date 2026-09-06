@@ -833,6 +833,27 @@ async fn appraise(
     // — the prerequisite §17.1 puts on the gate.
     let mut attributed_by_sensor = 0usize;
     let mut cite_a_charter_line = 0usize;
+    // §17.7 item 3's own exit, read off the question store rather than the
+    // appraisal: a run that put its goal to the owner, and one whose owner
+    // answered — the answer being the only confirmation the design admits.
+    // Counted over the sessions appraised here, so the three goal numbers
+    // share a denominator; a question with no goal is not on this line.
+    let appraised_ids: std::collections::BTreeSet<&str> =
+        appraisals.iter().map(|a| a.session_id.as_str()).collect();
+    let (goal_put_to_owner, goal_confirmed) = {
+        let mut asked: std::collections::BTreeSet<&str> = Default::default();
+        let mut answered: std::collections::BTreeSet<&str> = Default::default();
+        for q in questions.iter().filter(|q| q.goal.is_some()) {
+            if !appraised_ids.contains(q.session_id.as_str()) {
+                continue;
+            }
+            asked.insert(q.session_id.as_str());
+            if q.status == mecha_core::questions::ANSWERED {
+                answered.insert(q.session_id.as_str());
+            }
+        }
+        (asked.len(), answered.len())
+    };
     // The dimensional readout, summed: how many sessions the record has
     // anything signed to say about, and how much either way. This is the
     // number `docs/APPRAISAL-RESEARCH.md` §1 found the label hiding.
@@ -885,6 +906,8 @@ async fn appraise(
                 "named_a_goal": named_a_goal,
                 "attributed_by_sensor": attributed_by_sensor,
                 "cite_a_charter_line": cite_a_charter_line,
+                "goal_put_to_owner": goal_put_to_owner,
+                "goal_confirmed": goal_confirmed,
                 // The charter was consulted for attribution: `false` means
                 // it did not load, and every session's reading is partial
                 // for it.
@@ -1030,6 +1053,18 @@ async fn appraise(
             (_, true) => " — charter did not load, attribution off",
             (Some(c), false) if !c.has_sensors() => " — no charter line carries a sensor",
             _ => "",
+        }
+    );
+    // §17.7 item 3's exit: the goal put to the owner on a question, and the
+    // owner's answer to it. Read from the question store, so an unreadable
+    // store is named here rather than read as "nobody asked".
+    println!(
+        "  {goal_put_to_owner} put a goal to the owner on a question; {goal_confirmed} had it \
+         answered{}",
+        if questions_unreadable {
+            " — question store not fully read, so both are floors"
+        } else {
+            ""
         }
     );
 

@@ -160,6 +160,17 @@ impl SourceRead {
 /// composing a *new* message answers nothing) all mean the same thing — no
 /// context to show — and none of them is an error worth failing a review over.
 pub fn for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<SourceRead> {
+    from_messages(item, &messages_for_item(item, sessions_dir))
+}
+
+/// Everything the drafting session ever held, read once for every reader
+/// of this item — the source join and the goal note both walk the same
+/// transcript, and a review surface that read it twice per draft was
+/// parsing a long delegated session's JSONL twice inside one request
+/// (found on review). Empty when the item names no session, the session
+/// is gone, or the file cannot be read: for every reader here that is
+/// honest absence, not an error.
+pub fn messages_for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<Message> {
     let Some(id) = item.session_id.as_deref() else {
         return Vec::new();
     };
@@ -169,7 +180,54 @@ pub fn for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<SourceRead> {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
-    from_messages(item, &Session::messages_ever(&text))
+    Session::messages_ever(&text)
+}
+
+/// What the drafting run's plan served when it staged this draft — the
+/// `serves:` on its `todo` list as of the staging call, or nothing.
+///
+/// `docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 3's third case: a run with
+/// nobody to ask never asks, the goal it is assuming *rides in the note on
+/// the artifact it stages*, and the owner's release of that artifact is the
+/// confirmation. The note is derived here at review time rather than
+/// stamped on the item at staging, on D15's rule (the plan rehydrates from
+/// the transcript, never a second store) and because the loop must not
+/// learn which tool keeps the plan: the plan's own reader walks the
+/// transcript up to and including the staging call, so a `serves` the run
+/// set *after* staging does not retroactively claim the draft. A pointer
+/// only — the charter line's text is the owner's and is looked up by the
+/// surface that renders it; the model's sentence about the goal is never
+/// on this path.
+///
+/// `None` is honest absence: no plan, a plan that named nothing, or a
+/// staging call this walk cannot find (a draft no tool call produced, or
+/// one staged before `call_id` whose arguments the loop has since pinned).
+pub fn serves_at_staging(item: &OutboxItem, messages: &[Message]) -> Option<crate::goal::GoalRef> {
+    let staged_in = messages.iter().position(|m| {
+        m.role == Role::Assistant
+            && m.content.iter().any(|b| match b {
+                Block::ToolUse { id, name, input } => is_staging_call(item, id, name, input),
+                _ => false,
+            })
+    })?;
+    crate::tool::todo::TodoTool::plan_from_transcript(&messages[..=staged_in]).and_then(|p| p.goal)
+}
+
+/// Is this `tool_use` the call that staged `item`?
+///
+/// By id when the item has one, because identity by *content* was only
+/// ever true while nothing between the model's call and the stored draft
+/// touched the arguments — the loop now pins a call's declared schema
+/// defaults into the draft it stages, so a `mail_reply` whose `reply_all`
+/// was filled does not equal its own recorded input. The content match
+/// stays as the fallback, for a draft staged before `call_id` existed and
+/// for one no tool call produced. One predicate for both walks over the
+/// transcript, so they cannot drift apart (found on review).
+fn is_staging_call(item: &OutboxItem, id: &str, name: &str, input: &serde_json::Value) -> bool {
+    match &item.call_id {
+        Some(call_id) => id == call_id,
+        None => name == item.tool && *input == item.args_before,
+    }
 }
 
 /// The pure half, so the join is unit-tested rather than trialled against a
@@ -242,23 +300,12 @@ pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead>
         };
         // The staging call. Everything after it is what the run did *with* the
         // draft, not what it drafted from, and the call itself joins to its own
-        // arguments — so this is where the walk ends.
-        //
-        // By id when the item has one, because identity by *content* was only
-        // ever true while nothing between the model's call and the stored
-        // draft touched the arguments. The loop now pins a call's declared
-        // schema defaults into the draft it stages, so a `mail_reply` whose
-        // `reply_all` was filled does not equal its own recorded input — the
-        // walk ran past the staging call and the draft joined to itself on its
-        // own `thread_id`, which is this break's entire purpose.
-        //
-        // The content match stays as the fallback, for a draft staged before
-        // `call_id` existed and for one no tool call produced.
-        let is_staging_call = match &item.call_id {
-            Some(call_id) => id == call_id,
-            None => name == &item.tool && input == &item.args_before,
-        };
-        if is_staging_call {
+        // arguments — so this is where the walk ends. The walk once ran past
+        // the staging call because a pinned default made the draft unequal
+        // to its own recorded input, and the draft joined to itself on its
+        // own `thread_id` — which is this break's entire purpose; see
+        // `is_staging_call` for the id-then-content rule.
+        if is_staging_call(item, id, name, input) {
             break;
         }
         let Some(content) = results.get(id.as_str()) else {
@@ -867,5 +914,54 @@ mod tests {
         // by returning nothing is the honest answer rather than a failure.
         let item = draft(json!({"to": "a@b.c", "subject": "hi", "body_markdown": "Hello"}));
         assert!(from_messages(&item, &[]).is_empty());
+    }
+
+    /// §17.7 item 3's note on the artifact: the plan's `serves` as of the
+    /// staging call, and not one the run set afterwards — a draft is not
+    /// retroactively claimed for a goal the run named once it was staged.
+    #[test]
+    fn the_note_is_the_plan_goal_at_staging_never_a_later_one() {
+        let args = json!({"to": "a@b.c", "subject": "hi", "body_markdown": "Hello"});
+        let mut item = draft(args.clone());
+        item.call_id = Some("m1".into());
+        let plan = |serves: &str| json!({"items": [{"content": "write it", "status": "in_progress"}], "serves": serves});
+        let messages = vec![
+            call("p1", "todo", plan("charter:answer-what-waits-on-me")),
+            result("p1", "(not a whole echo)"),
+            call("m1", "mail__mail_reply", args.clone()),
+            result("m1", "Drafted, not sent"),
+            call("p2", "todo", plan("charter:something-else")),
+            result("p2", "(not a whole echo)"),
+        ];
+        assert_eq!(
+            serves_at_staging(&item, &messages),
+            Some(crate::goal::GoalRef::Charter(
+                "answer-what-waits-on-me".into()
+            ))
+        );
+        // No plan before the staging call: nothing, not the later plan.
+        assert_eq!(serves_at_staging(&item, &messages[2..]), None);
+        // A staging call the walk cannot find is honest absence.
+        item.call_id = Some("nope".into());
+        assert_eq!(serves_at_staging(&item, &messages), None);
+        // The content-match fallback, for a draft staged before `call_id`.
+        item.call_id = None;
+        assert_eq!(
+            serves_at_staging(&item, &messages),
+            Some(crate::goal::GoalRef::Charter(
+                "answer-what-waits-on-me".into()
+            ))
+        );
+        // A plan that named nothing is nothing.
+        let unnamed = vec![
+            call(
+                "p1",
+                "todo",
+                json!({"items": [{"content": "x", "status": "pending"}]}),
+            ),
+            result("p1", "(not a whole echo)"),
+            call("m1", "mail__mail_reply", args),
+        ];
+        assert_eq!(serves_at_staging(&item, &unnamed), None);
     }
 }

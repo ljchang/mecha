@@ -2033,7 +2033,9 @@ concludes).
 Eight decisions §17.3–17.6 leave open. Each is stated with the fact in the
 tree it turns on and its resolution. Items 2 and 3 decide what the owner
 sees mid-run and were **ruled by the owner on 2026-09-04**; the other six
-follow from facts in the tree and stand as written. None is built.
+follow from facts in the tree and stand as written. Items 1, 6 and 7 were
+built on 2026-09-04, items 3 and 5 on 2026-09-06; each carries its built
+note below.
 
 1. **A run records what it loaded.** `ValidationRecord` keys on
    `rules_hash` of the rendered block plus `rule_ids`; `SessionMeta` carries
@@ -2083,6 +2085,44 @@ follow from facts in the tree and stand as written. None is built.
    assumed goal rides in the note on the artifact they stage, and the
    owner's acceptance of that artifact is the confirmation — an
    owner-verdict channel that already exists.
+   *Built 2026-09-06* (`feat/goal-sentence`). The sentence is two optional
+   arguments on `ask_user`, `goal` and `serves`, strict on the way in like
+   `todo`'s `serves` (a pointer with no sentence is refused; so is an
+   unknown kind), rendered above the question as one text — *I take the
+   goal to be: X (serves Y)* — and carried typed to the asker
+   (`Asker::ask_about`, default-forwarding). The three cases: the
+   delegated seed's last bullet on the subject of asking folds the goal
+   into the ask-first call with `serves: "task:<id>"` and says never to
+   ask about the goal alone; `ParkingAsker` keeps the `GoalHypothesis` on
+   the parked `Question` beside the owner's answer, which is the goal
+   record (`questions show` prints it, `/api/questions` carries it); the
+   charter block asks every surface for the sentence in words that name
+   no tool, because `setup` cannot see which asker a front-end installs
+   after it returns (`serve` prepares non-interactively and then installs
+   `ask_user`), so the block says *if you have a way to ask, ask first
+   with the sentence as the question's `goal`; if you have no way to ask,
+   state the goal you are assuming and carry on*; and the unattended note
+   is **derived at review time, never stamped**: `outbox_source::
+   serves_at_staging` reads the plan's `serves` as of the staging call
+   (D15's rule — the plan rehydrates from the transcript — and a `serves`
+   set after staging cannot claim the draft), `mecha outbox show` and the
+   web outbox detail print it with the charter line's own text beside the
+   id, so releasing the draft confirms it. The appraisal's `for_transcript`
+   reads the ask's `serves` as a second producer of a *named* goal, the
+   plan's first; `sessions appraise` prints how many sessions put a goal
+   to the owner and how many had it answered, from the question store.
+   An id is one token: `GoalRef::from_str` refuses whitespace and control
+   characters (and `Charter::validate` refuses a line id a run could not
+   cite), because the note prints a model-written pointer beside the
+   owner's own charter text on the page where an injected draft is
+   released or refused, and a free-text id could forge the separator or
+   add a provenance line (found on review). The charter budget moved from
+   2,000 to 2,500 because it bounds the rendering and the block's fixed
+   prose grew by ~480 characters. Not
+   built, deliberately: a chat confirmation is in the transcript (the
+   `tool_use` and its result) and no reader consumes it — item 4's
+   distance is its first consumer; the cost threshold the §17.3 text
+   names has no numeric form, per this item's own ruling.
 4. **Distance is structural.** *Proposed:* distance from the anchor is 1 if
    the goal's kind or id changed; otherwise the fraction of open plan items
    whose `serves` does not trace to the anchor, plus a term for turns since
@@ -2094,6 +2134,13 @@ follow from facts in the tree and stand as written. None is built.
    lenient from records like the rest. Tiers read charter → project → task
    → step. The proposal's persistent user goal is a project node; its
    closure appraisal is the owner closing its last task. No new store.
+   *Built 2026-09-06*, with item 3: `GoalRef::Project`, wire word
+   `project`, a pointer like `Task` that the appraisal's charter check
+   leaves alone (the board owns the id), lenient from records like the
+   rest, and named in `ask_user`'s `serves` and its refusal message. No
+   producer writes one yet — the board's `project` field is not joined to
+   a plan — and nothing reads the tier; the kind exists so the wire
+   survives its first writer.
 6. **Backfill Situation, never the goal.** `reflect` re-runs
    `extract_interventions` over transcripts deterministically; a
    `Reflexion` persists `session_id`, `trigger` and the intervention text

@@ -74,6 +74,13 @@ pub struct Row {
     /// written — which is `mecha questions`' own `⚠`, on the surface that
     /// cannot see stderr.
     tainted: bool,
+    /// The goal the run put beside its question, typed, when it put one
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 3). The question text above
+    /// already carries the rendered line, so a card that shows text shows
+    /// it; this is the pointer for a card that wants to style it. Absent,
+    /// not null, when the run confirmed nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    goal: Option<mecha_core::goal::GoalHypothesis>,
 }
 
 impl From<&Question> for Row {
@@ -87,6 +94,7 @@ impl From<&Question> for Row {
             task: q.task_id.clone(),
             asked_at: q.asked_at.clone(),
             tainted: q.taint.untrusted,
+            goal: q.goal.clone(),
         }
     }
 }
@@ -262,6 +270,7 @@ mod tests {
             asked_at: "2026-08-26T10:00:00Z".into(),
             answered_at: None,
             answer: None,
+            goal: None,
         }
     }
 

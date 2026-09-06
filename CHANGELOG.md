@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The goal rides on the question, and a project is a kind of goal.**
+  `ask_user` takes `goal` (one sentence) and `serves` (`charter:<id>`,
+  `task:<id>`, `project:<id>`), shows them above the question as one text,
+  and a delegated run's parked question keeps the typed hypothesis beside
+  the owner's answer — the goal record, printed by `mecha questions show`
+  and carried by `/api/questions`. The delegated seed folds the goal into
+  the one question it already asks first; the charter block asks every
+  surface for the sentence in words that name no tool; a run with nobody
+  to ask states the goal it is assuming, and `mecha outbox show` and the
+  web outbox print what the drafting run's plan served as of the staging
+  call, with the charter line's own text, so releasing the draft confirms
+  it. `sessions appraise` counts sessions that put a goal to the owner and
+  had it answered, and reads the ask's `serves` as a second producer of a
+  named goal. `GoalRef::Project` is the fourth kind (`docs/GOAL-SYSTEM-
+  DESIGN.md` §17.7 items 3 and 5). The charter budget is 2,500 characters,
+  moved with the block's own prose.
 - **Task sources, and AgentDojo as a fixture world.** `[tasks] source`
   names an executable instead of a case file; the driver calls it with
   `list`, `setup <task>` and `grade <task>` (the run's `--json` result on

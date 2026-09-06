@@ -91,6 +91,19 @@ pub struct Question {
     /// their mouth in the transcript the resume writes.
     #[serde(default)]
     pub answer: Option<String>,
+    /// The goal the run put beside its question, when it put one
+    /// (`docs/GOAL-SYSTEM-DESIGN.md` §17.3, §17.7 item 3).
+    ///
+    /// **This and `answer` together are the goal record.** The hypothesis is
+    /// the model's and is typed here so no reader has to find it in the
+    /// question's prose; the answer is the owner's own words, which is the
+    /// only confirmation the design admits. `question` still carries the
+    /// rendered line above the model's sentence — that is what the owner was
+    /// shown and what the resume reads back, so the two never disagree about
+    /// what was asked. Absent on every question parked before the field
+    /// existed, and on one that confirmed nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<crate::goal::GoalHypothesis>,
 }
 
 /// The three states a question can be in. Named so a reader elsewhere
@@ -105,9 +118,32 @@ impl Question {
         self.status == OPEN
     }
 
+    /// The question itself, without the goal line rendered above it.
+    ///
+    /// `question` is what the owner was shown — the goal hypothesis above the
+    /// model's own sentence, as one text — and the resume reads that back
+    /// whole. A *listing* wants the other thing: what is being asked, which
+    /// is what tells two questions from one delegated run apart, and what
+    /// `mecha doctor` names when one goes stale. The rendered goal line is
+    /// stripped by matching the typed record's own rendering, so no reader
+    /// parses prose to find the seam (found on review: the summary was the
+    /// first 72 characters, which for a goal-carrying question was all goal
+    /// and no question).
+    pub fn asked(&self) -> &str {
+        let q = self.question.trim();
+        match &self.goal {
+            Some(goal) => q
+                .strip_prefix(goal.render().as_str())
+                .map(str::trim_start)
+                .filter(|rest| !rest.is_empty())
+                .unwrap_or(q),
+            None => q,
+        }
+    }
+
     /// One line for a listing.
     pub fn summary(&self) -> String {
-        let q = self.question.trim().replace('\n', " ");
+        let q = self.asked().replace('\n', " ");
         let q: String = q.chars().take(72).collect();
         match &self.task_id {
             Some(t) => format!("{q}  ({t})"),
@@ -293,6 +329,7 @@ impl QuestionStore {
         task_id: Option<String>,
         workspace: Option<PathBuf>,
         taint: Taint,
+        goal: Option<crate::goal::GoalHypothesis>,
     ) -> Result<Question> {
         let q = Question {
             id: Session::new_id(),
@@ -306,6 +343,7 @@ impl QuestionStore {
             asked_at: chrono::Utc::now().to_rfc3339(),
             answered_at: None,
             answer: None,
+            goal,
         };
         let _lock = self.lock()?;
         self.put(&q)?;
@@ -429,6 +467,7 @@ impl ParkingAsker {
         options: &[String],
         workspace: Option<PathBuf>,
         taint: Option<Taint>,
+        goal: Option<&crate::goal::GoalHypothesis>,
     ) -> String {
         // **Unknown taint is untrusted, at the moment of writing.** The stamp
         // that follows the run is a refinement, and everything between park
@@ -449,6 +488,7 @@ impl ParkingAsker {
             self.task_id.clone(),
             workspace,
             taint,
+            goal.cloned(),
         ) {
             Ok(q) => {
                 if let Ok(mut p) = self.parked.lock() {
@@ -481,7 +521,7 @@ impl crate::tool::ask::Asker for ParkingAsker {
     /// so the question is stored and the run carries on. Reachable only from a
     /// caller that never routes through `ask_in`, which no front-end here does.
     async fn ask(&self, question: &str, options: &[String]) -> Option<String> {
-        Some(self.record(question, options, None, None))
+        Some(self.record(question, options, None, None, None))
     }
 
     async fn ask_in(
@@ -490,8 +530,27 @@ impl crate::tool::ask::Asker for ParkingAsker {
         question: &str,
         options: &[String],
     ) -> Option<String> {
+        self.ask_about(ctx, question, options, None).await
+    }
+
+    /// The one asker that keeps the goal: a parked question is the record
+    /// the owner's answer completes, so the typed hypothesis is stored
+    /// beside the question rather than left in its prose.
+    async fn ask_about(
+        &self,
+        ctx: &crate::tool::ToolCtx,
+        question: &str,
+        options: &[String],
+        goal: Option<&crate::goal::GoalHypothesis>,
+    ) -> Option<String> {
         let before = self.parked().len();
-        let answer = self.record(question, options, Some(ctx.workspace.clone()), ctx.taint);
+        let answer = self.record(
+            question,
+            options,
+            Some(ctx.workspace.clone()),
+            ctx.taint,
+            goal,
+        );
         // Only stop if it actually landed. A question that failed to store
         // leaves the run alive to report, per `record`.
         if self.parked().len() > before {
@@ -531,6 +590,7 @@ mod tests {
                 Some("task-9".into()),
                 Some(PathBuf::from("/w/a")),
                 Taint::default(),
+                None,
             )
             .unwrap();
 
@@ -545,7 +605,15 @@ mod tests {
     fn answering_records_the_words_and_closes_it_once() {
         let s = store("answer");
         let q = s
-            .park("Which one?", vec![], "sess-1", None, None, Taint::default())
+            .park(
+                "Which one?",
+                vec![],
+                "sess-1",
+                None,
+                None,
+                Taint::default(),
+                None,
+            )
             .unwrap();
 
         let answered = s.answer(&q.id, "the work address").unwrap();
@@ -565,7 +633,15 @@ mod tests {
     fn abandoning_leaves_the_answer_empty() {
         let s = store("abandon");
         let q = s
-            .park("Which one?", vec![], "sess-1", None, None, Taint::default())
+            .park(
+                "Which one?",
+                vec![],
+                "sess-1",
+                None,
+                None,
+                Taint::default(),
+                None,
+            )
             .unwrap();
         let done = s.abandon(&q.id).unwrap();
         assert_eq!(done.status, "abandoned");
@@ -590,7 +666,7 @@ mod tests {
     fn a_question_is_found_by_its_printed_tail() {
         let s = store("tail");
         let q = s
-            .park("a?", vec![], "sess", None, None, Taint::default())
+            .park("a?", vec![], "sess", None, None, Taint::default(), None)
             .unwrap();
         let tail = QuestionStore::short(&q.id).to_string();
         assert_eq!(s.find(&tail).unwrap().id, q.id, "what is printed must work");
@@ -600,7 +676,7 @@ mod tests {
     fn an_ambiguous_prefix_is_an_error_rather_than_a_guess() {
         let s = store("find");
         let a = s
-            .park("a?", vec![], "sess", None, None, Taint::default())
+            .park("a?", vec![], "sess", None, None, Taint::default(), None)
             .unwrap();
         assert!(s.find(&a.id).is_ok());
         assert!(s.find(&a.id[..8]).is_ok());
@@ -650,6 +726,81 @@ mod tests {
         // The model is told what happened, not handed a decline.
         assert!(answer.contains(&q.id));
         assert!(!answer.to_lowercase().contains("declined"));
+    }
+
+    /// §17.3: the answer mints the goal record. The typed hypothesis is kept
+    /// beside the question the owner was shown, and the owner's words land
+    /// next to it — a pair no reader has to recover from prose.
+    #[tokio::test]
+    async fn a_parked_question_keeps_the_goal_beside_the_answer() {
+        let s = std::sync::Arc::new(store("goal"));
+        let asker = ParkingAsker::new(std::sync::Arc::clone(&s), "sess-8", Some("task-4".into()));
+        let ctx = ToolCtx {
+            workspace: PathBuf::from("/w/a"),
+            cancel: Some(tokio_util::sync::CancellationToken::new()),
+            ..Default::default()
+        };
+        let goal = crate::goal::GoalHypothesis {
+            sentence: "get Dirk's approval".into(),
+            serves: Some(crate::goal::GoalRef::Task("task-4".into())),
+        };
+        asker
+            .ask_about(
+                &ctx,
+                "I take the goal to be: …\n\nWhich account?",
+                &[],
+                Some(&goal),
+            )
+            .await
+            .unwrap();
+        let q = s.get(&asker.parked()[0]).unwrap();
+        assert_eq!(q.goal.as_ref(), Some(&goal));
+        assert!(
+            q.question.starts_with("I take the goal to be"),
+            "the owner saw one question"
+        );
+
+        let answered = s.answer(&q.id, "yes — and cc Vibha").unwrap();
+        assert_eq!(
+            answered.goal.as_ref(),
+            Some(&goal),
+            "the record survives the answer"
+        );
+        assert_eq!(answered.answer.as_deref(), Some("yes — and cc Vibha"));
+
+        // The listing leads with the question, not the goal above it — two
+        // questions from one run share a goal sentence and differ in what
+        // they ask (found on review).
+        let shown = format!("{}\n\nWhich account?", goal.render());
+        asker
+            .ask_about(&ctx, &shown, &[], Some(&goal))
+            .await
+            .unwrap();
+        let q = s.get(&asker.parked()[1]).unwrap();
+        assert_eq!(q.asked(), "Which account?");
+        assert_eq!(q.summary(), "Which account?  (task-4)");
+        assert!(
+            q.question.starts_with("I take the goal"),
+            "the whole text is kept"
+        );
+        // A goal whose rendering the question does not carry strips nothing.
+        let mut odd = q.clone();
+        odd.question = "Which account?".into();
+        assert_eq!(odd.asked(), "Which account?");
+        // And a question that *is* only the goal line is not blanked.
+        odd.question = goal.render();
+        assert_eq!(odd.asked(), goal.render());
+
+        // The plain path stores no goal, and a question parked before the
+        // field existed reads back with none.
+        asker.ask_in(&ctx, "Which one?", &[]).await.unwrap();
+        assert_eq!(s.get(&asker.parked()[2]).unwrap().goal, None);
+        let raw =
+            std::fs::read_to_string(s.root().join(format!("{}.json", asker.parked()[2]))).unwrap();
+        assert!(
+            !raw.contains("\"goal\""),
+            "absent on the wire, not null: {raw}"
+        );
     }
 
     /// A question that could not be stored must not also cost the run. Nobody
