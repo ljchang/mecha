@@ -1830,7 +1830,7 @@ never shows on a page load and would have failed the owner's next merge
 with the same message. Cause: the installed `~/.config/systemd/user/mecha-serve.service`
 had no `Environment=PATH` line — the repo's `scripts/voice/mecha-serve.service`
 does, and the installed file was an older copy — so since the
-2026-09-05 06:16Z reboot the process ran on the user manager's PATH
+2026-09-05 06:15Z reboot the process ran on the user manager's PATH
 (no `~/.cargo/bin`, no `~/.local/bin`; the `llama-local` incident one
 day earlier, one unit over), through every restart since, including
 02:32Z's. `ExecStart` names `mecha` by absolute path, which is why the
