@@ -1898,7 +1898,12 @@ what it is for"; 28 changelog entries retitled from Unreleased; the
 workflow's own checks re-run here first — `cargo test --workspace` green,
 `RUSTFLAGS=-D warnings cargo clippy --all-targets` clean; the workflow
 published all four crates and the GitHub release — crates.io answers
-0.1.18 for `mecha-cli`, `mecha-core`, `mecha-mail`, `mecha-slack`);
+0.1.18 for `mecha-cli`, `mecha-core`, `mecha-mail`, `mecha-slack`; found
+on review: the bump left the changelog's link definitions behind — no
+`[0.1.18]` definition and `[Unreleased]` still comparing from v0.1.17,
+with `[0.1.15]` missing too, so a recurring gap in the bump procedure that
+no workflow gate sees — fixed on `main` in the docs PR that carries this
+row, and the next bump should add the definition with the heading);
 **mecha-graph v0.1.5** (`a807885`, "0.1.5 — a task's association outlives
 the task"; the first tag since v0.1.2 — 0.1.3 and 0.1.4 bumped the version
 without a tag — no release workflow there, and its crates were last
