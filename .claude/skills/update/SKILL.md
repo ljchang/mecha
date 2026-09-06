@@ -185,14 +185,20 @@ it will actually exec with — the merged view, drop-ins included, over the
 only then diff the file to find out *why*:
 
 ```bash
-# what systemd will actually exec with — drop-ins included
-for u in mecha-serve mecha-slack mecha-triggers mecha-drain \
-         mecha-frontdoor mecha-mail-classify mecha-ruminate; do
+# a running unit: the PATH its process really holds (manager inheritance
+# and EnvironmentFile= included, which `show -p Environment` does not see)
+for u in mecha-serve mecha-slack mecha-triggers mecha-drain; do
+  pid=$(systemctl --user show -p MainPID --value "$u.service")
+  printf '%s: ' "$u"; tr '\0' '\n' < /proc/$pid/environ | grep '^PATH='
+done
+# an inactive oneshot has no pid: the Environment= assignments, drop-ins merged
+for u in mecha-frontdoor mecha-mail-classify mecha-ruminate; do
   printf '%s: ' "$u"; systemctl --user show "$u.service" -p Environment
 done
 # then, for a unit whose PATH is wrong or missing, find out why:
-#   systemctl --user cat <unit>                                  # main file + drop-ins
+#   systemctl --user cat <unit>          # main file + drop-ins
 #   diff scripts/<unit>.service ~/.config/systemd/user/<unit>.service
+#   (mecha-serve ships from scripts/voice/, not scripts/)
 ```
 
 A file diff alone misreads in both directions: a unit correct only

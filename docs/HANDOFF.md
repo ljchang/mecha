@@ -1848,8 +1848,11 @@ state for `mecha-serve`: the PATH line comes from two places, the
 installed unit (the repo's value, `~/.cargo/bin` first) and the drop-in
 (the same plus `~/.local/bin`, and the incident in its comment); the
 drop-in wins and both are meant to stay — `systemctl --user cat
-mecha-serve.service` shows both, and removing either changes nothing that
-matters.** Their
+mecha-serve.service` shows both. Removing the unit's line would change
+nothing; removing the drop-in would drop `~/.local/bin` and the
+incident's record, so the drop-in is the one to keep.** The llama
+incident the drop-in cites is `HISTORY.md`'s 2026-09-05 "user units
+need PATH without a login" entry. Their
 journals since the reboot hold no "not found", so nothing was lost there;
 the serve pages were the only casualty. The rule this adds to the update
 skill: **an installed unit is a copy, and copies drift — when a unit's
