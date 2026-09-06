@@ -118,9 +118,32 @@ impl Question {
         self.status == OPEN
     }
 
+    /// The question itself, without the goal line rendered above it.
+    ///
+    /// `question` is what the owner was shown — the goal hypothesis above the
+    /// model's own sentence, as one text — and the resume reads that back
+    /// whole. A *listing* wants the other thing: what is being asked, which
+    /// is what tells two questions from one delegated run apart, and what
+    /// `mecha doctor` names when one goes stale. The rendered goal line is
+    /// stripped by matching the typed record's own rendering, so no reader
+    /// parses prose to find the seam (found on review: the summary was the
+    /// first 72 characters, which for a goal-carrying question was all goal
+    /// and no question).
+    pub fn asked(&self) -> &str {
+        let q = self.question.trim();
+        match &self.goal {
+            Some(goal) => q
+                .strip_prefix(goal.render().as_str())
+                .map(str::trim_start)
+                .filter(|rest| !rest.is_empty())
+                .unwrap_or(q),
+            None => q,
+        }
+    }
+
     /// One line for a listing.
     pub fn summary(&self) -> String {
-        let q = self.question.trim().replace('\n', " ");
+        let q = self.asked().replace('\n', " ");
         let q: String = q.chars().take(72).collect();
         match &self.task_id {
             Some(t) => format!("{q}  ({t})"),
@@ -745,12 +768,35 @@ mod tests {
         );
         assert_eq!(answered.answer.as_deref(), Some("yes — and cc Vibha"));
 
+        // The listing leads with the question, not the goal above it — two
+        // questions from one run share a goal sentence and differ in what
+        // they ask (found on review).
+        let shown = format!("{}\n\nWhich account?", goal.render());
+        asker
+            .ask_about(&ctx, &shown, &[], Some(&goal))
+            .await
+            .unwrap();
+        let q = s.get(&asker.parked()[1]).unwrap();
+        assert_eq!(q.asked(), "Which account?");
+        assert_eq!(q.summary(), "Which account?  (task-4)");
+        assert!(
+            q.question.starts_with("I take the goal"),
+            "the whole text is kept"
+        );
+        // A goal whose rendering the question does not carry strips nothing.
+        let mut odd = q.clone();
+        odd.question = "Which account?".into();
+        assert_eq!(odd.asked(), "Which account?");
+        // And a question that *is* only the goal line is not blanked.
+        odd.question = goal.render();
+        assert_eq!(odd.asked(), goal.render());
+
         // The plain path stores no goal, and a question parked before the
         // field existed reads back with none.
         asker.ask_in(&ctx, "Which one?", &[]).await.unwrap();
-        assert_eq!(s.get(&asker.parked()[1]).unwrap().goal, None);
+        assert_eq!(s.get(&asker.parked()[2]).unwrap().goal, None);
         let raw =
-            std::fs::read_to_string(s.root().join(format!("{}.json", asker.parked()[1]))).unwrap();
+            std::fs::read_to_string(s.root().join(format!("{}.json", asker.parked()[2]))).unwrap();
         assert!(
             !raw.contains("\"goal\""),
             "absent on the wire, not null: {raw}"

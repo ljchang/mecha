@@ -770,9 +770,9 @@ pub fn prompt_block_for(charter: &Charter, todo_in_surface: bool) -> Option<Stri
     out.push_str(
         "\nBefore work that will take more than a step or two, say in one sentence what \
          you take the goal to be and which of these lines — or which task on the board — \
-         it serves. If it will not fit one sentence and you have a way to ask, ask that \
-         first, with the sentence as the question's `goal`; if you have no way to ask, \
-         state the goal you are assuming and carry on.\n",
+         it serves. If you are not sure of it and you have a way to ask, ask first, \
+         with your best one-sentence reading as the question's `goal`; if you have no way \
+         to ask, state the goal you are assuming and carry on.\n",
     );
     if todo_in_surface {
         out.push_str(

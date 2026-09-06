@@ -177,18 +177,23 @@ pub async fn detail(State(state): St, UrlPath(id): UrlPath<String>) -> Response 
         Ok(item) => item,
         Err(e) => return (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
     };
-    let sources = match (&state.review.sessions_dir, item.kind) {
-        // A publish's reviewable object is the rendered page, not a thread.
-        (Some(dir), OutboxKind::Message) => outbox_source::for_item(&item, dir),
-        _ => Vec::new(),
-    };
-    // The goal note rides on every kind: a published page serves a line as
-    // much as a message does, and releasing either confirms it.
-    let serves = state
+    // One read of the drafting transcript feeds both pure halves.
+    let messages = state
         .review
         .sessions_dir
         .as_ref()
-        .and_then(|dir| outbox_source::serves_for_item(&item, dir));
+        .map(|dir| outbox_source::messages_for_item(&item, dir))
+        .unwrap_or_default();
+    let sources = match item.kind {
+        OutboxKind::Message => outbox_source::from_messages(&item, &messages),
+        // A publish's reviewable object is the rendered page, not a thread.
+        OutboxKind::Publish => Vec::new(),
+    };
+    // The goal note rides on every kind: a published page serves a line as
+    // much as a message does, and releasing either confirms it. Resolved
+    // here, where the other store reads live, so `detail_json` stays pure.
+    let serves = outbox_source::serves_at_staging(&item, &messages)
+        .map(crate::commands::outbox::serves_note);
     Json(detail_json(&item, &sources, serves.as_ref())).into_response()
 }
 
@@ -198,7 +203,7 @@ pub async fn detail(State(state): St, UrlPath(id): UrlPath<String>) -> Response 
 fn detail_json(
     item: &OutboxItem,
     sources: &[outbox_source::SourceRead],
-    serves: Option<&mecha_core::goal::GoalRef>,
+    serves: Option<&crate::commands::outbox::ServesNote>,
 ) -> serde_json::Value {
     let view = DraftView::of(&item.args);
     let (headline, _) = headline_and_snippet(&item.args);
@@ -206,13 +211,15 @@ fn detail_json(
         "id": item.id,
         // What the drafting run's plan served when it staged this (§17.7
         // item 3's note on the artifact): the pointer, and for a charter
-        // line the owner's own text beside it. `null` when the run named
-        // nothing — absence, not a claim.
-        "serves": serves.map(|g| serde_json::json!({
-            "ref": g.to_string(),
-            "kind": g.kind(),
-            "id": g.id(),
-            "text": crate::commands::outbox::charter_text(g),
+        // line the owner's own text beside it, both resolved by the caller
+        // so this stays pure. `null` when the run named nothing — absence,
+        // not a claim.
+        "serves": serves.map(|n| serde_json::json!({
+            "ref": n.goal.to_string(),
+            "kind": n.goal.kind(),
+            "id": n.goal.id(),
+            "text": n.text,
+            "line": n.line(),
         })),
         "tool": item.tool,
         "label": label_for(&item.tool),
@@ -1285,6 +1292,33 @@ mod tests {
             vec!["c", "b", "a"]
         );
         assert_eq!(resolved, 1);
+    }
+
+    /// The goal note is rendered from a note the caller resolved, so this
+    /// stays pure, and its absence is `null` rather than a claim.
+    #[test]
+    fn the_serves_note_rides_on_the_detail_and_is_null_when_absent() {
+        let item = item("x", "pending", "2026-08-24T10:00:00Z");
+        assert!(detail_json(&item, &[], None)["serves"].is_null());
+        let note = crate::commands::outbox::ServesNote {
+            goal: mecha_core::goal::GoalRef::Charter("answer-what-waits-on-me".into()),
+            text: Some("Keep what waits on me short.".into()),
+        };
+        let serves = &detail_json(&item, &[], Some(&note))["serves"];
+        assert_eq!(serves["ref"], "charter:answer-what-waits-on-me");
+        assert_eq!(serves["kind"], "charter");
+        assert_eq!(serves["text"], "Keep what waits on me short.");
+        assert_eq!(
+            serves["line"],
+            "serves charter:answer-what-waits-on-me — Keep what waits on me short."
+        );
+        let bare = crate::commands::outbox::ServesNote {
+            goal: mecha_core::goal::GoalRef::Task("t1".into()),
+            text: None,
+        };
+        let serves = &detail_json(&item, &[], Some(&bare))["serves"];
+        assert!(serves["text"].is_null());
+        assert_eq!(serves["line"], "serves task:t1");
     }
 
     #[test]
