@@ -522,15 +522,20 @@ impl GoalTrack {
         }
     }
 
+    /// Recovers a poisoned lock rather than reading it as "never
+    /// confirmed" — the critical sections are a clone and an assignment,
+    /// so the value inside is whole, and a silent `None` here would be the
+    /// negative finding wearing unknown's clothes (found on review).
     pub fn anchor(&self) -> Option<crate::goal::GoalRef> {
-        self.anchor.lock().map(|a| a.clone()).unwrap_or(None)
+        self.anchor
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The owner confirmed a goal: it is the anchor from here on.
     pub fn set_anchor(&self, goal: crate::goal::GoalRef) {
-        if let Ok(mut a) = self.anchor.lock() {
-            *a = Some(goal);
-        }
+        *self.anchor.lock().unwrap_or_else(|e| e.into_inner()) = Some(goal);
     }
 
     /// A plan write, judged against the anchor. Nothing is counted while

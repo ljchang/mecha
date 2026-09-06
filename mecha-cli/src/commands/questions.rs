@@ -413,12 +413,8 @@ async fn answer_and_resume(
     // fresh track per run carrying this anchor, so nothing else on the
     // agent sees it. The answer's prose is not read; a correction in it
     // is the owner's to restate on the next question.
-    if let Some(serves) = recorded_q.goal.as_ref().and_then(|g| g.serves.clone()) {
-        let mut tools = (*cx.tools).clone();
-        tools.goal_track = Some(std::sync::Arc::new(mecha_core::tool::GoalTrack::carrying(
-            Some(serves),
-        )));
-        cx.tools = std::sync::Arc::new(tools);
+    if let Some(seeded) = mecha_core::questions::seed_anchor(&cx.tools, &recorded_q) {
+        cx.tools = std::sync::Arc::new(seeded);
     }
     // A resumed delegation is a delegation: same ceiling, or answering a
     // question would drop the run back to the terminal's twelve turns.
