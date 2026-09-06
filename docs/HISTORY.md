@@ -4121,7 +4121,7 @@ lesson applied a sixth and a seventh time; and
 changed kind or id is off, on item 2's posture, until the line has been
 read across a few nights. On this machine when written: *no run in this
 corpus recorded the sensor*, the expected reading until the next run under
-the new binary. Nothing installed or restarted when written; eight review
+the new binary. Nothing installed or restarted when written; nine review
 passes followed (`HANDOFF.md`'s goal section has the tally and what they
 changed), then merged at `67fb55e` on the owner's word and deployed 05:07Z
 the same morning (binary only, four units restarted).

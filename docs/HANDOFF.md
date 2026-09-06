@@ -1881,7 +1881,8 @@ mecha-drain (`Started`). Not restarted, correctly: mecha-voice-worker,
 mecha-parakeet, the web dist — `git diff --quiet c8a3a740 67fb55ef --
 scripts/voice scripts/*.service web/` is clean. The stale-process sweep
 found nothing. The installed binary's `sessions health` prints the new
-line as *goal drift          — (no run in this corpus recorded the sensor)* — the expected reading until a run under this binary
+line as *goal drift          — (no run in this corpus recorded the
+sensor)* — the expected reading until a run under this binary
 plans under a confirmed goal. Installed binary and `main` agree at
 `67fb55e`; nothing is owed on this machine from this merge.
 
@@ -2837,8 +2838,10 @@ the mechanism and every decision. What it left standing:
 
 **2026-09-06, later — §17.7 item 4's sensor half: PR #202
 (`feat/goal-distance`), merged at `67fb55e` on the owner's word after
-eight review passes (one medium in each of the first two, then only
-minors, observations and record nits — every one taken except a test for
+nine review passes, counted from the PR's comment record (one medium in
+each of the first two, then only minors, observations and record nits;
+the ninth landed 22 seconds before the merge and raised nothing —
+every one taken except a test for
 the web asker's shown-then-abandoned branch, which needs the ask timeout
 made injectable), and deployed the same morning (the machine-state row
 under §Machine state, dated, has the probes).** `HISTORY.md`'s entry of
