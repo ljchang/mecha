@@ -1207,7 +1207,10 @@ pub fn of_session(
             GoalRef::Charter(id) => records
                 .charter
                 .is_some_and(|c| c.lines().iter().any(|l| &l.id == id)),
-            GoalRef::Task(_) | GoalRef::Setpoint(_) => true,
+            // The board owns task and project ids, and the closure appraisal
+            // supplies its own; nothing here can check them and nothing
+            // labels on them alone.
+            GoalRef::Task(_) | GoalRef::Project(_) | GoalRef::Setpoint(_) => true,
         })
         .cloned()
         .collect();
@@ -1826,9 +1829,22 @@ pub fn for_transcript(
     // Without a goal, `of_session` never has one to attribute anything to —
     // see the matching comment in `mecha sessions appraise` for why an
     // absent goal is recorded rather than guessed.
-    let goal = goal.or_else(|| {
-        crate::tool::todo::TodoTool::plan_from_transcript(messages).and_then(|p| p.goal)
-    });
+    // Two producers of a named goal, the plan's first: `serves:` on the
+    // plan is what the run said the *work* was for, and the goal a run put
+    // to the owner on `ask_user` (§17.7 item 3) is what it said when it
+    // asked — the same claim in the run's own words either way, and never
+    // the owner's answer, which is prose no reader here interprets. The last
+    // hypothesis asked wins over an earlier one, as a later plan would.
+    let goal = goal
+        .or_else(|| {
+            crate::tool::todo::TodoTool::plan_from_transcript(messages).and_then(|p| p.goal)
+        })
+        .or_else(|| {
+            crate::tool::ask::AskUserTool::goals_named(messages)
+                .into_iter()
+                .rev()
+                .find_map(|h| h.serves)
+        });
     let goals: Vec<_> = goal.into_iter().collect();
     let end_taint = transcript
         .taint_timeline
@@ -4654,6 +4670,7 @@ text = "Tell me the truth early."
             asked_at: "2026-08-28T00:00:00Z".into(),
             answered_at: (status != "open").then(|| "2026-08-28T01:00:00Z".to_string()),
             answer: (status == "answered").then(|| "personal".to_string()),
+            goal: None,
         }
     }
 
@@ -5095,5 +5112,98 @@ text = "Tell me the truth early."
         }
         let json = serde_json::to_string(&full).unwrap();
         assert!(!json.contains("partial"), "absent when false: {json}");
+    }
+
+    /// §17.7 item 3's second producer of a named goal: a run that put its
+    /// goal to the owner on `ask_user` names one even with no plan, and the
+    /// plan's `serves:` still outranks it. Driven through a real session
+    /// file, because `goals` on the record is what the corpus readout counts.
+    #[test]
+    fn a_goal_put_to_the_owner_is_a_named_goal_when_no_plan_names_one() {
+        use crate::message::{Block, Message};
+        use crate::session::{Record, RunStats, Session, SessionMeta};
+        let dir =
+            std::env::temp_dir().join(format!("mecha-appraisal-ask-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |id: &str, ask: serde_json::Value, plan: Option<&str>| {
+            let s = Session::create(
+                &dir,
+                SessionMeta {
+                    id: id.into(),
+                    created_at: chrono::Utc::now(),
+                    provider: "scripted".into(),
+                    model: "m".into(),
+                    workspace: std::path::PathBuf::from("/tmp"),
+                    title: None,
+                    kind: None,
+                },
+            )
+            .unwrap();
+            s.append(&Record::Message(Message::user("do it"))).unwrap();
+            if let Some(serves) = plan {
+                s.append(&Record::Message(Message::assistant(vec![Block::ToolUse {
+                    id: "p".into(),
+                    name: "todo".into(),
+                    input: serde_json::json!({"items": [{"content": "x", "status": "pending"}], "serves": serves}),
+                }])))
+                .unwrap();
+                s.append(&Record::Message(Message::tool_results(vec![
+                    Block::ToolResult {
+                        tool_use_id: "p".into(),
+                        content: "(not a whole echo)".into(),
+                        is_error: false,
+                    },
+                ])))
+                .unwrap();
+            }
+            s.append(&Record::Message(Message::assistant(vec![Block::ToolUse {
+                id: "a".into(),
+                name: "ask_user".into(),
+                input: ask,
+            }])))
+            .unwrap();
+            s.append(&Record::Message(Message::tool_results(vec![
+                Block::ToolResult {
+                    tool_use_id: "a".into(),
+                    content: "yes".into(),
+                    is_error: false,
+                },
+            ])))
+            .unwrap();
+            s.append(&Record::Outcome(RunStats::default())).unwrap();
+            s.path
+        };
+        let asked = write(
+            "20260906T000000-asked",
+            serde_json::json!({"question": "which?", "goal": "ship it", "serves": "task:t1"}),
+            None,
+        );
+        let a = for_session(&asked, "asked", "t".into(), SessionRecords::default(), None)
+            .unwrap()
+            .appraisal;
+        assert_eq!(a.goals, vec![GoalRef::Task("t1".into())]);
+
+        // The plan outranks the question when both name one.
+        let both = write(
+            "20260906T000000-both",
+            serde_json::json!({"question": "which?", "goal": "ship it", "serves": "task:t1"}),
+            Some("task:from-plan"),
+        );
+        let a = for_session(&both, "both", "t".into(), SessionRecords::default(), None)
+            .unwrap()
+            .appraisal;
+        assert_eq!(a.goals, vec![GoalRef::Task("from-plan".into())]);
+
+        // A question with no goal names nothing.
+        let plain = write(
+            "20260906T000000-plain",
+            serde_json::json!({"question": "which?"}),
+            None,
+        );
+        let a = for_session(&plain, "plain", "t".into(), SessionRecords::default(), None)
+            .unwrap()
+            .appraisal;
+        assert!(a.goals.is_empty(), "{:?}", a.goals);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -2265,6 +2265,24 @@ fn work_prompt(
              plan agree about what it is for.\n"
         ));
     }
+    // **The goal rides on the one question** (`GOAL-SYSTEM-DESIGN.md` §17.7
+    // item 3, ruled 2026-09-04): a delegated run's goal is a hypothesis the
+    // owner can confirm, and the confirmation is folded into the question
+    // the bullet above already tells the run to ask first — never a second
+    // run-ending question, because each one is a separate morning of the
+    // owner's. Passed as `goal` and `serves` rather than written into the
+    // question's prose, so the question store keeps the hypothesis typed
+    // beside the owner's answer and the pair is a record. Placed last on
+    // purpose: it is the last instruction the run reads on the subject of
+    // asking, which is the one it obeys (see the ordering note above).
+    let serves = field("id")
+        .map(|id| format!(", with `serves: \"task:{id}\"`"))
+        .unwrap_or_default();
+    p.push_str(&format!(
+        "- Open that one question with what you take the goal of this task to be: pass it \
+         as the call's `goal`, one sentence{serves}. The owner confirms or corrects the \
+         goal in the same reply as the rest — never ask about the goal on its own.\n"
+    ));
     p
 }
 
@@ -2415,6 +2433,32 @@ mod tests {
             p.contains("Not one sentence"),
             "the tool's schema says one sentence, which is right for a present              human and is overridden here rather than widened for everyone"
         );
+    }
+
+    /// **§17.7 item 3: the goal rides on the one question.** The seed folds
+    /// the goal sentence into the ask-first call as `goal` + `serves`, bound
+    /// to this task's id, and says in so many words that the goal is never a
+    /// question of its own — a second run-ending question is a second
+    /// morning. Last on the subject of asking, because that is the
+    /// instruction a run obeys.
+    #[test]
+    fn the_goal_is_folded_into_the_first_question_never_asked_alone() {
+        let p = work_prompt(&task(), "2026-08-26", None, true, &reach());
+        assert!(p.contains("as the call's `goal`"), "{p}");
+        assert!(p.contains("`serves: \"task:task-1a2b3c4d\"`"), "{p}");
+        assert!(p.contains("never ask about the goal on its own"), "{p}");
+        let ask = p.find("Before you start").unwrap();
+        let goal = p.find("Open that one question").unwrap();
+        assert!(
+            goal > ask,
+            "the goal bullet follows the ask-first bullet it folds into"
+        );
+        // Without an id the sentence still goes, without a pointer it cannot
+        // name: a `serves` with a blank id is a call the tool refuses.
+        let bare = json!({"name": "Water the plants", "status": "inbox"});
+        let p = work_prompt(&bare, "", None, false, &reach());
+        assert!(p.contains("as the call's `goal`, one sentence."), "{p}");
+        assert!(!p.contains("serves: \"task:"), "{p}");
     }
 
     /// An unattended run is told so, because it changes what is worth

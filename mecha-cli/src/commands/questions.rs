@@ -141,6 +141,15 @@ fn show(id: &str) -> Result<()> {
     if let Some(t) = &q.task_id {
         println!("task     {t}");
     }
+    // The goal the run put up for confirmation, as the typed record beside
+    // the prose above — so a reader can see that answering this *is* the
+    // confirmation the appraisal will read, and what pointer it confirms.
+    if let Some(goal) = &q.goal {
+        match &goal.serves {
+            Some(serves) => println!("goal     {} (serves {serves})", goal.sentence.trim()),
+            None => println!("goal     {}", goal.sentence.trim()),
+        }
+    }
     println!("session  {}", q.session_id);
     if let Some(a) = &q.answer {
         println!(

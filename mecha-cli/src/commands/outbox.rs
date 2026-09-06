@@ -439,6 +439,13 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
     if let Some(session) = &item.session_id {
         println!("drafted by session {session}");
     }
+    // What the drafting run said the work was for, as of this draft — the
+    // note §17.7 item 3 puts on an unattended run's artifact, so releasing
+    // the draft confirms the goal. A pointer from the run, the line's text
+    // from the owner's own charter; nothing here is the model's prose.
+    if let Some(line) = serves_line(&item) {
+        println!("{line}");
+    }
     if let Some(resolved) = &item.resolved_at {
         println!(
             "resolved {resolved}{}",
@@ -483,6 +490,35 @@ pub(crate) fn source_reads(item: &OutboxItem) -> Vec<SourceRead> {
         return Vec::new();
     };
     mecha_core::outbox_source::for_item(item, &dir)
+}
+
+/// The `serves` note for a draft: the drafting run's plan goal at staging
+/// (`outbox_source::serves_for_item`), with a charter line's own text
+/// beside its id. `None` when the run named nothing or the transcript is
+/// gone — an absent line, not a claim.
+pub(crate) fn serves_line(item: &OutboxItem) -> Option<String> {
+    let dir = mecha_core::session::Session::default_dir().ok()?;
+    let goal = mecha_core::outbox_source::serves_for_item(item, &dir)?;
+    Some(match charter_text(&goal) {
+        Some(text) => format!("serves {goal} — {text}"),
+        None => format!("serves {goal}"),
+    })
+}
+
+/// The owner's text for a charter line a goal names, when the charter loads
+/// and contains it. Best-effort: a charter that will not load is `mecha
+/// doctor`'s finding, not this listing's.
+pub(crate) fn charter_text(goal: &mecha_core::goal::GoalRef) -> Option<String> {
+    let mecha_core::goal::GoalRef::Charter(id) = goal else {
+        return None;
+    };
+    let path = mecha_core::charter::Charter::default_path().ok()?;
+    let charter = mecha_core::charter::Charter::load(&path).ok()?;
+    charter
+        .lines()
+        .iter()
+        .find(|l| &l.id == id)
+        .map(|l| l.text.clone())
 }
 
 /// The heading over a quoted source read.

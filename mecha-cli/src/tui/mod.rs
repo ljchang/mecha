@@ -7928,15 +7928,25 @@ fn draw_question(frame: &mut Frame, q: &ask::Question) {
     // row for the question wrapping, which it does at any real width. Getting
     // this one short silently clips the line telling you how to answer.
     const WIDTH: u16 = 74;
-    let question_rows = (q.question.len() as u16 / (WIDTH - 2).max(1)) + 1;
+    // One `Line` per line of the question: a goal put beside a question
+    // (`ask_user`'s `goal`) arrives as two paragraphs, and a newline inside a
+    // single span renders as nothing in a terminal cell grid. Each line
+    // still wraps at the modal's width, so the height counts every row.
+    let question_lines: Vec<&str> = q.question.lines().collect();
+    let question_rows: u16 = question_lines
+        .iter()
+        .map(|l| (l.chars().count() as u16 / (WIDTH - 2).max(1)) + 1)
+        .sum::<u16>()
+        .max(1);
     let height = (q.options.len() as u16).clamp(0, 8) + question_rows + 5;
     let area = centered(frame.area(), WIDTH, height);
     frame.render_widget(Clear, area);
 
-    let mut body = vec![
-        Line::styled(q.question.as_str(), Style::new().fg(Color::White).bold()),
-        Line::raw(""),
-    ];
+    let mut body: Vec<Line> = question_lines
+        .iter()
+        .map(|l| Line::styled(*l, Style::new().fg(Color::White).bold()))
+        .collect();
+    body.push(Line::raw(""));
     for (i, option) in q.options.iter().enumerate() {
         body.push(Line::from(vec![
             Span::styled(
