@@ -4114,7 +4114,9 @@ without repeating `serves` would otherwise read as one that changed its
 goal — the fourth pass's finding); `RunOutcome` and `RunStats`
 carry the anchor and the three counts, unknown before the sensor and folded
 with the later anchor winning; `Corpus::goal_drift_rate` is over runs that
-planned under an anchor, the denominator lesson applied a sixth time; and
+named a goal at least once under an anchor — not every run that planned,
+since an all-unnamed run cannot have changed the pointer — the denominator
+lesson applied a sixth and a seventh time; and
 `sessions health` prints the line. The re-ask the design names for a
 changed kind or id is off, on item 2's posture, until the line has been
 read across a few nights. On this machine when written: *no run in this
