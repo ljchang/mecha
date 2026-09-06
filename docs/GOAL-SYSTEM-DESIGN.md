@@ -2128,6 +2128,50 @@ note below.
    whose `serves` does not trace to the anchor, plus a term for turns since
    the last confirmation. A kind or id change re-asks; a fraction above one
    half logs a drift event. No embedding model in a run, ever (§4.3, §4.5).
+   *Sensor half built 2026-09-06* (`feat/goal-distance`), on item 2's
+   posture — count first, act after a few nights are read. The anchor is
+   `tool::GoalTrack`, minted per run by the loop like the step counters
+   and carrying forward the anchor a caller seeded: a question resume
+   seeds the `serves` of the question the owner just answered
+   (`questions answer`), and `ask_user` sets it in-run when a *present*
+   human answers a question carrying `serves` — every `Asker` answers
+   `ask_about` with a `Reply`, `Answered` for a person's words or `Parked`
+   for a stored question, per question rather than per asker, because the
+   web asker shows a card and parks only when nobody answers it (found on
+   review). `todo` judges every plan write
+   against it (`goal::drift_of`): the same pointer is not drift; a
+   different kind or id is a *changed pointer*, the case the re-ask is
+   for; and no `serves` at all once an anchor stands is *unnamed*, kept
+   apart because on a local model a plan rewritten without repeating
+   `serves` is the likely dominant term and one number for both would
+   make the first readings unable to tell forgetfulness from a change of
+   goal (found on review) — the plan carries one goal for the whole list,
+   so the item-fraction term has one term today and the distance is one
+   of three states per write. `RunOutcome` and `RunStats` carry
+   `goal_anchor`, `goal_plan_writes`, `goal_drift_writes` and
+   `goal_unnamed_writes` (`Option`, unknown before
+   the sensor; the fold keeps the later run's anchor and sums the
+   counts); `runlog::Corpus::goal_drift_rate` is the share of runs that
+   changed the pointer over runs that *named a goal under an anchor* —
+   never every anchored run, never every run that planned (a run whose
+   writes all named nothing could not have changed the pointer and would
+   dilute the rate from the side the numerator deliberately excludes),
+   never every run since the sensor; `mecha sessions health`
+   prints the line and the JSON keys. Named, not built: the re-ask on a
+   kind or id change and the drift *event* (both off until the rate is
+   read); the turns-since-confirmation term (no calibration to write it
+   against); the anchor's own limit — it is the pointer the owner
+   confirmed, not the owner's words, so a correction in the answer's
+   prose moves nothing until the next question is answered; and its
+   scope — the loop mints the track per run into a run-local context and
+   never writes back, so a goal confirmed in one chat turn does not anchor
+   the next, and the first readings are delegated resumes plus
+   confirmations planned against within one run, not a statement about
+   interactive work across turns (carrying it between a front-end's turns
+   is the next half, per conversation and never on a shared context). A
+   corpus reader keys the drift denominator on the counts, not the
+   anchor, so a row whose anchor kind a build cannot read keeps its
+   measured drift and loses only `anchored`.
 5. **The persistent tier is the board's project.** `tasks` already takes
    `project: Option<String>`, a parent node the graph holds. *Proposed:*
    `GoalRef::Project(node_id)` as a fourth kind, a pointer like `Task`,

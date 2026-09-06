@@ -2793,6 +2793,24 @@ when touching it:
   appraisal reads the ask's `serves` as a second producer of a named goal,
   after the plan's. `CHARTER_CHAR_BUDGET` moved to 2,500 with the block's
   fixed prose.
+- **The goal anchor is a sensor, and drift is a bit per plan write**
+  (§17.7 item 4's sensor half, built 2026-09-06). `ToolCtx::goal_track`
+  is minted per run by the loop like `step_counts`, carrying the anchor a
+  caller seeded — a question resume seeds the answered question's
+  `serves`; `ask_user` sets it on a present human's answer and never on a
+  park — every `Asker` answers `ask_about` with a `Reply` that says
+  whether a person spoke (`Answered`) or the question was stored for later
+  (`Parked`), per question, because the web asker does both. `todo` counts each plan write and whether its
+  `serves` left the anchor (`goal::drift_of`: a changed kind or id is a
+  changed pointer, no goal at all is unnamed, and the two are never one
+  number — the rate is over changed pointers alone). The record carries
+  the anchor and the three counts, `Option` and unknown before the sensor;
+  the corpus rate is over runs that *named* a goal on at least one write
+  under an anchor (a run whose writes all named nothing cannot have
+  changed the pointer and is kept out of the denominator), keyed on the
+  counts so a row whose anchor kind a build cannot read keeps its drift. Nothing re-asks or narrows on it — off until read, on
+  item 2's posture. The anchor is the confirmed pointer, not the owner's
+  prose, and the doc on `GoalTrack` says so.
 - **A reading is five facts, and only one of them is a number.**
   `reading::Reading` is `Unread` (the store could not be read), `Deferred`
   (this reader does not scan that store), `Nothing` (nothing waits — the

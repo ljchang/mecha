@@ -10,7 +10,8 @@
 //! on with your best guess".
 
 use async_trait::async_trait;
-use mecha_core::tool::ask::Asker;
+use mecha_core::tool::ask::{Asker, Reply};
+use mecha_core::tool::ToolCtx;
 use tokio::sync::{mpsc, oneshot};
 
 /// A question waiting on the event loop.
@@ -48,5 +49,18 @@ impl Asker for TuiAsker {
             return None;
         }
         answer.await.ok().flatten()
+    }
+
+    /// A person at the terminal: what comes back is their words.
+    async fn ask_about(
+        &self,
+        ctx: &ToolCtx,
+        question: &str,
+        options: &[String],
+        _goal: Option<&mecha_core::goal::GoalHypothesis>,
+    ) -> Option<Reply> {
+        self.ask_in(ctx, question, options)
+            .await
+            .map(Reply::Answered)
     }
 }

@@ -4093,6 +4093,36 @@ with a test that drives the forged string. Merged at `53f087f` on the
 owner's word and deployed 02:32Z the same night (binary and `web/dist`,
 four units restarted).
 
+**2026-09-06, later — the goal anchor and the drift count, a sensor.**
+`GOAL-SYSTEM-DESIGN.md` §17.7 item 4's sensor half, built as
+`feat/goal-distance` straight after #198 landed, because item 3 had just
+produced the record item 4 measures against. `tool::GoalTrack` is minted
+per run by the loop on the step counters' pattern, carrying forward the
+anchor a caller seeded: `questions answer` seeds the `serves` of the
+question the owner just answered, and `ask_user` sets it in-run when a
+present human answers a question that carried a pointer — a new
+`Asker::ask_about` answers a `Reply` — `Answered` for a person's words,
+`Parked` for a stored question — so the tool can tell a park note from an
+answer, which is what keeps a delegated run's question from anchoring on
+its own note; per question, not per asker, because the first cut's
+per-asker flag missed the web asker, which shows a card and parks only
+when nobody answers it (the first review pass's medium). `todo`
+judges every plan write against the anchor (`goal::drift_of`: a changed
+kind or id is a changed pointer, no goal once one is confirmed is unnamed,
+and the two are kept apart because a local model that rewrites a plan
+without repeating `serves` would otherwise read as one that changed its
+goal — the fourth pass's finding); `RunOutcome` and `RunStats`
+carry the anchor and the three counts, unknown before the sensor and folded
+with the later anchor winning; `Corpus::goal_drift_rate` is over runs that
+named a goal at least once under an anchor — not every run that planned,
+since an all-unnamed run cannot have changed the pointer — the denominator
+lesson applied a sixth and a seventh time; and
+`sessions health` prints the line. The re-ask the design names for a
+changed kind or id is off, on item 2's posture, until the line has been
+read across a few nights. On this machine when written: *no run in this
+corpus recorded the sensor*, the expected reading until the next run under
+the new binary. Nothing installed or restarted when written.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own

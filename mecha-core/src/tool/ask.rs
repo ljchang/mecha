@@ -65,14 +65,24 @@ pub trait Asker: Send + Sync {
         self.ask(question, options).await
     }
 
-    /// Like [`ask_in`], with the goal the model put beside the question.
+    /// Like [`ask_in`], with the goal the model put beside the question,
+    /// and an answer that says **what kind of thing it is**.
     ///
     /// `question` already carries the rendered goal line above the model's
     /// own sentence, so a front-end that shows text and returns text needs
-    /// nothing from the third argument — the default forwards. The one asker
-    /// that overrides it is the question store's, which keeps the typed
-    /// hypothesis beside the owner's answer so the pair is a record rather
-    /// than two pieces of prose.
+    /// nothing from the third argument beyond wrapping what `ask_in` gave
+    /// it as [`Reply::Answered`]. An asker that *parks* — stores the
+    /// question and ends the run — hands the goal to its store and answers
+    /// [`Reply::Parked`]: its text is a note to the model, not a person's
+    /// words, and the tool must not anchor the run on it. Per answer, not
+    /// per asker: the web asker shows a card and parks only when nobody
+    /// answers it, so the same asker answers both ways (found on review).
+    ///
+    /// **No default, on purpose.** `Reply` is a provenance judgement — did
+    /// a person confirm this? — and a default that resolved an asker this
+    /// trait has never met to *a person* would be the fail-open shape
+    /// `CLAUDE.md` names: unknown is never clean (found on review). Every
+    /// asker says which it is.
     ///
     /// [`ask_in`]: Asker::ask_in
     async fn ask_about(
@@ -81,9 +91,25 @@ pub trait Asker: Send + Sync {
         question: &str,
         options: &[String],
         goal: Option<&GoalHypothesis>,
-    ) -> Option<String> {
-        let _ = goal;
-        self.ask_in(ctx, question, options).await
+    ) -> Option<Reply>;
+}
+
+/// What came back from an [`Asker`] — the text the tool hands the model
+/// either way, and whether a person said it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reply {
+    /// A person's words.
+    Answered(String),
+    /// The question was stored for later and the run is ending; the text
+    /// tells the model so. Nobody has confirmed anything.
+    Parked(String),
+}
+
+impl Reply {
+    pub fn text(&self) -> &str {
+        match self {
+            Reply::Answered(t) | Reply::Parked(t) => t,
+        }
     }
 }
 
@@ -288,7 +314,24 @@ impl Tool for AskUserTool {
             .ask_about(ctx, &shown, &options, goal.as_ref())
             .await
         {
-            Some(answer) => Ok(ToolOutput::ok(answer)),
+            Some(Reply::Answered(answer)) => {
+                // A person answered a question that carried a goal pointer:
+                // that pointer is the run's anchor from here (§17.7 item 4's
+                // sensor). The answer's prose is never read: a correction
+                // in it moves nothing structural, which the anchor's doc
+                // names.
+                if let (Some(track), Some(serves)) = (
+                    &ctx.goal_track,
+                    goal.as_ref().and_then(|h| h.serves.as_ref()),
+                ) {
+                    track.set_anchor(serves.clone());
+                }
+                Ok(ToolOutput::ok(answer))
+            }
+            // A park note is not a person's words: the resume seeds the
+            // anchor from the stored answer instead, and nothing is
+            // anchored here.
+            Some(Reply::Parked(note)) => Ok(ToolOutput::ok(note)),
             // An error result rather than an `Err`: the model should be able to
             // carry on with its best guess and say that it did, not have the
             // run die because someone pressed escape.
@@ -325,6 +368,81 @@ mod tests {
                 .push((question.to_string(), options.to_vec()));
             self.answer.clone()
         }
+        async fn ask_about(
+            &self,
+            ctx: &ToolCtx,
+            question: &str,
+            options: &[String],
+            _goal: Option<&GoalHypothesis>,
+        ) -> Option<Reply> {
+            self.ask_in(ctx, question, options)
+                .await
+                .map(Reply::Answered)
+        }
+    }
+
+    /// The question store's asker, as far as this tool can tell: it hands
+    /// back a note and says the note is a park.
+    struct Parking;
+
+    #[async_trait]
+    impl Asker for Parking {
+        async fn ask(&self, _question: &str, _options: &[String]) -> Option<String> {
+            None
+        }
+        async fn ask_about(
+            &self,
+            _ctx: &ToolCtx,
+            _question: &str,
+            _options: &[String],
+            _goal: Option<&GoalHypothesis>,
+        ) -> Option<Reply> {
+            Some(Reply::Parked(
+                "Put to the owner as question q1. This run is ending here.".into(),
+            ))
+        }
+    }
+
+    /// §17.7 item 4's anchor: a present human's answer to a question that
+    /// carried a pointer makes that pointer the run's anchor; a parking
+    /// asker's note does not, and a question with no pointer sets nothing.
+    #[tokio::test]
+    async fn a_present_humans_answer_sets_the_anchor_and_a_park_does_not() {
+        let track = Arc::new(crate::tool::GoalTrack::default());
+        let ctx = ToolCtx {
+            goal_track: Some(track.clone()),
+            ..ToolCtx::default()
+        };
+        let ask = json!({"question": "which?", "goal": "ship it", "serves": "task:t1"});
+
+        let (present, _) = tool(Some("yes"));
+        present
+            .call(json!({"question": "which?", "goal": "ship it"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(track.anchor(), None, "no pointer, no anchor");
+        present.call(ask.clone(), &ctx).await.unwrap();
+        assert_eq!(track.anchor(), Some(GoalRef::Task("t1".into())));
+
+        // A decline confirms nothing.
+        let later = Arc::new(crate::tool::GoalTrack::default());
+        let lctx = ToolCtx {
+            goal_track: Some(later.clone()),
+            ..ToolCtx::default()
+        };
+        let (declined, _) = tool(None);
+        declined.call(ask.clone(), &lctx).await.unwrap();
+        assert_eq!(later.anchor(), None);
+
+        // A park is a note to the model, not the owner's words.
+        let parked = AskUserTool::new(Arc::new(Parking));
+        let out = parked.call(ask, &lctx).await.unwrap();
+        assert!(!out.is_error);
+        assert_eq!(
+            later.anchor(),
+            None,
+            "the resume seeds the anchor, not the park"
+        );
     }
 
     fn tool(answer: Option<&str>) -> (AskUserTool, Arc<Canned>) {
