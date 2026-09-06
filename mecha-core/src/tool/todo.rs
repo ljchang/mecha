@@ -2494,9 +2494,9 @@ mod tests {
         tool.call(plan(Some("task:t2")), &ctx()).await.unwrap();
         tool.call(plan(Some("project:t1")), &ctx()).await.unwrap();
         tool.call(plan(None), &ctx()).await.unwrap();
-        let (anchor, writes, drifted) = track.snapshot();
+        let (anchor, writes, changed, unnamed) = track.snapshot();
         assert_eq!(anchor, Some(GoalRef::Task("t1".into())));
-        assert_eq!((writes, drifted), (4, 3));
+        assert_eq!((writes, changed, unnamed), (4, 2, 1));
 
         // No anchor: the writes are not counted at all.
         let bare = std::sync::Arc::new(crate::tool::GoalTrack::default());
@@ -2505,7 +2505,7 @@ mod tests {
             ..work_ctx(2, 0, None)
         };
         tool.call(plan(Some("task:t9")), &bctx).await.unwrap();
-        assert_eq!(bare.snapshot(), (None, 0, 0));
+        assert_eq!(bare.snapshot(), (None, 0, 0, 0));
         // No track: nothing to count into, and no panic.
         tool.call(plan(Some("task:t9")), &work_ctx(3, 0, None))
             .await

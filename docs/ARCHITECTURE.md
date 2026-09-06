@@ -2801,10 +2801,12 @@ when touching it:
   park — every `Asker` answers `ask_about` with a `Reply` that says
   whether a person spoke (`Answered`) or the question was stored for later
   (`Parked`), per question, because the web asker does both. `todo` counts each plan write and whether its
-  `serves` left the anchor (`goal::drifts_from`: a changed kind or id, or
-  no goal at all). The record carries anchor and both counts, `Option` and
-  unknown before the sensor; the corpus rate is over runs that planned
-  under an anchor. Nothing re-asks or narrows on it — off until read, on
+  `serves` left the anchor (`goal::drift_of`: a changed kind or id is a
+  changed pointer, no goal at all is unnamed, and the two are never one
+  number — the rate is over changed pointers alone). The record carries
+  the anchor and the three counts, `Option` and unknown before the sensor;
+  the corpus rate is over runs that planned under an anchor, keyed on the
+  count so a row whose anchor kind a build cannot read keeps its drift. Nothing re-asks or narrows on it — off until read, on
   item 2's posture. The anchor is the confirmed pointer, not the owner's
   prose, and the doc on `GoalTrack` says so.
 - **A reading is five facts, and only one of them is a number.**

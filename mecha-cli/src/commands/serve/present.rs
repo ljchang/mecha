@@ -401,6 +401,90 @@ mod tests {
         )
     }
 
+    /// A `WebAsker` over one session, keyed by the jail's file name, with
+    /// an optional park behind it. The events sender is returned so a test
+    /// can subscribe (a present person) or not (an empty room).
+    fn asker(
+        park: Option<Arc<mecha_core::questions::ParkingAsker>>,
+    ) -> (
+        WebAsker,
+        Questions,
+        tokio::sync::broadcast::Sender<WireEvent>,
+        ToolCtx,
+    ) {
+        let questions = Questions::default();
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        let (q, e) = (questions.clone(), events.clone());
+        let lookup: SessionLookup = Arc::new(move |key: &str| {
+            (key == "sess-w").then(|| (q.clone(), e.clone(), park.clone()))
+        });
+        let ctx = ToolCtx {
+            workspace: std::path::PathBuf::from("/tmp/sess-w"),
+            ..ToolCtx::default()
+        };
+        (WebAsker { lookup }, questions, events, ctx)
+    }
+
+    fn scratch_park() -> Arc<mecha_core::questions::ParkingAsker> {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-webasker-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let store = mecha_core::questions::QuestionStore::open(dir).unwrap();
+        Arc::new(mecha_core::questions::ParkingAsker::new(
+            Arc::new(store),
+            "sess-w",
+            Some("task-w".into()),
+        ))
+    }
+
+    /// The asker that does both, tested for which it does when: an empty
+    /// room parks — the reply says so, and the parked question carries the
+    /// goal — and a present person's text is an answer. The first review
+    /// pass found this asker forwarding through a default that said
+    /// "answered" on the park branch; `Reply` is what closes it, and this
+    /// is what keeps it closed.
+    #[tokio::test]
+    async fn an_empty_room_parks_with_the_goal_and_a_person_answers() {
+        use mecha_core::goal::{GoalHypothesis, GoalRef};
+        let goal = GoalHypothesis {
+            sentence: "ship it".into(),
+            serves: Some(GoalRef::Task("task-w".into())),
+        };
+        // Nobody subscribed: a park, with the goal stored beside it.
+        let park = scratch_park();
+        let (web, _, _events, ctx) = asker(Some(park.clone()));
+        let reply = web
+            .ask_about(&ctx, "Which?", &[], Some(&goal))
+            .await
+            .unwrap();
+        assert!(matches!(reply, Reply::Parked(_)), "{reply:?}");
+        let parked = park.parked();
+        assert_eq!(parked.len(), 1);
+
+        // A person present: their text is an answer.
+        let (web, questions, events, ctx) = asker(Some(scratch_park()));
+        let mut rx = events.subscribe();
+        let q2 = questions.clone();
+        tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                if let WireEvent::Question { qid, .. } = event {
+                    q2.answer(qid, Answer::Text("the March one".into()));
+                    break;
+                }
+            }
+        });
+        let reply = web
+            .ask_about(&ctx, "Which?", &[], Some(&goal))
+            .await
+            .unwrap();
+        assert_eq!(reply, Reply::Answered("the March one".into()));
+    }
+
     #[tokio::test]
     async fn read_only_mode_delegates_to_mode_approver_and_blocks() {
         let (approver, _) = approver(PermissionMode::ReadOnly, APPROVAL_TIMEOUT);

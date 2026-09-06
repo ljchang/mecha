@@ -514,6 +514,10 @@ impl Corpus {
                 .planned_under_an_anchor()
                 .map(|r| r.stats.goal_drift_writes.unwrap_or(0))
                 .sum(),
+            unnamed_writes: self
+                .planned_under_an_anchor()
+                .map(|r| r.stats.goal_unnamed_writes.unwrap_or(0))
+                .sum(),
         }
     }
 
@@ -709,7 +713,13 @@ pub struct GoalTotals {
     /// build.
     pub planned: usize,
     pub plan_writes: u32,
+    /// Writes that named a different kind or id than the anchor — the
+    /// drift rate's numerator.
     pub drift_writes: u32,
+    /// Writes that named nothing while an anchor stood — kept apart, and
+    /// never in the rate: on a local model a plan rewritten without
+    /// repeating `serves` is the likely dominant term (found on review).
+    pub unnamed_writes: u32,
 }
 
 /// What the step counters sum to over a corpus — see `Corpus::step_totals`.
@@ -928,6 +938,7 @@ mod tests {
             goal_anchor: None,
             goal_plan_writes: None,
             goal_drift_writes: None,
+            goal_unnamed_writes: None,
             checks_declared: None,
             checks_passed: None,
             turns: 3,
@@ -1023,6 +1034,8 @@ mod tests {
             st.goal_anchor = anchor.map(|a| GoalRef::Task(a.into()));
             st.goal_plan_writes = Some(writes);
             st.goal_drift_writes = Some(drifted);
+            // One unnamed write per planned run: never in the rate.
+            st.goal_unnamed_writes = Some(u32::from(writes > 0));
             st
         };
         session_with(
@@ -1056,6 +1069,7 @@ mod tests {
                 planned: 2,
                 plan_writes: 5,
                 drift_writes: 1,
+                unnamed_writes: 2,
             }
         );
         // One of the two anchored-and-planned runs drifted.
@@ -1091,7 +1105,14 @@ mod tests {
             totals.planned, 3,
             "the row that drifted is still in the denominator"
         );
-        assert_eq!((totals.plan_writes, totals.drift_writes), (7, 3));
+        assert_eq!(
+            (
+                totals.plan_writes,
+                totals.drift_writes,
+                totals.unnamed_writes
+            ),
+            (7, 3, 3)
+        );
         assert_eq!(corpus.goal_drift_rate(), Some(2.0 / 3.0));
     }
 

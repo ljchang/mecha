@@ -3849,6 +3849,7 @@ mod tests {
             goal_anchor: None,
             goal_plan_writes: 0,
             goal_drift_writes: 0,
+            goal_unnamed_writes: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),
