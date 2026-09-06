@@ -2849,8 +2849,8 @@ commit, and raised two minors left standing — `WebAsker::ask_in`'s
 a test for the web asker's shown-then-abandoned branch, which needs the
 ask timeout made injectable; the first version of this clause said "then
 only minors" and "raised nothing", written before that ninth pass was
-read — corrected the same morning), and deployed the same morning (the machine-state row
-under §Machine state, dated, has the probes).** `HISTORY.md`'s entry of
+read — corrected the same morning), and deployed the same morning (the
+machine-state row under §Machine state, dated, has the probes).** `HISTORY.md`'s entry of
 the same date has what and why; the design doc's built note under item 4
 has the shape and what is named rather than built (the re-ask, the drift
 event, the turns term). What the review loop changed: an answer says
