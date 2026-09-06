@@ -1778,7 +1778,25 @@ async fn work(
         let s = if parked.len() == 1 { "" } else { "s" };
         println!("it needs an answer before it can go further:\n");
         for q in &parked {
-            println!("  {}", q.question.trim());
+            // The question without the goal line above it, then the goal as
+            // its own row: the shown text is two paragraphs when a goal was
+            // put beside the question, and printing it whole dropped the
+            // second paragraph out of the indent, above its own options
+            // (found on review). One line for the goal, as `questions show`.
+            for line in q.asked().lines() {
+                println!("  {line}");
+            }
+            if let Some(goal) = &q.goal {
+                let sentence = goal
+                    .sentence
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                match &goal.serves {
+                    Some(serves) => println!("  (goal: {sentence}, serves {serves})"),
+                    None => println!("  (goal: {sentence})"),
+                }
+            }
             for opt in &q.options {
                 println!("    - {opt}");
             }

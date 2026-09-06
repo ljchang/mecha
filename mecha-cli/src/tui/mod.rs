@@ -7933,11 +7933,13 @@ fn draw_question(frame: &mut Frame, q: &ask::Question) {
     // single span renders as nothing in a terminal cell grid. Each line
     // still wraps at the modal's width, so the height counts every row.
     let question_lines: Vec<&str> = q.question.lines().collect();
+    // Saturating: a pathologically long model-written question must not
+    // overflow a `u16` in a debug build; `centered` clamps the height anyway.
     let question_rows: u16 = question_lines
         .iter()
-        .map(|l| (l.chars().count() as u16 / (WIDTH - 2).max(1)) + 1)
-        .sum::<u16>()
-        .max(1);
+        .map(|l| (l.chars().count() / usize::from((WIDTH - 2).max(1))) + 1)
+        .fold(0usize, usize::saturating_add)
+        .clamp(1, u16::MAX as usize) as u16;
     let height = (q.options.len() as u16).clamp(0, 8) + question_rows + 5;
     let area = centered(frame.area(), WIDTH, height);
     frame.render_widget(Clear, area);
