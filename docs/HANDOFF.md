@@ -2023,9 +2023,11 @@ is recoverable without the checkout's cwd. Record:
   `mecha-parakeet` — `scripts/voice/parakeet_server.py` is unchanged across
   the whole range and a restart costs a model load. Not reinstalled:
   `mecha-mail` — nothing under it changed and it has no `mecha-core`
-  dependency. Graph binaries, the benchmark musl build, the factory client
-  (0.2.8) and the droplet (0.2.8, active) all checked and current; the
-  sandbox image's toolchain matches the host.
+  dependency. Graph binaries and the benchmark musl build checked and
+  current; the factory client and the droplet were 0.2.8 and current
+  *then* — superseded by the 2026-09-06 bullet above (client 0.2.9,
+  droplet 0.2.8 and behind); the sandbox image's toolchain matches the
+  host.
 
   **The installed binary was verified by what it can do, not by its mtime:**
   `strings ~/.cargo/bin/mecha` finds all three of #158's new literals
