@@ -390,6 +390,31 @@ impl QuestionStore {
     }
 }
 
+/// The run's tool context, seeded with the goal an answered question
+/// confirmed — `GOAL-SYSTEM-DESIGN.md` §17.7 item 4's primary producer of
+/// an anchor, the delegated-run path.
+///
+/// `None` when the question carried no pointer, so the caller keeps the
+/// context it had; otherwise a clone of `tools` holding a fresh
+/// [`GoalTrack`] with the anchor and no counts. The loop re-mints the
+/// track per run *carrying the anchor forward*, so seeding the run's own
+/// context (never the agent's shared one) is what reaches that run and no
+/// other. The answer's prose is not read; a correction in it is the
+/// owner's to restate on the next question.
+///
+/// [`GoalTrack`]: crate::tool::GoalTrack
+pub fn seed_anchor(
+    tools: &crate::tool::ToolCtx,
+    answered: &Question,
+) -> Option<crate::tool::ToolCtx> {
+    let serves = answered.goal.as_ref()?.serves.clone()?;
+    let mut seeded = tools.clone();
+    seeded.goal_track = Some(std::sync::Arc::new(crate::tool::GoalTrack::carrying(Some(
+        serves,
+    ))));
+    Some(seeded)
+}
+
 /// An [`Asker`] that stores the question and stops the run, instead of
 /// blocking on an answer that is not coming.
 ///
@@ -517,11 +542,6 @@ impl ParkingAsker {
 
 #[async_trait::async_trait]
 impl crate::tool::ask::Asker for ParkingAsker {
-    /// The park note is not an answer: no anchor is set from it.
-    fn parks(&self) -> bool {
-        true
-    }
-
     /// The context-free path: no jail to record and no token to cancel with,
     /// so the question is stored and the run carries on. Reachable only from a
     /// caller that never routes through `ask_in`, which no front-end here does.
@@ -535,19 +555,36 @@ impl crate::tool::ask::Asker for ParkingAsker {
         question: &str,
         options: &[String],
     ) -> Option<String> {
-        self.ask_about(ctx, question, options, None).await
+        Some(self.park_in(ctx, question, options, None))
     }
 
     /// The one asker that keeps the goal: a parked question is the record
     /// the owner's answer completes, so the typed hypothesis is stored
-    /// beside the question rather than left in its prose.
+    /// beside the question rather than left in its prose. The reply says
+    /// it is a park, so the tool anchors nothing on the note.
     async fn ask_about(
         &self,
         ctx: &crate::tool::ToolCtx,
         question: &str,
         options: &[String],
         goal: Option<&crate::goal::GoalHypothesis>,
-    ) -> Option<String> {
+    ) -> Option<crate::tool::ask::Reply> {
+        Some(crate::tool::ask::Reply::Parked(
+            self.park_in(ctx, question, options, goal),
+        ))
+    }
+}
+
+impl ParkingAsker {
+    /// Store the question and stop the run — the shared body of both
+    /// `Asker` entry points.
+    fn park_in(
+        &self,
+        ctx: &crate::tool::ToolCtx,
+        question: &str,
+        options: &[String],
+        goal: Option<&crate::goal::GoalHypothesis>,
+    ) -> String {
         let before = self.parked().len();
         let answer = self.record(
             question,
@@ -561,7 +598,7 @@ impl crate::tool::ask::Asker for ParkingAsker {
         if self.parked().len() > before {
             ctx.cancel_run(crate::agent::CancelReason::Parked);
         }
-        Some(answer)
+        answer
     }
 }
 
@@ -805,6 +842,71 @@ mod tests {
         assert!(
             !raw.contains("\"goal\""),
             "absent on the wire, not null: {raw}"
+        );
+    }
+
+    /// §17.7 item 4's primary producer: the resume's context is seeded
+    /// with the answered question's pointer and nothing else, on a clone
+    /// — the caller's context is untouched — and a question with no
+    /// pointer seeds nothing.
+    #[test]
+    fn a_resume_is_seeded_with_the_answered_questions_pointer() {
+        let s = store("seed");
+        let q = s
+            .park(
+                "I take the goal to be: x (serves task:t4)\n\nWhich?",
+                vec![],
+                "sess-9",
+                Some("task-4".into()),
+                None,
+                Taint::default(),
+                Some(crate::goal::GoalHypothesis {
+                    sentence: "x".into(),
+                    serves: Some(crate::goal::GoalRef::Task("t4".into())),
+                }),
+            )
+            .unwrap();
+        let answered = s.answer(&q.id, "yes").unwrap();
+        let tools = ToolCtx::default();
+        let seeded = seed_anchor(&tools, &answered).expect("a pointer seeds");
+        assert_eq!(
+            seeded.goal_track.as_ref().unwrap().snapshot(),
+            (Some(crate::goal::GoalRef::Task("t4".into())), 0, 0)
+        );
+        assert!(
+            tools.goal_track.is_none(),
+            "the caller's context is untouched"
+        );
+
+        let plain = s
+            .park(
+                "Which?",
+                vec![],
+                "sess-9",
+                None,
+                None,
+                Taint::default(),
+                None,
+            )
+            .unwrap();
+        assert!(seed_anchor(&tools, &plain).is_none());
+        let bare = s
+            .park(
+                "Which?",
+                vec![],
+                "sess-9",
+                None,
+                None,
+                Taint::default(),
+                Some(crate::goal::GoalHypothesis {
+                    sentence: "x".into(),
+                    serves: None,
+                }),
+            )
+            .unwrap();
+        assert!(
+            seed_anchor(&tools, &bare).is_none(),
+            "a sentence with no pointer anchors nothing"
         );
     }
 

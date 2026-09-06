@@ -7531,6 +7531,47 @@ mod tests {
         assert_eq!(stats.goal_drift_writes, Some(1));
     }
 
+    /// The delegated-run path: a caller seeds the anchor on the run's own
+    /// context (`questions::seed_anchor`), and `run_in`'s per-run re-mint
+    /// carries it forward with fresh counters — so a reorder that minted
+    /// before reading would drop it, and this fails on that tree.
+    #[tokio::test]
+    async fn a_seeded_anchor_survives_the_per_run_re_mint() {
+        let (agent, _) = agent_with_tools(
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t0".into(),
+                        name: "todo".into(),
+                        input: json!({"items": [{"content": "a", "status": "in_progress"}], "serves": "task:t2"}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(crate::tool::todo::TodoTool::new())],
+            PermissionMode::Allow,
+        );
+        let mut cx = (**agent.context()).clone();
+        let mut tools = (*cx.tools).clone();
+        tools.goal_track = Some(Arc::new(crate::tool::GoalTrack::carrying(Some(
+            crate::goal::GoalRef::Task("t1".into()),
+        ))));
+        cx.tools = Arc::new(tools);
+        let mut convo = Conversation::user("go");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        assert_eq!(
+            outcome.goal_anchor,
+            Some(crate::goal::GoalRef::Task("t1".into()))
+        );
+        assert_eq!(
+            (outcome.goal_plan_writes, outcome.goal_drift_writes),
+            (1, 1)
+        );
+        // The caller's own cell saw nothing: the run counted into its own.
+        assert_eq!(cx.tools.goal_track.as_ref().unwrap().snapshot().1, 0);
+    }
+
     /// The review finding: the escalation's own thresholds are argued, not
     /// measured, and the off-by-default posture is explicitly pending a
     /// measurement that has nowhere to come from without a count in

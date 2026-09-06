@@ -686,7 +686,6 @@ fn exhaustive(record: &Record) {
     }
 }
 
-/// What the step counters sum to over a corpus — see `Corpus::step_totals`.
 /// The goal-anchor sensor's totals (`GOAL-SYSTEM-DESIGN.md` §17.7 item 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GoalTotals {
@@ -695,12 +694,15 @@ pub struct GoalTotals {
     /// Of those, rows that ran with a confirmed goal anchor.
     pub anchored: usize,
     /// Of those, rows that wrote a plan while the anchor stood — the drift
-    /// rate's denominator, and what the counts below sum over.
+    /// rate's denominator.
     pub planned: usize,
+    /// Summed over every anchored row; a row that never wrote a plan
+    /// contributes zero to both.
     pub plan_writes: u32,
     pub drift_writes: u32,
 }
 
+/// What the step counters sum to over a corpus — see `Corpus::step_totals`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StepTotals {
     /// Rows that carry the sensor at all.

@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use tokio::sync::oneshot;
 
 use mecha_core::config::PermissionMode;
-use mecha_core::tool::ask::Asker;
+use mecha_core::tool::ask::{Asker, Reply};
 use mecha_core::tool::{Approver, Decision, ModeApprover, Tool, ToolCtx};
 
 use super::chat::WireEvent;
@@ -288,6 +288,24 @@ impl Asker for WebAsker {
     }
 
     async fn ask_in(&self, ctx: &ToolCtx, question: &str, options: &[String]) -> Option<String> {
+        self.ask_about(ctx, question, options, None)
+            .await
+            .map(|r| r.text().to_string())
+    }
+
+    /// The one body: a card to a present person, or a park. Answers as a
+    /// [`Reply`] because this asker does both, per question — a park note
+    /// must not anchor the run on a goal nobody confirmed, and a parked
+    /// question must carry the goal into the store so the resume can seed
+    /// it (found on review: the default forwarded through `ask_in` and
+    /// dropped both).
+    async fn ask_about(
+        &self,
+        ctx: &ToolCtx,
+        question: &str,
+        options: &[String],
+        goal: Option<&mecha_core::goal::GoalHypothesis>,
+    ) -> Option<Reply> {
         let key = ctx.workspace.file_name()?.to_str()?.to_string();
         let (questions, events, park) = (self.lookup)(&key)?;
 
@@ -297,7 +315,7 @@ impl Asker for WebAsker {
         // run stops rather than carrying on having invented an answer.
         if let Some(park) = &park {
             if events.receiver_count() == 0 {
-                return park.ask_in(ctx, question, options).await;
+                return park.ask_about(ctx, question, options, goal).await;
             }
         }
 
@@ -327,11 +345,11 @@ impl Asker for WebAsker {
         questions.close(qid);
         let _ = events.send(WireEvent::QuestionDone { qid });
         match (answer, &park) {
-            (Some(text), _) => Some(text),
+            (Some(text), _) => Some(Reply::Answered(text)),
             // Shown, and nobody answered — the owner walked away mid-question,
             // which is indistinguishable from never having been there. Same
             // ending, so the run does not have to guess which happened.
-            (None, Some(park)) => park.ask_in(ctx, question, options).await,
+            (None, Some(park)) => park.ask_about(ctx, question, options, goal).await,
             (None, None) => None,
         }
     }

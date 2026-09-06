@@ -65,14 +65,19 @@ pub trait Asker: Send + Sync {
         self.ask(question, options).await
     }
 
-    /// Like [`ask_in`], with the goal the model put beside the question.
+    /// Like [`ask_in`], with the goal the model put beside the question,
+    /// and an answer that says **what kind of thing it is**.
     ///
     /// `question` already carries the rendered goal line above the model's
     /// own sentence, so a front-end that shows text and returns text needs
-    /// nothing from the third argument — the default forwards. The one asker
-    /// that overrides it is the question store's, which keeps the typed
-    /// hypothesis beside the owner's answer so the pair is a record rather
-    /// than two pieces of prose.
+    /// nothing from the third argument — the default forwards and wraps
+    /// the text as [`Reply::Answered`]. An asker that *parks* — stores the
+    /// question and ends the run — must override this, hand the goal to
+    /// its store, and answer [`Reply::Parked`]: its text is a note to the
+    /// model, not a person's words, and the tool must not anchor the run
+    /// on it. Per answer, not per asker (found on review): the web asker
+    /// shows a card and parks only when nobody answers it, so the same
+    /// asker answers both ways.
     ///
     /// [`ask_in`]: Asker::ask_in
     async fn ask_about(
@@ -81,18 +86,30 @@ pub trait Asker: Send + Sync {
         question: &str,
         options: &[String],
         goal: Option<&GoalHypothesis>,
-    ) -> Option<String> {
+    ) -> Option<Reply> {
         let _ = goal;
-        self.ask_in(ctx, question, options).await
+        self.ask_in(ctx, question, options)
+            .await
+            .map(Reply::Answered)
     }
+}
 
-    /// Does this asker store the question and end the run rather than hand
-    /// back a person's answer? `Some(text)` from a parking asker is a note
-    /// to the model, not the owner's words, so the tool must not treat it
-    /// as a confirmation. The question store's asker says yes; a front-end
-    /// with a person present keeps the default.
-    fn parks(&self) -> bool {
-        false
+/// What came back from an [`Asker`] — the text the tool hands the model
+/// either way, and whether a person said it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reply {
+    /// A person's words.
+    Answered(String),
+    /// The question was stored for later and the run is ending; the text
+    /// tells the model so. Nobody has confirmed anything.
+    Parked(String),
+}
+
+impl Reply {
+    pub fn text(&self) -> &str {
+        match self {
+            Reply::Answered(t) | Reply::Parked(t) => t,
+        }
     }
 }
 
@@ -297,24 +314,24 @@ impl Tool for AskUserTool {
             .ask_about(ctx, &shown, &options, goal.as_ref())
             .await
         {
-            Some(answer) => {
-                // A present human answered a question that carried a goal
-                // pointer: that pointer is the run's anchor from here
-                // (§17.7 item 4's sensor). Not on a parking asker, whose
-                // `Some` is the park note — the resume seeds the anchor
-                // from the stored answer instead. The answer's prose is
-                // never read: a correction in it moves nothing structural,
-                // which the anchor's doc names.
-                if !self.asker.parks() {
-                    if let (Some(track), Some(serves)) = (
-                        &ctx.goal_track,
-                        goal.as_ref().and_then(|h| h.serves.as_ref()),
-                    ) {
-                        track.set_anchor(serves.clone());
-                    }
+            Some(Reply::Answered(answer)) => {
+                // A person answered a question that carried a goal pointer:
+                // that pointer is the run's anchor from here (§17.7 item 4's
+                // sensor). The answer's prose is never read: a correction
+                // in it moves nothing structural, which the anchor's doc
+                // names.
+                if let (Some(track), Some(serves)) = (
+                    &ctx.goal_track,
+                    goal.as_ref().and_then(|h| h.serves.as_ref()),
+                ) {
+                    track.set_anchor(serves.clone());
                 }
                 Ok(ToolOutput::ok(answer))
             }
+            // A park note is not a person's words: the resume seeds the
+            // anchor from the stored answer instead, and nothing is
+            // anchored here.
+            Some(Reply::Parked(note)) => Ok(ToolOutput::ok(note)),
             // An error result rather than an `Err`: the model should be able to
             // carry on with its best guess and say that it did, not have the
             // run die because someone pressed escape.
@@ -354,16 +371,24 @@ mod tests {
     }
 
     /// The question store's asker, as far as this tool can tell: it hands
-    /// back a note and says it parks.
+    /// back a note and says the note is a park.
     struct Parking;
 
     #[async_trait]
     impl Asker for Parking {
         async fn ask(&self, _question: &str, _options: &[String]) -> Option<String> {
-            Some("Put to the owner as question q1. This run is ending here.".into())
+            None
         }
-        fn parks(&self) -> bool {
-            true
+        async fn ask_about(
+            &self,
+            _ctx: &ToolCtx,
+            _question: &str,
+            _options: &[String],
+            _goal: Option<&GoalHypothesis>,
+        ) -> Option<Reply> {
+            Some(Reply::Parked(
+                "Put to the owner as question q1. This run is ending here.".into(),
+            ))
         }
     }
 
