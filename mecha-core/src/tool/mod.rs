@@ -517,8 +517,15 @@ pub struct GoalTrack {
     anchor: std::sync::Mutex<Option<crate::goal::GoalRef>>,
     /// Plan writes seen while an anchor stood — the denominator.
     pub plan_writes: std::sync::atomic::AtomicU32,
-    /// Of those, writes whose `serves` did not trace to the anchor.
+    /// Of those, writes whose `serves` named a different kind or id — the
+    /// case the design's re-ask is for.
     pub drifted_writes: std::sync::atomic::AtomicU32,
+    /// Of those, writes that named nothing. Kept apart from `drifted_writes`
+    /// because on a local model a plan rewritten without repeating `serves`
+    /// is the likely dominant term, and one number for both would make the
+    /// first readings unable to tell forgetfulness from a change of goal
+    /// (found on review). Never in the drift rate.
+    pub unnamed_writes: std::sync::atomic::AtomicU32,
 }
 
 impl GoalTrack {
@@ -557,18 +564,26 @@ impl GoalTrack {
             return;
         };
         self.plan_writes.fetch_add(1, Relaxed);
-        if crate::goal::drifts_from(&anchor, serves) {
-            self.drifted_writes.fetch_add(1, Relaxed);
+        match crate::goal::drift_of(&anchor, serves) {
+            crate::goal::Drift::Same => {}
+            crate::goal::Drift::Changed => {
+                self.drifted_writes.fetch_add(1, Relaxed);
+            }
+            crate::goal::Drift::Unnamed => {
+                self.unnamed_writes.fetch_add(1, Relaxed);
+            }
         }
     }
 
-    /// `(anchor, plan writes, drifted writes)` as of now.
-    pub fn snapshot(&self) -> (Option<crate::goal::GoalRef>, u32, u32) {
+    /// `(anchor, plan writes, changed-pointer writes, unnamed writes)` as
+    /// of now.
+    pub fn snapshot(&self) -> (Option<crate::goal::GoalRef>, u32, u32, u32) {
         use std::sync::atomic::Ordering::Relaxed;
         (
             self.anchor(),
             self.plan_writes.load(Relaxed),
             self.drifted_writes.load(Relaxed),
+            self.unnamed_writes.load(Relaxed),
         )
     }
 }
@@ -2016,20 +2031,28 @@ mod jail_tests {
         let bare = GoalTrack::default();
         bare.note_plan(Some(&t1));
         bare.note_plan(None);
-        assert_eq!(bare.snapshot(), (None, 0, 0), "no anchor, nothing counted");
+        assert_eq!(
+            bare.snapshot(),
+            (None, 0, 0, 0),
+            "no anchor, nothing counted"
+        );
 
         let track = GoalTrack::carrying(Some(t1.clone()));
-        assert_eq!(track.snapshot(), (Some(t1.clone()), 0, 0));
+        assert_eq!(track.snapshot(), (Some(t1.clone()), 0, 0, 0));
         track.note_plan(Some(&t1));
         track.note_plan(Some(&GoalRef::Task("t2".into())));
         track.note_plan(None);
-        assert_eq!(track.snapshot(), (Some(t1.clone()), 3, 2));
+        assert_eq!(
+            track.snapshot(),
+            (Some(t1.clone()), 3, 1, 1),
+            "changed and unnamed apart"
+        );
 
         // An answer re-anchors; the counts already taken stand.
         let t2 = GoalRef::Charter("do-no-harm".into());
         track.set_anchor(t2.clone());
         track.note_plan(Some(&t2));
-        assert_eq!(track.snapshot(), (Some(t2), 4, 2));
+        assert_eq!(track.snapshot(), (Some(t2), 4, 1, 1));
 
         // A fresh track carrying the anchor shares no counters with it.
         let carried = GoalTrack::carrying(track.anchor());

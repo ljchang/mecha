@@ -2826,7 +2826,8 @@ had a confirmed goal* until a delegated run's question is answered or a
 chat run answers a goal-carrying `ask_user`; `mecha sessions health
 --json` gains `goal_drift_rate`, `runs_with_goal_sensor`,
 `runs_with_a_goal_anchor`, `runs_planned_under_an_anchor`,
-`goal_plan_writes`, `goal_drift_writes`. The anchor lives for one run:
+`goal_plan_writes`, `goal_drift_writes`, `goal_unnamed_writes` — the last
+two are opposite findings and the rate is over the first alone. The anchor lives for one run:
 the first readings are delegated resumes plus confirmations planned
 against within one run, not interactive work across turns.
 Deploy = binary only (no web change). **Open from §17.7 after this:**

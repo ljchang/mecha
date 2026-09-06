@@ -266,6 +266,7 @@ mod tests {
             goal_anchor: None,
             goal_plan_writes: 0,
             goal_drift_writes: 0,
+            goal_unnamed_writes: 0,
             homeostat: None,
             text: String::new(),
             stop_reason: mecha_core::message::StopReason::EndTurn,

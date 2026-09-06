@@ -637,6 +637,11 @@ pub struct RunStats {
     pub goal_plan_writes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_drift_writes: Option<u32>,
+    /// Plan writes that named no goal while an anchor stood — kept apart
+    /// from `goal_drift_writes` so a forgotten `serves` is never read as a
+    /// change of goal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_unnamed_writes: Option<u32>,
     /// Learned rules the harness delivered *during* the run, by id and the
     /// turn they landed on (not the voice facade's `delivered`, which says a
     /// reply's words reached the socket) — the situational half of what the run carried,
@@ -845,6 +850,10 @@ impl RunStats {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
+        self.goal_unnamed_writes = match (self.goal_unnamed_writes, other.goal_unnamed_writes) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
         self.delivered = match (self.delivered.take(), &other.delivered) {
             (Some(mut a), Some(b)) => {
                 a.extend(b.iter().cloned());
@@ -911,6 +920,7 @@ impl RunStats {
             goal_anchor: o.goal_anchor.clone(),
             goal_plan_writes: Some(o.goal_plan_writes),
             goal_drift_writes: Some(o.goal_drift_writes),
+            goal_unnamed_writes: Some(o.goal_unnamed_writes),
             // `Some(empty)`, and written by this build on purpose: the loop
             // delivers no rule mid-run yet, and a record that says so is what
             // keeps a later replay from reading the absence as unknown.
@@ -1865,6 +1875,7 @@ mod homeostat_record_tests {
             goal_anchor: None,
             goal_plan_writes: 0,
             goal_drift_writes: 0,
+            goal_unnamed_writes: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),
@@ -2863,6 +2874,7 @@ mod tests {
             goal_anchor: None,
             goal_plan_writes: 0,
             goal_drift_writes: 0,
+            goal_unnamed_writes: 0,
             text: "done".into(),
             stop_reason: StopReason::EndTurn,
             usage: Usage {
@@ -2938,6 +2950,7 @@ mod tests {
                 goal_anchor: None,
                 goal_plan_writes: 0,
                 goal_drift_writes: 0,
+                goal_unnamed_writes: 0,
                 text: String::new(),
                 stop_reason: StopReason::EndTurn,
                 usage: Usage {
@@ -3049,6 +3062,7 @@ mod tests {
             goal_anchor: None,
             goal_plan_writes: 0,
             goal_drift_writes: 0,
+            goal_unnamed_writes: 0,
             text: String::new(),
             stop_reason: StopReason::Other,
             usage: Usage::default(),
@@ -3519,6 +3533,7 @@ mod tests {
             goal_anchor: None,
             goal_plan_writes: 0,
             goal_drift_writes: 0,
+            goal_unnamed_writes: 0,
             text: String::new(),
             stop_reason: crate::message::StopReason::EndTurn,
             usage: crate::message::Usage::default(),

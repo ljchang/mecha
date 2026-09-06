@@ -392,6 +392,7 @@ mod tests {
             goal_anchor: None,
             goal_plan_writes: 0,
             goal_drift_writes: 0,
+            goal_unnamed_writes: 0,
             stop_cause: StopCause::Completed,
             compactions: 1,
             cost_usd: None,

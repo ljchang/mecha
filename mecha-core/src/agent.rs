@@ -1199,7 +1199,11 @@ pub struct RunOutcome {
     /// whose `serves` did not trace to it. Both zero with no anchor.
     pub goal_anchor: Option<crate::goal::GoalRef>,
     pub goal_plan_writes: u32,
+    /// Writes whose `serves` named a different kind or id than the anchor.
     pub goal_drift_writes: u32,
+    /// Writes that named nothing while an anchor stood — apart from the
+    /// above, so forgetfulness is never read as a change of goal.
+    pub goal_unnamed_writes: u32,
     /// False when `usage` is a *lower bound* rather than a measurement.
     ///
     /// A run cancelled mid-stream keeps the input tokens, which arrive in the
@@ -2036,6 +2040,7 @@ impl Agent {
                     goal_anchor: None,
                     goal_plan_writes: 0,
                     goal_drift_writes: 0,
+                    goal_unnamed_writes: 0,
                     text,
                     stop_reason: StopReason::Other,
                     usage,
@@ -3034,6 +3039,7 @@ impl Agent {
             goal_anchor: None,
             goal_plan_writes: 0,
             goal_drift_writes: 0,
+            goal_unnamed_writes: 0,
             stop_cause: StopCause::Completed,
             compactions,
             usage_complete: true,
@@ -3182,6 +3188,7 @@ impl Agent {
             goal_anchor: None,
             goal_plan_writes: 0,
             goal_drift_writes: 0,
+            goal_unnamed_writes: 0,
             stop_cause,
             compactions,
             cost_usd: self.cost(&usage),
@@ -4104,6 +4111,7 @@ fn emit_done(
         outcome.goal_anchor,
         outcome.goal_plan_writes,
         outcome.goal_drift_writes,
+        outcome.goal_unnamed_writes,
     ) = sensors.goal_track;
     emit(events, AgentEvent::Done(Box::new(outcome.clone())));
 }
@@ -4115,8 +4123,8 @@ fn emit_done(
 struct Sensors {
     /// `(nulls, reopens, completions, measured)`.
     step_counts: (u32, u32, u32, u32),
-    /// `(anchor, plan writes, drifted writes)`.
-    goal_track: (Option<crate::goal::GoalRef>, u32, u32),
+    /// `(anchor, plan writes, changed-pointer writes, unnamed writes)`.
+    goal_track: (Option<crate::goal::GoalRef>, u32, u32, u32),
 }
 
 /// Both sensors as of now, or zeros for a context with none — which
@@ -4129,7 +4137,7 @@ fn sensors_of(cx: &RunContext) -> Sensors {
             .goal_track
             .as_ref()
             .map(|t| t.snapshot())
-            .unwrap_or((None, 0, 0)),
+            .unwrap_or((None, 0, 0, 0)),
     }
 }
 
@@ -6665,6 +6673,7 @@ mod tests {
             goal_anchor: None,
             goal_plan_writes: 0,
             goal_drift_writes: 0,
+            goal_unnamed_writes: 0,
             ..outcome.clone()
         });
         assert_eq!(clean.context_overflows, Some(0));
@@ -7534,10 +7543,12 @@ mod tests {
         );
         assert_eq!(outcome.goal_plan_writes, 2, "only writes under the anchor");
         assert_eq!(outcome.goal_drift_writes, 1, "task:t2 left it");
+        assert_eq!(outcome.goal_unnamed_writes, 0);
         let stats = crate::session::RunStats::from(&outcome);
         assert_eq!(stats.goal_anchor, outcome.goal_anchor);
         assert_eq!(stats.goal_plan_writes, Some(2));
         assert_eq!(stats.goal_drift_writes, Some(1));
+        assert_eq!(stats.goal_unnamed_writes, Some(0));
     }
 
     /// The delegated-run path: a caller seeds the anchor on the run's own
@@ -7579,6 +7590,7 @@ mod tests {
         );
         // The caller's own cell saw nothing: the run counted into its own.
         assert_eq!(cx.tools.goal_track.as_ref().unwrap().snapshot().1, 0);
+        assert_eq!(outcome.goal_unnamed_writes, 0);
     }
 
     /// The review finding: the escalation's own thresholds are argued, not

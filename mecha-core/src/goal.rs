@@ -152,12 +152,28 @@ where
         .collect())
 }
 
-/// Has the plan moved off the anchor? `GOAL-SYSTEM-DESIGN.md` §17.7 item 4:
-/// the distance is 1 when the goal's kind or id changed — and a plan that
-/// names nothing once a goal has been confirmed has moved just as far, since
-/// nothing in it traces to the anchor any more. A pure bit, no model.
-pub fn drifts_from(anchor: &GoalRef, current: Option<&GoalRef>) -> bool {
-    current != Some(anchor)
+/// How a plan write stands to the goal the owner confirmed — `GOAL-SYSTEM-
+/// DESIGN.md` §17.7 item 4's distance, structural and with no model: the
+/// same pointer is [`Drift::Same`]; a changed kind or id is [`Drift::Changed`],
+/// the case the design's re-ask is for; and a write that names nothing once
+/// a goal has been confirmed is [`Drift::Unnamed`] — kept apart from
+/// `Changed` because on a local model the likely dominant cause is a plan
+/// written without repeating `serves`, and a reading that could not tell
+/// forgetfulness from a real change of goal would be the number the re-ask
+/// decision is taken on (found on review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drift {
+    Same,
+    Changed,
+    Unnamed,
+}
+
+pub fn drift_of(anchor: &GoalRef, current: Option<&GoalRef>) -> Drift {
+    match current {
+        None => Drift::Unnamed,
+        Some(c) if c == anchor => Drift::Same,
+        Some(_) => Drift::Changed,
+    }
 }
 
 impl fmt::Display for GoalRef {
@@ -349,15 +365,24 @@ mod tests {
         assert!("project:proj.teaching".parse::<GoalRef>().is_ok());
     }
 
-    /// §17.7 item 4's bit: a changed kind, a changed id, or no goal at all
-    /// is drift; the same pointer is not.
+    /// §17.7 item 4's distance: the same pointer is not drift; a changed
+    /// kind or id is; and no goal at all is its own finding, kept apart.
     #[test]
-    fn drift_is_a_changed_kind_or_id_or_no_goal_at_all() {
+    fn drift_tells_a_changed_pointer_from_a_plan_that_named_nothing() {
         let anchor = GoalRef::Task("t1".into());
-        assert!(!drifts_from(&anchor, Some(&GoalRef::Task("t1".into()))));
-        assert!(drifts_from(&anchor, Some(&GoalRef::Task("t2".into()))));
-        assert!(drifts_from(&anchor, Some(&GoalRef::Project("t1".into()))));
-        assert!(drifts_from(&anchor, None));
+        assert_eq!(
+            drift_of(&anchor, Some(&GoalRef::Task("t1".into()))),
+            Drift::Same
+        );
+        assert_eq!(
+            drift_of(&anchor, Some(&GoalRef::Task("t2".into()))),
+            Drift::Changed
+        );
+        assert_eq!(
+            drift_of(&anchor, Some(&GoalRef::Project("t1".into()))),
+            Drift::Changed
+        );
+        assert_eq!(drift_of(&anchor, None), Drift::Unnamed);
     }
 
     /// The fourth kind is a pointer like `Task`: the id is the board's, and

@@ -871,7 +871,7 @@ mod tests {
         let seeded = seed_anchor(&tools, &answered).expect("a pointer seeds");
         assert_eq!(
             seeded.goal_track.as_ref().unwrap().snapshot(),
-            (Some(crate::goal::GoalRef::Task("t4".into())), 0, 0)
+            (Some(crate::goal::GoalRef::Task("t4".into())), 0, 0, 0)
         );
         assert!(
             tools.goal_track.is_none(),

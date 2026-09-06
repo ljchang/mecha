@@ -2139,12 +2139,17 @@ note below.
    for a stored question, per question rather than per asker, because the
    web asker shows a card and parks only when nobody answers it (found on
    review). `todo` judges every plan write
-   against it: the same pointer is not drift; a different kind, a
-   different id, or no `serves` at all once an anchor stands is
-   (`goal::drifts_from`) — the plan carries one goal for the whole list,
-   so the item-fraction term has one term today and the distance is a bit
-   per write. `RunOutcome` and `RunStats` carry `goal_anchor`,
-   `goal_plan_writes` and `goal_drift_writes` (`Option`, unknown before
+   against it (`goal::drift_of`): the same pointer is not drift; a
+   different kind or id is a *changed pointer*, the case the re-ask is
+   for; and no `serves` at all once an anchor stands is *unnamed*, kept
+   apart because on a local model a plan rewritten without repeating
+   `serves` is the likely dominant term and one number for both would
+   make the first readings unable to tell forgetfulness from a change of
+   goal (found on review) — the plan carries one goal for the whole list,
+   so the item-fraction term has one term today and the distance is one
+   of three states per write. `RunOutcome` and `RunStats` carry
+   `goal_anchor`, `goal_plan_writes`, `goal_drift_writes` and
+   `goal_unnamed_writes` (`Option`, unknown before
    the sensor; the fold keeps the later run's anchor and sums the
    counts); `runlog::Corpus::goal_drift_rate` is the share of runs that
    drifted over runs that planned *under an anchor*, never every anchored

@@ -4107,9 +4107,12 @@ answer, which is what keeps a delegated run's question from anchoring on
 its own note; per question, not per asker, because the first cut's
 per-asker flag missed the web asker, which shows a card and parks only
 when nobody answers it (the first review pass's medium). `todo`
-judges every plan write against the anchor (`goal::drifts_from`: a changed
-kind or id, or no goal once one is confirmed); `RunOutcome` and `RunStats`
-carry the anchor and both counts, unknown before the sensor and folded
+judges every plan write against the anchor (`goal::drift_of`: a changed
+kind or id is a changed pointer, no goal once one is confirmed is unnamed,
+and the two are kept apart because a local model that rewrites a plan
+without repeating `serves` would otherwise read as one that changed its
+goal — the fourth pass's finding); `RunOutcome` and `RunStats`
+carry the anchor and the three counts, unknown before the sensor and folded
 with the later anchor winning; `Corpus::goal_drift_rate` is over runs that
 planned under an anchor, the denominator lesson applied a sixth time; and
 `sessions health` prints the line. The re-ask the design names for a
