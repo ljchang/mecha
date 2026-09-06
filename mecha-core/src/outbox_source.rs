@@ -160,6 +160,17 @@ impl SourceRead {
 /// composing a *new* message answers nothing) all mean the same thing — no
 /// context to show — and none of them is an error worth failing a review over.
 pub fn for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<SourceRead> {
+    from_messages(item, &messages_for_item(item, sessions_dir))
+}
+
+/// Everything the drafting session ever held, read once for every reader
+/// of this item — the source join and the goal note both walk the same
+/// transcript, and a review surface that read it twice per draft was
+/// parsing a long delegated session's JSONL twice inside one request
+/// (found on review). Empty when the item names no session, the session
+/// is gone, or the file cannot be read: for every reader here that is
+/// honest absence, not an error.
+pub fn messages_for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<Message> {
     let Some(id) = item.session_id.as_deref() else {
         return Vec::new();
     };
@@ -169,7 +180,7 @@ pub fn for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<SourceRead> {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
-    from_messages(item, &Session::messages_ever(&text))
+    Session::messages_ever(&text)
 }
 
 /// What the drafting run's plan served when it staged this draft — the
@@ -207,12 +218,10 @@ pub fn serves_at_staging(item: &OutboxItem, messages: &[Message]) -> Option<crat
 
 /// [`serves_at_staging`] over the drafting session on disk, best-effort
 /// like [`for_item`]: a missing or unreadable transcript is an absent note,
-/// never a failed review.
+/// never a failed review. A surface that also wants the source reads
+/// should call [`messages_for_item`] once and feed both pure halves.
 pub fn serves_for_item(item: &OutboxItem, sessions_dir: &Path) -> Option<crate::goal::GoalRef> {
-    let id = item.session_id.as_deref()?;
-    let path = Session::find(sessions_dir, id).ok()?;
-    let text = std::fs::read_to_string(&path).ok()?;
-    serves_at_staging(item, &Session::messages_ever(&text))
+    serves_at_staging(item, &messages_for_item(item, sessions_dir))
 }
 
 /// The pure half, so the join is unit-tested rather than trialled against a

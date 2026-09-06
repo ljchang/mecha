@@ -374,6 +374,8 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
     if let Some(error) = &item.error {
         println!("last send attempt failed: {error}\n");
     }
+    // One transcript read for both things this surface derives from it.
+    let ReviewReads { reads, serves } = review_reads(&item);
     match item.kind {
         OutboxKind::Message if json => {
             println!("arguments a release would execute:");
@@ -400,8 +402,8 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
                     mecha_core::outbox::diff_args(&item.args_before, &item.args)
                 );
             }
-            for read in source_reads(&item) {
-                println!("\n{}", source_heading(&read));
+            for read in &reads {
+                println!("\n{}", source_heading(read));
                 println!("{}", indent(&read.text));
             }
         }
@@ -443,8 +445,8 @@ fn show(store: &OutboxStore, id: &str, json: bool) -> Result<()> {
     // note §17.7 item 3 puts on an unattended run's artifact, so releasing
     // the draft confirms the goal. A pointer from the run, the line's text
     // from the owner's own charter; nothing here is the model's prose.
-    if let Some(line) = serves_line(&item) {
-        println!("{line}");
+    if let Some(note) = &serves {
+        println!("{}", note.line());
     }
     if let Some(resolved) = &item.resolved_at {
         println!(
@@ -492,17 +494,62 @@ pub(crate) fn source_reads(item: &OutboxItem) -> Vec<SourceRead> {
     mecha_core::outbox_source::for_item(item, &dir)
 }
 
-/// The `serves` note for a draft: the drafting run's plan goal at staging
-/// (`outbox_source::serves_for_item`), with a charter line's own text
-/// beside its id. `None` when the run named nothing or the transcript is
-/// gone — an absent line, not a claim.
-pub(crate) fn serves_line(item: &OutboxItem) -> Option<String> {
-    let dir = mecha_core::session::Session::default_dir().ok()?;
-    let goal = mecha_core::outbox_source::serves_for_item(item, &dir)?;
-    Some(match charter_text(&goal) {
-        Some(text) => format!("serves {goal} — {text}"),
-        None => format!("serves {goal}"),
-    })
+/// The `serves` note on a draft: what the drafting run's plan served as of
+/// the staging call (`outbox_source::serves_at_staging`), with a charter
+/// line's own text beside its id. One value for the three review surfaces
+/// — `outbox show`, the TUI pane and the web detail — so they cannot
+/// describe the same draft differently (found on review: the TUI pane had
+/// no note at all, and an owner approving there was confirming a goal they
+/// were never shown).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ServesNote {
+    pub goal: mecha_core::goal::GoalRef,
+    /// The owner's text for the charter line, when the goal names one the
+    /// loaded charter contains. `None` for a task or project pointer, and
+    /// for a charter the surface could not read.
+    pub text: Option<String>,
+}
+
+impl ServesNote {
+    /// The one line every surface prints.
+    pub fn line(&self) -> String {
+        match &self.text {
+            Some(text) => format!("serves {} — {text}", self.goal),
+            None => format!("serves {}", self.goal),
+        }
+    }
+}
+
+/// Resolve a goal into its note — the one place the charter is opened for
+/// this purpose, so the pure renderers (`serve::review::detail_json`, the
+/// TUI's `detail_lines`) take the resolved note and do no I/O.
+pub(crate) fn serves_note(goal: mecha_core::goal::GoalRef) -> ServesNote {
+    let text = charter_text(&goal);
+    ServesNote { goal, text }
+}
+
+/// Everything a review surface derives from the drafting transcript, off
+/// one read of it.
+pub(crate) struct ReviewReads {
+    pub reads: Vec<SourceRead>,
+    pub serves: Option<ServesNote>,
+}
+
+/// [`ReviewReads`] for an item, best-effort like [`source_reads`]: a
+/// session store that cannot be found is empty reads and no note, never a
+/// failed review.
+pub(crate) fn review_reads(item: &OutboxItem) -> ReviewReads {
+    let Ok(dir) = mecha_core::session::Session::default_dir() else {
+        return ReviewReads {
+            reads: Vec::new(),
+            serves: None,
+        };
+    };
+    let messages = mecha_core::outbox_source::messages_for_item(item, &dir);
+    ReviewReads {
+        reads: mecha_core::outbox_source::from_messages(item, &messages),
+        serves: mecha_core::outbox_source::serves_at_staging(item, &messages).map(serves_note),
+    }
 }
 
 /// The owner's text for a charter line a goal names, when the charter loads
