@@ -202,15 +202,24 @@ the moment it starts to.
 
 A release is a **tag on main**, nothing else:
 
-1. Move the `## [Unreleased]` entries in `CHANGELOG.md` under the new version,
-   and bump `version` in the workspace `Cargo.toml` (one PR; every crate
-   inherits it).
-2. Tag the merge commit `vX.Y.Z` and push the tag.
-3. The `release` workflow re-runs the full test suite (a tag can be pushed
-   from anywhere; "it was green when I looked" is not a gate), refuses a tag
-   that does not match the workspace version, and publishes the crates to
-   crates.io in dependency order: `mecha-core` → `mecha-mail` →
-   `mecha-slack` → `mecha-cli`.
+1. Move the `## [Unreleased]` entries in `CHANGELOG.md` under a new
+   `## [X.Y.Z] - date` heading, **and update the link definitions at the
+   bottom of the file** — add `[X.Y.Z]: …/releases/tag/vX.Y.Z` and repoint
+   `[Unreleased]` to compare from `vX.Y.Z` (forgotten at 0.1.15 and again at
+   0.1.18, which is why the workflow now refuses a tag without them) — and
+   bump `version` in the workspace `Cargo.toml` (every crate inherits it).
+   Every bump so far has been one commit straight on `main`, titled
+   `X.Y.Z — <one line>`, with an annotated tag of the same subject.
+2. Tag that commit `vX.Y.Z` and push the tag.
+3. The `release` workflow first refuses, in seconds, a tag that does not
+   match the workspace version or whose changelog lacks the `## [X.Y.Z]`
+   section, the `[X.Y.Z]:` link definition, or an `[Unreleased]` comparing
+   from `vX.Y.Z`; then re-runs the full test suite and clippy (a tag can be
+   pushed from anywhere; "it was green when I looked" is not a gate); then
+   publishes the crates to crates.io in dependency order: `mecha-core` →
+   `mecha-mail` → `mecha-slack` → `mecha-cli`, and creates the GitHub
+   release from the changelog section. A refused tag is recovered by
+   fixing `main`, deleting the tag and pushing it again.
 
 **A new workspace member that anything published depends on belongs in that
 list in the same change that introduces it, not in a follow-up.** `mecha-slack`
