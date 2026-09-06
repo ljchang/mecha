@@ -1843,7 +1843,13 @@ is disabled and inactive; mecha-voice-worker and mecha-parakeet have no
 such line in the repo either and exec a venv by absolute path); the four
 repo copies were installed over them and the manager reloaded — the three
 timer-fired oneshots pick the change up at their next firing (frontdoor
-03:04Z, ruminate 03:30Z, mail-classify 05:34Z), no restart needed. Their
+03:04Z, ruminate 03:30Z, mail-classify 05:34Z), no restart needed. **End
+state for `mecha-serve`: the PATH line comes from two places, the
+installed unit (the repo's value, `~/.cargo/bin` first) and the drop-in
+(the same plus `~/.local/bin`, and the incident in its comment); the
+drop-in wins and both are meant to stay — `systemctl --user cat
+mecha-serve.service` shows both, and removing either changes nothing that
+matters.** Their
 journals since the reboot hold no "not found", so nothing was lost there;
 the serve pages were the only casualty. The rule this adds to the update
 skill: **an installed unit is a copy, and copies drift — when a unit's
