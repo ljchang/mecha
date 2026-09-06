@@ -496,6 +496,16 @@ pub struct ToolCtx {
 /// id change is deliberately not built — like mid-run delivery (item 2), it
 /// is off until the count has been read across a few nights.
 ///
+/// **The anchor lives for one run.** The loop mints a fresh track per run
+/// into a run-local context and never writes back, so a goal confirmed in
+/// one chat turn is not the anchor of the next: today's denominator is
+/// delegated resumes (the resume seeds the answered question's pointer)
+/// and confirmations made and planned against inside one run. The first
+/// readings say nothing about interactive work across turns; carrying the
+/// anchor between a front-end's turns is the next half, and it must be
+/// per conversation, never on the agent's shared context (found on
+/// review, named rather than built).
+///
 /// **The anchor is the pointer the owner confirmed, not the owner's words.**
 /// The answer is prose the harness never interprets, so a correction in it
 /// ("no — the other project") does not move the anchor; what moves it is

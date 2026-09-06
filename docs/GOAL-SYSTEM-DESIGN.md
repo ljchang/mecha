@@ -2152,9 +2152,18 @@ note below.
    prints the line and the JSON keys. Named, not built: the re-ask on a
    kind or id change and the drift *event* (both off until the rate is
    read); the turns-since-confirmation term (no calibration to write it
-   against); and the anchor's own limit — it is the pointer the owner
+   against); the anchor's own limit — it is the pointer the owner
    confirmed, not the owner's words, so a correction in the answer's
-   prose moves nothing until the next question is answered.
+   prose moves nothing until the next question is answered; and its
+   scope — the loop mints the track per run into a run-local context and
+   never writes back, so a goal confirmed in one chat turn does not anchor
+   the next, and the first readings are delegated resumes plus
+   confirmations planned against within one run, not a statement about
+   interactive work across turns (carrying it between a front-end's turns
+   is the next half, per conversation and never on a shared context). A
+   corpus reader keys the drift denominator on the counts, not the
+   anchor, so a row whose anchor kind a build cannot read keeps its
+   measured drift and loses only `anchored`.
 5. **The persistent tier is the board's project.** `tasks` already takes
    `project: Option<String>`, a parent node the graph holds. *Proposed:*
    `GoalRef::Project(node_id)` as a fourth kind, a pointer like `Task`,
