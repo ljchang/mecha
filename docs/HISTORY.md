@@ -4048,6 +4048,20 @@ and the `update` skill the fix; the rung 10 table row that called `Pride`
 open; and `ARCHITECTURE.md`'s "label range is `Neutral` alone". Nothing
 installed or restarted.
 
+**2026-09-05 — user units need PATH without a login.** The box rebooted at
+06:15Z and nobody logged in at the console. A user unit's PATH is the
+manager's, and the manager only gains `~/.local/bin` when a graphical login
+imports it, so `llama-local` and `llama-embed` restarted every ten seconds
+for eight hours on `llama-server: not found` (2,951 restarts) while the
+binary sat in `~/.local/bin` the whole time; both nightly learning passes
+deferred on "model server not answering" and the 11:00Z `morning` trigger
+failed on transport. Fixed at 14:44Z with `*.service.d/path.conf` drop-ins
+naming the path, so the service no longer depends on someone sitting at
+the machine. The same reboot left a second, quieter casualty that was
+found only the next night: see the 2026-09-06 web-app entry in
+`HANDOFF.md`'s machine state — `mecha-serve` started by absolute path and
+only its bare `mecha-graph` children failed.
+
 **2026-09-06 — the goal rides on the one question; a project is a kind of
 goal.** `GOAL-SYSTEM-DESIGN.md` §17.7 items 3 and 5, built as
 `feat/goal-sentence`. Item 3 had been ruled on 2026-09-04 and was the
