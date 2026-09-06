@@ -1886,8 +1886,10 @@ sensor)* — the expected reading until a run under this binary
 plans under a confirmed goal. Installed binary and `main` agree at
 `67fb55e`; nothing is owed on this machine from this merge.
 
-**2026-09-06 17:10–17:19Z — patch releases for all three repositories,
-then the update skill end to end (mecha-53, on the owner's word "run the
+**2026-09-06 — patch releases for all three repositories (verification
+ending 17:07Z, bump commits 17:07:10Z graph, 17:08:16Z factory, 17:09:05Z
+mecha, both workflows green within the quarter hour), then the update
+skill end to end 17:10–17:19Z (mecha-53, on the owner's word "run the
 patch releases for anything that needs them and then run update skill").**
 Releases, each a bump commit straight on `main` and an annotated tag with
 the same subject, the shape every previous bump had (no PR, no branch
@@ -1902,8 +1904,11 @@ published all four crates and the GitHub release — crates.io answers
 on review: the bump left the changelog's link definitions behind — no
 `[0.1.18]` definition and `[Unreleased]` still comparing from v0.1.17,
 with `[0.1.15]` missing too, so a recurring gap in the bump procedure that
-no workflow gate sees — fixed on `main` in the docs PR that carries this
-row, and the next bump should add the definition with the heading);
+no workflow gate saw — fixed on `main` in the docs PR that carries this
+row, which also adds the gate: `release.yml` now refuses a tag whose
+version has no `[x.y.z]:` link definition in `CHANGELOG.md`, beside the
+tag-versus-workspace check, so the remedy is a workflow step rather than a
+sentence a later bump has to remember);
 **mecha-graph v0.1.5** (`a807885`, "0.1.5 — a task's association outlives
 the task"; the first tag since v0.1.2 — 0.1.3 and 0.1.4 bumped the version
 without a tag — no release workflow there, and its crates were last

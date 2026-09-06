@@ -47,6 +47,19 @@ jobs:
           [[ "$TAG" == "$VERSION" ]] || {
             echo "tag v$TAG != workspace version $VERSION" >&2; exit 1; }
 
+      # The bump retitles the changelog's Unreleased section and, twice now
+      # (0.1.15, 0.1.18), forgot the link definition under it — so the
+      # heading rendered as literal brackets on the docs site and in the
+      # release body this workflow cuts, and `[Unreleased]` went on
+      # comparing from the previous tag. A sentence in a handoff row is
+      # not a gate; this is.
+      - name: The changelog must define the version's link
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          grep -q "^\[$TAG\]: " CHANGELOG.md || {
+            echo "CHANGELOG.md has no [$TAG] link definition" >&2; exit 1; }
+
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
 
