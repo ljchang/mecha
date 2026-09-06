@@ -2111,8 +2111,14 @@ note below.
    reads the ask's `serves` as a second producer of a *named* goal, the
    plan's first; `sessions appraise` prints how many sessions put a goal
    to the owner and how many had it answered, from the question store.
-   The charter budget moved from 2,000 to 2,500 because it bounds the
-   rendering and the block's fixed prose grew by ~480 characters. Not
+   An id is one token: `GoalRef::from_str` refuses whitespace and control
+   characters (and `Charter::validate` refuses a line id a run could not
+   cite), because the note prints a model-written pointer beside the
+   owner's own charter text on the page where an injected draft is
+   released or refused, and a free-text id could forge the separator or
+   add a provenance line (found on review). The charter budget moved from
+   2,000 to 2,500 because it bounds the rendering and the block's fixed
+   prose grew by ~480 characters. Not
    built, deliberately: a chat confirmation is in the transcript (the
    `tool_use` and its result) and no reader consumes it — item 4's
    distance is its first consumer; the cost threshold the §17.3 text

@@ -128,7 +128,9 @@ fn list(all: bool) -> Result<()> {
 fn show(id: &str) -> Result<()> {
     let q = store()?.find(id)?;
     warn_if_tainted(&q);
-    println!("{}\n", q.question.trim());
+    // The question without the goal line rendered above it — the goal is
+    // printed once, as its typed row below, rather than twice.
+    println!("{}\n", q.asked());
     for opt in &q.options {
         println!("  - {opt}");
     }

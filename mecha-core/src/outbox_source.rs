@@ -206,22 +206,28 @@ pub fn serves_at_staging(item: &OutboxItem, messages: &[Message]) -> Option<crat
     let staged_in = messages.iter().position(|m| {
         m.role == Role::Assistant
             && m.content.iter().any(|b| match b {
-                Block::ToolUse { id, name, input } => match &item.call_id {
-                    Some(call_id) => id == call_id,
-                    None => name == &item.tool && input == &item.args_before,
-                },
+                Block::ToolUse { id, name, input } => is_staging_call(item, id, name, input),
                 _ => false,
             })
     })?;
     crate::tool::todo::TodoTool::plan_from_transcript(&messages[..=staged_in]).and_then(|p| p.goal)
 }
 
-/// [`serves_at_staging`] over the drafting session on disk, best-effort
-/// like [`for_item`]: a missing or unreadable transcript is an absent note,
-/// never a failed review. A surface that also wants the source reads
-/// should call [`messages_for_item`] once and feed both pure halves.
-pub fn serves_for_item(item: &OutboxItem, sessions_dir: &Path) -> Option<crate::goal::GoalRef> {
-    serves_at_staging(item, &messages_for_item(item, sessions_dir))
+/// Is this `tool_use` the call that staged `item`?
+///
+/// By id when the item has one, because identity by *content* was only
+/// ever true while nothing between the model's call and the stored draft
+/// touched the arguments — the loop now pins a call's declared schema
+/// defaults into the draft it stages, so a `mail_reply` whose `reply_all`
+/// was filled does not equal its own recorded input. The content match
+/// stays as the fallback, for a draft staged before `call_id` existed and
+/// for one no tool call produced. One predicate for both walks over the
+/// transcript, so they cannot drift apart (found on review).
+fn is_staging_call(item: &OutboxItem, id: &str, name: &str, input: &serde_json::Value) -> bool {
+    match &item.call_id {
+        Some(call_id) => id == call_id,
+        None => name == item.tool && *input == item.args_before,
+    }
 }
 
 /// The pure half, so the join is unit-tested rather than trialled against a
@@ -294,23 +300,12 @@ pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead>
         };
         // The staging call. Everything after it is what the run did *with* the
         // draft, not what it drafted from, and the call itself joins to its own
-        // arguments — so this is where the walk ends.
-        //
-        // By id when the item has one, because identity by *content* was only
-        // ever true while nothing between the model's call and the stored
-        // draft touched the arguments. The loop now pins a call's declared
-        // schema defaults into the draft it stages, so a `mail_reply` whose
-        // `reply_all` was filled does not equal its own recorded input — the
-        // walk ran past the staging call and the draft joined to itself on its
-        // own `thread_id`, which is this break's entire purpose.
-        //
-        // The content match stays as the fallback, for a draft staged before
-        // `call_id` existed and for one no tool call produced.
-        let is_staging_call = match &item.call_id {
-            Some(call_id) => id == call_id,
-            None => name == &item.tool && input == &item.args_before,
-        };
-        if is_staging_call {
+        // arguments — so this is where the walk ends. The walk once ran past
+        // the staging call because a pinned default made the draft unequal
+        // to its own recorded input, and the draft joined to itself on its
+        // own `thread_id` — which is this break's entire purpose; see
+        // `is_staging_call` for the id-then-content rule.
+        if is_staging_call(item, id, name, input) {
             break;
         }
         let Some(content) = results.get(id.as_str()) else {
