@@ -4081,8 +4081,16 @@ have lost its break — it now renders one line per line and counts the
 rows; and `CHARTER_CHAR_BUDGET` went from 2,000 to 2,500 because it bounds
 the rendering and the block's fixed prose grew by ~480 characters — the
 live charter measured 1,777 before and 2,256 after, so an unchanged
-budget would have warned on every run from the first start. Nothing
-installed or restarted when written.
+budget would have warned on every run from the first start. Three review
+passes followed (`HANDOFF.md`'s goal section has the tally): the two
+findings that changed the design were that a model-written goal *id*
+printed beside the owner's charter text on the outbox page could forge the
+` — ` separator or add a provenance line, and that the goal *sentence*
+could forge an `answered …` row on `questions show` — so an id is one token
+at `GoalRef::from_str` and a sentence is one line at `hypothesis_of`, each
+with a test that drives the forged string. Merged at `53f087f` on the
+owner's word and deployed 02:32Z the same night (binary and `web/dist`,
+four units restarted).
 
 ## The measurement record
 
