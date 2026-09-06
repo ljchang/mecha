@@ -146,10 +146,18 @@ fn show(id: &str) -> Result<()> {
     // The goal the run put up for confirmation, as the typed record beside
     // the prose above — so a reader can see that answering this *is* the
     // confirmation the appraisal will read, and what pointer it confirms.
+    // One line, whatever a stored record holds: the tool collapses the
+    // sentence at the door, and a record written by anything else must not
+    // be able to add an `answered …` row to this block (found on review).
     if let Some(goal) = &q.goal {
+        let sentence = goal
+            .sentence
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         match &goal.serves {
-            Some(serves) => println!("goal     {} (serves {serves})", goal.sentence.trim()),
-            None => println!("goal     {}", goal.sentence.trim()),
+            Some(serves) => println!("goal     {sentence} (serves {serves})"),
+            None => println!("goal     {sentence}"),
         }
     }
     println!("session  {}", q.session_id);
