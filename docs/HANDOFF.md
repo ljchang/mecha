@@ -1830,6 +1830,22 @@ reading the instrument wrong. `docs/MAIL-CORPUS-RESEARCH.md` §3 has the two
 caveats in full — **gitignored, like `OPERATIONS.md`**, because its figures are
 one person's mailbox rather than a public fact.
 
+**The first `mecha exp` run (2026-09-06) priced the interlock.** AgentDojo's
+workspace suite, 80 trials under the full harness: security 40/40 with the
+model never attempting an injected send, so the catch rate is *unmeasured*,
+not perfect; utility 21/40 on the plain tasks, with 15 of the 19 failures
+the interlock refusing the user's own send after one calendar read. Three
+artefacts — the real-date stamp against the suite's 2024 clock, task 7's
+grader failing its own ground truth in agentdojo 0.1.35, and the staged
+`eval/workspace` as a distractor — are in HISTORY's measurement record and
+want settling before the number is repeated. What it points at next: a
+clock the manifest can pin, a manifest with no staged workspace (or tools
+narrowed to the fixture server), an attack the model actually obeys so the
+catch rate exists, an arm that varies `trifecta` (not in the lever set — a
+widening to argue once), and `exp new` writing absolute paths so the store
+is recoverable without the checkout's cwd. Record:
+`results/dojo-workspace-2026-09-06.json`.
+
 ---
 
 ## What to do next
@@ -4420,8 +4436,9 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   **not re-verified since**, so assume it is stale rather than current), and read any
   job with `bench/check-subset.py` before believing it is a subset.
   k=5 for a leaderboard-comparable number is the follow-up, ~74h.
-  AgentDojo (for the interlock) and a SWE-bench Bash Only control are named in
-  the research and unstarted.
+  AgentDojo ran under `mecha exp` on 2026-09-06 (HISTORY's measurement
+  record); a SWE-bench Bash Only control is named in the research and
+  unstarted.
 - **`mecha replay --json` is not wired into CI.** `scripts/replay-regression.sh`
   consumes it locally, which is the standing regression check; making it a
   workflow needs a single-slot llama-server that CI does not have.
