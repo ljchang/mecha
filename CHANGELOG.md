@@ -3242,9 +3242,11 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.17...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.18...HEAD
+[0.1.18]: https://github.com/ljchang/mecha/releases/tag/v0.1.18
 [0.1.17]: https://github.com/ljchang/mecha/releases/tag/v0.1.17
 [0.1.16]: https://github.com/ljchang/mecha/releases/tag/v0.1.16
+[0.1.15]: https://github.com/ljchang/mecha/releases/tag/v0.1.15
 [0.1.14]: https://github.com/ljchang/mecha/releases/tag/v0.1.14
 [0.1.13]: https://github.com/ljchang/mecha/releases/tag/v0.1.13
 [0.1.12]: https://github.com/ljchang/mecha/releases/tag/v0.1.12
