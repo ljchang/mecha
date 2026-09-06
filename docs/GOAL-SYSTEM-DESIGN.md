@@ -2134,8 +2134,11 @@ note below.
    and carrying forward the anchor a caller seeded: a question resume
    seeds the `serves` of the question the owner just answered
    (`questions answer`), and `ask_user` sets it in-run when a *present*
-   human answers a question carrying `serves` (`Asker::parks` tells the
-   tool a park note from an answer). `todo` judges every plan write
+   human answers a question carrying `serves` — every `Asker` answers
+   `ask_about` with a `Reply`, `Answered` for a person's words or `Parked`
+   for a stored question, per question rather than per asker, because the
+   web asker shows a card and parks only when nobody answers it (found on
+   review). `todo` judges every plan write
    against it: the same pointer is not drift; a different kind, a
    different id, or no `serves` at all once an anchor stands is
    (`goal::drifts_from`) — the plan carries one goal for the whole list,

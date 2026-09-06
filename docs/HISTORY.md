@@ -4101,8 +4101,12 @@ per run by the loop on the step counters' pattern, carrying forward the
 anchor a caller seeded: `questions answer` seeds the `serves` of the
 question the owner just answered, and `ask_user` sets it in-run when a
 present human answers a question that carried a pointer — a new
-`Asker::parks` lets the tool tell a park note from an answer, which is what
-keeps a delegated run's question from anchoring on its own note. `todo`
+`Asker::ask_about` answers a `Reply` — `Answered` for a person's words,
+`Parked` for a stored question — so the tool can tell a park note from an
+answer, which is what keeps a delegated run's question from anchoring on
+its own note; per question, not per asker, because the first cut's
+per-asker flag missed the web asker, which shows a card and parks only
+when nobody answers it (the first review pass's medium). `todo`
 judges every plan write against the anchor (`goal::drifts_from`: a changed
 kind or id, or no goal once one is confirmed); `RunOutcome` and `RunStats`
 carry the anchor and both counts, unknown before the sensor and folded

@@ -2798,7 +2798,9 @@ when touching it:
   is minted per run by the loop like `step_counts`, carrying the anchor a
   caller seeded — a question resume seeds the answered question's
   `serves`; `ask_user` sets it on a present human's answer and never on a
-  park (`Asker::parks`). `todo` counts each plan write and whether its
+  park — every `Asker` answers `ask_about` with a `Reply` that says
+  whether a person spoke (`Answered`) or the question was stored for later
+  (`Parked`), per question, because the web asker does both. `todo` counts each plan write and whether its
   `serves` left the anchor (`goal::drifts_from`: a changed kind or id, or
   no goal at all). The record carries anchor and both counts, `Option` and
   unknown before the sensor; the corpus rate is over runs that planned
