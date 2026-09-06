@@ -171,7 +171,61 @@ non-zero exit, which in `ruminate.sh` (not `set -e`) shows up in the dated
 logfile while the script walks on. The silent case is the one to guard;
 the loud one is the good outcome. Every shipped unit that execs `mecha`,
 directly or through a wrapper, now carries that line (`scripts/*.service`,
-`scripts/voice/*.service`). After every install of
+`scripts/voice/*.service`) — **and the shipped file is not the installed
+one.** `~/.config/systemd/user/*.service` are copies, and a copy drifts:
+on 2026-09-06 four installed units (`mecha-serve`, `mecha-frontdoor`,
+`mecha-mail-classify`, `mecha-ruminate`) predated the PATH line their
+repo copies carried, and `mecha serve` — started by absolute path, so the
+unit looked healthy — had answered 502 on every graph page since the
+2026-09-05 reboot because its bare `mecha-graph` spawn ran on the
+manager's PATH. When a unit's *child* says "not found", ask systemd what
+it will actually exec with — the merged view, drop-ins included, over the
+**installed** units (an installed unit with no `scripts/` copy, like
+`mecha-drain`, is exactly the kind a repo-side loop cannot see) — and
+only then diff the file to find out *why*:
+
+```bash
+# a running unit: the PATH its process really holds (manager inheritance
+# and EnvironmentFile= included, which `show -p Environment` does not see)
+# every installed mecha unit, from the manager rather than a list kept by hand
+for u in $(systemctl --user list-unit-files 'mecha-*.service' --no-legend | awk '{print $1}'); do
+  pid=$(systemctl --user show -p MainPID --value "$u")
+  printf '%s: ' "$u"
+  if [ "$pid" != 0 ]; then
+    tr '\0' '\n' < /proc/$pid/environ | grep '^PATH=' \
+      || echo '(running with no PATH in its environment)'
+  else
+    # not running (a timer-fired oneshot between firings): the Environment=
+    # assignments, drop-ins merged — inheritance from the manager is invisible here
+    systemctl --user show "$u" -p Environment
+  fi
+done
+# then, for a unit whose PATH is wrong or missing, find out why:
+#   systemctl --user cat <unit>          # main file + drop-ins
+#   diff scripts/<unit>.service ~/.config/systemd/user/<unit>.service
+#   (mecha-serve ships from scripts/voice/, not scripts/)
+# and the fix, when the repo copy is right and the installed one drifted:
+#   cp scripts[/voice]/<unit>.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#   then restart a long-running unit; a timer-fired oneshot picks it up at its next firing.
+```
+
+`mecha-serve` carries the line twice on this machine — the installed unit
+and `mecha-serve.service.d/path.conf` — and the drop-in is the one to
+keep: it adds `~/.local/bin` and holds the incident's record, and the
+later assignment wins, so `cat` showing both is the expected state, not
+drift.
+
+A silent line is the trap the loop guards against: a unit with no PATH
+must print *that*, not let its label run into the next unit's value.
+
+A file diff alone misreads in both directions: a unit correct only
+through a drop-in prints as drifted, and a unit byte-identical to the
+repo but overridden by a stale drop-in prints as clean. (`mecha-voice-serve`
+is disabled, inactive and deliberately left stale, so a file diff over
+`scripts/voice/` reports it forever — another reason to start from the
+effective state.)
+
+After every install of
 `mecha-graph-mcp`, either restart those hosts or accept that they run the
 previous build until their next start; nothing about a stale child
 announces itself, which is the same silence the removed `pkg-mcp` entry
