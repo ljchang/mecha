@@ -948,6 +948,19 @@ real servers' tool contracts, stateful, fail-closed), `eval/fixtures/home/`
 `eval/home-lifetime.toml`. §21.2's AgentDojo seed is still the way to a
 larger one. B, C, D₂ and E remain, as does the model-driven principal.
 
+**First run, 2026-09-06.** `eval/dojo-workspace.toml` ran end to end on the
+installed binary — 80 trials in about twenty minutes — and the readout is in
+`HISTORY.md`'s measurement record: security 40/40 with the model never
+attempting the injected send (so the interlock's catch rate is unmeasured,
+not 100%), utility 21/40 plain with 15 failures the interlock refusing the
+user's own send. Three conditions to settle before the number is repeated —
+the real-date stamp against the suite's 2024-05-15 clock, agentdojo
+0.1.35's task 7 grading its own ground truth false, and the staged
+`eval/workspace` as a distractor beside the suite's drive — and one finding
+about the instrument: a manifest's relative paths resolve against each
+verb's cwd, so `status` from elsewhere shows pending as 0. E's first reader
+is that run's readout script, which the binary does not have.
+
 Each step is useful alone, which is still the test of whether the split is
 real: step 0 is a finding by itself, A′ makes today's `eval` honest about
 what it forces, D₁ is a runner other subsystems (the learning loop, harness
