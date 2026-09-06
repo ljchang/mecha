@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `goal_plan_writes`, `goal_drift_writes` and `goal_unnamed_writes`
   (unknown before the sensor), and `mecha sessions health` prints a
   `goal drift` line and JSON keys whose rate is changed pointers over
-  runs that planned under an anchor (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 4, the sensor
+  runs that named a goal at least once under an anchor (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 4, the sensor
   half; the re-ask stays off until it is read).
 - **The goal rides on the question, and a project is a kind of goal.**
   `ask_user` takes `goal` (one sentence) and `serves` (`charter:<id>`,
