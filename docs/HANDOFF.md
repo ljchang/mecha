@@ -2838,12 +2838,18 @@ the mechanism and every decision. What it left standing:
 
 **2026-09-06, later — §17.7 item 4's sensor half: PR #202
 (`feat/goal-distance`), merged at `67fb55e` on the owner's word after
-nine review passes, counted from the PR's comment record (one medium in
-each of the first two, then only minors, observations and record nits;
-the ninth landed 22 seconds before the merge and raised nothing —
-every one taken except a test for
-the web asker's shown-then-abandoned branch, which needs the ask timeout
-made injectable), and deployed the same morning (the machine-state row
+nine review passes, counted from the PR's comment record (findings at
+the medium bar in passes 1, 2 and 4 — the web asker parking per question,
+the docs naming a removed API, and the one-counter-for-two-causes and
+untested-web-asker pair; minors, observations and record nits in the
+rest; the ninth landed 22 seconds before the merge, after the last
+commit, and raised two minors left standing — `WebAsker::ask_in`'s
+`Reply`-to-text flatten, which nothing in production reaches, and
+`scratch_park`'s unswept temp dir — so the untaken set is those two plus
+a test for the web asker's shown-then-abandoned branch, which needs the
+ask timeout made injectable; the first version of this clause said "then
+only minors" and "raised nothing", written before that ninth pass was
+read — corrected the same morning), and deployed the same morning (the machine-state row
 under §Machine state, dated, has the probes).** `HISTORY.md`'s entry of
 the same date has what and why; the design doc's built note under item 4
 has the shape and what is named rather than built (the re-ask, the drift
