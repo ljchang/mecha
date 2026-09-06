@@ -1114,6 +1114,7 @@ mod tests {
             (7, 3, 3)
         );
         assert_eq!(corpus.goal_drift_rate(), Some(2.0 / 3.0));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The step counters are the same shape again: unknown over rows from
