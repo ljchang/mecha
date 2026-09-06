@@ -178,14 +178,29 @@ on 2026-09-06 four installed units (`mecha-serve`, `mecha-frontdoor`,
 repo copies carried, and `mecha serve` — started by absolute path, so the
 unit looked healthy — had answered 502 on every graph page since the
 2026-09-05 reboot because its bare `mecha-graph` spawn ran on the
-manager's PATH. When a unit's *child* says "not found", diff the
-installed unit against `scripts/` before reasoning about anything else:
+manager's PATH. When a unit's *child* says "not found", ask systemd what
+it will actually exec with — the merged view, drop-ins included, over the
+**installed** units (an installed unit with no `scripts/` copy, like
+`mecha-drain`, is exactly the kind a repo-side loop cannot see) — and
+only then diff the file to find out *why*:
 
 ```bash
-for f in scripts/*.service scripts/voice/*.service; do
-  diff -q "$f" ~/.config/systemd/user/"$(basename "$f")"
+# what systemd will actually exec with — drop-ins included
+for u in mecha-serve mecha-slack mecha-triggers mecha-drain \
+         mecha-frontdoor mecha-mail-classify mecha-ruminate; do
+  printf '%s: ' "$u"; systemctl --user show "$u.service" -p Environment
 done
+# then, for a unit whose PATH is wrong or missing, find out why:
+#   systemctl --user cat <unit>                                  # main file + drop-ins
+#   diff scripts/<unit>.service ~/.config/systemd/user/<unit>.service
 ```
+
+A file diff alone misreads in both directions: a unit correct only
+through a drop-in prints as drifted, and a unit byte-identical to the
+repo but overridden by a stale drop-in prints as clean. (`mecha-voice-serve`
+is disabled, inactive and deliberately left stale, so a file diff over
+`scripts/voice/` reports it forever — another reason to start from the
+effective state.)
 
 After every install of
 `mecha-graph-mcp`, either restart those hosts or accept that they run the
