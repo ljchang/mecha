@@ -189,7 +189,9 @@ only then diff the file to find out *why*:
 # and EnvironmentFile= included, which `show -p Environment` does not see)
 for u in mecha-serve mecha-slack mecha-triggers mecha-drain; do
   pid=$(systemctl --user show -p MainPID --value "$u.service")
-  printf '%s: ' "$u"; tr '\0' '\n' < /proc/$pid/environ | grep '^PATH='
+  printf '%s: ' "$u"
+  { [ "$pid" != 0 ] && tr '\0' '\n' < /proc/$pid/environ | grep '^PATH='; } \
+    || echo '(no PATH in the process environment — or not running)'
 done
 # an inactive oneshot has no pid: the Environment= assignments, drop-ins merged
 for u in mecha-frontdoor mecha-mail-classify mecha-ruminate; do
@@ -199,7 +201,13 @@ done
 #   systemctl --user cat <unit>          # main file + drop-ins
 #   diff scripts/<unit>.service ~/.config/systemd/user/<unit>.service
 #   (mecha-serve ships from scripts/voice/, not scripts/)
+# and the fix, when the repo copy is right and the installed one drifted:
+#   cp scripts[/voice]/<unit>.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#   then restart a long-running unit; a timer-fired oneshot picks it up at its next firing.
 ```
+
+A silent line is the trap the loop guards against: a unit with no PATH
+must print *that*, not let its label run into the next unit's value.
 
 A file diff alone misreads in both directions: a unit correct only
 through a drop-in prints as drifted, and a unit byte-identical to the
