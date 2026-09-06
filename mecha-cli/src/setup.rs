@@ -1639,6 +1639,16 @@ impl mecha_core::tool::ask::Asker for NoOneToAsk {
     async fn ask(&self, _question: &str, _options: &[String]) -> Option<String> {
         None
     }
+    /// Nobody: no answer of either kind.
+    async fn ask_about(
+        &self,
+        _ctx: &mecha_core::tool::ToolCtx,
+        _question: &str,
+        _options: &[String],
+        _goal: Option<&mecha_core::goal::GoalHypothesis>,
+    ) -> Option<mecha_core::tool::ask::Reply> {
+        None
+    }
 }
 
 /// Tools a replay may offer **for their description alone**, when the live

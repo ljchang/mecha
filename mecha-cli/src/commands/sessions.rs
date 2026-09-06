@@ -1342,6 +1342,7 @@ fn health(
     // mid-run rule delivery is switched on. Unknown before the sensor,
     // never a dash that reads as zero.
     let steps = corpus.step_totals();
+    let goals = corpus.goal_totals();
     if steps.planned > 0 {
         // Step totals beside run shares, each labelled as what it is, and
         // the denominator named: runs that completed a plan step, not every
@@ -1367,6 +1368,41 @@ fn health(
         );
     } else {
         println!("  plan steps          — (no run in this corpus recorded the counters)");
+    }
+    // §17.7 item 4's sensor: plan writes judged against the goal the owner
+    // confirmed. The denominator is runs that had an anchor *and* wrote a
+    // plan, never every run since the sensor. The re-ask stays off until
+    // this line has been read across a few nights, on item 2's posture.
+    if goals.planned > 0 {
+        // Two opposite findings, two numbers: a write that named a different
+        // goal and a write that named none are not one kind of drift, and
+        // the re-ask decision is taken on the first alone.
+        println!(
+            "  goal drift          of {} plan write(s) under a confirmed goal, {} changed the \
+             pointer and {} named nothing; a changed pointer in {} of the {} run(s) that named a \
+             goal under an anchor ({} planned under one, {} anchored, of {} that recorded the \
+             sensor)",
+            goals.plan_writes,
+            goals.drift_writes,
+            goals.unnamed_writes,
+            pct(corpus.goal_drift_rate()),
+            goals.named,
+            goals.planned,
+            goals.anchored,
+            goals.sensed
+        );
+    } else if goals.anchored > 0 {
+        println!(
+            "  goal drift          — ({} run(s) had a confirmed goal; none wrote a plan under it)",
+            goals.anchored
+        );
+    } else if goals.sensed > 0 {
+        println!(
+            "  goal drift          — ({} run(s) recorded the sensor; none had a confirmed goal)",
+            goals.sensed
+        );
+    } else {
+        println!("  goal drift          — (no run in this corpus recorded the sensor)");
     }
 
     let by_model = corpus.by_model();
@@ -1405,6 +1441,7 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
     let (cost, priced) = corpus.cost_usd();
     let (overflows, sensed) = corpus.context_overflows();
     let steps = corpus.step_totals();
+    let goals = corpus.goal_totals();
     serde_json::json!({
         "runs": corpus.len(),
         "sessions_read": corpus.sessions_read,
@@ -1438,6 +1475,17 @@ fn as_json(corpus: &mecha_core::runlog::Corpus) -> serde_json::Value {
         "step_completions": steps.completions,
         "step_measured": steps.measured,
         "step_nulls": steps.nulls,
+        // §17.7 item 4's sensor: `null` before any run planned under a
+        // confirmed goal; the denominators beside it.
+        "goal_drift_rate": corpus.goal_drift_rate(),
+        "runs_with_goal_sensor": goals.sensed,
+        "runs_with_a_goal_anchor": goals.anchored,
+        "runs_planned_under_an_anchor": goals.planned,
+        // The drift rate's denominator: named a goal at least once under it.
+        "runs_named_under_an_anchor": goals.named,
+        "goal_plan_writes": goals.plan_writes,
+        "goal_drift_writes": goals.drift_writes,
+        "goal_unnamed_writes": goals.unnamed_writes,
         "step_reopens": steps.reopens,
         "cost_usd": cost,
         "runs_priced": priced,

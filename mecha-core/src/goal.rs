@@ -152,6 +152,30 @@ where
         .collect())
 }
 
+/// How a plan write stands to the goal the owner confirmed — `GOAL-SYSTEM-
+/// DESIGN.md` §17.7 item 4's distance, structural and with no model: the
+/// same pointer is [`Drift::Same`]; a changed kind or id is [`Drift::Changed`],
+/// the case the design's re-ask is for; and a write that names nothing once
+/// a goal has been confirmed is [`Drift::Unnamed`] — kept apart from
+/// `Changed` because on a local model the likely dominant cause is a plan
+/// written without repeating `serves`, and a reading that could not tell
+/// forgetfulness from a real change of goal would be the number the re-ask
+/// decision is taken on (found on review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drift {
+    Same,
+    Changed,
+    Unnamed,
+}
+
+pub fn drift_of(anchor: &GoalRef, current: Option<&GoalRef>) -> Drift {
+    match current {
+        None => Drift::Unnamed,
+        Some(c) if c == anchor => Drift::Same,
+        Some(_) => Drift::Changed,
+    }
+}
+
 impl fmt::Display for GoalRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.kind(), self.id())
@@ -339,6 +363,26 @@ mod tests {
         assert!("charter:answer-what-waits-on-me".parse::<GoalRef>().is_ok());
         assert!("task:urn:uid:7".parse::<GoalRef>().is_ok());
         assert!("project:proj.teaching".parse::<GoalRef>().is_ok());
+    }
+
+    /// §17.7 item 4's distance: the same pointer is not drift; a changed
+    /// kind or id is; and no goal at all is its own finding, kept apart.
+    #[test]
+    fn drift_tells_a_changed_pointer_from_a_plan_that_named_nothing() {
+        let anchor = GoalRef::Task("t1".into());
+        assert_eq!(
+            drift_of(&anchor, Some(&GoalRef::Task("t1".into()))),
+            Drift::Same
+        );
+        assert_eq!(
+            drift_of(&anchor, Some(&GoalRef::Task("t2".into()))),
+            Drift::Changed
+        );
+        assert_eq!(
+            drift_of(&anchor, Some(&GoalRef::Project("t1".into()))),
+            Drift::Changed
+        );
+        assert_eq!(drift_of(&anchor, None), Drift::Unnamed);
     }
 
     /// The fourth kind is a pointer like `Task`: the id is the board's, and

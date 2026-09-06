@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use tokio::sync::oneshot;
 
 use mecha_core::config::PermissionMode;
-use mecha_core::tool::ask::Asker;
+use mecha_core::tool::ask::{Asker, Reply};
 use mecha_core::tool::{Approver, Decision, ModeApprover, Tool, ToolCtx};
 
 use super::chat::WireEvent;
@@ -288,6 +288,24 @@ impl Asker for WebAsker {
     }
 
     async fn ask_in(&self, ctx: &ToolCtx, question: &str, options: &[String]) -> Option<String> {
+        self.ask_about(ctx, question, options, None)
+            .await
+            .map(|r| r.text().to_string())
+    }
+
+    /// The one body: a card to a present person, or a park. Answers as a
+    /// [`Reply`] because this asker does both, per question — a park note
+    /// must not anchor the run on a goal nobody confirmed, and a parked
+    /// question must carry the goal into the store so the resume can seed
+    /// it (found on review: the default forwarded through `ask_in` and
+    /// dropped both).
+    async fn ask_about(
+        &self,
+        ctx: &ToolCtx,
+        question: &str,
+        options: &[String],
+        goal: Option<&mecha_core::goal::GoalHypothesis>,
+    ) -> Option<Reply> {
         let key = ctx.workspace.file_name()?.to_str()?.to_string();
         let (questions, events, park) = (self.lookup)(&key)?;
 
@@ -297,7 +315,7 @@ impl Asker for WebAsker {
         // run stops rather than carrying on having invented an answer.
         if let Some(park) = &park {
             if events.receiver_count() == 0 {
-                return park.ask_in(ctx, question, options).await;
+                return park.ask_about(ctx, question, options, goal).await;
             }
         }
 
@@ -327,11 +345,11 @@ impl Asker for WebAsker {
         questions.close(qid);
         let _ = events.send(WireEvent::QuestionDone { qid });
         match (answer, &park) {
-            (Some(text), _) => Some(text),
+            (Some(text), _) => Some(Reply::Answered(text)),
             // Shown, and nobody answered — the owner walked away mid-question,
             // which is indistinguishable from never having been there. Same
             // ending, so the run does not have to guess which happened.
-            (None, Some(park)) => park.ask_in(ctx, question, options).await,
+            (None, Some(park)) => park.ask_about(ctx, question, options, goal).await,
             (None, None) => None,
         }
     }
@@ -381,6 +399,90 @@ mod tests {
             },
             questions,
         )
+    }
+
+    /// A `WebAsker` over one session, keyed by the jail's file name, with
+    /// an optional park behind it. The events sender is returned so a test
+    /// can subscribe (a present person) or not (an empty room).
+    fn asker(
+        park: Option<Arc<mecha_core::questions::ParkingAsker>>,
+    ) -> (
+        WebAsker,
+        Questions,
+        tokio::sync::broadcast::Sender<WireEvent>,
+        ToolCtx,
+    ) {
+        let questions = Questions::default();
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        let (q, e) = (questions.clone(), events.clone());
+        let lookup: SessionLookup = Arc::new(move |key: &str| {
+            (key == "sess-w").then(|| (q.clone(), e.clone(), park.clone()))
+        });
+        let ctx = ToolCtx {
+            workspace: std::path::PathBuf::from("/tmp/sess-w"),
+            ..ToolCtx::default()
+        };
+        (WebAsker { lookup }, questions, events, ctx)
+    }
+
+    fn scratch_park() -> Arc<mecha_core::questions::ParkingAsker> {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-webasker-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let store = mecha_core::questions::QuestionStore::open(dir).unwrap();
+        Arc::new(mecha_core::questions::ParkingAsker::new(
+            Arc::new(store),
+            "sess-w",
+            Some("task-w".into()),
+        ))
+    }
+
+    /// The asker that does both, tested for which it does when: an empty
+    /// room parks — the reply says so, and the parked question carries the
+    /// goal — and a present person's text is an answer. The first review
+    /// pass found this asker forwarding through a default that said
+    /// "answered" on the park branch; `Reply` is what closes it, and this
+    /// is what keeps it closed.
+    #[tokio::test]
+    async fn an_empty_room_parks_with_the_goal_and_a_person_answers() {
+        use mecha_core::goal::{GoalHypothesis, GoalRef};
+        let goal = GoalHypothesis {
+            sentence: "ship it".into(),
+            serves: Some(GoalRef::Task("task-w".into())),
+        };
+        // Nobody subscribed: a park, with the goal stored beside it.
+        let park = scratch_park();
+        let (web, _, _events, ctx) = asker(Some(park.clone()));
+        let reply = web
+            .ask_about(&ctx, "Which?", &[], Some(&goal))
+            .await
+            .unwrap();
+        assert!(matches!(reply, Reply::Parked(_)), "{reply:?}");
+        let parked = park.parked();
+        assert_eq!(parked.len(), 1);
+
+        // A person present: their text is an answer.
+        let (web, questions, events, ctx) = asker(Some(scratch_park()));
+        let mut rx = events.subscribe();
+        let q2 = questions.clone();
+        tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                if let WireEvent::Question { qid, .. } = event {
+                    q2.answer(qid, Answer::Text("the March one".into()));
+                    break;
+                }
+            }
+        });
+        let reply = web
+            .ask_about(&ctx, "Which?", &[], Some(&goal))
+            .await
+            .unwrap();
+        assert_eq!(reply, Reply::Answered("the March one".into()));
     }
 
     #[tokio::test]

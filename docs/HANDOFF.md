@@ -2814,6 +2814,29 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
+**2026-09-06, later — §17.7 item 4's sensor half is built on
+`feat/goal-distance` (unmerged when written; merging is the owner's
+call).** `HISTORY.md`'s entry of the same date has what and why; the
+design doc's built note under item 4 has the shape and what is named
+rather than built (the re-ask, the drift event, the turns term). What to
+expect on this machine after it lands: `sessions health` prints a `goal
+drift` line reading *no run in this corpus recorded the sensor* until the
+first run under the new binary, then *N run(s) recorded the sensor; none
+had a confirmed goal* until a delegated run's question is answered or a
+chat run answers a goal-carrying `ask_user`; `mecha sessions health
+--json` gains `goal_drift_rate`, `runs_with_goal_sensor`,
+`runs_with_a_goal_anchor`, `runs_planned_under_an_anchor`,
+`runs_named_under_an_anchor` (the rate's denominator), `goal_plan_writes`,
+`goal_drift_writes`, `goal_unnamed_writes` — the last two are opposite
+findings and the rate is over the first alone. The anchor lives for one run:
+the first readings are delegated resumes plus confirmations planned
+against within one run, not interactive work across turns.
+Deploy = binary only (no web change). **Open from §17.7 after this:**
+item 2 (still waiting on the step counters being read), item 4's re-ask
+(waiting on this line), item 8; the anchor is the confirmed pointer, not
+the owner's words, and the first correction seen in an answer's prose is
+the case to design the next half against.
+
 **2026-09-06 — §17.7 items 3 and 5: PR #198 (`feat/goal-sentence`),
 merged at `53f087f` on the owner's word after three review passes (2
 mediums + 3 minors, then 1 medium + 5 below the bar, then 2 minors + 2
