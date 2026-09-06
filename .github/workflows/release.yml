@@ -32,11 +32,8 @@ jobs:
       # test suite runs again here even though CI ran it on the merge — a
       # tag can be pushed from anywhere, and "it was green when I looked"
       # is not a gate.
-      - run: cargo test --workspace
-      - run: cargo clippy --all-targets
-        env:
-          RUSTFLAGS: -D warnings
-
+      # The two cheap gates first: a wrong tag or a missing changelog link
+      # fails in seconds, not after the whole workspace has built and tested.
       # A tag that does not match the workspace version would publish a
       # crate whose version disagrees with its own git tag forever.
       - name: The tag must be the workspace version
@@ -59,6 +56,13 @@ jobs:
           TAG="${GITHUB_REF_NAME#v}"
           grep -q "^\[$TAG\]: " CHANGELOG.md || {
             echo "CHANGELOG.md has no [$TAG] link definition" >&2; exit 1; }
+          grep -q "^\[Unreleased\]: .*compare/v$TAG\.\.\.HEAD" CHANGELOG.md || {
+            echo "CHANGELOG.md's [Unreleased] does not compare from v$TAG" >&2; exit 1; }
+
+      - run: cargo test --workspace
+      - run: cargo clippy --all-targets
+        env:
+          RUSTFLAGS: -D warnings
 
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
