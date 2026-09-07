@@ -99,6 +99,7 @@ class Store:
                 ("defer_until", None),
                 ("context", None),
                 ("project", None),
+                ("project_id", None),
                 ("waiting_on", None),
                 ("about", []),
                 ("previously_waiting_on", None),
@@ -109,6 +110,17 @@ class Store:
             ):
                 if key not in t:
                     t[key] = default
+                    changed = True
+            # A seed names its project; the row carries the node's id beside
+            # it, as the real server renders every parented row (mecha-graph
+            # 0.1.6). Resolved on first read rather than written into the
+            # seed, so the name and the id cannot drift apart — and so the
+            # lifetime home exercises the built path of the project tier, not
+            # the pre-column fallback (found on review).
+            if t.get("project") and not t.get("project_id"):
+                node = self.resolve_node(t["project"])
+                if node is not None:
+                    t["project_id"] = node["id"]
                     changed = True
             if "created_at" not in t:
                 t["created_at"] = now()
