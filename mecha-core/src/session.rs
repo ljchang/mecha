@@ -1704,6 +1704,61 @@ impl Session {
         ))
     }
 
+    /// Every run configuration of a transcript, read line by line without
+    /// holding the file — the reader for a pass that reports on the whole
+    /// store, where [`Self::run_configs`] slurps each transcript. A record
+    /// from *any* attach counts: a rule can be minted from the keys of a
+    /// resumed run's record (`Transcript::config_covering`), so a reader
+    /// that stopped at the first record flagged a rule a run did present
+    /// (found on review). Only lines carrying the run record's tag are
+    /// parsed. `Err` for a transcript that cannot be opened or whose
+    /// run-record line does not parse *with records after it* — torn in
+    /// the middle is "could not be read", never "no record"; a torn
+    /// trailing line is the residue of a killed process and is tolerated,
+    /// as `messages_ever` tolerates it.
+    pub fn run_configs_streaming(path: &Path) -> Result<Vec<RunConfig>> {
+        use std::io::BufRead;
+        let file =
+            std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let mut reader = std::io::BufReader::new(file);
+        let mut line = String::new();
+        let mut out = Vec::new();
+        let mut torn: Option<String> = None;
+        loop {
+            line.clear();
+            if reader
+                .read_line(&mut line)
+                .with_context(|| format!("reading {}", path.display()))?
+                == 0
+            {
+                return Ok(out);
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Some(why) = torn.take() {
+                anyhow::bail!(
+                    "{}: a line before the last record does not parse: {why}",
+                    path.display()
+                );
+            }
+            // Only a line carrying the run record's tag is parsed: every
+            // other record is skipped unread, so the walk is a substring
+            // scan per line rather than a parse of the whole store — the
+            // cost `peek_meta` exists to avoid, and one the TUI pays on a
+            // keypress (found on review). A torn line that carries the tag
+            // is still "could not be read" when records follow it.
+            if !line.contains("\"record\":\"config\"") {
+                continue;
+            }
+            match serde_json::from_str::<Record>(&line) {
+                Ok(Record::Config(c)) => out.push(c),
+                Ok(_) => {}
+                Err(e) => torn = Some(e.to_string()),
+            }
+        }
+    }
+
     /// Every run configuration in a transcript, in the order the runs happened.
     ///
     /// A replay driver needs this per run rather than per session: resuming

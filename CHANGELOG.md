@@ -26,6 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   front door and mail now append the run record that keeps the surface
   they declare. Rules from before the key carry no surface and load on
   every surface as they did.
+- **The TUI's task edit form carries the project.** `tasks set --project`
+  existed in the terminal and not in the modal; the edit form now
+  prefills the project and re-files only when the field changed (clearing
+  it clears), so the two surfaces offer the same correction.
+- **`mecha rules` says when a scope loads nowhere.** A rule scoped to a
+  workspace or surface no run record ever presented is dark with nothing
+  warning — the corpus-shaped half of the never-loads check, which named
+  tools only; the roster prints `LOADS NOWHERE` beside it and the JSON
+  carries `loads_nowhere`, read off every run record in the session store
+  and only when a scope names such a key.
+- **The fixture board can be asked to truncate** (`MECHA_FIXTURE_BOARD_CAP=N`),
+  and the cross-process fixture test measures the flag every board reader
+  keys off against the fixture rather than a literal.
+
 - **A learned rule can be scoped to a workspace.** The workspace a run
   is jailed to joins the tool set as a scope key (`Situation::scope`,
   `Situation::matches`, `Situation::key`): a rule learned from

@@ -25,8 +25,9 @@ use mecha_core::learning::{
     judge_convicted, retire_threshold_for, rule_tallies, tally_for, LeapRun, LearningStore,
     Proposal, Rule, RuleTally, ValidationRecord, Verdict,
 };
-use mecha_core::session::Session;
+use mecha_core::session::{Session, SessionKind};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -92,8 +93,184 @@ pub async fn execute(args: Args) -> Result<()> {
     }
 }
 
+/// The workspace/surface pairs some run's rules block was matched against,
+/// off every run record of every transcript in the session store —
+/// what a scope's workspace or surface key must be found in to load
+/// anywhere. `None` when the store cannot be read *in full*: a transcript
+/// whose header does not parse (`Session::list_counting` counts them;
+/// `list` drops them silently) or with a torn line before its first run
+/// record (`Session::run_configs_streaming` refuses it) is evidence that could
+/// not be read, never evidence of absence — one torn file must not print
+/// "nowhere" about a rule that loads fine (found on review), and so is a
+/// listing with no record carrying either key — a missing store, or one
+/// written before the fields existed. Every attach's record counts, since
+/// a rule can be minted from a resumed run's keys (found on review); read
+/// streaming rather than slurped, once per roster, and only when a scope
+/// names one of those keys (`needs_presented_keys`) — the TUI's Rules
+/// pane runs the roster on a keypress.
+type Presented = Vec<(Option<PathBuf>, Option<SessionKind>)>;
+
+/// Whether a rule's answer consults the store at all: active, with no
+/// parked or corpus-mark surface (those are answered without it), and a
+/// workspace or surface on its scope. One predicate for both gates —
+/// whether to walk, and which pairs to walk for — because the early exit
+/// in `presented_keys_in` is sound only if every rule that will read the
+/// keys has its pair in `wanted`. Built from every rule, a retired rule
+/// scoped to a workspace that went dark kept the exit from firing, and
+/// the full walk it forced could meet a torn transcript and turn every
+/// live rule's answer into unknown on the strength of one dead rule
+/// (found on review).
+fn needs_keys(r: &Rule) -> bool {
+    r.active()
+        && r.scope.as_ref().is_some_and(|s| {
+            s.surface_unread.is_none()
+                && !s
+                    .surface
+                    .is_some_and(|k| mecha_core::situation::Situation::MARK_KINDS.contains(&k))
+        })
+        && r.scope
+            .as_ref()
+            .map(|s| s.scope())
+            .is_some_and(|s| s.workspace.is_some() || s.surface.is_some())
+}
+
+fn needs_presented_keys(rules: &[&Rule]) -> bool {
+    rules.iter().any(|r| needs_keys(r))
+}
+
+fn presented_keys(rules: &[&Rule]) -> Option<Presented> {
+    presented_keys_from(rules, &Session::default_dir().ok()?)
+}
+
+fn presented_keys_from(rules: &[&Rule], dir: &Path) -> Option<Presented> {
+    if !needs_presented_keys(rules) {
+        return None;
+    }
+    let wanted: Presented = rules
+        .iter()
+        .filter(|r| needs_keys(r))
+        .filter_map(|r| r.scope.as_ref().map(|s| s.scope()))
+        .map(|s| (s.workspace, s.surface))
+        .collect();
+    presented_keys_in(dir, &wanted)
+}
+
+/// Whether one run record's pair presents one scope's pair: each key the
+/// scope names must be the record's.
+fn pair_presents(
+    record: &(Option<PathBuf>, Option<SessionKind>),
+    scope: &(Option<PathBuf>, Option<SessionKind>),
+) -> bool {
+    scope
+        .0
+        .as_ref()
+        .is_none_or(|sw| record.0.as_ref() == Some(sw))
+        && scope.1.is_none_or(|sk| record.1 == Some(sk))
+}
+
+/// `wanted` is the pairs the scoped rules name: the walk stops at the
+/// first transcripts that present them all — newest first, so a rule
+/// scoped to the workspace in use is answered by one file rather than the
+/// whole store, which the TUI's reload reads on a keypress (found on
+/// review). An early exit happens only on a positive answer for every
+/// key; the unknown arms below are reached only by a walk that ran out.
+fn presented_keys_in(
+    dir: &Path,
+    wanted: &[(Option<PathBuf>, Option<SessionKind>)],
+) -> Option<Presented> {
+    let (listed, unreadable) = Session::list_counting(dir).ok()?;
+    if unreadable > 0 {
+        return None;
+    }
+    let mut out = Presented::new();
+    for (_, path) in listed {
+        for rc in Session::run_configs_streaming(&path).ok()? {
+            let pair = (rc.rules_workspace, rc.rules_surface);
+            if !out.contains(&pair) {
+                out.push(pair);
+            }
+        }
+        if !wanted.is_empty()
+            && wanted
+                .iter()
+                .all(|w| out.iter().any(|p| pair_presents(p, w)))
+        {
+            return Some(out);
+        }
+    }
+    // A listing that yielded no record carrying either key cannot answer
+    // the question: a missing or empty `sessions/` lists as `Ok(empty)`,
+    // and a record from before the fields carries `(None, None)` — "before
+    // the field" and "matched with no key" are two facts the record keeps
+    // apart, and a whole store of the first kind (every record on this
+    // machine, the day the keys landed) read as evidence that every keyed
+    // scope loads nowhere (found on review). Zero records is the least
+    // evidence there is; it must not make the loudest claim.
+    if out.iter().all(|(w, k)| w.is_none() && k.is_none()) {
+        return None;
+    }
+    Some(out)
+}
+
+/// Whether an active rule's scope names a workspace or surface no run
+/// record presented — `Some(false)` by construction for a scope naming
+/// neither, `None` when the store could not be read in full (unknown is
+/// not nowhere), and never `Some(true)` for a retired rule. One helper for
+/// the roster's prose and its JSON, so the two cannot drift.
+fn loads_nowhere(r: &Rule, keys: Option<&Presented>) -> Option<bool> {
+    let scope = r.scope.as_ref()?.scope();
+    // A parked surface provably matches no run, whatever the store holds —
+    // and so does a corpus-mark surface on the stored scope, which
+    // `scope()` strips but `matches` refuses, since no front-end declares
+    // one; the roster must agree with the startup warning (found on
+    // review).
+    if scope.surface_unread.is_some()
+        || r.scope
+            .as_ref()
+            .and_then(|s| s.surface)
+            .is_some_and(|k| mecha_core::situation::Situation::MARK_KINDS.contains(&k))
+    {
+        return Some(r.active());
+    }
+    if scope.workspace.is_none() && scope.surface.is_none() {
+        return Some(false);
+    }
+    keys.map(|k| r.active() && !presented(&scope, k))
+}
+
+/// Whether some run record presents every workspace/surface key `scope`
+/// names — the corpus-shaped half of `unloadable_rules`, which names tools
+/// only: a rule scoped to a workspace or surface no `prepare` ever matched
+/// against is dark with nothing warning, and the only honest test is the
+/// record of what runs actually presented (found on review). A scope that
+/// names neither key is presented by construction.
+fn presented(scope: &mecha_core::situation::Situation, presented: &Presented) -> bool {
+    // A parked surface is the one key `Situation::matches` refuses outright.
+    if scope.surface_unread.is_some() {
+        return false;
+    }
+    if scope.workspace.is_none() && scope.surface.is_none() {
+        return true;
+    }
+    presented
+        .iter()
+        .any(|p| pair_presents(p, &(scope.workspace.clone(), scope.surface)))
+}
+
 fn list(store: &LearningStore, as_json: bool) -> Result<()> {
     let tallies = rule_tallies(&store.validations()?);
+    let everything: Vec<Rule> = store
+        .domains()
+        .into_iter()
+        .flat_map(|d| {
+            store
+                .user_rules(&d)
+                .unwrap_or_default()
+                .into_iter()
+                .chain(store.learned_rules(&d).unwrap_or_default())
+        })
+        .collect();
+    let keys = presented_keys(&everything.iter().collect::<Vec<_>>());
     if as_json {
         let mut out = Vec::new();
         for domain in store.domains() {
@@ -124,6 +301,16 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
                     // Where it loads: `null` is a rule from before scoping
                     // (everywhere), a string is `Situation::describe`.
                     "scope": r.scope.as_ref().map(|s| s.describe()),
+                    // A scope no run record presents — dark everywhere,
+                    // whatever `scope` says. `null` when the store could
+                    // not be read: unknown is not "nowhere".
+                    // Decided per rule: a scope naming neither key is
+                    // presented by construction and says `false` whatever
+                    // the store holds; one naming a key says `null` only
+                    // when the store could not be read in full (found on
+                    // review — `null` had also meant "no rule needed the
+                    // walk").
+                    "loads_nowhere": loads_nowhere(r, keys.as_ref()),
                     // Where the evidence was seen to hold, and whether a
                     // scan ever narrowed it — see `Rule::support`.
                     "support": r.support.iter().map(|s| s.describe()).collect::<Vec<_>>(),
@@ -172,7 +359,7 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
             println!("  {} user rule(s) — immutable, never tallied", user.len());
         }
         for r in &learned {
-            println!("  {}", describe(r, &tallies));
+            println!("  {}", describe(r, &tallies, keys.as_ref()));
         }
     }
     if !any {
@@ -206,7 +393,7 @@ fn proposal_matches_verdict(p: &Proposal, id: &str, verdict: &Verdict) -> bool {
     }
 }
 
-fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
+fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>, keys: Option<&Presented>) -> String {
     let id =
         r.id.as_deref()
             .unwrap_or("(no id — predates identity; next learn pass mints one)");
@@ -237,6 +424,13 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
     // — see `Rule::scope`.
     let scope = match &r.scope {
         None => "unscoped (predates scoping; loads everywhere)".to_string(),
+        // `loads_nowhere` before `is_standing`: a scope naming only a corpus
+        // mark is standing by `scope()`'s definition and refused by
+        // `matches`, and the prose must agree with the JSON (found on review).
+        Some(s) if loads_nowhere(r, keys) == Some(true) => format!(
+            "scoped to {} — LOADS NOWHERE: no run record presents that workspace/surface",
+            s.describe()
+        ),
         Some(s) if s.is_standing() => "standing (loads everywhere)".to_string(),
         Some(s) => format!("loads with {}", s.describe()),
     };
@@ -404,7 +598,11 @@ fn restore(store: &LearningStore, id: &str) -> Result<()> {
 fn show(store: &LearningStore, id: &str) -> Result<()> {
     let tallies = rule_tallies(&store.validations()?);
     let (domain, rules, i) = find_rule(store, id)?;
-    println!("## {domain}\n{}", describe(&rules[i], &tallies));
+    let keys = presented_keys(&[&rules[i]]);
+    println!(
+        "## {domain}\n{}",
+        describe(&rules[i], &tallies, keys.as_ref())
+    );
     Ok(())
 }
 
@@ -993,7 +1191,7 @@ mod tests {
 
         // And the roster says so, in prose.
         let tallies = rule_tallies(&store.validations().unwrap());
-        let line = describe(wide, &tallies);
+        let line = describe(wide, &tallies, None);
         assert!(line.contains("loads with http_fetch"), "{line}");
         assert!(line.contains("narrowed "), "{line}");
         // A widened pre-field rule — support `[standing, shell]`, scope
@@ -1002,7 +1200,7 @@ mod tests {
             support: vec![Situation::default(), sit(&["shell"])],
             ..rule("Old and widened.", "r-pre")
         };
-        let pre_line = describe(&pre_field, &tallies);
+        let pre_line = describe(&pre_field, &tallies, None);
         assert!(pre_line.contains("seen in shell"), "{pre_line}");
         assert!(!pre_line.contains("seen in everywhere"), "{pre_line}");
         assert!(line.contains("by region:"), "{line}");
@@ -1011,6 +1209,359 @@ mod tests {
             "{line}"
         );
         std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    /// A scope naming a workspace or surface loads only where some run
+    /// record presented that pair; one naming neither is presented by
+    /// construction; the roster says LOADS NOWHERE for an active rule the
+    /// records never presented, and nothing when the store could not be
+    /// read.
+    #[test]
+    fn a_scope_no_run_record_presents_is_said_to_load_nowhere() {
+        use mecha_core::situation::Situation;
+        let w = PathBuf::from("/w");
+        let on_tui = Situation::of_run(&["shell".into()], Some(&w)).on(Some(SessionKind::Tui));
+        let keys: Presented = vec![
+            (Some(w.clone()), Some(SessionKind::Tui)),
+            (None, Some(SessionKind::Slack)),
+        ];
+        assert!(presented(&on_tui.scope(), &keys));
+        assert!(
+            !presented(
+                &Situation::of_run(&["shell".into()], Some(&w))
+                    .on(Some(SessionKind::Slack))
+                    .scope(),
+                &keys
+            ),
+            "the workspace and the surface must be presented together"
+        );
+        assert!(!presented(
+            &Situation::of_run(&["shell".into()], Some(&PathBuf::from("/elsewhere"))).scope(),
+            &keys
+        ));
+        assert!(
+            presented(&Situation::of_run(&["shell".into()], None).scope(), &keys),
+            "no such key: presented by construction"
+        );
+        assert!(presented(&Situation::default(), &Presented::new()));
+        let mut dark = Rule {
+            text: "Dark.".into(),
+            id: Some("r-dark".into()),
+            scope: Some(
+                Situation::of_run(&["shell".into()], Some(&PathBuf::from("/gone"))).scope(),
+            ),
+            ..Default::default()
+        };
+        let tallies = BTreeMap::new();
+        assert!(describe(&dark, &tallies, Some(&keys)).contains("LOADS NOWHERE"));
+        assert!(
+            !describe(&dark, &tallies, None).contains("LOADS NOWHERE"),
+            "unknown is not nowhere"
+        );
+        dark.retired_at = Some("2026-09-07T00:00:00Z".into());
+        assert!(
+            !describe(&dark, &tallies, Some(&keys)).contains("LOADS NOWHERE"),
+            "a retired rule loads nowhere by design"
+        );
+        assert_eq!(
+            loads_nowhere(&dark, Some(&keys)),
+            Some(false),
+            "retired: not flagged"
+        );
+        dark.retired_at = None;
+        assert_eq!(loads_nowhere(&dark, Some(&keys)), Some(true));
+        assert_eq!(loads_nowhere(&dark, None), None, "unknown store: unknown");
+        let tools_only = Rule {
+            scope: Some(Situation::of_run(&["shell".into()], None).scope()),
+            ..dark.clone()
+        };
+        assert_eq!(
+            loads_nowhere(&tools_only, None),
+            Some(false),
+            "by construction, whatever the store"
+        );
+        assert_eq!(
+            loads_nowhere(&Rule::default(), None),
+            None,
+            "unscoped: no claim"
+        );
+        // A parked surface provably matches no run: nowhere, whatever the
+        // store holds or whether it could be read.
+        let parked = Rule {
+            scope: Some(Situation {
+                surface_unread: Some("copilot".into()),
+                ..Situation::of_run(&["shell".into()], None)
+            }),
+            ..dark.clone()
+        };
+        assert_eq!(loads_nowhere(&parked, None), Some(true));
+        assert_eq!(loads_nowhere(&parked, Some(&keys)), Some(true));
+        assert!(!presented(&parked.scope.clone().unwrap().scope(), &keys));
+        // A corpus-mark surface on the stored scope: stripped by scope(),
+        // refused by matches — nowhere, and the roster says so.
+        let marked = Rule {
+            scope: Some(Situation::of_run(&["shell".into()], None).on(Some(SessionKind::Test))),
+            ..dark.clone()
+        };
+        assert_eq!(loads_nowhere(&marked, None), Some(true));
+        assert!(describe(&marked, &tallies, Some(&keys)).contains("LOADS NOWHERE"));
+        // With no tools at all the same scope is standing by definition,
+        // and the prose must still say nowhere, as the JSON does.
+        let bare_mark = Rule {
+            scope: Some(Situation::default().on(Some(SessionKind::Test))),
+            ..dark.clone()
+        };
+        assert_eq!(loads_nowhere(&bare_mark, None), Some(true));
+        let line = describe(&bare_mark, &tallies, None);
+        assert!(line.contains("LOADS NOWHERE"), "{line}");
+        assert!(!line.contains("standing"), "{line}");
+    }
+
+    /// The store is read from the top of each transcript only, and a torn
+    /// one makes the whole answer unknown: two hand-written transcripts —
+    /// one whose first run record names a workspace and surface, one with
+    /// no header — and the walk answers the pair for the first alone, then
+    /// `None` once the second is there. Fails on `Session::list`, which
+    /// drops the torn file silently and answers with the pair.
+    #[test]
+    fn presented_keys_come_off_every_run_record_and_a_torn_store_is_unknown() {
+        use mecha_core::session::{Record, RunConfig, SessionMeta};
+        use mecha_core::situation::Situation;
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-presented-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let s = Session::create(
+            &dir,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "p".into(),
+                model: "m".into(),
+                workspace: PathBuf::from("/jail"),
+                title: None,
+                kind: Some(SessionKind::Task),
+            },
+        )
+        .unwrap();
+        s.append(&Record::Config(RunConfig {
+            rules_workspace: Some(PathBuf::from("/w")),
+            rules_surface: Some(SessionKind::Web),
+            ..Default::default()
+        }))
+        .unwrap();
+        // A second run record later in the file names another pair — a
+        // resumed run's — and it counts: a rule can be minted from it.
+        s.append(&Record::Config(RunConfig {
+            rules_workspace: Some(PathBuf::from("/later")),
+            ..Default::default()
+        }))
+        .unwrap();
+        let keys = presented_keys_in(&dir, &[]).expect("a readable store answers");
+        assert_eq!(
+            keys,
+            vec![
+                (Some(PathBuf::from("/w")), Some(SessionKind::Web)),
+                (Some(PathBuf::from("/later")), None),
+            ]
+        );
+        // A torn trailing line is a killed process's residue and is
+        // tolerated; a torn line with records after it is not.
+        let residue = dir.join("residue");
+        let r = Session::create(
+            &residue,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "p".into(),
+                model: "m".into(),
+                workspace: PathBuf::from("/jail"),
+                title: None,
+                kind: Some(SessionKind::Tui),
+            },
+        )
+        .unwrap();
+        r.append(&Record::Config(RunConfig {
+            rules_workspace: Some(PathBuf::from("/w")),
+            ..Default::default()
+        }))
+        .unwrap();
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&r.path)
+                .unwrap();
+            // A torn message line in the middle is never parsed and never
+            // hides a run record; a torn *run record* trailing the file is
+            // a killed process's residue and is tolerated.
+            f.write_all(b"{\"record\":\"message\",\"trunc\n{\"record\":\"config\",\"trunc")
+                .unwrap();
+        }
+        assert!(
+            presented_keys_in(&residue, &[]).is_some(),
+            "trailing residue tolerated"
+        );
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&r.path)
+                .unwrap();
+            f.write_all(b"\n").unwrap();
+        }
+        r.append(&Record::Config(RunConfig::default())).unwrap();
+        assert_eq!(
+            presented_keys_in(&residue, &[]),
+            None,
+            "torn in the middle: unknown"
+        );
+        // The walk stops once every wanted pair has been seen, newest
+        // first: an older transcript torn in the middle is never opened
+        // when the newest already presents the pair. Fails on a walk that
+        // reads the whole store (it would answer unknown).
+        let stopped = dir.join("stopped");
+        let older = Session::create(
+            &stopped,
+            SessionMeta {
+                id: "20260101T000000-00000000".into(),
+                created_at: chrono::Utc::now(),
+                provider: "p".into(),
+                model: "m".into(),
+                workspace: PathBuf::from("/jail"),
+                title: None,
+                kind: Some(SessionKind::Tui),
+            },
+        )
+        .unwrap();
+        older
+            .append(&Record::Config(RunConfig {
+                rules_workspace: Some(PathBuf::from("/old")),
+                ..Default::default()
+            }))
+            .unwrap();
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&older.path)
+                .unwrap();
+            f.write_all(b"{\"record\":\"config\",\"trunc\n").unwrap();
+        }
+        older.append(&Record::Config(RunConfig::default())).unwrap();
+        let newer = Session::create(
+            &stopped,
+            SessionMeta {
+                id: "20260901T000000-ffffffff".into(),
+                created_at: chrono::Utc::now(),
+                provider: "p".into(),
+                model: "m".into(),
+                workspace: PathBuf::from("/jail"),
+                title: None,
+                kind: Some(SessionKind::Tui),
+            },
+        )
+        .unwrap();
+        newer
+            .append(&Record::Config(RunConfig {
+                rules_workspace: Some(PathBuf::from("/w")),
+                rules_surface: Some(SessionKind::Tui),
+                ..Default::default()
+            }))
+            .unwrap();
+        let wanted = vec![(Some(PathBuf::from("/w")), Some(SessionKind::Tui))];
+        assert_eq!(
+            presented_keys_in(&stopped, &wanted),
+            Some(wanted.clone()),
+            "answered by the newest transcript; the torn older one never read"
+        );
+        assert_eq!(
+            presented_keys_in(&stopped, &[]),
+            None,
+            "the full walk reaches the torn record and is unknown"
+        );
+        // A retired rule scoped to a workspace nothing presents must not
+        // force the full walk on the live rule's behalf: filtered out of
+        // both gates, the live rule is answered by the newest transcript
+        // and the torn older one is never opened. Fails on gates built
+        // from every rule, which answered the live rule `null`.
+        let live = Rule {
+            id: Some("r-live".into()),
+            text: "Live.".into(),
+            scope: Some(
+                Situation::of_run(&["shell".into()], Some(Path::new("/w")))
+                    .on(Some(SessionKind::Tui)),
+            ),
+            ..Default::default()
+        };
+        let mut retired = Rule {
+            id: Some("r-dead".into()),
+            text: "Dead.".into(),
+            scope: Some(Situation::of_run(
+                &["shell".into()],
+                Some(Path::new("/gone")),
+            )),
+            ..Default::default()
+        };
+        retired.retired_at = Some("2026-09-01T00:00:00Z".into());
+        assert!(needs_keys(&live));
+        assert!(!needs_keys(&retired));
+        let keys = presented_keys_from(&[&retired, &live], &stopped)
+            .expect("answered by the newest transcript");
+        assert_eq!(loads_nowhere(&live, Some(&keys)), Some(false));
+        let marked_only = Rule {
+            scope: Some(Situation::of_run(&["shell".into()], None).on(Some(SessionKind::Test))),
+            ..live.clone()
+        };
+        assert!(!needs_keys(&marked_only), "answered without the store");
+        assert_eq!(
+            presented_keys_from(&[&marked_only], &stopped),
+            None,
+            "no walk at all"
+        );
+        // A store with no record carrying either key cannot answer: a
+        // directory that does not exist, and one holding only a record
+        // from before the fields, are both unknown — never "nowhere".
+        assert_eq!(presented_keys_in(&dir.join("no-such-dir"), &[]), None);
+        let old_only = dir.join("old-only");
+        let o = Session::create(
+            &old_only,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "p".into(),
+                model: "m".into(),
+                workspace: PathBuf::from("/jail"),
+                title: None,
+                kind: Some(SessionKind::Tui),
+            },
+        )
+        .unwrap();
+        o.append(&Record::Config(RunConfig::default())).unwrap();
+        assert_eq!(
+            presented_keys_in(&old_only, &[]),
+            None,
+            "pre-field records are not evidence"
+        );
+        // A transcript with no header: the store can no longer be read in
+        // full, and the answer is unknown rather than a pair set with a
+        // hole in it.
+        std::fs::write(dir.join("torn.jsonl"), "{\"type\":\"message\",\"truncated").unwrap();
+        assert_eq!(presented_keys_in(&dir, &[]), None);
+        std::fs::remove_dir_all(&dir).ok();
+        // And the walk is not made at all for a store whose rules name no
+        // such key.
+        let tools_only = Rule {
+            scope: Some(Situation::of_run(&["shell".into()], None).scope()),
+            ..Default::default()
+        };
+        assert!(!needs_presented_keys(&[&tools_only]));
+        let scoped = Rule {
+            scope: Some(Situation::of_run(&["shell".into()], Some(Path::new("/w"))).scope()),
+            ..Default::default()
+        };
+        assert!(needs_presented_keys(&[&tools_only, &scoped]));
     }
 
     /// Staged rather than applied, a narrowing is a proposal whose rule
