@@ -547,7 +547,7 @@ writer lock), and the graph's `(source, source_id)` key makes a re-push an updat
 
 The distiller also reports **corrections** — moments the user said the graph
 holds something wrong — as `meta.corrections`, `[{wrong, right?, about?,
-fact_uid?}]`. the graph acts on each: supersede the wrong belief, stage the
+fact_uid?}]`. The graph acts on each: supersede the wrong belief, stage the
 replacement (or write a negation when the user simply rejected the claim),
 demote whatever produced the error on its autonomy ladder, and re-audit that
 producer's other output. `right` omitted means a rejection rather than a
@@ -3038,8 +3038,15 @@ records `GoalRef::Project` on `goals` *after* the task, so every error's
 pointer stays the tier the run was handed (`appraise_session`'s rule). The
 owner closing the last open task under a project is the project's own
 closure moment (`GOAL-SYSTEM-DESIGN.md` §17.7 item 5):
-`appraise_project_closure` reads the project's open list after the update,
-and if nothing else is open folds every session that worked a task under it
+`project_closure_pending` reads the project's open list after the update
+and **before the task's own appraisal** — that appraisal may stage a
+follow-up under the same project, in `inbox`, and read after it the
+disappointed closure would see its own follow-up holding the project open
+and print nothing (found on review). Membership is the row's own
+`project_id` (`rows_under`), never the server's `entity` filter, which
+narrows by association and so answers a superset; a row that does not say
+its project makes the answer unknown, not "not under it". If nothing else
+is open, `appraise_project` folds every session that worked a task under it
 into one `ProjectReading` — labels counted, valence summed with positive
 and negative apart, `partial` if any reading was, the tasks never delegated
 and the ones it could not read counted rather than dropped — printed on

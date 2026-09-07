@@ -114,7 +114,7 @@ pub struct Correction {
     pub right: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about: Option<String>,
-    /// the graph's own id for the wrong claim, when the transcript happened to
+    /// The graph's own id for the wrong claim, when the transcript happened to
     /// carry one. Rarely present: tool results are clipped before the
     /// distiller reads them, so uids usually do not survive. The graph falls
     /// back to matching the `wrong` text, narrowed by `about`.
@@ -576,7 +576,7 @@ pub struct PushOutcome {
     /// silently did not happen.
     pub corrections_applied: i64,
     pub corrections_unresolved: i64,
-    /// the graph's own count of what it looked at. Reported separately so the
+    /// The graph's own count of what it looked at. Reported separately so the
     /// tally can be CHECKED rather than assumed: if the graph ever resolves a
     /// correction into some third outcome, `applied + unresolved` quietly
     /// stops summing to what we sent, and the ones that went nowhere
