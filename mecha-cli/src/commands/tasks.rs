@@ -1588,9 +1588,37 @@ async fn stage_follow_up(
             if let Some(o) = args.as_object_mut() {
                 o.remove("captured_from");
             }
-            call_with(prepared, "kg_task_create", args)
-                .await
-                .with_context(|| format!("retried without captured_from after: {e:#}"))?
+            match call_with(prepared, "kg_task_create", args.clone()).await {
+                Ok(v) => v,
+                // Refused again with a `project` on the call: the parent is
+                // what the board would not take — a server that renders
+                // `project_id` but predates accepting it back, the deploy
+                // window the merge note names. §5.4 wants the follow-up
+                // *present*, so it is filed under no project and says so,
+                // rather than lost (found on review).
+                Err(e2)
+                    if e2
+                        .to_string()
+                        .starts_with(&tool_rejected_prefix("kg_task_create"))
+                        && args.get("project").is_some() =>
+                {
+                    let parent = args["project"].clone();
+                    if let Some(o) = args.as_object_mut() {
+                        o.remove("project");
+                    }
+                    eprintln!(
+                        "mecha: the board refused the follow-up's project {parent}; filing it \
+                         under no project — re-file it with `tasks set --project`: {e2:#}"
+                    );
+                    call_with(prepared, "kg_task_create", args)
+                        .await
+                        .with_context(|| format!("retried without a project after: {e2:#}"))?
+                }
+                Err(e2) => {
+                    return Err(e2)
+                        .with_context(|| format!("retried without captured_from after: {e:#}"))
+                }
+            }
         }
         Err(e) => return Err(e),
     };
