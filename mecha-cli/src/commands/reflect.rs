@@ -511,42 +511,75 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
         println!("· {id} stays without a situation — {why}");
     }
     // The reconcile: each recorded workspace against the key its session's
-    // rules block was matched against. A session that cannot be found or
-    // read confirms nothing, and a key nothing confirms is dropped rather
-    // than kept — unknown is not a key.
-    let mut matched_by_session: std::collections::HashMap<String, Option<PathBuf>> =
+    // rules block was matched against, decided by `reconcile_workspace`
+    // before anything is written. Three outcomes, kept apart: a row that
+    // records no workspace keeps none (the reconcile never adds a key — an
+    // outbox edit's lesson scopes by tools on purpose, and a key added here
+    // would narrow it on no conviction); a session that cannot be found or
+    // read confirms nothing and the row stays, with the reason, as the
+    // absent-situation branch above already does; a record that was read
+    // and disagrees sets what it names, `None` included (found on review —
+    // the first draft wrote an unreadable session as "confirms none").
+    use mecha_core::learning::{reconcile_workspace, WorkspaceReconcile};
+    let mut record_by_session: std::collections::HashMap<String, Result<Option<PathBuf>, String>> =
         Default::default();
     let mut reconcile: Vec<(String, Option<PathBuf>)> = Vec::new();
     let mut unconfirmed = 0usize;
+    let mut left = 0usize;
     for r in &present {
         let Some(s) = &r.situation else { continue };
-        let matched = matched_by_session
+        let record = record_by_session
             .entry(r.session_id.clone())
             .or_insert_with(|| {
-                paths
-                    .get(&r.session_id)
-                    .and_then(|path| Session::run_configs(path).ok())
-                    .and_then(|cs| cs.into_iter().next())
-                    .and_then(|rc| rc.rules_workspace)
+                let path = paths.get(&r.session_id).ok_or_else(|| {
+                    if unreadable_sessions > 0 {
+                        format!(
+                            "no readable session matching \"{}\" — {unreadable_sessions} \
+                             transcript(s) in the store could not be read, and it may be one",
+                            r.session_id
+                        )
+                    } else {
+                        format!("no session matching \"{}\"", r.session_id)
+                    }
+                })?;
+                let configs =
+                    Session::run_configs(path).map_err(|e| format!("session unreadable: {e:#}"))?;
+                Ok(configs.into_iter().next().and_then(|rc| rc.rules_workspace))
             })
             .clone();
-        if s.workspace != matched {
-            if matched.is_none() {
-                unconfirmed += 1;
+        let show = |w: Option<&PathBuf>| {
+            w.map(|w| w.display().to_string())
+                .unwrap_or_else(|| "none".into())
+        };
+        match reconcile_workspace(
+            s.workspace.as_deref(),
+            record.as_ref().map(|m| m.as_deref()).map_err(|e| e.clone()),
+        ) {
+            WorkspaceReconcile::Keep => {}
+            WorkspaceReconcile::Unreadable(why) => {
+                left += 1;
+                println!(
+                    "· {} keeps workspace {} — {why}",
+                    r.id,
+                    show(s.workspace.as_ref())
+                );
             }
-            println!(
-                "· {} workspace {} → {}",
-                r.id,
-                s.workspace
-                    .as_ref()
-                    .map(|w| w.display().to_string())
-                    .unwrap_or_else(|| "none".into()),
-                matched
-                    .as_ref()
-                    .map(|w| w.display().to_string())
-                    .unwrap_or_else(|| "none (the run record confirms none)".into())
-            );
-            reconcile.push((r.id.clone(), matched));
+            WorkspaceReconcile::Set(matched) => {
+                if matched.is_none() {
+                    unconfirmed += 1;
+                }
+                println!(
+                    "· {} workspace {} → {}",
+                    r.id,
+                    show(s.workspace.as_ref()),
+                    if matched.is_none() {
+                        "none (the run record carries none)".to_string()
+                    } else {
+                        show(matched.as_ref())
+                    }
+                );
+                reconcile.push((r.id.clone(), matched));
+            }
         }
     }
     let verb = if dry_run {
@@ -575,7 +608,8 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
     };
     println!(
         "{verb} {reconciled} workspace(s) of {} recorded situation(s) against the run record \
-         ({unconfirmed} to none: the record confirms no workspace)",
+         ({unconfirmed} to none: the record carries no workspace; {left} left as recorded: \
+         session not found or unreadable)",
         present.len()
     );
     println!(
