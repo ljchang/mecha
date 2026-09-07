@@ -1710,9 +1710,10 @@ impl Session {
     /// from *any* attach counts: a rule can be minted from the keys of a
     /// resumed run's record (`Transcript::config_covering`), so a reader
     /// that stopped at the first record flagged a rule a run did present
-    /// (found on review). `Err` for a transcript that cannot be opened or
-    /// that has a line that does not parse *with records after it* — torn
-    /// in the middle is "could not be read", never "no record"; a torn
+    /// (found on review). Only lines carrying the run record's tag are
+    /// parsed. `Err` for a transcript that cannot be opened or whose
+    /// run-record line does not parse *with records after it* — torn in
+    /// the middle is "could not be read", never "no record"; a torn
     /// trailing line is the residue of a killed process and is tolerated,
     /// as `messages_ever` tolerates it.
     pub fn run_configs_streaming(path: &Path) -> Result<Vec<RunConfig>> {
@@ -1740,6 +1741,15 @@ impl Session {
                     "{}: a line before the last record does not parse: {why}",
                     path.display()
                 );
+            }
+            // Only a line carrying the run record's tag is parsed: every
+            // other record is skipped unread, so the walk is a substring
+            // scan per line rather than a parse of the whole store — the
+            // cost `peek_meta` exists to avoid, and one the TUI pays on a
+            // keypress (found on review). A torn line that carries the tag
+            // is still "could not be read" when records follow it.
+            if !line.contains("\"record\":\"config\"") {
+                continue;
             }
             match serde_json::from_str::<Record>(&line) {
                 Ok(Record::Config(c)) => out.push(c),
