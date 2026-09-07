@@ -130,6 +130,18 @@ impl Situation {
     /// pins it against what its front-ends actually insert.
     pub const FRONTEND_TOOLS: &[&str] = &["ask_user", "recall", "show_file"];
 
+    /// The surface values that are corpus marks, not places: a process
+    /// puts them on the session record through `MECHA_SESSION_KIND`
+    /// (`Session::test_override`), and no front-end ever declares one to
+    /// `prepare`, so no run can present them at match time. The surface
+    /// key's mirror of [`Self::FRONTEND_TOOLS`]: [`Situation::scope`] drops
+    /// them, and `LearningStore::unloadable_rules` warns at startup about
+    /// a stored scope that names one anyway — a reflection stamped `test`
+    /// by the old miner, from a transcript since deleted so the reconcile
+    /// left it, would otherwise have scoped a rule to a surface nothing
+    /// matches, dark with nothing warning (found on review).
+    pub const MARK_KINDS: &[SessionKind] = &[SessionKind::Test, SessionKind::Experiment];
+
     /// The situation an intervention was recorded in.
     pub fn recorded(
         tools: &[String],
@@ -206,9 +218,10 @@ impl Situation {
     /// The keys a run can be matched against at start: the tool set, the
     /// workspace and the surface. Tools sorted, because a scope is a set
     /// and two batches whose regions are the same tools in another order
-    /// must be the same region; and without the front-end tools, which no
-    /// run registers at match time. The trigger is never a key (see its
-    /// field).
+    /// must be the same region; without the front-end tools, which no run
+    /// registers at match time; and without a surface that is a corpus
+    /// mark ([`Self::MARK_KINDS`]), which no run presents. The trigger is
+    /// never a key (see its field).
     pub fn scope(&self) -> Situation {
         let mut tools: Vec<String> = self
             .tools
@@ -221,7 +234,7 @@ impl Situation {
         Situation {
             tools,
             trigger: None,
-            surface: self.surface,
+            surface: self.surface.filter(|k| !Self::MARK_KINDS.contains(k)),
             workspace: self.workspace.clone(),
         }
     }
@@ -457,6 +470,29 @@ mod tests {
         assert!(old.matches(&elsewhere));
         assert!(old.matches(&below));
         assert!(old.matches(&Situation::of_run(&["shell".into()], None)));
+    }
+
+    /// A corpus mark is not a place: a situation recorded under the test
+    /// override scopes with no surface, so it can never pin a rule to a
+    /// surface no run presents — the mirror of a front-end focus.
+    #[test]
+    fn a_mark_kind_is_never_a_scope_key() {
+        for k in Situation::MARK_KINDS {
+            let marked =
+                Situation::recorded(&["shell".into()], "denial", Some(*k), Some(Path::new("/w")));
+            assert_eq!(marked.surface, Some(*k), "recorded as it was");
+            assert_eq!(marked.scope().surface, None, "never a key");
+            assert_eq!(marked.key(), "shell @ /w");
+            assert!(marked.scope().matches(
+                &Situation::of_run(&["shell".into()], Some(Path::new("/w")))
+                    .on(Some(SessionKind::Tui))
+            ));
+        }
+        assert_eq!(
+            s(&["shell"]).scope().surface,
+            Some(SessionKind::Tui),
+            "a real surface stays"
+        );
     }
 
     /// Two members on different surfaces share none, so the region — and
