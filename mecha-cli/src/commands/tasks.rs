@@ -743,15 +743,18 @@ fn project_of(row: &Value) -> ProjectTier {
 }
 
 /// The rows of a board answer filed *under* project `pid`, by the row's own
-/// `project_id`. `kg_task_list`'s `entity` argument narrows by association
-/// — `about`, `waiting_on`, `assigned_to`, *or* parent project — so its
-/// answer is a superset of the tier, and a task merely about a project
-/// would hold the project open or count in its fold (found on review).
-/// The rows carry the answer, so it is re-applied here rather than trusted
-/// to whatever the server's filter means — the same shape as `upsert_args`
-/// re-applying `corrections_for` at its boundary. `None` when any row lacks
-/// the key: a board that cannot say which project a row is under cannot
-/// answer either question, and unknown is never "not under it".
+/// `project_id`. The board is read **unfiltered**: `kg_task_list`'s
+/// `entity` argument narrows by association — `about`, `waiting_on`,
+/// `assigned_to`, *or* parent project — which is a superset of the tier
+/// on the server the fixture models (a task merely about a project would
+/// hold it open or count in its fold) and, on a server whose filter did
+/// not include the parent, a subset, which no filter on the way out can
+/// repair (both found on review). Membership therefore comes from the
+/// field the row carries and nothing else — the same shape as
+/// `upsert_args` re-applying `corrections_for` at its boundary, and the
+/// read `find_task_with` already pays. `None` when any row lacks the key:
+/// a board that cannot say which project a row is under cannot answer
+/// either question, and unknown is never "not under it".
 fn rows_under<'a>(board: &'a Value, pid: &str) -> Option<Vec<&'a Value>> {
     // A truncated answer is readable and still short: the rows that did
     // not arrive are not "not under this project", and a closure announced
@@ -911,7 +914,7 @@ async fn project_closure_pending(
         ProjectTier::Identified(p) => p,
     };
     let pid = project.id();
-    let open = match call_with(prepared, "kg_task_list", json!({ "entity": pid })).await {
+    let open = match call_with(prepared, "kg_task_list", json!({})).await {
         Ok(v) => v,
         Err(e) => {
             eprintln!(
@@ -949,7 +952,8 @@ async fn project_closure_pending(
 /// task later and closes again reads again. A `dropped` last task closes
 /// the project as much as a `done` one — the tier is empty either way —
 /// and the line says which task closed it. Membership is the row's own
-/// `project_id`, never the server's association filter (`rows_under`).
+/// `project_id` over an unfiltered board, never the server's association
+/// filter (`rows_under`).
 /// One consequence of the ordering, named rather than hidden: a follow-up
 /// the task's appraisal staged moments earlier is on the board by the time
 /// the fold reads it, so it counts as one task never delegated under a
@@ -962,13 +966,7 @@ async fn appraise_project(
     stores: &ClosureStores,
 ) {
     let pid = project.id();
-    let all = match call_with(
-        prepared,
-        "kg_task_list",
-        json!({ "entity": pid, "include_closed": true }),
-    )
-    .await
-    {
+    let all = match call_with(prepared, "kg_task_list", json!({ "include_closed": true })).await {
         Ok(v) => v,
         Err(e) => {
             eprintln!(
@@ -986,7 +984,12 @@ async fn appraise_project(
         );
         return;
     };
-    let name = all["entity"]["name"].as_str().unwrap_or("?");
+    // The project's name, off any row under it — the same field the board
+    // renders beside the id on every surface.
+    let name = rows
+        .iter()
+        .find_map(|t| t["project"].as_str())
+        .unwrap_or("?");
     let mut readings = Vec::new();
     let mut no_session = 0usize;
     let mut unread = 0usize;
@@ -1444,7 +1447,7 @@ async fn stage_follow_up(
     if let Some(p) = before["project_id"]
         .as_str()
         .filter(|s| !s.is_empty())
-        .or_else(|| before["project"].as_str())
+        .or_else(|| before["project"].as_str().filter(|s| !s.is_empty()))
     {
         args["project"] = json!(p);
     }
@@ -3230,9 +3233,8 @@ mod tests {
 
     #[test]
     fn rows_under_reads_membership_off_the_row_not_the_servers_filter() {
-        // `entity` narrows by association, so a task merely *about* the
-        // project comes back too; only the row's own `project_id` says
-        // whether it is under it.
+        // The board is read unfiltered, so every task comes back; only the
+        // row's own `project_id` says whether it is under the project.
         let board = json!({"items": [
             {"id": "task-a", "project_id": "proj-tide"},
             {"id": "task-b", "project_id": null},

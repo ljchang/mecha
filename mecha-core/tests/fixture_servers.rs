@@ -176,6 +176,12 @@ async fn the_board_fixture_persists_across_processes_in_the_real_servers_shapes(
         "defer_until",
         "context",
         "project",
+        // The pointer beside the name (mecha-graph 0.1.6): every reader
+        // of the project tier keys off it and fails closed without it,
+        // so a fixture that quietly stopped rendering it would degrade
+        // the feature to silence — asserted here, cross-process, not in
+        // a `json!` literal.
+        "project_id",
         "waiting_on",
         "about",
         "session",
@@ -196,6 +202,11 @@ async fn the_board_fixture_persists_across_processes_in_the_real_servers_shapes(
     let id = created["id"].as_str().unwrap().to_string();
     assert!(id.starts_with("task-"));
     assert_eq!(created["about"][0]["name"], "Priya Nair");
+    assert_eq!(
+        created["task"]["project_id"], "project:aurora",
+        "the create echo carries the row, and the row carries the parent's id"
+    );
+    assert_eq!(created["task"]["project"], "Aurora grant proposal");
     let (err, text) = call(&create, json!({"name": "x", "project": "Nobody"}), &dir).await;
     assert!(
         err && text.contains("no node"),
@@ -213,6 +224,57 @@ async fn the_board_fixture_persists_across_processes_in_the_real_servers_shapes(
     let updated: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(updated["status"], "updated");
     assert_eq!(updated["task"]["session"], "s-42");
+    assert!(
+        updated["task"].get("project_id").is_some(),
+        "the update echo carries `project_id` — `carry_refiled_project` reads it off exactly this echo"
+    );
+    // The re-file path, end to end: by id, then cleared, then by name;
+    // a refused parent changes nothing.
+    let (err, text) = call(&update, json!({"task": &id, "project": ""}), &dir).await;
+    assert!(!err, "{text}");
+    let refiled: Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        refiled["task"]["project_id"].is_null(),
+        "cleared: {refiled}"
+    );
+    assert!(refiled["task"]["project"].is_null());
+    let (err, text) = call(
+        &update,
+        json!({"task": &id, "project": "project:aurora"}),
+        &dir,
+    )
+    .await;
+    assert!(!err, "{text}");
+    let refiled: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        refiled["task"]["project_id"], "project:aurora",
+        "re-filed by id"
+    );
+    let (err, text) = call(
+        &update,
+        json!({"task": &id, "project": "Nobody", "status": "done"}),
+        &dir,
+    )
+    .await;
+    assert!(err && text.contains("nothing was changed"), "{text}");
+    let (err, text) = call(
+        &update,
+        json!({"task": &id, "project": {"id": "project:aurora"}}),
+        &dir,
+    )
+    .await;
+    assert!(err && text.contains("must be a string"), "{text}");
+    let (err, text) = call(&list, json!({"include_closed": true}), &dir).await;
+    assert!(!err, "{text}");
+    let after: Value = serde_json::from_str(&text).unwrap();
+    let row = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(row["project_id"], "project:aurora");
+    assert_ne!(row["status"], "done", "the refused call changed nothing");
     assert!(
         updated["task"]["completed_at"].is_string(),
         "done stamps completed_at"
