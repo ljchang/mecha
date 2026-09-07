@@ -1300,16 +1300,19 @@ mod tests {
         assert_eq!(form.value("due"), "2026-08-15");
         assert_eq!(form.value("context"), "@email");
         assert_eq!(form.value("defer"), "", "it has none, and says so");
-        // The project, prefilled and remembered — fails on the three-field
-        // form, which offered no way to re-file.
-        assert_eq!(
-            form.value("project"),
-            rows[0].project.as_deref().unwrap_or_default()
-        );
-        assert_eq!(
-            form.original_project.as_deref(),
-            Some(rows[0].project.as_deref().unwrap_or_default())
-        );
+        // The project, prefilled and remembered, measured on the *filed*
+        // row — `rows[0]` is filed under nothing, so both sides there are
+        // empty and a form that never prefilled would pass (found on
+        // review). Fails on the three-field form.
+        let filed = rows
+            .iter()
+            .find(|r| r.project.is_some())
+            .expect("a filed row in the fixture");
+        let form = Form::edit(filed);
+        let name = filed.project.as_deref().unwrap();
+        assert!(!name.is_empty());
+        assert_eq!(form.value("project"), name);
+        assert_eq!(form.original_project.as_deref(), Some(name));
     }
 
     /// Saving re-files only when the project changed: the same name back
@@ -1318,23 +1321,39 @@ mod tests {
     #[test]
     fn a_save_refiles_only_when_the_project_changed() {
         let (rows, _) = rows_from_json(BOARD).unwrap();
-        let mut form = Form::edit(&rows[0]);
-        let original = rows[0].project.clone().unwrap_or_default();
-        assert!(!form.refiled(&original));
+        // The filed row: every arm below is vacuous against an original of
+        // `""` (found on review — the first draft measured the unfiled row).
+        let filed = rows
+            .iter()
+            .find(|r| r.project.is_some())
+            .expect("a filed row in the fixture");
+        let mut form = Form::edit(filed);
+        let original = filed.project.clone().unwrap();
+        assert!(!original.is_empty());
+        assert!(
+            !form.refiled(&original),
+            "the same name back re-files nothing"
+        );
         assert!(
             !form.refiled(&format!("  {original} ")),
             "whitespace is not a re-file"
         );
         assert!(form.refiled("Somewhere else"));
-        assert!(
-            form.refiled("") == !original.is_empty(),
-            "emptied: clears a filed task"
-        );
+        assert!(form.refiled(""), "emptied: clears a filed task");
         form.original_project = Some("  Tidelab ".into());
         assert!(
             !form.refiled("Tidelab"),
             "the original is compared trimmed too"
         );
+        // An unfiled row: the same name back is nothing, and emptying it is
+        // not a clear.
+        let unfiled = rows
+            .iter()
+            .find(|r| r.project.is_none())
+            .expect("an unfiled row");
+        let form = Form::edit(unfiled);
+        assert!(!form.refiled(""));
+        assert!(form.refiled("Tidelab"));
         assert!(!Form::capture().refiled("Anything"));
     }
 
