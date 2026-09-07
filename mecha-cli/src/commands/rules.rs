@@ -25,8 +25,9 @@ use mecha_core::learning::{
     judge_convicted, retire_threshold_for, rule_tallies, tally_for, LeapRun, LearningStore,
     Proposal, Rule, RuleTally, ValidationRecord, Verdict,
 };
-use mecha_core::session::Session;
+use mecha_core::session::{Session, SessionKind};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
@@ -92,8 +93,69 @@ pub async fn execute(args: Args) -> Result<()> {
     }
 }
 
+/// The workspace/surface pairs some run's rules block was matched against,
+/// off every run record in the session store — what a scope's workspace
+/// or surface key must be found in to load anywhere. `None` when the store
+/// cannot be listed: unknown is not "nowhere". Read once per roster, and
+/// only when a scope names one of those keys, since it is a pass over every
+/// transcript header and run record.
+type Presented = std::collections::BTreeSet<(Option<PathBuf>, Option<SessionKind>)>;
+
+fn presented_keys(rules: &[&Rule]) -> Option<Presented> {
+    let wants = rules.iter().any(|r| {
+        r.scope
+            .as_ref()
+            .is_some_and(|s| s.workspace.is_some() || s.surface.is_some())
+    });
+    if !wants {
+        return None;
+    }
+    let dir = Session::default_dir().ok()?;
+    let listed = Session::list(&dir).ok()?;
+    let mut out = Presented::new();
+    for (_, path) in listed {
+        if let Ok(configs) = Session::run_configs(&path) {
+            for rc in configs {
+                out.insert((rc.rules_workspace, rc.rules_surface));
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Whether some run record presents every workspace/surface key `scope`
+/// names — the corpus-shaped half of `unloadable_rules`, which names tools
+/// only: a rule scoped to a workspace or surface no `prepare` ever matched
+/// against is dark with nothing warning, and the only honest test is the
+/// record of what runs actually presented (found on review). A scope that
+/// names neither key is presented by construction.
+fn presented(scope: &mecha_core::situation::Situation, presented: &Presented) -> bool {
+    if scope.workspace.is_none() && scope.surface.is_none() {
+        return true;
+    }
+    presented.iter().any(|(w, k)| {
+        scope
+            .workspace
+            .as_ref()
+            .is_none_or(|sw| w.as_ref() == Some(sw))
+            && scope.surface.is_none_or(|sk| *k == Some(sk))
+    })
+}
+
 fn list(store: &LearningStore, as_json: bool) -> Result<()> {
     let tallies = rule_tallies(&store.validations()?);
+    let everything: Vec<Rule> = store
+        .domains()
+        .into_iter()
+        .flat_map(|d| {
+            store
+                .user_rules(&d)
+                .unwrap_or_default()
+                .into_iter()
+                .chain(store.learned_rules(&d).unwrap_or_default())
+        })
+        .collect();
+    let keys = presented_keys(&everything.iter().collect::<Vec<_>>());
     if as_json {
         let mut out = Vec::new();
         for domain in store.domains() {
@@ -124,6 +186,12 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
                     // Where it loads: `null` is a rule from before scoping
                     // (everywhere), a string is `Situation::describe`.
                     "scope": r.scope.as_ref().map(|s| s.describe()),
+                    // A scope no run record presents — dark everywhere,
+                    // whatever `scope` says. `null` when the store could
+                    // not be read: unknown is not "nowhere".
+                    "loads_nowhere": keys.as_ref().and_then(|k| {
+                        r.scope.as_ref().map(|s| r.active() && !presented(&s.scope(), k))
+                    }),
                     // Where the evidence was seen to hold, and whether a
                     // scan ever narrowed it — see `Rule::support`.
                     "support": r.support.iter().map(|s| s.describe()).collect::<Vec<_>>(),
@@ -172,7 +240,7 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
             println!("  {} user rule(s) — immutable, never tallied", user.len());
         }
         for r in &learned {
-            println!("  {}", describe(r, &tallies));
+            println!("  {}", describe(r, &tallies, keys.as_ref()));
         }
     }
     if !any {
@@ -206,7 +274,7 @@ fn proposal_matches_verdict(p: &Proposal, id: &str, verdict: &Verdict) -> bool {
     }
 }
 
-fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
+fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>, keys: Option<&Presented>) -> String {
     let id =
         r.id.as_deref()
             .unwrap_or("(no id — predates identity; next learn pass mints one)");
@@ -238,7 +306,13 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>) -> String {
     let scope = match &r.scope {
         None => "unscoped (predates scoping; loads everywhere)".to_string(),
         Some(s) if s.is_standing() => "standing (loads everywhere)".to_string(),
-        Some(s) => format!("loads with {}", s.describe()),
+        Some(s) => match keys {
+            Some(k) if r.active() && !presented(&s.scope(), k) => format!(
+                "scoped to {} — LOADS NOWHERE: no run record presents that workspace/surface",
+                s.describe()
+            ),
+            _ => format!("loads with {}", s.describe()),
+        },
     };
     // Where it was seen to hold, when that is more than where it loads —
     // a widened rule names each sub-region it widened over; a narrowed one
@@ -404,7 +478,11 @@ fn restore(store: &LearningStore, id: &str) -> Result<()> {
 fn show(store: &LearningStore, id: &str) -> Result<()> {
     let tallies = rule_tallies(&store.validations()?);
     let (domain, rules, i) = find_rule(store, id)?;
-    println!("## {domain}\n{}", describe(&rules[i], &tallies));
+    let keys = presented_keys(&[&rules[i]]);
+    println!(
+        "## {domain}\n{}",
+        describe(&rules[i], &tallies, keys.as_ref())
+    );
     Ok(())
 }
 

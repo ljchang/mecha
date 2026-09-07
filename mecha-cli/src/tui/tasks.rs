@@ -109,6 +109,12 @@ pub struct Form {
     pub editing: Option<String>,
     pub fields: Vec<(&'static str, String)>,
     pub idx: usize,
+    /// On an edit, the project the row was filed under when the form
+    /// opened — so a submit that left the field alone re-files nothing,
+    /// and one that cleared it clears (`tasks set --project ""`). Passing
+    /// the prefilled name back would re-resolve it by name on every save,
+    /// and an ambiguous name is refused by the graph.
+    pub original_project: Option<String>,
     /// A refusal from the last submit — an unparseable date, a project the
     /// graph does not have. Shown in the form, which stays open with the
     /// typing intact: bouncing beats saving junk, and beats losing the words.
@@ -126,21 +132,27 @@ impl Form {
                 ("context", String::new()),
             ],
             idx: 0,
+            original_project: None,
             error: None,
         }
     }
 
     /// The schedule of an existing task, prefilled with what it currently is
-    /// — so an edit that changes one field does not blank the other two.
+    /// — so an edit that changes one field does not blank the others — and
+    /// its project, the one field the terminal's `tasks set --project`
+    /// could correct and this form could not (found on review: the modal
+    /// and the CLI are meant to offer the same verbs).
     pub fn edit(row: &TaskRow) -> Self {
         Form {
             editing: Some(row.id.clone()),
             fields: vec![
                 ("due", row.due_at.clone().unwrap_or_default()),
                 ("defer", row.defer_until.clone().unwrap_or_default()),
+                ("project", row.project.clone().unwrap_or_default()),
                 ("context", row.context.clone().unwrap_or_default()),
             ],
             idx: 0,
+            original_project: Some(row.project.clone().unwrap_or_default()),
             error: None,
         }
     }
