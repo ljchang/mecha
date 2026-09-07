@@ -1532,7 +1532,9 @@ fn follow_up_args(task_id: &str, before: &Value, a: &mecha_core::appraisal::Appr
     // (found on review — the same reason `project_of` reads the id).
     // The id through the same one-token check `project_of` gives it, so
     // the two readers of the field agree about what a usable id is; the
-    // name only on a board from before `project_id` (found on review).
+    // name where there is no usable id — a board from before `project_id`,
+    // or an id this build will not cite (found on review, twice: the
+    // comment had said "before `project_id`" alone).
     let by_id = match project_of(before) {
         ProjectTier::Identified(p) => Some(p.id().to_string()),
         ProjectTier::None | ProjectTier::Unidentified(_) => None,

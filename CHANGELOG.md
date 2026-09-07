@@ -29,7 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error, where the kind word alone used to cross — resolved first: a
   charter id against the charter, a task or project id against the board
   (one `kg_task_list` per distill run), and what does not resolve falls
-  back to the kind word.
+  back to the kind word on `goal` and on each error's `goal` alike, so a
+  run that named a setpoint is not read as one that named nothing
+  (`serves_charter` is the join key alone, absent when no line resolves).
   The goal hypothesis, the owner's answer and the charter line's text
   never ride (§17.7 item 8).
 
