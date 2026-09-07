@@ -495,9 +495,18 @@ pub fn upsert_args(
         // was attributed, by id. What never rides: the goal hypothesis the
         // run put to the owner, the owner's answer, and the charter line's
         // text — owner prose stays in the stores mecha itself writes, and
-        // the graph joins on the id.
-        if let Some(g) = a.goals.first().and_then(|g| goal_pointer(g, known)) {
-            meta["goal"] = Value::String(g);
+        // the graph joins on the id. What does not resolve falls back to
+        // the kind word, as the pointer on each error does: a run that
+        // named a setpoint (never admitted whole), or one distilled while
+        // the board could not be read, is a run that *named a goal*, and
+        // with the key dropped it read as one that named none — the
+        // distinction "unknown is never clean" exists to keep (found on
+        // review). `serves_charter` below is the join key alone and stays
+        // absent when no line resolves: a bare `charter` would say nothing
+        // `goal` does not.
+        if let Some(g) = a.goals.first() {
+            meta["goal"] =
+                Value::String(goal_pointer(g, known).unwrap_or_else(|| g.kind().to_string()));
         }
         // `find_map`, not `find` then resolve: the first charter reference
         // that *resolves* crosses, so a later one that would is not lost
@@ -1307,8 +1316,9 @@ mod tests {
         for k in ["goal", "serves_charter"] {
             let v = meta[k].as_str().unwrap();
             assert!(
-                v.parse::<GoalRef>().is_ok(),
-                "{k} is a pointer, not prose: {v:?}"
+                v.parse::<GoalRef>().is_ok()
+                    || ["charter", "project", "task", "setpoint"].contains(&v),
+                "{k} is a pointer or a kind word, not prose: {v:?}"
             );
         }
     }
@@ -1331,9 +1341,9 @@ mod tests {
             &goal_appraisal(vec![sentence.clone()], vec![], Some(sentence)),
             &board(),
         );
-        assert!(
-            meta.get("goal").is_none(),
-            "not on the board: does not cross"
+        assert_eq!(
+            meta["goal"], "task",
+            "not on the board: the kind word crosses, never the sentence"
         );
         assert_eq!(meta["goal_errors"][0]["goal"], "task");
 
@@ -1342,15 +1352,18 @@ mod tests {
             &goal_appraisal(vec![unknown_project.clone()], vec![], Some(unknown_project)),
             &board(),
         );
-        assert!(meta.get("goal").is_none());
+        assert_eq!(meta["goal"], "project");
         assert_eq!(meta["goal_errors"][0]["goal"], "project");
 
+        // A setpoint is never admitted whole, and a run that named one is
+        // not a run that named nothing: the key carries the kind word
+        // rather than vanishing (found on review).
         let setpoint = GoalRef::Setpoint("attention-debt".into());
         let meta = meta_of(
             &goal_appraisal(vec![setpoint.clone()], vec![], Some(setpoint)),
             &board(),
         );
-        assert!(meta.get("goal").is_none());
+        assert_eq!(meta["goal"], "setpoint");
         assert_eq!(meta["goal_errors"][0]["goal"], "setpoint");
 
         // Nothing read: a real task id does not cross, and neither does a
@@ -1362,9 +1375,12 @@ mod tests {
             &goal_appraisal(vec![real.clone()], vec![line.clone()], Some(real)),
             &KnownPointers::none(),
         );
-        assert!(meta.get("goal").is_none());
+        assert_eq!(meta["goal"], "task", "named, unresolved: the kind word");
         assert_eq!(meta["goal_errors"][0]["goal"], "task");
-        assert!(meta.get("serves_charter").is_none());
+        assert!(
+            meta.get("serves_charter").is_none(),
+            "a join key, or nothing"
+        );
         // A charter line the loaded charter does not contain — renamed
         // since the record was written, or hand-built — is the kind word.
         let gone = GoalRef::Charter("no-such-line".into());
@@ -1372,7 +1388,7 @@ mod tests {
             &goal_appraisal(vec![gone.clone()], vec![gone.clone()], Some(gone)),
             &board(),
         );
-        assert!(meta.get("goal").is_none());
+        assert_eq!(meta["goal"], "charter");
         assert!(meta.get("serves_charter").is_none());
         assert_eq!(meta["goal_errors"][0]["goal"], "charter");
     }
@@ -1450,9 +1466,9 @@ mod tests {
             &goal_appraisal(vec![hostile.clone()], vec![hostile], None),
             &board(),
         );
-        assert!(
-            meta.get("goal").is_none(),
-            "a non-token pointer does not cross at all"
+        assert_eq!(
+            meta["goal"], "task",
+            "a non-token pointer crosses as its kind word, never as itself"
         );
         assert!(meta.get("serves_charter").is_none());
     }

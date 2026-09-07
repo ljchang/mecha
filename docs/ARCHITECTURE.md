@@ -2927,7 +2927,11 @@ the other door. The ids are also not slugs of names on the real server
 prefix plus a UUID v4; verified in mecha-graph at PR #10), which is the
 weaker half of the case; the fixture graph's `project:aurora` is
 hand-authored gold data, not the minter. What does not resolve falls back
-to the kind word alone, which is what crossed before. What never rides is the sentence: the goal hypothesis a run put to the owner, the
+to the kind word alone, which is what crossed before — on `meta.goal` and
+on each error's `goal` alike, so a run that named a setpoint, or one
+distilled while the board could not be read, is not mistaken for a run
+that named nothing (found on review); `meta.serves_charter` is the join
+key alone and is absent when no line resolves. What never rides is the sentence: the goal hypothesis a run put to the owner, the
 owner's answer, and the charter line's text stay in the stores mecha itself
 writes (`GOAL-SYSTEM-DESIGN.md` §17.7 item 8), and the graph joins on the id.
 

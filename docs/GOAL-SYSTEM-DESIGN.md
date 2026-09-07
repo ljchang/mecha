@@ -2261,7 +2261,9 @@ note below.
    (`distill::KnownPointers`): a charter id against the loaded charter's
    lines, a task or project id against the board (one read per run), a
    setpoint never whole; what does not resolve falls back to the kind word, which is
-   what crossed before. Pinned by a test on `meta`'s key set:
+   what crossed before — on `meta.goal` as on each error's `goal`, so a
+   named-but-unresolved goal is not read as none; `serves_charter` is the
+   join key alone, absent when no line resolves. Pinned by a test on `meta`'s key set:
    the hypothesis a run put to the owner, the owner's answer and the
    charter line's text never ride. The situation index on the graph side
    is not built; the id is there for it.
