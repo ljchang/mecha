@@ -528,8 +528,8 @@ async fn set(
             if refiled && !carry_refiled_project(&mut before, &out) {
                 eprintln!(
                     "mecha: {task} was re-filed and closed in one call, but the board's echo \
-                     carried no row, so the project tier of this closure is unknown and not \
-                     appraised"
+                     carried no row with a project column, so the project tier of this \
+                     closure is unknown and not appraised"
                 );
             }
             // The project's open list is read *before* the task's own
@@ -793,12 +793,19 @@ fn rows_under<'a>(board: &'a Value, pid: &str) -> Option<Vec<&'a Value>> {
 
 /// After a closure that re-filed the task in the same call: the project
 /// the row is under *now*, off the update's echo, into the pre-mutation
-/// row the closure reads its tier from. `true` when the echo carried a row;
-/// `false` leaves `before` with no project at all — unknown, not the old
-/// tier — so nothing downstream appraises, records or stages under the
-/// project the task just left.
+/// row the closure reads its tier from. `true` when the echo carried a row
+/// with the project column on it; `false` leaves `before` with no project
+/// at all — unknown, not the old tier — so nothing downstream appraises,
+/// records or stages under the project the task just left. A row without
+/// the `project_id` key is the same unknown as no row: `rows_under` reads
+/// that absence as a board this build cannot read, and this reader had
+/// read it as "cleared" (found on review). A present `null` is the
+/// cleared tier.
 fn carry_refiled_project(before: &mut Value, out: &Value) -> bool {
-    match out.get("task").filter(|t| t.is_object()) {
+    match out
+        .get("task")
+        .filter(|t| t.is_object() && t.get("project_id").is_some())
+    {
         Some(row) => {
             before["project"] = row["project"].clone();
             before["project_id"] = row["project_id"].clone();
@@ -3433,6 +3440,16 @@ mod tests {
         ));
         assert_eq!(project_of(&before), ProjectTier::None);
         assert!(before.get("project_id").is_none());
+        // A row without the project column (a server predating it): the
+        // same unknown — an absent key is not "cleared", as `rows_under`
+        // already holds one function up.
+        let mut before = stale();
+        assert!(!carry_refiled_project(
+            &mut before,
+            &json!({"task": {"id": "task-1a2b3c4d", "status": "done"}})
+        ));
+        assert!(before.get("project_id").is_none());
+        assert!(before.get("project").is_none());
     }
 
     #[test]
