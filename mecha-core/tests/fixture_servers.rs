@@ -373,8 +373,6 @@ async fn the_board_fixture_persists_across_processes_in_the_real_servers_shapes(
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// A send lands in the store and nowhere else, in the real server's words;
-/// the reply threads; the next process sees both.
 /// The board can be asked to truncate, and says so — the one shape every
 /// reader of `truncated` in mecha (`rows_under`, `KnownPointers::from_board`,
 /// `project_closed_by`) was measured against a `json!` literal for, until
@@ -409,8 +407,11 @@ async fn the_board_fixture_truncates_when_asked_and_says_so() {
     let board: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(board["items"].as_array().unwrap().len(), 2);
     assert_eq!(board["truncated"], false);
+    std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A send lands in the store and nowhere else, in the real server's words;
+/// the reply threads; the next process sees both.
 #[tokio::test]
 async fn the_mail_fixture_records_every_send_and_delivers_nothing() {
     if unavailable("python3", python3_available()) {
