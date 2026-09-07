@@ -2917,11 +2917,17 @@ charter the command loaded, a task or project id must be on the board (one
 `kg_task_list` per distill run through the same server the episodes go to —
 a board that could not be read admits nothing and says so), and a setpoint
 name has no store to resolve against and never crosses whole. "On the
-board" is the guarantee, and it rests on the graph minting ids a model
-cannot author: a task id is `task-` plus a uid, and a node id is a type
-prefix plus a uid or a content hash, never a slug of the name — so a
-project name a model wrote cannot arrive as its own id by the other door. What does not resolve falls back to the kind word
-alone, which is what crossed before. What never rides is the sentence: the goal hypothesis a run put to the owner, the
+board" is the guarantee, and what it rests on is *existence*, not the id's
+charset: a task row exists only because `kg_task_create` made it, and a
+project node only because a source minted it or the owner accepted it out
+of the review queue — `kg_task_create` refuses a project that resolves to
+no node — so a project name a model wrote cannot become its own pointer by
+the other door. The ids are also not slugs of names on the real server
+(`gtd::create_task` mints `task-` plus a uid, `graph::create_node` a type
+prefix plus a UUID v4; verified in mecha-graph at PR #10), which is the
+weaker half of the case; the fixture graph's `project:aurora` is
+hand-authored gold data, not the minter. What does not resolve falls back
+to the kind word alone, which is what crossed before. What never rides is the sentence: the goal hypothesis a run put to the owner, the
 owner's answer, and the charter line's text stay in the stores mecha itself
 writes (`GOAL-SYSTEM-DESIGN.md` §17.7 item 8), and the graph joins on the id.
 
