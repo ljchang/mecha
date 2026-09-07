@@ -265,8 +265,20 @@ async fn answer_and_resume(
     if opts.workspace.is_none() {
         opts.workspace = q.workspace.clone();
     }
-    // A continuation of a delegated task run is matched as one.
-    opts.surface = Some(mecha_core::session::SessionKind::Task);
+    // The surface the asking run's block was matched against, off its
+    // first run record — restored, like the jail above, never asserted.
+    // The board's task door on `serve` parks a run whose block was matched
+    // as `web` while its session records `task`; a continuation that
+    // asserted `task` re-rendered the block on another surface mid-
+    // conversation and recorded a key the miner then stamped over (found
+    // on review). `Task` only for a record that carries none.
+    opts.surface = Session::default_dir()
+        .ok()
+        .and_then(|dir| Session::find(&dir, &q.session_id).ok())
+        .and_then(|path| Session::run_configs(&path).ok())
+        .and_then(|cs| cs.into_iter().next())
+        .and_then(|rc| rc.rules_surface)
+        .or(Some(mecha_core::session::SessionKind::Task));
     let mut prepared = setup::prepare(&opts, !unattended).await?;
 
     // The same refusal `tasks work` makes, for the same reason: this is that

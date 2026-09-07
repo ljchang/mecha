@@ -18,8 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from reflections all on one surface loads only there, widens by
   restatement from another, and narrows by conviction, as the workspace
   does; the reflect pass reconciles rows stamped with a kind before the
-  field existed. Rules from before the key carry no surface and load on
-  every surface as they did.
+  field existed. A question continuation restores the asking run's
+  surface off its record rather than asserting one, and the miner stamps
+  the keys of the run record covering each intervention. Rules from
+  before the key carry no surface and load on every surface as they did.
 - **A learned rule can be scoped to a workspace.** The workspace a run
   is jailed to joins the tool set as a scope key (`Situation::scope`,
   `Situation::matches`, `Situation::key`): a rule learned from

@@ -345,26 +345,33 @@ impl KeyUpdate {
 /// the intervention text, copied verbatim from `Intervention::text` at
 /// mining — since the message index is not on the record. `matched` is the
 /// workspace the session's rules block was matched against
-/// (`RunConfig::rules_workspace`), never the session's jail, and `surface`
-/// the one it was matched on (`RunConfig::rules_surface`), never
-/// `SessionMeta::kind`; a record from before those fields gives `None`,
-/// and the reflection scopes by tools alone.
+/// (`RunConfig::rules_workspace`), never the session's jail, and the
+/// surface the one it was matched on (`RunConfig::rules_surface`), never
+/// `SessionMeta::kind` — both from the run record covering the
+/// intervention's message (`keys_at`), since a session may hold runs
+/// matched on different keys; a record from before those fields gives
+/// `None`, and the reflection scopes by tools alone.
 pub fn backfill_situation(
     r: &Reflexion,
     interventions: &[Intervention],
-    matched: Option<&std::path::Path>,
-    surface: Option<crate::session::SessionKind>,
+    keys_at: &dyn Fn(
+        usize,
+    ) -> (
+        Option<std::path::PathBuf>,
+        Option<crate::session::SessionKind>,
+    ),
 ) -> Backfilled {
     let mut fits: Vec<crate::situation::Situation> = Vec::new();
     for i in interventions {
         if i.trigger.as_str() != r.trigger || i.text != r.intervention {
             continue;
         }
+        let (matched, surface) = keys_at(i.at);
         let s = crate::situation::Situation::recorded(
             &i.tools_before,
             i.trigger.as_str(),
             surface,
-            matched,
+            matched.as_deref(),
         );
         if !fits.contains(&s) {
             fits.push(s);
@@ -6578,12 +6585,10 @@ mod situation_tests {
             ),
         ];
         assert_eq!(
-            backfill_situation(
-                &r,
-                &interventions,
-                Some(std::path::Path::new("/w")),
+            backfill_situation(&r, &interventions, &|_| (
+                Some(std::path::PathBuf::from("/w")),
                 Some(SessionKind::Web)
-            ),
+            )),
             Backfilled::Matched(Situation::recorded(
                 &["fs_read".into(), "shell".into()],
                 "denial",
@@ -6593,12 +6598,10 @@ mod situation_tests {
             "the trigger tells the two apart"
         );
         assert_eq!(
-            backfill_situation(
-                &r,
-                &[],
-                Some(std::path::Path::new("/w")),
+            backfill_situation(&r, &[], &|_| (
+                Some(std::path::PathBuf::from("/w")),
                 Some(SessionKind::Web)
-            ),
+            )),
             Backfilled::NoMatch
         );
 
@@ -6608,12 +6611,10 @@ mod situation_tests {
             iv(Trigger::Denial, "Denied by the user: no", &["mail_send"]),
         ];
         assert_eq!(
-            backfill_situation(
-                &r,
-                &differing,
-                Some(std::path::Path::new("/w")),
+            backfill_situation(&r, &differing, &|_| (
+                Some(std::path::PathBuf::from("/w")),
                 Some(SessionKind::Web)
-            ),
+            )),
             Backfilled::Ambiguous(2)
         );
         // Two fits with the same window: one situation, matched.
@@ -6622,12 +6623,10 @@ mod situation_tests {
             iv(Trigger::Denial, "Denied by the user: no", &["shell"]),
         ];
         assert!(matches!(
-            backfill_situation(
-                &r,
-                &agreeing,
-                Some(std::path::Path::new("/w")),
+            backfill_situation(&r, &agreeing, &|_| (
+                Some(std::path::PathBuf::from("/w")),
                 Some(SessionKind::Web)
-            ),
+            )),
             Backfilled::Matched(_)
         ));
     }

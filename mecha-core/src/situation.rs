@@ -32,7 +32,10 @@
 //! workspace and surface the block was matched against
 //! (`RunConfig::rules_workspace` and `rules_surface`, from `RulesCarried`),
 //! and the miner, the backfill, the validator's region and the probe all
-//! read those — never the session's jail, never `SessionMeta::kind`. The
+//! read those — never the session's jail, never `SessionMeta::kind`; the
+//! miner and the backfill read the record covering the intervention's
+//! message (`Transcript::config_covering`), since a resumed question or
+//! a `/model` switch gives one session runs matched on different keys. The
 //! two differ where one block serves many jails: `serve` renders once
 //! against the producer root and jails each session a level below, Slack
 //! renders against its configured workspace and jails each thread under
