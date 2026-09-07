@@ -742,6 +742,21 @@ impl Valence {
         self.positives == 0 && self.negatives == 0
     }
 
+    /// Fold another reading into this one: the sums add, positive and
+    /// negative kept apart as they are everywhere; `visible` and `partial`
+    /// are sticky. The one place the rule lives — the corpus readout and
+    /// the project fold both sum readings, and two hand-written copies of
+    /// a six-field sum is where a seventh field gets one of them wrong
+    /// (found on review).
+    pub fn merge(&mut self, other: &Valence) {
+        self.positive += other.positive;
+        self.negative += other.negative;
+        self.positives += other.positives;
+        self.negatives += other.negatives;
+        self.visible |= other.visible;
+        self.partial |= other.partial;
+    }
+
     /// The one-line form for a status strip or a message footer: `+1.0`,
     /// `−2.0`, or `+1.0 −2.0`; empty when silent; a trailing `…` when
     /// partial. One decimal, because the magnitudes are the record's own
@@ -1197,10 +1212,11 @@ pub fn of_session(
     // consulted (the live readout reads no stores), or the charter
     // unreadable, it is dropped and the run appraises as goal-less on that
     // reference. Fail-closed on purpose — unknown is never clean — and
-    // `Task`/`Setpoint` references are untouched: the board owns those
-    // ids and the closure appraisal supplies its own. The attributed
-    // references added below come from the charter itself, so they need
-    // no check.
+    // `Task`/`Project`/`Setpoint` references are untouched: the board owns
+    // the task and project ids and the closure appraisal supplies its own,
+    // and `distill` resolves each against the board before one crosses a
+    // wire. The attributed references added below come from the charter
+    // itself, so they need no check.
     let goals: Vec<GoalRef> = goals
         .iter()
         .filter(|g| match g {
@@ -2456,6 +2472,42 @@ pub fn apply_appraiser(a: &mut Appraisal, v: AppraiserVerdict) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valence_merge_adds_the_sums_and_keeps_the_flags_sticky() {
+        let mut a = Valence {
+            positive: 1.0,
+            negative: 0.5,
+            positives: 1,
+            negatives: 1,
+            visible: false,
+            partial: false,
+        };
+        let b = Valence {
+            positive: 0.25,
+            negative: 2.0,
+            positives: 1,
+            negatives: 3,
+            visible: true,
+            partial: true,
+        };
+        a.merge(&b);
+        assert_eq!(
+            a,
+            Valence {
+                positive: 1.25,
+                negative: 2.5,
+                positives: 2,
+                negatives: 4,
+                visible: true,
+                partial: true,
+            }
+        );
+        // Merging a silent, clean reading changes nothing.
+        a.merge(&Valence::default());
+        assert_eq!(a.positives, 2);
+        assert!(a.partial && a.visible, "a flag once set stays set");
+    }
 
     fn err(sign: f32, agency: Agency) -> GoalError {
         GoalError {

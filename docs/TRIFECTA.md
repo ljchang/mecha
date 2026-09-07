@@ -85,7 +85,7 @@ is not about stopping exfiltration but about arming the taint honestly and
 keeping instructions from being followed.
 
 **Owned by: source declarations and wrapping.** MCP servers that custody
-third-party text carry `untrusted_input = true` in config (pkg, mail — no
+third-party text carry `untrusted_input = true` in config (the graph, mail — no
 annotation can say "untrusted", so the config override is load-bearing).
 Tool results that really came from outside are wrapped in
 `<untrusted-content>` markers telling the model to treat them strictly as
