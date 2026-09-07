@@ -159,6 +159,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // named is resolved before it rides on an episode's `meta` — a token
     // is not a pointer until the board says so. Unreadable is said, and
     // then admits nothing: every such reference crosses as its kind word.
+    let charter_lines: Vec<String> = charter
+        .as_ref()
+        .map(|c| c.lines().iter().map(|l| l.id.clone()).collect())
+        .unwrap_or_default();
     let known = match distill::known_pointers(&client).await {
         Ok(k) => {
             if k.truncated {
@@ -176,7 +180,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             );
             distill::KnownPointers::none()
         }
-    };
+    }
+    .with_charter_lines(charter_lines);
 
     let mut distilled = 0usize;
     let mut skipped = 0usize;

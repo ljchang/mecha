@@ -2910,12 +2910,13 @@ id the harness minted. The one field the harness did not mint is
 and `goal` on each error, all in the `kind:id` spelling) — but only a
 *resolved* one. `GoalRef::from_str` makes an id one token, and one token is
 not a pointer: a hyphen-joined sentence under `MAX_ID_CHARS` parses (found
-on review). So a charter id crosses because `of_session` already checked it
-against the loaded charter; a task or project id crosses only if the board
-holds it (`distill::KnownPointers`, one `kg_task_list` per distill run
-through the same server the episodes go to — a board that could not be read
-admits nothing and says so); a setpoint name has no store to resolve against
-and never crosses whole. What does not resolve falls back to the kind word
+on review). So every kind is resolved at the boundary itself
+(`distill::KnownPointers`, because `upsert_args` is public and a boundary
+that trusts its caller is not one): a charter id must be a line of the
+charter the command loaded, a task or project id must be on the board (one
+`kg_task_list` per distill run through the same server the episodes go to —
+a board that could not be read admits nothing and says so), and a setpoint
+name has no store to resolve against and never crosses whole. What does not resolve falls back to the kind word
 alone, which is what crossed before. What never rides is the sentence: the goal hypothesis a run put to the owner, the
 owner's answer, and the charter line's text stay in the stores mecha itself
 writes (`GOAL-SYSTEM-DESIGN.md` §17.7 item 8), and the graph joins on the id.

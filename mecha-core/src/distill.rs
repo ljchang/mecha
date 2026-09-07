@@ -561,14 +561,17 @@ pub fn upsert_args(
 /// sentence under `MAX_ID_CHARS` parses (found on review), and the id on
 /// this path is the model's own `serves:` argument, which `of_session`
 /// deliberately leaves unchecked for task and project because the board
-/// owns those ids. So the board is asked. `none()` — nothing read — admits
-/// no task or project, and every such reference crosses as its kind word
-/// alone; a charter id is not the board's to vouch for and crosses
-/// regardless, since `of_session` already checked it against the charter.
+/// owns those ids. So the board is asked — and the charter, for its own
+/// ids: `of_session` checks a charter reference against the loaded charter
+/// upstream, but `upsert_args` is public and takes any `Appraisal`, and a
+/// boundary that trusts its caller is not one (found on review), so the
+/// line ids ride here too. `none()` — nothing read — admits nothing, and
+/// every reference crosses as its kind word alone.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KnownPointers {
     tasks: std::collections::BTreeSet<String>,
     projects: std::collections::BTreeSet<String>,
+    charter: std::collections::BTreeSet<String>,
     /// The board said its answer was short. The direction is safe — a row
     /// that did not arrive costs its pointer the kind word, never admits
     /// one — but a large board would otherwise degrade every pointer with
@@ -578,10 +581,16 @@ pub struct KnownPointers {
 }
 
 impl KnownPointers {
-    /// The board was not read: fail closed — no task or project crosses
-    /// whole. Charter ids are unaffected; they were resolved upstream.
+    /// Nothing read: fail closed — no reference of any kind crosses whole.
     pub fn none() -> KnownPointers {
         KnownPointers::default()
+    }
+
+    /// The charter's line ids, from the charter the command loaded — the
+    /// same file `of_session` resolved against, re-applied at this boundary.
+    pub fn with_charter_lines(mut self, ids: impl IntoIterator<Item = String>) -> KnownPointers {
+        self.charter.extend(ids);
+        self
     }
 
     /// From a `kg_task_list` answer taken with `include_closed`: every task
@@ -604,15 +613,14 @@ impl KnownPointers {
         out
     }
 
-    /// Whether a reference may cross whole. A charter id was already
-    /// checked against the charter in `of_session` before any error was
-    /// built; a task or project id must be on the board; a setpoint name is
-    /// a model-written string with no store to resolve it against, so it
-    /// never crosses.
+    /// Whether a reference may cross whole: a charter id must be a line of
+    /// the loaded charter, a task or project id on the board; a setpoint
+    /// name is a model-written string with no store to resolve it against,
+    /// so it never crosses.
     fn admits(&self, g: &crate::goal::GoalRef) -> bool {
         use crate::goal::GoalRef;
         match g {
-            GoalRef::Charter(_) => true,
+            GoalRef::Charter(id) => self.charter.contains(id),
             GoalRef::Task(id) => self.tasks.contains(id),
             GoalRef::Project(id) => self.projects.contains(id),
             GoalRef::Setpoint(_) => false,
@@ -633,8 +641,8 @@ fn goal_pointer(g: &crate::goal::GoalRef, known: &KnownPointers) -> Option<Strin
 
 /// The board's pointers, read through the graph server that will receive
 /// the episodes. A read that fails is `Err` for the caller to say so, and
-/// then `KnownPointers::none()` — task and project ids as kind words only,
-/// never a guess; charter ids still cross, resolved upstream.
+/// then `KnownPointers::none()` — kind words only, never a guess. The
+/// caller adds the charter's line ids (`with_charter_lines`).
 pub async fn known_pointers(client: &Arc<McpClient>) -> Result<KnownPointers> {
     let output = client
         .call_tool("kg_task_list", json!({ "include_closed": true }))
@@ -1212,6 +1220,7 @@ mod tests {
             {"id": "01J8ZK", "project_id": "proj-tide"},
             {"id": "t1", "project_id": null},
         ]}))
+        .with_charter_lines(["answer-what-waits".to_string(), "l1".to_string()])
     }
 
     /// §17.7 item 8: the pointer crosses whole, in the one `kind:id`
@@ -1333,9 +1342,9 @@ mod tests {
         assert!(meta.get("goal").is_none());
         assert_eq!(meta["goal_errors"][0]["goal"], "setpoint");
 
-        // The board not read: a real task id still does not cross — but a
-        // charter id does, because the charter vouched for it upstream
-        // (`of_session`), not the board.
+        // Nothing read: a real task id does not cross, and neither does a
+        // charter id — the boundary resolves every kind itself rather than
+        // trusting that its caller's appraisal was checked upstream.
         let real = GoalRef::Task("01J8ZK".into());
         let line = GoalRef::Charter("answer-what-waits".into());
         let meta = meta_of(
@@ -1344,13 +1353,17 @@ mod tests {
         );
         assert!(meta.get("goal").is_none());
         assert_eq!(meta["goal_errors"][0]["goal"], "task");
-        assert_eq!(meta["serves_charter"], "charter:answer-what-waits");
+        assert!(meta.get("serves_charter").is_none());
+        // A charter line the loaded charter does not contain — renamed
+        // since the record was written, or hand-built — is the kind word.
+        let gone = GoalRef::Charter("no-such-line".into());
         let meta = meta_of(
-            &goal_appraisal(vec![line.clone()], vec![], Some(line)),
-            &KnownPointers::none(),
+            &goal_appraisal(vec![gone.clone()], vec![gone.clone()], Some(gone)),
+            &board(),
         );
-        assert_eq!(meta["goal"], "charter:answer-what-waits");
-        assert_eq!(meta["goal_errors"][0]["goal"], "charter:answer-what-waits");
+        assert!(meta.get("goal").is_none());
+        assert!(meta.get("serves_charter").is_none());
+        assert_eq!(meta["goal_errors"][0]["goal"], "charter");
     }
 
     #[test]
