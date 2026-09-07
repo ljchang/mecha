@@ -2018,7 +2018,11 @@ async fn work(
     // Not sniffed from stdin. A tty check would make the posture depend on
     // how the process happened to be launched, which is exactly the kind of
     // thing that is right in testing and wrong in the shipped unit file.
-    let mut prepared = setup::prepare(global, !unattended).await?;
+    let opts = GlobalOpts {
+        surface: Some(mecha_core::session::SessionKind::Task),
+        ..global.clone()
+    };
+    let mut prepared = setup::prepare(&opts, !unattended).await?;
 
     // `mail draft`'s rule: without the route, a send the model makes actually
     // sends. A task run is exactly the context where that is discovered too

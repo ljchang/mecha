@@ -182,7 +182,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // and each session is jailed a level below, so a lesson stamped
         // with the jail scoped its rule to a workspace no run presents
         // (found on review). A record from before the field gives none.
-        let matched_workspace = matched_workspace_of(path).ok().flatten();
+        let (matched_workspace, matched_surface) = matched_keys_of(path).unwrap_or((None, None));
         let (_, convo) = match Session::load(path) {
             Ok(loaded) => loaded,
             Err(e) => {
@@ -264,13 +264,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // Where it happened, from what the miner already held:
                     // the tool window is registry names (it survives the
                     // user-evidence-only view for the same reason), the
-                    // surface is the session record's, the workspace the
-                    // run record's matched one. Set here and not by the
-                    // reflector, which saw prose.
+                    // surface and workspace are the run record's matched
+                    // ones — never `meta.kind`, never the jail. Set here
+                    // and not by the reflector, which saw prose.
                     r.situation = Some(mecha_core::situation::Situation::recorded(
                         &intervention.tools_before,
                         intervention.trigger.as_str(),
-                        meta.kind,
+                        matched_surface,
                         matched_workspace.as_deref(),
                     ));
                     pending.push(r);
@@ -389,63 +389,77 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 /// Frame one edited-then-sent outbox item as an intervention for the
 /// writing-domain reflector: the draft is the context, the diff is what the
 /// user did, the sent version is the aftermath.
-/// The workspace a session's rules block was matched against, off its
-/// first run record (`RunConfig::rules_workspace`) — the key a match
-/// presents, never the session's jail. `Ok(None)` for a record from before
-/// the field, or a run whose situation named no workspace; `Err` when the
-/// transcript cannot be read, which confirms nothing either way.
-fn matched_workspace_of(path: &Path) -> std::result::Result<Option<PathBuf>, String> {
+/// The keys a session's rules block was matched against, off its first
+/// run record (`RunConfig::rules_workspace`, `rules_surface`) — what a
+/// match presents, never the session's jail and never `SessionMeta::kind`.
+/// `None` for a record from before the field, or a run that declared
+/// none; `Err` when the transcript cannot be read, which confirms nothing
+/// either way.
+fn matched_keys_of(
+    path: &Path,
+) -> std::result::Result<(Option<PathBuf>, Option<mecha_core::session::SessionKind>), String> {
     Session::run_configs(path)
-        .map(|cs| cs.into_iter().next().and_then(|rc| rc.rules_workspace))
+        .map(|cs| {
+            cs.into_iter()
+                .next()
+                .map(|rc| (rc.rules_workspace, rc.rules_surface))
+                .unwrap_or((None, None))
+        })
         .map_err(|e| format!("session unreadable: {e:#}"))
 }
 
-/// Reconcile the workspace on every recorded situation with the key its
-/// session's rules block was matched against, decided row by row by
-/// `learning::reconcile_workspace` before anything is written: a row that
-/// records no workspace is not read at all (the reconcile never adds a
-/// key — an outbox edit's lesson scopes by tools on purpose, and a key
-/// added here would narrow it on no conviction); a session that cannot be
-/// found or read confirms nothing and the row stays, with the reason; a
-/// record that was read and disagrees sets what it names, `None` included.
-/// Runs on every `reflect` pass — the nightly's `learn --auto` follows it —
-/// so correctness does not depend on a human running a flag first (found
-/// on review). Commits its own writes; a pass with nothing to apply does
-/// not touch the file. Returns how many rows were (or would be) rewritten.
+/// Reconcile the keys on every recorded situation — the workspace and the
+/// surface — with what its session's rules block was matched against,
+/// decided key by key by `learning::reconcile_key` before anything is
+/// written: a key the row does not record is never added (an outbox
+/// edit's lesson scopes by tools on purpose, and a key added here would
+/// narrow it on no conviction); a session that cannot be found or read
+/// confirms nothing and the row stays, with the reason; a record that was
+/// read and disagrees sets what it names, `None` included. Runs on every
+/// `reflect` pass — the nightly's `learn --auto` follows it — so
+/// correctness does not depend on a human running a flag first (found on
+/// review). Commits its own writes; a pass with nothing to apply does not
+/// touch the file. Returns how many rows were (or would be) rewritten.
 fn reconcile_recorded_workspaces(
     store: &LearningStore,
     paths: &std::collections::HashMap<String, PathBuf>,
     unreadable_sessions: usize,
     dry_run: bool,
 ) -> Result<usize> {
-    use mecha_core::learning::{reconcile_workspace, WorkspaceReconcile};
+    use mecha_core::learning::{reconcile_key, KeyReconcile, KeyUpdate};
     let present: Vec<_> = store
         .reflexions()?
         .into_iter()
         .filter(|r| {
-            r.situation.as_ref().is_some_and(|s| s.workspace.is_some()) && !r.session_id.is_empty()
+            r.situation
+                .as_ref()
+                .is_some_and(|s| s.workspace.is_some() || s.surface.is_some())
+                && !r.session_id.is_empty()
         })
         .collect();
     if present.is_empty() {
         return Ok(0);
     }
+    type Matched = (Option<PathBuf>, Option<mecha_core::session::SessionKind>);
     let mut record_by_session: std::collections::HashMap<
         String,
-        std::result::Result<Option<PathBuf>, String>,
+        std::result::Result<Matched, String>,
     > = Default::default();
-    let mut reconcile: Vec<(String, Option<PathBuf>)> = Vec::new();
+    let mut reconcile: Vec<(String, KeyUpdate)> = Vec::new();
     let mut to_none = 0usize;
     let mut left = 0usize;
-    let show = |w: Option<&PathBuf>| {
+    let show_w = |w: Option<&PathBuf>| {
         w.map(|w| w.display().to_string())
             .unwrap_or_else(|| "none".into())
     };
+    let show_k =
+        |k: Option<mecha_core::session::SessionKind>| k.map(|k| k.as_str()).unwrap_or("none");
     for r in &present {
         let Some(s) = &r.situation else { continue };
         let record = record_by_session
             .entry(r.session_id.clone())
             .or_insert_with(|| match paths.get(&r.session_id) {
-                Some(path) => matched_workspace_of(path),
+                Some(path) => matched_keys_of(path),
                 None if unreadable_sessions > 0 => Err(format!(
                     "no readable session matching \"{}\" — {unreadable_sessions} \
                      transcript(s) in the store could not be read, and it may be one",
@@ -454,52 +468,92 @@ fn reconcile_recorded_workspaces(
                 None => Err(format!("no session matching \"{}\"", r.session_id)),
             })
             .clone();
-        match reconcile_workspace(
-            s.workspace.as_deref(),
-            record.as_ref().map(|m| m.as_deref()).map_err(Clone::clone),
+        let mut update = KeyUpdate::default();
+        match reconcile_key(
+            s.workspace.as_ref(),
+            record
+                .as_ref()
+                .map(|(w, _)| w.as_ref())
+                .map_err(Clone::clone),
         ) {
-            WorkspaceReconcile::Keep => {}
-            WorkspaceReconcile::Unreadable(why) => {
+            KeyReconcile::Keep => {}
+            KeyReconcile::Unreadable(why) => {
                 left += 1;
                 println!(
                     "· {} keeps workspace {} — {why}",
                     r.id,
-                    show(s.workspace.as_ref())
+                    show_w(s.workspace.as_ref())
                 );
             }
-            WorkspaceReconcile::Set(matched) => {
+            KeyReconcile::Set(matched) => {
                 if matched.is_none() {
                     to_none += 1;
                 }
                 println!(
                     "· {} workspace {} → {}",
                     r.id,
-                    show(s.workspace.as_ref()),
+                    show_w(s.workspace.as_ref()),
                     if matched.is_none() {
                         "none (the run record carries none)".to_string()
                     } else {
-                        show(matched.as_ref())
+                        show_w(matched.as_ref())
                     }
                 );
-                reconcile.push((r.id.clone(), matched));
+                update.workspace = Some(matched);
             }
+        }
+        match reconcile_key(
+            s.surface.as_ref(),
+            record
+                .as_ref()
+                .map(|(_, k)| k.as_ref())
+                .map_err(Clone::clone),
+        ) {
+            KeyReconcile::Keep => {}
+            KeyReconcile::Unreadable(why) => {
+                // Counted once per row, above, when the workspace was also
+                // recorded; a surface-only row is counted here.
+                if s.workspace.is_none() {
+                    left += 1;
+                    println!("· {} keeps surface {} — {why}", r.id, show_k(s.surface));
+                }
+            }
+            KeyReconcile::Set(matched) => {
+                if matched.is_none() {
+                    to_none += 1;
+                }
+                println!(
+                    "· {} surface {} → {}",
+                    r.id,
+                    show_k(s.surface),
+                    if matched.is_none() {
+                        "none (the run record carries none)".to_string()
+                    } else {
+                        show_k(matched).to_string()
+                    }
+                );
+                update.surface = Some(matched);
+            }
+        }
+        if !update.is_empty() {
+            reconcile.push((r.id.clone(), update));
         }
     }
     let written = if dry_run {
         reconcile.len()
     } else {
-        let written = store.reconcile_workspaces(&reconcile, &chrono::Utc::now().to_rfc3339())?;
+        let written = store.reconcile_keys(&reconcile, &chrono::Utc::now().to_rfc3339())?;
         if written > 0 {
             store.commit(&format!(
-                "reflect: {written} workspace(s) reconciled with the run record"
+                "reflect: {written} situation(s)' keys reconciled with the run record"
             ));
         }
         written
     };
     if written + left > 0 {
         println!(
-            "{} {written} workspace(s) of {} recorded against the run record ({to_none} to \
-             none: the record carries none; {left} left as recorded: session not found or \
+            "{} {written} situation(s) of {} recorded against the run record ({to_none} key(s) \
+             to none: the record carries none; {left} left as recorded: session not found or \
              unreadable)",
             if dry_run {
                 "would reconcile"
@@ -581,7 +635,7 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
         (
             mecha_core::session::SessionMeta,
             Vec<mecha_core::learning::Intervention>,
-            Option<PathBuf>,
+            (Option<PathBuf>, Option<mecha_core::session::SessionKind>),
         ),
         String,
     >;
@@ -607,13 +661,13 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
             })?;
             let (meta, convo) =
                 Session::load(path).map_err(|e| format!("session unreadable: {e:#}"))?;
-            let matched = matched_workspace_of(path).ok().flatten();
+            let matched = matched_keys_of(path).unwrap_or((None, None));
             Ok((meta, extract_interventions(&convo.messages), matched))
         });
         match read {
             Err(why) => unmatched.push((r.id.clone(), why.clone())),
-            Ok((meta, interventions, matched)) => {
-                match backfill_situation(r, interventions, meta, matched.as_deref()) {
+            Ok((meta, interventions, (matched, surface))) => {
+                match backfill_situation(r, interventions, meta, matched.as_deref(), *surface) {
                     Backfilled::Matched(s) => updates.push((r.id.clone(), s)),
                     Backfilled::NoMatch => unmatched.push((
                         r.id.clone(),
@@ -681,6 +735,22 @@ mod tests {
     }
 
     fn session_in(dir: &Path, jail: &str, matched: Option<&str>) -> Session {
+        session_on(
+            dir,
+            jail,
+            matched,
+            Some(SessionKind::Web),
+            Some(SessionKind::Web),
+        )
+    }
+
+    fn session_on(
+        dir: &Path,
+        jail: &str,
+        matched: Option<&str>,
+        kind: Option<SessionKind>,
+        matched_surface: Option<SessionKind>,
+    ) -> Session {
         let s = Session::create(
             dir,
             SessionMeta {
@@ -690,25 +760,28 @@ mod tests {
                 model: "m".into(),
                 workspace: PathBuf::from(jail),
                 title: None,
-                kind: Some(SessionKind::Web),
+                kind,
             },
         )
         .unwrap();
         s.append(&Record::Config(RunConfig {
             workspace: PathBuf::from(jail),
             rules_workspace: matched.map(PathBuf::from),
+            rules_surface: matched_surface,
             ..Default::default()
         }))
         .unwrap();
         s
     }
 
-    /// The miner stamps the workspace the block was matched against, never
-    /// the session's jail — the bug that recurred on `serve`, Slack and task
-    /// sessions, each of which jails a run somewhere the block was not
-    /// rendered. Fails on the old read of `meta.workspace`.
+    /// The miner stamps the workspace and the surface the block was
+    /// matched against, never the session's jail and never its kind — the
+    /// bug that recurred on `serve`, Slack and task sessions, each of which
+    /// jails a run somewhere the block was not rendered, and the board's
+    /// task door, which records a task while the block was matched as web.
+    /// Fails on the old reads of `meta.workspace` and `meta.kind`.
     #[test]
-    fn the_miner_reads_the_matched_workspace_and_never_the_jail() {
+    fn the_miner_reads_the_matched_keys_and_never_the_jail_or_the_kind() {
         let dir = scratch("mecha-reflect-test");
         let s = session_in(
             &dir,
@@ -719,7 +792,7 @@ mod tests {
             s.meta.workspace,
             PathBuf::from("/home/x/.mecha/work/web/main")
         );
-        let matched = matched_workspace_of(&s.path).unwrap();
+        let (matched, surface) = matched_keys_of(&s.path).unwrap();
         assert_eq!(
             matched.as_deref(),
             Some(Path::new("/home/x/.mecha/work/web"))
@@ -727,7 +800,7 @@ mod tests {
         let recorded = mecha_core::situation::Situation::recorded(
             &["shell".into()],
             "denial",
-            s.meta.kind,
+            surface,
             matched.as_deref(),
         );
         assert_eq!(
@@ -740,23 +813,44 @@ mod tests {
             Some(s.meta.workspace.clone()),
             "not the jail"
         );
-        // A record from before the field: no key, never the jail.
-        let old = session_in(&dir, "/jail", None);
-        assert_eq!(matched_workspace_of(&old.path).unwrap(), None);
+        // A record from before the fields: no key, never the jail or kind.
+        let old = session_on(&dir, "/jail", None, Some(SessionKind::Tui), None);
+        assert_eq!(matched_keys_of(&old.path).unwrap(), (None, None));
+        // The board's task door on serve: recorded as a task, matched as
+        // web — the surface stamped is the matched one, never the kind.
+        let door = session_on(
+            &dir,
+            "/jail",
+            Some("/root"),
+            Some(SessionKind::Task),
+            Some(SessionKind::Web),
+        );
+        assert_eq!(
+            matched_keys_of(&door.path).unwrap().1,
+            Some(SessionKind::Web)
+        );
+        assert_eq!(door.meta.kind, Some(SessionKind::Task));
         // No transcript at all: unreadable, not "none".
-        assert!(matched_workspace_of(&dir.join("missing.jsonl")).is_err());
+        assert!(matched_keys_of(&dir.join("missing.jsonl")).is_err());
     }
 
-    /// The pass over a store: a jailed row goes to the matched workspace,
-    /// a row whose session is gone stays as it is, a row with no workspace
-    /// is never given one, and the second pass writes nothing.
+    /// The pass over a store: a jailed row goes to the matched keys, a
+    /// row whose session is gone stays as it is, a row with no key is
+    /// never given one, and the second pass writes nothing.
     #[test]
     fn the_reconcile_pass_sets_from_a_read_record_and_leaves_the_rest() {
         use mecha_core::learning::Reflexion;
         let dir = scratch("mecha-reconcile-pass");
         let sessions = dir.join("sessions");
         let store = LearningStore::open(dir.join("learning")).unwrap();
-        let s = session_in(&sessions, "/jail", Some("/root"));
+        // The door: recorded as a task, the block matched as web.
+        let s = session_on(
+            &sessions,
+            "/jail",
+            Some("/root"),
+            Some(SessionKind::Task),
+            Some(SessionKind::Web),
+        );
         let situated = |id: &str, session_id: &str, ws: Option<&str>| {
             let r = Reflexion {
                 id: id.into(),
@@ -776,10 +870,11 @@ mod tests {
                 edited_at: None,
                 dropped_at: None,
                 dropped_reason: None,
+                // Stamped the old way: the jail, and the session's kind.
                 situation: Some(mecha_core::situation::Situation::recorded(
                     &["shell".into()],
                     "denial",
-                    None,
+                    ws.map(|_| SessionKind::Task),
                     ws.map(Path::new),
                 )),
                 situation_recomputed_at: None,
@@ -795,17 +890,26 @@ mod tests {
             listed.into_iter().map(|(m, p)| (m.id, p)).collect();
         assert_eq!(
             reconcile_recorded_workspaces(&store, &paths, unreadable, false).unwrap(),
-            1
+            2,
+            "jailed (both keys) and agrees (the surface alone)"
         );
-        let ws = |id: &str| store.reflexion(id).unwrap().situation.unwrap().workspace;
-        assert_eq!(ws("jailed").as_deref(), Some(Path::new("/root")));
-        assert_eq!(ws("agrees").as_deref(), Some(Path::new("/root")));
+        let sit = |id: &str| store.reflexion(id).unwrap().situation.unwrap();
+        assert_eq!(sit("jailed").workspace.as_deref(), Some(Path::new("/root")));
         assert_eq!(
-            ws("gone").as_deref(),
+            sit("jailed").surface,
+            Some(SessionKind::Web),
+            "the door: matched as web, whatever the session is recorded as"
+        );
+        assert_eq!(sit("agrees").workspace.as_deref(), Some(Path::new("/root")));
+        assert_eq!(sit("agrees").surface, Some(SessionKind::Web));
+        assert_eq!(
+            sit("gone").workspace.as_deref(),
             Some(Path::new("/jail")),
             "unreadable: left"
         );
-        assert_eq!(ws("edit"), None, "never given a key");
+        assert_eq!(sit("gone").surface, Some(SessionKind::Task));
+        assert_eq!(sit("edit").workspace, None, "never given a key");
+        assert_eq!(sit("edit").surface, None);
         let file = dir.join("learning").join("reflections.jsonl");
         let before = std::fs::read(&file).unwrap();
         assert_eq!(

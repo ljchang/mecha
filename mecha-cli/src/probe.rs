@@ -78,6 +78,7 @@ impl ProbePrep {
             &self.recorded.tools,
             self.recorded.rules_workspace.as_deref(),
         )
+        .on(self.recorded.rules_surface)
     }
 
     /// The tool names the recording carried — what a fidelity check must

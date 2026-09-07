@@ -492,13 +492,18 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                      domain, so they cannot fire. Check the filename, or route it."
                 );
             }
+            // The surface the front-end says it is — with the test override
+            // applied here as `Session::create` applies it to the record, so
+            // the matched key and the recorded key agree under it too.
+            let surface = mecha_core::session::SessionKind::test_override().or(opts.surface);
             let situation = mecha_core::situation::Situation::of_run(
                 &registry
                     .iter()
                     .map(|t| t.name().to_string())
                     .collect::<Vec<_>>(),
                 Some(&tools.workspace),
-            );
+            )
+            .on(surface);
             rules = store.rules_carried_for(mecha_core::learning::RUN_DOMAINS, &situation)?;
             if let Some(block) = rules.block.clone() {
                 let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();

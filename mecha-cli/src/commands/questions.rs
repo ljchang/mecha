@@ -265,6 +265,8 @@ async fn answer_and_resume(
     if opts.workspace.is_none() {
         opts.workspace = q.workspace.clone();
     }
+    // A continuation of a delegated task run is matched as one.
+    opts.surface = Some(mecha_core::session::SessionKind::Task);
     let mut prepared = setup::prepare(&opts, !unattended).await?;
 
     // The same refusal `tasks work` makes, for the same reason: this is that

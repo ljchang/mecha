@@ -96,6 +96,15 @@ pub struct GlobalOpts {
     /// deliberately narrowed run is how a real typo later gets ignored.
     #[arg(skip)]
     pub tools_from_trigger: bool,
+    /// Set by the front-end that owns the run, never by a flag: the surface
+    /// the session will be recorded as, so `setup::build` can match the
+    /// learned-rules block against it and record what it matched
+    /// (`RunConfig::rules_surface`). A front-end that sets none matches no
+    /// surface-scoped rule, which is the fail-closed reading of unknown.
+    /// The test override (`MECHA_SESSION_KIND`) wins over it in `build`, as
+    /// it does on the session record.
+    #[arg(skip)]
+    pub surface: Option<mecha_core::session::SessionKind>,
 
     /// Only carry these skills (repeatable). Names are matched exactly.
     ///

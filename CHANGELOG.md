@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A learned rule can be scoped to a surface.** The front-end that owns
+  a run tells `prepare` its kind (`GlobalOpts::surface`, never a flag),
+  the learned-rules block is matched against it, and the run record keeps
+  what was matched (`RunConfig::rules_surface`) for the miner to stamp —
+  never `SessionMeta::kind`, which the board's task door on `serve`
+  records as a task while the block was matched as web. A rule learned
+  from reflections all on one surface loads only there, widens by
+  restatement from another, and narrows by conviction, as the workspace
+  does; the reflect pass reconciles rows stamped with a kind before the
+  field existed. Rules from before the key carry no surface and load on
+  every surface as they did.
 - **A learned rule can be scoped to a workspace.** The workspace a run
   is jailed to joins the tool set as a scope key (`Situation::scope`,
   `Situation::matches`, `Situation::key`): a rule learned from
