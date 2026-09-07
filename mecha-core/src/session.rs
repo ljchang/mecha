@@ -357,9 +357,11 @@ pub struct RunConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules_workspace: Option<PathBuf>,
     /// The surface the rules block was matched against
-    /// (`RulesCarried::surface`, from `GlobalOpts::surface` with the test
-    /// override applied) — beside `SessionMeta::kind`, which is what the
-    /// session is recorded as. The two differ on the board's task door over
+    /// (`RulesCarried::surface`, from `GlobalOpts::surface` alone — the
+    /// test override marks the session record and never the match, so a
+    /// smoke test and an `exp` trial render the block the shipped binary
+    /// does) — beside `SessionMeta::kind`, which is what the session is
+    /// recorded as. The two differ on the board's task door over
     /// `serve` (recorded as a task, matched as web). Lenient on read like
     /// `kind`: a surface this build cannot name costs the field, never the
     /// record. `None` is a record from before the field, or a front-end
