@@ -1212,10 +1212,11 @@ pub fn of_session(
     // consulted (the live readout reads no stores), or the charter
     // unreadable, it is dropped and the run appraises as goal-less on that
     // reference. Fail-closed on purpose — unknown is never clean — and
-    // `Task`/`Setpoint` references are untouched: the board owns those
-    // ids and the closure appraisal supplies its own. The attributed
-    // references added below come from the charter itself, so they need
-    // no check.
+    // `Task`/`Project`/`Setpoint` references are untouched: the board owns
+    // the task and project ids and the closure appraisal supplies its own,
+    // and `distill` resolves each against the board before one crosses a
+    // wire. The attributed references added below come from the charter
+    // itself, so they need no check.
     let goals: Vec<GoalRef> = goals
         .iter()
         .filter(|g| match g {

@@ -1387,28 +1387,13 @@ fn describe(a: &mecha_core::appraisal::Appraisal) -> String {
     )
 }
 
-/// §5.4: "a disappointed closure may stage a follow-up... one follow-up per
-/// closure." Created via the same tool `add` already calls, composed
-/// entirely from typed fields the harness minted — the label, which channels
-/// fired, and the task's own **id**, never its name.
-///
-/// **The task's own name is not necessarily trusted board text, and an
-/// earlier version of this comment was wrong to call it that.** `mail task`
-/// defaults a task's name to the classifier's paraphrase and then to the
-/// raw subject line of somebody else's mail (docs/ARCHITECTURE.md's own task-board
-/// section names this as a known, unresolved gap for the *original* task).
-/// Copying that text verbatim into a *new* record, under a `captured_from`
-/// that says `kind: session` — implying the harness authored it — would
-/// launder exactly that provenance: a later reader (or a delegation seed
-/// built from the follow-up) would see no reason to treat the embedded text
-/// as anything other than the harness's own words. Citing the id instead
-/// costs the reader one lookup (`mecha tasks list`) and costs nothing here.
-async fn stage_follow_up(
-    prepared: &setup::PreparedTools,
-    task_id: &str,
-    before: &Value,
-    a: &mecha_core::appraisal::Appraisal,
-) -> Result<()> {
+/// The follow-up's `kg_task_create` arguments, from typed fields only —
+/// the label, which channels fired, the task's own **id**, and the project
+/// it is filed under. Pure, so the one preference that matters is held by
+/// a test: the parent by its *id* where the board gave one, the name only
+/// on a board from before `project_id`, and never an empty string of
+/// either (found on review, twice).
+fn follow_up_args(task_id: &str, before: &Value, a: &mecha_core::appraisal::Appraisal) -> Value {
     let channels: std::collections::BTreeSet<String> = a
         .errors
         .iter()
@@ -1451,6 +1436,32 @@ async fn stage_follow_up(
     {
         args["project"] = json!(p);
     }
+    args
+}
+
+/// §5.4: "a disappointed closure may stage a follow-up... one follow-up per
+/// closure." Created via the same tool `add` already calls, composed
+/// entirely from typed fields the harness minted — the label, which channels
+/// fired, and the task's own **id**, never its name.
+///
+/// **The task's own name is not necessarily trusted board text, and an
+/// earlier version of this comment was wrong to call it that.** `mail task`
+/// defaults a task's name to the classifier's paraphrase and then to the
+/// raw subject line of somebody else's mail (docs/ARCHITECTURE.md's own task-board
+/// section names this as a known, unresolved gap for the *original* task).
+/// Copying that text verbatim into a *new* record, under a `captured_from`
+/// that says `kind: session` — implying the harness authored it — would
+/// launder exactly that provenance: a later reader (or a delegation seed
+/// built from the follow-up) would see no reason to treat the embedded text
+/// as anything other than the harness's own words. Citing the id instead
+/// costs the reader one lookup (`mecha tasks list`) and costs nothing here.
+async fn stage_follow_up(
+    prepared: &setup::PreparedTools,
+    task_id: &str,
+    before: &Value,
+    a: &mecha_core::appraisal::Appraisal,
+) -> Result<()> {
+    let mut args = follow_up_args(task_id, before, a);
     let out = match call_with(prepared, "kg_task_create", args.clone()).await {
         Ok(v) => v,
         // The store's own validation may be stricter than the documented
@@ -3202,6 +3213,43 @@ mod tests {
             project_of(&json!({"project_id": "proj\ntide"})),
             ProjectTier::Unidentified("proj\ntide".into())
         );
+    }
+
+    #[test]
+    fn a_follow_up_is_filed_under_the_project_by_id_then_name_and_never_empty() {
+        use mecha_core::appraisal::Affect;
+        let a = appraisal(Affect::Distress);
+        let by_id = follow_up_args(
+            "task-1a2b3c4d",
+            &json!({"project": "Tide pool study", "project_id": "proj-tide"}),
+            &a,
+        );
+        assert_eq!(
+            by_id["project"], "proj-tide",
+            "the id where the board gave one"
+        );
+        let by_name = follow_up_args("task-1a2b3c4d", &json!({"project": "Tide pool study"}), &a);
+        assert_eq!(
+            by_name["project"], "Tide pool study",
+            "the name on an older board"
+        );
+        for row in [
+            json!({}),
+            json!({"project": "", "project_id": ""}),
+            json!({"project": null, "project_id": null}),
+        ] {
+            let args = follow_up_args("task-1a2b3c4d", &row, &a);
+            assert!(
+                args.get("project").is_none(),
+                "no parent, no argument: {row}"
+            );
+        }
+        // Typed fields only: the name says the id and the label, never the
+        // task's own name, which is somebody's text.
+        let args = follow_up_args("task-1a2b3c4d", &json!({"name": "Ship <b>it</b>"}), &a);
+        assert!(args["name"].as_str().unwrap().contains("task-1a2b3c4d"));
+        assert!(!args["name"].as_str().unwrap().contains("Ship"));
+        assert_eq!(args["captured_from"]["kind"], "session");
     }
 
     #[test]

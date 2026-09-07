@@ -2916,7 +2916,11 @@ that trusts its caller is not one): a charter id must be a line of the
 charter the command loaded, a task or project id must be on the board (one
 `kg_task_list` per distill run through the same server the episodes go to —
 a board that could not be read admits nothing and says so), and a setpoint
-name has no store to resolve against and never crosses whole. What does not resolve falls back to the kind word
+name has no store to resolve against and never crosses whole. "On the
+board" is the guarantee, and it rests on the graph minting ids a model
+cannot author: a task id is `task-` plus a uid, and a node id is a type
+prefix plus a uid or a content hash, never a slug of the name — so a
+project name a model wrote cannot arrive as its own id by the other door. What does not resolve falls back to the kind word
 alone, which is what crossed before. What never rides is the sentence: the goal hypothesis a run put to the owner, the
 owner's answer, and the charter line's text stay in the stores mecha itself
 writes (`GOAL-SYSTEM-DESIGN.md` §17.7 item 8), and the graph joins on the id.
