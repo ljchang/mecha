@@ -101,7 +101,9 @@ pub async fn execute(args: Args) -> Result<()> {
 /// `list` drops them silently) or with a torn line before its first run
 /// record (`Session::first_run_config` refuses it) is evidence that could
 /// not be read, never evidence of absence — one torn file must not print
-/// "nowhere" about a rule that loads fine (found on review). Read from the
+/// "nowhere" about a rule that loads fine (found on review), and so is a
+/// listing with no record carrying either key — a missing store, or one
+/// written before the fields existed. Read from the
 /// top of each file only, so a roster costs what `Session::list` costs and
 /// not the whole store's bytes — the TUI's Rules pane runs the roster on
 /// a keypress (found on review). Read once per roster, and only when a
@@ -136,6 +138,17 @@ fn presented_keys_in(dir: &Path) -> Option<Presented> {
                 out.push(pair);
             }
         }
+    }
+    // A listing that yielded no record carrying either key cannot answer
+    // the question: a missing or empty `sessions/` lists as `Ok(empty)`,
+    // and a record from before the fields carries `(None, None)` — "before
+    // the field" and "matched with no key" are two facts the record keeps
+    // apart, and a whole store of the first kind (every record on this
+    // machine, the day the keys landed) read as evidence that every keyed
+    // scope loads nowhere (found on review). Zero records is the least
+    // evidence there is; it must not make the loudest claim.
+    if out.iter().all(|(w, k)| w.is_none() && k.is_none()) {
+        return None;
     }
     Some(out)
 }
