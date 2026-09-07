@@ -806,8 +806,14 @@ fn widened(
         Some(s) if !s.is_standing() => s.describe(),
         _ => "everywhere".to_string(),
     };
-    let keys =
-        |r: &mecha_core::learning::Rule| r.scope.as_ref().map_or(0, |s| s.scope().tools.len());
+    // Every scope key counts, not the tools alone: a widening that drops
+    // the workspace and keeps the tools is a widening (found on review).
+    let keys = |r: &mecha_core::learning::Rule| {
+        r.scope.as_ref().map_or(0, |s| {
+            let s = s.scope();
+            s.tools.len() + usize::from(s.workspace.is_some())
+        })
+    };
     after
         .iter()
         .filter_map(|r| {

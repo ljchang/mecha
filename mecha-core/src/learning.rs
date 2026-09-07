@@ -5797,6 +5797,61 @@ mod situation_tests {
         assert_eq!(r.sources, vec!["x"], "the second batch is lineage too");
         assert_eq!(carried_in(&out, &run_with(&["fs_read"])).count(), 1);
 
+        // The workspace widens the same way: a rule learned in one
+        // workspace, restated verbatim by a batch from another, drops the
+        // workspace and keeps the tools they share.
+        let at = |w: &str| {
+            Situation::recorded(
+                &["shell".into()],
+                "denial",
+                None,
+                Some(std::path::Path::new(w)),
+            )
+        };
+        let at_a = vec![rule("Say what you ran.", "r-w", Some(at("/a").scope()))];
+        let out = finalize_region_rules(
+            vec![Rule {
+                text: "Say what you ran.".into(),
+                ..Default::default()
+            }],
+            &at_a,
+            &at("/b").scope(),
+            &["y".into()],
+            &[at("/b")],
+            "now",
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].scope,
+            Some(shell()),
+            "shell@/a ∩ shell@/b is shell everywhere"
+        );
+        assert_eq!(
+            carried_in(
+                &out,
+                &Situation::of_run(&["shell".into()], Some(std::path::Path::new("/c")))
+            )
+            .count(),
+            1
+        );
+        // And a scope that names a workspace loads only there.
+        assert_eq!(
+            carried_in(
+                &at_a,
+                &Situation::of_run(&["shell".into()], Some(std::path::Path::new("/b")))
+            )
+            .count(),
+            0
+        );
+        assert_eq!(
+            carried_in(
+                &at_a,
+                &Situation::of_run(&["shell".into()], Some(std::path::Path::new("/a")))
+            )
+            .count(),
+            1
+        );
+
         // A batch focused elsewhere whose every window still carried
         // `shell` is evidence inside the shell region: support grows, the
         // scope does not. And the standing batch never widens — not with
