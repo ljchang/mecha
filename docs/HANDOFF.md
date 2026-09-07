@@ -1943,14 +1943,25 @@ check: `factory --version`, `mecha-factory.service` active, binary and
 the owner's word. Installed binaries and each repo's `main` agree at the
 tagged commits; nothing else is owed on this machine.
 
-**2026-09-07, mecha-a6: nothing deployed, nothing restarted.** Two PRs
-open and unmerged (mecha #206 code head `5b242d82`, later commits
-handoff-only; mecha-graph #10 at `92c34b5`); the installed binaries are unchanged from the 2026-09-06 row
-above. When they merge: the graph first (`mecha-graph-mcp` reinstalled,
-the four units' MCP children restart with them), then mecha's binary —
-the web dist is untouched by either. The graph worktree is
-`~/Github/mecha-graph-project`, the mecha one
-`.claude/worktrees/project-tier`.
+**2026-09-07, 16:34–16:36Z, mecha-a6: both merges deployed.**
+`~/.cargo/bin/mecha-graph` and `mecha-graph-mcp` reinstalled from the
+public mecha-graph `main` at `940c806` (PR #10), and
+`~/Github/mecha-graph/target/release/mecha-graph` rebuilt for the 01:30
+nightly — probe `strings ~/.cargo/bin/mecha-graph-mcp | grep -c
+parent_reviewed` printed 1 (0 before); the installed server answers 13
+tools. `~/.cargo/bin/mecha` and `mecha-mail` reinstalled from mecha `main`
+at `146922da` (PR #206) — probe `strings ~/.cargo/bin/mecha | grep -c
+'project tier of this'` printed 3 (0 before), and `grep -c pkg__kg_`
+printed 0. Restarted `mecha-slack`, `mecha-triggers`, `mecha-drain`,
+`mecha-serve`, `mecha-voice-worker` at 16:35:51Z; each logged its own
+startup line in a journal window opened at the restart, and each carries
+`~/.cargo/bin` on its PATH. Web dist untouched (neither PR touched
+`web/`). Two kinds of host that no restart step reaches still ran the
+previous graph server afterwards — two Claude Code sessions' MCP
+children and the Hermes dashboard — and were reported, not killed. The public mecha-graph
+checkout was moved from another session's unpushed docs branch
+(`docs/bee-keyring-reboot`, kept at `c3bcb40`, clean) to `main`, so the
+nightly's script and binary are both current.
 
 ## What the measurements say
 
@@ -2912,93 +2923,25 @@ the mechanism and every decision. What it left standing:
 
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
-**2026-09-07 — §17.7 item 5 finished and item 8 built, with the pkg→graph
-rename: mecha PR #206 (`feat/project-tier`, code head `5b242d82`) and
-mecha-graph PR #10 (`feat/task-project-id`, head `92c34b5`), both review
-loops closed at the bar, both unmerged when written — merging is the
-owner's call — and nothing deployed.** The design doc's built notes under
-§17.7 items 5 and 8 have the shape; `ARCHITECTURE.md` §the goal system
-("The project is the tier above the task") and §distillation have the
-invariants. What is built, verified in source: the board row carries
-`project_id` beside the project's name (`TaskItem::project_id`, from the
-same join as the name, so the two are absent together); `tasks set`'s
-closure appraisal records `GoalRef::Project` on the appraisal's `goals`
-after the task (`appraise_session_with`); the owner closing a project's
-last open task is the project's closure (`project_closure_pending`, read
-*before* `appraise_closure` can stage a follow-up under it) and
-`appraise_project` folds every session that worked a task under it into a
-`ProjectReading` printed on stderr — membership by the row's own
-`project_id` over one whole-board read taken before the appraisal
-(`rows_under`), a truncated or unparseable answer unknown rather than
-closed, no follow-up staged, no record written; `tasks set --project` re-files a task or clears it and a
-re-file in the closing call moves the tier to the echoed row
-(`carry_refiled_project`); the follow-up is filed by project id
-(`follow_up_args`). Item 8: a distilled episode's `meta` carries `goal`,
-`serves_charter` and each error's `goal` as `kind:id` pointers, each
-resolved at the boundary first (`distill::KnownPointers` — a charter id
-against the loaded charter's lines, a task or project id against one
-`kg_task_list` per distill run, a setpoint never), and the sentence never
-rides (pinned on `meta`'s key set). The graph side, in the same arc:
-`kg_task_create` accepts the id it hands out (id first, then name; an
-ambiguous name refused with the ids), `NEVER_A_PARENT` (task, person,
-agent, place, event, event_series, document, artifact — and any node that
-is a task by row, whatever its type) bound to every writer of a parent
-(`set_task_parent_id`, `retype_node`, `merge_nodes`), `kg_task_update`
-takes `project` resolved before anything is written and written last,
-`repair-parents` surveys the rows from before the guard and
-`task-project` re-files or prints the detachment history each detach
-appends to `properties.detached_parents`. The eval fixture's board renders
-`project_id` and both echoes and models the re-file, and
-`mecha-core/tests/fixture_servers.rs` asserts it cross-process. Nothing
-now calls the retired server by name in the live tree: `prompts/agent.md`
-names the bare `kg_*` tools the documented wiring exposes, the landing
-snippet carries `prefix_tools = false`, the evaluation page names the
-fixture that exists. **Passes, counted from the PR comment records at
-13:19Z:** #206 had twenty-nine summary comments (ten in a row clean at
-the bar through `dea69278` at 13:26Z; the pass on `1ec25cfd` at 13:43Z
-then found one medium — the landing page's `[[mcp]]` snippet, once it
-named a shipped binary, lacked the `untrusted_input = true` override
-that arms the interlock over the graph — fixed on `5b242d82` with the
-minor beside it, `carry_refiled_project` reading an absent project
-column as cleared; the pass on the handoff commit after it, at 13:59Z,
-found nothing labelled at the bar but one item "worth acting on" —
-`meta.goal` dropped its key where each error's `goal` fell back to the
-kind word, so a setpoint-driven run crossed as goal-less — taken on
-`5b242d82`, whose pass was pending when written); #10 has
-thirty-five (a push mid-pass cancels the last, so the record undercounts
-the runs; its passes on `c2d025c`, `e93b6f8`, `b29b15e`, `4c034c7`,
-`35c326d`, `8129acf` and `fb19799` found nothing at the bar, each leaving
-two or three minors about the survey, the vouch or the pending list, all
-taken; the pass on `50eec00` found one medium — a `parent_reviewed` mark
-outlived its parent's row and `vouch_stands` read it as standing — fixed
-on `fb19799` by re-deriving the survey's whole predicate and having a
-declined vouch remove a stale mark; the pass on `92c34b5` at 13:31Z
-found nothing at the bar and closed the loop, leaving two minors on the
-PR body for the owner — `merge_nodes`' re-point branch records no
-detachment, and `task-project`'s advisory reads after a re-file are
-fatal and run for every id-form re-file).
-The graph loop went thirteen passes past its first clean one,
-each pass finding one more *writer* of the parent the rule had not bound
-— the survey, retype, merge, the row-based type, the JSON branch, the
-nightly, the pending list, the re-file itself; every major and medium was
-fixed on the branch, and the untaken set is named on each PR body. **Deploy order is a
-hard dependency, and on an old server a degradation rather than a
-loss:** merge and deploy mecha-graph #10 first — `stage_follow_up` files
-by `project_id`, and a graph server that renders the column but predates
-#10's create change refuses it, so the follow-up is filed under no
-project with a stderr line saying to re-file it (`tasks set --project`);
-a server from before the column leaves the project tier unidentified once
-and the task appraisal unchanged. **Owed after this:** an end-to-end test of the
-read-before-stage ordering (needs a delegated session with a recorded
-outcome under the fixture — the one guarantee here held by statement
-order alone); `merge_nodes` discards its detach count; and, still from
-§17.7, item 2 (off until the
-step counters are read — `sessions health` said one run had recorded the
-sensor on 2026-09-07 01:20Z, none completing a step), item 4's re-ask.
-**Not built, on the owner's question:** surface and workspace as scope
-keys for learned rules — workspace is unblocked now that widening exists,
-surface needs `prepare` told the session kind at 13 front-end sites; the
-recommendation given was workspace first.
+**2026-09-07 — the project tier (§17.7 item 5) and the goal pointer
+(item 8) shipped and are deployed; the shape is in HISTORY under this
+date.** What is still open from that arc: an end-to-end test of the
+read-before-stage ordering (`project_closure_pending` before
+`appraise_closure`, held by statement order alone — needs a delegated
+session with a recorded outcome under the fixture); the fixture board
+server cannot be asked to emit `truncated`, so `rows_under` and
+`KnownPointers::from_board` are measured against literals only; the
+just-closed task's transcript is read twice on a project-closing `tasks
+set` (once by `appraise_closure`, once as a row in `appraise_project`'s
+fold); `--project` is on `tasks set` and the TUI's add form but not its
+edit form; on the graph side `merge_nodes` discards the count of tasks
+its detach branch detached (the pending list shows them), its re-point
+branch records no detachment, and `task-project`'s post-write advisory
+reads are fatal and run on every id-form re-file. Still from §17.7: item 2 (mid-run
+delivery, off until the step counters are read) and item 4's re-ask.
+**In progress on the owner's word (2026-09-07 evening): the workspace as
+a scope key for learned rules**, workspace before surface — surface needs
+`prepare` told the session kind at thirteen front-end sites.
 
 **2026-09-06, later — §17.7 item 4's sensor half: PR #202
 (`feat/goal-distance`), merged at `67fb55e` on the owner's word after
