@@ -81,6 +81,11 @@ pub enum Cmd {
         /// yourself; `""` clears it.
         #[arg(long)]
         waiting_on: Option<String>,
+        /// Re-file under this project — a container node the graph knows,
+        /// by name or node id (the `project_id` a row carries); `""` clears
+        /// it. The correction path for a parent the goal record cites.
+        #[arg(long)]
+        project: Option<String>,
         /// The agent conversation working this task. **Set by a harness that
         /// starts one, never typed** — it is the link the board offers as
         /// *open the conversation*, and D5's rule that a run's state is
@@ -181,10 +186,11 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
             defer,
             context,
             waiting_on,
+            project,
             session,
         } => {
             set(
-                global, &task, status, due, defer, context, waiting_on, session,
+                global, &task, status, due, defer, context, waiting_on, project, session,
             )
             .await
         }
@@ -418,6 +424,7 @@ async fn set(
     defer: Option<String>,
     context: Option<String>,
     waiting_on: Option<String>,
+    project: Option<String>,
     session: Option<String>,
 ) -> Result<()> {
     let mut args = json!({ "task": task });
@@ -429,6 +436,7 @@ async fn set(
         ("defer", defer),
         ("context", context),
         ("waiting_on", waiting_on),
+        ("project", project),
         ("session", session.clone()),
     ] {
         if let Some(v) = value {
@@ -438,7 +446,7 @@ async fn set(
     if args.as_object().is_some_and(|o| o.len() == 1) {
         bail!(
             "nothing to change — pass at least one of --status, --due, --defer, --context, \
-             --waiting-on"
+             --waiting-on, --project"
         );
     }
 

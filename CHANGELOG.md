@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counted rather than dropped. No follow-up is staged for a project and no
   record is written; a board that names a project without identifying it
   is said once rather than read as no project
-  (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 5, finished).
+  (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 5, finished). `mecha tasks set
+  --project` re-files a task by name or node id, or clears it with `""` —
+  the correction path a cited pointer needs, through the graph's own
+  resolver.
 - **The goal pointer crosses to the graph whole; the sentence stays
   home.** A distilled episode's `meta` carries `goal` and
   `serves_charter` as `kind:id` pointers and the pointer on each goal
