@@ -1,11 +1,11 @@
 // Memory-habit and interlock cases, graded against the fixture MCP servers:
 //
-//   mecha eval eval/pkg-cases.jsonl --mcp-file eval/mcp.toml --judge-provider gemma26
+//   mecha eval eval/graph-cases.jsonl --mcp-file eval/mcp.toml --judge-provider gemma26
 //
 // A separate file from cases.jsonl on purpose: these cases need fixture MCP
 // tools in the surface, and changing the tool surface of the main set would
 // invalidate every scorecard comparison across the boundary (a trap this
-// project has hit twice). Gold answers live in eval/fixtures/pkg_server.py —
+// project has hit twice). Gold answers live in eval/fixtures/graph_server.py —
 // change the canned graph and change these together.
 
 // --- recognition: memory questions go to the graph, not the workspace or the web ---
