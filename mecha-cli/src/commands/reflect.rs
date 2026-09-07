@@ -601,13 +601,23 @@ fn reconcile_recorded_keys(
                 show_recorded()
             );
         }
+        // The replacement for a parked surface is the first attach that
+        // *names* one — the same quantifier as the guard above. `confirmed`
+        // falls back to the first attach whatever it says, and a session
+        // whose first run carried no rules block and whose resumed run did
+        // read [none, web]: the guard let it through and the fallback
+        // cleared the parked key to nothing (found on review).
         let surface_record = record
             .as_ref()
             .map(|all| {
-                confirmed(
-                    surface_recorded.as_ref(),
-                    all.iter().map(|(_, k)| *k).collect(),
-                )
+                if s.surface_unread.is_some() {
+                    all.iter().find_map(|(_, k)| *k)
+                } else {
+                    confirmed(
+                        surface_recorded.as_ref(),
+                        all.iter().map(|(_, k)| *k).collect(),
+                    )
+                }
             })
             .map_err(Clone::clone);
         match reconcile_key(
@@ -1178,6 +1188,61 @@ mod tests {
             Some("copilot"),
             "still parked, still matching nothing"
         );
+        // Two attaches, the first naming no surface (rules off), the second
+        // naming web: the parked row takes web — never cleared to nothing.
+        let mixed = session_on(
+            &sessions,
+            "/jail",
+            Some("/root"),
+            Some(SessionKind::Tui),
+            None,
+        );
+        mixed
+            .append(&Record::Config(RunConfig {
+                workspace: PathBuf::from("/jail"),
+                rules_workspace: Some(PathBuf::from("/root")),
+                rules_surface: Some(SessionKind::Web),
+                ..Default::default()
+            }))
+            .unwrap();
+        store
+            .append_reflexion(&Reflexion {
+                id: "parked-mixed".into(),
+                domain: "behavior".into(),
+                session_id: mixed.meta.id.clone(),
+                trigger: "denial".into(),
+                context: "c".into(),
+                intervention: "Denied by the user: no".into(),
+                reflexion_text: "t".into(),
+                error_type: None,
+                confidence: None,
+                is_processed: false,
+                leap_run_id: None,
+                created_at: "2026-09-07T00:00:00Z".into(),
+                origin: mecha_core::learning::Origin::Clean,
+                evidence: mecha_core::learning::Evidence::Full,
+                edited_at: None,
+                dropped_at: None,
+                dropped_reason: None,
+                situation: Some(
+                    serde_json::from_str(r#"{"tools":["shell"],"surface":"copilot"}"#).unwrap(),
+                ),
+                situation_recomputed_at: None,
+            })
+            .unwrap();
+        let (listed, unreadable) = Session::list_counting(&sessions).unwrap();
+        let paths: std::collections::HashMap<String, PathBuf> =
+            listed.into_iter().map(|(m, p)| (m.id, p)).collect();
+        assert_eq!(
+            reconcile_recorded_keys(&store, &paths, unreadable, false).unwrap(),
+            1
+        );
+        assert_eq!(
+            sit("parked-mixed").surface,
+            Some(SessionKind::Web),
+            "the attach that names one"
+        );
+        assert_eq!(sit("parked-mixed").surface_unread, None);
         let file = dir.join("learning").join("reflections.jsonl");
         let before = std::fs::read(&file).unwrap();
         assert_eq!(
