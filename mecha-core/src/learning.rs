@@ -952,8 +952,9 @@ pub fn near_restatements(before: &[Rule], after: &[Rule]) -> Vec<(String, String
 
 /// The distinct scopes among `situations`, in first-seen order — the
 /// sub-regions a batch of evidence spans. A recorded window is reduced to
-/// its scope first, so two windows that differ only in trigger, surface or
-/// order are one sub-region, as they are one region to the loader.
+/// its scope first, so two windows that differ only in trigger, order or a
+/// front-end tool are one sub-region, as they are one region to the
+/// loader; two that differ in workspace or surface are two.
 pub fn distinct_scopes(situations: &[Situation]) -> Vec<Situation> {
     let mut out: Vec<Situation> = Vec::new();
     for s in situations {

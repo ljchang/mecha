@@ -609,8 +609,8 @@ mod tests {
     }
 
     /// A region's key is its scope, so two windows that differ in order,
-    /// trigger, surface or a front-end tool fold into one tally row, two
-    /// workspaces make two rows, and standing is the empty key.
+    /// trigger or a front-end tool fold into one tally row, two workspaces
+    /// or two surfaces make two rows, and standing is the empty key.
     #[test]
     fn the_key_is_the_scope_and_nothing_else() {
         assert_eq!(s(&["shell", "fs_read"]).key(), "fs_read,shell @ /w on tui");
