@@ -518,11 +518,18 @@ async fn set(
             // appraisal and the project's agree about the closed task.
             let closed_project = project_closure_pending(&prepared, task, &before).await;
             // One read of every store for the task's appraisal and the
-            // project's fold alike, and each store's warning once.
-            let stores = ClosureStores::load(task);
-            appraise_closure(&prepared, task, status, &before, &stores).await;
-            if let Some(project) = closed_project {
-                appraise_project(&prepared, task, &project, &stores).await;
+            // project's fold alike, and each store's warning once — and
+            // only when one of the two will read them: a hand-typed task
+            // with no session under no closing project appraises nothing,
+            // and must not pay five scans or print a store warning about
+            // an appraisal that does not happen (found on review).
+            let delegated = before["session"].as_str().is_some_and(|s| !s.is_empty());
+            if delegated || closed_project.is_some() {
+                let stores = ClosureStores::load(task);
+                appraise_closure(&prepared, task, status, &before, &stores).await;
+                if let Some(project) = closed_project {
+                    appraise_project(&prepared, task, &project, &stores).await;
+                }
             }
         }
     }
@@ -640,7 +647,7 @@ async fn appraise_closure(
     // The tier above the task, read off the board row it came with —
     // §17.7 item 5's join, made by the caller that already knows both ids
     // (the closure appraisal supplies the task the same way). An
-    // unidentified project is reported by `appraise_project_closure`, once.
+    // unidentified project is reported by `project_closure_pending`, once.
     let project = match project_of(before) {
         ProjectTier::Identified(p) => Some(p),
         ProjectTier::None | ProjectTier::Unidentified(_) => None,
@@ -872,9 +879,9 @@ async fn project_closure_pending(
         Some(false) => None,
         None => {
             eprintln!(
-                "mecha: could not read project {pid}'s open list after closing {task_id} (no \
-                 `items`, or a row without an id or a `project_id`), so whether that closed the \
-                 project is unknown"
+                "mecha: could not read project {pid}'s open list after closing {task_id} (a \
+                 truncated answer, no `items`, or a row without an id or a `project_id`), so \
+                 whether that closed the project is unknown"
             );
             None
         }
@@ -927,8 +934,8 @@ async fn appraise_project(
     let Some(rows) = rows_under(&all, pid) else {
         eprintln!(
             "mecha: {task_id} closed project {pid}, but the board's rows do not say which \
-             project they are under (no `items`, or a row without `project_id`), so the \
-             project is not appraised"
+             project they are under (a truncated answer, no `items`, or a row without \
+             `project_id`), so the project is not appraised"
         );
         return;
     };
