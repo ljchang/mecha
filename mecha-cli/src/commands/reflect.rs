@@ -438,17 +438,17 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
         .into_iter()
         .map(|(meta, path)| (meta.id, path))
         .collect();
-    let mut by_session: std::collections::HashMap<
+    // One session read: its record, its interventions, and the workspace
+    // its rules block was matched against; or why it could not be read.
+    type SessionRead = Result<
+        (
+            mecha_core::session::SessionMeta,
+            Vec<mecha_core::learning::Intervention>,
+            Option<PathBuf>,
+        ),
         String,
-        Result<
-            (
-                mecha_core::session::SessionMeta,
-                Vec<mecha_core::learning::Intervention>,
-                Option<PathBuf>,
-            ),
-            String,
-        >,
-    > = Default::default();
+    >;
+    let mut by_session: std::collections::HashMap<String, SessionRead> = Default::default();
     let mut updates: Vec<(String, mecha_core::situation::Situation)> = Vec::new();
     let mut unmatched: Vec<(String, String)> = Vec::new();
     for r in &todo {
