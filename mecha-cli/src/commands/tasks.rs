@@ -517,9 +517,12 @@ async fn set(
             // (found on review). The fold itself runs after, so the task's
             // appraisal and the project's agree about the closed task.
             let closed_project = project_closure_pending(&prepared, task, &before).await;
-            appraise_closure(&prepared, task, status, &before).await;
+            // One read of every store for the task's appraisal and the
+            // project's fold alike, and each store's warning once.
+            let stores = ClosureStores::load(task);
+            appraise_closure(&prepared, task, status, &before, &stores).await;
             if let Some(project) = closed_project {
-                appraise_project(&prepared, task, &project).await;
+                appraise_project(&prepared, task, &project, &stores).await;
             }
         }
     }
@@ -612,6 +615,7 @@ async fn appraise_closure(
     task_id: &str,
     new_status: &str,
     before: &Value,
+    stores: &ClosureStores,
 ) {
     // Never delegated — the ordinary case for a hand-typed task. There is
     // nothing here for D9's index to point at, and that is not an error.
@@ -641,7 +645,7 @@ async fn appraise_closure(
         ProjectTier::Identified(p) => Some(p),
         ProjectTier::None | ProjectTier::Unidentified(_) => None,
     };
-    let a = match appraise_session(session_id, task_id, project.as_ref()) {
+    let a = match appraise_session_with(session_id, task_id, project.as_ref(), stores) {
         Ok(Some(a)) => a,
         // The run never got as far as recording an outcome — a crash, a
         // kill, or a transcript from before the record existed (the live
@@ -901,6 +905,7 @@ async fn appraise_project(
     prepared: &setup::PreparedTools,
     task_id: &str,
     project: &mecha_core::goal::GoalRef,
+    stores: &ClosureStores,
 ) {
     let pid = project.id();
     let all = match call_with(
@@ -931,8 +936,6 @@ async fn appraise_project(
     let mut readings = Vec::new();
     let mut no_session = 0usize;
     let mut unread = 0usize;
-    // One read of every store for the whole fold, and its warnings once.
-    let stores = ClosureStores::load(task_id);
     for t in rows {
         // A row this build cannot read is a task it could not appraise —
         // counted, never dropped, or `tasks` would undercount.
@@ -949,7 +952,7 @@ async fn appraise_project(
             unread += 1;
             continue;
         }
-        match appraise_session_with(sid, tid, Some(project), &stores) {
+        match appraise_session_with(sid, tid, Some(project), stores) {
             Ok(Some(a)) => readings.push((tid.to_string(), a)),
             Ok(None) => unread += 1,
             Err(e) => {
@@ -1046,8 +1049,11 @@ fn is_bare_path_component(id: &str) -> bool {
 /// project, synchronously inside `tasks set`, in front of the TUI event
 /// loop and Slack's Done tap (found on review: 5N store scans for an
 /// N-task project, and every per-store warning printed N times). The
-/// stores do not change across the fold, so they are read here and
-/// handed in; a warning about a store prints once per load.
+/// stores do not change across the fold, so they are read once in `set`
+/// and handed to the task's appraisal and the project's alike; a warning
+/// about a store prints once per `tasks set`. `Default` is the empty,
+/// readable set, for tests that exercise the guards ahead of any store.
+#[derive(Default)]
 struct ClosureStores {
     drafts: Vec<mecha_core::outbox::OutboxItem>,
     outbox_unreadable: bool,
@@ -1214,18 +1220,6 @@ impl ClosureStores {
 /// not read the same to the owner. Widening `for_session` to carry that
 /// distinction for one caller would cost every other reader of it a richer
 /// error type they have no use for.
-fn appraise_session(
-    session_id: &str,
-    task_id: &str,
-    project: Option<&mecha_core::goal::GoalRef>,
-) -> Result<Option<mecha_core::appraisal::Appraisal>> {
-    // The id guard runs before the stores are read, so a hostile id costs
-    // nothing but its refusal.
-    if !is_bare_path_component(session_id) {
-        anyhow::bail!("not a session id: {session_id:?}");
-    }
-    appraise_session_with(session_id, task_id, project, &ClosureStores::load(task_id))
-}
 
 /// The appraisal of one session against one task, over stores already
 /// read. `project` is the tier the task is filed under, when the board
@@ -3351,10 +3345,11 @@ mod tests {
     /// call the guard before doing anything else, so a hostile id never
     /// reaches `Session::default_dir()` at all.
     #[test]
-    fn appraise_session_refuses_a_hostile_id_before_touching_the_filesystem() {
+    fn appraise_session_with_refuses_a_hostile_id_before_touching_the_filesystem() {
         for hostile in ["../../etc/passwd", "/etc/passwd", ".."] {
-            let e = appraise_session(hostile, "task-1a2b3c4d", None)
-                .expect_err(&format!("{hostile:?} must be refused"));
+            let e =
+                appraise_session_with(hostile, "task-1a2b3c4d", None, &ClosureStores::default())
+                    .expect_err(&format!("{hostile:?} must be refused"));
             // The guard's own refusal, not `Session::find`'s "no session
             // matching" — which every one of these would produce anyway,
             // *after* the join this exists to prevent. `dir.join(hostile)`
