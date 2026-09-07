@@ -96,10 +96,14 @@ pub async fn execute(args: Args) -> Result<()> {
 /// The workspace/surface pairs some run's rules block was matched against,
 /// off every run record in the session store — what a scope's workspace
 /// or surface key must be found in to load anywhere. `None` when the store
-/// cannot be listed: unknown is not "nowhere". Read once per roster, and
-/// only when a scope names one of those keys, since it is a pass over every
-/// transcript header and run record.
-type Presented = std::collections::BTreeSet<(Option<PathBuf>, Option<SessionKind>)>;
+/// cannot be read *in full*: a transcript whose header does not parse
+/// (`Session::list_counting` counts them; `list` drops them silently) or
+/// whose run records cannot be read is evidence that could not be read,
+/// never evidence of absence — one torn file must not print "nowhere"
+/// about a rule that loads fine (found on review). Read once per roster,
+/// and only when a scope names one of those keys, since it is a pass over
+/// every transcript.
+type Presented = Vec<(Option<PathBuf>, Option<SessionKind>)>;
 
 fn presented_keys(rules: &[&Rule]) -> Option<Presented> {
     let wants = rules.iter().any(|r| {
@@ -111,12 +115,16 @@ fn presented_keys(rules: &[&Rule]) -> Option<Presented> {
         return None;
     }
     let dir = Session::default_dir().ok()?;
-    let listed = Session::list(&dir).ok()?;
+    let (listed, unreadable) = Session::list_counting(&dir).ok()?;
+    if unreadable > 0 {
+        return None;
+    }
     let mut out = Presented::new();
     for (_, path) in listed {
-        if let Ok(configs) = Session::run_configs(&path) {
-            for rc in configs {
-                out.insert((rc.rules_workspace, rc.rules_surface));
+        for rc in Session::run_configs(&path).ok()? {
+            let pair = (rc.rules_workspace, rc.rules_surface);
+            if !out.contains(&pair) {
+                out.push(pair);
             }
         }
     }
@@ -189,8 +197,18 @@ fn list(store: &LearningStore, as_json: bool) -> Result<()> {
                     // A scope no run record presents — dark everywhere,
                     // whatever `scope` says. `null` when the store could
                     // not be read: unknown is not "nowhere".
-                    "loads_nowhere": keys.as_ref().and_then(|k| {
-                        r.scope.as_ref().map(|s| r.active() && !presented(&s.scope(), k))
+                    // Decided per rule: a scope naming neither key is
+                    // presented by construction and says `false` whatever
+                    // the store holds; one naming a key says `null` only
+                    // when the store could not be read in full (found on
+                    // review — `null` had also meant "no rule needed the
+                    // walk").
+                    "loads_nowhere": r.scope.as_ref().and_then(|s| {
+                        let scope = s.scope();
+                        if scope.workspace.is_none() && scope.surface.is_none() {
+                            return Some(false);
+                        }
+                        keys.as_ref().map(|k| r.active() && !presented(&scope, k))
                     }),
                     // Where the evidence was seen to hold, and whether a
                     // scan ever narrowed it — see `Rule::support`.
@@ -1071,7 +1089,7 @@ mod tests {
 
         // And the roster says so, in prose.
         let tallies = rule_tallies(&store.validations().unwrap());
-        let line = describe(wide, &tallies);
+        let line = describe(wide, &tallies, None);
         assert!(line.contains("loads with http_fetch"), "{line}");
         assert!(line.contains("narrowed "), "{line}");
         // A widened pre-field rule — support `[standing, shell]`, scope
@@ -1080,7 +1098,7 @@ mod tests {
             support: vec![Situation::default(), sit(&["shell"])],
             ..rule("Old and widened.", "r-pre")
         };
-        let pre_line = describe(&pre_field, &tallies);
+        let pre_line = describe(&pre_field, &tallies, None);
         assert!(pre_line.contains("seen in shell"), "{pre_line}");
         assert!(!pre_line.contains("seen in everywhere"), "{pre_line}");
         assert!(line.contains("by region:"), "{line}");
@@ -1089,6 +1107,60 @@ mod tests {
             "{line}"
         );
         std::fs::remove_dir_all(store.root()).ok();
+    }
+
+    /// A scope naming a workspace or surface loads only where some run
+    /// record presented that pair; one naming neither is presented by
+    /// construction; the roster says LOADS NOWHERE for an active rule the
+    /// records never presented, and nothing when the store could not be
+    /// read.
+    #[test]
+    fn a_scope_no_run_record_presents_is_said_to_load_nowhere() {
+        use mecha_core::situation::Situation;
+        let w = PathBuf::from("/w");
+        let on_tui = Situation::of_run(&["shell".into()], Some(&w)).on(Some(SessionKind::Tui));
+        let keys: Presented = vec![
+            (Some(w.clone()), Some(SessionKind::Tui)),
+            (None, Some(SessionKind::Slack)),
+        ];
+        assert!(presented(&on_tui.scope(), &keys));
+        assert!(
+            !presented(
+                &Situation::of_run(&["shell".into()], Some(&w))
+                    .on(Some(SessionKind::Slack))
+                    .scope(),
+                &keys
+            ),
+            "the workspace and the surface must be presented together"
+        );
+        assert!(!presented(
+            &Situation::of_run(&["shell".into()], Some(&PathBuf::from("/elsewhere"))).scope(),
+            &keys
+        ));
+        assert!(
+            presented(&Situation::of_run(&["shell".into()], None).scope(), &keys),
+            "no such key: presented by construction"
+        );
+        assert!(presented(&Situation::default(), &Presented::new()));
+        let mut dark = Rule {
+            text: "Dark.".into(),
+            id: Some("r-dark".into()),
+            scope: Some(
+                Situation::of_run(&["shell".into()], Some(&PathBuf::from("/gone"))).scope(),
+            ),
+            ..Default::default()
+        };
+        let tallies = BTreeMap::new();
+        assert!(describe(&dark, &tallies, Some(&keys)).contains("LOADS NOWHERE"));
+        assert!(
+            !describe(&dark, &tallies, None).contains("LOADS NOWHERE"),
+            "unknown is not nowhere"
+        );
+        dark.retired_at = Some("2026-09-07T00:00:00Z".into());
+        assert!(
+            !describe(&dark, &tallies, Some(&keys)).contains("LOADS NOWHERE"),
+            "a retired rule loads nowhere by design"
+        );
     }
 
     /// Staged rather than applied, a narrowing is a proposal whose rule

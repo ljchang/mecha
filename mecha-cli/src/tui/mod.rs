@@ -6438,7 +6438,7 @@ fn submit_task_form(app: &mut App) -> Result<()> {
             ];
             // The project only when it changed: the same name passed back
             // would re-file by name on every save, and `""` clears.
-            let refiled = form.original_project.as_deref() != Some(project.as_str());
+            let refiled = form.refiled(&project);
             if refiled {
                 args.extend(["--project", project.as_str()]);
             }

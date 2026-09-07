@@ -99,7 +99,7 @@ impl Captured {
 pub const ACTIVE_STATUSES: [&str; 4] = ["next", "inbox", "scheduled", "waiting"];
 
 /// A form being filled in: a capture when `editing` is `None`, otherwise the
-/// schedule of that task id.
+/// schedule and project of that task id.
 ///
 /// **There is no `name` field on an edit, and that is the tool surface rather
 /// than an omission**: `kg_task_update` moves a status and edits scheduling,
@@ -152,7 +152,7 @@ impl Form {
                 ("context", row.context.clone().unwrap_or_default()),
             ],
             idx: 0,
-            original_project: Some(row.project.clone().unwrap_or_default()),
+            original_project: Some(row.project.clone().unwrap_or_default().trim().to_string()),
             error: None,
         }
     }
@@ -178,9 +178,20 @@ impl Form {
             .unwrap_or_default()
     }
 
+    /// Whether saving the edit re-files the task: the typed project differs
+    /// from the one the form opened with, trimmed on both sides. The same
+    /// name back re-files nothing (the graph re-resolves by name, and an
+    /// ambiguous name is refused), and `""` against a filed task clears.
+    pub fn refiled(&self, typed: &str) -> bool {
+        match &self.original_project {
+            Some(original) => original.trim() != typed.trim(),
+            None => false,
+        }
+    }
+
     pub fn title(&self) -> String {
         match &self.editing {
-            Some(_) => " edit schedule · tab moves · enter saves · esc back ".into(),
+            Some(_) => " edit schedule & project · tab moves · enter saves · esc back ".into(),
             None => " capture a task · tab moves · enter saves · esc back ".into(),
         }
     }
@@ -1289,6 +1300,42 @@ mod tests {
         assert_eq!(form.value("due"), "2026-08-15");
         assert_eq!(form.value("context"), "@email");
         assert_eq!(form.value("defer"), "", "it has none, and says so");
+        // The project, prefilled and remembered — fails on the three-field
+        // form, which offered no way to re-file.
+        assert_eq!(
+            form.value("project"),
+            rows[0].project.as_deref().unwrap_or_default()
+        );
+        assert_eq!(
+            form.original_project.as_deref(),
+            Some(rows[0].project.as_deref().unwrap_or_default())
+        );
+    }
+
+    /// Saving re-files only when the project changed: the same name back
+    /// (whitespace aside) re-files nothing, another name re-files, and an
+    /// emptied field clears; a capture never re-files.
+    #[test]
+    fn a_save_refiles_only_when_the_project_changed() {
+        let (rows, _) = rows_from_json(BOARD).unwrap();
+        let mut form = Form::edit(&rows[0]);
+        let original = rows[0].project.clone().unwrap_or_default();
+        assert!(!form.refiled(&original));
+        assert!(
+            !form.refiled(&format!("  {original} ")),
+            "whitespace is not a re-file"
+        );
+        assert!(form.refiled("Somewhere else"));
+        assert!(
+            form.refiled("") == !original.is_empty(),
+            "emptied: clears a filed task"
+        );
+        form.original_project = Some("  Tidelab ".into());
+        assert!(
+            !form.refiled("Tidelab"),
+            "the original is compared trimmed too"
+        );
+        assert!(!Form::capture().refiled("Anything"));
     }
 
     /// The list spends its width on the task, not on the node id — the
