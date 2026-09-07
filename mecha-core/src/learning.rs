@@ -6556,15 +6556,6 @@ mod situation_tests {
     /// both read as absent — never the first one that fits.
     #[test]
     fn a_reflection_is_matched_to_its_intervention_by_trigger_and_text_or_not_at_all() {
-        let meta = crate::session::SessionMeta {
-            id: "s".into(),
-            created_at: "2026-09-04T00:00:00Z".parse().unwrap(),
-            provider: "local".into(),
-            model: "m".into(),
-            workspace: std::path::PathBuf::from("/w"),
-            title: None,
-            kind: Some(SessionKind::Web),
-        };
         let iv = |trigger: Trigger, text: &str, tools: &[&str]| Intervention {
             trigger,
             context: String::new(),
