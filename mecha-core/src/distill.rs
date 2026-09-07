@@ -562,7 +562,9 @@ pub fn upsert_args(
 /// this path is the model's own `serves:` argument, which `of_session`
 /// deliberately leaves unchecked for task and project because the board
 /// owns those ids. So the board is asked. `none()` — nothing read — admits
-/// nothing, and every such reference crosses as its kind word alone.
+/// no task or project, and every such reference crosses as its kind word
+/// alone; a charter id is not the board's to vouch for and crosses
+/// regardless, since `of_session` already checked it against the charter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KnownPointers {
     tasks: std::collections::BTreeSet<String>,
@@ -570,7 +572,8 @@ pub struct KnownPointers {
 }
 
 impl KnownPointers {
-    /// The board was not read: fail closed, kind words only.
+    /// The board was not read: fail closed — no task or project crosses
+    /// whole. Charter ids are unaffected; they were resolved upstream.
     pub fn none() -> KnownPointers {
         KnownPointers::default()
     }
@@ -621,7 +624,8 @@ fn goal_pointer(g: &crate::goal::GoalRef, known: &KnownPointers) -> Option<Strin
 
 /// The board's pointers, read through the graph server that will receive
 /// the episodes. A read that fails is `Err` for the caller to say so, and
-/// then `KnownPointers::none()` — kind words only, never a guess.
+/// then `KnownPointers::none()` — task and project ids as kind words only,
+/// never a guess; charter ids still cross, resolved upstream.
 pub async fn known_pointers(client: &Arc<McpClient>) -> Result<KnownPointers> {
     let output = client
         .call_tool("kg_task_list", json!({ "include_closed": true }))
@@ -1320,14 +1324,24 @@ mod tests {
         assert!(meta.get("goal").is_none());
         assert_eq!(meta["goal_errors"][0]["goal"], "setpoint");
 
-        // The board not read: a real task id still does not cross.
+        // The board not read: a real task id still does not cross — but a
+        // charter id does, because the charter vouched for it upstream
+        // (`of_session`), not the board.
         let real = GoalRef::Task("01J8ZK".into());
+        let line = GoalRef::Charter("answer-what-waits".into());
         let meta = meta_of(
-            &goal_appraisal(vec![real.clone()], vec![], Some(real)),
+            &goal_appraisal(vec![real.clone()], vec![line.clone()], Some(real)),
             &KnownPointers::none(),
         );
         assert!(meta.get("goal").is_none());
         assert_eq!(meta["goal_errors"][0]["goal"], "task");
+        assert_eq!(meta["serves_charter"], "charter:answer-what-waits");
+        let meta = meta_of(
+            &goal_appraisal(vec![line.clone()], vec![], Some(line)),
+            &KnownPointers::none(),
+        );
+        assert_eq!(meta["goal"], "charter:answer-what-waits");
+        assert_eq!(meta["goal_errors"][0]["goal"], "charter:answer-what-waits");
     }
 
     #[test]
