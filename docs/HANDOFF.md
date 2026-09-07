@@ -3109,8 +3109,9 @@ a narrowed rule prints its old convictions beside `active`; the
 followup-region test asserts a copy of `record`'s predicate rather than
 `record`; `tally_for` refolds the ledger per rule; and the cover pool
 follows `--trigger` now but the flag's doc does not say so. **Open from
-§17.4 now:** mid-run delivery (§17.7 item 2), a disjunctive scope — the split a narrowing cannot
-express, which today retires with the clean regions named. The night of
+§17.4 now:** mid-run delivery (§17.7 item 2), a disjunctive scope — the
+split a narrowing cannot express, which today retires with the clean
+regions named. The night of
 2026-09-05's rumination was deferred (the model server was in its PATH
 restart loop until 14:44Z), so the "argue the backfilled regions" pass
 the previous session named as this item's precondition has still not

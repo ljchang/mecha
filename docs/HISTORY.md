@@ -4199,7 +4199,9 @@ with PR #211 (`fix/owed-items`, merged `1ad2591c`; both deployed
 23:13Z). `Situation::scope` keeps the workspace and the surface,
 `matches` requires each exactly (a jail is not a prefix; a run that
 declares no surface matches no surface-scoped rule), and `key` names
-them after the tools; `region` and the widening step needed no edit. The
+them after the tools; `region` intersects each new key (`surface_unread`
+included) and `learn.rs`'s `widened` counts it, or a widening that drops
+the key goes unprinted — both found on review, not on the first pass. The
 rule that ended the review loops: **record what `prepare` matched, not
 what the session was** — `RulesCarried::workspace`/`surface` are what
 `setup::build` matched the block against (the front-end's `GlobalOpts::surface`,
@@ -6639,8 +6641,9 @@ and is what finally exercised the path.)
 
 - **A new scope key has five doors, and each fails closed on its own —
   or a downgrade opens the one you skipped.** The surface key (2026-09-07)
-  took eight consecutive review passes, each finding one item at the
-  bar, and all on one shape: the value has to fail closed at construction
+  drew fifteen review passes, the first fourteen each with something at
+  the bar and the fifteenth clean (counted from the PR's comment record),
+  and the findings were all on one shape: the value has to fail closed at construction
   (`Situation::recorded`/`of_run`), at deserialization (a stored value the
   build cannot name — parked verbatim, matching nothing, never `None`,
   which on a scope is *every* surface), on the run record (what `prepare`
@@ -6650,9 +6653,9 @@ and is what finally exercised the path.)
   it), and at the startup warning (`unloadable_rules` names it). Then walk
   a downgrade through all five. The workspace key had the same doors but
   its value is a path, which no build fails to name — the surface is the
-  first key whose closed set can grow, and that is what made it eight
-  passes. Close all five on the first pass; each door found later is a
-  pass.
+  first key whose closed set can grow, and that is what made it fourteen
+  passes with a finding. Close all five on the first pass; each door
+  found later is a pass.
 
 - **A PR based on another PR's branch can stop getting review runs, and
   the silence reads like a clean pass.** #211 was opened against
