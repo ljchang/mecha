@@ -476,13 +476,12 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             // Same shape one level down: a rule scoped to a tool the
             // front-end inserts after this block is rendered can never
             // load, and nothing but this line would say so.
-            for (domain, tool, text) in store
+            for (domain, what, text) in store
                 .unloadable_rules(mecha_core::learning::RUN_DOMAINS)
                 .unwrap_or_default()
             {
                 eprintln!(
-                    "mecha: a `{domain}` rule is scoped to `{tool}`, which joins the registry \
-                     after the rules block is rendered — it can never load: {text}"
+                    "mecha: a `{domain}` rule is scoped to {what} — it can never load: {text}"
                 );
             }
             let routed = mecha_core::learning::routed_domains();

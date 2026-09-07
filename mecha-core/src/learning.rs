@@ -1425,8 +1425,9 @@ impl LearningStore {
     }
 
     /// Active rules in `domains` whose scope names a tool no run registers
-    /// when the block is rendered ([`Situation::FRONTEND_TOOLS`]) — rules
-    /// that can never load, `(domain, tool, text)`. `Situation::scope`
+    /// when the block is rendered ([`Situation::FRONTEND_TOOLS`]) or a
+    /// surface no run presents ([`Situation::MARK_KINDS`]) — rules that can
+    /// never load, `(domain, what, text)` with `what` a phrase for the line. `Situation::scope`
     /// drops those names, so this reaches only a hand-edited or older
     /// file; startup warns on it like an unrouted domain, because a rule
     /// that cannot fire is indistinguishable from one being obeyed.
@@ -1444,8 +1445,25 @@ impl LearningStore {
                 let Some(scope) = &rule.scope else { continue };
                 for tool in &scope.tools {
                     if Situation::FRONTEND_TOOLS.contains(&tool.as_str()) {
-                        out.push((domain.to_string(), tool.clone(), rule.text.clone()));
+                        out.push((
+                            domain.to_string(),
+                            format!("the tool `{tool}`, which joins the registry after the block is rendered"),
+                            rule.text.clone(),
+                        ));
                     }
+                }
+                // The surface key's mirror: a corpus mark is a surface no
+                // front-end declares, so a stored scope naming one — an old
+                // miner's stamp, a hand edit — can never load either.
+                if let Some(k) = scope.surface.filter(|k| Situation::MARK_KINDS.contains(k)) {
+                    out.push((
+                        domain.to_string(),
+                        format!(
+                            "the surface `{}`, a corpus mark no run presents",
+                            k.as_str()
+                        ),
+                        rule.text.clone(),
+                    ));
                 }
             }
         }
@@ -6629,6 +6647,37 @@ mod situation_tests {
             )),
             Backfilled::Matched(_)
         ));
+    }
+
+    /// A stored scope naming a corpus-mark surface is reported beside one
+    /// naming a front-end tool: neither can ever load, and the startup line
+    /// says which.
+    #[test]
+    fn a_scope_naming_a_mark_kind_is_reported_as_unloadable() {
+        use crate::session::SessionKind;
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-unloadable-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = LearningStore::open(&dir).unwrap();
+        let marked = Rule {
+            scope: Some(Situation {
+                tools: vec!["shell".into()],
+                trigger: None,
+                surface: Some(SessionKind::Test),
+                workspace: None,
+            }),
+            ..rule("Marked.", "r-m", None)
+        };
+        let fine = rule("Fine.", "r-f", Some(shell().on(Some(SessionKind::Tui))));
+        store
+            .write_learned_rules("behavior", &[marked, fine])
+            .unwrap();
+        let out = store.unloadable_rules(&["behavior"]).unwrap();
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].1.contains("surface `test`"), "{}", out[0].1);
+        assert_eq!(out[0].2, "Marked.");
     }
 
     /// The decision, before any write, the same for either key: a row with
