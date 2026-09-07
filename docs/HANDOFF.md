@@ -1944,7 +1944,7 @@ the owner's word. Installed binaries and each repo's `main` agree at the
 tagged commits; nothing else is owed on this machine.
 
 **2026-09-07, mecha-a6: nothing deployed, nothing restarted.** Two PRs
-open and unmerged (mecha #206 code head `4542e735`, later commits
+open and unmerged (mecha #206 code head `5b242d82`, later commits
 handoff-only; mecha-graph #10 at `92c34b5`); the installed binaries are unchanged from the 2026-09-06 row
 above. When they merge: the graph first (`mecha-graph-mcp` reinstalled,
 the four units' MCP children restart with them), then mecha's binary —
@@ -2913,7 +2913,7 @@ the mechanism and every decision. What it left standing:
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
 **2026-09-07 — §17.7 item 5 finished and item 8 built, with the pkg→graph
-rename: mecha PR #206 (`feat/project-tier`, code head `4542e735`) and
+rename: mecha PR #206 (`feat/project-tier`, code head `5b242d82`) and
 mecha-graph PR #10 (`feat/task-project-id`, head `92c34b5`), both review
 loops closed at the bar, both unmerged when written — merging is the
 owner's call — and nothing deployed.** The design doc's built notes under
@@ -2958,9 +2958,13 @@ fixture that exists. **Passes, counted from the PR comment records at
 the bar through `dea69278` at 13:26Z; the pass on `1ec25cfd` at 13:43Z
 then found one medium — the landing page's `[[mcp]]` snippet, once it
 named a shipped binary, lacked the `untrusted_input = true` override
-that arms the interlock over the graph — fixed on `4542e735` with the
+that arms the interlock over the graph — fixed on `5b242d82` with the
 minor beside it, `carry_refiled_project` reading an absent project
-column as cleared; that commit's pass was pending when written); #10 has
+column as cleared; the pass on the handoff commit after it, at 13:59Z,
+found nothing labelled at the bar but one item "worth acting on" —
+`meta.goal` dropped its key where each error's `goal` fell back to the
+kind word, so a setpoint-driven run crossed as goal-less — taken on
+`5b242d82`, whose pass was pending when written); #10 has
 thirty-five (a push mid-pass cancels the last, so the record undercounts
 the runs; its passes on `c2d025c`, `e93b6f8`, `b29b15e`, `4c034c7`,
 `35c326d`, `8129acf` and `fb19799` found nothing at the bar, each leaving
