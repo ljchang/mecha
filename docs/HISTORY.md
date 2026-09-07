@@ -4147,11 +4147,11 @@ pointer crosses to the graph whole.** mecha PR #206 (`feat/project-tier`,
 merged `146922da`) and mecha-graph PR #10 (`feat/task-project-id`, merged
 `940c806a`), deployed the same afternoon, graph first because the
 follow-up files by the id the graph hands out. §17.7 item 5: the board row
-carries `project_id` beside the project's name (`TaskItem::project_id`,
+carries `project_id` beside the project's name (mecha-graph's `TaskItem::project_id`,
 from the same join, so the two are absent together); `tasks set`'s
 closure appraisal records `GoalRef::Project` after the task; the owner
 closing a project's last open task is the project's closure
-(`project_closed_by` over one whole-board read taken *before*
+(`project_closed_by` over one whole-board read that `project_closure_pending` takes *before*
 `appraise_closure` can stage a follow-up under it), folded by
 `appraise_project` into a `ProjectReading` printed on stderr — unknown
 rather than closed on a truncated or unparseable board, no follow-up
@@ -4179,9 +4179,12 @@ server: `prompts/agent.md` names the bare `kg_*` tools the documented
 wiring exposes, and the landing page's `[[mcp]]` snippet names the
 shipped binary with `prefix_tools = false` and the `untrusted_input =
 true` override that arms the interlock. The review record, counted from
-the PR comments: #206 closed at the bar on its thirteenth clean pass
-after two docs-only pushes each drew a finding ten earlier passes had
-not (the snippet's missing override; `meta.goal` dropping its key); #10
+the PR comments (33 summary comments on #206, 03:42Z–14:12Z): #206
+closed at the bar on the 33rd, after a handoff-only push (`1ec25cfd`)
+drew a medium that twenty-one consecutive clean passes had not (the
+snippet's missing override), and the fix push (`4542e735`, pushed with
+the handoff commit `1cf82da7`) drew one more item worth acting on
+(`meta.goal` dropping its key); #10
 went thirteen passes past its first clean one, each finding one more
 writer of the parent the rule had not bound, and closed with two minors
 left to the owner. Surface and workspace as scope keys were asked about
@@ -6581,19 +6584,24 @@ and is what finally exercised the path.)
   Bind an invariant to the writers, not the parser, on the first pass;
   each writer found later is a pass.
 
-- **A docs-only push draws a full-diff pass, and two in a row found what
-  ten clean passes had not.** On 2026-09-07 mecha PR #206 had ten
-  consecutive passes clean at the bar; a handoff-only commit then drew a
-  medium — the landing page's `[[mcp]]` snippet, made copy-pasteable by
-  the rename, lacked the `untrusted_input = true` override that arms the
-  interlock over the graph — and the next handoff-only commit drew the
-  `meta.goal` asymmetry (the key vanished where each error's `goal` fell
-  back to the kind word). Both had been in the diff the whole time. The
-  lesson: the reviewer reading a large diff cold is a different
-  instrument from the one reading an incremental push, and "the last
-  pass was clean" is a statement about that push, not the branch. A cheap
-  docs-only push before merge buys one more cold read; and every push,
-  however small, is a pass to read.
+- **A docs-only push draws a full-diff pass, and it found what
+  twenty-one clean passes had not.** On 2026-09-07 mecha PR #206 had
+  twenty-one consecutive passes clean at the bar (05:20Z–13:26Z, counted
+  from its 33 summary comments after the last medium at 05:12Z); a
+  handoff-only commit (`1ec25cfd`) then drew a medium — the landing
+  page's `[[mcp]]` snippet, made copy-pasteable by the rename, lacked the
+  `untrusted_input = true` override that arms the interlock over the
+  graph — and the fix push after it (`4542e735`, pushed together with a
+  handoff commit, so not docs-only) drew the `meta.goal` asymmetry (the
+  key vanished where each error's `goal` fell back to the kind word).
+  Both had been in the diff the whole time. The lesson: the reviewer
+  reading a large diff cold is a different instrument from the one
+  reading an incremental push, and "the last pass was clean" is a
+  statement about that push, not the branch. A cheap docs-only push
+  before merge buys one more cold read; and every push, however small,
+  is a pass to read. The entry's own first draft said "ten" and
+  "thirteenth" from memory; the record said twenty-one and thirty-third
+  — the count is the evidence, so measure it before typing the sentence.
 
 - **Sixteen review passes on one PR, and four of them were the author's own
   stale tests, a format miss and a lint nit pushed without gating.** The
