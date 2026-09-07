@@ -1034,14 +1034,6 @@ pub enum SessionKind {
     /// the real store's readers like `Test`; admitted by default only in a
     /// home carrying `experiment::HOME_MARKER`.
     Experiment,
-    /// A surface this build cannot name, as read off a *stored scope* —
-    /// a hand edit, or a kind a newer binary wrote. Never on a session
-    /// record (`de_lenient_kind` reads one as `None`: unknown, not any
-    /// surface), never in [`Self::ALL`], never declared by a front-end. On
-    /// a scope it is the fail-closed reading: a rule scoped to it matches
-    /// nothing, where `None` would have matched every surface — the one
-    /// key whose malformed value widened (found on review).
-    Unknown,
 }
 
 /// Environment variable that marks every session a process opens as
@@ -1082,7 +1074,6 @@ impl SessionKind {
             SessionKind::Slack => "slack",
             SessionKind::Test => "test",
             SessionKind::Experiment => "experiment",
-            SessionKind::Unknown => "unknown",
         }
     }
 
@@ -3454,7 +3445,6 @@ mod tests {
                 SessionKind::Slack => 9,
                 SessionKind::Test => 10,
                 SessionKind::Experiment => 11,
-                SessionKind::Unknown => usize::MAX,
             }
         }
         assert!(

@@ -472,10 +472,9 @@ fn reconcile_recorded_keys(
         .reflexions()?
         .into_iter()
         .filter(|r| {
-            r.situation
-                .as_ref()
-                .is_some_and(|s| s.workspace.is_some() || s.surface.is_some())
-                && !r.session_id.is_empty()
+            r.situation.as_ref().is_some_and(|s| {
+                s.workspace.is_some() || s.surface.is_some() || s.surface_unread.is_some()
+            }) && !r.session_id.is_empty()
         })
         .collect();
     if present.is_empty() {
@@ -563,9 +562,21 @@ fn reconcile_recorded_keys(
                 update.workspace = Some(matched);
             }
         }
+        // A surface this build could not name is a recorded key no attach
+        // can confirm: it takes what the first attach presented, or none.
+        let surface_recorded = if s.surface_unread.is_some() {
+            Some(mecha_core::session::SessionKind::Test)
+        } else {
+            s.surface
+        };
         let surface_record = record
             .as_ref()
-            .map(|all| confirmed(s.surface.as_ref(), all.iter().map(|(_, k)| *k).collect()))
+            .map(|all| {
+                confirmed(
+                    surface_recorded.as_ref(),
+                    all.iter().map(|(_, k)| *k).collect(),
+                )
+            })
             .map_err(Clone::clone);
         match reconcile_key(
             s.surface.as_ref(),

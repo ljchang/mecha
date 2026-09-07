@@ -31,7 +31,8 @@
 //! that declares a surface appends the run record that keeps it, so a
 //! lesson mined there can be scoped to it). A stored scope naming a
 //! surface this build cannot read matches nothing rather than everything
-//! ([`SessionKind::Unknown`]) — the only key whose lenient read widened. **The recorded key is the matched key by
+//! (parked verbatim as `surface_unread`) — the only key whose lenient read
+//! widened, and one a downgrade must not destroy. **The recorded key is the matched key by
 //! construction**, as the tool list already was: the run record keeps the
 //! workspace and surface the block was matched against
 //! (`RunConfig::rules_workspace` and `rules_surface`, from `RulesCarried`),
@@ -83,49 +84,96 @@ use crate::session::SessionKind;
 
 /// The closed-set description of where a record was made. See the module
 /// doc for what may be a key.
+///
+/// Read and written through [`SituationWire`]: the load degrades, the
+/// store keeps the evidence. A surface string this build cannot name lands
+/// in [`Self::surface_unread`] and is written back as it came, so a
+/// downgrade parks the key rather than destroying it (found on review —
+/// a persisted `unknown` was never recovered by the build that could name
+/// it), and an empty workspace path reads as none.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "SituationWire", into = "SituationWire")]
 pub struct Situation {
     /// Registry-owned tool names in the order the trace touched them,
     /// deduplicated. The **last is the focus**: for a denial it is the tool
     /// refused, for a steer the tool the model was mid-way through.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
     /// [`crate::learning::Trigger::as_str`] of the intervention this was
     /// recorded at. How the lesson was *learned*, not where it applies — a
     /// rule learned from a denial applies whenever its tool is in play — so
     /// it is never a scope key.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<String>,
-    /// The surface the block was matched against. Read through
-    /// [`de_scope_kind`]: a kind this build cannot name costs neither the
-    /// record nor the field — it reads as [`SessionKind::Unknown`], which
-    /// matches nothing. `None` here means "names no surface", and on a
-    /// scope that is every surface, so a lenient read to `None` was the
-    /// one key whose malformed value widened the rule's reach (found on
-    /// review); the session record keeps its lenient read, where `None`
-    /// means unknown.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "de_scope_kind"
-    )]
+    /// The surface the block was matched against, when this build can name
+    /// it. `None` here means "names no surface", and on a scope that is
+    /// every surface — so a surface this build cannot name is never read
+    /// as `None`: it is parked in [`Self::surface_unread`] instead, where
+    /// it matches nothing (found on review: the lenient read was the one
+    /// key whose malformed value widened a rule's reach). The session
+    /// record keeps its lenient read, where `None` means unknown.
     pub surface: Option<SessionKind>,
+    /// A stored surface this build could not name — a hand edit, or a kind
+    /// a newer binary wrote — kept verbatim so it round-trips. A key that
+    /// matches no run ([`Situation::matches`]), kept by [`Situation::scope`],
+    /// printed by the roster, reported at startup by
+    /// `LearningStore::unloadable_rules`, and replaced by the reflect
+    /// pass's reconcile with a key the run record confirms. Never set by
+    /// the two construction doors.
+    pub surface_unread: Option<String>,
     /// The workspace a match presents (see the module doc). Read through
     /// [`known_workspace`] like the two construction doors, because a
-    /// front-end that records none writes the empty path, and a row read
-    /// back as a set key would scope tonight's rules to a workspace no run
-    /// presents (found on review).
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "de_known_workspace"
-    )]
+    /// front-end that records no workspace writes the empty path, and a
+    /// row read back as a set key would scope tonight's rules to a
+    /// workspace no run presents (found on review).
     pub workspace: Option<PathBuf>,
 }
 
-fn de_known_workspace<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
-    let raw: Option<PathBuf> = Option::deserialize(d)?;
-    Ok(known_workspace(raw.as_deref()))
+/// The stored shape of a [`Situation`]: `surface` is whatever the file
+/// holds, so a value this build cannot name is kept rather than dropped.
+#[derive(Serialize, Deserialize)]
+struct SituationWire {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trigger: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    surface: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace: Option<PathBuf>,
+}
+
+impl From<SituationWire> for Situation {
+    fn from(w: SituationWire) -> Situation {
+        let (surface, surface_unread) = match w.surface {
+            None | Some(serde_json::Value::Null) => (None, None),
+            Some(serde_json::Value::String(s)) => match SessionKind::parse_lenient(&s) {
+                Some(k) => (Some(k), None),
+                None => (None, Some(s)),
+            },
+            Some(other) => (None, Some(other.to_string())),
+        };
+        Situation {
+            tools: w.tools,
+            trigger: w.trigger,
+            surface,
+            surface_unread,
+            workspace: known_workspace(w.workspace.as_deref()),
+        }
+    }
+}
+
+impl From<Situation> for SituationWire {
+    fn from(s: Situation) -> SituationWire {
+        SituationWire {
+            tools: s.tools,
+            trigger: s.trigger,
+            surface: match (s.surface, s.surface_unread) {
+                (Some(k), _) => Some(serde_json::Value::String(k.as_str().to_string())),
+                (None, Some(raw)) => Some(serde_json::Value::String(raw)),
+                (None, None) => None,
+            },
+            workspace: s.workspace,
+        }
+    }
 }
 
 impl Situation {
@@ -168,6 +216,7 @@ impl Situation {
             tools: deduped,
             trigger: Some(trigger.to_string()),
             surface,
+            surface_unread: None,
             workspace: known_workspace(workspace),
         }
     }
@@ -192,6 +241,7 @@ impl Situation {
             tools: tools.to_vec(),
             trigger: None,
             surface: None,
+            surface_unread: None,
             workspace: known_workspace(workspace),
         }
     }
@@ -244,6 +294,7 @@ impl Situation {
             tools,
             trigger: None,
             surface: self.surface.filter(|k| !Self::MARK_KINDS.contains(k)),
+            surface_unread: self.surface_unread.clone(),
             workspace: self.workspace.clone(),
         }
     }
@@ -255,10 +306,11 @@ impl Situation {
     }
 
     /// The canonical name of a region: its scope's tools, sorted and joined
-    /// by a comma, then ` @ ` and the workspace when the scope names one;
-    /// empty for standing. What a per-region tally is keyed on, so two
-    /// windows that touched the same tools in another order fold into one
-    /// row, and two workspaces do not.
+    /// by a comma, then ` @ ` and the workspace and ` on ` and the surface
+    /// when the scope names them (an unread surface verbatim); empty for
+    /// standing. What a per-region tally is keyed on, so two windows that
+    /// touched the same tools in another order fold into one row, and two
+    /// workspaces or two surfaces do not.
     pub fn key(&self) -> String {
         let scope = self.scope();
         let mut parts: Vec<String> = Vec::new();
@@ -272,6 +324,9 @@ impl Situation {
         if let Some(k) = scope.surface {
             parts.push(format!("on {}", k.as_str()));
         }
+        if let Some(raw) = &scope.surface_unread {
+            parts.push(format!("on {raw}"));
+        }
         parts.join(" ")
     }
 
@@ -283,7 +338,7 @@ impl Situation {
     /// path, and a jail is not a prefix; and the surface the scope names,
     /// if any, is the one the run's front-end declared — a run that
     /// declared none matches no surface-scoped rule, and a scope naming a
-    /// surface this build cannot read ([`SessionKind::Unknown`]) matches
+    /// surface this build cannot read ([`Self::surface_unread`]) matches
     /// no run at all.
     pub fn matches(&self, run: &Situation) -> bool {
         self.tools.iter().all(|t| run.tools.contains(t))
@@ -291,9 +346,8 @@ impl Situation {
                 .workspace
                 .as_ref()
                 .is_none_or(|w| run.workspace.as_ref() == Some(w))
-            && self
-                .surface
-                .is_none_or(|k| k != SessionKind::Unknown && run.surface == Some(k))
+            && self.surface.is_none_or(|k| run.surface == Some(k))
+            && self.surface_unread.is_none()
     }
 
     /// The keys every member shares — the region a batch of reflections was
@@ -313,6 +367,9 @@ impl Situation {
             }
             if out.surface != m.surface {
                 out.surface = None;
+            }
+            if out.surface_unread != m.surface_unread {
+                out.surface_unread = None;
             }
             if out.workspace != m.workspace {
                 out.workspace = None;
@@ -334,6 +391,9 @@ impl Situation {
         if let Some(k) = self.surface {
             parts.push(k.as_str().to_string());
         }
+        if let Some(raw) = &self.surface_unread {
+            parts.push(format!("{raw} (a surface this build cannot name)"));
+        }
         if let Some(w) = &self.workspace {
             parts.push(w.display().to_string());
         }
@@ -343,21 +403,6 @@ impl Situation {
             parts.join(" · ")
         }
     }
-}
-
-/// Read a surface off a stored situation: absent or `null` is `None`
-/// (names no surface); a string naming a kind is that kind; anything else
-/// — a word this build does not know, a number, an object — is
-/// [`SessionKind::Unknown`], which no run presents. Fails closed where
-/// `crate::session::de_lenient_kind` fails open, because here `None` is a
-/// claim about every surface and there it is the absence of one.
-fn de_scope_kind<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SessionKind>, D::Error> {
-    let raw = Option::<serde_json::Value>::deserialize(d)?;
-    Ok(raw.map(|v| {
-        v.as_str()
-            .and_then(SessionKind::parse_lenient)
-            .unwrap_or(SessionKind::Unknown)
-    }))
 }
 
 /// The door for the workspace key — all three of them: [`Situation::recorded`],
@@ -458,6 +503,7 @@ mod tests {
             tools: vec!["shell".into()],
             trigger: None,
             surface: Some(SessionKind::Tui),
+            surface_unread: None,
             workspace: Some(PathBuf::from("/w")),
         };
         assert!(scope.matches(&same));
@@ -506,17 +552,18 @@ mod tests {
     /// read is untouched. Fails on the lenient read, which dropped the key
     /// and rode the rule on every surface.
     #[test]
-    fn an_unreadable_surface_on_a_scope_matches_nothing() {
-        for raw in [
-            r#"{"tools":["shell"],"surface":"Tui"}"#,
-            r#"{"tools":["shell"],"surface":7}"#,
-            r#"{"tools":["shell"],"surface":"hologram"}"#,
+    fn an_unreadable_surface_on_a_scope_matches_nothing_and_round_trips() {
+        for (raw, kept) in [
+            (r#"{"tools":["shell"],"surface":"Tui"}"#, "Tui"),
+            (r#"{"tools":["shell"],"surface":7}"#, "7"),
+            (r#"{"tools":["shell"],"surface":"hologram"}"#, "hologram"),
         ] {
             let stored: Situation = serde_json::from_str(raw).unwrap();
-            assert_eq!(stored.surface, Some(SessionKind::Unknown), "{raw}");
+            assert_eq!(stored.surface, None, "{raw}");
+            assert_eq!(stored.surface_unread.as_deref(), Some(kept), "{raw}");
             assert_eq!(
-                stored.scope().surface,
-                Some(SessionKind::Unknown),
+                stored.scope().surface_unread.as_deref(),
+                Some(kept),
                 "kept: a key, not a mark"
             );
             for run in [
@@ -525,19 +572,23 @@ mod tests {
             ] {
                 assert!(!stored.scope().matches(&run), "{raw} must match nothing");
             }
-            assert_eq!(stored.key(), "shell on unknown");
+            assert_eq!(stored.key(), format!("shell on {kept}"));
+            // Written back as it came: the build that can name it gets it.
+            let back = serde_json::to_string(&stored).unwrap();
+            assert!(back.contains(&format!("\"surface\":\"{kept}\"")), "{back}");
         }
         let none: Situation = serde_json::from_str(r#"{"tools":["shell"]}"#).unwrap();
         assert_eq!(none.surface, None, "absent is absent");
+        assert_eq!(none.surface_unread, None);
         let tui: Situation =
             serde_json::from_str(r#"{"tools":["shell"],"surface":"tui"}"#).unwrap();
         assert_eq!(tui.surface, Some(SessionKind::Tui));
-        assert_eq!(
-            SessionKind::parse_lenient("unknown"),
-            None,
-            "never a name a record can carry"
-        );
-        assert!(!SessionKind::ALL.contains(&SessionKind::Unknown));
+        assert!(serde_json::to_string(&tui)
+            .unwrap()
+            .contains("\"surface\":\"tui\""));
+        assert!(!serde_json::to_string(&Situation::default())
+            .unwrap()
+            .contains("surface"));
     }
 
     /// A corpus mark is not a place: a situation recorded under the test
@@ -646,9 +697,10 @@ mod tests {
             serde_json::from_str(r#"{"tools":["shell"],"surface":"hologram"}"#).unwrap();
         assert_eq!(newer.tools, vec!["shell"]);
         // A surface this build cannot name still costs no record — and on
-        // a stored situation it reads as `Unknown`, a key that matches
-        // nothing, never as `None`, which would be every surface.
-        assert_eq!(newer.surface, Some(SessionKind::Unknown));
+        // a stored situation it is parked verbatim, a key that matches
+        // nothing, never read as `None`, which would be every surface.
+        assert_eq!(newer.surface, None);
+        assert_eq!(newer.surface_unread.as_deref(), Some("hologram"));
     }
 
     /// A scope is a set: order does not make two regions, and a tool no

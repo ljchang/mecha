@@ -1468,10 +1468,10 @@ impl LearningStore {
                 }
                 // And a surface this build cannot read: kept on the scope so
                 // it matches nothing, and said here so it is not silent.
-                if scope.surface == Some(crate::session::SessionKind::Unknown) {
+                if let Some(raw) = &scope.surface_unread {
                     out.push((
                         domain.to_string(),
-                        "a surface this build cannot name (read back as `unknown`)".to_string(),
+                        format!("a surface this build cannot name (`{raw}`)"),
                         rule.text.clone(),
                     ));
                 }
@@ -1932,6 +1932,7 @@ impl LearningStore {
                     }
                     if let Some(k) = u.surface {
                         s.surface = k;
+                        s.surface_unread = None;
                     }
                     r.situation_recomputed_at = Some(recomputed_at.to_string());
                     written += 1;
@@ -6676,13 +6677,17 @@ mod situation_tests {
                 tools: vec!["shell".into()],
                 trigger: None,
                 surface: Some(SessionKind::Test),
+                surface_unread: None,
                 workspace: None,
             }),
             ..rule("Marked.", "r-m", None)
         };
         let fine = rule("Fine.", "r-f", Some(shell().on(Some(SessionKind::Tui))));
         let unreadable = Rule {
-            scope: Some(shell().on(Some(SessionKind::Unknown))),
+            scope: Some(Situation {
+                surface_unread: Some("copilot".into()),
+                ..shell()
+            }),
             ..rule("Unreadable.", "r-u", None)
         };
         store
