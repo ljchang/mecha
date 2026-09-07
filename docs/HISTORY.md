@@ -4142,6 +4142,55 @@ five installs, the graph's nightly binary, the benchmark's musl binary
 in `HANDOFF.md`'s machine state; the droplet was left on 0.2.8 for the
 owner's word.
 
+**2026-09-07 — the project is the tier above the task, and the goal
+pointer crosses to the graph whole.** mecha PR #206 (`feat/project-tier`,
+merged `146922da`) and mecha-graph PR #10 (`feat/task-project-id`, merged
+`940c806a`), deployed the same afternoon, graph first because the
+follow-up files by the id the graph hands out. §17.7 item 5: the board row
+carries `project_id` beside the project's name (mecha-graph's `TaskItem::project_id`,
+from the same join, so the two are absent together); `tasks set`'s
+closure appraisal records `GoalRef::Project` after the task; the owner
+closing a project's last open task is the project's closure
+(`project_closed_by` over one whole-board read that `project_closure_pending` takes *before*
+`appraise_closure` can stage a follow-up under it), folded by
+`appraise_project` into a `ProjectReading` printed on stderr — unknown
+rather than closed on a truncated or unparseable board, no follow-up
+staged, no record written; `tasks set --project` re-files or clears, and
+a re-file in the closing call moves the tier to the echoed row. Item 8: a
+distilled episode's `meta` carries `goal`, `serves_charter` and each
+error's `goal` as `kind:id` pointers resolved at the boundary
+(`distill::KnownPointers` — a charter id against the loaded charter, a
+task or project id against one `kg_task_list` per run, a setpoint never),
+falling back to the kind word where nothing resolves so a named goal is
+never read as none, and the sentence never rides. On the graph: create
+accepts the id it hands out (id first, then name, an ambiguous name
+refused with the ids); "the row is the fact" — a node with a task row is
+a task whatever its type, `NEVER_A_PARENT` and `CONTAINER_TYPES`
+partition the node types and are bound to every writer of a parent
+(`set_task_parent_id`, `retype_node`, `merge_nodes`); `kg_task_update`
+resolves `project` before anything is written and writes it last;
+`repair-parents` surveys the rows from before the guard (slips detached
+on `--apply`, plausible old filings — a place, an event, a series — kept
+unless asked, vouched for by `task-project <task> <its parent's id>`, a
+vouch that stands only where the survey honours it); every detachment
+appends to `properties.detached_parents`, which `task-project <task>`
+reads. The same arc retired the last live mentions of the pre-rename
+server: `prompts/agent.md` names the bare `kg_*` tools the documented
+wiring exposes, and the landing page's `[[mcp]]` snippet names the
+shipped binary with `prefix_tools = false` and the `untrusted_input =
+true` override that arms the interlock. The review record, counted from
+the PR comments (33 summary comments on #206, 03:42Z–14:12Z): #206
+closed at the bar on the 33rd, after a handoff-only push (`1ec25cfd`)
+drew a medium that twenty-one consecutive clean passes had not (the
+snippet's missing override), and the fix push (`4542e735`, pushed with
+the handoff commit `1cf82da7`) drew one more item worth acting on
+(`meta.goal` dropping its key); #10
+went thirteen passes past its first clean one, each finding one more
+writer of the parent the rule had not bound, and closed with two minors
+left to the owner. Surface and workspace as scope keys were asked about
+in the same session and answered rather than built; the workspace key
+began that evening on the owner's word.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -6534,6 +6583,25 @@ and is what finally exercised the path.)
   rule was restated as *the row is the fact* and bound to every writer.
   Bind an invariant to the writers, not the parser, on the first pass;
   each writer found later is a pass.
+
+- **A docs-only push draws a full-diff pass, and it found what
+  twenty-one clean passes had not.** On 2026-09-07 mecha PR #206 had
+  twenty-one consecutive passes clean at the bar (05:20Z–13:26Z, counted
+  from its 33 summary comments after the last medium at 05:12Z); a
+  handoff-only commit (`1ec25cfd`) then drew a medium — the landing
+  page's `[[mcp]]` snippet, made copy-pasteable by the rename, lacked the
+  `untrusted_input = true` override that arms the interlock over the
+  graph — and the fix push after it (`4542e735`, pushed together with a
+  handoff commit, so not docs-only) drew the `meta.goal` asymmetry (the
+  key vanished where each error's `goal` fell back to the kind word).
+  Both had been in the diff the whole time. The lesson: the reviewer
+  reading a large diff cold is a different instrument from the one
+  reading an incremental push, and "the last pass was clean" is a
+  statement about that push, not the branch. A cheap docs-only push
+  before merge buys one more cold read; and every push, however small,
+  is a pass to read. The entry's own first draft said "ten" and
+  "thirteenth" from memory; the record said twenty-one and thirty-third
+  — the count is the evidence, so measure it before typing the sentence.
 
 - **Sixteen review passes on one PR, and four of them were the author's own
   stale tests, a format miss and a lint nit pushed without gating.** The
