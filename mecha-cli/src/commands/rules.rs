@@ -1260,6 +1260,30 @@ mod tests {
             keys,
             vec![(Some(PathBuf::from("/w")), Some(SessionKind::Web))]
         );
+        // A store with no record carrying either key cannot answer: a
+        // directory that does not exist, and one holding only a record
+        // from before the fields, are both unknown — never "nowhere".
+        assert_eq!(presented_keys_in(&dir.join("no-such-dir")), None);
+        let old_only = dir.join("old-only");
+        let o = Session::create(
+            &old_only,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "p".into(),
+                model: "m".into(),
+                workspace: PathBuf::from("/jail"),
+                title: None,
+                kind: Some(SessionKind::Tui),
+            },
+        )
+        .unwrap();
+        o.append(&Record::Config(RunConfig::default())).unwrap();
+        assert_eq!(
+            presented_keys_in(&old_only),
+            None,
+            "pre-field records are not evidence"
+        );
         // A transcript with no header: the store can no longer be read in
         // full, and the answer is unknown rather than a pair set with a
         // hole in it.
