@@ -40,7 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retired server's name; nothing calls that server, and the words now say
   so. Three places changed what somebody *does* (found on review): the
   published evaluation page named a fixture file that does not exist, the
-  landing page's `[[mcp]]` snippet named a binary that is not shipped, and
+  landing page's `[[mcp]]` snippet named a binary that is not shipped (and,
+  once it named a shipped one, lacked the `[mcp.capabilities]
+  untrusted_input = true` that arms the interlock over the graph — the
+  override `TRIFECTA.md` calls load-bearing; found on review), and
   `prompts/agent.md` told the model to call `pkg__kg_*` tools that are not
   on the surface — it now names the bare `kg_*` the documented wiring
   (`prefix_tools = false`) exposes.
