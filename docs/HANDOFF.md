@@ -2954,10 +2954,10 @@ now calls the retired server by name in the live tree: `prompts/agent.md`
 names the bare `kg_*` tools the documented wiring exposes, the landing
 snippet carries `prefix_tools = false`, the evaluation page names the
 fixture that exists. **Passes, counted from the PR comment records:** #206
-has sixteen summary comments (the last three found nothing at the bar);
-#10 has twenty-eight (a push mid-pass cancels the last, so the record
-undercounts the runs; its passes on `e93b6f8` and `c2d025c` found nothing
-at the bar). The graph loop went eleven passes past its first clean one,
+has twenty summary comments, counted from the PR at 10:12Z (the last
+three found nothing at the bar); #10 has twenty-five (a push mid-pass
+cancels the last, so the record undercounts the runs; its passes on
+`e93b6f8` and `c2d025c` found nothing at the bar). The graph loop went eleven passes past its first clean one,
 each pass finding one more *writer* of the parent the rule had not bound
 — the survey, retype, merge, the row-based type, the JSON branch, the
 nightly, the pending list, the re-file itself; every major and medium was
