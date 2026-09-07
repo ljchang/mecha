@@ -206,13 +206,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // third-party content becomes a rule in every future run's prompt,
         // so the classification must fail closed: a timeline that cannot be
         // read covers nothing, and uncovered means Untrusted.
-        let timeline = Session::taint_timeline(path).unwrap_or_else(|e| {
-            eprintln!(
-                "· cannot read taint from {}: {e:#}; treating as untrusted",
-                meta.id
-            );
-            TaintTimeline::default()
-        });
+        // Off the transcript already read, like the run records: one
+        // reading of the file for its messages, its configs and its taint,
+        // rather than a strict re-parse beside a lenient one (found on
+        // review).
+        let timeline = t.taint_timeline.clone();
 
         if args.dry_run {
             for i in &interventions {
@@ -407,12 +405,22 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 /// either way.
 fn matched_keys_of(
     path: &Path,
-) -> std::result::Result<(Option<PathBuf>, Option<mecha_core::session::SessionKind>), String> {
+) -> std::result::Result<Vec<(Option<PathBuf>, Option<mecha_core::session::SessionKind>)>, String> {
     // Through `Session::read`, the same reader the miner holds, so the
     // reconcile and the miner cannot disagree about one record by parsing
-    // it two ways (found on review).
+    // it two ways (found on review). Every run record, in order: a stored
+    // reflection carries no message index, so the reconcile cannot ask
+    // which attach covered it, and must instead accept a key *any* attach
+    // presented — comparing against the first alone rewrote the key the
+    // miner had just stamped off a continuation's second record (found on
+    // review).
     Session::read(path)
-        .map(|t| matched_keys_in(&t))
+        .map(|t| {
+            t.configs
+                .iter()
+                .map(|rc| (rc.rules_workspace.clone(), rc.rules_surface))
+                .collect()
+        })
         .map_err(|e| format!("session unreadable: {e:#}"))
 }
 
@@ -430,10 +438,8 @@ fn keys_covering(
         .unwrap_or((None, None))
 }
 
-/// The first run record's keys off a transcript already read — what the
-/// reconcile compares an already-stamped row against, since a stored
-/// reflection carries no message index; a session with runs matched on
-/// different keys is reconciled to its first.
+/// The first run record's keys off a transcript already read.
+#[cfg(test)]
 fn matched_keys_in(
     t: &mecha_core::session::Transcript,
 ) -> (Option<PathBuf>, Option<mecha_core::session::SessionKind>) {
@@ -475,7 +481,18 @@ fn reconcile_recorded_keys(
     if present.is_empty() {
         return Ok(0);
     }
-    type Matched = (Option<PathBuf>, Option<mecha_core::session::SessionKind>);
+    type Matched = Vec<(Option<PathBuf>, Option<mecha_core::session::SessionKind>)>;
+    // What the record confirms for one recorded key: the key itself when
+    // any attach presented it, else the first attach's — or none.
+    fn confirmed<T: PartialEq + Clone>(
+        recorded: Option<&T>,
+        attaches: Vec<Option<T>>,
+    ) -> Option<T> {
+        match recorded {
+            Some(r) if attaches.iter().any(|a| a.as_ref() == Some(r)) => Some(r.clone()),
+            _ => attaches.into_iter().next().flatten(),
+        }
+    }
     let mut record_by_session: std::collections::HashMap<
         String,
         std::result::Result<Matched, String>,
@@ -504,11 +521,20 @@ fn reconcile_recorded_keys(
             })
             .clone();
         let mut update = KeyUpdate::default();
+        let workspace_record = record
+            .as_ref()
+            .map(|all| {
+                confirmed(
+                    s.workspace.as_ref(),
+                    all.iter().map(|(w, _)| w.clone()).collect(),
+                )
+            })
+            .map_err(Clone::clone);
         match reconcile_key(
             s.workspace.as_ref(),
-            record
+            workspace_record
                 .as_ref()
-                .map(|(w, _)| w.as_ref())
+                .map(|m| m.as_ref())
                 .map_err(Clone::clone),
         ) {
             KeyReconcile::Keep => {}
@@ -537,11 +563,15 @@ fn reconcile_recorded_keys(
                 update.workspace = Some(matched);
             }
         }
+        let surface_record = record
+            .as_ref()
+            .map(|all| confirmed(s.surface.as_ref(), all.iter().map(|(_, k)| *k).collect()))
+            .map_err(Clone::clone);
         match reconcile_key(
             s.surface.as_ref(),
-            record
+            surface_record
                 .as_ref()
-                .map(|(_, k)| k.as_ref())
+                .map(|m| m.as_ref())
                 .map_err(Clone::clone),
         ) {
             KeyReconcile::Keep => {}
@@ -824,7 +854,7 @@ mod tests {
             s.meta.workspace,
             PathBuf::from("/home/x/.mecha/work/web/main")
         );
-        let (matched, surface) = matched_keys_of(&s.path).unwrap();
+        let (matched, surface) = matched_keys_of(&s.path).unwrap().remove(0);
         assert_eq!(
             matched.as_deref(),
             Some(Path::new("/home/x/.mecha/work/web"))
@@ -847,7 +877,11 @@ mod tests {
         );
         // A record from before the fields: no key, never the jail or kind.
         let old = session_on(&dir, "/jail", None, Some(SessionKind::Tui), None);
-        assert_eq!(matched_keys_of(&old.path).unwrap(), (None, None));
+        assert_eq!(matched_keys_of(&old.path).unwrap(), vec![(None, None)]);
+        assert_eq!(
+            matched_keys_in(&Session::read(&old.path).unwrap()),
+            (None, None)
+        );
         // The board's task door on serve: recorded as a task, matched as
         // web — the surface stamped is the matched one, never the kind.
         let door = session_on(
@@ -858,7 +892,7 @@ mod tests {
             Some(SessionKind::Web),
         );
         assert_eq!(
-            matched_keys_of(&door.path).unwrap().1,
+            matched_keys_of(&door.path).unwrap()[0].1,
             Some(SessionKind::Web)
         );
         assert_eq!(door.meta.kind, Some(SessionKind::Task));
@@ -913,8 +947,19 @@ mod tests {
             };
             store.append_reflexion(&r).unwrap();
         };
+        // A second attach — a question continuation — matched against
+        // another workspace: a row stamped with *its* key is a key the
+        // session presented, and stays.
+        s.append(&Record::Config(RunConfig {
+            workspace: PathBuf::from("/jail"),
+            rules_workspace: Some(PathBuf::from("/second")),
+            rules_surface: Some(SessionKind::Web),
+            ..Default::default()
+        }))
+        .unwrap();
         situated("jailed", &s.meta.id, Some("/jail"));
         situated("agrees", &s.meta.id, Some("/root"));
+        situated("second", &s.meta.id, Some("/second"));
         situated("gone", "20260101T000000-deadbeef", Some("/jail"));
         situated("edit", &s.meta.id, None);
         let (listed, unreadable) = Session::list_counting(&sessions).unwrap();
@@ -922,8 +967,8 @@ mod tests {
             listed.into_iter().map(|(m, p)| (m.id, p)).collect();
         assert_eq!(
             reconcile_recorded_keys(&store, &paths, unreadable, false).unwrap(),
-            2,
-            "jailed (both keys) and agrees (the surface alone)"
+            3,
+            "jailed (both keys), agrees and second (the surface alone)"
         );
         let sit = |id: &str| store.reflexion(id).unwrap().situation.unwrap();
         assert_eq!(sit("jailed").workspace.as_deref(), Some(Path::new("/root")));
@@ -934,6 +979,12 @@ mod tests {
         );
         assert_eq!(sit("agrees").workspace.as_deref(), Some(Path::new("/root")));
         assert_eq!(sit("agrees").surface, Some(SessionKind::Web));
+        assert_eq!(
+            sit("second").workspace.as_deref(),
+            Some(Path::new("/second")),
+            "the second attach's key is one the session presented: kept, not reverted"
+        );
+        assert_eq!(sit("second").surface, Some(SessionKind::Web));
         assert_eq!(
             sit("gone").workspace.as_deref(),
             Some(Path::new("/jail")),

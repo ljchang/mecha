@@ -275,9 +275,8 @@ async fn answer_and_resume(
     opts.surface = Session::default_dir()
         .ok()
         .and_then(|dir| Session::find(&dir, &q.session_id).ok())
-        .and_then(|path| Session::run_configs(&path).ok())
-        .and_then(|cs| cs.into_iter().next())
-        .and_then(|rc| rc.rules_surface)
+        .and_then(|path| Session::read(&path).ok())
+        .and_then(|t| t.configs.first().and_then(|rc| rc.rules_surface))
         .or(Some(mecha_core::session::SessionKind::Task));
     let mut prepared = setup::prepare(&opts, !unattended).await?;
 
