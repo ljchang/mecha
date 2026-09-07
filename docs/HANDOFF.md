@@ -1944,8 +1944,8 @@ the owner's word. Installed binaries and each repo's `main` agree at the
 tagged commits; nothing else is owed on this machine.
 
 **2026-09-07, mecha-a6: nothing deployed, nothing restarted.** Two PRs
-open and unmerged (mecha #206 at `835b77e3`, mecha-graph #10 at
-`667944e`); the installed binaries are unchanged from the 2026-09-06 row
+open and unmerged (mecha #206 at `6980ca9e`, mecha-graph #10 at
+`eca1fa4`); the installed binaries are unchanged from the 2026-09-06 row
 above. When they merge: the graph first (`mecha-graph-mcp` reinstalled,
 the four units' MCP children restart with them), then mecha's binary —
 the web dist is untouched by either. The graph worktree is
@@ -2913,8 +2913,8 @@ the mechanism and every decision. What it left standing:
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
 **2026-09-07 — §17.7 item 5 finished and item 8 built, with the pkg→graph
-rename: mecha PR #206 (`feat/project-tier`, head `835b77e3`) and
-mecha-graph PR #10 (`feat/task-project-id`, head `667944e`), both review
+rename: mecha PR #206 (`feat/project-tier`, head `6980ca9e`) and
+mecha-graph PR #10 (`feat/task-project-id`, head `eca1fa4`), both review
 loops closed at the bar, both unmerged when written — merging is the
 owner's call — and nothing deployed.** The design doc's built notes under
 §17.7 items 5 and 8 have the shape; `ARCHITECTURE.md` §the goal system
@@ -2954,10 +2954,12 @@ now calls the retired server by name in the live tree: `prompts/agent.md`
 names the bare `kg_*` tools the documented wiring exposes, the landing
 snippet carries `prefix_tools = false`, the evaluation page names the
 fixture that exists. **Passes, counted from the PR comment records:** #206
-has twenty summary comments, counted from the PR at 10:12Z (the last
-three found nothing at the bar); #10 has twenty-five (a push mid-pass
+has twenty-eight summary comments, counted from the PR at 12:06Z (its
+last nine found nothing at the bar); #10 has thirty-one (a push mid-pass
 cancels the last, so the record undercounts the runs; its passes on
-`e93b6f8` and `c2d025c` found nothing at the bar). The graph loop went eleven passes past its first clean one,
+`c2d025c`, `e93b6f8`, `b29b15e`, `4c034c7` and `35c326d` found nothing
+at the bar, each leaving two or three minors about the survey, the vouch
+or the pending list, all taken). The graph loop went eleven passes past its first clean one,
 each pass finding one more *writer* of the parent the rule had not bound
 — the survey, retype, merge, the row-based type, the JSON branch, the
 nightly, the pending list, the re-file itself; every major and medium was
