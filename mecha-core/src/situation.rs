@@ -27,7 +27,11 @@
 //! told it (`GlobalOpts::surface`, set by the front-end that owns the run
 //! and never by a flag; the test override marks the session record and
 //! never the match, or a smoke test and every `mecha exp` trial would
-//! render a block with no surface-scoped rule in it). **The recorded key is the matched key by
+//! render a block with no surface-scoped rule in it; and every front-end
+//! that declares a surface appends the run record that keeps it, so a
+//! lesson mined there can be scoped to it). A stored scope naming a
+//! surface this build cannot read matches nothing rather than everything
+//! ([`SessionKind::Unknown`]) — the only key whose lenient read widened. **The recorded key is the matched key by
 //! construction**, as the tool list already was: the run record keeps the
 //! workspace and surface the block was matched against
 //! (`RunConfig::rules_workspace` and `rules_surface`, from `RulesCarried`),
@@ -92,13 +96,18 @@ pub struct Situation {
     /// it is never a scope key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<String>,
-    /// The surface the session ran on. Lenient on read like
-    /// `SessionMeta::kind`: a kind this build cannot name costs the field,
-    /// never the record.
+    /// The surface the block was matched against. Read through
+    /// [`de_scope_kind`]: a kind this build cannot name costs neither the
+    /// record nor the field — it reads as [`SessionKind::Unknown`], which
+    /// matches nothing. `None` here means "names no surface", and on a
+    /// scope that is every surface, so a lenient read to `None` was the
+    /// one key whose malformed value widened the rule's reach (found on
+    /// review); the session record keeps its lenient read, where `None`
+    /// means unknown.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "crate::session::de_lenient_kind"
+        deserialize_with = "de_scope_kind"
     )]
     pub surface: Option<SessionKind>,
     /// The workspace a match presents (see the module doc). Read through
@@ -273,14 +282,18 @@ impl Situation {
     /// the run is jailed to — exactly, since both sides carry the canonical
     /// path, and a jail is not a prefix; and the surface the scope names,
     /// if any, is the one the run's front-end declared — a run that
-    /// declared none matches no surface-scoped rule.
+    /// declared none matches no surface-scoped rule, and a scope naming a
+    /// surface this build cannot read ([`SessionKind::Unknown`]) matches
+    /// no run at all.
     pub fn matches(&self, run: &Situation) -> bool {
         self.tools.iter().all(|t| run.tools.contains(t))
             && self
                 .workspace
                 .as_ref()
                 .is_none_or(|w| run.workspace.as_ref() == Some(w))
-            && self.surface.is_none_or(|k| run.surface == Some(k))
+            && self
+                .surface
+                .is_none_or(|k| k != SessionKind::Unknown && run.surface == Some(k))
     }
 
     /// The keys every member shares — the region a batch of reflections was
@@ -330,6 +343,21 @@ impl Situation {
             parts.join(" · ")
         }
     }
+}
+
+/// Read a surface off a stored situation: absent or `null` is `None`
+/// (names no surface); a string naming a kind is that kind; anything else
+/// — a word this build does not know, a number, an object — is
+/// [`SessionKind::Unknown`], which no run presents. Fails closed where
+/// `crate::session::de_lenient_kind` fails open, because here `None` is a
+/// claim about every surface and there it is the absence of one.
+fn de_scope_kind<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<SessionKind>, D::Error> {
+    let raw = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(raw.map(|v| {
+        v.as_str()
+            .and_then(SessionKind::parse_lenient)
+            .unwrap_or(SessionKind::Unknown)
+    }))
 }
 
 /// The door for the workspace key — all three of them: [`Situation::recorded`],
@@ -472,6 +500,46 @@ mod tests {
         assert!(old.matches(&Situation::of_run(&["shell".into()], None)));
     }
 
+    /// A stored scope naming a surface this build cannot read fails closed:
+    /// it keeps a key that matches no run, prints as such, and is never
+    /// produced by the two construction doors. The session record's lenient
+    /// read is untouched. Fails on the lenient read, which dropped the key
+    /// and rode the rule on every surface.
+    #[test]
+    fn an_unreadable_surface_on_a_scope_matches_nothing() {
+        for raw in [
+            r#"{"tools":["shell"],"surface":"Tui"}"#,
+            r#"{"tools":["shell"],"surface":7}"#,
+            r#"{"tools":["shell"],"surface":"hologram"}"#,
+        ] {
+            let stored: Situation = serde_json::from_str(raw).unwrap();
+            assert_eq!(stored.surface, Some(SessionKind::Unknown), "{raw}");
+            assert_eq!(
+                stored.scope().surface,
+                Some(SessionKind::Unknown),
+                "kept: a key, not a mark"
+            );
+            for run in [
+                Situation::of_run(&["shell".into()], None).on(Some(SessionKind::Tui)),
+                Situation::of_run(&["shell".into()], None),
+            ] {
+                assert!(!stored.scope().matches(&run), "{raw} must match nothing");
+            }
+            assert_eq!(stored.key(), "shell on unknown");
+        }
+        let none: Situation = serde_json::from_str(r#"{"tools":["shell"]}"#).unwrap();
+        assert_eq!(none.surface, None, "absent is absent");
+        let tui: Situation =
+            serde_json::from_str(r#"{"tools":["shell"],"surface":"tui"}"#).unwrap();
+        assert_eq!(tui.surface, Some(SessionKind::Tui));
+        assert_eq!(
+            SessionKind::parse_lenient("unknown"),
+            None,
+            "never a name a record can carry"
+        );
+        assert!(!SessionKind::ALL.contains(&SessionKind::Unknown));
+    }
+
     /// A corpus mark is not a place: a situation recorded under the test
     /// override scopes with no surface, so it can never pin a rule to a
     /// surface no run presents — the mirror of a front-end focus.
@@ -571,13 +639,16 @@ mod tests {
     }
 
     #[test]
-    fn a_record_from_before_the_field_and_an_unknown_surface_both_load() {
+    fn a_record_from_before_the_field_loads_and_an_unknown_surface_fails_closed() {
         let old: Situation = serde_json::from_str("{}").unwrap();
         assert_eq!(old, Situation::default());
         let newer: Situation =
             serde_json::from_str(r#"{"tools":["shell"],"surface":"hologram"}"#).unwrap();
         assert_eq!(newer.tools, vec!["shell"]);
-        assert_eq!(newer.surface, None);
+        // A surface this build cannot name still costs no record — and on
+        // a stored situation it reads as `Unknown`, a key that matches
+        // nothing, never as `None`, which would be every surface.
+        assert_eq!(newer.surface, Some(SessionKind::Unknown));
     }
 
     /// A scope is a set: order does not make two regions, and a tool no

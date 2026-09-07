@@ -439,6 +439,19 @@ async fn triage(
                 kind: Some(mecha_core::session::SessionKind::Frontdoor),
             },
         )?;
+        // The run record, as every other front-end writes one: without it
+        // no lesson mined from a triage could be scoped to this surface,
+        // and the reconcile would clear a stamp an older miner left
+        // (found on review).
+        session.append(&mecha_core::session::Record::Config(
+            mecha_core::session::RunConfig::of(
+                &prepared.agent,
+                &prepared.config,
+                &prepared.provider_name,
+                &prepared.levers_off,
+                Some(&prepared.rules),
+            ),
+        ))?;
         if let Some(route) = &prepared.agent.context().outbox {
             route.set_session_id(&session.meta.id);
         }

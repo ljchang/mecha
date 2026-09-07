@@ -1466,6 +1466,15 @@ impl LearningStore {
                         rule.text.clone(),
                     ));
                 }
+                // And a surface this build cannot read: kept on the scope so
+                // it matches nothing, and said here so it is not silent.
+                if scope.surface == Some(crate::session::SessionKind::Unknown) {
+                    out.push((
+                        domain.to_string(),
+                        "a surface this build cannot name (read back as `unknown`)".to_string(),
+                        rule.text.clone(),
+                    ));
+                }
             }
         }
         Ok(out)
@@ -6672,13 +6681,19 @@ mod situation_tests {
             ..rule("Marked.", "r-m", None)
         };
         let fine = rule("Fine.", "r-f", Some(shell().on(Some(SessionKind::Tui))));
+        let unreadable = Rule {
+            scope: Some(shell().on(Some(SessionKind::Unknown))),
+            ..rule("Unreadable.", "r-u", None)
+        };
         store
-            .write_learned_rules("behavior", &[marked, fine])
+            .write_learned_rules("behavior", &[marked, fine, unreadable])
             .unwrap();
         let out = store.unloadable_rules(&["behavior"]).unwrap();
-        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out.len(), 2, "{out:?}");
         assert!(out[0].1.contains("surface `test`"), "{}", out[0].1);
         assert_eq!(out[0].2, "Marked.");
+        assert!(out[1].1.contains("cannot name"), "{}", out[1].1);
+        assert_eq!(out[1].2, "Unreadable.");
     }
 
     /// The decision, before any write, the same for either key: a row with
