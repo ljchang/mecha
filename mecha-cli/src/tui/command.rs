@@ -188,12 +188,12 @@ pub fn parse(line: &str) -> Option<Command> {
                 match (parse_toggle(first), second) {
                     // `/mcp off` — everything.
                     (Some(v), None) => Command::Mcp(Some(v)),
-                    // `/mcp off pkg` reads naturally but is the wrong way
+                    // `/mcp off graph` reads naturally but is the wrong way
                     // round; say so rather than guessing which was meant.
                     (Some(_), Some(_)) => Command::BadToggle(a.to_string()),
-                    // `/mcp pkg` — flip that one.
+                    // `/mcp graph` — flip that one.
                     (None, None) => Command::McpServer(first.to_string(), None),
-                    // `/mcp pkg off`.
+                    // `/mcp graph off`.
                     (None, Some(word)) => match parse_toggle(word) {
                         Some(v) => Command::McpServer(first.to_string(), Some(v)),
                         None => Command::BadToggle(word.to_string()),
@@ -750,28 +750,28 @@ mod tests {
     fn mcp_addresses_all_the_servers_or_one_of_them() {
         assert_eq!(parse("/mcp off"), Some(Command::Mcp(Some(false))));
         assert_eq!(
-            parse("/mcp pkg off"),
-            Some(Command::McpServer("pkg".into(), Some(false)))
+            parse("/mcp graph off"),
+            Some(Command::McpServer("graph".into(), Some(false)))
         );
         assert_eq!(
-            parse("/mcp pkg on"),
-            Some(Command::McpServer("pkg".into(), Some(true)))
+            parse("/mcp graph on"),
+            Some(Command::McpServer("graph".into(), Some(true)))
         );
         // A bare name flips it, which is what you want when there is one
         // server you keep reaching for.
         assert_eq!(
-            parse("/mcp pkg"),
-            Some(Command::McpServer("pkg".into(), None))
+            parse("/mcp graph"),
+            Some(Command::McpServer("graph".into(), None))
         );
 
         // Reads naturally, means the opposite of what it looks like. Refused
         // rather than guessed at.
         assert_eq!(
-            parse("/mcp off pkg"),
-            Some(Command::BadToggle("off pkg".into()))
+            parse("/mcp off graph"),
+            Some(Command::BadToggle("off graph".into()))
         );
         assert_eq!(
-            parse("/mcp pkg maybe"),
+            parse("/mcp graph maybe"),
             Some(Command::BadToggle("maybe".into()))
         );
     }

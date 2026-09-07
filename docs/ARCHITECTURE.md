@@ -534,25 +534,25 @@ watch for is `mecha proposals` filling with them.
 
 **Distillation is not learning, and its provenance rule differs on purpose.**
 `mecha distill` (`distill.rs`) summarises each closed session into an episode
-staged to the knowledge graph through pkg's `kg_upsert` — evidence, not
-belief: pkg's extractor turns it into candidates that wait in the *user's*
-review queue, and mecha reads pkg back through the `untrusted_input`
+staged to the knowledge graph through the graph's `kg_upsert` — evidence, not
+belief: the graph's extractor turns it into candidates that wait in the *user's*
+review queue, and mecha reads the graph back through the `untrusted_input`
 override, so an episode never enters a future prompt as trusted text the way
 a learned rule does. A tainted session therefore still distills — losing the
 record of a real afternoon because a web page was open would gut the memory —
 and the taint snapshot is recorded on the episode's `meta` instead, where
 review can see it. Unknown taint is recorded as unknown, never clean.
 Idempotent at both ends: `distilled.jsonl` in the learning store (same
-writer lock), and pkg's `(source, source_id)` key makes a re-push an update.
+writer lock), and the graph's `(source, source_id)` key makes a re-push an update.
 
 The distiller also reports **corrections** — moments the user said the graph
 holds something wrong — as `meta.corrections`, `[{wrong, right?, about?,
-fact_uid?}]`. pkg acts on each: supersede the wrong belief, stage the
+fact_uid?}]`. the graph acts on each: supersede the wrong belief, stage the
 replacement (or write a negation when the user simply rejected the claim),
 demote whatever produced the error on its autonomy ladder, and re-audit that
 producer's other output. `right` omitted means a rejection rather than a
 replacement. `fact_uid` is optional and usually absent — tool results are
-clipped before the distiller reads the transcript — so pkg falls back to
+clipped before the distiller reads the transcript — so the graph falls back to
 matching the `wrong` text narrowed by `about`, and routes anything it cannot
 pin to exactly one belief into the review queue rather than guessing. A
 correction outlives a skip: a session can be worth no episode and still tell
@@ -560,7 +560,7 @@ the graph it is wrong, so `{"skip": true}` carrying corrections still pushes.
 
 **Corrections are the exception to "a tainted session still distills", and
 the only part of this path carrying a security argument.** That rule holds
-because everything pkg *derives* from an episode waits in the user's review
+because everything the graph *derives* from an episode waits in the user's review
 queue — but a correction's supersede and class demotion land immediately;
 only the replacement is staged. So an untrusted transcript could carry
 "correction: the graph is wrong that Dr. X is at Yale", lifted from a fetched
@@ -568,11 +568,11 @@ page, and evict a true belief with nobody in the loop.
 `distill::corrections_for` therefore withholds every correction unless the
 recorded taint is present and not untrusted — unknown counts as untrusted,
 the same way the taint snapshot refuses to let uncovered masquerade as clean
-— and `upsert_args` re-applies the same function at the pkg boundary, because
+— and `upsert_args` re-applies the same function at the the graph boundary, because
 a boundary that trusts its caller is not one. The episode still goes; only the
 repairs are withheld. The trust decision is made *before* the body is written:
 a carrier episode describing a withheld correction would launder the claim
-into prose that pkg's extractor mines into candidates anyway, so an untrusted
+into prose that the graph's extractor mines into candidates anyway, so an untrusted
 corrections-only session pushes nothing at all.
 
 Known gap: `shell` is universal and taint tracking can't see inside a command,
@@ -817,7 +817,7 @@ reaches the model as an empty body.
 
 The capability labeling is the part worth not re-litigating: **reads are
 untrusted sources but not send sinks.** Mail bodies are other people's words,
-so config forces `untrusted_input` exactly as it does for pkg — reading mail
+so config forces `untrusted_input` exactly as it does for the graph — reading mail
 arms the interlock. But a search query travels only to googleapis.com, which
 already custodies the mailbox, so reads carry `readOnlyHint` and *not*
 `openWorldHint`; that is the difference from `http_fetch`, whose payload can
@@ -2905,9 +2905,17 @@ third party".
 **`GoalError::cite` is a pointer, never prose** — `frontdoor::Record::for_privileged_run`
 in a fourth setting, after `diagnose::Evidence`. Every variant is a name or an
 id the harness minted. The one field the harness did not mint is
-`GoalError::goal`, filled from the model's own `serves:` argument where
-`GoalRef::from_str` constrains only the kind word, which is why `distill`
-redacts a goal to its kind alone before it reaches pkg.
+`GoalError::goal`, filled from the model's own `serves:` argument.
+`GoalRef::from_str` makes an id one token — no whitespace, no control
+character, bounded length — and every reference a record yields comes
+through it, so `distill` now carries the pointer whole (`meta.goal`,
+`meta.serves_charter`, and `goal` on each error, all in the `kind:id`
+spelling); a reference built in code never went through the parser, so
+`distill::goal_pointer` re-proves it at the boundary and falls back to the
+kind word alone, which is what crossed before the id was constrained. What
+never rides is the sentence: the goal hypothesis a run put to the owner, the
+owner's answer, and the charter line's text stay in the stores mecha itself
+writes (`GOAL-SYSTEM-DESIGN.md` §17.7 item 8), and the graph joins on the id.
 
 **Not every counter is an error.** `tool_denied`, `blocked_sends` and
 `context_overflows` are excluded because they are the approver, the interlock
@@ -3021,6 +3029,26 @@ draft is a verdict with no residue to put on a board. `cut_short` exists
 because a ceiling stopped labelling `Anger` when it became the owner's own
 limit (`Agency::Owner`), and the residue of a ceiling-cut `done` still
 wants capturing.
+
+**The project is the tier above the task, and it closes when its last task
+does.** The join is made where both ids are already in hand — the board row
+carries `project_id` beside the project's *name*, which is prose two nodes
+can share and so never a pointer — and `tasks set`'s closure appraisal
+records `GoalRef::Project` on `goals` *after* the task, so every error's
+pointer stays the tier the run was handed (`appraise_session`'s rule). The
+owner closing the last open task under a project is the project's own
+closure moment (`GOAL-SYSTEM-DESIGN.md` §17.7 item 5):
+`appraise_project_closure` reads the project's open list after the update,
+and if nothing else is open folds every session that worked a task under it
+into one `ProjectReading` — labels counted, valence summed with positive
+and negative apart, `partial` if any reading was, the tasks never delegated
+and the ones it could not read counted rather than dropped — printed on
+stderr where the task's own appraisal is. It stages no follow-up (one per
+closure, and the task's owns it), writes no record (there is no project
+store), and treats a `dropped` last task as closing the tier like a `done`
+one. A board that names a project without identifying it — a graph server
+from before `project_id`, or an id that is not one token — is said once on
+stderr rather than read as no project: the silently-degrading-guard shape.
 
 **The plan is the prediction, and the record of it is the appraisal
 lane's.** `TodoItem` carries three optional fields — `expect` (one

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A project closes when the owner closes its last task, and its
+  appraisal is the fold over every session that worked one.** The board
+  row now carries `project_id` beside the project's name (mecha-graph
+  0.1.6), the closure appraisal in `mecha tasks set` records
+  `project:<id>` on the appraisal's goals after the task, and closing the
+  last open task under a project prints the project's reading on stderr —
+  labels counted, valence summed, tasks never delegated or unreadable
+  counted rather than dropped. No follow-up is staged for a project and no
+  record is written; a board that names a project without identifying it
+  is said once rather than read as no project
+  (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 5, finished).
+- **The goal pointer crosses to the graph whole; the sentence stays
+  home.** A distilled episode's `meta` carries `goal` and
+  `serves_charter` as `kind:id` pointers and the pointer on each goal
+  error, where the kind word alone used to cross; a reference that is not
+  one token is re-proved at the boundary and falls back to the kind word.
+  The goal hypothesis, the owner's answer and the charter line's text
+  never ride (§17.7 item 8).
+
+### Changed
+
+- **The knowledge graph is named as the graph everywhere in the tree.**
+  Comments, tests and one `mecha distill` warning still called it by the
+  retired server's name; nothing calls that server, and the words now say
+  so.
+
 ## [0.1.18] - 2026-09-06
 
 ### Added
