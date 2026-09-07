@@ -1957,8 +1957,8 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > (`RunConfig::rules_workspace`), and the miner stamps that — never the
 > session's jail, which on `serve` and Slack is a path no match presents
 > (found on review); rows stamped with a jail before the field existed
-> are reconciled by `mecha reflect --backfill-situations`, a step of
-> installing this build. So a
+> are reconciled on every `mecha reflect` pass, ahead of the nightly's
+> `learn`, never by a flag a human has to remember. So a
 > per-region tally splits by workspace and the roster's `loads with` line
 > says where. A batch whose reflections all came from one workspace scopes
 > its new rules there; a batch from two drops the key by intersection, as
