@@ -18,7 +18,7 @@ use mecha_core::learning::{
     evidence_for, extract_interventions, Evidence, Intervention, LearningStore, Origin, Reflector,
     Trigger,
 };
-use mecha_core::session::{Session, TaintTimeline};
+use mecha_core::session::Session;
 use std::path::{Path, PathBuf};
 
 #[derive(clap::Args, Debug)]
@@ -403,9 +403,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 /// `None` for a record from before the field, or a run that declared
 /// none; `Err` when the transcript cannot be read, which confirms nothing
 /// either way.
-fn matched_keys_of(
-    path: &Path,
-) -> std::result::Result<Vec<(Option<PathBuf>, Option<mecha_core::session::SessionKind>)>, String> {
+/// The workspace and surface one run record says its block was matched
+/// against.
+type MatchedKeys = (Option<PathBuf>, Option<mecha_core::session::SessionKind>);
+
+fn matched_keys_of(path: &Path) -> std::result::Result<Vec<MatchedKeys>, String> {
     // Through `Session::read`, the same reader the miner holds, so the
     // reconcile and the miner cannot disagree about one record by parsing
     // it two ways (found on review). Every run record, in order: a stored
@@ -481,7 +483,7 @@ fn reconcile_recorded_keys(
     if present.is_empty() {
         return Ok(0);
     }
-    type Matched = Vec<(Option<PathBuf>, Option<mecha_core::session::SessionKind>)>;
+    type Matched = Vec<MatchedKeys>;
     // What the record confirms for one recorded key: the key itself when
     // any attach presented it, else the first attach's — or none.
     fn confirmed<T: PartialEq + Clone>(
