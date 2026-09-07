@@ -547,13 +547,14 @@ async fn set(
             // with no session under no closing project appraises nothing,
             // and must not pay five scans or print a store warning about
             // an appraisal that does not happen (found on review).
-            let delegated = before["session"].as_str().is_some_and(|s| !s.is_empty());
-            if delegated || closed.is_some() {
-                let stores = ClosureStores::load(task);
-                let staged = appraise_closure(&prepared, task, status, &before, &stores).await;
-                if let Some((project, board)) = closed {
-                    appraise_project(task, &project, &board, &stores, staged);
-                }
+            // Read lazily: the first appraisal that gets as far as a store
+            // pays the read, and a closure that appraises nothing pays
+            // nothing (found on review, twice — the second time for a
+            // delegated task with no recorded outcome).
+            let stores = LazyStores::for_closure(task);
+            let staged = appraise_closure(&prepared, task, status, &before, &stores).await;
+            if let Some((project, board)) = closed {
+                appraise_project(task, &project, &board, &stores, staged);
             }
         }
     }
@@ -646,7 +647,7 @@ async fn appraise_closure(
     task_id: &str,
     new_status: &str,
     before: &Value,
-    stores: &ClosureStores,
+    stores: &LazyStores,
 ) -> bool {
     // Never delegated — the ordinary case for a hand-typed task. There is
     // nothing here for D9's index to point at, and that is not an error.
@@ -776,6 +777,12 @@ fn rows_under<'a>(board: &'a Value, pid: &str) -> Option<Vec<&'a Value>> {
     let items = board["items"].as_array()?;
     let mut under = Vec::new();
     for t in items {
+        // The key must be present on every row — a null for no parent, as
+        // the real server renders it (`task_json` builds the row with
+        // `json!`, and an `Option` there is an explicit `null`, never an
+        // omitted key; the fixture does the same) — because an absent key
+        // is how a server from before the column looks, and that board
+        // must read as unknown rather than as "no row is under it".
         let project_id = t.get("project_id")?;
         if project_id.as_str() == Some(pid) {
             under.push(t);
@@ -988,7 +995,7 @@ fn appraise_project(
     task_id: &str,
     project: &mecha_core::goal::GoalRef,
     board: &Value,
-    stores: &ClosureStores,
+    stores: &LazyStores,
     // Whether the task's own appraisal just staged a follow-up — under
     // this project, so the board shows an open task there again and the
     // line must not read as if it did not (found on review).
@@ -1157,6 +1164,41 @@ struct ClosureStores {
     charter_unreadable: bool,
 }
 
+/// The stores, read on first use and never otherwise: a delegated task
+/// whose transcript recorded no outcome — a crash, a kill, a run closed
+/// while live — appraises nothing, and must not pay five scans or print a
+/// store warning about an appraisal that then does not happen (found on
+/// review; the "no session" gate caught only half of that condition).
+struct LazyStores {
+    task_id: String,
+    cell: std::cell::OnceCell<ClosureStores>,
+}
+
+impl LazyStores {
+    fn for_closure(task_id: &str) -> LazyStores {
+        LazyStores {
+            task_id: task_id.to_string(),
+            cell: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// Already-read stores, for tests that exercise the guards ahead of
+    /// any store.
+    #[cfg(test)]
+    fn ready(stores: ClosureStores) -> LazyStores {
+        let cell = std::cell::OnceCell::new();
+        let _ = cell.set(stores);
+        LazyStores {
+            task_id: String::new(),
+            cell,
+        }
+    }
+
+    fn get(&self) -> &ClosureStores {
+        self.cell.get_or_init(|| ClosureStores::load(&self.task_id))
+    }
+}
+
 impl ClosureStores {
     /// `task_id` names the closure the warnings are about.
     fn load(task_id: &str) -> ClosureStores {
@@ -1320,7 +1362,7 @@ fn appraise_session_with(
     session_id: &str,
     task_id: &str,
     project: Option<&mecha_core::goal::GoalRef>,
-    stores: &ClosureStores,
+    stores: &LazyStores,
 ) -> Result<Option<mecha_core::appraisal::Appraisal>> {
     // The board's `session` field is nominally the harness's own — set once
     // by `move_task` at delegation — but `kg_task_list` is a read off
@@ -1367,6 +1409,9 @@ fn appraise_session_with(
     let end_taint = transcript
         .taint_timeline
         .covering(messages.len().saturating_sub(1));
+    // The stores are read here, after the transcript has an outcome —
+    // never for a run that recorded none.
+    let stores = stores.get();
     let mine: Vec<&mecha_core::outbox::OutboxItem> = stores
         .drafts
         .iter()
@@ -3566,9 +3611,13 @@ mod tests {
     #[test]
     fn appraise_session_with_refuses_a_hostile_id_before_touching_the_filesystem() {
         for hostile in ["../../etc/passwd", "/etc/passwd", ".."] {
-            let e =
-                appraise_session_with(hostile, "task-1a2b3c4d", None, &ClosureStores::default())
-                    .expect_err(&format!("{hostile:?} must be refused"));
+            let e = appraise_session_with(
+                hostile,
+                "task-1a2b3c4d",
+                None,
+                &LazyStores::ready(ClosureStores::default()),
+            )
+            .expect_err(&format!("{hostile:?} must be refused"));
             // The guard's own refusal, not `Session::find`'s "no session
             // matching" — which every one of these would produce anyway,
             // *after* the join this exists to prevent. `dir.join(hostile)`
