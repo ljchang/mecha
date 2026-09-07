@@ -466,9 +466,11 @@ not scope targets, as `Situation::of_run` says), through
 registers every tool the scope names — a lesson from editing `mail_send`
 drafts loads where `mail_send` is mounted and nowhere else. The scope
 keys are the tool set and, since 2026-09-07, the workspace: the run's
-jail as `setup::build` canonicalised it, matched exactly against the
+jail as `setup::prepare_tools` canonicalised it, matched exactly against the
 same spelling the session record carries (a jail is not a prefix, and
-a run that records none is not a match). The surface is recorded but
+a run that records none is not a match — and an empty recorded path is
+none at every door, the deserializer included, since a front-end that
+records no workspace writes one). The surface is recorded but
 `prepare` does not know it (the front-end names the kind when it opens
 the session, after `prepare` returns). The workspace waited for
 region-widening on purpose: scoped to one with no way to widen, a rule
