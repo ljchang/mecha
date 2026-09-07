@@ -287,6 +287,42 @@ pub enum Backfilled {
     Ambiguous(usize),
 }
 
+/// What the reconcile does to one recorded workspace, decided before any
+/// write ([`reconcile_workspace`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceReconcile {
+    /// Nothing to do: the row records no workspace (a lesson that scopes by
+    /// tools on purpose — an outbox edit, a triage correction — and the
+    /// reconcile never *adds* a key, which would narrow on no conviction),
+    /// or the record agrees with what the row carries.
+    Keep,
+    /// The session could not be found or read, so nothing is confirmed
+    /// either way; the row is left as it is and the reason printed. A
+    /// deleted transcript is not a record that confirms none (found on
+    /// review — it was written as one).
+    Unreadable(String),
+    /// The record was read and disagrees: the row takes what it names —
+    /// the matched workspace, or `None` where the record carries none.
+    Set(Option<std::path::PathBuf>),
+}
+
+/// Decide the reconcile for one row: `recorded` is the workspace on its
+/// situation, `record` the session's first `RunConfig::rules_workspace`
+/// when the session was read, or why it could not be.
+pub fn reconcile_workspace(
+    recorded: Option<&std::path::Path>,
+    record: Result<Option<&std::path::Path>, String>,
+) -> WorkspaceReconcile {
+    let Some(recorded) = recorded else {
+        return WorkspaceReconcile::Keep;
+    };
+    match record {
+        Err(why) => WorkspaceReconcile::Unreadable(why),
+        Ok(Some(matched)) if matched == recorded => WorkspaceReconcile::Keep,
+        Ok(matched) => WorkspaceReconcile::Set(matched.map(std::path::Path::to_path_buf)),
+    }
+}
+
 /// Match a reflection mined before the field to the intervention it came
 /// from, and recompute its situation the way the miner would have recorded
 /// it. The key is what a reflection persists — `session_id`, `trigger` and
@@ -6517,8 +6553,41 @@ mod situation_tests {
         ));
     }
 
-    /// The write takes only reflections still without a situation, stamps
-    /// the recomputation, and is free to run twice: a situation recorded at
+    /// The decision, before any write: a row with no workspace keeps none
+    /// whatever the record says (never add a key); a session that cannot be
+    /// read confirms nothing and the row stays; a record that agrees keeps;
+    /// a record that disagrees sets what it names, `None` included.
+    #[test]
+    fn a_workspace_is_reconciled_only_from_a_record_that_was_read_and_disagrees() {
+        use std::path::Path;
+        let w = Path::new("/w");
+        let jail = Path::new("/home/x/.mecha/work/web/main");
+        assert_eq!(
+            reconcile_workspace(None, Ok(Some(w))),
+            WorkspaceReconcile::Keep
+        );
+        assert_eq!(
+            reconcile_workspace(None, Ok(None)),
+            WorkspaceReconcile::Keep
+        );
+        assert_eq!(
+            reconcile_workspace(Some(jail), Err("no session".into())),
+            WorkspaceReconcile::Unreadable("no session".into())
+        );
+        assert_eq!(
+            reconcile_workspace(Some(w), Ok(Some(w))),
+            WorkspaceReconcile::Keep
+        );
+        assert_eq!(
+            reconcile_workspace(Some(jail), Ok(Some(w))),
+            WorkspaceReconcile::Set(Some(w.to_path_buf()))
+        );
+        assert_eq!(
+            reconcile_workspace(Some(jail), Ok(None)),
+            WorkspaceReconcile::Set(None)
+        );
+    }
+
     /// A recorded workspace that the run record does not confirm is
     /// reconciled — to the matched one, or to none — and one that agrees is
     /// untouched; a pass with nothing to apply leaves the file byte-identical.
@@ -6573,6 +6642,8 @@ mod situation_tests {
         );
     }
 
+    /// The write takes only reflections still without a situation, stamps
+    /// the recomputation, and is free to run twice: a situation recorded at
     /// mining is never overwritten.
     #[test]
     fn set_situations_fills_only_the_absent_and_stamps_the_recomputation() {
