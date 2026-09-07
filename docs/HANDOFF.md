@@ -1956,9 +1956,9 @@ printed 0. Restarted `mecha-slack`, `mecha-triggers`, `mecha-drain`,
 `mecha-serve`, `mecha-voice-worker` at 16:35:51Z; each logged its own
 startup line in a journal window opened at the restart, and each carries
 `~/.cargo/bin` on its PATH. Web dist untouched (neither PR touched
-`web/`). Two hosts no step restarts still ran the previous graph server
-afterwards — two Claude Code sessions' MCP children and the Hermes
-dashboard — and were reported, not killed. The public mecha-graph
+`web/`). Two kinds of host that no restart step reaches still ran the
+previous graph server afterwards — two Claude Code sessions' MCP
+children and the Hermes dashboard — and were reported, not killed. The public mecha-graph
 checkout was moved from another session's unpushed docs branch
 (`docs/bee-keyring-reboot`, kept at `c3bcb40`, clean) to `main`, so the
 nightly's script and binary are both current.
@@ -2934,9 +2934,10 @@ server cannot be asked to emit `truncated`, so `rows_under` and
 just-closed task's transcript is read twice on a project-closing `tasks
 set` (once by `appraise_closure`, once as a row in `appraise_project`'s
 fold); `--project` is on `tasks set` and the TUI's add form but not its
-edit form; on the graph side `merge_nodes`' re-point branch records no
-detachment and `task-project`'s post-write advisory reads are fatal and
-run on every id-form re-file. Still from §17.7: item 2 (mid-run
+edit form; on the graph side `merge_nodes` discards the count of tasks
+its detach branch detached (the pending list shows them), its re-point
+branch records no detachment, and `task-project`'s post-write advisory
+reads are fatal and run on every id-form re-file. Still from §17.7: item 2 (mid-run
 delivery, off until the step counters are read) and item 4's re-ask.
 **In progress on the owner's word (2026-09-07 evening): the workspace as
 a scope key for learned rules**, workspace before surface — surface needs
