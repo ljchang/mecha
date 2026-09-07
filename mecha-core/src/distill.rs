@@ -667,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn corrections_ride_in_episode_meta_for_pkg_to_repair() {
+    fn corrections_ride_in_episode_meta_for_the_graph_to_repair() {
         // Clean taint: repairs only leave a trusted timeline (see
         // corrections_are_withheld_from_an_untrusted_timeline).
         let args = upsert_args(

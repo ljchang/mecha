@@ -700,14 +700,19 @@ fn project_of(row: &Value) -> ProjectTier {
 /// the board's *open* list for that project, fetched after the update
 /// landed. The closed task is not expected on that list, but a row of it
 /// is tolerated rather than read as "still open", since the answer this
-/// decides is "was that the last one".
-fn project_closed_by(open: &Value, task_id: &str) -> bool {
-    !open["items"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
-        .iter()
-        .any(|t| t["id"].as_str().is_some_and(|id| id != task_id))
+/// decides is "was that the last one". `None` when the answer cannot be
+/// read — no `items` array, or a row with no string id: unknown is never
+/// "nothing else is open", and a project closure announced off a reply
+/// this build could not parse would be the false finding a fold is paid
+/// for (found on review).
+fn project_closed_by(open: &Value, task_id: &str) -> Option<bool> {
+    let items = open["items"].as_array()?;
+    let mut other_open = false;
+    for t in items {
+        let id = t["id"].as_str()?;
+        other_open |= id != task_id;
+    }
+    Some(!other_open)
 }
 
 /// One project's appraisal, folded from the sessions of every task ever
@@ -747,13 +752,7 @@ impl ProjectReading {
         };
         for (_, a) in readings {
             *out.labels.entry(format!("{:?}", a.label)).or_default() += 1;
-            let v = mecha_core::appraisal::Valence::of(a);
-            out.valence.positive += v.positive;
-            out.valence.negative += v.negative;
-            out.valence.positives += v.positives;
-            out.valence.negatives += v.negatives;
-            out.valence.visible |= v.visible;
-            out.valence.partial |= v.partial;
+            out.valence.merge(&mecha_core::appraisal::Valence::of(a));
         }
         out
     }
@@ -826,8 +825,16 @@ async fn appraise_project_closure(prepared: &setup::PreparedTools, task_id: &str
             return;
         }
     };
-    if !project_closed_by(&open, task_id) {
-        return;
+    match project_closed_by(&open, task_id) {
+        Some(true) => {}
+        Some(false) => return,
+        None => {
+            eprintln!(
+                "mecha: could not read project {pid}'s open list after closing {task_id} (no \
+                 `items`, or a row without an id), so whether that closed the project is unknown"
+            );
+            return;
+        }
     }
     let all = match call_with(
         prepared,
@@ -849,15 +856,25 @@ async fn appraise_project_closure(prepared: &setup::PreparedTools, task_id: &str
     let mut readings = Vec::new();
     let mut no_session = 0usize;
     let mut unread = 0usize;
+    // One read of every store for the whole fold, and its warnings once.
+    let stores = ClosureStores::load(task_id);
     for t in all["items"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        // A row this build cannot read is a task it could not appraise —
+        // counted, never dropped, or `tasks` would undercount.
         let Some(tid) = t["id"].as_str() else {
+            unread += 1;
             continue;
         };
         let Some(sid) = t["session"].as_str().filter(|s| !s.is_empty()) else {
             no_session += 1;
             continue;
         };
-        match appraise_session(sid, tid, Some(&project)) {
+        if !is_bare_path_component(sid) {
+            eprintln!("mecha: {tid}'s session field is not a session id: {sid:?}");
+            unread += 1;
+            continue;
+        }
+        match appraise_session_with(sid, tid, Some(&project), &stores) {
             Ok(Some(a)) => readings.push((tid.to_string(), a)),
             Ok(None) => unread += 1,
             Err(e) => {
@@ -947,6 +964,159 @@ fn is_bare_path_component(id: &str) -> bool {
         && components.next().is_none()
 }
 
+/// Every store a closure appraisal reads, read **once**. `appraise_session`
+/// used to open and scan the outbox, the question store, the front door,
+/// the learning store and the charter on every call, which was one call —
+/// until the project fold looped it over every task ever filed under a
+/// project, synchronously inside `tasks set`, in front of the TUI event
+/// loop and Slack's Done tap (found on review: 5N store scans for an
+/// N-task project, and every per-store warning printed N times). The
+/// stores do not change across the fold, so they are read here and
+/// handed in; a warning about a store prints once per load.
+struct ClosureStores {
+    drafts: Vec<mecha_core::outbox::OutboxItem>,
+    outbox_unreadable: bool,
+    questions: Vec<mecha_core::questions::Question>,
+    questions_unreadable: bool,
+    requests: Vec<mecha_core::frontdoor::Record>,
+    frontdoor_unreadable: bool,
+    reflexions: Vec<mecha_core::learning::Reflexion>,
+    learning_unreadable: bool,
+    charter: Option<mecha_core::charter::Charter>,
+    charter_unreadable: bool,
+}
+
+impl ClosureStores {
+    /// `task_id` names the closure the warnings are about.
+    fn load(task_id: &str) -> ClosureStores {
+        // `sessions.rs`'s own scan keeps "the store could not be read" apart
+        // from "the store has nothing in it" (`outbox_unreadable`) for the same
+        // reason this needs to: a read failure here silently undercounts the
+        // `Edit` channel's evidence for a decision that, unlike that scan, can
+        // never be rerun — the task is already closed by the time this runs.
+        let mut outbox_unreadable = false;
+        let drafts: Vec<mecha_core::outbox::OutboxItem> =
+            match mecha_core::outbox::OutboxStore::open_existing_default() {
+                None => Vec::new(),
+                Some(store) => match store.items_counting() {
+                    Ok((items, skipped)) => {
+                        if skipped > 0 {
+                            // A skipped file is an unread draft, and this
+                            // decision is never rerun: say so and keep the
+                            // request arm from reading the gap as "nothing
+                            // drafted" (found on review).
+                            eprintln!(
+                                "mecha: {skipped} outbox item(s) could not be parsed while appraising \
+                                 {task_id} — the edit channel is incomplete and the request arm is off"
+                            );
+                            outbox_unreadable = true;
+                        }
+                        items
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "mecha: could not read the outbox while appraising {task_id} — its \
+                             drafts are missing from this appraisal and the follow-up decision, if \
+                             any, may be based on incomplete evidence: {e:#}"
+                        );
+                        outbox_unreadable = true;
+                        Vec::new()
+                    }
+                },
+            };
+        // The three commitment stores, on the same best-effort terms as the
+        // outbox above: a store that could not be read costs its channel and
+        // says so, never the appraisal.
+        // Counting readers, so a skipped row is said out loud here the way an
+        // unreadable store is: these arms only ever add a sign, so a skip
+        // under-signs rather than inverting one, but a decision that is never
+        // rerun deserves to know its evidence was short.
+        let skipped_note = |store: &str, skipped: usize| {
+            if skipped > 0 {
+                eprintln!(
+                    "mecha: {skipped} {store} row(s) could not be parsed while appraising {task_id} — \
+                     that channel is incomplete"
+                );
+            }
+        };
+        // Each store hands back what it read and whether that was everything:
+        // the flag travels into the record as `partial`, so the printout
+        // below and the record `stage_follow_up` cites carry the caveat with
+        // them rather than only on a stderr line above (found on review).
+        // `worth_a_follow_up` does not read it yet — a short reading gates the
+        // same way a full one does, and says so.
+        let (questions, questions_unreadable) =
+            match mecha_core::questions::QuestionStore::open_existing_default() {
+                None => (Vec::new(), false),
+                Some(store) => match store.items_counting() {
+                    Ok((items, skipped)) => {
+                        skipped_note("question", skipped);
+                        (items, skipped > 0)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "mecha: could not read the question store while appraising {task_id}: {e:#}"
+                        );
+                        (Vec::new(), true)
+                    }
+                },
+            };
+        let (requests, frontdoor_unreadable) =
+            match mecha_core::frontdoor::Frontdoor::open_existing_default() {
+                None => (Vec::new(), false),
+                Some(fd) => match fd.records_counting() {
+                    Ok((items, skipped)) => {
+                        skipped_note("front-door", skipped);
+                        (items, skipped > 0)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "mecha: could not read the front door while appraising {task_id}: {e:#}"
+                        );
+                        (Vec::new(), true)
+                    }
+                },
+            };
+        let (reflexions, learning_unreadable) =
+            match mecha_core::learning::LearningStore::open_existing_default() {
+                None => (Vec::new(), false),
+                Some(store) => match store.reflexions_counting() {
+                    Ok((items, skipped)) => {
+                        skipped_note("reflection", skipped);
+                        (items, skipped > 0)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "mecha: could not read the learning store while appraising {task_id}: {e:#}"
+                        );
+                        (Vec::new(), true)
+                    }
+                },
+            };
+        // The charter, on the same terms. Every error here already carries the
+        // task as its goal, so the sensored-line attribution fills nothing on
+        // this path today; it is passed so a future arm that names no goal is
+        // attributed the same way the corpus readout attributes it, and so an
+        // unreadable charter marks this reading partial like any other store.
+        let (charter, charter_unreadable) = mecha_core::appraisal::load_charter();
+        if charter_unreadable {
+            eprintln!("mecha: the charter did not load while appraising {task_id} — nothing is attributed to a charter line");
+        }
+        ClosureStores {
+            drafts,
+            outbox_unreadable,
+            questions,
+            questions_unreadable,
+            requests,
+            frontdoor_unreadable,
+            reflexions,
+            learning_unreadable,
+            charter,
+            charter_unreadable,
+        }
+    }
+}
+
 /// Build one session's appraisal off its own transcript, the outbox, and the
 /// task it served — the single-lookup twin of `mecha sessions appraise`'s
 /// whole-store scan, which already does this same four-step assembly per
@@ -972,12 +1142,27 @@ fn is_bare_path_component(id: &str) -> bool {
 fn appraise_session(
     session_id: &str,
     task_id: &str,
-    // The project the task is filed under, when the board identified one.
-    // Recorded on the appraisal's `goals` *after* the task: the run served
-    // the task and the task served the project, and `of_session` cites the
-    // first on every error, so the pointer on an error stays the tier the
-    // run itself was handed.
     project: Option<&mecha_core::goal::GoalRef>,
+) -> Result<Option<mecha_core::appraisal::Appraisal>> {
+    // The id guard runs before the stores are read, so a hostile id costs
+    // nothing but its refusal.
+    if !is_bare_path_component(session_id) {
+        anyhow::bail!("not a session id: {session_id:?}");
+    }
+    appraise_session_with(session_id, task_id, project, &ClosureStores::load(task_id))
+}
+
+/// The appraisal of one session against one task, over stores already
+/// read. `project` is the tier the task is filed under, when the board
+/// identified one: recorded on the appraisal's `goals` *after* the task —
+/// the run served the task and the task served the project, and
+/// `of_session` cites the first on every error, so the pointer on an error
+/// stays the tier the run itself was handed.
+fn appraise_session_with(
+    session_id: &str,
+    task_id: &str,
+    project: Option<&mecha_core::goal::GoalRef>,
+    stores: &ClosureStores,
 ) -> Result<Option<mecha_core::appraisal::Appraisal>> {
     // The board's `session` field is nominally the harness's own — set once
     // by `move_task` at delegation — but `kg_task_list` is a read off
@@ -1024,123 +1209,11 @@ fn appraise_session(
     let end_taint = transcript
         .taint_timeline
         .covering(messages.len().saturating_sub(1));
-    // `sessions.rs`'s own scan keeps "the store could not be read" apart
-    // from "the store has nothing in it" (`outbox_unreadable`) for the same
-    // reason this needs to: a read failure here silently undercounts the
-    // `Edit` channel's evidence for a decision that, unlike that scan, can
-    // never be rerun — the task is already closed by the time this runs.
-    let mut outbox_unreadable = false;
-    let drafts: Vec<mecha_core::outbox::OutboxItem> =
-        match mecha_core::outbox::OutboxStore::open_existing_default() {
-            None => Vec::new(),
-            Some(store) => match store.items_counting() {
-                Ok((items, skipped)) => {
-                    if skipped > 0 {
-                        // A skipped file is an unread draft, and this
-                        // decision is never rerun: say so and keep the
-                        // request arm from reading the gap as "nothing
-                        // drafted" (found on review).
-                        eprintln!(
-                            "mecha: {skipped} outbox item(s) could not be parsed while appraising \
-                             {task_id} — the edit channel is incomplete and the request arm is off"
-                        );
-                        outbox_unreadable = true;
-                    }
-                    items
-                        .into_iter()
-                        .filter(|i| i.session_id.as_deref() == Some(session_id))
-                        .collect()
-                }
-                Err(e) => {
-                    eprintln!(
-                        "mecha: could not read the outbox while appraising {task_id} — its \
-                         drafts are missing from this appraisal and the follow-up decision, if \
-                         any, may be based on incomplete evidence: {e:#}"
-                    );
-                    outbox_unreadable = true;
-                    Vec::new()
-                }
-            },
-        };
-    let mine: Vec<&mecha_core::outbox::OutboxItem> = drafts.iter().collect();
-    // The three commitment stores, on the same best-effort terms as the
-    // outbox above: a store that could not be read costs its channel and
-    // says so, never the appraisal.
-    // Counting readers, so a skipped row is said out loud here the way an
-    // unreadable store is: these arms only ever add a sign, so a skip
-    // under-signs rather than inverting one, but a decision that is never
-    // rerun deserves to know its evidence was short.
-    let skipped_note = |store: &str, skipped: usize| {
-        if skipped > 0 {
-            eprintln!(
-                "mecha: {skipped} {store} row(s) could not be parsed while appraising {task_id} — \
-                 that channel is incomplete"
-            );
-        }
-    };
-    // Each store hands back what it read and whether that was everything:
-    // the flag travels into the record as `partial`, so the printout
-    // below and the record `stage_follow_up` cites carry the caveat with
-    // them rather than only on a stderr line above (found on review).
-    // `worth_a_follow_up` does not read it yet — a short reading gates the
-    // same way a full one does, and says so.
-    let (questions, questions_unreadable) =
-        match mecha_core::questions::QuestionStore::open_existing_default() {
-            None => (Vec::new(), false),
-            Some(store) => match store.items_counting() {
-                Ok((items, skipped)) => {
-                    skipped_note("question", skipped);
-                    (items, skipped > 0)
-                }
-                Err(e) => {
-                    eprintln!(
-                        "mecha: could not read the question store while appraising {task_id}: {e:#}"
-                    );
-                    (Vec::new(), true)
-                }
-            },
-        };
-    let (requests, frontdoor_unreadable) =
-        match mecha_core::frontdoor::Frontdoor::open_existing_default() {
-            None => (Vec::new(), false),
-            Some(fd) => match fd.records_counting() {
-                Ok((items, skipped)) => {
-                    skipped_note("front-door", skipped);
-                    (items, skipped > 0)
-                }
-                Err(e) => {
-                    eprintln!(
-                        "mecha: could not read the front door while appraising {task_id}: {e:#}"
-                    );
-                    (Vec::new(), true)
-                }
-            },
-        };
-    let (reflexions, learning_unreadable) =
-        match mecha_core::learning::LearningStore::open_existing_default() {
-            None => (Vec::new(), false),
-            Some(store) => match store.reflexions_counting() {
-                Ok((items, skipped)) => {
-                    skipped_note("reflection", skipped);
-                    (items, skipped > 0)
-                }
-                Err(e) => {
-                    eprintln!(
-                        "mecha: could not read the learning store while appraising {task_id}: {e:#}"
-                    );
-                    (Vec::new(), true)
-                }
-            },
-        };
-    // The charter, on the same terms. Every error here already carries the
-    // task as its goal, so the sensored-line attribution fills nothing on
-    // this path today; it is passed so a future arm that names no goal is
-    // attributed the same way the corpus readout attributes it, and so an
-    // unreadable charter marks this reading partial like any other store.
-    let (charter, charter_unreadable) = mecha_core::appraisal::load_charter();
-    if charter_unreadable {
-        eprintln!("mecha: the charter did not load while appraising {task_id} — nothing is attributed to a charter line");
-    }
+    let mine: Vec<&mecha_core::outbox::OutboxItem> = stores
+        .drafts
+        .iter()
+        .filter(|i| i.session_id.as_deref() == Some(session_id))
+        .collect();
     let mut goals = vec![mecha_core::goal::GoalRef::Task(task_id.to_string())];
     goals.extend(project.cloned());
     Ok(Some(mecha_core::appraisal::of_session(
@@ -1150,15 +1223,15 @@ fn appraise_session(
         &interventions,
         mecha_core::appraisal::SessionRecords {
             drafts: &mine,
-            outbox_unreadable,
-            questions: &questions,
-            questions_unreadable,
-            requests: &requests,
-            frontdoor_unreadable,
-            reflexions: &reflexions,
-            learning_unreadable,
-            charter: charter.as_ref(),
-            charter_unreadable,
+            outbox_unreadable: stores.outbox_unreadable,
+            questions: &stores.questions,
+            questions_unreadable: stores.questions_unreadable,
+            requests: &stores.requests,
+            frontdoor_unreadable: stores.frontdoor_unreadable,
+            reflexions: &stores.reflexions,
+            learning_unreadable: stores.learning_unreadable,
+            charter: stores.charter.as_ref(),
+            charter_unreadable: stores.charter_unreadable,
             stops: &stops,
         },
         end_taint,
@@ -3000,15 +3073,21 @@ mod tests {
     #[test]
     fn the_project_closes_when_no_other_open_task_remains() {
         let empty = json!({"items": []});
-        assert!(project_closed_by(&empty, "task-a"));
+        assert_eq!(project_closed_by(&empty, "task-a"), Some(true));
         // The just-closed task still on the list (a read racing the
         // update) is not another open task.
         let only_me = json!({"items": [{"id": "task-a", "status": "done"}]});
-        assert!(project_closed_by(&only_me, "task-a"));
+        assert_eq!(project_closed_by(&only_me, "task-a"), Some(true));
         let another = json!({"items": [{"id": "task-b", "status": "next"}]});
-        assert!(!project_closed_by(&another, "task-a"));
-        // An unreadable list is not an empty one.
-        assert!(project_closed_by(&json!({}), "task-a"));
+        assert_eq!(project_closed_by(&another, "task-a"), Some(false));
+        // An unreadable list is not an empty one: no `items`, or a row with
+        // no id, is unknown — never "nothing else is open".
+        assert_eq!(project_closed_by(&json!({}), "task-a"), None);
+        assert_eq!(project_closed_by(&json!({"items": "?"}), "task-a"), None);
+        assert_eq!(
+            project_closed_by(&json!({"items": [{"status": "next"}]}), "task-a"),
+            None
+        );
     }
 
     #[test]
