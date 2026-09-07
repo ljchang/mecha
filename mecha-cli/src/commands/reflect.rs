@@ -186,11 +186,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // records both — `load` and `run_configs` each parsed the whole
         // file, twice per session on the nightly's hot path (found on
         // review).
-        let (convo, (matched_workspace, matched_surface)) = match Session::read(path) {
-            Ok(t) => {
-                let keys = matched_keys_in(&t);
-                (t.convo, keys)
-            }
+        let t = match Session::read(path) {
+            Ok(t) => t,
             Err(e) => {
                 // A transcript that does not load is not this command's bug to
                 // fix; skip it *without* marking it mined, so a later mecha
@@ -200,6 +197,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
         };
 
+        let convo = &t.convo;
         let interventions = extract_interventions(&convo.messages);
         interventions_found += interventions.len();
 
@@ -273,6 +271,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // surface and workspace are the run record's matched
                     // ones — never `meta.kind`, never the jail. Set here
                     // and not by the reflector, which saw prose.
+                    // The keys of the run record covering *this*
+                    // intervention, not the session's first: a session may
+                    // hold runs matched on different keys (a resumed
+                    // question, a `/model` switch), and `config_covering`
+                    // is the exact answer per message (found on review).
+                    let (matched_workspace, matched_surface) = keys_covering(&t, intervention.at);
                     r.situation = Some(mecha_core::situation::Situation::recorded(
                         &intervention.tools_before,
                         intervention.trigger.as_str(),
@@ -412,8 +416,24 @@ fn matched_keys_of(
         .map_err(|e| format!("session unreadable: {e:#}"))
 }
 
-/// The same keys off a transcript already read — the miner and the
-/// backfill hold one, and must not parse the file a second time for it.
+/// The keys of the run record covering message `at` of a transcript
+/// already read (`Transcript::config_covering`): what the miner and the
+/// backfill stamp on an intervention, since a session may hold runs
+/// matched on different keys. `(None, None)` for a transcript recorded
+/// before configs were kept.
+fn keys_covering(
+    t: &mecha_core::session::Transcript,
+    at: usize,
+) -> (Option<PathBuf>, Option<mecha_core::session::SessionKind>) {
+    t.config_covering(at)
+        .map(|rc| (rc.rules_workspace.clone(), rc.rules_surface))
+        .unwrap_or((None, None))
+}
+
+/// The first run record's keys off a transcript already read — what the
+/// reconcile compares an already-stamped row against, since a stored
+/// reflection carries no message index; a session with runs matched on
+/// different keys is reconciled to its first.
 fn matched_keys_in(
     t: &mecha_core::session::Transcript,
 ) -> (Option<PathBuf>, Option<mecha_core::session::SessionKind>) {
@@ -648,9 +668,8 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
     // its rules block was matched against; or why it could not be read.
     type SessionRead = Result<
         (
-            mecha_core::session::SessionMeta,
             Vec<mecha_core::learning::Intervention>,
-            (Option<PathBuf>, Option<mecha_core::session::SessionKind>),
+            mecha_core::session::Transcript,
         ),
         String,
     >;
@@ -675,13 +694,12 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
                 }
             })?;
             let t = Session::read(path).map_err(|e| format!("session unreadable: {e:#}"))?;
-            let matched = matched_keys_in(&t);
-            Ok((t.meta, extract_interventions(&t.convo.messages), matched))
+            Ok((extract_interventions(&t.convo.messages), t))
         });
         match read {
             Err(why) => unmatched.push((r.id.clone(), why.clone())),
-            Ok((_meta, interventions, (matched, surface))) => {
-                match backfill_situation(r, interventions, matched.as_deref(), *surface) {
+            Ok((interventions, t)) => {
+                match backfill_situation(r, interventions, &|at| keys_covering(t, at)) {
                     Backfilled::Matched(s) => updates.push((r.id.clone(), s)),
                     Backfilled::NoMatch => unmatched.push((
                         r.id.clone(),
