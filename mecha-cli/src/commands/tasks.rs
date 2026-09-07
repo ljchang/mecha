@@ -428,6 +428,7 @@ async fn set(
     session: Option<String>,
 ) -> Result<()> {
     let mut args = json!({ "task": task });
+    let refiled = project.is_some();
     // Every field `kg_task_update` takes, because the modal drives the CLI and
     // a verb the terminal cannot reach is one the UI must not offer either.
     for (key, value) in [
@@ -524,7 +525,7 @@ async fn set(
             // recorded and staged under the project the task just *left*,
             // and never checked the one it moved to (found on review). A
             // server whose echo carries no row leaves the tier unknown.
-            if project.is_some() && !carry_refiled_project(&mut before, &out) {
+            if refiled && !carry_refiled_project(&mut before, &out) {
                 eprintln!(
                     "mecha: {task} was re-filed and closed in one call, but the board's echo \
                      carried no row, so the project tier of this closure is unknown and not \
