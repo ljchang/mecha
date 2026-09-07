@@ -1857,11 +1857,13 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > the original as a new rule scoped to the batch — a model-did-not-listen
 > case the count cap and the next consolidation bound, not the code. The registry the block
 > is matched against is `build`'s, after subagents join it; the
-> front-end's own tools join later and are not scope targets. Two keys
-> are recorded and not yet scope keys, with the reasons in `situation.rs`:
-> the surface, because `prepare` does not know it, and the workspace,
-> because scoping to it before widening exists would pin nearly every rule
-> to the one workspace most reflections come from. `error_type` is not a
+> front-end's own tools join later and are not scope targets. One key
+> is recorded and not a scope key, with the reason in `situation.rs`:
+> the surface, because `prepare` does not know it. The workspace was the
+> same until 2026-09-07 — scoping to it before widening existed would
+> have pinned nearly every rule to the one workspace most reflections
+> come from — and is a scope key now that widening exists (the addendum
+> below). `error_type` is not a
 > key at all: it is the reflector's label, and §17.3's rule is that a key
 > is what the harness knows structurally. Reflections mined before the
 > field carry no situation and batch as standing (§17.7 item 6's backfill
@@ -1943,8 +1945,31 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > before the field carry no region and exercise nothing, so on this
 > machine every existing tally reads as ride-along until the next
 > validate pass writes placed rows. Still unbuilt from this section:
-> mid-run delivery (§17.7 item 2), surface and workspace as scope keys,
+> mid-run delivery (§17.7 item 2), the surface as a scope key,
 > and a disjunctive scope — the split a narrowing cannot express today.
+
+> **Built 2026-09-07: the workspace as a scope key** (`feat/workspace-scope`).
+> `Situation::scope` keeps the workspace, `Situation::matches` requires
+> it exactly (a run that records none does not match), and
+> `Situation::key` names it after the tools, so a per-region tally splits
+> by workspace. The recorded key is the matched key by construction: the
+> run record keeps the workspace the block was matched against
+> (`RunConfig::rules_workspace`), and the miner stamps that — never the
+> session's jail, which on `serve` and Slack is a path no match presents
+> (found on review); rows stamped with a jail before the field existed
+> are reconciled on every `mecha reflect` pass, ahead of the nightly's
+> `learn`, never by a flag a human has to remember. So a
+> per-region tally splits by workspace and the roster's `loads with` line
+> says where. A batch whose reflections all came from one workspace scopes
+> its new rules there; a batch from two drops the key by intersection, as
+> does a verbatim restatement from a second workspace's batch
+> (`finalize_region_rules`, the same arithmetic as tools); a conviction in
+> one workspace narrows to the one the rule held in. Rules scoped before
+> the key carry no workspace and load everywhere as they did, and are
+> context — not rewritable — in a single-workspace batch, since
+> `rewritable_in` is equality and a narrower batch rewriting a wider rule
+> would narrow it on no conviction. The surface stays recorded-only until
+> `prepare` is told the session kind.
 
 ### 17.5 The validator these rulings are missing, and its template
 

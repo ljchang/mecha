@@ -347,6 +347,15 @@ pub struct RunConfig {
     pub rules_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rule_ids: Vec<String>,
+    /// The workspace the rules block was matched against
+    /// (`RulesCarried::workspace`) — the scope key a run presented, beside
+    /// the jail in `workspace` above, which is what the run was confined to.
+    /// The two differ on `serve` and Slack, and a reflection stamped with
+    /// the jail scoped its rule to a workspace no match presents (found on
+    /// review). `None` is a record from before the field, or a run whose
+    /// situation named no workspace: no key, never a guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules_workspace: Option<PathBuf>,
     /// Which trial this run is one actor of (`docs/EXPERIMENT-DESIGN.md`
     /// §4). `None` for every ordinary run. Read off the environment the
     /// runner set (`experiment::EXPERIMENT_REF_ENV`) rather than handed in,
@@ -431,6 +440,7 @@ impl Default for RunConfig {
             experiment: None,
             rules_hash: None,
             rule_ids: Vec::new(),
+            rules_workspace: None,
         }
     }
 }
@@ -503,6 +513,7 @@ impl RunConfig {
             experiment: crate::experiment::ExperimentRef::from_env(),
             rules_hash: rules.map(|r| r.hash.clone()),
             rule_ids: rules.map(|r| r.rule_ids.clone()).unwrap_or_default(),
+            rules_workspace: rules.and_then(|r| r.workspace.clone()),
         }
     }
 }
@@ -3642,6 +3653,17 @@ mod rules_arm_tests {
         let old: RunConfig = serde_json::from_str(r#"{"mecha_version":"0"}"#).unwrap();
         assert_eq!(old.rules_hash, None);
         assert!(old.rule_ids.is_empty());
+        assert_eq!(old.rules_workspace, None, "before the field: no key");
+        assert!(!serde_json::to_string(&old)
+            .unwrap()
+            .contains("rules_workspace"));
+        let jailed = RunConfig {
+            rules_workspace: Some(PathBuf::from("/w")),
+            ..Default::default()
+        };
+        let back: RunConfig =
+            serde_json::from_str(&serde_json::to_string(&jailed).unwrap()).unwrap();
+        assert_eq!(back.rules_workspace.as_deref(), Some(Path::new("/w")));
         assert!(old.rules_arm_note(None).contains("unknown"));
         assert!(!serde_json::to_string(&old).unwrap().contains("rules_hash"));
 
