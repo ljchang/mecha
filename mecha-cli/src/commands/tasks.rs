@@ -803,6 +803,15 @@ fn carry_refiled_project(before: &mut Value, out: &Value) -> bool {
     }
 }
 
+/// A board row's task id, if it is one token as `GoalRef::from_str` spells
+/// it — the row's own spelling required, as `project_of` requires of the
+/// parent — or nothing, for a row this build will not cite.
+fn task_pointer(row: &Value) -> Option<&str> {
+    let id = row["id"].as_str().filter(|s| !s.is_empty())?;
+    let parsed: mecha_core::goal::GoalRef = format!("task:{id}").parse().ok()?;
+    (parsed.id() == id).then_some(id)
+}
+
 /// Whether closing `task_id` left its project with no open task — read off
 /// the board's *open* list for that project, fetched after the update
 /// landed and before anything else is staged. The closed task is not
@@ -1000,8 +1009,12 @@ async fn appraise_project(
     let mut unread = 0usize;
     for t in rows {
         // A row this build cannot read is a task it could not appraise —
-        // counted, never dropped, or `tasks` would undercount.
-        let Some(tid) = t["id"].as_str() else {
+        // counted, never dropped, or `tasks` would undercount. The id goes
+        // through the same one-token check `project_of` gives the parent's:
+        // it becomes `GoalRef::Task` on the appraisal and prints beside the
+        // summary, and a row from somebody else's store must not forge a
+        // line there either (found on review).
+        let Some(tid) = task_pointer(t) else {
             unread += 1;
             continue;
         };
@@ -1010,7 +1023,7 @@ async fn appraise_project(
             continue;
         };
         if !is_bare_path_component(sid) {
-            eprintln!("mecha: {tid}'s session field is not a session id: {sid:?}");
+            eprintln!("mecha: {tid:?}'s session field is not a session id: {sid:?}");
             unread += 1;
             continue;
         }
@@ -1035,7 +1048,7 @@ async fn appraise_project(
         fold.describe()
     );
     for (tid, a) in &readings {
-        eprintln!("  {tid}: {}", describe(a));
+        eprintln!("  {tid:?}: {}", describe(a));
     }
 }
 
@@ -3292,6 +3305,23 @@ mod tests {
         ));
         assert_eq!(project_of(&before), ProjectTier::None);
         assert!(before.get("project_id").is_none());
+    }
+
+    #[test]
+    fn a_task_id_is_cited_only_as_one_token_spelled_the_boards_way() {
+        assert_eq!(
+            task_pointer(&json!({"id": "task-1a2b3c4d"})),
+            Some("task-1a2b3c4d")
+        );
+        for bad in [
+            json!({}),
+            json!({"id": ""}),
+            json!({"id": "task a"}),
+            json!({"id": " task-1"}),
+            json!({"id": "t\n"}),
+        ] {
+            assert_eq!(task_pointer(&bad), None, "{bad}");
+        }
     }
 
     #[test]
