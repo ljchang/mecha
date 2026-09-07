@@ -582,6 +582,12 @@ pub struct KnownPointers {
     /// nothing said, where `tasks set` names the same condition (found on
     /// review). The caller prints it; this crate does not.
     pub truncated: bool,
+    /// The answer carried no `items` array at all — a server answering 200
+    /// in a shape this build does not read. Kept apart from an empty board
+    /// for the same reason as `truncated`: every pointer would otherwise
+    /// drop to its kind word with nothing in the run saying why (found on
+    /// review; `rows_under` reads the same absence as unknown).
+    pub unreadable: bool,
 }
 
 impl KnownPointers {
@@ -604,6 +610,7 @@ impl KnownPointers {
     pub fn from_board(board: &Value) -> KnownPointers {
         let mut out = KnownPointers {
             truncated: board["truncated"].as_bool() == Some(true),
+            unreadable: !board["items"].is_array(),
             ..KnownPointers::default()
         };
         for t in board["items"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
@@ -1383,7 +1390,11 @@ mod tests {
         assert!(known.admits(&crate::goal::GoalRef::Project("proj-tide".into())));
         assert!(!known.admits(&crate::goal::GoalRef::Project("task-a".into())));
         assert!(!known.admits(&crate::goal::GoalRef::Task("".into())));
-        assert_eq!(KnownPointers::from_board(&json!({})), KnownPointers::none());
+        // No `items` at all is an unreadable answer, not an empty board.
+        let blind = KnownPointers::from_board(&json!({}));
+        assert!(blind.unreadable);
+        assert!(!KnownPointers::from_board(&json!({"items": []})).unreadable);
+        assert!(!blind.admits(&crate::goal::GoalRef::Task("task-a".into())));
         // A short answer still admits what arrived, and says it was short.
         let short =
             KnownPointers::from_board(&json!({"items": [{"id": "task-a"}], "truncated": true}));
