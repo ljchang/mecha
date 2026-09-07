@@ -140,6 +140,7 @@ command = "mecha-mail"
 [[mcp]]
 name = "graph"         # who people are, and what happened when
 command = "mecha-graph-mcp"
+prefix_tools = false   # its kg_* tools carry their own namespace
 
 [outbox]               # staged for review, never sent outright
 tools = ["mail__mail_send", "mail__mail_reply"]`}

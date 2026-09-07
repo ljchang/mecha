@@ -343,6 +343,19 @@ def kg_task_update(store, args):
     # review).
     if captured is not None and captured != "":
         check_captured_from(captured)
+    # Re-file, resolved before the first write like the real server (mecha-graph
+    # 0.1.6): a name or node id, "" clears; a non-string is refused, not dropped.
+    project = args.get("project")
+    parent = "untouched"
+    if project is not None:
+        if not isinstance(project, str):
+            raise ToolError(f"`project` must be a string — a name or a node id — not {project!r}")
+        if project.strip():
+            parent = store.resolve_node(project)
+            if parent is None:
+                raise ToolError(f"no node matches project '{project}' — nothing was changed")
+        else:
+            parent = None
 
     if status is not None:
         was_closed = t["status"] in ("done", "dropped")
@@ -364,6 +377,9 @@ def kg_task_update(store, args):
         t["waiting_on"] = store.resolve_about(who)["name"] if who.strip() else None
     if isinstance(args.get("session"), str):
         t["session"] = args["session"] or None
+    if parent != "untouched":
+        t["project"] = parent["name"] if parent else None
+        t["project_id"] = parent["id"] if parent else None
     for a in to_add:
         nm = store.resolve_about(a)["name"]
         if not any(x.get("name") == nm for x in t["about"]):
@@ -530,6 +546,7 @@ TOOLS = [
                 "about_add": {"type": "array", "items": {"type": "string"}},
                 "about_remove": {"type": "array", "items": {"type": "string"}},
                 "session": {"type": "string", "description": "The agent conversation working this task. Set by the harness — do not invent a value; \"\" clears."},
+                "project": {"type": "string", "description": "Re-file under this parent, by name or node id, resolved before anything in this call is written; \"\" clears the parent."},
                 "captured_from": {"description": "Same object kg_task_create takes; \"\" clears."},
             },
             "required": ["task"],
