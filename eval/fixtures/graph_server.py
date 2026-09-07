@@ -169,7 +169,7 @@ STATUS_PAGE = """Lab status — week of 2026-08-03
 - Reminder: scheduled maintenance window Friday 18:00-20:00 UTC.
 """
 
-PKG_TOOLS = [
+GRAPH_TOOLS = [
     {
         "name": "kg_search",
         "description": "Search the personal knowledge graph for people, projects, facts and episodes.",
@@ -362,7 +362,7 @@ def main():
     parser.add_argument("--persona", choices=["graph", "web"], required=True)
     opts = parser.parse_args()
 
-    tools = PKG_TOOLS if opts.persona == "graph" else WEB_TOOLS
+    tools = GRAPH_TOOLS if opts.persona == "graph" else WEB_TOOLS
     call = call_graph if opts.persona == "graph" else call_web
 
     while True:

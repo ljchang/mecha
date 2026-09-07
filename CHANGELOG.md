@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A project closes when the owner closes its last task, and its
   appraisal is the fold over every session that worked one.** The board
   row now carries `project_id` beside the project's name (mecha-graph
-  0.1.6), the closure appraisal in `mecha tasks set` records
+  PR #10, unreleased when written), the closure appraisal in `mecha tasks set` records
   `project:<id>` on the appraisal's goals after the task, and closing the
   last open task under a project prints the project's reading on stderr —
   labels counted, valence summed, tasks never delegated or unreadable
