@@ -1944,8 +1944,8 @@ the owner's word. Installed binaries and each repo's `main` agree at the
 tagged commits; nothing else is owed on this machine.
 
 **2026-09-07, mecha-a6: nothing deployed, nothing restarted.** Two PRs
-open and unmerged (mecha #206 at `5b5a426f`, mecha-graph #10 at
-`c1d0a01`); the installed binaries are unchanged from the 2026-09-06 row
+open and unmerged (mecha #206 at `fab98bef`, mecha-graph #10 at
+`fdf4538`); the installed binaries are unchanged from the 2026-09-06 row
 above. When they merge: the graph first (`mecha-graph-mcp` reinstalled,
 the four units' MCP children restart with them), then mecha's binary —
 the web dist is untouched by either. The graph worktree is
@@ -2913,8 +2913,8 @@ the mechanism and every decision. What it left standing:
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
 **2026-09-07 — §17.7 item 5 finished and item 8 built, with the pkg→graph
-rename: mecha PR #206 (`feat/project-tier`, head `5b5a426f`) and
-mecha-graph PR #10 (`feat/task-project-id`, head `c1d0a01`), both review
+rename: mecha PR #206 (`feat/project-tier`, head `fab98bef`) and
+mecha-graph PR #10 (`feat/task-project-id`, head `fdf4538`), both review
 loops closed at the bar, both unmerged when written — merging is the
 owner's call — and nothing deployed.** The design doc's built notes under
 §17.7 items 5 and 8 have the shape; `ARCHITECTURE.md` §the goal system
@@ -2954,10 +2954,14 @@ now calls the retired server by name in the live tree: `prompts/agent.md`
 names the bare `kg_*` tools the documented wiring exposes, the landing
 snippet carries `prefix_tools = false`, the evaluation page names the
 fixture that exists. **Passes, counted from the PR comment records:** #206
-has fourteen summary comments (passes 7, 11, 12, 13 and 14 found nothing
-at the bar); #10 has thirteen (a push mid-pass cancels the last, so the
-record undercounts the runs); every major and medium was fixed on the
-branch, and the untaken set is named on each PR body. **Deploy order is a
+has sixteen summary comments (the last three found nothing at the bar);
+#10 has twenty-eight (a push mid-pass cancels the last, so the record
+undercounts the runs; its passes on `e93b6f8` and `c2d025c` found nothing
+at the bar). The graph loop went eleven passes past its first clean one,
+each pass finding one more *writer* of the parent the rule had not bound
+— the survey, retype, merge, the row-based type, the JSON branch, the
+nightly, the pending list, the re-file itself; every major and medium was
+fixed on the branch, and the untaken set is named on each PR body. **Deploy order is a
 hard dependency and, on an old server, a regression:** merge and deploy
 mecha-graph #10 first — `stage_follow_up` files by `project_id`, and a
 graph server that renders the column but predates #10's create change
