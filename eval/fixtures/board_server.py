@@ -12,6 +12,11 @@ shapes (what `mecha tasks` parses), the canned-graph reads
 entity set, and `kg_upsert`, which records what a run tried to put into memory
 without letting it in — the review queue, as a file.
 
+`MECHA_FIXTURE_BOARD_CAP=N` makes `kg_task_list` return at most N rows and
+say `"truncated": true` when it cut — the real server's shape for a long
+board, so mecha's readers of that flag can be measured against a fixture
+rather than a literal.
+
 State lives in the directory `$MECHA_FIXTURE_DIR` names (or `--store`), which
 `mecha exp` sets to `<trial home>/fixtures/<server name>/` and seeds once
 from the manifest's `seed` directory:
@@ -252,7 +257,16 @@ def kg_task_list(store, args):
         tasks = [t for t in tasks if touches(t)]
     tasks.sort(key=order_key)
     td = today()
-    out = {"v": 1, "items": [task_json(t, td) for t in tasks], "today": td, "truncated": False}
+    # A cap the test can ask for (`MECHA_FIXTURE_BOARD_CAP=N`): the real
+    # server truncates a long board and says so, and every reader of
+    # `truncated` in mecha was measured against a literal until a fixture
+    # could produce one (found on review).
+    cap = os.environ.get("MECHA_FIXTURE_BOARD_CAP")
+    truncated = False
+    if cap is not None and cap.strip().isdigit() and len(tasks) > int(cap):
+        tasks = tasks[: int(cap)]
+        truncated = True
+    out = {"v": 1, "items": [task_json(t, td) for t in tasks], "today": td, "truncated": truncated}
     if node is not None:
         out["entity"] = {"id": node["id"], "name": node["name"]}
     return out
