@@ -476,13 +476,12 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
             // Same shape one level down: a rule scoped to a tool the
             // front-end inserts after this block is rendered can never
             // load, and nothing but this line would say so.
-            for (domain, tool, text) in store
+            for (domain, what, text) in store
                 .unloadable_rules(mecha_core::learning::RUN_DOMAINS)
                 .unwrap_or_default()
             {
                 eprintln!(
-                    "mecha: a `{domain}` rule is scoped to `{tool}`, which joins the registry \
-                     after the rules block is rendered — it can never load: {text}"
+                    "mecha: a `{domain}` rule is scoped to {what} — it can never load: {text}"
                 );
             }
             let routed = mecha_core::learning::routed_domains();
@@ -492,13 +491,25 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                      domain, so they cannot fire. Check the filename, or route it."
                 );
             }
+            // The surface the front-end says it is — and *not* the test
+            // override. `MECHA_SESSION_KIND` is a corpus mark on the session
+            // record (`Session::create` applies it there); applied to the
+            // matched key it would take every surface-scoped rule out of
+            // each `mecha exp` trial (spawned as `experiment` over a seeded
+            // copy of the real store) and out of every smoke test, so the
+            // trial measured a prompt the machine never renders and the
+            // smoke test never exercised the shipped block (found on
+            // review). `rules_surface` is its own field so the two may
+            // disagree; the record keeps what was matched either way.
+            let surface = opts.surface;
             let situation = mecha_core::situation::Situation::of_run(
                 &registry
                     .iter()
                     .map(|t| t.name().to_string())
                     .collect::<Vec<_>>(),
                 Some(&tools.workspace),
-            );
+            )
+            .on(surface);
             rules = store.rules_carried_for(mecha_core::learning::RUN_DOMAINS, &situation)?;
             if let Some(block) = rules.block.clone() {
                 let base = cfg.agent.resolve_system_prompt()?.unwrap_or_default();

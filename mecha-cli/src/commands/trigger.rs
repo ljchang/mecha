@@ -940,6 +940,7 @@ async fn run_agent(
         no_skills: t.skills.is_empty(),
         no_mcp: t.no_mcp,
         global_config_only: true,
+        surface: Some(mecha_core::session::SessionKind::Trigger),
         ..GlobalOpts::default()
     };
 

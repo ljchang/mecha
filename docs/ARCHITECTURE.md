@@ -466,24 +466,29 @@ not scope targets, as `Situation::of_run` says), through
 registers every tool the scope names — a lesson from editing `mail_send`
 drafts loads where `mail_send` is mounted and nowhere else. The scope
 keys are the tool set and, since 2026-09-07, the workspace `prepare`
-matched the block against (`setup::prepare_tools` canonicalises it),
-matched exactly (a jail is not a prefix, and a run that records none is
-not a match). **The recorded key is the matched key by construction:**
-the run record keeps that workspace as `RunConfig::rules_workspace`, and
-the miner, the backfill, the validator's region and the probe read it —
-never the session's jail, which differs from it wherever one block
-serves many jails (`serve` renders against the producer root and jails
-each session below it; Slack renders against its configured workspace
-and jails each thread) and would have scoped a lesson to a workspace no
-match presents. An empty recorded path is none at every door, the
-deserializer included, and rows stamped with a jail before the field
-existed are reconciled against the run record on every `mecha reflect`
-pass, before anything is mined or batched (`LearningStore::reconcile_workspaces`)
-— to the matched workspace, or to none where the record carries none;
-never adding a key, and leaving a row whose session cannot be read — so
-nothing depends on a human running a flag before the nightly's `learn`. The surface is recorded but
-`prepare` does not know it (the front-end names the kind when it opens
-the session, after `prepare` returns). The workspace waited for
+matched the block against (`setup::prepare_tools` canonicalises it) and
+the surface the front-end told it (`GlobalOpts::surface`, set by the
+front-end that owns the run and never by a flag; the test override marks
+the session record and never the match, or every `mecha exp` trial and
+smoke test would render a block with no surface-scoped rule). The
+workspace is matched exactly (a jail is not a prefix) and so is the
+surface, and a run that records neither matches neither. **The recorded
+key is the matched key by construction:** the run record keeps them as
+`RunConfig::rules_workspace` and `rules_surface`, and the miner, the
+backfill, the validator's region and the probe read those — never the
+session's jail and never `SessionMeta::kind`, which differ from them
+wherever one block serves many sessions (`serve` renders against the
+producer root and jails each session below it, and its board door
+records a task while the block was matched as web; Slack renders against
+its configured workspace and jails each thread) and would have scoped a
+lesson to a key no match presents. An empty recorded path is none at every door, the
+deserializer included, and rows stamped with a jail or a kind before the
+fields existed are reconciled against the run record on every `mecha
+reflect` pass, before anything is mined or batched
+(`LearningStore::reconcile_keys`) — each key to the matched one, or to
+none where the record carries none; never adding a key, and leaving a
+row whose session cannot be read — so nothing depends on a human running
+a flag before the nightly's `learn`. The workspace waited for
 region-widening on purpose: scoped to one with no way to widen, a rule
 learned in the one workspace most reflections come from would have been
 dark everywhere else for good; with widening, a verbatim restatement

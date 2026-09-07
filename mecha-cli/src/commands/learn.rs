@@ -811,7 +811,7 @@ fn widened(
     let keys = |r: &mecha_core::learning::Rule| {
         r.scope.as_ref().map_or(0, |s| {
             let s = s.scope();
-            s.tools.len() + usize::from(s.workspace.is_some())
+            s.tools.len() + usize::from(s.workspace.is_some()) + usize::from(s.surface.is_some())
         })
     };
     after

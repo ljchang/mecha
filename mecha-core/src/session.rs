@@ -356,6 +356,22 @@ pub struct RunConfig {
     /// situation named no workspace: no key, never a guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules_workspace: Option<PathBuf>,
+    /// The surface the rules block was matched against
+    /// (`RulesCarried::surface`, from `GlobalOpts::surface` alone — the
+    /// test override marks the session record and never the match, so a
+    /// smoke test and an `exp` trial render the block the shipped binary
+    /// does) — beside `SessionMeta::kind`, which is what the session is
+    /// recorded as. The two differ on the board's task door over
+    /// `serve` (recorded as a task, matched as web). Lenient on read like
+    /// `kind`: a surface this build cannot name costs the field, never the
+    /// record. `None` is a record from before the field, or a front-end
+    /// that declared none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient_kind"
+    )]
+    pub rules_surface: Option<SessionKind>,
     /// Which trial this run is one actor of (`docs/EXPERIMENT-DESIGN.md`
     /// §4). `None` for every ordinary run. Read off the environment the
     /// runner set (`experiment::EXPERIMENT_REF_ENV`) rather than handed in,
@@ -441,6 +457,7 @@ impl Default for RunConfig {
             rules_hash: None,
             rule_ids: Vec::new(),
             rules_workspace: None,
+            rules_surface: None,
         }
     }
 }
@@ -514,6 +531,7 @@ impl RunConfig {
             rules_hash: rules.map(|r| r.hash.clone()),
             rule_ids: rules.map(|r| r.rule_ids.clone()).unwrap_or_default(),
             rules_workspace: rules.and_then(|r| r.workspace.clone()),
+            rules_surface: rules.and_then(|r| r.surface),
         }
     }
 }
@@ -3654,9 +3672,26 @@ mod rules_arm_tests {
         assert_eq!(old.rules_hash, None);
         assert!(old.rule_ids.is_empty());
         assert_eq!(old.rules_workspace, None, "before the field: no key");
+        assert_eq!(old.rules_surface, None);
         assert!(!serde_json::to_string(&old)
             .unwrap()
             .contains("rules_workspace"));
+        assert!(!serde_json::to_string(&old)
+            .unwrap()
+            .contains("rules_surface"));
+        let odd: RunConfig =
+            serde_json::from_str(r#"{"mecha_version":"0","rules_surface":"hologram"}"#).unwrap();
+        assert_eq!(
+            odd.rules_surface, None,
+            "a surface this build cannot name costs the field"
+        );
+        let on_web = RunConfig {
+            rules_surface: Some(SessionKind::Web),
+            ..Default::default()
+        };
+        let back: RunConfig =
+            serde_json::from_str(&serde_json::to_string(&on_web).unwrap()).unwrap();
+        assert_eq!(back.rules_surface, Some(SessionKind::Web));
         let jailed = RunConfig {
             rules_workspace: Some(PathBuf::from("/w")),
             ..Default::default()

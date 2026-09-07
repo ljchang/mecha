@@ -396,7 +396,11 @@ async fn triage(
         return Ok(());
     }
 
-    let prepared = setup::prepare(global, false).await?;
+    let opts = GlobalOpts {
+        surface: Some(mecha_core::session::SessionKind::Frontdoor),
+        ..global.clone()
+    };
+    let prepared = setup::prepare(&opts, false).await?;
     let outbox = mecha_core::outbox::OutboxStore::open_existing_default();
     if outbox.is_none() || prepared.agent.context().outbox.is_none() {
         // Refused rather than run. Without the route, a `mail_send` the model
@@ -435,6 +439,19 @@ async fn triage(
                 kind: Some(mecha_core::session::SessionKind::Frontdoor),
             },
         )?;
+        // The run record, as every other front-end writes one: without it
+        // no lesson mined from a triage could be scoped to this surface,
+        // and the reconcile would clear a stamp an older miner left
+        // (found on review).
+        session.append(&mecha_core::session::Record::Config(
+            mecha_core::session::RunConfig::of(
+                &prepared.agent,
+                &prepared.config,
+                &prepared.provider_name,
+                &prepared.levers_off,
+                Some(&prepared.rules),
+            ),
+        ))?;
         if let Some(route) = &prepared.agent.context().outbox {
             route.set_session_id(&session.meta.id);
         }
