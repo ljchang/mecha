@@ -4237,10 +4237,11 @@ transcripts that present every wanted pair, and answering unknown for a
 torn or keyless store; the fixture board takes `MECHA_FIXTURE_BOARD_CAP`
 and says `truncated`, measured cross-process. **Passes, counted from the
 PR comment records when this was written:** #209 7 summary comments,
-#210 15, #211 8; #210's last eight passes before its clean one each
-found one item at the bar, every one an edge of the surface key's
-fail-closed doors; #211 drew no review run at all while based on #210's
-branch and six after being retargeted to `main`.
+#210 15, #211 8; of #210's fifteen, the first fourteen each found
+something at the bar and the fifteenth was clean — every finding an edge
+of the surface key's fail-closed doors; #211 drew no review run at all
+while based on #210's branch and its eight summaries all came after it
+was retargeted to `main`.
 
 ## The measurement record
 
