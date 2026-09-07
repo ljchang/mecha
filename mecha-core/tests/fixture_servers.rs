@@ -207,6 +207,22 @@ async fn the_board_fixture_persists_across_processes_in_the_real_servers_shapes(
         "the create echo carries the row, and the row carries the parent's id"
     );
     assert_eq!(created["task"]["project"], "Aurora grant proposal");
+    // The path `stage_follow_up` actually takes: create with the project's
+    // *id*, which the row hands out and which the real server accepts since
+    // mecha-graph #10 — the hard deploy dependency, measured here rather
+    // than asserted about the JSON `follow_up_args` builds.
+    let (err, text) = call(
+        &create,
+        json!({"name": "follow up", "project": "project:aurora"}),
+        &dir,
+    )
+    .await;
+    assert!(!err, "{text}");
+    let by_id: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        by_id["task"]["project_id"], "project:aurora",
+        "`follow_up_args` files by id — create must resolve one"
+    );
     let (err, text) = call(&create, json!({"name": "x", "project": "Nobody"}), &dir).await;
     assert!(
         err && text.contains("no node"),
@@ -315,7 +331,8 @@ async fn the_board_fixture_persists_across_processes_in_the_real_servers_shapes(
     );
     let (_, text) = call(&list, json!({"include_closed": true}), &dir).await;
     let all: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(all["items"].as_array().unwrap().len(), 3);
+    // The two seeds, the one created by name, the one created by id.
+    assert_eq!(all["items"].as_array().unwrap().len(), 4);
     let (_, text) = call(
         &list,
         json!({"entity": "Priya Nair", "include_closed": true}),
