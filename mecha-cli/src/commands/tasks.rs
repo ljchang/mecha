@@ -1198,8 +1198,8 @@ impl ClosureStores {
     }
 }
 
-/// Build one session's appraisal off its own transcript, the outbox, and the
-/// task it served — the single-lookup twin of `mecha sessions appraise`'s
+/// Build one session's appraisal off its own transcript, the stores already
+/// read, and the task it served — the single-lookup twin of `mecha sessions appraise`'s
 /// whole-store scan, which already does this same four-step assembly per
 /// session it walks. Not shared with it: that loop already holds
 /// `(meta, path)` off one `Session::list` pass, where this needs its own
@@ -1220,9 +1220,8 @@ impl ClosureStores {
 /// not read the same to the owner. Widening `for_session` to carry that
 /// distinction for one caller would cost every other reader of it a richer
 /// error type they have no use for.
-
-/// The appraisal of one session against one task, over stores already
-/// read. `project` is the tier the task is filed under, when the board
+///
+/// `project` is the tier the task is filed under, when the board
 /// identified one: recorded on the appraisal's `goals` *after* the task —
 /// the run served the task and the task served the project, and
 /// `of_session` cites the first on every error, so the pointer on an error
