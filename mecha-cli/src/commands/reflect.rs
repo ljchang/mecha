@@ -394,19 +394,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Frame one edited-then-sent outbox item as an intervention for the
-/// writing-domain reflector: the draft is the context, the diff is what the
-/// user did, the sent version is the aftermath.
-/// The keys a session's rules block was matched against, off its first
-/// run record (`RunConfig::rules_workspace`, `rules_surface`) — what a
-/// match presents, never the session's jail and never `SessionMeta::kind`.
-/// `None` for a record from before the field, or a run that declared
-/// none; `Err` when the transcript cannot be read, which confirms nothing
-/// either way.
 /// The workspace and surface one run record says its block was matched
 /// against.
 type MatchedKeys = (Option<PathBuf>, Option<mecha_core::session::SessionKind>);
 
+/// The keys a session's rules block was matched against, one entry per run
+/// record in order (`RunConfig::rules_workspace`, `rules_surface`) — what a
+/// match presents, never the session's jail and never `SessionMeta::kind`.
+/// An entry is `(None, None)` for a record from before the fields, or a run
+/// that declared neither; the vec is empty for a transcript with no run
+/// record at all. `Err` when the transcript cannot be read, which confirms
+/// nothing either way.
 fn matched_keys_of(path: &Path) -> std::result::Result<Vec<MatchedKeys>, String> {
     // Through `Session::read`, the same reader the miner holds, so the
     // reconcile and the miner cannot disagree about one record by parsing
@@ -633,6 +631,9 @@ fn reconcile_recorded_keys(
     Ok(written)
 }
 
+/// Frame one edited-then-sent outbox item as an intervention for the
+/// writing-domain reflector: the draft is the context, the diff is what the
+/// user did, the sent version is the aftermath.
 fn outbox_intervention(item: &mecha_core::outbox::OutboxItem) -> Intervention {
     let pretty =
         |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
