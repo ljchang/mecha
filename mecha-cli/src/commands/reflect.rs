@@ -586,7 +586,7 @@ fn reconcile_recorded_keys(
             })
             .map_err(Clone::clone);
         match reconcile_key(
-            s.surface.as_ref(),
+            surface_recorded.as_ref(),
             surface_record
                 .as_ref()
                 .map(|m| m.as_ref())
@@ -983,13 +983,53 @@ mod tests {
         situated("second", &s.meta.id, Some("/second"));
         situated("gone", "20260101T000000-deadbeef", Some("/jail"));
         situated("edit", &s.meta.id, None);
+        // A row whose stored surface this build cannot name — parked
+        // verbatim by the wire form — against a session matched as web:
+        // the reconcile replaces it, and nothing stays parked. Fails on the
+        // decision being handed `surface` (always none for such a row).
+        store
+            .append_reflexion(&Reflexion {
+                id: "parked".into(),
+                domain: "behavior".into(),
+                session_id: s.meta.id.clone(),
+                trigger: "denial".into(),
+                context: "c".into(),
+                intervention: "Denied by the user: no".into(),
+                reflexion_text: "t".into(),
+                error_type: None,
+                confidence: None,
+                is_processed: false,
+                leap_run_id: None,
+                created_at: "2026-09-07T00:00:00Z".into(),
+                origin: mecha_core::learning::Origin::Clean,
+                evidence: mecha_core::learning::Evidence::Full,
+                edited_at: None,
+                dropped_at: None,
+                dropped_reason: None,
+                situation: Some(
+                    serde_json::from_str(r#"{"tools":["shell"],"surface":"copilot"}"#).unwrap(),
+                ),
+                situation_recomputed_at: None,
+            })
+            .unwrap();
+        assert_eq!(
+            store
+                .reflexion("parked")
+                .unwrap()
+                .situation
+                .unwrap()
+                .surface_unread
+                .as_deref(),
+            Some("copilot"),
+            "parked on the way in"
+        );
         let (listed, unreadable) = Session::list_counting(&sessions).unwrap();
         let paths: std::collections::HashMap<String, PathBuf> =
             listed.into_iter().map(|(m, p)| (m.id, p)).collect();
         assert_eq!(
             reconcile_recorded_keys(&store, &paths, unreadable, false).unwrap(),
-            3,
-            "jailed (both keys), agrees and second (the surface alone)"
+            4,
+            "jailed (both keys), agrees and second (the surface alone), parked"
         );
         let sit = |id: &str| store.reflexion(id).unwrap().situation.unwrap();
         assert_eq!(sit("jailed").workspace.as_deref(), Some(Path::new("/root")));
@@ -1014,6 +1054,12 @@ mod tests {
         assert_eq!(sit("gone").surface, Some(SessionKind::Task));
         assert_eq!(sit("edit").workspace, None, "never given a key");
         assert_eq!(sit("edit").surface, None);
+        assert_eq!(
+            sit("parked").surface,
+            Some(SessionKind::Web),
+            "replaced by what the record confirms"
+        );
+        assert_eq!(sit("parked").surface_unread, None, "nothing stays parked");
         let file = dir.join("learning").join("reflections.jsonl");
         let before = std::fs::read(&file).unwrap();
         assert_eq!(

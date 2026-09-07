@@ -1913,6 +1913,8 @@ impl LearningStore {
                     current.get(id).is_some_and(|cur| {
                         u.workspace.as_ref().is_some_and(|w| *w != cur.workspace)
                             || u.surface.is_some_and(|k| k != cur.surface)
+                            // A parked surface is cleared by any surface update.
+                            || (u.surface.is_some() && cur.surface_unread.is_some())
                     })
                 })
                 .collect()
@@ -6793,8 +6795,28 @@ mod situation_tests {
                 },
             ),
         ];
-        assert_eq!(store.reconcile_keys(&updates, "now").unwrap(), 1);
+        // A row whose surface is parked verbatim: a clear applies to it
+        // even though its `surface` already reads none (found on review).
+        let mut parked = refl("parked", &["shell"], "denial");
+        parked.situation.as_mut().unwrap().surface_unread = Some("copilot".into());
+        store.append_reflexion(&parked).unwrap();
+        let mut updates = updates;
+        updates.push((
+            "parked".to_string(),
+            KeyUpdate {
+                workspace: None,
+                surface: Some(None),
+            },
+        ));
+        assert_eq!(store.reconcile_keys(&updates, "now").unwrap(), 2);
         let all = store.reflexions().unwrap();
+        let p = all.iter().find(|r| r.id == "parked").unwrap();
+        assert_eq!(
+            p.situation.as_ref().unwrap().surface_unread,
+            None,
+            "cleared"
+        );
+        assert_eq!(p.situation.as_ref().unwrap().surface, None);
         let j = all.iter().find(|r| r.id == "jailed").unwrap();
         assert_eq!(j.situation.as_ref().unwrap().workspace, None);
         assert_eq!(
