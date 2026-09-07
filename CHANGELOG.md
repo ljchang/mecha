@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A learned rule can be scoped to a workspace.** The workspace a run
+  is jailed to joins the tool set as a scope key (`Situation::scope`,
+  `Situation::matches`, `Situation::key`): a rule learned from
+  reflections that all came from one workspace loads only in runs jailed
+  there, a verbatim restatement from a second workspace's batch widens it
+  by dropping the key, and a conviction in one workspace narrows it to
+  the one it held in — the same harness arithmetic tools already had
+  (`GOAL-SYSTEM-DESIGN.md` §17.4). The run record keeps the workspace
+  the block was matched against (`RunConfig::rules_workspace`), and the
+  miner stamps a reflection with that rather than the session's jail —
+  on `serve` and Slack the two differ, and a lesson scoped to a jail no
+  match presents would be dark forever. Every `mecha reflect` pass now
+  reconciles each recorded workspace against the run record before
+  anything is mined — to the matched one, or to none where the record
+  carries none; never adding a key, and leaving a row whose session
+  cannot be read — since reflections stamped with a jail before the
+  field existed were inert until the workspace became a key, and the
+  nightly's `learn` follows that pass. Rules from before the key carry no
+  workspace and load everywhere as they did. The surface stays recorded
+  and unmatched, since `prepare` is not told the session kind.
 - **A project closes when the owner closes its last task, and its
   appraisal is the fold over every session that worked one.** The board
   row now carries `project_id` beside the project's name (mecha-graph

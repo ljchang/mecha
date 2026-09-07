@@ -646,7 +646,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // rules only — the set every run carries — rather than a guess.
         let run = first_config
             .as_ref()
-            .map(|rc| Situation::of_run(&rc.tools, Some(&rc.workspace)))
+            // The workspace the block was matched against, not the jail —
+            // the region a row is placed in is the key the run presented.
+            .map(|rc| Situation::of_run(&rc.tools, rc.rules_workspace.as_deref()))
             .unwrap_or_default();
         // The situation a followup is judged in is the session's first
         // config's — the judge path re-asks the corrective turn under the
