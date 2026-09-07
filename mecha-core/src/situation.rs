@@ -53,7 +53,12 @@
 //! shows it as context rather than narrowing it on no conviction.
 //!
 //! A run record from before `rules_workspace` gives the miner no workspace,
-//! and its reflections scope by tools alone — no key, never a guess.
+//! and its reflections scope by tools alone — no key, never a guess. Rows
+//! stamped before the field carry the session's jail, and were inert until
+//! the workspace became a key: `mecha reflect --backfill-situations`
+//! reconciles them against the run record
+//! (`LearningStore::reconcile_workspaces`), to the matched workspace or to
+//! none — run it once after installing the build that made the key.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

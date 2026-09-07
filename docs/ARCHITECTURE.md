@@ -476,7 +476,11 @@ serves many jails (`serve` renders against the producer root and jails
 each session below it; Slack renders against its configured workspace
 and jails each thread) and would have scoped a lesson to a workspace no
 match presents. An empty recorded path is none at every door, the
-deserializer included. The surface is recorded but
+deserializer included, and rows stamped with a jail before the field
+existed are reconciled against the run record by `mecha reflect
+--backfill-situations` (`LearningStore::reconcile_workspaces`) — to the
+matched workspace, or to none where the record confirms none — which is
+a step of installing the build that made the key. The surface is recorded but
 `prepare` does not know it (the front-end names the kind when it opens
 the session, after `prepare` returns). The workspace waited for
 region-widening on purpose: scoped to one with no way to widen, a rule

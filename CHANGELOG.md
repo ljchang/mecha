@@ -20,7 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the block was matched against (`RunConfig::rules_workspace`), and the
   miner stamps a reflection with that rather than the session's jail —
   on `serve` and Slack the two differ, and a lesson scoped to a jail no
-  match presents would be dark forever. Rules from before the key carry no
+  match presents would be dark forever. `mecha reflect
+  --backfill-situations` now also reconciles every recorded workspace
+  against the run record — to the matched one, or to none where the
+  record confirms none — and is a step of installing this build, since
+  reflections stamped with a jail before the field existed were inert
+  until the workspace became a key. Rules from before the key carry no
   workspace and load everywhere as they did. The surface stays recorded
   and unmatched, since `prepare` is not told the session kind.
 - **A project closes when the owner closes its last task, and its
