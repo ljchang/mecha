@@ -1963,6 +1963,25 @@ checkout was moved from another session's unpushed docs branch
 (`docs/bee-keyring-reboot`, kept at `c3bcb40`, clean) to `main`, so the
 nightly's script and binary are both current.
 
+**2026-09-07, 19:06Z and 23:13Z, mecha-a6: the scope keys deployed.**
+`~/.cargo/bin/mecha` reinstalled twice from mecha `main` — at 19:06Z from
+`1f909899` (PR #209, the workspace key; probe `strings ~/.cargo/bin/mecha
+| grep -c rules_workspace` printed 2, 0 before) and at 23:13Z from
+`1ad2591c` (PRs #210 and #211; probes `grep -c rules_surface` printed 2
+and `grep -c 'LOADS NOWHERE'` printed 1, both 0 before). `mecha-mail` and
+the graph binaries unchanged. After each install the five long-running
+units (`mecha-slack`, `mecha-triggers`, `mecha-drain`, `mecha-serve`,
+`mecha-voice-worker`) were restarted and each logged its startup line in
+a journal window opened at the restart; then `mecha reflect` was run once
+with the installed binary, which reconciled every recorded situation's
+keys against the run records — 48 workspaces to none at 19:08Z (commit
+`750716a` in `~/.mecha/learning`), 12 surfaces to none at 23:15Z
+(`ad22290`) — since every run record on the machine predates the fields;
+nothing was mined and no model was called. The same three graph MCP
+children (two Claude Code sessions, the Hermes dashboard) still run the
+previous graph binary until their hosts restart. Nothing in `~/.mecha/`
+outside the learning store was edited.
+
 ## What the measurements say
 
 Two things a reader needs before trusting any number here, both with the detail
@@ -2939,9 +2958,24 @@ its detach branch detached (the pending list shows them), its re-point
 branch records no detachment, and `task-project`'s post-write advisory
 reads are fatal and run on every id-form re-file. Still from §17.7: item 2 (mid-run
 delivery, off until the step counters are read) and item 4's re-ask.
-**In progress on the owner's word (2026-09-07 evening): the workspace as
-a scope key for learned rules**, workspace before surface — surface needs
-`prepare` told the session kind at thirteen front-end sites.
+**2026-09-07, evening — the workspace and the surface are scope keys
+(PRs #209, #210) and three owed items landed (#211); shipped and
+deployed, the shape is in HISTORY under this date.** Open from them, for
+the owner's ruling: `mecha rules`' `loads_nowhere` is CLI-only — the
+TUI's learning pane reads the JSON through a reader that ignores it, so
+a dark rule is invisible in the modal; `tasks work` matches as `task`
+while the board's door on `serve` matches as `web`, two regions for one
+activity; the question continuation's workspace key is its jail while
+the door's block was matched against the producer root, beyond a
+`GlobalOpts` field to fix; for a row whose recorded surface is nameable
+but matches no attach, `confirmed` falls back to the first attach
+whatever it says (a `[none, web]` session sets it to none — the safe
+direction, but the two branches answer the same record differently);
+`setup::build`'s "the test override never reaches the match" has no unit
+seam for a regression test. The number to read before ruling on any of
+it: the region count in the next `mecha learn` log — tool × workspace ×
+surface, with `rewritable_in` still equality, is the fineness the design
+accepted and has not yet measured.
 
 **2026-09-06, later — §17.7 item 4's sensor half: PR #202
 (`feat/goal-distance`), merged at `67fb55e` on the owner's word after
@@ -3075,9 +3109,9 @@ a narrowed rule prints its old convictions beside `active`; the
 followup-region test asserts a copy of `record`'s predicate rather than
 `record`; `tally_for` refolds the ledger per rule; and the cover pool
 follows `--trigger` now but the flag's doc does not say so. **Open from
-§17.4 now:** mid-run delivery (§17.7 item 2), surface and workspace as
-scope keys, and a disjunctive scope — the split a narrowing cannot
-express, which today retires with the clean regions named. The night of
+§17.4 now:** mid-run delivery (§17.7 item 2), a disjunctive scope — the
+split a narrowing cannot express, which today retires with the clean
+regions named. The night of
 2026-09-05's rumination was deferred (the model server was in its PATH
 restart loop until 14:44Z), so the "argue the backfilled regions" pass
 the previous session named as this item's precondition has still not
@@ -3169,10 +3203,10 @@ budgets, the situation backfill (§17.7 item 6 — **built 2026-09-04 night
 as `mecha reflect --backfill-situations`, `feat/situation-backfill`;
 the owner ran the write 2026-09-04 23:12Z: 37 of 45 recomputed, 8 absent
 with reasons, learning-store commit `5767dc4`**), and
-surface and workspace as *scope* keys — both are
-recorded, neither is matched, for the reasons in `situation.rs`'s module doc
-(the surface needs `prepare` to be told the session kind; the workspace
-waits on widening, or nearly every rule pins to one workspace). The twelve
+surface and workspace as *scope* keys — **both matched since
+2026-09-07** (#209, #210; the evening paragraph above has what is still
+open from them), each recorded as what `prepare` matched rather than what
+the session was. The twelve
 live rules on this machine are unscoped and load everywhere as before, until
 the standing batch rewrites them; the first scoped rule appears when a
 region batch of new reflections learns.

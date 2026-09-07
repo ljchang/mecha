@@ -4191,6 +4191,61 @@ left to the owner. Surface and workspace as scope keys were asked about
 in the same session and answered rather than built; the workspace key
 began that evening on the owner's word.
 
+**2026-09-07, evening — the workspace and the surface are scope keys for
+learned rules, and the recorded key is the matched key by
+construction.** PR #209 (`feat/workspace-scope`, merged `1f909899`,
+deployed 19:06Z) and PR #210 (`feat/surface-scope`, merged `897c8b90`),
+with PR #211 (`fix/owed-items`, merged `1ad2591c`; both deployed
+23:13Z). `Situation::scope` keeps the workspace and the surface,
+`matches` requires each exactly (a jail is not a prefix; a run that
+declares no surface matches no surface-scoped rule), and `key` names
+them after the tools; `region` intersects each new key (`surface_unread`
+included) and `learn.rs`'s `widened` counts it, or a widening that drops
+the key goes unprinted — both found on review, not on the first pass. The
+rule that ended the review loops: **record what `prepare` matched, not
+what the session was** — `RulesCarried::workspace`/`surface` are what
+`setup::build` matched the block against (the front-end's `GlobalOpts::surface`,
+set in code and never by a flag, and *never* the `MECHA_SESSION_KIND`
+override, which marks the record alone), `RunConfig::rules_workspace`/
+`rules_surface` keep them beside the jail and the kind, and the miner,
+the situation backfill, the validator's region and the probe read the
+record — the miner per intervention through `Transcript::config_covering`,
+since a resumed question or a `/model` switch gives one session runs
+matched on different keys. `serve` and Slack render one block against a
+root and jail each session below it, and the board's door on `serve`
+records a task while its block was matched as web; the front door and
+mail now append the run record they declared a surface for. Every
+`mecha reflect` pass reconciles the rows already on disk against the run
+records before anything is mined (`learning::reconcile_key` per key,
+`LearningStore::reconcile_keys`; a key any attach presented is kept, a
+key none confirms takes what the first attach presented, a row whose
+session cannot be read stays, a key a row never carried is never added,
+a pass domain's rows are never read), so nothing depends on a human
+running a flag before the nightly's `learn`. The surface is the first
+key whose value is a closed set that can grow, and it got the guards a
+path never needed: `Situation::MARK_KINDS` (`test`, `experiment`) are
+corpus marks no run presents — dropped by `scope`, reported by
+`unloadable_rules` — and a stored surface this build cannot name is
+parked verbatim as `surface_unread` through a `SituationWire` from/into
+form, matching nothing, printed as itself, reported at startup, replaced
+by the reconcile only with a key some attach names, and handed back to a
+build that can name it. #211: the TUI's edit form carries the project
+and re-files only when it changed (`Form::refiled`, trimmed both sides);
+`mecha rules` prints `LOADS NOWHERE` beside an active rule scoped to a
+workspace/surface pair no run record presents, read streaming off the
+run-record lines alone (`Session::run_configs_streaming`) for the rules
+that consult the store alone (`needs_keys`), stopping at the first
+transcripts that present every wanted pair, and answering unknown for a
+torn or keyless store; the fixture board takes `MECHA_FIXTURE_BOARD_CAP`
+and says `truncated`, measured cross-process. **Passes, counted from the
+PR comment records when this was written:** #209 7 summary comments,
+#210 15, #211 8; of #210's fifteen, the first fourteen each found
+something at the bar and the fifteenth was clean — every finding an edge
+of the surface key's fail-closed doors; #211's review ran 3 times
+on its first pushes while based on #210's branch, then stopped — three
+further pushes, one a force-push, drew no workflow run — and ran again
+within a minute of being retargeted to `main`, 5 more times.
+
 ## The measurement record
 
 Moved out of `HANDOFF.md` on 2026-08-06, when that file went over its own
@@ -6583,6 +6638,44 @@ and is what finally exercised the path.)
   rule was restated as *the row is the fact* and bound to every writer.
   Bind an invariant to the writers, not the parser, on the first pass;
   each writer found later is a pass.
+
+- **A new scope key has five doors, and each fails closed on its own —
+  or a downgrade opens the one you skipped.** The surface key (2026-09-07)
+  drew fifteen review passes, the first fourteen each with something at
+  the bar and the fifteenth clean (counted from the PR's comment record),
+  and the findings were all on one shape: the value has to fail closed at construction
+  (`Situation::recorded`/`of_run`), at deserialization (a stored value the
+  build cannot name — parked verbatim, matching nothing, never `None`,
+  which on a scope is *every* surface), on the run record (what `prepare`
+  matched, never what the session was), in the reconcile (a key any
+  attach presented is kept; a parked key is replaced only by a key some
+  attach names; a record that reads a newer value as none must not clear
+  it), and at the startup warning (`unloadable_rules` names it). Then walk
+  a downgrade through all five. The workspace key had the same doors but
+  its value is a path, which no build fails to name — the surface is the
+  first key whose closed set can grow, and that is what made it fourteen
+  passes with a finding. Close all five on the first pass; each door
+  found later is a pass.
+
+- **A PR based on another PR's branch can stop getting review runs, and
+  the silence reads like a clean pass.** #211 was opened against
+  `feat/surface-scope` so its diff showed only its own change; its first
+  pushes were reviewed (3 passes), then three further pushes, one a
+  force-push, produced no workflow run at all (`gh api
+  repos/…/actions/runs?head_sha=…` empty) while the same workflow ran on
+  every other branch. Retargeting it to `main` started a run within a
+  minute, and 5 passes followed. Base a PR on `main` and accept the
+  wider diff — and when a push draws no run, read it as absence of
+  evidence, never as nothing to find.
+
+- **A gate is the exit status of every step, the patch script included.**
+  Twice in one evening a commit went out without the change its message
+  named: once because `cargo test | grep "^test result" | grep -vq "0
+  failed"` passes when the tests fail to *compile* (no result lines, so
+  nothing to reject), and once because a Python heredoc that edits the
+  tree was followed on the next line by `cargo fmt && …` — the heredoc's
+  failure was dropped at the newline and the chain ran on an unpatched
+  tree. Check `$?` of each command, and start the `&&` chain at the edit.
 
 - **A docs-only push draws a full-diff pass, and it found what
   twenty-one clean passes had not.** On 2026-09-07 mecha PR #206 had
