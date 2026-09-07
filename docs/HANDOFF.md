@@ -2963,8 +2963,11 @@ two or three minors about the survey, the vouch or the pending list, all
 taken; the pass on `50eec00` found one medium — a `parent_reviewed` mark
 outlived its parent's row and `vouch_stands` read it as standing — fixed
 on `fb19799` by re-deriving the survey's whole predicate and having a
-declined vouch remove a stale mark; the pass on `92c34b5` was pending
-when written, and from there only a major or medium moves the head).
+declined vouch remove a stale mark; the pass on `92c34b5` at 13:31Z
+found nothing at the bar and closed the loop, leaving two minors on the
+PR body for the owner — `merge_nodes`' re-point branch records no
+detachment, and `task-project`'s advisory reads after a re-file are
+fatal and run for every id-form re-file).
 The graph loop went thirteen passes past its first clean one,
 each pass finding one more *writer* of the parent the rule had not bound
 — the survey, retype, merge, the row-based type, the JSON branch, the
