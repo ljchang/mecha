@@ -154,6 +154,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // redacted to its kind word before the graph (`goal: "charter"`) and that is
     // exactly the salience a queue reader wants.
     let (charter, charter_unreadable) = mecha_core::appraisal::load_charter();
+    // The board's pointers, once per run, so a task or project id a run
+    // named is resolved before it rides on an episode's `meta` — a token
+    // is not a pointer until the board says so. Unreadable is said, and
+    // then admits nothing: every such reference crosses as its kind word.
+    let known = match distill::known_pointers(&client).await {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!(
+                "mecha: could not read the board for goal pointers — task and project ids \
+                 cross as kind words this run: {e:#}"
+            );
+            distill::KnownPointers::none()
+        }
+    };
 
     let mut distilled = 0usize;
     let mut skipped = 0usize;
@@ -307,7 +321,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     taint,
                     distiller.model(),
                     &sendable,
-                    appraisal.as_ref(),
+                    appraisal.as_ref().map(|a| (a, &known)),
                     &out.surprises,
                 );
                 match distill::push_episode(&client, push_args).await {

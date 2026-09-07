@@ -23,8 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The goal pointer crosses to the graph whole; the sentence stays
   home.** A distilled episode's `meta` carries `goal` and
   `serves_charter` as `kind:id` pointers and the pointer on each goal
-  error, where the kind word alone used to cross; a reference that is not
-  one token is re-proved at the boundary and falls back to the kind word.
+  error, where the kind word alone used to cross — resolved first: a
+  charter id against the charter, a task or project id against the board
+  (one `kg_task_list` per distill run), and what does not resolve falls
+  back to the kind word.
   The goal hypothesis, the owner's answer and the charter line's text
   never ride (§17.7 item 8).
 

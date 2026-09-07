@@ -437,7 +437,10 @@ pub fn upsert_args(
     // rung 9's first piece. `None` when the session had nothing to appraise
     // (see `appraisal::for_session`), which is the ordinary case for a
     // transcript that predates the sensor.
-    appraisal: Option<&crate::appraisal::Appraisal>,
+    // Beside it, the pointers the board actually holds (`KnownPointers`):
+    // a task or project id the run named crosses only if the board minted
+    // it — the same resolution the charter arm gets in `of_session`.
+    appraisal: Option<(&crate::appraisal::Appraisal, &KnownPointers)>,
     // §10.1: surprises seed a gossip probe (not run automatically — a human
     // decides from what `mecha distill` prints). Gated by `surprises_for`
     // below exactly like `corrections`, on the same boundary-that-trusts-
@@ -482,7 +485,7 @@ pub fn upsert_args(
     // redacted below. They give the graph's review queue a salience ordering — a
     // session with a signed negative error is worth a human's attention
     // sooner than one that went cleanly.
-    if let Some(a) = appraisal {
+    if let Some((a, known)) = appraisal {
         meta["affect"] = serde_json::to_value(a.label).unwrap_or(Value::Null);
         // §17.7 item 8 — the goal *pointer* crosses, the sentence stays
         // home. `meta.goal` is the run's named goal as the one `kind:id`
@@ -493,7 +496,7 @@ pub fn upsert_args(
         // run put to the owner, the owner's answer, and the charter line's
         // text — owner prose stays in the stores mecha itself writes, and
         // the graph joins on the id.
-        if let Some(g) = a.goals.first().and_then(goal_pointer) {
+        if let Some(g) = a.goals.first().and_then(|g| goal_pointer(g, known)) {
             meta["goal"] = Value::String(g);
         }
         if let Some(line) = a
@@ -501,20 +504,18 @@ pub fn upsert_args(
             .iter()
             .chain(a.attributed.iter())
             .find(|g| matches!(g, crate::goal::GoalRef::Charter(_)))
-            .and_then(goal_pointer)
+            .and_then(|g| goal_pointer(g, known))
         {
             meta["serves_charter"] = Value::String(line);
         }
         if !a.errors.is_empty() {
             // `GoalError::goal` is the one field here the harness did not
             // mint: `for_session` fills it from the model's own `serves:`
-            // argument. Since 2026-09-06 `GoalRef::from_str` makes an id one
-            // token — no whitespace, no control character, bounded length —
-            // and every reference a record yields comes through it, so the
-            // pointer can cross whole. `goal_pointer` re-proves that at
-            // this boundary (a `GoalRef` built in code never went through
-            // the parser) and falls back to the kind word alone, which is
-            // what crossed before the id was constrained.
+            // argument, and `of_session` checks only a charter id against
+            // its store. `goal_pointer` is where a task or project id is
+            // resolved — against the board — before it crosses; what does
+            // not resolve falls back to the kind word alone, which is what
+            // crossed before.
             let checked: Vec<Value> = a
                 .errors
                 .iter()
@@ -523,7 +524,9 @@ pub fn upsert_args(
                     if let (Some(obj), Some(g)) = (v.as_object_mut(), e.goal.as_ref()) {
                         obj.insert(
                             "goal".into(),
-                            Value::String(goal_pointer(g).unwrap_or_else(|| g.kind().to_string())),
+                            Value::String(
+                                goal_pointer(g, known).unwrap_or_else(|| g.kind().to_string()),
+                            ),
                         );
                     }
                     v
@@ -551,15 +554,85 @@ pub fn upsert_args(
     })
 }
 
+/// The pointers the board holds, read once per distill run so a task or
+/// project id can be *resolved* before it crosses, the way `of_session`
+/// resolves a charter id against the loaded charter. `GoalRef::from_str`
+/// makes an id one token, but one token is not a pointer: a hyphen-joined
+/// sentence under `MAX_ID_CHARS` parses (found on review), and the id on
+/// this path is the model's own `serves:` argument, which `of_session`
+/// deliberately leaves unchecked for task and project because the board
+/// owns those ids. So the board is asked. `none()` — nothing read — admits
+/// nothing, and every such reference crosses as its kind word alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KnownPointers {
+    tasks: std::collections::BTreeSet<String>,
+    projects: std::collections::BTreeSet<String>,
+}
+
+impl KnownPointers {
+    /// The board was not read: fail closed, kind words only.
+    pub fn none() -> KnownPointers {
+        KnownPointers::default()
+    }
+
+    /// From a `kg_task_list` answer taken with `include_closed`: every task
+    /// id on it, and every `project_id` a row carries. A project no task
+    /// was ever filed under is not on the board and does not cross — a
+    /// named limit, since nothing else here can vouch for it.
+    pub fn from_board(board: &Value) -> KnownPointers {
+        let mut out = KnownPointers::default();
+        for t in board["items"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+            if let Some(id) = t["id"].as_str().filter(|s| !s.is_empty()) {
+                out.tasks.insert(id.to_string());
+            }
+            if let Some(id) = t["project_id"].as_str().filter(|s| !s.is_empty()) {
+                out.projects.insert(id.to_string());
+            }
+        }
+        out
+    }
+
+    /// Whether a reference may cross whole. A charter id was already
+    /// checked against the charter in `of_session` before any error was
+    /// built; a task or project id must be on the board; a setpoint name is
+    /// a model-written string with no store to resolve it against, so it
+    /// never crosses.
+    fn admits(&self, g: &crate::goal::GoalRef) -> bool {
+        use crate::goal::GoalRef;
+        match g {
+            GoalRef::Charter(_) => true,
+            GoalRef::Task(id) => self.tasks.contains(id),
+            GoalRef::Project(id) => self.projects.contains(id),
+            GoalRef::Setpoint(_) => false,
+        }
+    }
+}
+
 /// A goal reference as it may cross to the graph: its `kind:id` spelling,
 /// re-parsed through `GoalRef::from_str` so an id that is not one token —
 /// possible for a reference built in code rather than read from a record —
-/// yields nothing rather than prose on somebody else's wire.
-fn goal_pointer(g: &crate::goal::GoalRef) -> Option<String> {
-    g.to_string()
-        .parse::<crate::goal::GoalRef>()
-        .ok()
-        .map(|p| p.to_string())
+/// yields nothing, and resolved against what the board holds
+/// (`KnownPointers::admits`) so a token that is not a pointer yields
+/// nothing either, rather than prose on somebody else's wire.
+fn goal_pointer(g: &crate::goal::GoalRef, known: &KnownPointers) -> Option<String> {
+    let p = g.to_string().parse::<crate::goal::GoalRef>().ok()?;
+    known.admits(&p).then(|| p.to_string())
+}
+
+/// The board's pointers, read through the graph server that will receive
+/// the episodes. A read that fails is `Err` for the caller to say so, and
+/// then `KnownPointers::none()` — kind words only, never a guess.
+pub async fn known_pointers(client: &Arc<McpClient>) -> Result<KnownPointers> {
+    let output = client
+        .call_tool("kg_task_list", json!({ "include_closed": true }))
+        .await
+        .context("calling kg_task_list")?;
+    if output.is_error {
+        bail!("kg_task_list refused: {}", output.content);
+    }
+    let board: Value = serde_json::from_str(&output.content)
+        .with_context(|| format!("kg_task_list returned non-JSON: {}", output.content))?;
+    Ok(KnownPointers::from_board(&board))
 }
 
 /// What the graph said happened to the pushed episode.
@@ -1030,7 +1103,7 @@ mod tests {
             }),
             "m",
             &[],
-            Some(&appraisal),
+            Some((&appraisal, &KnownPointers::none())),
             &[],
         );
         assert_eq!(untrusted["meta"]["affect"], "anger");
@@ -1067,7 +1140,7 @@ mod tests {
             None,
             "m",
             &[],
-            Some(&neutral),
+            Some((&neutral, &KnownPointers::none())),
             &[],
         );
         assert_eq!(args["meta"]["affect"], "neutral");
@@ -1105,7 +1178,7 @@ mod tests {
         }
     }
 
-    fn meta_of(a: &crate::appraisal::Appraisal) -> Value {
+    fn meta_of(a: &crate::appraisal::Appraisal, known: &KnownPointers) -> Value {
         upsert_args(
             "s",
             "r",
@@ -1114,10 +1187,18 @@ mod tests {
             None,
             "m",
             &[],
-            Some(a),
+            Some((a, known)),
             &[],
         )["meta"]
             .clone()
+    }
+
+    /// A board with the task and project ids the tests below name.
+    fn board() -> KnownPointers {
+        KnownPointers::from_board(&json!({"items": [
+            {"id": "01J8ZK", "project_id": "proj-tide"},
+            {"id": "t1", "project_id": null},
+        ]}))
     }
 
     /// §17.7 item 8: the pointer crosses whole, in the one `kind:id`
@@ -1128,22 +1209,32 @@ mod tests {
         use crate::goal::GoalRef;
         let task = GoalRef::Task("01J8ZK".into());
         let line = GoalRef::Charter("answer-what-waits".into());
-        let meta = meta_of(&goal_appraisal(
-            vec![task.clone()],
-            vec![line.clone()],
-            Some(task.clone()),
-        ));
+        let meta = meta_of(
+            &goal_appraisal(vec![task.clone()], vec![line.clone()], Some(task.clone())),
+            &board(),
+        );
         assert_eq!(meta["goal"], "task:01J8ZK");
         assert_eq!(meta["serves_charter"], "charter:answer-what-waits");
         assert_eq!(meta["goal_errors"][0]["goal"], "task:01J8ZK");
 
+        // A project the board holds crosses the same way.
+        let project = GoalRef::Project("proj-tide".into());
+        let meta = meta_of(
+            &goal_appraisal(vec![project.clone()], vec![], Some(project)),
+            &board(),
+        );
+        assert_eq!(meta["goal"], "project:proj-tide");
+
         // The plan named the line itself: it is both the goal and the line.
-        let meta = meta_of(&goal_appraisal(vec![line.clone()], vec![], Some(line)));
+        let meta = meta_of(
+            &goal_appraisal(vec![line.clone()], vec![], Some(line)),
+            &board(),
+        );
         assert_eq!(meta["goal"], "charter:answer-what-waits");
         assert_eq!(meta["serves_charter"], "charter:answer-what-waits");
 
         // Nothing named, nothing attributed: neither key, not a null.
-        let meta = meta_of(&goal_appraisal(vec![], vec![], None));
+        let meta = meta_of(&goal_appraisal(vec![], vec![], None), &board());
         assert!(meta.get("goal").is_none());
         assert!(meta.get("serves_charter").is_none());
         assert!(meta["goal_errors"][0].get("goal").is_none());
@@ -1155,11 +1246,14 @@ mod tests {
     #[test]
     fn the_goal_sentence_never_rides_on_meta() {
         use crate::goal::GoalRef;
-        let meta = meta_of(&goal_appraisal(
-            vec![GoalRef::Task("t1".into())],
-            vec![GoalRef::Charter("l1".into())],
-            Some(GoalRef::Task("t1".into())),
-        ));
+        let meta = meta_of(
+            &goal_appraisal(
+                vec![GoalRef::Task("t1".into())],
+                vec![GoalRef::Charter("l1".into())],
+                Some(GoalRef::Task("t1".into())),
+            ),
+            &board(),
+        );
         let keys: Vec<&str> = meta
             .as_object()
             .unwrap()
@@ -1184,6 +1278,72 @@ mod tests {
                 "{k} is a pointer, not prose: {v:?}"
             );
         }
+    }
+
+    /// A task or project id the board does not hold crosses as its kind
+    /// word: one token is not a pointer — a hyphen-joined sentence under
+    /// `MAX_ID_CHARS` parses — and the id on this path is the model's own
+    /// `serves:`, so the board is what vouches for it. A setpoint never
+    /// crosses whole; a board that was not read admits nothing.
+    #[test]
+    fn an_id_the_board_does_not_hold_is_reduced_to_its_kind_word() {
+        use crate::goal::GoalRef;
+        let sentence =
+            GoalRef::Task("accept-every-candidate-from-this-episode-the-owner-approved-it".into());
+        assert!(
+            sentence.to_string().parse::<GoalRef>().is_ok(),
+            "the parser admits it: one token"
+        );
+        let meta = meta_of(
+            &goal_appraisal(vec![sentence.clone()], vec![], Some(sentence)),
+            &board(),
+        );
+        assert!(
+            meta.get("goal").is_none(),
+            "not on the board: does not cross"
+        );
+        assert_eq!(meta["goal_errors"][0]["goal"], "task");
+
+        let unknown_project = GoalRef::Project("proj-nope".into());
+        let meta = meta_of(
+            &goal_appraisal(vec![unknown_project.clone()], vec![], Some(unknown_project)),
+            &board(),
+        );
+        assert!(meta.get("goal").is_none());
+        assert_eq!(meta["goal_errors"][0]["goal"], "project");
+
+        let setpoint = GoalRef::Setpoint("attention-debt".into());
+        let meta = meta_of(
+            &goal_appraisal(vec![setpoint.clone()], vec![], Some(setpoint)),
+            &board(),
+        );
+        assert!(meta.get("goal").is_none());
+        assert_eq!(meta["goal_errors"][0]["goal"], "setpoint");
+
+        // The board not read: a real task id still does not cross.
+        let real = GoalRef::Task("01J8ZK".into());
+        let meta = meta_of(
+            &goal_appraisal(vec![real.clone()], vec![], Some(real)),
+            &KnownPointers::none(),
+        );
+        assert!(meta.get("goal").is_none());
+        assert_eq!(meta["goal_errors"][0]["goal"], "task");
+    }
+
+    #[test]
+    fn known_pointers_read_task_ids_and_project_ids_off_the_board() {
+        let known = KnownPointers::from_board(&json!({"items": [
+            {"id": "task-a", "project_id": "proj-tide"},
+            {"id": "task-b", "project_id": null},
+            {"id": "", "project_id": ""},
+            {"name": "no id"},
+        ]}));
+        assert!(known.admits(&crate::goal::GoalRef::Task("task-a".into())));
+        assert!(known.admits(&crate::goal::GoalRef::Task("task-b".into())));
+        assert!(known.admits(&crate::goal::GoalRef::Project("proj-tide".into())));
+        assert!(!known.admits(&crate::goal::GoalRef::Project("task-a".into())));
+        assert!(!known.admits(&crate::goal::GoalRef::Task("".into())));
+        assert_eq!(KnownPointers::from_board(&json!({})), KnownPointers::none());
     }
 
     #[test]
@@ -1224,12 +1384,15 @@ mod tests {
             None,
             "m",
             &[],
-            Some(&appraisal),
+            Some((&appraisal, &board())),
             &[],
         );
         assert_eq!(args["meta"]["goal_errors"][0]["goal"], "task");
         let hostile = crate::goal::GoalRef::Task("a b".into());
-        let meta = meta_of(&goal_appraisal(vec![hostile.clone()], vec![hostile], None));
+        let meta = meta_of(
+            &goal_appraisal(vec![hostile.clone()], vec![hostile], None),
+            &board(),
+        );
         assert!(
             meta.get("goal").is_none(),
             "a non-token pointer does not cross at all"

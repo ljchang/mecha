@@ -2906,14 +2906,17 @@ third party".
 in a fourth setting, after `diagnose::Evidence`. Every variant is a name or an
 id the harness minted. The one field the harness did not mint is
 `GoalError::goal`, filled from the model's own `serves:` argument.
-`GoalRef::from_str` makes an id one token — no whitespace, no control
-character, bounded length — and every reference a record yields comes
-through it, so `distill` now carries the pointer whole (`meta.goal`,
-`meta.serves_charter`, and `goal` on each error, all in the `kind:id`
-spelling); a reference built in code never went through the parser, so
-`distill::goal_pointer` re-proves it at the boundary and falls back to the
-kind word alone, which is what crossed before the id was constrained. What
-never rides is the sentence: the goal hypothesis a run put to the owner, the
+`distill` now carries the pointer whole (`meta.goal`, `meta.serves_charter`,
+and `goal` on each error, all in the `kind:id` spelling) — but only a
+*resolved* one. `GoalRef::from_str` makes an id one token, and one token is
+not a pointer: a hyphen-joined sentence under `MAX_ID_CHARS` parses (found
+on review). So a charter id crosses because `of_session` already checked it
+against the loaded charter; a task or project id crosses only if the board
+holds it (`distill::KnownPointers`, one `kg_task_list` per distill run
+through the same server the episodes go to — a board that could not be read
+admits nothing and says so); a setpoint name has no store to resolve against
+and never crosses whole. What does not resolve falls back to the kind word
+alone, which is what crossed before. What never rides is the sentence: the goal hypothesis a run put to the owner, the
 owner's answer, and the charter line's text stay in the stores mecha itself
 writes (`GOAL-SYSTEM-DESIGN.md` §17.7 item 8), and the graph joins on the id.
 
