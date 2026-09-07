@@ -1944,8 +1944,8 @@ the owner's word. Installed binaries and each repo's `main` agree at the
 tagged commits; nothing else is owed on this machine.
 
 **2026-09-07, mecha-a6: nothing deployed, nothing restarted.** Two PRs
-open and unmerged (mecha #206 at `289d216a`, mecha-graph #10 at
-`b14f7db`); the installed binaries are unchanged from the 2026-09-06 row
+open and unmerged (mecha #206 at `5b5a426f`, mecha-graph #10 at
+`c1d0a01`); the installed binaries are unchanged from the 2026-09-06 row
 above. When they merge: the graph first (`mecha-graph-mcp` reinstalled,
 the four units' MCP children restart with them), then mecha's binary —
 the web dist is untouched by either. The graph worktree is
@@ -2913,8 +2913,8 @@ the mechanism and every decision. What it left standing:
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
 **2026-09-07 — §17.7 item 5 finished and item 8 built, with the pkg→graph
-rename: mecha PR #206 (`feat/project-tier`, head `289d216a`) and
-mecha-graph PR #10 (`feat/task-project-id`, head `b14f7db`), both review
+rename: mecha PR #206 (`feat/project-tier`, head `5b5a426f`) and
+mecha-graph PR #10 (`feat/task-project-id`, head `c1d0a01`), both review
 loops closed at the bar, both unmerged when written — merging is the
 owner's call — and nothing deployed.** The design doc's built notes under
 §17.7 items 5 and 8 have the shape; `ARCHITECTURE.md` §the goal system
@@ -2928,9 +2928,9 @@ last open task is the project's closure (`project_closure_pending`, read
 *before* `appraise_closure` can stage a follow-up under it) and
 `appraise_project` folds every session that worked a task under it into a
 `ProjectReading` printed on stderr — membership by the row's own
-`project_id` over an unfiltered board (`rows_under`), a truncated or
-unparseable answer unknown rather than closed, no follow-up staged, no
-record written; `tasks set --project` re-files a task or clears it and a
+`project_id` over one whole-board read taken before the appraisal
+(`rows_under`), a truncated or unparseable answer unknown rather than
+closed, no follow-up staged, no record written; `tasks set --project` re-files a task or clears it and a
 re-file in the closing call moves the tier to the echoed row
 (`carry_refiled_project`); the follow-up is filed by project id
 (`follow_up_args`). Item 8: a distilled episode's `meta` carries `goal`,
@@ -2966,9 +2966,8 @@ from before the column leaves the project tier unidentified once and the
 task appraisal unchanged. **Owed after this:** an end-to-end test of the
 read-before-stage ordering (needs a delegated session with a recorded
 outcome under the fixture — the one guarantee here held by statement
-order alone); `merge_nodes` discards its detach count; the fold counts a
-follow-up staged moments earlier as one task never delegated (disclosed
-in `appraise_project`'s doc); and, still from §17.7, item 2 (off until the
+order alone); `merge_nodes` discards its detach count; and, still from
+§17.7, item 2 (off until the
 step counters are read — `sessions health` said one run had recorded the
 sensor on 2026-09-07 01:20Z, none completing a step), item 4's re-ask.
 **Not built, on the owner's question:** surface and workspace as scope
