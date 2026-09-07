@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A learned rule can be scoped to a workspace.** The workspace a run
+  is jailed to joins the tool set as a scope key (`Situation::scope`,
+  `Situation::matches`, `Situation::key`): a rule learned from
+  reflections that all came from one workspace loads only in runs jailed
+  there, a verbatim restatement from a second workspace's batch widens it
+  by dropping the key, and a conviction in one workspace narrows it to
+  the one it held in — the same harness arithmetic tools already had
+  (`GOAL-SYSTEM-DESIGN.md` §17.4). Rules from before the key carry no
+  workspace and load everywhere as they did. The surface stays recorded
+  and unmatched, since `prepare` is not told the session kind.
 - **A project closes when the owner closes its last task, and its
   appraisal is the fold over every session that worked one.** The board
   row now carries `project_id` beside the project's name (mecha-graph

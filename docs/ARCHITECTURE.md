@@ -464,13 +464,24 @@ front-end's own tools, `ask_user` and the TUI's, still join later and are
 not scope targets, as `Situation::of_run` says), through
 `rules_carried_for`, and a scoped rule enters the prefix only when the run
 registers every tool the scope names — a lesson from editing `mail_send`
-drafts loads where `mail_send` is mounted and nowhere else. The one scope
-key today is the tool set: the surface is recorded but `prepare` does not
-know it (the front-end names the kind when it opens the session, after
-`prepare` returns), and scoping to a workspace before region-widening
-exists would pin nearly every rule to the one workspace most reflections
-come from. `Situation::scope` and `Situation::matches` are pinned together
-by a test so a key cannot join one without the other. The incident: 42 of
+drafts loads where `mail_send` is mounted and nowhere else. The scope
+keys are the tool set and, since 2026-09-07, the workspace: the run's
+jail as `setup::build` canonicalised it, matched exactly against the
+same spelling the session record carries (a jail is not a prefix, and
+a run that records none is not a match). The surface is recorded but
+`prepare` does not know it (the front-end names the kind when it opens
+the session, after `prepare` returns). The workspace waited for
+region-widening on purpose: scoped to one with no way to widen, a rule
+learned in the one workspace most reflections come from would have been
+dark everywhere else for good; with widening, a verbatim restatement
+from a second workspace's batch drops the key by intersection, and a
+conviction in one workspace narrows the rule to the one it held in. A
+rule scoped before the key carries no workspace and rides in every
+workspace as it did — rewritable only by a batch whose region has none
+either, so a single-workspace batch shows it as context rather than
+narrowing it on no conviction. `Situation::scope` and
+`Situation::matches` are pinned together by a test so a key cannot join
+one without the other. The incident: 42 of
 45 reflections were `behavior`, and a lesson about `shell` refused in one
 run rode in every prompt as a universal rule. **A rule widens by verbatim restatement and narrows by conviction, and
 both are the harness's arithmetic over recorded situations** (built
