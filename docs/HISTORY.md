@@ -4239,9 +4239,10 @@ and says `truncated`, measured cross-process. **Passes, counted from the
 PR comment records when this was written:** #209 7 summary comments,
 #210 15, #211 8; of #210's fifteen, the first fourteen each found
 something at the bar and the fifteenth was clean — every finding an edge
-of the surface key's fail-closed doors; #211 drew no review run at all
-while based on #210's branch and its eight summaries all came after it
-was retargeted to `main`.
+of the surface key's fail-closed doors; #211's review ran 3 times
+on its first pushes while based on #210's branch, then stopped — three
+further pushes, one a force-push, drew no workflow run — and ran again
+within a minute of being retargeted to `main`, 5 more times.
 
 ## The measurement record
 
@@ -6653,13 +6654,16 @@ and is what finally exercised the path.)
   passes. Close all five on the first pass; each door found later is a
   pass.
 
-- **A PR based on another PR's branch gets no review run at all.** #211
-  was opened against `feat/surface-scope` so its diff showed only its own
-  change; three pushes, including a force-push, produced no workflow run
-  (`gh api repos/…/actions/runs?head_sha=…` empty) while the same workflow
-  ran on every other branch. Retargeting it to `main` started the run
-  within a minute. Base a PR on `main` and accept the wider diff, or
-  expect silence and read it as absence of evidence, not a clean pass.
+- **A PR based on another PR's branch can stop getting review runs, and
+  the silence reads like a clean pass.** #211 was opened against
+  `feat/surface-scope` so its diff showed only its own change; its first
+  pushes were reviewed (3 passes), then three further pushes, one a
+  force-push, produced no workflow run at all (`gh api
+  repos/…/actions/runs?head_sha=…` empty) while the same workflow ran on
+  every other branch. Retargeting it to `main` started a run within a
+  minute, and 5 passes followed. Base a PR on `main` and accept the
+  wider diff — and when a push draws no run, read it as absence of
+  evidence, never as nothing to find.
 
 - **A gate is the exit status of every step, the patch script included.**
   Twice in one evening a commit went out without the change its message
