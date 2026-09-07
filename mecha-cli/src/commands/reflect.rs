@@ -417,12 +417,24 @@ fn outbox_intervention(item: &mecha_core::outbox::OutboxItem) -> Intervention {
 fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool) -> Result<()> {
     use mecha_core::learning::{backfill_situation, extract_interventions, Backfilled};
     let _lock = if dry_run { None } else { Some(store.lock()?) };
-    let todo: Vec<_> = store
-        .reflexions()?
-        .into_iter()
+    let all = store.reflexions()?;
+    let todo: Vec<_> = all
+        .iter()
         .filter(|r| r.situation.is_none())
+        .cloned()
         .collect();
-    if todo.is_empty() {
+    // Rows that carry a situation are read too: one stamped before the
+    // run record kept `rules_workspace` carries the session's jail, which
+    // on `serve` and task sessions is a path no match presents, and the
+    // field was inert until the workspace became a scope key (found on
+    // review — 13 such rows on the machine that day). Reconciled below
+    // against the run record, to the matched workspace or to none.
+    let present: Vec<_> = all
+        .iter()
+        .filter(|r| r.situation.is_some() && !r.session_id.is_empty())
+        .cloned()
+        .collect();
+    if todo.is_empty() && present.is_empty() {
         println!("every reflection carries a situation — nothing to backfill");
         return Ok(());
     }
@@ -498,27 +510,74 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
     for (id, why) in &unmatched {
         println!("· {id} stays without a situation — {why}");
     }
+    // The reconcile: each recorded workspace against the key its session's
+    // rules block was matched against. A session that cannot be found or
+    // read confirms nothing, and a key nothing confirms is dropped rather
+    // than kept — unknown is not a key.
+    let mut matched_by_session: std::collections::HashMap<String, Option<PathBuf>> =
+        Default::default();
+    let mut reconcile: Vec<(String, Option<PathBuf>)> = Vec::new();
+    let mut unconfirmed = 0usize;
+    for r in &present {
+        let Some(s) = &r.situation else { continue };
+        let matched = matched_by_session
+            .entry(r.session_id.clone())
+            .or_insert_with(|| {
+                paths
+                    .get(&r.session_id)
+                    .and_then(|path| Session::run_configs(path).ok())
+                    .and_then(|cs| cs.into_iter().next())
+                    .and_then(|rc| rc.rules_workspace)
+            })
+            .clone();
+        if s.workspace != matched {
+            if matched.is_none() {
+                unconfirmed += 1;
+            }
+            println!(
+                "· {} workspace {} → {}",
+                r.id,
+                s.workspace
+                    .as_ref()
+                    .map(|w| w.display().to_string())
+                    .unwrap_or_else(|| "none".into()),
+                matched
+                    .as_ref()
+                    .map(|w| w.display().to_string())
+                    .unwrap_or_else(|| "none (the run record confirms none)".into())
+            );
+            reconcile.push((r.id.clone(), matched));
+        }
+    }
     let verb = if dry_run {
         "would recompute"
     } else {
         "recomputed"
     };
-    let written = if dry_run {
-        updates.len()
+    let (written, reconciled) = if dry_run {
+        (updates.len(), reconcile.len())
     } else {
-        let written = store.set_situations(&updates, &chrono::Utc::now().to_rfc3339())?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let written = store.set_situations(&updates, &now)?;
+        let reconciled = store.reconcile_workspaces(&reconcile, &now)?;
         // Committed on its own, like every batch pass over this store: the
         // rewrite changes which region batches the next `learn --auto`
         // argues, and left uncommitted it would ride into the next
         // nightly's `reflect: 0 session(s)` commit (found on review).
-        if written > 0 {
+        if written + reconciled > 0 {
             store.commit(&format!(
-                "reflect --backfill-situations: {written} situation(s) recomputed, {} left absent",
+                "reflect --backfill-situations: {written} situation(s) recomputed, {} left absent, \
+                 {reconciled} workspace(s) reconciled",
                 unmatched.len()
             ));
         }
-        written
+        (written, reconciled)
     };
+    println!(
+        "{verb} {reconciled} workspace(s) of {} recorded situation(s) against the run record \
+         ({unconfirmed} to none: the record confirms no workspace)",
+        present.len()
+    );
     println!(
         "{verb} {written} of {} situation(s); {} left absent, {} session(s) read{}",
         todo.len(),

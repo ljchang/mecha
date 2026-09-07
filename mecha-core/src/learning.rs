@@ -1786,6 +1786,53 @@ impl LearningStore {
         Ok(written)
     }
 
+    /// Reconcile the workspace on recorded situations with the key the
+    /// session's rules block was matched against (`RunConfig::rules_workspace`).
+    /// Rows stamped before that field existed carry the session's *jail*,
+    /// which on `serve` and task sessions is a path no match presents — and
+    /// the field was inert until the workspace became a scope key, so those
+    /// rows would have scoped a rule to nowhere the moment it did (found on
+    /// review). Each update names the workspace the record confirms, or
+    /// `None` where it confirms none: unknown is not a key. Rows whose
+    /// workspace already agrees are untouched, and a pass with nothing to
+    /// apply does not touch the file, for the reason [`Self::set_situations`]
+    /// gives.
+    pub fn reconcile_workspaces(
+        &self,
+        updates: &[(String, Option<std::path::PathBuf>)],
+        recomputed_at: &str,
+    ) -> Result<usize> {
+        let applicable: Vec<&(String, Option<std::path::PathBuf>)> = {
+            let current: std::collections::HashMap<String, Option<std::path::PathBuf>> = self
+                .reflexions()?
+                .into_iter()
+                .filter_map(|r| r.situation.map(|s| (r.id, s.workspace)))
+                .collect();
+            updates
+                .iter()
+                .filter(|(id, w)| current.get(id).is_some_and(|cur| cur != w))
+                .collect()
+        };
+        if applicable.is_empty() {
+            return Ok(0);
+        }
+        let mut written = 0usize;
+        self.rewrite_reflexions(|all| {
+            for r in all.iter_mut() {
+                let Some((_, w)) = applicable.iter().find(|(id, _)| *id == r.id) else {
+                    continue;
+                };
+                if let Some(s) = r.situation.as_mut() {
+                    s.workspace = w.clone();
+                    r.situation_recomputed_at = Some(recomputed_at.to_string());
+                    written += 1;
+                }
+            }
+            Ok(())
+        })?;
+        Ok(written)
+    }
+
     /// Refuse a reflection. Kept as evidence; never a candidate again.
     pub fn drop_reflexion(&self, id: &str, reason: Option<String>) -> Result<Reflexion> {
         self.set_dropped(id, Some(reason))
@@ -6472,6 +6519,60 @@ mod situation_tests {
 
     /// The write takes only reflections still without a situation, stamps
     /// the recomputation, and is free to run twice: a situation recorded at
+    /// A recorded workspace that the run record does not confirm is
+    /// reconciled — to the matched one, or to none — and one that agrees is
+    /// untouched; a pass with nothing to apply leaves the file byte-identical.
+    #[test]
+    fn reconcile_workspaces_rewrites_only_a_workspace_the_record_disagrees_with() {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-reconcile-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = LearningStore::open(&dir).unwrap();
+        let mut jailed = refl("jailed", &["shell"], "denial");
+        jailed.situation.as_mut().unwrap().workspace =
+            Some(std::path::PathBuf::from("/home/x/.mecha/work/web/main"));
+        let mut fine = refl("fine", &["shell"], "denial");
+        fine.situation.as_mut().unwrap().workspace = Some(std::path::PathBuf::from("/w"));
+        let mut absent = refl("absent", &[], "denial");
+        absent.situation = None;
+        for r in [&jailed, &fine, &absent] {
+            store.append_reflexion(r).unwrap();
+        }
+        let updates = vec![
+            ("jailed".to_string(), None),
+            ("fine".to_string(), Some(std::path::PathBuf::from("/w"))),
+            ("absent".to_string(), Some(std::path::PathBuf::from("/w"))),
+        ];
+        assert_eq!(store.reconcile_workspaces(&updates, "now").unwrap(), 1);
+        let all = store.reflexions().unwrap();
+        let j = all.iter().find(|r| r.id == "jailed").unwrap();
+        assert_eq!(j.situation.as_ref().unwrap().workspace, None);
+        assert_eq!(
+            j.situation.as_ref().unwrap().tools,
+            vec!["shell"],
+            "only the key moved"
+        );
+        assert_eq!(j.situation_recomputed_at.as_deref(), Some("now"));
+        let f = all.iter().find(|r| r.id == "fine").unwrap();
+        assert_eq!(f.situation_recomputed_at, None, "agreeing: untouched");
+        assert!(all
+            .iter()
+            .find(|r| r.id == "absent")
+            .unwrap()
+            .situation
+            .is_none());
+        let file = dir.join("reflections.jsonl");
+        let before = std::fs::read(&file).unwrap();
+        assert_eq!(store.reconcile_workspaces(&updates, "later").unwrap(), 0);
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            before,
+            "nothing to apply: not rewritten"
+        );
+    }
+
     /// mining is never overwritten.
     #[test]
     fn set_situations_fills_only_the_absent_and_stamps_the_recomputation() {
