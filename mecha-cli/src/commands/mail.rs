@@ -2203,7 +2203,11 @@ async fn draft(
         .get(&account, thread_id)
         .with_context(|| format!("no such thread: {thread_id}"))?;
 
-    let prepared = setup::prepare(global, false).await?;
+    let opts = GlobalOpts {
+        surface: Some(mecha_core::session::SessionKind::Mail),
+        ..global.clone()
+    };
+    let prepared = setup::prepare(&opts, false).await?;
     if prepared.agent.context().outbox.is_none() {
         bail!(
             "drafting needs the outbox: name your send tools in `[outbox] tools` \

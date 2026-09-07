@@ -176,6 +176,10 @@ impl ChatState {
             // The registry belongs to the agent and one agent serves every
             // session — a loaded skill would be shared state across them.
             no_skills: true,
+            // The surface every session on this agent is matched as —
+            // the board's task door too, whose session is recorded as a
+            // task: the recorded key is the matched key.
+            surface: Some(mecha_core::session::SessionKind::Web),
             ..GlobalOpts::default()
         };
         // Not interactive: no terminal approver — and then `ask_user` IS

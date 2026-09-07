@@ -650,6 +650,7 @@ pub async fn run(global: &GlobalOpts, args: Args) -> Result<()> {
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         opts.workspace = Some(dir);
     }
+    opts.surface = Some(mecha_core::session::SessionKind::Voice);
     let prepared = crate::setup::prepare(&opts, false).await?;
 
     let global_cfg = mecha_core::config::Config::load_global()?;

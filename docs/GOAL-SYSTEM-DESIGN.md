@@ -1945,8 +1945,8 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > before the field carry no region and exercise nothing, so on this
 > machine every existing tally reads as ride-along until the next
 > validate pass writes placed rows. Still unbuilt from this section:
-> mid-run delivery (§17.7 item 2), the surface as a scope key,
-> and a disjunctive scope — the split a narrowing cannot express today.
+> mid-run delivery (§17.7 item 2) and a disjunctive scope — the split a
+> narrowing cannot express today.
 
 > **Built 2026-09-07: the workspace as a scope key** (`feat/workspace-scope`).
 > `Situation::scope` keeps the workspace, `Situation::matches` requires
@@ -1968,8 +1968,19 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > the key carry no workspace and load everywhere as they did, and are
 > context — not rewritable — in a single-workspace batch, since
 > `rewritable_in` is equality and a narrower batch rewriting a wider rule
-> would narrow it on no conviction. The surface stays recorded-only until
-> `prepare` is told the session kind.
+> would narrow it on no conviction.
+
+> **Built 2026-09-07, later: the surface as a scope key**
+> (`feat/surface-scope`). Each front-end tells `prepare` its kind
+> (`GlobalOpts::surface`, never a flag; the test override wins in `build`
+> as on the record), the match presents it, `RulesCarried::surface` and
+> `RunConfig::rules_surface` record it, and the miner, backfill, validator
+> and probe read the record — never `SessionMeta::kind`, which the board's
+> task door on `serve` records as `task` while the block was matched as
+> `web`. Rows stamped with the kind before the field existed reconcile on
+> every `reflect` pass like the workspace. One key is recorded and never a
+> scope key: the trigger, since how a lesson was learned is not where it
+> applies.
 
 ### 17.5 The validator these rulings are missing, and its template
 

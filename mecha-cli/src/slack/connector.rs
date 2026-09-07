@@ -357,6 +357,7 @@ async fn build_agent(
         // procedure into B's compaction. Per-thread skills means an agent per
         // thread, which is the same trade as per-thread MCP isolation above.
         no_skills: true,
+        surface: Some(mecha_core::session::SessionKind::Slack),
         ..GlobalOpts::default()
     };
     // Not interactive: no terminal approver, and no `ask_user` — the registry

@@ -396,7 +396,11 @@ async fn triage(
         return Ok(());
     }
 
-    let prepared = setup::prepare(global, false).await?;
+    let opts = GlobalOpts {
+        surface: Some(mecha_core::session::SessionKind::Frontdoor),
+        ..global.clone()
+    };
+    let prepared = setup::prepare(&opts, false).await?;
     let outbox = mecha_core::outbox::OutboxStore::open_existing_default();
     if outbox.is_none() || prepared.agent.context().outbox.is_none() {
         // Refused rather than run. Without the route, a `mail_send` the model
