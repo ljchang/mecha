@@ -1857,13 +1857,13 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 > the original as a new rule scoped to the batch — a model-did-not-listen
 > case the count cap and the next consolidation bound, not the code. The registry the block
 > is matched against is `build`'s, after subagents join it; the
-> front-end's own tools join later and are not scope targets. One key
-> is recorded and not a scope key, with the reason in `situation.rs`:
-> the surface, because `prepare` does not know it. The workspace was the
-> same until 2026-09-07 — scoping to it before widening existed would
-> have pinned nearly every rule to the one workspace most reflections
-> come from — and is a scope key now that widening exists (the addendum
-> below). `error_type` is not a
+> front-end's own tools join later and are not scope targets. Every key
+> a reflection records is a scope key except the trigger (how a lesson
+> was learned is not where it applies): the workspace since 2026-09-07 —
+> scoping to it before widening existed would have pinned nearly every
+> rule to the one workspace most reflections come from — and the surface
+> since later that day, once each front-end told `prepare` its kind (the
+> two addenda below). `error_type` is not a
 > key at all: it is the reflector's label, and §17.3's rule is that a key
 > is what the harness knows structurally. Reflections mined before the
 > field carry no situation and batch as standing (§17.7 item 6's backfill

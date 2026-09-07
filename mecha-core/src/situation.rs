@@ -21,8 +21,8 @@
 //!
 //! A reflection records every key it can. A *rule* is scoped by the subset a
 //! run can be matched against at start — [`Situation::scope`] — and that
-//! is the tool set and the workspace: `prepare` knows the registry when it
-//! renders the rules block, the workspace it matched against
+//! is the tool set, the workspace and the surface: `prepare` knows the
+//! registry when it renders the rules block, the workspace it matched against
 //! (`setup::prepare_tools` canonicalises it), and the surface the front-end
 //! told it (`GlobalOpts::surface`, set by the front-end that owns the run
 //! and never by a flag; the test override marks the session record and
@@ -60,16 +60,17 @@
 //! none either (`rewritable_in` is equality), so a single-workspace batch
 //! shows it as context rather than narrowing it on no conviction.
 //!
-//! A run record from before `rules_workspace` gives the miner no workspace,
-//! and its reflections scope by tools alone — no key, never a guess. Rows
-//! stamped before the field carry the session's jail, and were inert until
-//! the workspace became a key: every `mecha reflect` pass reconciles them
-//! against the run record before anything is mined or batched
-//! (`learning::reconcile_workspace` decides, `LearningStore::reconcile_workspaces`
-//! writes), to the matched workspace or to none — never adding a key a row
-//! did not carry, and leaving a row whose session cannot be read as it is.
-//! Not a flag a human runs once: the nightly's `learn --auto` follows the
-//! pass, and a rule scoped to a jail could never be consolidated back out.
+//! A run record from before `rules_workspace` and `rules_surface` gives the
+//! miner neither key, and its reflections scope by tools alone — no key,
+//! never a guess. Rows stamped before the fields carry the session's jail
+//! and its kind, and were inert until each became a key: every `mecha
+//! reflect` pass reconciles them against the run record before anything is
+//! mined or batched (`learning::reconcile_key` decides per key,
+//! `LearningStore::reconcile_keys` writes), to a key some attach of the
+//! session presented or to none — never adding a key a row did not carry,
+//! and leaving a row whose session cannot be read as it is. Not a flag a
+//! human runs once: the nightly's `learn --auto` follows the pass, and a
+//! rule scoped to a jail could never be consolidated back out.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
