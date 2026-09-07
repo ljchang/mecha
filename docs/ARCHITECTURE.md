@@ -3045,7 +3045,8 @@ disappointed closure would see its own follow-up holding the project open
 and print nothing (found on review). Membership is the row's own
 `project_id` (`rows_under`), never the server's `entity` filter, which
 narrows by association and so answers a superset; a row that does not say
-its project makes the answer unknown, not "not under it". If nothing else
+its project, or an answer whose envelope says `truncated`, makes the answer
+unknown, not "not under it". If nothing else
 is open, `appraise_project` folds every session that worked a task under it
 into one `ProjectReading` — labels counted, valence summed with positive
 and negative apart, `partial` if any reading was, the tasks never delegated

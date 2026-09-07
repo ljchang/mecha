@@ -718,6 +718,14 @@ fn project_of(row: &Value) -> ProjectTier {
 /// the key: a board that cannot say which project a row is under cannot
 /// answer either question, and unknown is never "not under it".
 fn rows_under<'a>(board: &'a Value, pid: &str) -> Option<Vec<&'a Value>> {
+    // A truncated answer is readable and still short: the rows that did
+    // not arrive are not "not under this project", and a closure announced
+    // off the rows that did would be the false finding again (found on
+    // review — HISTORY's "a correct filter over a truncated input"). The
+    // envelope carries the flag beside `items`; unknown is never zero.
+    if board["truncated"].as_bool() == Some(true) {
+        return None;
+    }
     let items = board["items"].as_array()?;
     let mut under = Vec::new();
     for t in items {
@@ -3154,6 +3162,14 @@ mod tests {
         assert!(rows_under(&unsaid, "proj-tide").is_none());
         assert!(rows_under(&json!({}), "proj-tide").is_none());
         assert_eq!(rows_under(&json!({"items": []}), "proj-tide"), Some(vec![]));
+        // A truncated answer is readable and still short — the rows that
+        // did not arrive could be under the project, so nothing is known.
+        let short =
+            json!({"items": [{"id": "task-a", "project_id": "proj-tide"}], "truncated": true});
+        assert!(rows_under(&short, "proj-tide").is_none());
+        let whole =
+            json!({"items": [{"id": "task-a", "project_id": "proj-tide"}], "truncated": false});
+        assert_eq!(rows_under(&whole, "proj-tide").map(|r| r.len()), Some(1));
     }
 
     #[test]
