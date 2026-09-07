@@ -182,9 +182,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // and each session is jailed a level below, so a lesson stamped
         // with the jail scoped its rule to a workspace no run presents
         // (found on review). A record from before the field gives none.
-        let (matched_workspace, matched_surface) = matched_keys_of(path).unwrap_or((None, None));
-        let (_, convo) = match Session::load(path) {
-            Ok(loaded) => loaded,
+        // One read of the transcript for the conversation and its run
+        // records both — `load` and `run_configs` each parsed the whole
+        // file, twice per session on the nightly's hot path (found on
+        // review).
+        let (convo, (matched_workspace, matched_surface)) = match Session::read(path) {
+            Ok(t) => {
+                let keys = matched_keys_in(&t);
+                (t.convo, keys)
+            }
             Err(e) => {
                 // A transcript that does not load is not this command's bug to
                 // fix; skip it *without* marking it mined, so a later mecha
@@ -406,6 +412,17 @@ fn matched_keys_of(
                 .unwrap_or((None, None))
         })
         .map_err(|e| format!("session unreadable: {e:#}"))
+}
+
+/// The same keys off a transcript already read — the miner and the
+/// backfill hold one, and must not parse the file a second time for it.
+fn matched_keys_in(
+    t: &mecha_core::session::Transcript,
+) -> (Option<PathBuf>, Option<mecha_core::session::SessionKind>) {
+    t.configs
+        .first()
+        .map(|rc| (rc.rules_workspace.clone(), rc.rules_surface))
+        .unwrap_or((None, None))
 }
 
 /// Reconcile the keys on every recorded situation — the workspace and the
@@ -659,10 +676,9 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
                     format!("no session matching \"{}\"", r.session_id)
                 }
             })?;
-            let (meta, convo) =
-                Session::load(path).map_err(|e| format!("session unreadable: {e:#}"))?;
-            let matched = matched_keys_of(path).unwrap_or((None, None));
-            Ok((meta, extract_interventions(&convo.messages), matched))
+            let t = Session::read(path).map_err(|e| format!("session unreadable: {e:#}"))?;
+            let matched = matched_keys_in(&t);
+            Ok((t.meta, extract_interventions(&t.convo.messages), matched))
         });
         match read {
             Err(why) => unmatched.push((r.id.clone(), why.clone())),
