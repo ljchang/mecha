@@ -165,6 +165,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .unwrap_or_default();
     let known = match distill::known_pointers(&client).await {
         Ok(k) => {
+            if k.unreadable {
+                eprintln!(
+                    "mecha: the board's answer carried no task list this build can read — task \
+                     and project ids cross as kind words this run"
+                );
+            }
             if k.truncated {
                 eprintln!(
                     "mecha: the board's answer was truncated — a task or project id it did not \
