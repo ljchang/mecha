@@ -516,6 +516,21 @@ async fn set(
                 Some(s) => before["session"] = json!(s),
                 None => {}
             }
+            // `--project` in the same call is the same shape, with one
+            // difference: it takes a name *or* an id and only the server
+            // resolves it, so the new tier is read off the update's echo
+            // (the row under `task`, rendered by the server) rather than
+            // patched from the flag. Without this the closure appraised,
+            // recorded and staged under the project the task just *left*,
+            // and never checked the one it moved to (found on review). A
+            // server whose echo carries no row leaves the tier unknown.
+            if project.is_some() && !carry_refiled_project(&mut before, &out) {
+                eprintln!(
+                    "mecha: {task} was re-filed and closed in one call, but the board's echo \
+                     carried no row, so the project tier of this closure is unknown and not \
+                     appraised"
+                );
+            }
             // The project's open list is read *before* the task's own
             // appraisal, because that appraisal may stage a follow-up under
             // the same project (`stage_follow_up` copies `project`), and a
@@ -754,6 +769,29 @@ fn rows_under<'a>(board: &'a Value, pid: &str) -> Option<Vec<&'a Value>> {
         }
     }
     Some(under)
+}
+
+/// After a closure that re-filed the task in the same call: the project
+/// the row is under *now*, off the update's echo, into the pre-mutation
+/// row the closure reads its tier from. `true` when the echo carried a row;
+/// `false` leaves `before` with no project at all — unknown, not the old
+/// tier — so nothing downstream appraises, records or stages under the
+/// project the task just left.
+fn carry_refiled_project(before: &mut Value, out: &Value) -> bool {
+    match out.get("task").filter(|t| t.is_object()) {
+        Some(row) => {
+            before["project"] = row["project"].clone();
+            before["project_id"] = row["project_id"].clone();
+            true
+        }
+        None => {
+            if let Some(o) = before.as_object_mut() {
+                o.remove("project");
+                o.remove("project_id");
+            }
+            false
+        }
+    }
 }
 
 /// Whether closing `task_id` left its project with no open task — read off
@@ -3160,6 +3198,33 @@ mod tests {
             project_of(&json!({"project_id": "proj\ntide"})),
             ProjectTier::Unidentified("proj\ntide".into())
         );
+    }
+
+    #[test]
+    fn a_refile_in_the_closing_call_moves_the_tier_to_the_echoed_row() {
+        let stale = || json!({"project": "Old", "project_id": "proj-old", "session": "s1"});
+        // Re-filed under another project: the echo's row wins.
+        let mut before = stale();
+        let out = json!({"task": {"project": "New", "project_id": "proj-new"}});
+        assert!(carry_refiled_project(&mut before, &out));
+        assert_eq!(
+            project_of(&before),
+            ProjectTier::Identified(mecha_core::goal::GoalRef::Project("proj-new".into()))
+        );
+        assert_eq!(before["session"], "s1", "the rest of the row is untouched");
+        // Cleared with `""`: the echo says no project, and that is the tier.
+        let mut before = stale();
+        let out = json!({"task": {"project": null, "project_id": null}});
+        assert!(carry_refiled_project(&mut before, &out));
+        assert_eq!(project_of(&before), ProjectTier::None);
+        // An echo with no row (an older server): unknown, never the old tier.
+        let mut before = stale();
+        assert!(!carry_refiled_project(
+            &mut before,
+            &json!({"status": "updated"})
+        ));
+        assert_eq!(project_of(&before), ProjectTier::None);
+        assert!(before.get("project_id").is_none());
     }
 
     #[test]

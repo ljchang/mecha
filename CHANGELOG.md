@@ -42,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published evaluation page named a fixture file that does not exist, the
   landing page's `[[mcp]]` snippet named a binary that is not shipped, and
   `prompts/agent.md` told the model to call `pkg__kg_*` tools that are not
-  on the surface — it now names `graph__kg_*`, the configured server.
+  on the surface — it now names the bare `kg_*` the documented wiring
+  (`prefix_tools = false`) exposes.
 
 ## [0.1.18] - 2026-09-06
 
