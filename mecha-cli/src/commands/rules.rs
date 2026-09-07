@@ -110,25 +110,49 @@ pub async fn execute(args: Args) -> Result<()> {
 /// pane runs the roster on a keypress.
 type Presented = Vec<(Option<PathBuf>, Option<SessionKind>)>;
 
-fn needs_presented_keys(rules: &[&Rule]) -> bool {
-    rules.iter().any(|r| {
-        r.scope
+/// Whether a rule's answer consults the store at all: active, with no
+/// parked or corpus-mark surface (those are answered without it), and a
+/// workspace or surface on its scope. One predicate for both gates —
+/// whether to walk, and which pairs to walk for — because the early exit
+/// in `presented_keys_in` is sound only if every rule that will read the
+/// keys has its pair in `wanted`. Built from every rule, a retired rule
+/// scoped to a workspace that went dark kept the exit from firing, and
+/// the full walk it forced could meet a torn transcript and turn every
+/// live rule's answer into unknown on the strength of one dead rule
+/// (found on review).
+fn needs_keys(r: &Rule) -> bool {
+    r.active()
+        && r.scope.as_ref().is_some_and(|s| {
+            s.surface_unread.is_none()
+                && !s
+                    .surface
+                    .is_some_and(|k| mecha_core::situation::Situation::MARK_KINDS.contains(&k))
+        })
+        && r.scope
             .as_ref()
+            .map(|s| s.scope())
             .is_some_and(|s| s.workspace.is_some() || s.surface.is_some())
-    })
+}
+
+fn needs_presented_keys(rules: &[&Rule]) -> bool {
+    rules.iter().any(|r| needs_keys(r))
 }
 
 fn presented_keys(rules: &[&Rule]) -> Option<Presented> {
+    presented_keys_from(rules, &Session::default_dir().ok()?)
+}
+
+fn presented_keys_from(rules: &[&Rule], dir: &Path) -> Option<Presented> {
     if !needs_presented_keys(rules) {
         return None;
     }
     let wanted: Presented = rules
         .iter()
+        .filter(|r| needs_keys(r))
         .filter_map(|r| r.scope.as_ref().map(|s| s.scope()))
-        .filter(|s| s.workspace.is_some() || s.surface.is_some())
         .map(|s| (s.workspace, s.surface))
         .collect();
-    presented_keys_in(&Session::default_dir().ok()?, &wanted)
+    presented_keys_in(dir, &wanted)
 }
 
 /// Whether one run record's pair presents one scope's pair: each key the
@@ -1456,6 +1480,45 @@ mod tests {
             presented_keys_in(&stopped, &[]),
             None,
             "the full walk reaches the torn record and is unknown"
+        );
+        // A retired rule scoped to a workspace nothing presents must not
+        // force the full walk on the live rule's behalf: filtered out of
+        // both gates, the live rule is answered by the newest transcript
+        // and the torn older one is never opened. Fails on gates built
+        // from every rule, which answered the live rule `null`.
+        let live = Rule {
+            id: Some("r-live".into()),
+            text: "Live.".into(),
+            scope: Some(
+                Situation::of_run(&["shell".into()], Some(Path::new("/w")))
+                    .on(Some(SessionKind::Tui)),
+            ),
+            ..Default::default()
+        };
+        let mut retired = Rule {
+            id: Some("r-dead".into()),
+            text: "Dead.".into(),
+            scope: Some(Situation::of_run(
+                &["shell".into()],
+                Some(Path::new("/gone")),
+            )),
+            ..Default::default()
+        };
+        retired.retired_at = Some("2026-09-01T00:00:00Z".into());
+        assert!(needs_keys(&live));
+        assert!(!needs_keys(&retired));
+        let keys = presented_keys_from(&[&retired, &live], &stopped)
+            .expect("answered by the newest transcript");
+        assert_eq!(loads_nowhere(&live, Some(&keys)), Some(false));
+        let marked_only = Rule {
+            scope: Some(Situation::of_run(&["shell".into()], None).on(Some(SessionKind::Test))),
+            ..live.clone()
+        };
+        assert!(!needs_keys(&marked_only), "answered without the store");
+        assert_eq!(
+            presented_keys_from(&[&marked_only], &stopped),
+            None,
+            "no walk at all"
         );
         // A store with no record carrying either key cannot answer: a
         // directory that does not exist, and one holding only a record
