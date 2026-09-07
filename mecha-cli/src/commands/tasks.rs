@@ -1569,6 +1569,7 @@ async fn stage_follow_up(
     // review).
     let mut args = follow_up_args(task_id, before, a);
     let mut under_project = args.get("project").is_some();
+    let captured_from = args.get("captured_from").cloned();
     let out = match call_with(prepared, "kg_task_create", args.clone()).await {
         Ok(v) => v,
         // The store's own validation may be stricter than the documented
@@ -1618,6 +1619,12 @@ async fn stage_follow_up(
                     let parent = args["project"].clone();
                     if let Some(o) = args.as_object_mut() {
                         o.remove("project");
+                        // The pointer the first retry stripped was never
+                        // the cause on this path — the parent was — so it
+                        // rides on the call that lands (found on review).
+                        if let Some(c) = captured_from.clone() {
+                            o.insert("captured_from".into(), c);
+                        }
                     }
                     under_project = false;
                     eprintln!(
