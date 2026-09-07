@@ -3043,7 +3043,7 @@ does.** The join is made where both ids are already in hand — the board row
 carries `project_id` beside the project's *name*, which is prose two nodes
 can share and so never a pointer — and `tasks set`'s closure appraisal
 records `GoalRef::Project` on `goals` *after* the task, so every error's
-pointer stays the tier the run was handed (`appraise_session`'s rule). The
+pointer stays the tier the run was handed (`appraise_session_with`'s rule). The
 owner closing the last open task under a project is the project's own
 closure moment (`GOAL-SYSTEM-DESIGN.md` §17.7 item 5):
 `project_closure_pending` reads the whole board once, after the update
@@ -3108,7 +3108,7 @@ store's readers do not choke on it, and nothing fires it yet. The check's
 execution and the planner's ask are the other lane's (`AUDIT-RESEARCH.md`
 §3.11).
 
-**`tasks.rs::appraise_session` deliberately does not call `appraisal::for_session`**,
+**`tasks.rs::appraise_session_with` deliberately does not call `appraisal::for_session`**,
 which does the identical assembly. `for_session` folds "could not read the file"
 and "no outcome recorded yet" into one `None`, which is right for a report or an
 episode and wrong here: a closure gets one appraisal ever, so "something is

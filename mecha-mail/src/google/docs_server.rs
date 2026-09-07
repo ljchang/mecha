@@ -10,7 +10,7 @@
 //!   third-party text, and a document *comment* is a better injection vector
 //!   than an email body because it is invisible in the rendered page — so the
 //!   connecting client is expected to force `untrusted_input`, exactly as
-//!   mecha's config already does for mail and pkg.
+//!   mecha's config already does for mail and the graph.
 //! - **Writes** carry `openWorldHint`, and this is the leg people miss:
 //!   **writing into a document a third party can read is exfiltration.** It
 //!   looks like a local edit and it is a publish, with far more bandwidth

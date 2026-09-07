@@ -305,7 +305,7 @@ def search(query):
     return json.dumps(body)
 
 
-def call_pkg(name, args):
+def call_graph(name, args):
     if name == "kg_search":
         return search(args.get("query", ""))
     if name == "kg_entity":
@@ -363,7 +363,7 @@ def main():
     opts = parser.parse_args()
 
     tools = PKG_TOOLS if opts.persona == "graph" else WEB_TOOLS
-    call = call_pkg if opts.persona == "graph" else call_web
+    call = call_graph if opts.persona == "graph" else call_web
 
     while True:
         line = sys.stdin.readline()
