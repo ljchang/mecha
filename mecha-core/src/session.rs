@@ -1704,6 +1704,45 @@ impl Session {
         ))
     }
 
+    /// The first run configuration of a transcript, read from the top of
+    /// the file and no further — the front-end writes it at run start,
+    /// before the run's own messages, so this stays O(number of sessions)
+    /// across a store the way [`Self::peek_meta`] does, where
+    /// [`Self::run_configs`] slurps every byte. `Ok(None)` for a transcript
+    /// that reaches its first message (or its end) with no config recorded;
+    /// `Err` for one that cannot be opened *or whose lines up to that point
+    /// do not parse* — a torn line is "could not be read", never "no
+    /// config", for a reader that reports on the store (found on review).
+    pub fn first_run_config(path: &Path) -> Result<Option<RunConfig>> {
+        use std::io::BufRead;
+        let file =
+            std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let mut reader = std::io::BufReader::new(file);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader
+                .read_line(&mut line)
+                .with_context(|| format!("reading {}", path.display()))?
+                == 0
+            {
+                return Ok(None);
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Record>(&line) {
+                Ok(Record::Config(c)) => return Ok(Some(c)),
+                Ok(Record::Meta(_)) => continue,
+                Ok(_) => return Ok(None),
+                Err(e) => anyhow::bail!(
+                    "{}: a line before the first run record does not parse: {e}",
+                    path.display()
+                ),
+            }
+        }
+    }
+
     /// Every run configuration in a transcript, in the order the runs happened.
     ///
     /// A replay driver needs this per run rather than per session: resuming

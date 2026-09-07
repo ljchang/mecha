@@ -1010,7 +1010,7 @@ missing from a script. Three decisions on top of that:
   says so. Two boards over one store with divergent keys is a trap, and the
   keystroke it springs is `x` on something you meant to finish.
 
-An edit form offers due, defer and context and *not* the name, because
+An edit form offers due, defer, project and context and *not* the name, because
 `kg_task_update` has no rename — a box that silently discarded what was typed
 in it would be worse than not offering one.
 

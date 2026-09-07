@@ -306,7 +306,7 @@ pub const KEYS: &[Key] = &[
     Key {
         key: 'e',
         short: "e edit",
-        note: "due, defer and context of the selected task",
+        note: "due, defer, project and context of the selected task",
     },
     Key {
         key: 'n',
