@@ -291,11 +291,15 @@ pub enum Backfilled {
 /// from, and recompute its situation the way the miner would have recorded
 /// it. The key is what a reflection persists — `session_id`, `trigger` and
 /// the intervention text, copied verbatim from `Intervention::text` at
-/// mining — since the message index is not on the record.
+/// mining — since the message index is not on the record. `matched` is the
+/// workspace the session's rules block was matched against
+/// (`RunConfig::rules_workspace`), never the session's jail; a record from
+/// before that field gives `None`, and the reflection scopes by tools alone.
 pub fn backfill_situation(
     r: &Reflexion,
     interventions: &[Intervention],
     meta: &crate::session::SessionMeta,
+    matched: Option<&std::path::Path>,
 ) -> Backfilled {
     let mut fits: Vec<crate::situation::Situation> = Vec::new();
     for i in interventions {
@@ -306,7 +310,7 @@ pub fn backfill_situation(
             &i.tools_before,
             i.trigger.as_str(),
             meta.kind,
-            Some(&meta.workspace),
+            matched,
         );
         if !fits.contains(&s) {
             fits.push(s);
@@ -965,6 +969,15 @@ pub struct RulesCarried {
     pub block: Option<String>,
     pub hash: String,
     pub rule_ids: Vec<String>,
+    /// The workspace the block was matched against — the run's situation's,
+    /// as `prepare` built it — recorded on the run (`RunConfig::rules_workspace`)
+    /// so the miner stamps a reflection with the key a match presents, not
+    /// with the session's jail. The two differ on `serve` (one block rendered
+    /// against the producer root, each session jailed a level below) and on
+    /// Slack (a thread jail, no workspace recorded); a lesson scoped to a
+    /// jail no run presents is dark forever (found on review). `None` from
+    /// [`Self::none`], and for a run whose situation named no workspace.
+    pub workspace: Option<std::path::PathBuf>,
 }
 
 impl Default for RulesCarried {
@@ -984,6 +997,7 @@ impl RulesCarried {
             block: None,
             hash: rules_hash(""),
             rule_ids: Vec::new(),
+            workspace: None,
         }
     }
 }
@@ -1336,6 +1350,7 @@ impl LearningStore {
             hash: rules_hash(block.as_deref().unwrap_or("")),
             block,
             rule_ids,
+            workspace: run.workspace.clone(),
         })
     }
 
@@ -6330,6 +6345,21 @@ mod situation_tests {
         assert_ne!(with.hash, without.hash);
         assert!(with.block.as_deref().unwrap().contains("Shell only."));
         assert!(!without.block.as_deref().unwrap().contains("Shell only."));
+        // What the block was matched against rides with it, for the run
+        // record to keep and the miner to stamp: none here, the jail when
+        // the run had one.
+        assert_eq!(with.workspace, None);
+        let jailed = store
+            .rules_carried_for(
+                &["behavior"],
+                &Situation::of_run(&["shell".into()], Some(std::path::Path::new("/w"))),
+            )
+            .unwrap();
+        assert_eq!(
+            jailed.workspace.as_deref(),
+            Some(std::path::Path::new("/w"))
+        );
+        assert_eq!(RulesCarried::none().workspace, None);
         assert_eq!(with.hash, rules_hash(with.block.as_deref().unwrap()));
         // The treatment arm of a gate: one domain's set replaced, rendered
         // for the same situation.
@@ -6406,7 +6436,7 @@ mod situation_tests {
             ),
         ];
         assert_eq!(
-            backfill_situation(&r, &interventions, &meta),
+            backfill_situation(&r, &interventions, &meta, Some(std::path::Path::new("/w"))),
             Backfilled::Matched(Situation::recorded(
                 &["fs_read".into(), "shell".into()],
                 "denial",
@@ -6415,7 +6445,10 @@ mod situation_tests {
             )),
             "the trigger tells the two apart"
         );
-        assert_eq!(backfill_situation(&r, &[], &meta), Backfilled::NoMatch);
+        assert_eq!(
+            backfill_situation(&r, &[], &meta, Some(std::path::Path::new("/w"))),
+            Backfilled::NoMatch
+        );
 
         // Two fits with different windows: not knowable, so absent.
         let differing = vec![
@@ -6423,7 +6456,7 @@ mod situation_tests {
             iv(Trigger::Denial, "Denied by the user: no", &["mail_send"]),
         ];
         assert_eq!(
-            backfill_situation(&r, &differing, &meta),
+            backfill_situation(&r, &differing, &meta, Some(std::path::Path::new("/w"))),
             Backfilled::Ambiguous(2)
         );
         // Two fits with the same window: one situation, matched.
@@ -6432,7 +6465,7 @@ mod situation_tests {
             iv(Trigger::Denial, "Denied by the user: no", &["shell"]),
         ];
         assert!(matches!(
-            backfill_situation(&r, &agreeing, &meta),
+            backfill_situation(&r, &agreeing, &meta, Some(std::path::Path::new("/w"))),
             Backfilled::Matched(_)
         ));
     }

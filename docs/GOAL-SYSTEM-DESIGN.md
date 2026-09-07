@@ -1950,8 +1950,13 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 
 > **Built 2026-09-07: the workspace as a scope key** (`feat/workspace-scope`).
 > `Situation::scope` keeps the workspace, `Situation::matches` requires
-> it exactly (the canonical jail on both sides; a run that records none
-> does not match), and `Situation::key` names it after the tools, so a
+> it exactly (a run that records none does not match), and
+> `Situation::key` names it after the tools, so a per-region tally splits
+> by workspace. The recorded key is the matched key by construction: the
+> run record keeps the workspace the block was matched against
+> (`RunConfig::rules_workspace`), and the miner stamps that — never the
+> session's jail, which on `serve` and Slack is a path no match presents
+> (found on review). So a
 > per-region tally splits by workspace and the roster's `loads with` line
 > says where. A batch whose reflections all came from one workspace scopes
 > its new rules there; a batch from two drops the key by intersection, as

@@ -465,12 +465,18 @@ not scope targets, as `Situation::of_run` says), through
 `rules_carried_for`, and a scoped rule enters the prefix only when the run
 registers every tool the scope names — a lesson from editing `mail_send`
 drafts loads where `mail_send` is mounted and nowhere else. The scope
-keys are the tool set and, since 2026-09-07, the workspace: the run's
-jail as `setup::prepare_tools` canonicalised it, matched exactly against the
-same spelling the session record carries (a jail is not a prefix, and
-a run that records none is not a match — and an empty recorded path is
-none at every door, the deserializer included, since a front-end that
-records no workspace writes one). The surface is recorded but
+keys are the tool set and, since 2026-09-07, the workspace `prepare`
+matched the block against (`setup::prepare_tools` canonicalises it),
+matched exactly (a jail is not a prefix, and a run that records none is
+not a match). **The recorded key is the matched key by construction:**
+the run record keeps that workspace as `RunConfig::rules_workspace`, and
+the miner, the backfill, the validator's region and the probe read it —
+never the session's jail, which differs from it wherever one block
+serves many jails (`serve` renders against the producer root and jails
+each session below it; Slack renders against its configured workspace
+and jails each thread) and would have scoped a lesson to a workspace no
+match presents. An empty recorded path is none at every door, the
+deserializer included. The surface is recorded but
 `prepare` does not know it (the front-end names the kind when it opens
 the session, after `prepare` returns). The workspace waited for
 region-widening on purpose: scoped to one with no way to widen, a rule

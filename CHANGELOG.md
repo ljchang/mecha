@@ -16,7 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there, a verbatim restatement from a second workspace's batch widens it
   by dropping the key, and a conviction in one workspace narrows it to
   the one it held in — the same harness arithmetic tools already had
-  (`GOAL-SYSTEM-DESIGN.md` §17.4). Rules from before the key carry no
+  (`GOAL-SYSTEM-DESIGN.md` §17.4). The run record keeps the workspace
+  the block was matched against (`RunConfig::rules_workspace`), and the
+  miner stamps a reflection with that rather than the session's jail —
+  on `serve` and Slack the two differ, and a lesson scoped to a jail no
+  match presents would be dark forever. Rules from before the key carry no
   workspace and load everywhere as they did. The surface stays recorded
   and unmatched, since `prepare` is not told the session kind.
 - **A project closes when the owner closes its last task, and its
