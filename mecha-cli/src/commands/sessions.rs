@@ -876,15 +876,12 @@ async fn appraise(
         }
         let v = appraisal::Valence::of(a);
         // Partial whether or not anything was signed: a silent reading
-        // over a short store is the one that most needs the mark.
-        valence.partial |= v.partial;
+        // over a short store is the one that most needs the mark — and a
+        // silent reading adds zero to every sum, so the merge is
+        // unconditional and only the count is gated.
+        valence.merge(&v);
         if !v.is_silent() {
             signed += 1;
-            valence.positive += v.positive;
-            valence.negative += v.negative;
-            valence.positives += v.positives;
-            valence.negatives += v.negatives;
-            valence.visible |= v.visible;
         }
         for e in &a.errors {
             *channels.entry(enum_key(e.channel)).or_default() += 1;

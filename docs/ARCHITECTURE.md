@@ -568,7 +568,7 @@ page, and evict a true belief with nobody in the loop.
 `distill::corrections_for` therefore withholds every correction unless the
 recorded taint is present and not untrusted — unknown counts as untrusted,
 the same way the taint snapshot refuses to let uncovered masquerade as clean
-— and `upsert_args` re-applies the same function at the the graph boundary, because
+— and `upsert_args` re-applies the same function at the graph boundary, because
 a boundary that trusts its caller is not one. The episode still goes; only the
 repairs are withheld. The trust decision is made *before* the body is written:
 a carrier episode describing a withheld correction would launder the claim
