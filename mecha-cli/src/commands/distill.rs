@@ -150,16 +150,25 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     // The charter, for the episode tag's sensored-line attribution
     // (§11.1) — one small file per distill run, and the one store this
-    // command does read beside the outbox, because the goal it yields is
-    // redacted to its kind word before the graph (`goal: "charter"`) and that is
-    // exactly the salience a queue reader wants.
+    // command does read beside the outbox. It is also what lets a charter
+    // id cross to the graph whole (`meta.serves_charter`, `charter:<id>`):
+    // `of_session` keeps a charter reference only if the loaded charter
+    // contains the line, so the pointer is resolved before it leaves.
     let (charter, charter_unreadable) = mecha_core::appraisal::load_charter();
     // The board's pointers, once per run, so a task or project id a run
     // named is resolved before it rides on an episode's `meta` — a token
     // is not a pointer until the board says so. Unreadable is said, and
     // then admits nothing: every such reference crosses as its kind word.
     let known = match distill::known_pointers(&client).await {
-        Ok(k) => k,
+        Ok(k) => {
+            if k.truncated {
+                eprintln!(
+                    "mecha: the board's answer was truncated — a task or project id it did not \
+                     list crosses as its kind word this run"
+                );
+            }
+            k
+        }
         Err(e) => {
             eprintln!(
                 "mecha: could not read the board for goal pointers — task and project ids \

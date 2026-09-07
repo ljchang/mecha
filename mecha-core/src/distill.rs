@@ -569,6 +569,12 @@ pub fn upsert_args(
 pub struct KnownPointers {
     tasks: std::collections::BTreeSet<String>,
     projects: std::collections::BTreeSet<String>,
+    /// The board said its answer was short. The direction is safe — a row
+    /// that did not arrive costs its pointer the kind word, never admits
+    /// one — but a large board would otherwise degrade every pointer with
+    /// nothing said, where `tasks set` names the same condition (found on
+    /// review). The caller prints it; this crate does not.
+    pub truncated: bool,
 }
 
 impl KnownPointers {
@@ -583,7 +589,10 @@ impl KnownPointers {
     /// was ever filed under is not on the board and does not cross — a
     /// named limit, since nothing else here can vouch for it.
     pub fn from_board(board: &Value) -> KnownPointers {
-        let mut out = KnownPointers::default();
+        let mut out = KnownPointers {
+            truncated: board["truncated"].as_bool() == Some(true),
+            ..KnownPointers::default()
+        };
         for t in board["items"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
             if let Some(id) = t["id"].as_str().filter(|s| !s.is_empty()) {
                 out.tasks.insert(id.to_string());
@@ -1358,6 +1367,12 @@ mod tests {
         assert!(!known.admits(&crate::goal::GoalRef::Project("task-a".into())));
         assert!(!known.admits(&crate::goal::GoalRef::Task("".into())));
         assert_eq!(KnownPointers::from_board(&json!({})), KnownPointers::none());
+        // A short answer still admits what arrived, and says it was short.
+        let short =
+            KnownPointers::from_board(&json!({"items": [{"id": "task-a"}], "truncated": true}));
+        assert!(short.truncated);
+        assert!(short.admits(&crate::goal::GoalRef::Task("task-a".into())));
+        assert!(!KnownPointers::from_board(&json!({"items": [], "truncated": false})).truncated);
     }
 
     #[test]
