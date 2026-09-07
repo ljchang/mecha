@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A deterministic fixture MCP server for the eval rig.
 
-The real pkg answers from the user's live knowledge graph, which drifts as it
+The real graph server answers from the user's live knowledge graph, which drifts as it
 ingests mail and Slack — a case graded against it passes today and fails next
 month, and fails on any other machine immediately. This server is the frozen
 stand-in: a small canned graph whose gold answers never move, so eval cases can
@@ -11,8 +11,9 @@ Two personas, selected by argv, so one file backs two `[[mcp]]` entries:
 
 - `--persona graph`  — kg_search / kg_entity / kg_related / kg_timeline
   (readOnlyHint) and kg_upsert (a write; echoes what was staged, stores
-  nothing). Serve it under the name `pkg` so tool names match the ones
-  `prompts/agent.md` teaches (`pkg__kg_search`, ...).
+  nothing). Serve it under the name `graph` with `prefix_tools = false`,
+  as `eval/mcp.toml` does, so the tool names are the bare `kg_*` that
+  `prompts/agent.md` teaches.
 - `--persona web`  — a single `fetch` tool, readOnlyHint + openWorldHint:
   read-only but an untrusted source and a send sink, exactly like
   `http_fetch`. Returns a canned status page. Its openWorldHint is what lets
@@ -28,7 +29,7 @@ import sys
 
 # --- the canned graph ------------------------------------------------------
 #
-# Cases in eval/pkg-cases.jsonl assert against these values. Change one and
+# Cases in eval/graph-cases.jsonl assert against these values. Change one and
 # the gold answers change with it — treat this block like a generated fixture.
 
 ENTITIES = {
@@ -69,7 +70,7 @@ ENTITIES = {
     },
 }
 
-# Facts per entity, mirroring what real pkg's kg_entity returns — including
+# Facts per entity, mirroring what the real graph's kg_entity returns — including
 # `polarity`. A "negative" fact is a recorded DENIAL: the graph knows the
 # claim to be false, which is not the same as the graph being silent on it.
 #
@@ -247,7 +248,7 @@ def entity_text(entity_id):
     if e is None:
         return None
     body = {k: e[k] for k in ("id", "kind", "name", "summary")}
-    # Real pkg returns facts with polarity; a fixture that omits them cannot
+    # The real graph returns facts with polarity; a fixture that omits them cannot
     # exercise how the agent handles a recorded denial.
     body["facts"] = FACTS.get(entity_id, [])
     return json.dumps(body)
@@ -279,7 +280,7 @@ def search(query):
     if not hits:
         return json.dumps({"results": [], "ambiguous": [], "note": "no results"})
 
-    # Real pkg attaches `flags` when it notices a problem with what it is
+    # The real graph attaches `flags` when it notices a problem with what it is
     # about to return — it detects, the agent judges. Without a fixture
     # carrying one, the agent prompt's flag rule is prose nothing can
     # test. Halcyon has two live target dates on a predicate that admits
@@ -388,7 +389,7 @@ def main():
                 {
                     "protocolVersion": "2025-06-18",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": f"pkg-fixture-{opts.persona}", "version": "0"},
+                    "serverInfo": {"name": f"graph-fixture-{opts.persona}", "version": "0"},
                 },
             )
         elif method == "tools/list":
