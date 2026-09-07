@@ -98,7 +98,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         Default::default()
     };
 
-    let sessions = Session::list(&sessions_dir)?;
+    // `list_counting`, so the reconcile below can say when a cited
+    // transcript is one the store could not read rather than one deleted.
+    let (sessions, unreadable_sessions) = Session::list_counting(&sessions_dir)?;
+    let paths: std::collections::HashMap<String, PathBuf> = sessions
+        .iter()
+        .map(|(meta, path)| (meta.id.clone(), path.clone()))
+        .collect();
     let mut todo: Vec<_> = sessions
         .into_iter()
         .filter(|(meta, _)| {
@@ -137,6 +143,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         None => Vec::new(),
     };
 
+    // Every pass, before anything is mined or batched: the workspace on
+    // each recorded situation against the run record. Not a flag a human
+    // runs once after installing — the nightly's `learn --auto` follows
+    // this pass, and a row stamped with a jail before the key existed
+    // would have scoped a rule to nowhere while the flag waited to be run
+    // (found on review). Free when there is nothing to apply.
+    reconcile_recorded_workspaces(&store, &paths, unreadable_sessions, args.dry_run)?;
+
     if todo.is_empty() && outbox_todo.is_empty() {
         println!("nothing to mine: every session and sent draft is already reflected on");
         return Ok(());
@@ -168,10 +182,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // and each session is jailed a level below, so a lesson stamped
         // with the jail scoped its rule to a workspace no run presents
         // (found on review). A record from before the field gives none.
-        let matched_workspace = Session::run_configs(path)
-            .ok()
-            .and_then(|cs| cs.into_iter().next())
-            .and_then(|rc| rc.rules_workspace);
+        let matched_workspace = matched_workspace_of(path).ok().flatten();
         let (_, convo) = match Session::load(path) {
             Ok(loaded) => loaded,
             Err(e) => {
@@ -378,6 +389,129 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 /// Frame one edited-then-sent outbox item as an intervention for the
 /// writing-domain reflector: the draft is the context, the diff is what the
 /// user did, the sent version is the aftermath.
+/// The workspace a session's rules block was matched against, off its
+/// first run record (`RunConfig::rules_workspace`) — the key a match
+/// presents, never the session's jail. `Ok(None)` for a record from before
+/// the field, or a run whose situation named no workspace; `Err` when the
+/// transcript cannot be read, which confirms nothing either way.
+fn matched_workspace_of(path: &Path) -> std::result::Result<Option<PathBuf>, String> {
+    Session::run_configs(path)
+        .map(|cs| cs.into_iter().next().and_then(|rc| rc.rules_workspace))
+        .map_err(|e| format!("session unreadable: {e:#}"))
+}
+
+/// Reconcile the workspace on every recorded situation with the key its
+/// session's rules block was matched against, decided row by row by
+/// `learning::reconcile_workspace` before anything is written: a row that
+/// records no workspace is not read at all (the reconcile never adds a
+/// key — an outbox edit's lesson scopes by tools on purpose, and a key
+/// added here would narrow it on no conviction); a session that cannot be
+/// found or read confirms nothing and the row stays, with the reason; a
+/// record that was read and disagrees sets what it names, `None` included.
+/// Runs on every `reflect` pass — the nightly's `learn --auto` follows it —
+/// so correctness does not depend on a human running a flag first (found
+/// on review). Commits its own writes; a pass with nothing to apply does
+/// not touch the file. Returns how many rows were (or would be) rewritten.
+fn reconcile_recorded_workspaces(
+    store: &LearningStore,
+    paths: &std::collections::HashMap<String, PathBuf>,
+    unreadable_sessions: usize,
+    dry_run: bool,
+) -> Result<usize> {
+    use mecha_core::learning::{reconcile_workspace, WorkspaceReconcile};
+    let present: Vec<_> = store
+        .reflexions()?
+        .into_iter()
+        .filter(|r| {
+            r.situation.as_ref().is_some_and(|s| s.workspace.is_some()) && !r.session_id.is_empty()
+        })
+        .collect();
+    if present.is_empty() {
+        return Ok(0);
+    }
+    let mut record_by_session: std::collections::HashMap<
+        String,
+        std::result::Result<Option<PathBuf>, String>,
+    > = Default::default();
+    let mut reconcile: Vec<(String, Option<PathBuf>)> = Vec::new();
+    let mut to_none = 0usize;
+    let mut left = 0usize;
+    let show = |w: Option<&PathBuf>| {
+        w.map(|w| w.display().to_string())
+            .unwrap_or_else(|| "none".into())
+    };
+    for r in &present {
+        let Some(s) = &r.situation else { continue };
+        let record = record_by_session
+            .entry(r.session_id.clone())
+            .or_insert_with(|| match paths.get(&r.session_id) {
+                Some(path) => matched_workspace_of(path),
+                None if unreadable_sessions > 0 => Err(format!(
+                    "no readable session matching \"{}\" — {unreadable_sessions} \
+                     transcript(s) in the store could not be read, and it may be one",
+                    r.session_id
+                )),
+                None => Err(format!("no session matching \"{}\"", r.session_id)),
+            })
+            .clone();
+        match reconcile_workspace(
+            s.workspace.as_deref(),
+            record.as_ref().map(|m| m.as_deref()).map_err(Clone::clone),
+        ) {
+            WorkspaceReconcile::Keep => {}
+            WorkspaceReconcile::Unreadable(why) => {
+                left += 1;
+                println!(
+                    "· {} keeps workspace {} — {why}",
+                    r.id,
+                    show(s.workspace.as_ref())
+                );
+            }
+            WorkspaceReconcile::Set(matched) => {
+                if matched.is_none() {
+                    to_none += 1;
+                }
+                println!(
+                    "· {} workspace {} → {}",
+                    r.id,
+                    show(s.workspace.as_ref()),
+                    if matched.is_none() {
+                        "none (the run record carries none)".to_string()
+                    } else {
+                        show(matched.as_ref())
+                    }
+                );
+                reconcile.push((r.id.clone(), matched));
+            }
+        }
+    }
+    let written = if dry_run {
+        reconcile.len()
+    } else {
+        let written = store.reconcile_workspaces(&reconcile, &chrono::Utc::now().to_rfc3339())?;
+        if written > 0 {
+            store.commit(&format!(
+                "reflect: {written} workspace(s) reconciled with the run record"
+            ));
+        }
+        written
+    };
+    if written + left > 0 {
+        println!(
+            "{} {written} workspace(s) of {} recorded against the run record ({to_none} to \
+             none: the record carries none; {left} left as recorded: session not found or \
+             unreadable)",
+            if dry_run {
+                "would reconcile"
+            } else {
+                "reconciled"
+            },
+            present.len()
+        );
+    }
+    Ok(written)
+}
+
 fn outbox_intervention(item: &mecha_core::outbox::OutboxItem) -> Intervention {
     let pretty =
         |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
@@ -417,27 +551,6 @@ fn outbox_intervention(item: &mecha_core::outbox::OutboxItem) -> Intervention {
 fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool) -> Result<()> {
     use mecha_core::learning::{backfill_situation, extract_interventions, Backfilled};
     let _lock = if dry_run { None } else { Some(store.lock()?) };
-    let all = store.reflexions()?;
-    let todo: Vec<_> = all
-        .iter()
-        .filter(|r| r.situation.is_none())
-        .cloned()
-        .collect();
-    // Rows that carry a situation are read too: one stamped before the
-    // run record kept `rules_workspace` carries the session's jail, which
-    // on `serve` and task sessions is a path no match presents, and the
-    // field was inert until the workspace became a scope key (found on
-    // review — 13 such rows on the machine that day). Reconciled below
-    // against the run record, to the matched workspace or to none.
-    let present: Vec<_> = all
-        .iter()
-        .filter(|r| r.situation.is_some() && !r.session_id.is_empty())
-        .cloned()
-        .collect();
-    if todo.is_empty() && present.is_empty() {
-        println!("every reflection carries a situation — nothing to backfill");
-        return Ok(());
-    }
     // The store listed once — `Session::find` is a full scan of the
     // directory per call (found on review) — then one read per cited
     // session, shared by every reflection that cites it.
@@ -450,6 +563,18 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
         .into_iter()
         .map(|(meta, path)| (meta.id, path))
         .collect();
+    // The workspace reconcile first — the ordinary pass runs it too, and
+    // this flag is the place to run it by hand and read every line.
+    reconcile_recorded_workspaces(store, &paths, unreadable_sessions, dry_run)?;
+    let todo: Vec<_> = store
+        .reflexions()?
+        .into_iter()
+        .filter(|r| r.situation.is_none())
+        .collect();
+    if todo.is_empty() {
+        println!("every reflection carries a situation — nothing to backfill");
+        return Ok(());
+    }
     // One session read: its record, its interventions, and the workspace
     // its rules block was matched against; or why it could not be read.
     type SessionRead = Result<
@@ -482,10 +607,7 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
             })?;
             let (meta, convo) =
                 Session::load(path).map_err(|e| format!("session unreadable: {e:#}"))?;
-            let matched = Session::run_configs(path)
-                .ok()
-                .and_then(|cs| cs.into_iter().next())
-                .and_then(|rc| rc.rules_workspace);
+            let matched = matched_workspace_of(path).ok().flatten();
             Ok((meta, extract_interventions(&convo.messages), matched))
         });
         match read {
@@ -510,108 +632,27 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
     for (id, why) in &unmatched {
         println!("· {id} stays without a situation — {why}");
     }
-    // The reconcile: each recorded workspace against the key its session's
-    // rules block was matched against, decided by `reconcile_workspace`
-    // before anything is written. Three outcomes, kept apart: a row that
-    // records no workspace keeps none (the reconcile never adds a key — an
-    // outbox edit's lesson scopes by tools on purpose, and a key added here
-    // would narrow it on no conviction); a session that cannot be found or
-    // read confirms nothing and the row stays, with the reason, as the
-    // absent-situation branch above already does; a record that was read
-    // and disagrees sets what it names, `None` included (found on review —
-    // the first draft wrote an unreadable session as "confirms none").
-    use mecha_core::learning::{reconcile_workspace, WorkspaceReconcile};
-    let mut record_by_session: std::collections::HashMap<String, Result<Option<PathBuf>, String>> =
-        Default::default();
-    let mut reconcile: Vec<(String, Option<PathBuf>)> = Vec::new();
-    let mut unconfirmed = 0usize;
-    let mut left = 0usize;
-    for r in &present {
-        let Some(s) = &r.situation else { continue };
-        let record = record_by_session
-            .entry(r.session_id.clone())
-            .or_insert_with(|| {
-                let path = paths.get(&r.session_id).ok_or_else(|| {
-                    if unreadable_sessions > 0 {
-                        format!(
-                            "no readable session matching \"{}\" — {unreadable_sessions} \
-                             transcript(s) in the store could not be read, and it may be one",
-                            r.session_id
-                        )
-                    } else {
-                        format!("no session matching \"{}\"", r.session_id)
-                    }
-                })?;
-                let configs =
-                    Session::run_configs(path).map_err(|e| format!("session unreadable: {e:#}"))?;
-                Ok(configs.into_iter().next().and_then(|rc| rc.rules_workspace))
-            })
-            .clone();
-        let show = |w: Option<&PathBuf>| {
-            w.map(|w| w.display().to_string())
-                .unwrap_or_else(|| "none".into())
-        };
-        match reconcile_workspace(
-            s.workspace.as_deref(),
-            record.as_ref().map(|m| m.as_deref()).map_err(|e| e.clone()),
-        ) {
-            WorkspaceReconcile::Keep => {}
-            WorkspaceReconcile::Unreadable(why) => {
-                left += 1;
-                println!(
-                    "· {} keeps workspace {} — {why}",
-                    r.id,
-                    show(s.workspace.as_ref())
-                );
-            }
-            WorkspaceReconcile::Set(matched) => {
-                if matched.is_none() {
-                    unconfirmed += 1;
-                }
-                println!(
-                    "· {} workspace {} → {}",
-                    r.id,
-                    show(s.workspace.as_ref()),
-                    if matched.is_none() {
-                        "none (the run record carries none)".to_string()
-                    } else {
-                        show(matched.as_ref())
-                    }
-                );
-                reconcile.push((r.id.clone(), matched));
-            }
-        }
-    }
     let verb = if dry_run {
         "would recompute"
     } else {
         "recomputed"
     };
-    let (written, reconciled) = if dry_run {
-        (updates.len(), reconcile.len())
+    let written = if dry_run {
+        updates.len()
     } else {
-        let now = chrono::Utc::now().to_rfc3339();
-        let written = store.set_situations(&updates, &now)?;
-        let reconciled = store.reconcile_workspaces(&reconcile, &now)?;
+        let written = store.set_situations(&updates, &chrono::Utc::now().to_rfc3339())?;
         // Committed on its own, like every batch pass over this store: the
         // rewrite changes which region batches the next `learn --auto`
         // argues, and left uncommitted it would ride into the next
         // nightly's `reflect: 0 session(s)` commit (found on review).
-        if written + reconciled > 0 {
+        if written > 0 {
             store.commit(&format!(
-                "reflect --backfill-situations: {written} situation(s) recomputed, {} left absent, \
-                 {reconciled} workspace(s) reconciled",
+                "reflect --backfill-situations: {written} situation(s) recomputed, {} left absent",
                 unmatched.len()
             ));
         }
-        (written, reconciled)
+        written
     };
-    println!(
-        "{verb} {reconciled} workspace(s) of {} recorded situation(s) against the run record \
-         ({unconfirmed} to none: the record carries no workspace; {left} left as recorded: \
-         session not found or unreadable)",
-        present.len()
-    );
     println!(
         "{verb} {written} of {} situation(s); {} left absent, {} session(s) read{}",
         todo.len(),
@@ -624,4 +665,157 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
         }
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::session::{Record, RunConfig, SessionKind, SessionMeta};
+
+    fn scratch(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{tag}-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ))
+    }
+
+    fn session_in(dir: &Path, jail: &str, matched: Option<&str>) -> Session {
+        let s = Session::create(
+            dir,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "p".into(),
+                model: "m".into(),
+                workspace: PathBuf::from(jail),
+                title: None,
+                kind: Some(SessionKind::Web),
+            },
+        )
+        .unwrap();
+        s.append(&Record::Config(RunConfig {
+            workspace: PathBuf::from(jail),
+            rules_workspace: matched.map(PathBuf::from),
+            ..Default::default()
+        }))
+        .unwrap();
+        s
+    }
+
+    /// The miner stamps the workspace the block was matched against, never
+    /// the session's jail — the bug that recurred on `serve`, Slack and task
+    /// sessions, each of which jails a run somewhere the block was not
+    /// rendered. Fails on the old read of `meta.workspace`.
+    #[test]
+    fn the_miner_reads_the_matched_workspace_and_never_the_jail() {
+        let dir = scratch("mecha-reflect-test");
+        let s = session_in(
+            &dir,
+            "/home/x/.mecha/work/web/main",
+            Some("/home/x/.mecha/work/web"),
+        );
+        assert_eq!(
+            s.meta.workspace,
+            PathBuf::from("/home/x/.mecha/work/web/main")
+        );
+        let matched = matched_workspace_of(&s.path).unwrap();
+        assert_eq!(
+            matched.as_deref(),
+            Some(Path::new("/home/x/.mecha/work/web"))
+        );
+        let recorded = mecha_core::situation::Situation::recorded(
+            &["shell".into()],
+            "denial",
+            s.meta.kind,
+            matched.as_deref(),
+        );
+        assert_eq!(
+            recorded.workspace.as_deref(),
+            Some(Path::new("/home/x/.mecha/work/web")),
+            "the key a match presents"
+        );
+        assert_ne!(
+            recorded.workspace,
+            Some(s.meta.workspace.clone()),
+            "not the jail"
+        );
+        // A record from before the field: no key, never the jail.
+        let old = session_in(&dir, "/jail", None);
+        assert_eq!(matched_workspace_of(&old.path).unwrap(), None);
+        // No transcript at all: unreadable, not "none".
+        assert!(matched_workspace_of(&dir.join("missing.jsonl")).is_err());
+    }
+
+    /// The pass over a store: a jailed row goes to the matched workspace,
+    /// a row whose session is gone stays as it is, a row with no workspace
+    /// is never given one, and the second pass writes nothing.
+    #[test]
+    fn the_reconcile_pass_sets_from_a_read_record_and_leaves_the_rest() {
+        use mecha_core::learning::Reflexion;
+        let dir = scratch("mecha-reconcile-pass");
+        let sessions = dir.join("sessions");
+        let store = LearningStore::open(dir.join("learning")).unwrap();
+        let s = session_in(&sessions, "/jail", Some("/root"));
+        let situated = |id: &str, session_id: &str, ws: Option<&str>| {
+            let r = Reflexion {
+                id: id.into(),
+                domain: "behavior".into(),
+                session_id: session_id.into(),
+                trigger: "denial".into(),
+                context: "c".into(),
+                intervention: "Denied by the user: no".into(),
+                reflexion_text: "t".into(),
+                error_type: None,
+                confidence: None,
+                is_processed: false,
+                leap_run_id: None,
+                created_at: "2026-09-07T00:00:00Z".into(),
+                origin: mecha_core::learning::Origin::Clean,
+                evidence: mecha_core::learning::Evidence::Full,
+                edited_at: None,
+                dropped_at: None,
+                dropped_reason: None,
+                situation: Some(mecha_core::situation::Situation::recorded(
+                    &["shell".into()],
+                    "denial",
+                    None,
+                    ws.map(Path::new),
+                )),
+                situation_recomputed_at: None,
+            };
+            store.append_reflexion(&r).unwrap();
+        };
+        situated("jailed", &s.meta.id, Some("/jail"));
+        situated("agrees", &s.meta.id, Some("/root"));
+        situated("gone", "20260101T000000-deadbeef", Some("/jail"));
+        situated("edit", &s.meta.id, None);
+        let (listed, unreadable) = Session::list_counting(&sessions).unwrap();
+        let paths: std::collections::HashMap<String, PathBuf> =
+            listed.into_iter().map(|(m, p)| (m.id, p)).collect();
+        assert_eq!(
+            reconcile_recorded_workspaces(&store, &paths, unreadable, false).unwrap(),
+            1
+        );
+        let ws = |id: &str| store.reflexion(id).unwrap().situation.unwrap().workspace;
+        assert_eq!(ws("jailed").as_deref(), Some(Path::new("/root")));
+        assert_eq!(ws("agrees").as_deref(), Some(Path::new("/root")));
+        assert_eq!(
+            ws("gone").as_deref(),
+            Some(Path::new("/jail")),
+            "unreadable: left"
+        );
+        assert_eq!(ws("edit"), None, "never given a key");
+        let file = dir.join("learning").join("reflections.jsonl");
+        let before = std::fs::read(&file).unwrap();
+        assert_eq!(
+            reconcile_recorded_workspaces(&store, &paths, unreadable, false).unwrap(),
+            0
+        );
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            before,
+            "free the second time"
+        );
+    }
 }

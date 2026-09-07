@@ -55,12 +55,13 @@
 //! A run record from before `rules_workspace` gives the miner no workspace,
 //! and its reflections scope by tools alone — no key, never a guess. Rows
 //! stamped before the field carry the session's jail, and were inert until
-//! the workspace became a key: `mecha reflect --backfill-situations`
-//! reconciles them against the run record
+//! the workspace became a key: every `mecha reflect` pass reconciles them
+//! against the run record before anything is mined or batched
 //! (`learning::reconcile_workspace` decides, `LearningStore::reconcile_workspaces`
 //! writes), to the matched workspace or to none — never adding a key a row
 //! did not carry, and leaving a row whose session cannot be read as it is.
-//! Run it once after installing the build that made the key.
+//! Not a flag a human runs once: the nightly's `learn --auto` follows the
+//! pass, and a rule scoped to a jail could never be consolidated back out.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
