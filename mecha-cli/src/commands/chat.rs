@@ -20,7 +20,11 @@ pub struct Args {
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
-    let mut prepared = setup::prepare(global, true).await?;
+    let opts = GlobalOpts {
+        surface: Some(mecha_core::session::SessionKind::Chat),
+        ..global.clone()
+    };
+    let mut prepared = setup::prepare(&opts, true).await?;
     let session_dir = Session::default_dir()?;
 
     // One conversation for the whole session: the taint travels with it, so a

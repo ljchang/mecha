@@ -812,6 +812,10 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
     // the one wired to the event loop, not a fresh terminal one that would
     // fight the interface for stdin.
     let approver: Arc<dyn Approver> = Arc::new(tui_approver);
+    let global = &GlobalOpts {
+        surface: Some(mecha_core::session::SessionKind::Tui),
+        ..global.clone()
+    };
     let mut prepared = setup::prepare_with_approver(global, Arc::clone(&approver)).await?;
 
     let session_dir = Session::default_dir()?;
@@ -3076,6 +3080,10 @@ async fn apply_switch(
     // **The mode in force, not the one the process started in.** See
     // `approver_for`: passing the retained approver here reverted the session
     // to asking while the status line still claimed otherwise.
+    let opts = GlobalOpts {
+        surface: Some(mecha_core::session::SessionKind::Tui),
+        ..opts
+    };
     let prepared = match setup::prepare_with_approver(&opts, approver_for(app.mode, approver)).await
     {
         Ok(p) => p,

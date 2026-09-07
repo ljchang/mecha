@@ -21,21 +21,34 @@
 //!
 //! A reflection records every key it can. A *rule* is scoped by the subset a
 //! run can be matched against at start — [`Situation::scope`] — and that
-//! is the tool set and the workspace: `prepare` knows the registry when it
-//! renders the rules block, and the workspace it matched against
-//! (`setup::prepare_tools` canonicalises it). **The recorded key is the
-//! matched key by construction**, as the tool list already was: the run
-//! record keeps the workspace the block was matched against
-//! (`RunConfig::rules_workspace`, from `RulesCarried::workspace`), and the
-//! miner, the backfill, the validator's region and the probe all read that
-//! — never the session's jail. The two differ where one block serves many
-//! jails: `serve` renders once against the producer root and jails each
-//! session a level below, Slack renders against its configured workspace
-//! and jails each thread under `~/.mecha/work/slack/`; a lesson stamped
-//! with the jail scoped its rule to a workspace no match presents, dark
-//! forever with nothing warning (found on review). The surface is recorded
-//! and not matched: the front-end names it when it opens the session, after
-//! `prepare` returns. A key joins [`Situation::scope`] and
+//! is the tool set, the workspace and the surface: `prepare` knows the
+//! registry when it renders the rules block, the workspace it matched against
+//! (`setup::prepare_tools` canonicalises it), and the surface the front-end
+//! told it (`GlobalOpts::surface`, set by the front-end that owns the run
+//! and never by a flag; the test override marks the session record and
+//! never the match, or a smoke test and every `mecha exp` trial would
+//! render a block with no surface-scoped rule in it; and every front-end
+//! that declares a surface appends the run record that keeps it, so a
+//! lesson mined there can be scoped to it). A stored scope naming a
+//! surface this build cannot read matches nothing rather than everything
+//! (parked verbatim as `surface_unread`) — the only key whose lenient read
+//! widened, and one a downgrade must not destroy. **The recorded key is the matched key by
+//! construction**, as the tool list already was: the run record keeps the
+//! workspace and surface the block was matched against
+//! (`RunConfig::rules_workspace` and `rules_surface`, from `RulesCarried`),
+//! and the miner, the backfill, the validator's region and the probe all
+//! read those — never the session's jail, never `SessionMeta::kind`; the
+//! miner and the backfill read the record covering the intervention's
+//! message (`Transcript::config_covering`), since a resumed question or
+//! a `/model` switch gives one session runs matched on different keys. The
+//! two differ where one block serves many jails: `serve` renders once
+//! against the producer root and jails each session a level below, Slack
+//! renders against its configured workspace and jails each thread under
+//! `~/.mecha/work/slack/`; a lesson stamped with the jail scoped its rule
+//! to a workspace no match presents, dark forever with nothing warning
+//! (found on review). The board's task door on `serve` is the surface
+//! case of the same shape: the session is recorded as a task and the
+//! block was matched as web. A key joins [`Situation::scope`] and
 //! [`Situation::matches`] in the same change, pinned by
 //! `scope_keys_and_matching_move_together`.
 //!
@@ -52,16 +65,17 @@
 //! none either (`rewritable_in` is equality), so a single-workspace batch
 //! shows it as context rather than narrowing it on no conviction.
 //!
-//! A run record from before `rules_workspace` gives the miner no workspace,
-//! and its reflections scope by tools alone — no key, never a guess. Rows
-//! stamped before the field carry the session's jail, and were inert until
-//! the workspace became a key: every `mecha reflect` pass reconciles them
-//! against the run record before anything is mined or batched
-//! (`learning::reconcile_workspace` decides, `LearningStore::reconcile_workspaces`
-//! writes), to the matched workspace or to none — never adding a key a row
-//! did not carry, and leaving a row whose session cannot be read as it is.
-//! Not a flag a human runs once: the nightly's `learn --auto` follows the
-//! pass, and a rule scoped to a jail could never be consolidated back out.
+//! A run record from before `rules_workspace` and `rules_surface` gives the
+//! miner neither key, and its reflections scope by tools alone — no key,
+//! never a guess. Rows stamped before the fields carry the session's jail
+//! and its kind, and were inert until each became a key: every `mecha
+//! reflect` pass reconciles them against the run record before anything is
+//! mined or batched (`learning::reconcile_key` decides per key,
+//! `LearningStore::reconcile_keys` writes), to a key some attach of the
+//! session presented or to none — never adding a key a row did not carry,
+//! and leaving a row whose session cannot be read as it is. Not a flag a
+//! human runs once: the nightly's `learn --auto` follows the pass, and a
+//! rule scoped to a jail could never be consolidated back out.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -70,44 +84,96 @@ use crate::session::SessionKind;
 
 /// The closed-set description of where a record was made. See the module
 /// doc for what may be a key.
+///
+/// Read and written through [`SituationWire`]: the load degrades, the
+/// store keeps the evidence. A surface string this build cannot name lands
+/// in [`Self::surface_unread`] and is written back as it came, so a
+/// downgrade parks the key rather than destroying it (found on review —
+/// a persisted `unknown` was never recovered by the build that could name
+/// it), and an empty workspace path reads as none.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "SituationWire", into = "SituationWire")]
 pub struct Situation {
     /// Registry-owned tool names in the order the trace touched them,
     /// deduplicated. The **last is the focus**: for a denial it is the tool
     /// refused, for a steer the tool the model was mid-way through.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
     /// [`crate::learning::Trigger::as_str`] of the intervention this was
     /// recorded at. How the lesson was *learned*, not where it applies — a
     /// rule learned from a denial applies whenever its tool is in play — so
     /// it is never a scope key.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<String>,
-    /// The surface the session ran on. Lenient on read like
-    /// `SessionMeta::kind`: a kind this build cannot name costs the field,
-    /// never the record.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "crate::session::de_lenient_kind"
-    )]
+    /// The surface the block was matched against, when this build can name
+    /// it. `None` here means "names no surface", and on a scope that is
+    /// every surface — so a surface this build cannot name is never read
+    /// as `None`: it is parked in [`Self::surface_unread`] instead, where
+    /// it matches nothing (found on review: the lenient read was the one
+    /// key whose malformed value widened a rule's reach). The session
+    /// record keeps its lenient read, where `None` means unknown.
     pub surface: Option<SessionKind>,
+    /// A stored surface this build could not name — a hand edit, or a kind
+    /// a newer binary wrote — kept verbatim so it round-trips. A key that
+    /// matches no run ([`Situation::matches`]), kept by [`Situation::scope`],
+    /// printed by the roster, reported at startup by
+    /// `LearningStore::unloadable_rules`, and replaced by the reflect
+    /// pass's reconcile with a key the run record confirms. Never set by
+    /// the two construction doors.
+    pub surface_unread: Option<String>,
     /// The workspace a match presents (see the module doc). Read through
     /// [`known_workspace`] like the two construction doors, because a
-    /// front-end that records none writes the empty path, and a row read
-    /// back as a set key would scope tonight's rules to a workspace no run
-    /// presents (found on review).
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "de_known_workspace"
-    )]
+    /// front-end that records no workspace writes the empty path, and a
+    /// row read back as a set key would scope tonight's rules to a
+    /// workspace no run presents (found on review).
     pub workspace: Option<PathBuf>,
 }
 
-fn de_known_workspace<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
-    let raw: Option<PathBuf> = Option::deserialize(d)?;
-    Ok(known_workspace(raw.as_deref()))
+/// The stored shape of a [`Situation`]: `surface` is whatever the file
+/// holds, so a value this build cannot name is kept rather than dropped.
+#[derive(Serialize, Deserialize)]
+struct SituationWire {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trigger: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    surface: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace: Option<PathBuf>,
+}
+
+impl From<SituationWire> for Situation {
+    fn from(w: SituationWire) -> Situation {
+        let (surface, surface_unread) = match w.surface {
+            None | Some(serde_json::Value::Null) => (None, None),
+            Some(serde_json::Value::String(s)) => match SessionKind::parse_lenient(&s) {
+                Some(k) => (Some(k), None),
+                None => (None, Some(s)),
+            },
+            Some(other) => (None, Some(other.to_string())),
+        };
+        Situation {
+            tools: w.tools,
+            trigger: w.trigger,
+            surface,
+            surface_unread,
+            workspace: known_workspace(w.workspace.as_deref()),
+        }
+    }
+}
+
+impl From<Situation> for SituationWire {
+    fn from(s: Situation) -> SituationWire {
+        SituationWire {
+            tools: s.tools,
+            trigger: s.trigger,
+            surface: match (s.surface, s.surface_unread) {
+                (Some(k), _) => Some(serde_json::Value::String(k.as_str().to_string())),
+                (None, Some(raw)) => Some(serde_json::Value::String(raw)),
+                (None, None) => None,
+            },
+            workspace: s.workspace,
+        }
+    }
 }
 
 impl Situation {
@@ -120,6 +186,18 @@ impl Situation {
     /// names one anyway. The list is the closed set of such tools; the CLI
     /// pins it against what its front-ends actually insert.
     pub const FRONTEND_TOOLS: &[&str] = &["ask_user", "recall", "show_file"];
+
+    /// The surface values that are corpus marks, not places: a process
+    /// puts them on the session record through `MECHA_SESSION_KIND`
+    /// (`Session::test_override`), and no front-end ever declares one to
+    /// `prepare`, so no run can present them at match time. The surface
+    /// key's mirror of [`Self::FRONTEND_TOOLS`]: [`Situation::scope`] drops
+    /// them, and `LearningStore::unloadable_rules` warns at startup about
+    /// a stored scope that names one anyway — a reflection stamped `test`
+    /// by the old miner, from a transcript since deleted so the reconcile
+    /// left it, would otherwise have scoped a rule to a surface nothing
+    /// matches, dark with nothing warning (found on review).
+    pub const MARK_KINDS: &[SessionKind] = &[SessionKind::Test, SessionKind::Experiment];
 
     /// The situation an intervention was recorded in.
     pub fn recorded(
@@ -138,6 +216,7 @@ impl Situation {
             tools: deduped,
             trigger: Some(trigger.to_string()),
             surface,
+            surface_unread: None,
             workspace: known_workspace(workspace),
         }
     }
@@ -162,8 +241,17 @@ impl Situation {
             tools: tools.to_vec(),
             trigger: None,
             surface: None,
+            surface_unread: None,
             workspace: known_workspace(workspace),
         }
+    }
+
+    /// The surface a run is on — what the front-end told `prepare`, and
+    /// what the run record keeps as `rules_surface`. `None` is unknown,
+    /// which matches no surface-scoped rule.
+    pub fn on(mut self, surface: Option<SessionKind>) -> Situation {
+        self.surface = surface;
+        self
     }
 
     /// The tool the record is *about* — the last one the trace touched.
@@ -186,11 +274,13 @@ impl Situation {
             .filter(|t| !Self::FRONTEND_TOOLS.contains(t))
     }
 
-    /// The keys a run can be matched against at start: the tool set and
-    /// the workspace (see the module doc for why the surface is not one).
-    /// Tools sorted, because a scope is a set and two batches whose regions
-    /// are the same tools in another order must be the same region; and
-    /// without the front-end tools, which no run registers at match time.
+    /// The keys a run can be matched against at start: the tool set, the
+    /// workspace and the surface. Tools sorted, because a scope is a set
+    /// and two batches whose regions are the same tools in another order
+    /// must be the same region; without the front-end tools, which no run
+    /// registers at match time; and without a surface that is a corpus
+    /// mark ([`Self::MARK_KINDS`]), which no run presents. The trigger is
+    /// never a key (see its field).
     pub fn scope(&self) -> Situation {
         let mut tools: Vec<String> = self
             .tools
@@ -203,7 +293,8 @@ impl Situation {
         Situation {
             tools,
             trigger: None,
-            surface: None,
+            surface: self.surface.filter(|k| !Self::MARK_KINDS.contains(k)),
+            surface_unread: self.surface_unread.clone(),
             workspace: self.workspace.clone(),
         }
     }
@@ -215,32 +306,48 @@ impl Situation {
     }
 
     /// The canonical name of a region: its scope's tools, sorted and joined
-    /// by a comma, then ` @ ` and the workspace when the scope names one;
-    /// empty for standing. What a per-region tally is keyed on, so two
-    /// windows that touched the same tools in another order fold into one
-    /// row, and two workspaces do not.
+    /// by a comma, then ` @ ` and the workspace and ` on ` and the surface
+    /// when the scope names them (an unread surface verbatim); empty for
+    /// standing. What a per-region tally is keyed on, so two windows that
+    /// touched the same tools in another order fold into one row, and two
+    /// workspaces or two surfaces do not.
     pub fn key(&self) -> String {
         let scope = self.scope();
+        let mut parts: Vec<String> = Vec::new();
         let tools = scope.tools.join(",");
-        match &scope.workspace {
-            Some(w) if tools.is_empty() => format!("@ {}", w.display()),
-            Some(w) => format!("{tools} @ {}", w.display()),
-            None => tools,
+        if !tools.is_empty() {
+            parts.push(tools);
         }
+        if let Some(w) = &scope.workspace {
+            parts.push(format!("@ {}", w.display()));
+        }
+        if let Some(k) = scope.surface {
+            parts.push(format!("on {}", k.as_str()));
+        }
+        if let Some(raw) = &scope.surface_unread {
+            parts.push(format!("on {raw}"));
+        }
+        parts.join(" ")
     }
 
     /// Whether a rule scoped to `self` belongs in `run`'s prefix. Every
     /// scope key `self` sets must hold in `run`; a key `self` does not set
-    /// constrains nothing. Two keys: every tool the scope names is in the
-    /// run's registry, and the workspace the scope names, if any, is the
-    /// one the run is jailed to — exactly, since both sides carry the
-    /// canonical path, and a jail is not a prefix.
+    /// constrains nothing. Three keys: every tool the scope names is in the
+    /// run's registry; the workspace the scope names, if any, is the one
+    /// the run is jailed to — exactly, since both sides carry the canonical
+    /// path, and a jail is not a prefix; and the surface the scope names,
+    /// if any, is the one the run's front-end declared — a run that
+    /// declared none matches no surface-scoped rule, and a scope naming a
+    /// surface this build cannot read ([`Self::surface_unread`]) matches
+    /// no run at all.
     pub fn matches(&self, run: &Situation) -> bool {
         self.tools.iter().all(|t| run.tools.contains(t))
             && self
                 .workspace
                 .as_ref()
                 .is_none_or(|w| run.workspace.as_ref() == Some(w))
+            && self.surface.is_none_or(|k| run.surface == Some(k))
+            && self.surface_unread.is_none()
     }
 
     /// The keys every member shares — the region a batch of reflections was
@@ -261,6 +368,9 @@ impl Situation {
             if out.surface != m.surface {
                 out.surface = None;
             }
+            if out.surface_unread != m.surface_unread {
+                out.surface_unread = None;
+            }
             if out.workspace != m.workspace {
                 out.workspace = None;
             }
@@ -280,6 +390,9 @@ impl Situation {
         }
         if let Some(k) = self.surface {
             parts.push(k.as_str().to_string());
+        }
+        if let Some(raw) = &self.surface_unread {
+            parts.push(format!("{raw} (a surface this build cannot name)"));
         }
         if let Some(w) = &self.workspace {
             parts.push(w.display().to_string());
@@ -353,8 +466,9 @@ mod tests {
     fn a_scope_matches_a_run_that_carries_every_tool_it_names() {
         let scope = s(&["shell"]).scope();
         let w = Path::new("/w");
-        let with = Situation::of_run(&["fs_read".into(), "shell".into()], Some(w));
-        let without = Situation::of_run(&["fs_read".into()], Some(w));
+        let with = Situation::of_run(&["fs_read".into(), "shell".into()], Some(w))
+            .on(Some(SessionKind::Tui));
+        let without = Situation::of_run(&["fs_read".into()], Some(w)).on(Some(SessionKind::Tui));
         assert!(scope.matches(&with));
         assert!(!scope.matches(&without));
         // Standing constrains nothing.
@@ -368,41 +482,60 @@ mod tests {
         assert!(!here.matches(&Situation::of_run(&["fs_read".into()], None)));
     }
 
-    /// The module doc promises the surface is recorded but not matched,
-    /// and the workspace is both. If a key joins `scope`, it must join
-    /// `matches` in the same change, or a rule scoped by it loads
+    /// Every key a reflection records is a scope key except the trigger,
+    /// and the two halves move together: if a key joins `scope`, it must
+    /// join `matches` in the same change, or a rule scoped by it loads
     /// everywhere (or nowhere) while the roster prints the key as though
     /// it meant something.
     #[test]
     fn scope_keys_and_matching_move_together() {
         let full = s(&["shell"]);
         let scope = full.scope();
-        assert_eq!(scope.trigger, None);
-        assert_eq!(scope.surface, None);
+        assert_eq!(
+            scope.trigger, None,
+            "how a lesson was learned is not where it applies"
+        );
+        assert_eq!(scope.surface, Some(SessionKind::Tui));
         assert_eq!(scope.workspace.as_deref(), Some(Path::new("/w")));
-        // Another surface in the same workspace still matches: the surface
-        // is not a key.
-        let other_surface = Situation {
+        // The same surface in the same workspace matches; another surface
+        // does not, and neither does a run that declared none.
+        let same = Situation {
             tools: vec!["shell".into()],
             trigger: None,
-            surface: Some(SessionKind::Trigger),
+            surface: Some(SessionKind::Tui),
+            surface_unread: None,
             workspace: Some(PathBuf::from("/w")),
         };
-        assert!(scope.matches(&other_surface));
-        assert!(full.matches(&other_surface));
+        assert!(scope.matches(&same));
+        assert!(full.matches(&same));
+        let other_surface = Situation {
+            surface: Some(SessionKind::Trigger),
+            ..same.clone()
+        };
+        assert!(!scope.matches(&other_surface));
+        assert!(!scope.matches(&Situation {
+            surface: None,
+            ..same.clone()
+        }));
+        // A scope that names no surface rides on every surface.
+        let anywhere =
+            Situation::recorded(&["shell".into()], "denial", None, Some(Path::new("/w")));
+        assert!(anywhere.scope().matches(&other_surface));
         // Another workspace does not, and neither does a run that records
         // none: a key the scope sets must hold, and unknown is not a match.
         let elsewhere = Situation {
             workspace: Some(PathBuf::from("/elsewhere")),
-            ..other_surface.clone()
+            ..same.clone()
         };
         assert!(!scope.matches(&elsewhere));
-        assert!(!scope.matches(&Situation::of_run(&["shell".into()], None)));
+        assert!(
+            !scope.matches(&Situation::of_run(&["shell".into()], None).on(Some(SessionKind::Tui)))
+        );
         // A jail is not a prefix: a run rooted below the scope's workspace
         // is another workspace.
         let below = Situation {
             workspace: Some(PathBuf::from("/w/sub")),
-            ..other_surface
+            ..same
         };
         assert!(!scope.matches(&below));
         // A scope from before the key carries no workspace and rides in
@@ -410,6 +543,97 @@ mod tests {
         let old: Situation = serde_json::from_str(r#"{"tools":["shell"]}"#).unwrap();
         assert!(old.matches(&elsewhere));
         assert!(old.matches(&below));
+        assert!(old.matches(&Situation::of_run(&["shell".into()], None)));
+    }
+
+    /// A stored scope naming a surface this build cannot read fails closed:
+    /// it keeps a key that matches no run, prints as such, and is never
+    /// produced by the two construction doors. The session record's lenient
+    /// read is untouched. Fails on the lenient read, which dropped the key
+    /// and rode the rule on every surface.
+    #[test]
+    fn an_unreadable_surface_on_a_scope_matches_nothing_and_round_trips() {
+        for (raw, kept) in [
+            (r#"{"tools":["shell"],"surface":"Tui"}"#, "Tui"),
+            (r#"{"tools":["shell"],"surface":7}"#, "7"),
+            (r#"{"tools":["shell"],"surface":"hologram"}"#, "hologram"),
+        ] {
+            let stored: Situation = serde_json::from_str(raw).unwrap();
+            assert_eq!(stored.surface, None, "{raw}");
+            assert_eq!(stored.surface_unread.as_deref(), Some(kept), "{raw}");
+            assert_eq!(
+                stored.scope().surface_unread.as_deref(),
+                Some(kept),
+                "kept: a key, not a mark"
+            );
+            for run in [
+                Situation::of_run(&["shell".into()], None).on(Some(SessionKind::Tui)),
+                Situation::of_run(&["shell".into()], None),
+            ] {
+                assert!(!stored.scope().matches(&run), "{raw} must match nothing");
+            }
+            assert_eq!(stored.key(), format!("shell on {kept}"));
+            // Written back as it came: the build that can name it gets it.
+            let back = serde_json::to_string(&stored).unwrap();
+            assert!(back.contains(&format!("\"surface\":\"{kept}\"")), "{back}");
+        }
+        let none: Situation = serde_json::from_str(r#"{"tools":["shell"]}"#).unwrap();
+        assert_eq!(none.surface, None, "absent is absent");
+        assert_eq!(none.surface_unread, None);
+        let tui: Situation =
+            serde_json::from_str(r#"{"tools":["shell"],"surface":"tui"}"#).unwrap();
+        assert_eq!(tui.surface, Some(SessionKind::Tui));
+        assert!(serde_json::to_string(&tui)
+            .unwrap()
+            .contains("\"surface\":\"tui\""));
+        assert!(!serde_json::to_string(&Situation::default())
+            .unwrap()
+            .contains("surface"));
+    }
+
+    /// A corpus mark is not a place: a situation recorded under the test
+    /// override scopes with no surface, so it can never pin a rule to a
+    /// surface no run presents — the mirror of a front-end focus.
+    #[test]
+    fn a_mark_kind_is_never_a_scope_key() {
+        for k in Situation::MARK_KINDS {
+            let marked =
+                Situation::recorded(&["shell".into()], "denial", Some(*k), Some(Path::new("/w")));
+            assert_eq!(marked.surface, Some(*k), "recorded as it was");
+            assert_eq!(marked.scope().surface, None, "never a key");
+            assert_eq!(marked.key(), "shell @ /w");
+            assert!(marked.scope().matches(
+                &Situation::of_run(&["shell".into()], Some(Path::new("/w")))
+                    .on(Some(SessionKind::Tui))
+            ));
+        }
+        assert_eq!(
+            s(&["shell"]).scope().surface,
+            Some(SessionKind::Tui),
+            "a real surface stays"
+        );
+    }
+
+    /// Two members on different surfaces share none, so the region — and
+    /// a widening by intersection — drops the key; the key names the
+    /// surface after the workspace.
+    #[test]
+    fn a_region_across_surfaces_drops_the_surface_key() {
+        let a = s(&["shell"]);
+        let mut b = s(&["shell"]);
+        b.surface = Some(SessionKind::Slack);
+        let region = Situation::region([&a, &b]).scope();
+        assert_eq!(region.surface, None);
+        assert_eq!(region.workspace.as_deref(), Some(Path::new("/w")));
+        assert_eq!(
+            Situation::region([&a, &s(&["shell"])]).scope().surface,
+            Some(SessionKind::Tui)
+        );
+        assert_eq!(s(&["shell"]).key(), "shell @ /w on tui");
+        assert_eq!(
+            Situation::recorded(&["shell".into()], "denial", Some(SessionKind::Web), None).key(),
+            "shell on web"
+        );
     }
 
     /// A session that recorded no workspace carries the empty path, and
@@ -466,13 +690,17 @@ mod tests {
     }
 
     #[test]
-    fn a_record_from_before_the_field_and_an_unknown_surface_both_load() {
+    fn a_record_from_before_the_field_loads_and_an_unknown_surface_fails_closed() {
         let old: Situation = serde_json::from_str("{}").unwrap();
         assert_eq!(old, Situation::default());
         let newer: Situation =
             serde_json::from_str(r#"{"tools":["shell"],"surface":"hologram"}"#).unwrap();
         assert_eq!(newer.tools, vec!["shell"]);
+        // A surface this build cannot name still costs no record — and on
+        // a stored situation it is parked verbatim, a key that matches
+        // nothing, never read as `None`, which would be every surface.
         assert_eq!(newer.surface, None);
+        assert_eq!(newer.surface_unread.as_deref(), Some("hologram"));
     }
 
     /// A scope is a set: order does not make two regions, and a tool no
@@ -504,21 +732,21 @@ mod tests {
     }
 
     /// A region's key is its scope, so two windows that differ in order,
-    /// trigger, surface or a front-end tool fold into one tally row, two
-    /// workspaces make two rows, and standing is the empty key.
+    /// trigger or a front-end tool fold into one tally row, two workspaces
+    /// or two surfaces make two rows, and standing is the empty key.
     #[test]
     fn the_key_is_the_scope_and_nothing_else() {
-        assert_eq!(s(&["shell", "fs_read"]).key(), "fs_read,shell @ /w");
+        assert_eq!(s(&["shell", "fs_read"]).key(), "fs_read,shell @ /w on tui");
         assert_eq!(
             s(&["fs_read", "shell", "ask_user"]).key(),
-            "fs_read,shell @ /w"
+            "fs_read,shell @ /w on tui"
         );
         let nowhere = Situation::recorded(&["shell".into()], "denial", None, None);
         assert_eq!(nowhere.key(), "shell");
         assert_eq!(Situation::default().key(), "");
         assert_eq!(
             s(&["ask_user"]).key(),
-            "@ /w",
+            "@ /w on tui",
             "a front-end focus in a workspace is still that workspace"
         );
         assert_eq!(
@@ -530,6 +758,7 @@ mod tests {
     #[test]
     fn describe_names_the_keys_and_standing_says_so() {
         assert_eq!(s(&["shell"]).describe(), "shell · denial · tui · /w");
+        assert_eq!(s(&["shell"]).scope().describe(), "shell · tui · /w");
         assert_eq!(Situation::default().describe(), "everywhere");
     }
 }

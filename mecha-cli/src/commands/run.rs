@@ -53,7 +53,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Nothing can answer an approval prompt when output is being piped or
     // parsed, so those runs use the configured permission mode instead.
     let interactive = std::io::stdin().is_terminal() && !args.json;
-    let mut prepared = setup::prepare(global, interactive).await?;
+    let opts = GlobalOpts {
+        surface: Some(mecha_core::session::SessionKind::Run),
+        ..global.clone()
+    };
+    let mut prepared = setup::prepare(&opts, interactive).await?;
 
     let session_dir = Session::default_dir()?;
     let mut convo = mecha_core::agent::Conversation::new();

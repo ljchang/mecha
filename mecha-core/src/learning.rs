@@ -287,10 +287,10 @@ pub enum Backfilled {
     Ambiguous(usize),
 }
 
-/// What the reconcile does to one recorded workspace, decided before any
-/// write ([`reconcile_workspace`]).
+/// What the reconcile does to one recorded key — the workspace or the
+/// surface — decided before any write ([`reconcile_key`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkspaceReconcile {
+pub enum KeyReconcile<T> {
     /// Nothing to do: the row records no workspace (a lesson that scopes by
     /// tools on purpose — an outbox edit, a triage correction — and the
     /// reconcile never *adds* a key, which would narrow on no conviction),
@@ -302,24 +302,40 @@ pub enum WorkspaceReconcile {
     /// review — it was written as one).
     Unreadable(String),
     /// The record was read and disagrees: the row takes what it names —
-    /// the matched workspace, or `None` where the record carries none.
-    Set(Option<std::path::PathBuf>),
+    /// the matched key, or `None` where the record carries none.
+    Set(Option<T>),
 }
 
-/// Decide the reconcile for one row: `recorded` is the workspace on its
-/// situation, `record` the session's first `RunConfig::rules_workspace`
-/// when the session was read, or why it could not be.
-pub fn reconcile_workspace(
-    recorded: Option<&std::path::Path>,
-    record: Result<Option<&std::path::Path>, String>,
-) -> WorkspaceReconcile {
+/// Decide the reconcile for one key of one row: `recorded` is the key on
+/// its situation, `record` the session's first run record's matched key
+/// when the session was read, or why it could not be. The same arithmetic
+/// for the workspace (`RunConfig::rules_workspace`) and the surface
+/// (`rules_surface`).
+pub fn reconcile_key<T: PartialEq + Clone>(
+    recorded: Option<&T>,
+    record: Result<Option<&T>, String>,
+) -> KeyReconcile<T> {
     let Some(recorded) = recorded else {
-        return WorkspaceReconcile::Keep;
+        return KeyReconcile::Keep;
     };
     match record {
-        Err(why) => WorkspaceReconcile::Unreadable(why),
-        Ok(Some(matched)) if matched == recorded => WorkspaceReconcile::Keep,
-        Ok(matched) => WorkspaceReconcile::Set(matched.map(std::path::Path::to_path_buf)),
+        Err(why) => KeyReconcile::Unreadable(why),
+        Ok(Some(matched)) if matched == recorded => KeyReconcile::Keep,
+        Ok(matched) => KeyReconcile::Set(matched.cloned()),
+    }
+}
+
+/// What one row's reconcile writes: each key `Some(new value)` to set —
+/// `Some(None)` clears it — or `None` to leave as recorded.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyUpdate {
+    pub workspace: Option<Option<std::path::PathBuf>>,
+    pub surface: Option<Option<crate::session::SessionKind>>,
+}
+
+impl KeyUpdate {
+    pub fn is_empty(&self) -> bool {
+        self.workspace.is_none() && self.surface.is_none()
     }
 }
 
@@ -329,24 +345,33 @@ pub fn reconcile_workspace(
 /// the intervention text, copied verbatim from `Intervention::text` at
 /// mining — since the message index is not on the record. `matched` is the
 /// workspace the session's rules block was matched against
-/// (`RunConfig::rules_workspace`), never the session's jail; a record from
-/// before that field gives `None`, and the reflection scopes by tools alone.
+/// (`RunConfig::rules_workspace`), never the session's jail, and the
+/// surface the one it was matched on (`RunConfig::rules_surface`), never
+/// `SessionMeta::kind` — both from the run record covering the
+/// intervention's message (`keys_at`), since a session may hold runs
+/// matched on different keys; a record from before those fields gives
+/// `None`, and the reflection scopes by tools alone.
 pub fn backfill_situation(
     r: &Reflexion,
     interventions: &[Intervention],
-    meta: &crate::session::SessionMeta,
-    matched: Option<&std::path::Path>,
+    keys_at: &dyn Fn(
+        usize,
+    ) -> (
+        Option<std::path::PathBuf>,
+        Option<crate::session::SessionKind>,
+    ),
 ) -> Backfilled {
     let mut fits: Vec<crate::situation::Situation> = Vec::new();
     for i in interventions {
         if i.trigger.as_str() != r.trigger || i.text != r.intervention {
             continue;
         }
+        let (matched, surface) = keys_at(i.at);
         let s = crate::situation::Situation::recorded(
             &i.tools_before,
             i.trigger.as_str(),
-            meta.kind,
-            matched,
+            surface,
+            matched.as_deref(),
         );
         if !fits.contains(&s) {
             fits.push(s);
@@ -927,8 +952,9 @@ pub fn near_restatements(before: &[Rule], after: &[Rule]) -> Vec<(String, String
 
 /// The distinct scopes among `situations`, in first-seen order — the
 /// sub-regions a batch of evidence spans. A recorded window is reduced to
-/// its scope first, so two windows that differ only in trigger, surface or
-/// order are one sub-region, as they are one region to the loader.
+/// its scope first, so two windows that differ only in trigger, order or a
+/// front-end tool are one sub-region, as they are one region to the
+/// loader; two that differ in workspace or surface are two.
 pub fn distinct_scopes(situations: &[Situation]) -> Vec<Situation> {
     let mut out: Vec<Situation> = Vec::new();
     for s in situations {
@@ -1014,6 +1040,13 @@ pub struct RulesCarried {
     /// jail no run presents is dark forever (found on review). `None` from
     /// [`Self::none`], and for a run whose situation named no workspace.
     pub workspace: Option<std::path::PathBuf>,
+    /// The surface the block was matched against (`GlobalOpts::surface`,
+    /// never the test override), recorded as `RunConfig::rules_surface`
+    /// for the same reason: the board's task door on `serve` records its
+    /// session as a task while the block was matched as web, and a lesson
+    /// stamped with the record's kind would scope to a surface no match
+    /// presents. `None` when the front-end declared none.
+    pub surface: Option<crate::session::SessionKind>,
 }
 
 impl Default for RulesCarried {
@@ -1034,6 +1067,7 @@ impl RulesCarried {
             hash: rules_hash(""),
             rule_ids: Vec::new(),
             workspace: None,
+            surface: None,
         }
     }
 }
@@ -1387,12 +1421,14 @@ impl LearningStore {
             block,
             rule_ids,
             workspace: run.workspace.clone(),
+            surface: run.surface,
         })
     }
 
     /// Active rules in `domains` whose scope names a tool no run registers
-    /// when the block is rendered ([`Situation::FRONTEND_TOOLS`]) — rules
-    /// that can never load, `(domain, tool, text)`. `Situation::scope`
+    /// when the block is rendered ([`Situation::FRONTEND_TOOLS`]) or a
+    /// surface no run presents ([`Situation::MARK_KINDS`]) — rules that can
+    /// never load, `(domain, what, text)` with `what` a phrase for the line. `Situation::scope`
     /// drops those names, so this reaches only a hand-edited or older
     /// file; startup warns on it like an unrouted domain, because a rule
     /// that cannot fire is indistinguishable from one being obeyed.
@@ -1410,8 +1446,34 @@ impl LearningStore {
                 let Some(scope) = &rule.scope else { continue };
                 for tool in &scope.tools {
                     if Situation::FRONTEND_TOOLS.contains(&tool.as_str()) {
-                        out.push((domain.to_string(), tool.clone(), rule.text.clone()));
+                        out.push((
+                            domain.to_string(),
+                            format!("the tool `{tool}`, which joins the registry after the block is rendered"),
+                            rule.text.clone(),
+                        ));
                     }
+                }
+                // The surface key's mirror: a corpus mark is a surface no
+                // front-end declares, so a stored scope naming one — an old
+                // miner's stamp, a hand edit — can never load either.
+                if let Some(k) = scope.surface.filter(|k| Situation::MARK_KINDS.contains(k)) {
+                    out.push((
+                        domain.to_string(),
+                        format!(
+                            "the surface `{}`, a corpus mark no run presents",
+                            k.as_str()
+                        ),
+                        rule.text.clone(),
+                    ));
+                }
+                // And a surface this build cannot read: kept on the scope so
+                // it matches nothing, and said here so it is not silent.
+                if let Some(raw) = &scope.surface_unread {
+                    out.push((
+                        domain.to_string(),
+                        format!("a surface this build cannot name (`{raw}`)"),
+                        rule.text.clone(),
+                    ));
                 }
             }
         }
@@ -1822,31 +1884,39 @@ impl LearningStore {
         Ok(written)
     }
 
-    /// Reconcile the workspace on recorded situations with the key the
-    /// session's rules block was matched against (`RunConfig::rules_workspace`).
-    /// Rows stamped before that field existed carry the session's *jail*,
-    /// which on `serve` and task sessions is a path no match presents — and
-    /// the field was inert until the workspace became a scope key, so those
-    /// rows would have scoped a rule to nowhere the moment it did (found on
-    /// review). Each update names the workspace the record confirms, or
-    /// `None` where it confirms none: unknown is not a key. Rows whose
-    /// workspace already agrees are untouched, and a pass with nothing to
-    /// apply does not touch the file, for the reason [`Self::set_situations`]
-    /// gives.
-    pub fn reconcile_workspaces(
+    /// Reconcile the keys on recorded situations — the workspace and the
+    /// surface — with what the session's rules block was matched against
+    /// (`RunConfig::rules_workspace`, `rules_surface`). Rows stamped before
+    /// those fields existed carry the session's *jail* and its *kind*,
+    /// which on `serve`, Slack and the board's task door are keys no match
+    /// presents — and each field was inert until it became a scope key, so
+    /// those rows would have scoped a rule to nowhere the moment it did
+    /// (found on review, twice). Each update names, per key, the value the
+    /// record confirms — `Some(None)` where it confirms none, `None` to
+    /// leave as recorded: unknown is not a key. A row whose keys already
+    /// agree is untouched, and a pass with nothing to apply does not touch
+    /// the file, for the reason [`Self::set_situations`] gives.
+    pub fn reconcile_keys(
         &self,
-        updates: &[(String, Option<std::path::PathBuf>)],
+        updates: &[(String, KeyUpdate)],
         recomputed_at: &str,
     ) -> Result<usize> {
-        let applicable: Vec<&(String, Option<std::path::PathBuf>)> = {
-            let current: std::collections::HashMap<String, Option<std::path::PathBuf>> = self
+        let applicable: Vec<&(String, KeyUpdate)> = {
+            let current: std::collections::HashMap<String, Situation> = self
                 .reflexions()?
                 .into_iter()
-                .filter_map(|r| r.situation.map(|s| (r.id, s.workspace)))
+                .filter_map(|r| r.situation.map(|s| (r.id, s)))
                 .collect();
             updates
                 .iter()
-                .filter(|(id, w)| current.get(id).is_some_and(|cur| cur != w))
+                .filter(|(id, u)| {
+                    current.get(id).is_some_and(|cur| {
+                        u.workspace.as_ref().is_some_and(|w| *w != cur.workspace)
+                            || u.surface.is_some_and(|k| k != cur.surface)
+                            // A parked surface is cleared by any surface update.
+                            || (u.surface.is_some() && cur.surface_unread.is_some())
+                    })
+                })
                 .collect()
         };
         if applicable.is_empty() {
@@ -1855,11 +1925,17 @@ impl LearningStore {
         let mut written = 0usize;
         self.rewrite_reflexions(|all| {
             for r in all.iter_mut() {
-                let Some((_, w)) = applicable.iter().find(|(id, _)| *id == r.id) else {
+                let Some((_, u)) = applicable.iter().find(|(id, _)| *id == r.id) else {
                     continue;
                 };
                 if let Some(s) = r.situation.as_mut() {
-                    s.workspace = w.clone();
+                    if let Some(w) = &u.workspace {
+                        s.workspace = w.clone();
+                    }
+                    if let Some(k) = u.surface {
+                        s.surface = k;
+                        s.surface_unread = None;
+                    }
                     r.situation_recomputed_at = Some(recomputed_at.to_string());
                     written += 1;
                 }
@@ -6211,18 +6287,39 @@ mod situation_tests {
         let rules =
             finalize_region_rules(learned, &[], region, &["a".into(), "c".into()], &[], "now");
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].scope, Some(shell()));
+        // The batch's reflections were all recorded on the TUI, so the
+        // surface is in the region too: the rule rides on the TUI where
+        // `shell` is registered, and nowhere else — not on another
+        // surface, and not in a run that declared none.
+        let tui = Some(crate::session::SessionKind::Tui);
+        assert_eq!(rules[0].scope, Some(shell().on(tui)));
 
         assert_eq!(
-            carried_in(&rules, &run_with(&["fs_read", "shell"])).count(),
+            carried_in(&rules, &run_with(&["fs_read", "shell"]).on(tui)).count(),
             1
         );
-        assert_eq!(carried_in(&rules, &run_with(&["fs_read"])).count(), 0);
+        assert_eq!(
+            carried_in(&rules, &run_with(&["fs_read"]).on(tui)).count(),
+            0
+        );
+        assert_eq!(
+            carried_in(&rules, &run_with(&["fs_read", "shell"])).count(),
+            0,
+            "no surface declared: no surface-scoped rule"
+        );
+        assert_eq!(
+            carried_in(
+                &rules,
+                &run_with(&["fs_read", "shell"]).on(Some(crate::session::SessionKind::Slack))
+            )
+            .count(),
+            0
+        );
         assert!(
             domain_rules_section_for("behavior", &[], &rules, &run_with(&["fs_read"])).is_none()
         );
         assert!(
-            domain_rules_section_for("behavior", &[], &rules, &run_with(&["shell"]))
+            domain_rules_section_for("behavior", &[], &rules, &run_with(&["shell"]).on(tui))
                 .unwrap()
                 .contains("destructive shell")
         );
@@ -6443,6 +6540,15 @@ mod situation_tests {
             Some(std::path::Path::new("/w"))
         );
         assert_eq!(RulesCarried::none().workspace, None);
+        assert_eq!(jailed.surface, None, "no surface declared: none matched");
+        let on_tui = store
+            .rules_carried_for(
+                &["behavior"],
+                &Situation::of_run(&["shell".into()], None)
+                    .on(Some(crate::session::SessionKind::Tui)),
+            )
+            .unwrap();
+        assert_eq!(on_tui.surface, Some(crate::session::SessionKind::Tui));
         assert_eq!(with.hash, rules_hash(with.block.as_deref().unwrap()));
         // The treatment arm of a gate: one domain's set replaced, rendered
         // for the same situation.
@@ -6488,15 +6594,6 @@ mod situation_tests {
     /// both read as absent — never the first one that fits.
     #[test]
     fn a_reflection_is_matched_to_its_intervention_by_trigger_and_text_or_not_at_all() {
-        let meta = crate::session::SessionMeta {
-            id: "s".into(),
-            created_at: "2026-09-04T00:00:00Z".parse().unwrap(),
-            provider: "local".into(),
-            model: "m".into(),
-            workspace: std::path::PathBuf::from("/w"),
-            title: None,
-            kind: Some(SessionKind::Web),
-        };
         let iv = |trigger: Trigger, text: &str, tools: &[&str]| Intervention {
             trigger,
             context: String::new(),
@@ -6519,7 +6616,10 @@ mod situation_tests {
             ),
         ];
         assert_eq!(
-            backfill_situation(&r, &interventions, &meta, Some(std::path::Path::new("/w"))),
+            backfill_situation(&r, &interventions, &|_| (
+                Some(std::path::PathBuf::from("/w")),
+                Some(SessionKind::Web)
+            )),
             Backfilled::Matched(Situation::recorded(
                 &["fs_read".into(), "shell".into()],
                 "denial",
@@ -6529,7 +6629,10 @@ mod situation_tests {
             "the trigger tells the two apart"
         );
         assert_eq!(
-            backfill_situation(&r, &[], &meta, Some(std::path::Path::new("/w"))),
+            backfill_situation(&r, &[], &|_| (
+                Some(std::path::PathBuf::from("/w")),
+                Some(SessionKind::Web)
+            )),
             Backfilled::NoMatch
         );
 
@@ -6539,7 +6642,10 @@ mod situation_tests {
             iv(Trigger::Denial, "Denied by the user: no", &["mail_send"]),
         ];
         assert_eq!(
-            backfill_situation(&r, &differing, &meta, Some(std::path::Path::new("/w"))),
+            backfill_situation(&r, &differing, &|_| (
+                Some(std::path::PathBuf::from("/w")),
+                Some(SessionKind::Web)
+            )),
             Backfilled::Ambiguous(2)
         );
         // Two fits with the same window: one situation, matched.
@@ -6548,51 +6654,105 @@ mod situation_tests {
             iv(Trigger::Denial, "Denied by the user: no", &["shell"]),
         ];
         assert!(matches!(
-            backfill_situation(&r, &agreeing, &meta, Some(std::path::Path::new("/w"))),
+            backfill_situation(&r, &agreeing, &|_| (
+                Some(std::path::PathBuf::from("/w")),
+                Some(SessionKind::Web)
+            )),
             Backfilled::Matched(_)
         ));
     }
 
-    /// The decision, before any write: a row with no workspace keeps none
-    /// whatever the record says (never add a key); a session that cannot be
-    /// read confirms nothing and the row stays; a record that agrees keeps;
-    /// a record that disagrees sets what it names, `None` included.
+    /// A stored scope naming a corpus-mark surface is reported beside one
+    /// naming a front-end tool: neither can ever load, and the startup line
+    /// says which.
     #[test]
-    fn a_workspace_is_reconciled_only_from_a_record_that_was_read_and_disagrees() {
-        use std::path::Path;
-        let w = Path::new("/w");
-        let jail = Path::new("/home/x/.mecha/work/web/main");
+    fn a_scope_naming_a_mark_kind_is_reported_as_unloadable() {
+        use crate::session::SessionKind;
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-unloadable-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = LearningStore::open(&dir).unwrap();
+        let marked = Rule {
+            scope: Some(Situation {
+                tools: vec!["shell".into()],
+                trigger: None,
+                surface: Some(SessionKind::Test),
+                surface_unread: None,
+                workspace: None,
+            }),
+            ..rule("Marked.", "r-m", None)
+        };
+        let fine = rule("Fine.", "r-f", Some(shell().on(Some(SessionKind::Tui))));
+        let unreadable = Rule {
+            scope: Some(Situation {
+                surface_unread: Some("copilot".into()),
+                ..shell()
+            }),
+            ..rule("Unreadable.", "r-u", None)
+        };
+        store
+            .write_learned_rules("behavior", &[marked, fine, unreadable])
+            .unwrap();
+        let out = store.unloadable_rules(&["behavior"]).unwrap();
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert!(out[0].1.contains("surface `test`"), "{}", out[0].1);
+        assert_eq!(out[0].2, "Marked.");
+        assert!(out[1].1.contains("cannot name"), "{}", out[1].1);
+        assert_eq!(out[1].2, "Unreadable.");
+    }
+
+    /// The decision, before any write, the same for either key: a row with
+    /// none keeps none whatever the record says (never add a key); a
+    /// session that cannot be read confirms nothing and the row stays; a
+    /// record that agrees keeps; a record that disagrees sets what it
+    /// names, `None` included.
+    #[test]
+    fn a_key_is_reconciled_only_from_a_record_that_was_read_and_disagrees() {
+        use std::path::{Path, PathBuf};
+        let w = PathBuf::from("/w");
+        let jail = PathBuf::from("/home/x/.mecha/work/web/main");
         assert_eq!(
-            reconcile_workspace(None, Ok(Some(w))),
-            WorkspaceReconcile::Keep
+            reconcile_key(None, Ok(Some(&w))),
+            KeyReconcile::<PathBuf>::Keep
+        );
+        assert_eq!(reconcile_key::<PathBuf>(None, Ok(None)), KeyReconcile::Keep);
+        assert_eq!(
+            reconcile_key(Some(&jail), Err("no session".into())),
+            KeyReconcile::<PathBuf>::Unreadable("no session".into())
+        );
+        assert_eq!(reconcile_key(Some(&w), Ok(Some(&w))), KeyReconcile::Keep);
+        assert_eq!(
+            reconcile_key(Some(&jail), Ok(Some(&w))),
+            KeyReconcile::Set(Some(Path::new("/w").to_path_buf()))
         );
         assert_eq!(
-            reconcile_workspace(None, Ok(None)),
-            WorkspaceReconcile::Keep
+            reconcile_key(Some(&jail), Ok(None)),
+            KeyReconcile::Set(None)
+        );
+        // The surface, the same way.
+        use crate::session::SessionKind;
+        assert_eq!(
+            reconcile_key(Some(&SessionKind::Task), Ok(Some(&SessionKind::Web))),
+            KeyReconcile::Set(Some(SessionKind::Web))
         );
         assert_eq!(
-            reconcile_workspace(Some(jail), Err("no session".into())),
-            WorkspaceReconcile::Unreadable("no session".into())
+            reconcile_key(Some(&SessionKind::Tui), Ok(Some(&SessionKind::Tui))),
+            KeyReconcile::Keep
         );
         assert_eq!(
-            reconcile_workspace(Some(w), Ok(Some(w))),
-            WorkspaceReconcile::Keep
-        );
-        assert_eq!(
-            reconcile_workspace(Some(jail), Ok(Some(w))),
-            WorkspaceReconcile::Set(Some(w.to_path_buf()))
-        );
-        assert_eq!(
-            reconcile_workspace(Some(jail), Ok(None)),
-            WorkspaceReconcile::Set(None)
+            reconcile_key::<SessionKind>(None, Ok(Some(&SessionKind::Tui))),
+            KeyReconcile::Keep
         );
     }
 
-    /// A recorded workspace that the run record does not confirm is
-    /// reconciled — to the matched one, or to none — and one that agrees is
+    /// A recorded key that the run record does not confirm is reconciled —
+    /// to the matched one, or to none — per key; one that agrees is
     /// untouched; a pass with nothing to apply leaves the file byte-identical.
     #[test]
-    fn reconcile_workspaces_rewrites_only_a_workspace_the_record_disagrees_with() {
+    fn reconcile_keys_rewrites_only_a_key_the_record_disagrees_with() {
+        use crate::session::SessionKind;
         let dir = std::env::temp_dir().join(format!(
             "mecha-reconcile-test-{}-{}",
             std::process::id(),
@@ -6600,8 +6760,11 @@ mod situation_tests {
         ));
         let store = LearningStore::open(&dir).unwrap();
         let mut jailed = refl("jailed", &["shell"], "denial");
-        jailed.situation.as_mut().unwrap().workspace =
-            Some(std::path::PathBuf::from("/home/x/.mecha/work/web/main"));
+        {
+            let s = jailed.situation.as_mut().unwrap();
+            s.workspace = Some(std::path::PathBuf::from("/home/x/.mecha/work/web/main"));
+            s.surface = Some(SessionKind::Task);
+        }
         let mut fine = refl("fine", &["shell"], "denial");
         fine.situation.as_mut().unwrap().workspace = Some(std::path::PathBuf::from("/w"));
         let mut absent = refl("absent", &[], "denial");
@@ -6610,18 +6773,60 @@ mod situation_tests {
             store.append_reflexion(r).unwrap();
         }
         let updates = vec![
-            ("jailed".to_string(), None),
-            ("fine".to_string(), Some(std::path::PathBuf::from("/w"))),
-            ("absent".to_string(), Some(std::path::PathBuf::from("/w"))),
+            (
+                "jailed".to_string(),
+                KeyUpdate {
+                    workspace: Some(None),
+                    surface: Some(Some(SessionKind::Web)),
+                },
+            ),
+            (
+                "fine".to_string(),
+                KeyUpdate {
+                    workspace: Some(Some(std::path::PathBuf::from("/w"))),
+                    surface: None,
+                },
+            ),
+            (
+                "absent".to_string(),
+                KeyUpdate {
+                    workspace: Some(Some(std::path::PathBuf::from("/w"))),
+                    surface: None,
+                },
+            ),
         ];
-        assert_eq!(store.reconcile_workspaces(&updates, "now").unwrap(), 1);
+        // A row whose surface is parked verbatim: a clear applies to it
+        // even though its `surface` already reads none (found on review).
+        let mut parked = refl("parked", &["shell"], "denial");
+        parked.situation.as_mut().unwrap().surface_unread = Some("copilot".into());
+        store.append_reflexion(&parked).unwrap();
+        let mut updates = updates;
+        updates.push((
+            "parked".to_string(),
+            KeyUpdate {
+                workspace: None,
+                surface: Some(None),
+            },
+        ));
+        assert_eq!(store.reconcile_keys(&updates, "now").unwrap(), 2);
         let all = store.reflexions().unwrap();
+        let p = all.iter().find(|r| r.id == "parked").unwrap();
+        assert_eq!(
+            p.situation.as_ref().unwrap().surface_unread,
+            None,
+            "cleared"
+        );
+        assert_eq!(p.situation.as_ref().unwrap().surface, None);
         let j = all.iter().find(|r| r.id == "jailed").unwrap();
         assert_eq!(j.situation.as_ref().unwrap().workspace, None);
         assert_eq!(
+            j.situation.as_ref().unwrap().surface,
+            Some(SessionKind::Web)
+        );
+        assert_eq!(
             j.situation.as_ref().unwrap().tools,
             vec!["shell"],
-            "only the key moved"
+            "only the keys moved"
         );
         assert_eq!(j.situation_recomputed_at.as_deref(), Some("now"));
         let f = all.iter().find(|r| r.id == "fine").unwrap();
@@ -6634,7 +6839,7 @@ mod situation_tests {
             .is_none());
         let file = dir.join("reflections.jsonl");
         let before = std::fs::read(&file).unwrap();
-        assert_eq!(store.reconcile_workspaces(&updates, "later").unwrap(), 0);
+        assert_eq!(store.reconcile_keys(&updates, "later").unwrap(), 0);
         assert_eq!(
             std::fs::read(&file).unwrap(),
             before,

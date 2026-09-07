@@ -2203,7 +2203,11 @@ async fn draft(
         .get(&account, thread_id)
         .with_context(|| format!("no such thread: {thread_id}"))?;
 
-    let prepared = setup::prepare(global, false).await?;
+    let opts = GlobalOpts {
+        surface: Some(mecha_core::session::SessionKind::Mail),
+        ..global.clone()
+    };
+    let prepared = setup::prepare(&opts, false).await?;
     if prepared.agent.context().outbox.is_none() {
         bail!(
             "drafting needs the outbox: name your send tools in `[outbox] tools` \
@@ -2224,6 +2228,17 @@ async fn draft(
             kind: Some(mecha_core::session::SessionKind::Mail),
         },
     )?;
+    // The run record, as every other front-end writes one — the surface
+    // declared above is recorded only through it (found on review).
+    session.append(&mecha_core::session::Record::Config(
+        mecha_core::session::RunConfig::of(
+            &prepared.agent,
+            &prepared.config,
+            &prepared.provider_name,
+            &prepared.levers_off,
+            Some(&prepared.rules),
+        ),
+    ))?;
     if let Some(route) = &prepared.agent.context().outbox {
         route.set_session_id(&session.meta.id);
     }

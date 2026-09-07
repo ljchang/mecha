@@ -265,6 +265,23 @@ async fn answer_and_resume(
     if opts.workspace.is_none() {
         opts.workspace = q.workspace.clone();
     }
+    // The asking session, read once and before the MCP servers start: its
+    // transcript is the conversation the run resumes, and its first run
+    // record is the surface the asking run's block was matched against —
+    // restored, like the jail above, never asserted. The board's task door
+    // on `serve` parks a run whose block was matched as `web` while its
+    // session records `task`; a continuation that asserted `task`
+    // re-rendered the block on another surface mid-conversation and
+    // recorded a key the miner then stamped over (found on review). And a
+    // record naming none — before the field, `--no-learned-rules`, no
+    // store on disk — is a run that matched no surface-scoped rule, so
+    // the continuation declares none too: unknown is not a key (found on
+    // review, twice).
+    let dir = Session::default_dir()?;
+    let path = Session::find(&dir, &q.session_id)
+        .with_context(|| format!("the session that asked ({}) is gone", q.session_id))?;
+    let asked = Session::read(&path)?;
+    opts.surface = asked.configs.first().and_then(|rc| rc.rules_surface);
     let mut prepared = setup::prepare(&opts, !unattended).await?;
 
     // The same refusal `tasks work` makes, for the same reason: this is that
@@ -288,10 +305,7 @@ async fn answer_and_resume(
         }
     }
 
-    let dir = Session::default_dir()?;
-    let path = Session::find(&dir, &q.session_id)
-        .with_context(|| format!("the session that asked ({}) is gone", q.session_id))?;
-    let (meta, prior) = Session::load(&path)?;
+    let (meta, prior) = (asked.meta, asked.convo);
 
     // D15 — the plan comes back with the conversation, so the resumed run
     // reads its own list rather than rebuilding one from the summary.
