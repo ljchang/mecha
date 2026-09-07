@@ -435,7 +435,7 @@ comparisons across the boundary.
 mecha eval eval/graph-cases.jsonl --mcp-file eval/mcp.toml --judge-provider gemma26
 ```
 
-It runs against **fixture servers** (`eval/fixtures/pkg_server.py`, declared in
+It runs against **fixture servers** (`eval/fixtures/graph_server.py`, declared in
 `eval/mcp.toml`) — a frozen fake of the knowledge graph, because the real one
 answers from live machine-local data and a case graded against it measures
 nothing repeatable. `--mcp-file` connects exactly the servers named in that

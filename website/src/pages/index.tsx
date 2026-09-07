@@ -137,9 +137,16 @@ mecha trigger add briefing --schedule "0 7 * * 1-5" \\
 name = "mail"          # every account behind one surface
 command = "mecha-mail"
 
+[mcp.capabilities]     # other people's words: config says so, no annotation can
+untrusted_input = true
+
 [[mcp]]
-name = "pkg"           # who people are, and what happened when
-command = "pkg-mcp"
+name = "graph"         # who people are, and what happened when
+command = "mecha-graph-mcp"
+prefix_tools = false   # its kg_* tools carry their own namespace
+
+[mcp.capabilities]     # the graph holds what mail said, so the same override
+untrusted_input = true
 
 [outbox]               # staged for review, never sent outright
 tools = ["mail__mail_send", "mail__mail_reply"]`}

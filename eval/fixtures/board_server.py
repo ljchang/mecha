@@ -99,6 +99,7 @@ class Store:
                 ("defer_until", None),
                 ("context", None),
                 ("project", None),
+                ("project_id", None),
                 ("waiting_on", None),
                 ("about", []),
                 ("previously_waiting_on", None),
@@ -109,6 +110,17 @@ class Store:
             ):
                 if key not in t:
                     t[key] = default
+                    changed = True
+            # A seed names its project; the row carries the node's id beside
+            # it, as the real server renders every parented row (mecha-graph
+            # 0.1.6). Resolved on first read rather than written into the
+            # seed, so the name and the id cannot drift apart — and so the
+            # lifetime home exercises the built path of the project tier, not
+            # the pre-column fallback (found on review).
+            if t.get("project") and not t.get("project_id"):
+                node = self.resolve_node(t["project"])
+                if node is not None:
+                    t["project_id"] = node["id"]
                     changed = True
             if "created_at" not in t:
                 t["created_at"] = now()
@@ -194,6 +206,9 @@ def task_json(t, today_str):
         "defer_until": t.get("defer_until"),
         "context": t.get("context"),
         "project": t.get("project"),
+        # The parent's node id beside its name, as mecha-graph 0.1.6 renders
+        # it: the pointer a consumer cites, where the name is prose.
+        "project_id": t.get("project_id"),
         "waiting_on": t.get("waiting_on"),
         "about": t.get("about", []),
         "previously_waiting_on": t.get("previously_waiting_on"),
@@ -292,6 +307,7 @@ def kg_task_create(store, args):
         "defer_until": None,
         "context": args.get("context"),
         "project": store.resolve_node(project)["name"] if project is not None else None,
+        "project_id": store.resolve_node(project)["id"] if project is not None else None,
         "waiting_on": None,
         "about": [{"name": store.resolve_about(a)["name"], "unreviewed": False} for a in about],
         "previously_waiting_on": None,
@@ -303,7 +319,12 @@ def kg_task_create(store, args):
     }
     store.board["tasks"].append(task)
     store.save_board()
-    return {"v": 1, "status": "created", "id": task["id"], "due_at": due, "about": task["about"]}
+    # The whole row under `task` beside the top-level keys, as the real
+    # server's create echo renders it.
+    return {
+        "v": 1, "status": "created", "id": task["id"], "due_at": due, "about": task["about"],
+        "task": task_json(task, today()),
+    }
 
 
 def kg_task_update(store, args):
@@ -334,6 +355,19 @@ def kg_task_update(store, args):
     # review).
     if captured is not None and captured != "":
         check_captured_from(captured)
+    # Re-file, resolved before the first write like the real server (mecha-graph
+    # 0.1.6): a name or node id, "" clears; a non-string is refused, not dropped.
+    project = args.get("project")
+    parent = "untouched"
+    if project is not None:
+        if not isinstance(project, str):
+            raise ToolError(f"`project` must be a string — a name or a node id — not {project!r}")
+        if project.strip():
+            parent = store.resolve_node(project)
+            if parent is None:
+                raise ToolError(f"no node matches project '{project}' — nothing was changed")
+        else:
+            parent = None
 
     if status is not None:
         was_closed = t["status"] in ("done", "dropped")
@@ -355,6 +389,9 @@ def kg_task_update(store, args):
         t["waiting_on"] = store.resolve_about(who)["name"] if who.strip() else None
     if isinstance(args.get("session"), str):
         t["session"] = args["session"] or None
+    if parent != "untouched":
+        t["project"] = parent["name"] if parent else None
+        t["project_id"] = parent["id"] if parent else None
     for a in to_add:
         nm = store.resolve_about(a)["name"]
         if not any(x.get("name") == nm for x in t["about"]):
@@ -468,7 +505,7 @@ TOOLS = [
     {
         "name": "kg_task_list",
         "annotations": {"readOnlyHint": True, "openWorldHint": False},
-        "description": "The GTD board: every open task, actionable statuses first (next, inbox, scheduled, waiting), then by due date. Each task carries its status, due/defer dates, parent project, who it is waiting on, the entities it is `about`, and — when captured from something — a `captured_from` pointer. Use it to answer 'what should Ada do next', to check whether something is already tracked, and to find overdue items (due_at earlier than today). include_closed adds done/dropped history. `entity` narrows to one person, project or topic.",
+        "description": "The GTD board: every open task, actionable statuses first (next, inbox, scheduled, waiting), then by due date. Each task carries its status, due/defer dates, parent project (`project` is its name, `project_id` its node id — cite the id), who it is waiting on, the entities it is `about`, and — when captured from something — a `captured_from` pointer. Use it to answer 'what should Ada do next', to check whether something is already tracked, and to find overdue items (due_at earlier than today). include_closed adds done/dropped history. `entity` narrows to one person, project or topic.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -521,6 +558,7 @@ TOOLS = [
                 "about_add": {"type": "array", "items": {"type": "string"}},
                 "about_remove": {"type": "array", "items": {"type": "string"}},
                 "session": {"type": "string", "description": "The agent conversation working this task. Set by the harness — do not invent a value; \"\" clears."},
+                "project": {"type": "string", "description": "Re-file under this parent, by name or node id, resolved before anything in this call is written; \"\" clears the parent."},
                 "captured_from": {"description": "Same object kg_task_create takes; \"\" clears."},
             },
             "required": ["task"],

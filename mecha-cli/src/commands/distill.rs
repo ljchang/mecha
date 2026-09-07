@@ -5,9 +5,9 @@
 //! from the moments the user stepped in; distill records *what happened* —
 //! what the user would ask a personal assistant later — as an episode pushed
 //! through the graph server's `kg_upsert`. Evidence, not belief: the facts
-//! pkg extracts from the episode wait in its review queue.
+//! the graph extracts from the episode wait in its review queue.
 //!
-//! Idempotent like reflect: distilled session ids are ledgered (and pkg's
+//! Idempotent like reflect: distilled session ids are ledgered (and the graph's
 //! `(source, source_id)` key makes a duplicate push an update anyway), so a
 //! nightly run or a `session_end` hook only ever pays for the new sessions.
 
@@ -150,10 +150,44 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     // The charter, for the episode tag's sensored-line attribution
     // (§11.1) — one small file per distill run, and the one store this
-    // command does read beside the outbox, because the goal it yields is
-    // redacted to its kind word before pkg (`goal: "charter"`) and that is
-    // exactly the salience a queue reader wants.
+    // command does read beside the outbox. It is also what lets a charter
+    // id cross to the graph whole (`meta.serves_charter`, `charter:<id>`):
+    // `of_session` keeps a charter reference only if the loaded charter
+    // contains the line, so the pointer is resolved before it leaves.
     let (charter, charter_unreadable) = mecha_core::appraisal::load_charter();
+    // The board's pointers, once per run, so a task or project id a run
+    // named is resolved before it rides on an episode's `meta` — a token
+    // is not a pointer until the board says so. Unreadable is said, and
+    // then admits nothing: every such reference crosses as its kind word.
+    let charter_lines: Vec<String> = charter
+        .as_ref()
+        .map(|c| c.lines().iter().map(|l| l.id.clone()).collect())
+        .unwrap_or_default();
+    let known = match distill::known_pointers(&client).await {
+        Ok(k) => {
+            if k.unreadable {
+                eprintln!(
+                    "mecha: the board's answer carried no task list this build can read — task \
+                     and project ids cross as kind words this run"
+                );
+            }
+            if k.truncated {
+                eprintln!(
+                    "mecha: the board's answer was truncated — a task or project id it did not \
+                     list crosses as its kind word this run"
+                );
+            }
+            k
+        }
+        Err(e) => {
+            eprintln!(
+                "mecha: could not read the board for goal pointers — task and project ids \
+                 cross as kind words this run: {e:#}"
+            );
+            distill::KnownPointers::none()
+        }
+    }
+    .with_charter_lines(charter_lines);
 
     let mut distilled = 0usize;
     let mut skipped = 0usize;
@@ -226,7 +260,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             Ok(Some(out)) => {
                 // Decide what may leave BEFORE writing the body: a carrier
                 // describing a withheld correction would launder the claim
-                // into episode prose, which pkg's extractor mines into
+                // into episode prose, which the graph's extractor mines into
                 // candidates anyway.
                 let sendable = distill::corrections_for(taint, &out.corrections).to_vec();
                 let withheld = out.corrections.len() - sendable.len();
@@ -238,7 +272,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // reading their own terminal is the safe context the front
                 // door's own `show` verb already relies on for a
                 // stranger's prose (there's no injection risk in reading —
-                // only in acting), where pkg is a *second automated
+                // only in acting), where the graph is a *second automated
                 // reader* and stays gated exactly as before. An untrusted
                 // one is marked rather than dropped, because it is still
                 // the model's own free-text reading of transcript prose —
@@ -307,7 +341,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     taint,
                     distiller.model(),
                     &sendable,
-                    appraisal.as_ref(),
+                    appraisal.as_ref().map(|a| (a, &known)),
                     &out.surprises,
                 );
                 match distill::push_episode(&client, push_args).await {
@@ -337,7 +371,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         // that silently did not happen — say so. Report
                         // SENT and WITHHELD separately: a zeroed tally for
                         // a correction we never transmitted reads exactly
-                        // like pkg failing to pin one down, and the session
+                        // like the graph failing to pin one down, and the session
                         // is marked distilled either way.
                         if !sendable.is_empty() {
                             println!(
@@ -348,7 +382,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                                 outcome.corrections_unresolved
                             );
                             // The tally must add up, or the print is
-                            // theatre: anything pkg neither repaired nor
+                            // theatre: anything the graph neither repaired nor
                             // queued went nowhere, and would otherwise
                             // leave no trace at all.
                             let accounted =
@@ -356,7 +390,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                             let sent = sendable.len() as i64;
                             if accounted != sent || outcome.corrections_processed != sent {
                                 eprintln!(
-                                    "  WARNING: {sent} sent but pkg reports {} processed and \
+                                    "  WARNING: {sent} sent but the graph reports {} processed and \
                                      {accounted} accounted for — {} unaccounted",
                                     outcome.corrections_processed,
                                     sent - accounted

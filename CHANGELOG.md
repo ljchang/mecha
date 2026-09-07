@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A project closes when the owner closes its last task, and its
+  appraisal is the fold over every session that worked one.** The board
+  row now carries `project_id` beside the project's name (mecha-graph
+  PR #10, unreleased when written), the closure appraisal in `mecha tasks set` records
+  `project:<id>` on the appraisal's goals after the task, and closing the
+  last open task under a project prints the project's reading on stderr —
+  labels counted, valence summed, tasks never delegated or unreadable
+  counted rather than dropped. No follow-up is staged for a project and no
+  record is written; a board that names a project without identifying it
+  is said once rather than read as no project
+  (`docs/GOAL-SYSTEM-DESIGN.md` §17.7 item 5, finished). `mecha tasks set
+  --project` re-files a task by name or node id, or clears it with `""` —
+  the correction path a cited pointer needs, through the graph's own
+  resolver.
+- **The goal pointer crosses to the graph whole; the sentence stays
+  home.** A distilled episode's `meta` carries `goal` and
+  `serves_charter` as `kind:id` pointers and the pointer on each goal
+  error, where the kind word alone used to cross — resolved first: a
+  charter id against the charter, a task or project id against the board
+  (one `kg_task_list` per distill run), and what does not resolve falls
+  back to the kind word on `goal` and on each error's `goal` alike, so a
+  run that named a setpoint is not read as one that named nothing
+  (`serves_charter` is the join key alone, absent when no line resolves).
+  The goal hypothesis, the owner's answer and the charter line's text
+  never ride (§17.7 item 8).
+
+### Changed
+
+- **The knowledge graph is named as the graph everywhere in the tree.**
+  Comments, tests and one `mecha distill` warning still called it by the
+  retired server's name; nothing calls that server, and the words now say
+  so. Three places changed what somebody *does* (found on review): the
+  published evaluation page named a fixture file that does not exist, the
+  landing page's `[[mcp]]` snippet named a binary that is not shipped (and,
+  once it named a shipped one, lacked the `[mcp.capabilities]
+  untrusted_input = true` that arms the interlock over the graph — the
+  override `TRIFECTA.md` calls load-bearing; found on review), and
+  `prompts/agent.md` told the model to call `pkg__kg_*` tools that are not
+  on the surface — it now names the bare `kg_*` the documented wiring
+  (`prefix_tools = false`) exposes.
+
 ## [0.1.18] - 2026-09-06
 
 ### Added

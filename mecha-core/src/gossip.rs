@@ -158,7 +158,7 @@ impl Tool for LensedSearch {
             "sources": self.sources,
             "since": self.since,
             "until": self.until,
-            // EVIDENCE ONLY, and load-bearing rather than tidy. pkg's
+            // EVIDENCE ONLY, and load-bearing rather than tidy. The graph's
             // source and window filters apply to the episode arm; the
             // facts arm takes neither. Leave scope at its default and both
             // readers are served the same distilled layer — the very thing
@@ -168,13 +168,13 @@ impl Tool for LensedSearch {
             // episodes, NPMI 1.00" and meetings from 2016 and 2020,
             // through a 2024+ window, because those are facts.
             "scope": "evidence_only",
-            // Instrumentation, not interest. pkg's Selector ranks probe
+            // Instrumentation, not interest. The graph's Selector ranks probe
             // targets by retrieval demand, and a reader's own searches were
             // feeding that signal: one probe took its target from 2 touches
             // to 28 and tripled its score, so the Selector elected the same
             // person again, harder, out of a pool of nine. A probe that
             // manufactures its own justification is not selecting anything.
-            // Still logged in pkg's query_log — just not counted as demand.
+            // Still logged in the graph's query_log — just not counted as demand.
             "probe": true,
         });
         let mut out = self.client.call_tool("kg_search", args).await?;
@@ -432,7 +432,7 @@ pub async fn coverage(
 /// about the graph's owner became unjudgeable.
 ///
 /// That is the third distinct thing one duplicate identity has broken
-/// today: `pkg dups` could not see the pair, staging dropped the subject
+/// today: the graph's duplicate scan could not see the pair, staging dropped the subject
 /// from 189 candidates, and now coverage cannot be measured at all. So this
 /// picks the candidate with the most interactions, re-asks by id, and
 /// returns whether it had to guess. Merging the nodes remains the real fix.
@@ -587,7 +587,7 @@ pub fn extractor(
 ///
 /// The one participant deliberately not given a lens. Readers are narrowed
 /// so that their agreement means something; an adjudicator narrowed the
-/// same way would just be a third witness. It gets `kg_verify` — pkg's
+/// same way would just be a third witness. It gets `kg_verify` — the graph's
 /// deterministic tier, which dereferences a stored claim to the evidence
 /// cited for it with no model in the loop — and an unrestricted
 /// `kg_search`.
@@ -1107,7 +1107,7 @@ pub fn claim_lines(text: &str, max: usize) -> Vec<String> {
         .collect()
 }
 
-/// pkg's deterministic verdicts on its own stored claims about an entity.
+/// The graph's deterministic verdicts on its own stored claims about an entity.
 ///
 /// No model in the loop: `kg_verify` dereferences each live claim to the
 /// evidence cited for it. This is the one part of an audit that cannot
@@ -1709,7 +1709,7 @@ pub async fn pending_about(
 /// One class of the review queue, oldest first.
 /// `unjudged_by`: name the mechanism to skip candidates it has already
 /// filed a verdict on — a batch run then extends coverage instead of
-/// re-judging the same oldest N (pkg keeps verdict history, so re-judging
+/// re-judging the same oldest N (the graph keeps verdict history, so re-judging
 /// duplicates opinions).
 pub async fn pending(
     client: &McpClient,

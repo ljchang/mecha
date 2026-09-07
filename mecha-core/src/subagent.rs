@@ -575,7 +575,7 @@ mod tests {
     }
 
     /// The laundering hole this closes: a child holding a private-capable
-    /// tool (pkg, mail) returns a summary *containing* private data, and with
+    /// tool (the graph, mail) returns a summary *containing* private data, and with
     /// `private_data` hard-coded false the parent's `taint.private` stayed
     /// clear — so the parent could hand that summary to `web_search` with the
     /// interlock disarmed. The leg has to come back with the answer, exactly
