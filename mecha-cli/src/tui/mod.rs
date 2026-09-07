@@ -6425,17 +6425,31 @@ fn submit_task_form(app: &mut App) -> Result<()> {
     );
 
     let result = match &editing {
-        Some(id) => tasks_cli(&[
-            "set",
-            id,
-            "--due",
-            &due,
-            "--defer",
-            &defer,
-            "--context",
-            &context,
-        ])
-        .map(|_| "schedule saved".to_string()),
+        Some(id) => {
+            let mut args = vec![
+                "set",
+                id,
+                "--due",
+                &due,
+                "--defer",
+                &defer,
+                "--context",
+                &context,
+            ];
+            // The project only when it changed: the same name passed back
+            // would re-file by name on every save, and `""` clears.
+            let refiled = form.refiled(&project);
+            if refiled {
+                args.extend(["--project", project.as_str()]);
+            }
+            tasks_cli(&args).map(|_| {
+                if refiled {
+                    "schedule and project saved".to_string()
+                } else {
+                    "schedule saved".to_string()
+                }
+            })
+        }
         None if name.is_empty() => Err(anyhow::anyhow!("a task needs a name")),
         None => {
             let mut args = vec!["add"];
