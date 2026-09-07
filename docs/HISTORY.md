@@ -6515,6 +6515,26 @@ and is what finally exercised the path.)
 
 ### Review process
 
+- **The same fail-open gate, re-hit twice in one night with the record of it
+  open in the next paragraph.** On 2026-09-07 two pushes went out that did
+  not build — a value moved into a loop and read after it, and a function
+  referenced before its file had been written — because the gate was
+  `set -o pipefail; cargo test … | grep …; git add && git commit && git
+  push`: `pipefail` made the *test pipeline's* status honest and the
+  semicolon threw it away, so the commit ran regardless. Each cost a
+  review pass and a fixing commit whose message had to say so. The general
+  lesson is the one below, restated for the shape that slipped past it:
+  **a gate is only the chain from the first check to the push, joined by
+  `&&` end to end** — one `;` anywhere in it is a gate that reports and
+  does not gate. The night's other lesson is about review at scale: a
+  guard bound at *resolve* time only (the parent type check on
+  `create_task`) drew seven passes of "and this writer re-creates the
+  state" — the id writer, retype, merge, upsert's conflict clause, the
+  survey's inner join, the raw column beside the joined name — until the
+  rule was restated as *the row is the fact* and bound to every writer.
+  Bind an invariant to the writers, not the parser, on the first pass;
+  each writer found later is a pass.
+
 - **Sixteen review passes on one PR, and four of them were the author's own
   stale tests, a format miss and a lint nit pushed without gating.** The
   meeting-poll PRs (2026-09-04/05) were large — ~4,500 lines, a file three
