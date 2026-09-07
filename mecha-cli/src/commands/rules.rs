@@ -122,10 +122,38 @@ fn presented_keys(rules: &[&Rule]) -> Option<Presented> {
     if !needs_presented_keys(rules) {
         return None;
     }
-    presented_keys_in(&Session::default_dir().ok()?)
+    let wanted: Presented = rules
+        .iter()
+        .filter_map(|r| r.scope.as_ref().map(|s| s.scope()))
+        .filter(|s| s.workspace.is_some() || s.surface.is_some())
+        .map(|s| (s.workspace, s.surface))
+        .collect();
+    presented_keys_in(&Session::default_dir().ok()?, &wanted)
 }
 
-fn presented_keys_in(dir: &Path) -> Option<Presented> {
+/// Whether one run record's pair presents one scope's pair: each key the
+/// scope names must be the record's.
+fn pair_presents(
+    record: &(Option<PathBuf>, Option<SessionKind>),
+    scope: &(Option<PathBuf>, Option<SessionKind>),
+) -> bool {
+    scope
+        .0
+        .as_ref()
+        .is_none_or(|sw| record.0.as_ref() == Some(sw))
+        && scope.1.is_none_or(|sk| record.1 == Some(sk))
+}
+
+/// `wanted` is the pairs the scoped rules name: the walk stops at the
+/// first transcripts that present them all — newest first, so a rule
+/// scoped to the workspace in use is answered by one file rather than the
+/// whole store, which the TUI's reload reads on a keypress (found on
+/// review). An early exit happens only on a positive answer for every
+/// key; the unknown arms below are reached only by a walk that ran out.
+fn presented_keys_in(
+    dir: &Path,
+    wanted: &[(Option<PathBuf>, Option<SessionKind>)],
+) -> Option<Presented> {
     let (listed, unreadable) = Session::list_counting(dir).ok()?;
     if unreadable > 0 {
         return None;
@@ -137,6 +165,13 @@ fn presented_keys_in(dir: &Path) -> Option<Presented> {
             if !out.contains(&pair) {
                 out.push(pair);
             }
+        }
+        if !wanted.is_empty()
+            && wanted
+                .iter()
+                .all(|w| out.iter().any(|p| pair_presents(p, w)))
+        {
+            return Some(out);
         }
     }
     // A listing that yielded no record carrying either key cannot answer
@@ -193,13 +228,9 @@ fn presented(scope: &mecha_core::situation::Situation, presented: &Presented) ->
     if scope.workspace.is_none() && scope.surface.is_none() {
         return true;
     }
-    presented.iter().any(|(w, k)| {
-        scope
-            .workspace
-            .as_ref()
-            .is_none_or(|sw| w.as_ref() == Some(sw))
-            && scope.surface.is_none_or(|sk| *k == Some(sk))
-    })
+    presented
+        .iter()
+        .any(|p| pair_presents(p, &(scope.workspace.clone(), scope.surface)))
 }
 
 fn list(store: &LearningStore, as_json: bool) -> Result<()> {
@@ -369,14 +400,15 @@ fn describe(r: &Rule, tallies: &BTreeMap<String, RuleTally>, keys: Option<&Prese
     // — see `Rule::scope`.
     let scope = match &r.scope {
         None => "unscoped (predates scoping; loads everywhere)".to_string(),
+        // `loads_nowhere` before `is_standing`: a scope naming only a corpus
+        // mark is standing by `scope()`'s definition and refused by
+        // `matches`, and the prose must agree with the JSON (found on review).
+        Some(s) if loads_nowhere(r, keys) == Some(true) => format!(
+            "scoped to {} — LOADS NOWHERE: no run record presents that workspace/surface",
+            s.describe()
+        ),
         Some(s) if s.is_standing() => "standing (loads everywhere)".to_string(),
-        Some(s) => match loads_nowhere(r, keys) {
-            Some(true) => format!(
-                "scoped to {} — LOADS NOWHERE: no run record presents that workspace/surface",
-                s.describe()
-            ),
-            _ => format!("loads with {}", s.describe()),
-        },
+        Some(s) => format!("loads with {}", s.describe()),
     };
     // Where it was seen to hold, when that is more than where it loads —
     // a widened rule names each sub-region it widened over; a narrowed one
@@ -1249,6 +1281,16 @@ mod tests {
         };
         assert_eq!(loads_nowhere(&marked, None), Some(true));
         assert!(describe(&marked, &tallies, Some(&keys)).contains("LOADS NOWHERE"));
+        // With no tools at all the same scope is standing by definition,
+        // and the prose must still say nowhere, as the JSON does.
+        let bare_mark = Rule {
+            scope: Some(Situation::default().on(Some(SessionKind::Test))),
+            ..dark.clone()
+        };
+        assert_eq!(loads_nowhere(&bare_mark, None), Some(true));
+        let line = describe(&bare_mark, &tallies, None);
+        assert!(line.contains("LOADS NOWHERE"), "{line}");
+        assert!(!line.contains("standing"), "{line}");
     }
 
     /// The store is read from the top of each transcript only, and a torn
@@ -1292,7 +1334,7 @@ mod tests {
             ..Default::default()
         }))
         .unwrap();
-        let keys = presented_keys_in(&dir).expect("a readable store answers");
+        let keys = presented_keys_in(&dir, &[]).expect("a readable store answers");
         assert_eq!(
             keys,
             vec![
@@ -1334,7 +1376,7 @@ mod tests {
                 .unwrap();
         }
         assert!(
-            presented_keys_in(&residue).is_some(),
+            presented_keys_in(&residue, &[]).is_some(),
             "trailing residue tolerated"
         );
         {
@@ -1347,14 +1389,78 @@ mod tests {
         }
         r.append(&Record::Config(RunConfig::default())).unwrap();
         assert_eq!(
-            presented_keys_in(&residue),
+            presented_keys_in(&residue, &[]),
             None,
             "torn in the middle: unknown"
+        );
+        // The walk stops once every wanted pair has been seen, newest
+        // first: an older transcript torn in the middle is never opened
+        // when the newest already presents the pair. Fails on a walk that
+        // reads the whole store (it would answer unknown).
+        let stopped = dir.join("stopped");
+        let older = Session::create(
+            &stopped,
+            SessionMeta {
+                id: "20260101T000000-00000000".into(),
+                created_at: chrono::Utc::now(),
+                provider: "p".into(),
+                model: "m".into(),
+                workspace: PathBuf::from("/jail"),
+                title: None,
+                kind: Some(SessionKind::Tui),
+            },
+        )
+        .unwrap();
+        older
+            .append(&Record::Config(RunConfig {
+                rules_workspace: Some(PathBuf::from("/old")),
+                ..Default::default()
+            }))
+            .unwrap();
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&older.path)
+                .unwrap();
+            f.write_all(b"{\"record\":\"config\",\"trunc\n").unwrap();
+        }
+        older.append(&Record::Config(RunConfig::default())).unwrap();
+        let newer = Session::create(
+            &stopped,
+            SessionMeta {
+                id: "20260901T000000-ffffffff".into(),
+                created_at: chrono::Utc::now(),
+                provider: "p".into(),
+                model: "m".into(),
+                workspace: PathBuf::from("/jail"),
+                title: None,
+                kind: Some(SessionKind::Tui),
+            },
+        )
+        .unwrap();
+        newer
+            .append(&Record::Config(RunConfig {
+                rules_workspace: Some(PathBuf::from("/w")),
+                rules_surface: Some(SessionKind::Tui),
+                ..Default::default()
+            }))
+            .unwrap();
+        let wanted = vec![(Some(PathBuf::from("/w")), Some(SessionKind::Tui))];
+        assert_eq!(
+            presented_keys_in(&stopped, &wanted),
+            Some(wanted.clone()),
+            "answered by the newest transcript; the torn older one never read"
+        );
+        assert_eq!(
+            presented_keys_in(&stopped, &[]),
+            None,
+            "the full walk reaches the torn record and is unknown"
         );
         // A store with no record carrying either key cannot answer: a
         // directory that does not exist, and one holding only a record
         // from before the fields, are both unknown — never "nowhere".
-        assert_eq!(presented_keys_in(&dir.join("no-such-dir")), None);
+        assert_eq!(presented_keys_in(&dir.join("no-such-dir"), &[]), None);
         let old_only = dir.join("old-only");
         let o = Session::create(
             &old_only,
@@ -1371,7 +1477,7 @@ mod tests {
         .unwrap();
         o.append(&Record::Config(RunConfig::default())).unwrap();
         assert_eq!(
-            presented_keys_in(&old_only),
+            presented_keys_in(&old_only, &[]),
             None,
             "pre-field records are not evidence"
         );
@@ -1379,7 +1485,7 @@ mod tests {
         // full, and the answer is unknown rather than a pair set with a
         // hole in it.
         std::fs::write(dir.join("torn.jsonl"), "{\"type\":\"message\",\"truncated").unwrap();
-        assert_eq!(presented_keys_in(&dir), None);
+        assert_eq!(presented_keys_in(&dir, &[]), None);
         std::fs::remove_dir_all(&dir).ok();
         // And the walk is not made at all for a store whose rules name no
         // such key.
