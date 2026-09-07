@@ -201,7 +201,7 @@ pub async fn run(global: &crate::GlobalOpts, args: &GossipArgs) -> Result<()> {
     let mut graph_findings_text: Option<String> = None;
     let mut audit_verdicts = Vec::new();
     if args.verify > 0 {
-        // pkg's deterministic tier first, and printed whether or not the
+        // the graph's deterministic tier first, and printed whether or not the
         // model tier agrees with it. `kg_verify` dereferences stored claims
         // to their cited evidence with no model in the loop, so it is the
         // one part of this audit that cannot hallucinate — it belongs above

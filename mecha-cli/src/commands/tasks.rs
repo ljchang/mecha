@@ -509,6 +509,7 @@ async fn set(
                 None => {}
             }
             appraise_closure(&prepared, task, status, &before).await;
+            appraise_project_closure(&prepared, task, &before).await;
         }
     }
     Ok(())
@@ -621,7 +622,15 @@ async fn appraise_closure(
              appraisal reflects an incomplete run and will not be redone"
         );
     }
-    let a = match appraise_session(session_id, task_id) {
+    // The tier above the task, read off the board row it came with —
+    // §17.7 item 5's join, made by the caller that already knows both ids
+    // (the closure appraisal supplies the task the same way). An
+    // unidentified project is reported by `appraise_project_closure`, once.
+    let project = match project_of(before) {
+        ProjectTier::Identified(p) => Some(p),
+        ProjectTier::None | ProjectTier::Unidentified(_) => None,
+    };
+    let a = match appraise_session(session_id, task_id, project.as_ref()) {
         Ok(Some(a)) => a,
         // The run never got as far as recording an outcome — a crash, a
         // kill, or a transcript from before the record existed (the live
@@ -649,6 +658,223 @@ async fn appraise_closure(
     }
     if let Err(e) = stage_follow_up(prepared, task_id, before, &a).await {
         eprintln!("mecha: could not stage a follow-up for {task_id}: {e:#}");
+    }
+}
+
+/// The persistent tier above a task, as the board row carries it
+/// (`GOAL-SYSTEM-DESIGN.md` §17.7 item 5: "the persistent tier is the
+/// board's project").
+#[derive(Debug, Clone, PartialEq)]
+enum ProjectTier {
+    /// No parent project.
+    None,
+    /// A parent project the board both named and identified.
+    Identified(mecha_core::goal::GoalRef),
+    /// The board named a project but carried no usable id for it — a graph
+    /// server from before `project_id`, or an id that is not one token.
+    /// Kept apart from `None` so the tier's absence is said rather than
+    /// read as "no project".
+    Unidentified(String),
+}
+
+/// Read the project tier off a board row. `project_id` is the pointer —
+/// the node id the board minted — and `project` is its name, which is prose
+/// (spaces; two nodes can share one) and is never cited. The id goes
+/// through `GoalRef::from_str` like every other model- or store-supplied
+/// pointer, so a row from somebody else's store cannot put whitespace or a
+/// control character into a goal record a review surface prints.
+fn project_of(row: &Value) -> ProjectTier {
+    let name = row["project"].as_str().filter(|s| !s.is_empty());
+    let id = row["project_id"].as_str().filter(|s| !s.is_empty());
+    match (id, name) {
+        (Some(id), _) => match format!("project:{id}").parse() {
+            Ok(p) => ProjectTier::Identified(p),
+            Err(_) => ProjectTier::Unidentified(name.unwrap_or(id).to_string()),
+        },
+        (None, Some(name)) => ProjectTier::Unidentified(name.to_string()),
+        (None, None) => ProjectTier::None,
+    }
+}
+
+/// Whether closing `task_id` left its project with no open task — read off
+/// the board's *open* list for that project, fetched after the update
+/// landed. The closed task is not expected on that list, but a row of it
+/// is tolerated rather than read as "still open", since the answer this
+/// decides is "was that the last one".
+fn project_closed_by(open: &Value, task_id: &str) -> bool {
+    !open["items"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .any(|t| t["id"].as_str().is_some_and(|id| id != task_id))
+}
+
+/// One project's appraisal, folded from the sessions of every task ever
+/// filed under it. A reading, not a record: nothing stores it, and it is
+/// printed where the task's own appraisal is.
+#[derive(Debug, Default, PartialEq)]
+struct ProjectReading {
+    /// Tasks on the project, open or closed.
+    tasks: usize,
+    /// Tasks whose session was read and appraised.
+    read: usize,
+    /// Tasks that never had a session — hand-typed, never delegated.
+    no_session: usize,
+    /// Tasks with a session this pass could not appraise: no outcome
+    /// recorded, or a read failure said on stderr as it happened.
+    unread: usize,
+    /// Derived labels, counted. `Debug` form like `describe`, prose for a
+    /// person.
+    labels: std::collections::BTreeMap<String, usize>,
+    /// The signed sums over every session read, positive and negative kept
+    /// apart as `Valence` keeps them; `partial` if any reading was.
+    valence: mecha_core::appraisal::Valence,
+}
+
+impl ProjectReading {
+    fn fold(
+        readings: &[(String, mecha_core::appraisal::Appraisal)],
+        no_session: usize,
+        unread: usize,
+    ) -> ProjectReading {
+        let mut out = ProjectReading {
+            tasks: readings.len() + no_session + unread,
+            read: readings.len(),
+            no_session,
+            unread,
+            ..ProjectReading::default()
+        };
+        for (_, a) in readings {
+            *out.labels.entry(format!("{:?}", a.label)).or_default() += 1;
+            let v = mecha_core::appraisal::Valence::of(a);
+            out.valence.positive += v.positive;
+            out.valence.negative += v.negative;
+            out.valence.positives += v.positives;
+            out.valence.negatives += v.negatives;
+            out.valence.visible |= v.visible;
+            out.valence.partial |= v.partial;
+        }
+        out
+    }
+
+    fn describe(&self) -> String {
+        let labels = if self.labels.is_empty() {
+            "no session read".to_string()
+        } else {
+            self.labels
+                .iter()
+                .map(|(l, n)| format!("{l} ×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let reading = match (self.valence.is_silent(), self.valence.partial) {
+            (true, true) => "nothing signed, partial reading".to_string(),
+            (true, false) => "nothing signed".to_string(),
+            (false, _) => self.valence.compact(),
+        };
+        format!(
+            "{} task(s), {} read ({labels}) · {reading} ({} positive, {} negative); {} never \
+             delegated, {} unread",
+            self.tasks,
+            self.read,
+            self.valence.positives,
+            self.valence.negatives,
+            self.no_session,
+            self.unread
+        )
+    }
+}
+
+/// §17.7 item 5's closure moment for the persistent tier: **the owner
+/// closing a project's last task is the project's closure**, and its
+/// appraisal is the fold over every session that worked a task under it.
+/// Runs after the task's own appraisal, on the same best-effort terms —
+/// stderr, never a `bail!`, the task is already closed.
+///
+/// What it does not do, deliberately. It stages no follow-up: §5.4 allows
+/// one per closure and the task's appraisal owns that one, so a project
+/// that closes disappointed says so and puts nothing on the board. It
+/// writes no record: there is no project store (the design's "no new
+/// store"), so the reading is printed and gone, and a project that gains a
+/// task later and closes again reads again. A `dropped` last task closes
+/// the project as much as a `done` one — the tier is empty either way —
+/// and the line says which task closed it. And a project the board names
+/// but does not identify is named as such, once, rather than read as no
+/// project: the graph server from before `project_id` is the case.
+async fn appraise_project_closure(prepared: &setup::PreparedTools, task_id: &str, before: &Value) {
+    let project = match project_of(before) {
+        ProjectTier::None => return,
+        ProjectTier::Unidentified(name) => {
+            eprintln!(
+                "mecha: {task_id} is filed under project {name:?}, but the board carried no \
+                 usable project id — the project tier is not appraised (a graph server from \
+                 before `project_id`, most likely)"
+            );
+            return;
+        }
+        ProjectTier::Identified(p) => p,
+    };
+    let pid = project.id();
+    let open = match call_with(prepared, "kg_task_list", json!({ "entity": pid })).await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "mecha: could not read project {pid}'s open tasks after closing {task_id}, so \
+                 whether that closed the project is unknown: {e:#}"
+            );
+            return;
+        }
+    };
+    if !project_closed_by(&open, task_id) {
+        return;
+    }
+    let all = match call_with(
+        prepared,
+        "kg_task_list",
+        json!({ "entity": pid, "include_closed": true }),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "mecha: {task_id} closed project {pid}, but its tasks could not be read for the \
+                 project's appraisal: {e:#}"
+            );
+            return;
+        }
+    };
+    let name = all["entity"]["name"].as_str().unwrap_or("?");
+    let mut readings = Vec::new();
+    let mut no_session = 0usize;
+    let mut unread = 0usize;
+    for t in all["items"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        let Some(tid) = t["id"].as_str() else {
+            continue;
+        };
+        let Some(sid) = t["session"].as_str().filter(|s| !s.is_empty()) else {
+            no_session += 1;
+            continue;
+        };
+        match appraise_session(sid, tid, Some(&project)) {
+            Ok(Some(a)) => readings.push((tid.to_string(), a)),
+            Ok(None) => unread += 1,
+            Err(e) => {
+                eprintln!(
+                    "mecha: could not appraise {tid}'s session {sid} for project {pid}: {e:#}"
+                );
+                unread += 1;
+            }
+        }
+    }
+    let fold = ProjectReading::fold(&readings, no_session, unread);
+    eprintln!(
+        "mecha's appraisal of project {pid} ({name}), closed with {task_id}: {}",
+        fold.describe()
+    );
+    for (tid, a) in &readings {
+        eprintln!("  {tid}: {}", describe(a));
     }
 }
 
@@ -746,6 +972,12 @@ fn is_bare_path_component(id: &str) -> bool {
 fn appraise_session(
     session_id: &str,
     task_id: &str,
+    // The project the task is filed under, when the board identified one.
+    // Recorded on the appraisal's `goals` *after* the task: the run served
+    // the task and the task served the project, and `of_session` cites the
+    // first on every error, so the pointer on an error stays the tier the
+    // run itself was handed.
+    project: Option<&mecha_core::goal::GoalRef>,
 ) -> Result<Option<mecha_core::appraisal::Appraisal>> {
     // The board's `session` field is nominally the harness's own — set once
     // by `move_task` at delegation — but `kg_task_list` is a read off
@@ -909,11 +1141,12 @@ fn appraise_session(
     if charter_unreadable {
         eprintln!("mecha: the charter did not load while appraising {task_id} — nothing is attributed to a charter line");
     }
-    let goal = mecha_core::goal::GoalRef::Task(task_id.to_string());
+    let mut goals = vec![mecha_core::goal::GoalRef::Task(task_id.to_string())];
+    goals.extend(project.cloned());
     Ok(Some(mecha_core::appraisal::of_session(
         session_id,
         &stats,
-        &[goal],
+        &goals,
         &interventions,
         mecha_core::appraisal::SessionRecords {
             drafts: &mine,
@@ -2734,6 +2967,123 @@ mod tests {
         }
     }
 
+    // --- §17.7 item 5: the project tier ---
+
+    #[test]
+    fn project_of_reads_the_id_and_names_a_project_it_cannot_identify() {
+        use mecha_core::goal::GoalRef;
+        assert_eq!(project_of(&json!({})), ProjectTier::None);
+        assert_eq!(project_of(&json!({"project": null})), ProjectTier::None);
+        assert_eq!(
+            project_of(&json!({"project": "Tide pool study", "project_id": "proj-tide"})),
+            ProjectTier::Identified(GoalRef::Project("proj-tide".into()))
+        );
+        // A graph server from before `project_id`: the name is there, the
+        // pointer is not, and that is said rather than read as no project.
+        assert_eq!(
+            project_of(&json!({"project": "Tide pool study"})),
+            ProjectTier::Unidentified("Tide pool study".into())
+        );
+        // A pointer is one token (`GoalRef::from_str`): an id with
+        // whitespace from somebody else's store is refused, and the name is
+        // what the note carries.
+        assert_eq!(
+            project_of(&json!({"project": "Tide pool study", "project_id": "proj tide"})),
+            ProjectTier::Unidentified("Tide pool study".into())
+        );
+        assert_eq!(
+            project_of(&json!({"project_id": "proj\ntide"})),
+            ProjectTier::Unidentified("proj\ntide".into())
+        );
+    }
+
+    #[test]
+    fn the_project_closes_when_no_other_open_task_remains() {
+        let empty = json!({"items": []});
+        assert!(project_closed_by(&empty, "task-a"));
+        // The just-closed task still on the list (a read racing the
+        // update) is not another open task.
+        let only_me = json!({"items": [{"id": "task-a", "status": "done"}]});
+        assert!(project_closed_by(&only_me, "task-a"));
+        let another = json!({"items": [{"id": "task-b", "status": "next"}]});
+        assert!(!project_closed_by(&another, "task-a"));
+        // An unreadable list is not an empty one.
+        assert!(project_closed_by(&json!({}), "task-a"));
+    }
+
+    #[test]
+    fn a_project_reading_folds_labels_and_valence_and_counts_what_it_did_not_read() {
+        use mecha_core::appraisal::{Affect, Agency, Channel, Cite, GoalError};
+        let err = |sign: f32| GoalError {
+            goal: None,
+            channel: Channel::Counter,
+            sign,
+            agency: Agency::Own,
+            visible: false,
+            controllable: None,
+            cite: Cite::Counter("stop_cause".into()),
+        };
+        let mut good = appraisal(Affect::Neutral);
+        good.errors = vec![err(1.0)];
+        let mut bad = appraisal(Affect::Distress);
+        bad.errors = vec![err(-0.5), err(-1.0)];
+        bad.partial = true;
+        let readings = vec![("task-a".to_string(), good), ("task-b".to_string(), bad)];
+        let fold = ProjectReading::fold(&readings, 2, 1);
+        assert_eq!(fold.tasks, 5);
+        assert_eq!(fold.read, 2);
+        assert_eq!(fold.no_session, 2);
+        assert_eq!(fold.unread, 1);
+        assert_eq!(fold.labels.get("Neutral"), Some(&1));
+        assert_eq!(fold.labels.get("Distress"), Some(&1));
+        assert_eq!(fold.valence.positives, 1);
+        assert_eq!(fold.valence.negatives, 2);
+        assert!((fold.valence.positive - 1.0).abs() < f32::EPSILON);
+        assert!((fold.valence.negative - 1.5).abs() < f32::EPSILON);
+        assert!(
+            fold.valence.partial,
+            "one partial reading makes the fold partial"
+        );
+        let line = fold.describe();
+        assert!(
+            line.contains("5 task(s), 2 read (Distress ×1, Neutral ×1)"),
+            "{line}"
+        );
+        assert!(line.contains("+1.0 \u{2212}1.5\u{2026}"), "{line}");
+        assert!(line.contains("2 never delegated, 1 unread"), "{line}");
+
+        let none = ProjectReading::fold(&[], 3, 0);
+        let line = none.describe();
+        assert!(
+            line.contains("3 task(s), 0 read (no session read)"),
+            "{line}"
+        );
+        assert!(line.contains("nothing signed"), "{line}");
+    }
+
+    #[test]
+    fn a_closure_under_a_project_records_the_project_after_the_task() {
+        // `appraise_session` puts the task first so every error's pointer
+        // is the tier the run was handed; the project rides second. Pinned
+        // through `of_session` directly, since the session read needs a
+        // store.
+        use mecha_core::goal::GoalRef;
+        let task = GoalRef::Task("task-1a2b3c4d".into());
+        let project = GoalRef::Project("proj-tide".into());
+        let mut goals = vec![task.clone()];
+        goals.extend(Some(&project).cloned());
+        let a = mecha_core::appraisal::of_session(
+            "s1",
+            &mecha_core::session::RunStats::default(),
+            &goals,
+            &[],
+            mecha_core::appraisal::SessionRecords::default(),
+            None,
+            "2026-09-07T00:00:00Z".into(),
+        );
+        assert_eq!(a.goals, vec![task, project]);
+    }
+
     #[test]
     fn only_a_transition_into_a_closed_status_is_a_fresh_closure() {
         let open = json!({"status": "next"});
@@ -2787,7 +3137,7 @@ mod tests {
     #[test]
     fn appraise_session_refuses_a_hostile_id_before_touching_the_filesystem() {
         for hostile in ["../../etc/passwd", "/etc/passwd", ".."] {
-            let e = appraise_session(hostile, "task-1a2b3c4d")
+            let e = appraise_session(hostile, "task-1a2b3c4d", None)
                 .expect_err(&format!("{hostile:?} must be refused"));
             // The guard's own refusal, not `Session::find`'s "no session
             // matching" — which every one of these would produce anyway,

@@ -317,7 +317,7 @@ impl McpClient {
                     // `external_send` says data can leave — neither implies the
                     // tool changes anything, and `http_fetch` is read-only
                     // while being a send sink for exactly that reason. Blanket
-                    // narrowing here made every pkg retrieval prompt for
+                    // narrowing here made every graph retrieval prompt for
                     // approval, which is unusable for memory read at turn start.
                     read_only: hint("readOnlyHint") && !self.forced.destructive,
                     // `openWorldHint` means the tool talks to the wider world:

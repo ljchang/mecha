@@ -101,7 +101,7 @@ one.
 | `rules propose-retirements` | 3 attributed regressions | nobody — deterministic scan | the ledger itself | same |
 | outbox writing mining | a human **edited a draft** | Reflector, writing frame | same probe machinery | `mined_outbox.jsonl` |
 | `harness ruminate` | a counter crossing a doctor threshold | Diagnostician | paired replay → `candidate::judge` | candidate store |
-| `distill` | session close | Distiller | pkg's review queue | `distilled.jsonl` |
+| `distill` | session close | Distiller | the graph's review queue | `distilled.jsonl` |
 
 `Proposal` and `HarnessCandidate` are the same record with two status
 vocabularies (`pending|accepted|rejected|rejected_by_gate` against
@@ -988,7 +988,7 @@ that already exists.
   store's conventions (one pretty JSON per record, temp-sibling-and-rename,
   the same writer lock, a `Scan`-bounded reader). mecha's own operational
   record: needs no review queue, and must be readable with the graph absent.
-- **Episodes → pkg** — the affect label and goal errors ride on `meta`,
+- **Episodes → the graph** — the affect label and goal errors ride on `meta`,
   beside the taint snapshot already there. Emotional tagging at consolidation
   is the neuroscience, and it hands the review queue a **salience ordering**,
   which matters when that queue has reached 6,434 items. Same prioritisation
@@ -1543,7 +1543,7 @@ Each rung is independently useful and independently measurable.
    with `mecha gossip --entity <about>`, on this project's standing rule
    that real model spend needs a gate rather than a session's own say-so.
 
-   **Review-queue salience is still unbuilt**: it needs pkg (a different
+   **Review-queue salience is still unbuilt**: it needs mecha-graph (a different
    repository) to read `meta.affect`/`meta.goal_errors` and reorder on
    them.
 10. **The charter** (§11), anticipated guilt (§7.4), and the homeostat into
@@ -2034,7 +2034,8 @@ Eight decisions §17.3–17.6 leave open. Each is stated with the fact in the
 tree it turns on and its resolution. Items 2 and 3 decide what the owner
 sees mid-run and were **ruled by the owner on 2026-09-04**; the other six
 follow from facts in the tree and stand as written. Items 1, 6 and 7 were
-built on 2026-09-04, items 3 and 5 on 2026-09-06; each carries its built
+built on 2026-09-04, items 3 and 5 on 2026-09-06, and item 5's producer,
+reader and closure moment with item 8 on 2026-09-07; each carries its built
 note below.
 
 1. **A run records what it loaded.** `ValidationRecord` keys on
@@ -2185,6 +2186,29 @@ note below.
    producer writes one yet — the board's `project` field is not joined to
    a plan — and nothing reads the tier; the kind exists so the wire
    survives its first writer.
+   *Finished 2026-09-07.* The join is made where both ids are already in
+   hand, not on the plan: the board row carries `project_id` beside the
+   project's name (mecha-graph, the same change; a name is prose and two
+   nodes can share one, so it could never be a pointer), and the closure
+   appraisal in `tasks set` records `GoalRef::Project` on the appraisal's
+   `goals` *after* the task — the run served the task, the task the
+   project, and every error's pointer stays the tier the run was handed.
+   The tier's own closure moment is the one this item names: **the owner
+   closing a project's last task closes the project**, and
+   `appraise_project_closure` folds every session that worked a task under
+   it into one reading (`ProjectReading` — labels counted, valence summed
+   positive and negative apart, `partial` if any reading was, and the
+   tasks never delegated or unreadable counted rather than dropped),
+   printed on stderr where the task's own appraisal is. Deliberately: no
+   follow-up staged (§5.4 allows one per closure and the task's owns it),
+   no record written (no project store — "no new store"), so a project
+   that gains a task later and closes again reads again; a `dropped` last
+   task closes the tier as much as a `done` one; and a board that names a
+   project without identifying it — a graph server from before
+   `project_id`, or an id that is not one token — is said once on stderr
+   rather than read as no project, the silently-degrading-guard shape.
+   The seed already tells a delegated run its project by name; the plan
+   still cites the task, which is the tier it was handed.
 6. **Backfill Situation, never the goal.** `reflect` re-runs
    `extract_interventions` over transcripts deterministically; a
    `Reflexion` persists `session_id`, `trigger` and the intervention text
@@ -2217,7 +2241,20 @@ note below.
    `Interrupted` sign nothing. The evidence-class grading above it (medium
    for a redirect, weak for silence) is still to build on this.
 8. **The goal sentence stays home.** `distill` already redacts a goal to
-   its kind before pkg. *Proposed:* pkg `meta` carries `{kind, id,
-   serves_charter}`; the objective sentence stays in the goal store; the
-   situation index joins on the id. The charter's rule, one record over:
-   owner text never leaves the stores mecha itself writes.
+   its kind before the graph. *Proposed:* the graph's `meta` carries
+   `{kind, id, serves_charter}`; the objective sentence stays in the goal
+   store; the situation index joins on the id. The charter's rule, one
+   record over: owner text never leaves the stores mecha itself writes.
+   *Built 2026-09-07*, with one correction: the pointer crosses in the
+   one `kind:id` spelling every wire uses (`goal.rs`'s rule — a derived
+   object would give the same value a second shape), not as a
+   `{kind, id}` object. `meta.goal` is the run's named goal,
+   `meta.serves_charter` the charter line it cited or was attributed by a
+   sensor, and `goal` on each error the pointer rather than the kind word
+   — possible since 2026-09-06 made an id one token, and re-proved at the
+   boundary by `distill::goal_pointer` because a reference built in code
+   never went through the parser (a non-token falls back to the kind word,
+   which is what crossed before). Pinned by a test on `meta`'s key set:
+   the hypothesis a run put to the owner, the owner's answer and the
+   charter line's text never ride. The situation index on the graph side
+   is not built; the id is there for it.
