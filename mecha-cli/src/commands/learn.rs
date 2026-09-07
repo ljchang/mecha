@@ -860,10 +860,18 @@ mod tests {
             )),
             ..Default::default()
         };
+        let at = |id: &str, tools: &[&str], w: &str| Rule {
+            scope: Some(Situation::of_run(
+                &tools.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                Some(std::path::Path::new(w)),
+            )),
+            ..scoped(id, tools)
+        };
         let before = vec![
             scoped("a", &["shell"]),
             scoped("b", &["fs_read"]),
             scoped("d", &["shell"]),
+            at("e", &["shell"], "/a"),
         ];
         let mut after = vec![
             scoped("a", &[]),
@@ -871,6 +879,9 @@ mod tests {
             scoped("d", &["fs_write", "shell"]),
             scoped("b", &["fs_read"]),
             scoped("c", &["shell"]),
+            // Same tools, workspace dropped: a widening, and one the
+            // tool count alone could not see (fails on the old closure).
+            scoped("e", &["shell"]),
         ];
         after.push(Rule {
             text: "No id.".into(),
@@ -879,11 +890,18 @@ mod tests {
         let out = widened(&before, &after);
         assert_eq!(
             out,
-            vec![(
-                "Rule a.".to_string(),
-                "shell".to_string(),
-                "everywhere".to_string()
-            )]
+            vec![
+                (
+                    "Rule a.".to_string(),
+                    "shell".to_string(),
+                    "everywhere".to_string()
+                ),
+                (
+                    "Rule e.".to_string(),
+                    "shell · /a".to_string(),
+                    "shell".to_string()
+                ),
+            ]
         );
     }
 

@@ -42,6 +42,16 @@
 //! workspace, as it did; it is rewritable only by a batch whose region has
 //! none either (`rewritable_in` is equality), so a single-workspace batch
 //! shows it as context rather than narrowing it on no conviction.
+//!
+//! A front-end whose runs are jailed somewhere other than the workspace
+//! the rules block was rendered against must record *no* workspace, or
+//! its lessons scope to a jail no match presents. The Slack connector is
+//! that case — one block rendered at `prepare` against its configured
+//! workspace, each thread jailed under `~/.mecha/work/slack/` — and it
+//! records none (an empty path, which [`Situation::recorded`] reads as
+//! none), so a Slack lesson scopes by tools alone. Recording the thread
+//! jail there would be worse, not better, until the connector renders or
+//! matches per thread.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -104,7 +114,7 @@ impl Situation {
             tools: deduped,
             trigger: Some(trigger.to_string()),
             surface,
-            workspace: workspace.map(Path::to_path_buf),
+            workspace: known_workspace(workspace),
         }
     }
 
@@ -128,7 +138,7 @@ impl Situation {
             tools: tools.to_vec(),
             trigger: None,
             surface: None,
-            workspace: workspace.map(Path::to_path_buf),
+            workspace: known_workspace(workspace),
         }
     }
 
@@ -256,6 +266,20 @@ impl Situation {
     }
 }
 
+/// The door for the workspace key: an empty path is *no* workspace, never
+/// a workspace named `""`. A session record whose front-end recorded none
+/// carries the empty path (`SessionMeta::workspace` is not optional, and
+/// the Slack connector writes `PathBuf::default()` — found on review), and
+/// mapped straight through it became a set key no run could ever present:
+/// a rule scoped to it was dark everywhere, the roster printed the key as
+/// though it meant something, and nothing warned. Unknown is not a match
+/// and not a key.
+fn known_workspace(workspace: Option<&Path>) -> Option<PathBuf> {
+    workspace
+        .filter(|w| !w.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +380,29 @@ mod tests {
         let old: Situation = serde_json::from_str(r#"{"tools":["shell"]}"#).unwrap();
         assert!(old.matches(&elsewhere));
         assert!(old.matches(&below));
+    }
+
+    /// A session that recorded no workspace carries the empty path, and
+    /// the empty path is not a key: a rule learned from it scopes by tools
+    /// alone and loads in every workspace, rather than in none. Fails on
+    /// the pass-through, which scoped it to `""`.
+    #[test]
+    fn an_empty_workspace_is_no_workspace() {
+        let none = Situation::recorded(&["shell".into()], "denial", None, Some(Path::new("")));
+        assert_eq!(none.workspace, None);
+        assert_eq!(none.scope().key(), "shell");
+        assert!(none
+            .scope()
+            .matches(&Situation::of_run(&["shell".into()], Some(Path::new("/w")))));
+        assert_eq!(
+            Situation::of_run(&["shell".into()], Some(Path::new(""))).workspace,
+            None
+        );
+        assert!(
+            Situation::recorded(&[], "denial", None, Some(Path::new("")))
+                .scope()
+                .is_standing()
+        );
     }
 
     /// Two members in different workspaces share no workspace, so the
