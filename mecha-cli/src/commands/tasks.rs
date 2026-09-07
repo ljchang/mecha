@@ -550,9 +550,9 @@ async fn set(
             let delegated = before["session"].as_str().is_some_and(|s| !s.is_empty());
             if delegated || closed.is_some() {
                 let stores = ClosureStores::load(task);
-                appraise_closure(&prepared, task, status, &before, &stores).await;
+                let staged = appraise_closure(&prepared, task, status, &before, &stores).await;
                 if let Some((project, board)) = closed {
-                    appraise_project(task, &project, &board, &stores);
+                    appraise_project(task, &project, &board, &stores, staged);
                 }
             }
         }
@@ -647,14 +647,14 @@ async fn appraise_closure(
     new_status: &str,
     before: &Value,
     stores: &ClosureStores,
-) {
+) -> bool {
     // Never delegated — the ordinary case for a hand-typed task. There is
     // nothing here for D9's index to point at, and that is not an error.
     // `""` lands here too, belt over the caller's braces: the CLI spells
     // "clear this field" as an empty string, and an empty id is no session,
     // not a malformed one.
     let Some(session_id) = before["session"].as_str().filter(|s| !s.is_empty()) else {
-        return;
+        return false;
     };
     // Closing while the run is still live is reachable from the terminal or
     // the modal regardless of what the model is doing, and it produces the
@@ -682,10 +682,10 @@ async fn appraise_closure(
         // kill, or a transcript from before the record existed (the live
         // case above already said its own piece). Otherwise silent, on
         // `board.rs`'s own rule for the same absence.
-        Ok(None) => return,
+        Ok(None) => return false,
         Err(e) => {
             eprintln!("mecha: could not appraise {task_id}'s session {session_id}: {e:#}");
-            return;
+            return false;
         }
     };
     // Stderr, never stdout: this is a note to the owner, not `set`'s answer.
@@ -700,10 +700,14 @@ async fn appraise_closure(
     // The appraisal record and the warning above apply to any closure — only
     // the board write is gated, in `worth_a_follow_up`.
     if !worth_a_follow_up(new_status, &a) {
-        return;
+        return false;
     }
-    if let Err(e) = stage_follow_up(prepared, task_id, before, &a).await {
-        eprintln!("mecha: could not stage a follow-up for {task_id}: {e:#}");
+    match stage_follow_up(prepared, task_id, before, &a).await {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("mecha: could not stage a follow-up for {task_id}: {e:#}");
+            false
+        }
     }
 }
 
@@ -985,6 +989,10 @@ fn appraise_project(
     project: &mecha_core::goal::GoalRef,
     board: &Value,
     stores: &ClosureStores,
+    // Whether the task's own appraisal just staged a follow-up — under
+    // this project, so the board shows an open task there again and the
+    // line must not read as if it did not (found on review).
+    follow_up_staged: bool,
 ) {
     let pid = project.id();
     let all = board;
@@ -1042,7 +1050,12 @@ fn appraise_project(
     // the summary — the sibling in `project_closure_pending` prints it the
     // same way (found on review).
     eprintln!(
-        "mecha's appraisal of project {pid} ({name:?}), closed with {task_id}: {}",
+        "mecha's appraisal of project {pid} ({name:?}), closed with {task_id}{}: {}",
+        if follow_up_staged {
+            " (one follow-up staged under it since)"
+        } else {
+            ""
+        },
         fold.describe()
     );
     for (tid, a) in &readings {
@@ -1449,11 +1462,19 @@ fn follow_up_args(task_id: &str, before: &Value, a: &mecha_core::appraisal::Appr
     // and a name is prose two nodes can share, so a follow-up filed by name
     // could land under a different project from the one just appraised
     // (found on review — the same reason `project_of` reads the id).
-    if let Some(p) = before["project_id"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .or_else(|| before["project"].as_str().filter(|s| !s.is_empty()))
-    {
+    // The id through the same one-token check `project_of` gives it, so
+    // the two readers of the field agree about what a usable id is; the
+    // name only on a board from before `project_id` (found on review).
+    let by_id = match project_of(before) {
+        ProjectTier::Identified(p) => Some(p.id().to_string()),
+        ProjectTier::None | ProjectTier::Unidentified(_) => None,
+    };
+    if let Some(p) = by_id.or_else(|| {
+        before["project"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }) {
         args["project"] = json!(p);
     }
     args
@@ -3259,6 +3280,14 @@ mod tests {
             by_name["project"], "Tide pool study",
             "the name on an older board"
         );
+        // An id that is not one token falls back to the name, as
+        // `project_of` reads the same row.
+        let odd = follow_up_args(
+            "task-1a2b3c4d",
+            &json!({"project": "Tide pool study", "project_id": "proj tide"}),
+            &a,
+        );
+        assert_eq!(odd["project"], "Tide pool study");
         for row in [
             json!({}),
             json!({"project": "", "project_id": ""}),
