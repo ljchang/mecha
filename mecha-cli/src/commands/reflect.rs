@@ -149,7 +149,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // this pass, and a row stamped with a jail before the key existed
     // would have scoped a rule to nowhere while the flag waited to be run
     // (found on review). Free when there is nothing to apply.
-    reconcile_recorded_workspaces(&store, &paths, unreadable_sessions, args.dry_run)?;
+    reconcile_recorded_keys(&store, &paths, unreadable_sessions, args.dry_run)?;
 
     if todo.is_empty() && outbox_todo.is_empty() {
         println!("nothing to mine: every session and sent draft is already reflected on");
@@ -404,13 +404,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 fn matched_keys_of(
     path: &Path,
 ) -> std::result::Result<(Option<PathBuf>, Option<mecha_core::session::SessionKind>), String> {
-    Session::run_configs(path)
-        .map(|cs| {
-            cs.into_iter()
-                .next()
-                .map(|rc| (rc.rules_workspace, rc.rules_surface))
-                .unwrap_or((None, None))
-        })
+    // Through `Session::read`, the same reader the miner holds, so the
+    // reconcile and the miner cannot disagree about one record by parsing
+    // it two ways (found on review).
+    Session::read(path)
+        .map(|t| matched_keys_in(&t))
         .map_err(|e| format!("session unreadable: {e:#}"))
 }
 
@@ -437,7 +435,7 @@ fn matched_keys_in(
 /// correctness does not depend on a human running a flag first (found on
 /// review). Commits its own writes; a pass with nothing to apply does not
 /// touch the file. Returns how many rows were (or would be) rewritten.
-fn reconcile_recorded_workspaces(
+fn reconcile_recorded_keys(
     store: &LearningStore,
     paths: &std::collections::HashMap<String, PathBuf>,
     unreadable_sessions: usize,
@@ -636,7 +634,7 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
         .collect();
     // The workspace reconcile first — the ordinary pass runs it too, and
     // this flag is the place to run it by hand and read every line.
-    reconcile_recorded_workspaces(store, &paths, unreadable_sessions, dry_run)?;
+    reconcile_recorded_keys(store, &paths, unreadable_sessions, dry_run)?;
     let todo: Vec<_> = store
         .reflexions()?
         .into_iter()
@@ -682,8 +680,8 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
         });
         match read {
             Err(why) => unmatched.push((r.id.clone(), why.clone())),
-            Ok((meta, interventions, (matched, surface))) => {
-                match backfill_situation(r, interventions, meta, matched.as_deref(), *surface) {
+            Ok((_meta, interventions, (matched, surface))) => {
+                match backfill_situation(r, interventions, matched.as_deref(), *surface) {
                     Backfilled::Matched(s) => updates.push((r.id.clone(), s)),
                     Backfilled::NoMatch => unmatched.push((
                         r.id.clone(),
@@ -905,7 +903,7 @@ mod tests {
         let paths: std::collections::HashMap<String, PathBuf> =
             listed.into_iter().map(|(m, p)| (m.id, p)).collect();
         assert_eq!(
-            reconcile_recorded_workspaces(&store, &paths, unreadable, false).unwrap(),
+            reconcile_recorded_keys(&store, &paths, unreadable, false).unwrap(),
             2,
             "jailed (both keys) and agrees (the surface alone)"
         );
@@ -929,7 +927,7 @@ mod tests {
         let file = dir.join("learning").join("reflections.jsonl");
         let before = std::fs::read(&file).unwrap();
         assert_eq!(
-            reconcile_recorded_workspaces(&store, &paths, unreadable, false).unwrap(),
+            reconcile_recorded_keys(&store, &paths, unreadable, false).unwrap(),
             0
         );
         assert_eq!(

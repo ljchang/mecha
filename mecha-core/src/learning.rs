@@ -348,16 +348,13 @@ impl KeyUpdate {
 /// (`RunConfig::rules_workspace`), never the session's jail, and `surface`
 /// the one it was matched on (`RunConfig::rules_surface`), never
 /// `SessionMeta::kind`; a record from before those fields gives `None`,
-/// and the reflection scopes by tools alone. `meta` is what the miner
-/// already held and is kept for the match on the session.
+/// and the reflection scopes by tools alone.
 pub fn backfill_situation(
     r: &Reflexion,
     interventions: &[Intervention],
-    meta: &crate::session::SessionMeta,
     matched: Option<&std::path::Path>,
     surface: Option<crate::session::SessionKind>,
 ) -> Backfilled {
-    debug_assert!(!meta.id.is_empty() || r.session_id.is_empty());
     let mut fits: Vec<crate::situation::Situation> = Vec::new();
     for i in interventions {
         if i.trigger.as_str() != r.trigger || i.text != r.intervention {
@@ -1036,7 +1033,7 @@ pub struct RulesCarried {
     /// [`Self::none`], and for a run whose situation named no workspace.
     pub workspace: Option<std::path::PathBuf>,
     /// The surface the block was matched against (`GlobalOpts::surface`,
-    /// the test override applied), recorded as `RunConfig::rules_surface`
+    /// never the test override), recorded as `RunConfig::rules_surface`
     /// for the same reason: the board's task door on `serve` records its
     /// session as a task while the block was matched as web, and a lesson
     /// stamped with the record's kind would scope to a surface no match
@@ -6593,7 +6590,6 @@ mod situation_tests {
             backfill_situation(
                 &r,
                 &interventions,
-                &meta,
                 Some(std::path::Path::new("/w")),
                 Some(SessionKind::Web)
             ),
@@ -6609,7 +6605,6 @@ mod situation_tests {
             backfill_situation(
                 &r,
                 &[],
-                &meta,
                 Some(std::path::Path::new("/w")),
                 Some(SessionKind::Web)
             ),
@@ -6625,7 +6620,6 @@ mod situation_tests {
             backfill_situation(
                 &r,
                 &differing,
-                &meta,
                 Some(std::path::Path::new("/w")),
                 Some(SessionKind::Web)
             ),
@@ -6640,7 +6634,6 @@ mod situation_tests {
             backfill_situation(
                 &r,
                 &agreeing,
-                &meta,
                 Some(std::path::Path::new("/w")),
                 Some(SessionKind::Web)
             ),

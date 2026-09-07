@@ -1972,8 +1972,10 @@ cheap lookup keyed on a recorded situation. Never by current valence.
 
 > **Built 2026-09-07, later: the surface as a scope key**
 > (`feat/surface-scope`). Each front-end tells `prepare` its kind
-> (`GlobalOpts::surface`, never a flag; the test override wins in `build`
-> as on the record), the match presents it, `RulesCarried::surface` and
+> (`GlobalOpts::surface`, never a flag; the test override marks the
+> session record and never the match, or every `mecha exp` trial and
+> smoke test would render a block with no surface-scoped rule), the
+> match presents it, `RulesCarried::surface` and
 > `RunConfig::rules_surface` record it, and the miner, backfill, validator
 > and probe read the record — never `SessionMeta::kind`, which the board's
 > task door on `serve` records as `task` while the block was matched as

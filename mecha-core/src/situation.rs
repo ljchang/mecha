@@ -25,8 +25,9 @@
 //! renders the rules block, the workspace it matched against
 //! (`setup::prepare_tools` canonicalises it), and the surface the front-end
 //! told it (`GlobalOpts::surface`, set by the front-end that owns the run
-//! and never by a flag; the test override wins over it in `build` as it
-//! does on the record). **The recorded key is the matched key by
+//! and never by a flag; the test override marks the session record and
+//! never the match, or a smoke test and every `mecha exp` trial would
+//! render a block with no surface-scoped rule in it). **The recorded key is the matched key by
 //! construction**, as the tool list already was: the run record keeps the
 //! workspace and surface the block was matched against
 //! (`RunConfig::rules_workspace` and `rules_surface`, from `RulesCarried`),
@@ -429,12 +430,11 @@ mod tests {
         let anywhere =
             Situation::recorded(&["shell".into()], "denial", None, Some(Path::new("/w")));
         assert!(anywhere.scope().matches(&other_surface));
-        let other_surface = same.clone();
         // Another workspace does not, and neither does a run that records
         // none: a key the scope sets must hold, and unknown is not a match.
         let elsewhere = Situation {
             workspace: Some(PathBuf::from("/elsewhere")),
-            ..other_surface.clone()
+            ..same.clone()
         };
         assert!(!scope.matches(&elsewhere));
         assert!(
@@ -444,7 +444,7 @@ mod tests {
         // is another workspace.
         let below = Situation {
             workspace: Some(PathBuf::from("/w/sub")),
-            ..other_surface
+            ..same
         };
         assert!(!scope.matches(&below));
         // A scope from before the key carries no workspace and rides in
