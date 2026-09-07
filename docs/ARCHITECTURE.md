@@ -486,9 +486,7 @@ reflect` pass, before anything is mined or batched
 (`LearningStore::reconcile_keys`) — each key to the matched one, or to
 none where the record carries none; never adding a key, and leaving a
 row whose session cannot be read — so nothing depends on a human running
-a flag before the nightly's `learn`. The surface is recorded but
-`prepare` does not know it (the front-end names the kind when it opens
-the session, after `prepare` returns). The workspace waited for
+a flag before the nightly's `learn`. The workspace waited for
 region-widening on purpose: scoped to one with no way to widen, a rule
 learned in the one workspace most reflections come from would have been
 dark everywhere else for good; with widening, a verbatim restatement

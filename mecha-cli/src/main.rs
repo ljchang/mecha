@@ -101,8 +101,9 @@ pub struct GlobalOpts {
     /// learned-rules block against it and record what it matched
     /// (`RunConfig::rules_surface`). A front-end that sets none matches no
     /// surface-scoped rule, which is the fail-closed reading of unknown.
-    /// The test override (`MECHA_SESSION_KIND`) wins over it in `build`, as
-    /// it does on the session record.
+    /// The test override (`MECHA_SESSION_KIND`) marks the session record
+    /// and never this: a smoke test or an `exp` trial matches the block the
+    /// shipped binary renders, and records that it did.
     #[arg(skip)]
     pub surface: Option<mecha_core::session::SessionKind>,
 
