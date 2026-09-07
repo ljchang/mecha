@@ -138,8 +138,8 @@ name = "mail"          # every account behind one surface
 command = "mecha-mail"
 
 [[mcp]]
-name = "pkg"           # who people are, and what happened when
-command = "pkg-mcp"
+name = "graph"         # who people are, and what happened when
+command = "mecha-graph-mcp"
 
 [outbox]               # staged for review, never sent outright
 tools = ["mail__mail_send", "mail__mail_reply"]`}

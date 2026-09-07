@@ -35,7 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The knowledge graph is named as the graph everywhere in the tree.**
   Comments, tests and one `mecha distill` warning still called it by the
   retired server's name; nothing calls that server, and the words now say
-  so.
+  so. Three places changed what somebody *does* (found on review): the
+  published evaluation page named a fixture file that does not exist, the
+  landing page's `[[mcp]]` snippet named a binary that is not shipped, and
+  `prompts/agent.md` told the model to call `pkg__kg_*` tools that are not
+  on the surface — it now names `graph__kg_*`, the configured server.
 
 ## [0.1.18] - 2026-09-06
 
