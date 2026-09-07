@@ -831,11 +831,14 @@ fn task_pointer(row: &Value) -> Option<&str> {
 /// array, a row without `project_id`, a row with no string id or status:
 /// unknown is never "nothing else is open", and a project closure
 /// announced off a reply this build could not parse would be the false
-/// finding a fold is paid for (found on review).
+/// finding a fold is paid for (found on review) — and so is one announced
+/// off a board that does not even carry the row just closed.
 fn project_closed_by(board: &Value, pid: &str, task_id: &str) -> Option<bool> {
     let mut other_open = false;
+    let mut saw_me = false;
     for t in rows_under(board, pid)? {
         let id = t["id"].as_str()?;
+        saw_me |= id == task_id;
         // The board is read whole (`include_closed`), once, for this
         // decision and the fold alike: open is a status that is not a
         // closing one — the modelled server's and the real server's own
@@ -844,7 +847,12 @@ fn project_closed_by(board: &Value, pid: &str, task_id: &str) -> Option<bool> {
         let status = t["status"].as_str()?;
         other_open |= id != task_id && !crate::closure_guard::is_closing_status(status);
     }
-    Some(!other_open)
+    // The task just closed under `pid` must be on a whole-board read. Its
+    // absence means the answer was short in a way the envelope did not say
+    // (a cap without `truncated`, a re-file the echo reported but did not
+    // persist), and an empty tier is then a zero read as an answer rather
+    // than as unknown (found on review).
+    saw_me.then_some(!other_open)
 }
 
 /// One project's appraisal, folded from the sessions of every task ever
@@ -3430,26 +3438,42 @@ mod tests {
     #[test]
     fn the_project_closes_when_no_other_open_task_remains() {
         let pid = "proj-tide";
-        let empty = json!({"items": []});
-        assert_eq!(project_closed_by(&empty, pid, "task-a"), Some(true));
+        let me = json!({"id": "task-a", "status": "done", "project_id": pid});
+        // A whole-board read that does not carry the row just closed is
+        // short in a way the envelope did not say: unknown, never closed.
+        assert_eq!(
+            project_closed_by(&json!({"items": []}), pid, "task-a"),
+            None
+        );
+        assert_eq!(
+            project_closed_by(
+                &json!({"items": [{"id": "task-b", "status": "done", "project_id": pid}]}),
+                pid,
+                "task-a"
+            ),
+            None
+        );
         // The just-closed task's own row is not another open task, and a
         // closed sibling (the board is read whole) is not one either.
-        let only_me = json!({"items": [{"id": "task-a", "status": "done", "project_id": pid}]});
-        assert_eq!(project_closed_by(&only_me, pid, "task-a"), Some(true));
+        assert_eq!(
+            project_closed_by(&json!({"items": [me]}), pid, "task-a"),
+            Some(true)
+        );
         let closed_sibling = json!({"items": [
-            {"id": "task-a", "status": "done", "project_id": pid},
-            {"id": "task-b", "status": "dropped", "project_id": pid},
+            me, {"id": "task-b", "status": "dropped", "project_id": pid},
         ]});
         assert_eq!(
             project_closed_by(&closed_sibling, pid, "task-a"),
             Some(true)
         );
-        let another = json!({"items": [{"id": "task-b", "status": "next", "project_id": pid}]});
+        let another = json!({"items": [
+            me, {"id": "task-b", "status": "next", "project_id": pid},
+        ]});
         assert_eq!(project_closed_by(&another, pid, "task-a"), Some(false));
         // A row with no status cannot say whether it is open.
         assert_eq!(
             project_closed_by(
-                &json!({"items": [{"id": "task-b", "project_id": pid}]}),
+                &json!({"items": [me, {"id": "task-b", "project_id": pid}]}),
                 pid,
                 "task-a"
             ),
@@ -3457,7 +3481,9 @@ mod tests {
         );
         // An open task merely associated with the project — `about` it,
         // waiting on it — is not under it and does not hold it open.
-        let about_it = json!({"items": [{"id": "task-b", "status": "next", "project_id": null}]});
+        let about_it = json!({"items": [
+            me, {"id": "task-b", "status": "next", "project_id": null},
+        ]});
         assert_eq!(project_closed_by(&about_it, pid, "task-a"), Some(true));
         // An unreadable list is not an empty one: no `items`, a row with
         // no id, or a row that does not say its project, is unknown —
@@ -3469,7 +3495,7 @@ mod tests {
         );
         assert_eq!(
             project_closed_by(
-                &json!({"items": [{"status": "next", "project_id": pid}]}),
+                &json!({"items": [me, {"status": "next", "project_id": pid}]}),
                 pid,
                 "task-a"
             ),
@@ -3477,7 +3503,7 @@ mod tests {
         );
         assert_eq!(
             project_closed_by(
-                &json!({"items": [{"id": "task-b", "status": "next"}]}),
+                &json!({"items": [me, {"id": "task-b", "status": "next"}]}),
                 pid,
                 "task-a"
             ),
