@@ -468,9 +468,11 @@ drafts loads where `mail_send` is mounted and nowhere else. The scope
 keys are the tool set and, since 2026-09-07, the workspace `prepare`
 matched the block against (`setup::prepare_tools` canonicalises it) and
 the surface the front-end told it (`GlobalOpts::surface`, set by the
-front-end that owns the run and never by a flag; the test override wins
-over it in `build` as on the record), each matched exactly (a jail is not
-a prefix, and a run that records none is not a match). **The recorded
+front-end that owns the run and never by a flag; the test override marks
+the session record and never the match, or every `mecha exp` trial and
+smoke test would render a block with no surface-scoped rule). The
+workspace is matched exactly (a jail is not a prefix) and so is the
+surface, and a run that records neither matches neither. **The recorded
 key is the matched key by construction:** the run record keeps them as
 `RunConfig::rules_workspace` and `rules_surface`, and the miner, the
 backfill, the validator's region and the probe read those — never the
