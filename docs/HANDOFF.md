@@ -3204,7 +3204,7 @@ as `mecha reflect --backfill-situations`, `feat/situation-backfill`;
 the owner ran the write 2026-09-04 23:12Z: 37 of 45 recomputed, 8 absent
 with reasons, learning-store commit `5767dc4`**), and
 surface and workspace as *scope* keys — **both matched since
-2026-09-07** (#209, #210; the evening paragraph below has what is still
+2026-09-07** (#209, #210; the evening paragraph above has what is still
 open from them), each recorded as what `prepare` matched rather than what
 the session was. The twelve
 live rules on this machine are unscoped and load everywhere as before, until
