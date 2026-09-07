@@ -704,7 +704,7 @@ async fn appraise_closure(
         return false;
     }
     match stage_follow_up(prepared, task_id, before, &a).await {
-        Ok(()) => true,
+        Ok(under_project) => under_project,
         Err(e) => {
             eprintln!("mecha: could not stage a follow-up for {task_id}: {e:#}");
             false
@@ -1002,15 +1002,19 @@ async fn project_closure_pending(
 /// and the line says which task closed it. Membership is the row's own
 /// `project_id` over an unfiltered board, never the server's association
 /// filter (`rows_under`), and the board is the one read taken before the
-/// task's appraisal, so a follow-up it staged is not in the fold.
+/// task's appraisal, so a follow-up it staged is not in the fold. Named,
+/// not built: a task re-filed and closed in one call is appraised under
+/// the tier it moved *to*; if it was the last open task of the tier it
+/// left, that closure goes undetected until another task under it closes.
 fn appraise_project(
     task_id: &str,
     project: &mecha_core::goal::GoalRef,
     board: &Value,
     stores: &LazyStores,
-    // Whether the task's own appraisal just staged a follow-up — under
-    // this project, so the board shows an open task there again and the
-    // line must not read as if it did not (found on review).
+    // Whether the task's own appraisal just staged a follow-up *under this
+    // project*, so the board shows an open task there again and the line
+    // must not read as if it did not (found on review) — false when the
+    // deploy-window fallback filed it under none.
     follow_up_staged: bool,
 ) {
     let pid = project.id();
@@ -1558,8 +1562,13 @@ async fn stage_follow_up(
     task_id: &str,
     before: &Value,
     a: &mecha_core::appraisal::Appraisal,
-) -> Result<()> {
+) -> Result<bool> {
+    // Answers whether the follow-up landed *under the task's project*: the
+    // deploy-window fallback below files it under none, and the fold's
+    // line must not then say one was staged under the project (found on
+    // review).
     let mut args = follow_up_args(task_id, before, a);
+    let mut under_project = args.get("project").is_some();
     let out = match call_with(prepared, "kg_task_create", args.clone()).await {
         Ok(v) => v,
         // The store's own validation may be stricter than the documented
@@ -1610,6 +1619,7 @@ async fn stage_follow_up(
                     if let Some(o) = args.as_object_mut() {
                         o.remove("project");
                     }
+                    under_project = false;
                     eprintln!(
                         "mecha: the board refused the follow-up's project {parent}; filing it \
                          under no project — re-file it with `tasks set --project`: {e2:#}"
@@ -1638,7 +1648,7 @@ async fn stage_follow_up(
         out["id"].as_str().unwrap_or("created"),
         out["name"].as_str().unwrap_or("")
     );
-    Ok(())
+    Ok(under_project)
 }
 
 /// Where a task run announces itself and watches to be stopped.
