@@ -69,11 +69,15 @@ pub struct ProbePrep {
 }
 
 impl ProbePrep {
-    /// The situation the recorded run was in: the registry and workspace
-    /// its `RunConfig` names. What a rules block for this probe is rendered
-    /// against.
+    /// The situation the recorded run was in: the registry its `RunConfig`
+    /// names and the workspace its rules block was matched against — not
+    /// the jail, which on `serve` and Slack is a different path. What a
+    /// rules block for this probe is rendered against.
     pub fn situation(&self) -> Situation {
-        Situation::of_run(&self.recorded.tools, Some(&self.recorded.workspace))
+        Situation::of_run(
+            &self.recorded.tools,
+            self.recorded.rules_workspace.as_deref(),
+        )
     }
 
     /// The tool names the recording carried — what a fidelity check must

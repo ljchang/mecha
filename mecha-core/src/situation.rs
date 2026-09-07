@@ -22,12 +22,21 @@
 //! A reflection records every key it can. A *rule* is scoped by the subset a
 //! run can be matched against at start — [`Situation::scope`] — and that
 //! is the tool set and the workspace: `prepare` knows the registry when it
-//! renders the rules block, and the jail the run is rooted in
-//! (`setup::prepare_tools` canonicalises it, and the session record carries the
-//! same spelling, so the two sides of a match agree byte for byte). The
-//! surface is recorded and not matched: the front-end names it when it
-//! opens the session, after `prepare` returns. A key joins [`Situation::scope`]
-//! and [`Situation::matches`] in the same change, pinned by
+//! renders the rules block, and the workspace it matched against
+//! (`setup::prepare_tools` canonicalises it). **The recorded key is the
+//! matched key by construction**, as the tool list already was: the run
+//! record keeps the workspace the block was matched against
+//! (`RunConfig::rules_workspace`, from `RulesCarried::workspace`), and the
+//! miner, the backfill, the validator's region and the probe all read that
+//! — never the session's jail. The two differ where one block serves many
+//! jails: `serve` renders once against the producer root and jails each
+//! session a level below, Slack renders against its configured workspace
+//! and jails each thread under `~/.mecha/work/slack/`; a lesson stamped
+//! with the jail scoped its rule to a workspace no match presents, dark
+//! forever with nothing warning (found on review). The surface is recorded
+//! and not matched: the front-end names it when it opens the session, after
+//! `prepare` returns. A key joins [`Situation::scope`] and
+//! [`Situation::matches`] in the same change, pinned by
 //! `scope_keys_and_matching_move_together`.
 //!
 //! The workspace became a key on 2026-09-07, after region widening existed
@@ -43,15 +52,8 @@
 //! none either (`rewritable_in` is equality), so a single-workspace batch
 //! shows it as context rather than narrowing it on no conviction.
 //!
-//! A front-end whose runs are jailed somewhere other than the workspace
-//! the rules block was rendered against must record *no* workspace, or
-//! its lessons scope to a jail no match presents. The Slack connector is
-//! that case — one block rendered at `prepare` against its configured
-//! workspace, each thread jailed under `~/.mecha/work/slack/` — and it
-//! records none (an empty path, which [`Situation::recorded`] reads as
-//! none), so a Slack lesson scopes by tools alone. Recording the thread
-//! jail there would be worse, not better, until the connector renders or
-//! matches per thread.
+//! A run record from before `rules_workspace` gives the miner no workspace,
+//! and its reflections scope by tools alone — no key, never a guess.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -82,7 +84,7 @@ pub struct Situation {
         deserialize_with = "crate::session::de_lenient_kind"
     )]
     pub surface: Option<SessionKind>,
-    /// The jail the session was rooted in. Read through
+    /// The workspace a match presents (see the module doc). Read through
     /// [`known_workspace`] like the two construction doors, because a
     /// front-end that records none writes the empty path, and a row read
     /// back as a set key would scope tonight's rules to a workspace no run

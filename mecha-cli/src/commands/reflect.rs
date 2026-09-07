@@ -162,6 +162,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut reflections_written = 0usize;
 
     for (meta, path) in &todo {
+        // The workspace the session's rules block was matched against, off
+        // its run record — the key a match presents. Never the session's
+        // jail: on `serve` the block is rendered against the producer root
+        // and each session is jailed a level below, so a lesson stamped
+        // with the jail scoped its rule to a workspace no run presents
+        // (found on review). A record from before the field gives none.
+        let matched_workspace = Session::run_configs(path)
+            .ok()
+            .and_then(|cs| cs.into_iter().next())
+            .and_then(|rc| rc.rules_workspace);
         let (_, convo) = match Session::load(path) {
             Ok(loaded) => loaded,
             Err(e) => {
@@ -243,13 +253,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // Where it happened, from what the miner already held:
                     // the tool window is registry names (it survives the
                     // user-evidence-only view for the same reason), the
-                    // surface and workspace are the session record's. Set
-                    // here and not by the reflector, which saw prose.
+                    // surface is the session record's, the workspace the
+                    // run record's matched one. Set here and not by the
+                    // reflector, which saw prose.
                     r.situation = Some(mecha_core::situation::Situation::recorded(
                         &intervention.tools_before,
                         intervention.trigger.as_str(),
                         meta.kind,
-                        Some(&meta.workspace),
+                        matched_workspace.as_deref(),
                     ));
                     pending.push(r);
                 }
@@ -433,6 +444,7 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
             (
                 mecha_core::session::SessionMeta,
                 Vec<mecha_core::learning::Intervention>,
+                Option<PathBuf>,
             ),
             String,
         >,
@@ -458,20 +470,26 @@ fn backfill_situations(store: &LearningStore, sessions_dir: &Path, dry_run: bool
             })?;
             let (meta, convo) =
                 Session::load(path).map_err(|e| format!("session unreadable: {e:#}"))?;
-            Ok((meta, extract_interventions(&convo.messages)))
+            let matched = Session::run_configs(path)
+                .ok()
+                .and_then(|cs| cs.into_iter().next())
+                .and_then(|rc| rc.rules_workspace);
+            Ok((meta, extract_interventions(&convo.messages), matched))
         });
         match read {
             Err(why) => unmatched.push((r.id.clone(), why.clone())),
-            Ok((meta, interventions)) => match backfill_situation(r, interventions, meta) {
-                Backfilled::Matched(s) => updates.push((r.id.clone(), s)),
-                Backfilled::NoMatch => unmatched.push((
-                    r.id.clone(),
-                    "no intervention with this trigger and text in the transcript".into(),
-                )),
-                Backfilled::Ambiguous(n) => {
-                    unmatched.push((r.id.clone(), format!("fits {n} different tool windows")))
+            Ok((meta, interventions, matched)) => {
+                match backfill_situation(r, interventions, meta, matched.as_deref()) {
+                    Backfilled::Matched(s) => updates.push((r.id.clone(), s)),
+                    Backfilled::NoMatch => unmatched.push((
+                        r.id.clone(),
+                        "no intervention with this trigger and text in the transcript".into(),
+                    )),
+                    Backfilled::Ambiguous(n) => {
+                        unmatched.push((r.id.clone(), format!("fits {n} different tool windows")))
+                    }
                 }
-            },
+            }
         }
     }
     for (id, s) in &updates {
