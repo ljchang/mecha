@@ -23,7 +23,7 @@
 //! run can be matched against at start — [`Situation::scope`] — and that
 //! is the tool set and the workspace: `prepare` knows the registry when it
 //! renders the rules block, and the jail the run is rooted in
-//! (`setup::build` canonicalises it, and the session record carries the
+//! (`setup::prepare_tools` canonicalises it, and the session record carries the
 //! same spelling, so the two sides of a match agree byte for byte). The
 //! surface is recorded and not matched: the front-end names it when it
 //! opens the session, after `prepare` returns. A key joins [`Situation::scope`]
@@ -82,8 +82,22 @@ pub struct Situation {
         deserialize_with = "crate::session::de_lenient_kind"
     )]
     pub surface: Option<SessionKind>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The jail the session was rooted in. Read through
+    /// [`known_workspace`] like the two construction doors, because a
+    /// front-end that records none writes the empty path, and a row read
+    /// back as a set key would scope tonight's rules to a workspace no run
+    /// presents (found on review).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_known_workspace"
+    )]
     pub workspace: Option<PathBuf>,
+}
+
+fn de_known_workspace<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
+    let raw: Option<PathBuf> = Option::deserialize(d)?;
+    Ok(known_workspace(raw.as_deref()))
 }
 
 impl Situation {
@@ -197,9 +211,11 @@ impl Situation {
     /// row, and two workspaces do not.
     pub fn key(&self) -> String {
         let scope = self.scope();
+        let tools = scope.tools.join(",");
         match &scope.workspace {
-            Some(w) => format!("{} @ {}", scope.tools.join(","), w.display()),
-            None => scope.tools.join(","),
+            Some(w) if tools.is_empty() => format!("@ {}", w.display()),
+            Some(w) => format!("{tools} @ {}", w.display()),
+            None => tools,
         }
     }
 
@@ -266,14 +282,18 @@ impl Situation {
     }
 }
 
-/// The door for the workspace key: an empty path is *no* workspace, never
-/// a workspace named `""`. A session record whose front-end recorded none
-/// carries the empty path (`SessionMeta::workspace` is not optional, and
-/// the Slack connector writes `PathBuf::default()` — found on review), and
-/// mapped straight through it became a set key no run could ever present:
-/// a rule scoped to it was dark everywhere, the roster printed the key as
-/// though it meant something, and nothing warned. Unknown is not a match
-/// and not a key.
+/// The door for the workspace key — all three of them: [`Situation::recorded`],
+/// [`Situation::of_run`], and the field's deserializer. An empty path is
+/// *no* workspace, never a workspace named `""`. A session record whose
+/// front-end recorded none carries the empty path (`SessionMeta::workspace`
+/// is not optional, and the Slack connector writes `PathBuf::default()` —
+/// found on review), and mapped straight through it became a set key no
+/// run could ever present: a rule scoped to it was dark everywhere, the
+/// roster printed the key as though it meant something, and nothing
+/// warned. The read door matters as much as the two construction doors:
+/// the store is append-only, and a row a past build wrote is read on
+/// this build's terms (found on review, the next pass). Unknown is not a
+/// match and not a key.
 fn known_workspace(workspace: Option<&Path>) -> Option<PathBuf> {
     workspace
         .filter(|w| !w.as_os_str().is_empty())
@@ -403,6 +423,16 @@ mod tests {
                 .scope()
                 .is_standing()
         );
+        // The read door too: a row written by a build that recorded the
+        // empty path comes back with no workspace — not `""`.
+        let on_disk: Situation =
+            serde_json::from_str(r#"{"tools":["shell"],"trigger":"denial","workspace":""}"#)
+                .unwrap();
+        assert_eq!(on_disk.workspace, None);
+        assert_eq!(on_disk.scope().key(), "shell");
+        let kept: Situation =
+            serde_json::from_str(r#"{"tools":["shell"],"workspace":"/w"}"#).unwrap();
+        assert_eq!(kept.workspace.as_deref(), Some(Path::new("/w")));
     }
 
     /// Two members in different workspaces share no workspace, so the
@@ -478,7 +508,7 @@ mod tests {
         assert_eq!(Situation::default().key(), "");
         assert_eq!(
             s(&["ask_user"]).key(),
-            " @ /w",
+            "@ /w",
             "a front-end focus in a workspace is still that workspace"
         );
         assert_eq!(
