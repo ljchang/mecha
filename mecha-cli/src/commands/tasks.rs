@@ -894,6 +894,10 @@ impl ProjectReading {
             *out.labels.entry(format!("{:?}", a.label)).or_default() += 1;
             out.valence.merge(&mecha_core::appraisal::Valence::of(a));
         }
+        // A task under the project whose session could not be read is a
+        // reading that was short: the sums must say so, not only the count
+        // beside them (found on review).
+        out.valence.partial |= unread > 0;
         out
     }
 
@@ -3572,6 +3576,21 @@ mod tests {
             fold.valence.partial,
             "one partial reading makes the fold partial"
         );
+        // And an unread task alone makes it partial too.
+        let mut clean = appraisal(Affect::Neutral);
+        clean.errors = vec![err(1.0)];
+        let short = ProjectReading::fold(&[("task-c".to_string(), clean)], 0, 1);
+        assert!(
+            short.valence.partial,
+            "an unread session is a short reading"
+        );
+        assert!(
+            short.describe().contains("+1.0\u{2026}"),
+            "{}",
+            short.describe()
+        );
+        let whole = ProjectReading::fold(&[], 2, 0);
+        assert!(!whole.valence.partial, "nothing unread, nothing partial");
         let line = fold.describe();
         assert!(
             line.contains("5 task(s), 2 read (Distress ×1, Neutral ×1)"),
