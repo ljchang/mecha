@@ -584,6 +584,23 @@ fn reconcile_recorded_keys(
             Some(raw) => format!("{raw} (a surface this build cannot name)"),
             None => show_k(s.surface).to_string(),
         };
+        // A parked surface against a record that names none stays parked:
+        // the record side reads a surface it cannot name as none, so a
+        // downgrade would otherwise clear the parked key here — the very
+        // key the parking exists to keep — and hand the rule every surface
+        // (found on review). A record that names a surface still replaces
+        // it.
+        let parked_and_unnamed = s.surface_unread.is_some()
+            && record
+                .as_ref()
+                .is_ok_and(|all| all.iter().all(|(_, k)| k.is_none()));
+        if parked_and_unnamed {
+            println!(
+                "· {} keeps surface {} — no run record names a surface to replace it with",
+                r.id,
+                show_recorded()
+            );
+        }
         let surface_record = record
             .as_ref()
             .map(|all| {
@@ -594,7 +611,11 @@ fn reconcile_recorded_keys(
             })
             .map_err(Clone::clone);
         match reconcile_key(
-            surface_recorded.as_ref(),
+            if parked_and_unnamed {
+                None
+            } else {
+                surface_recorded.as_ref()
+            },
             surface_record
                 .as_ref()
                 .map(|m| m.as_ref())
@@ -1108,6 +1129,54 @@ mod tests {
         assert_eq!(
             triage.situation_recomputed_at, None,
             "never read as a session"
+        );
+        // A parked surface against a record that names none stays parked
+        // — the downgrade case: the record side reads the newer kind as
+        // none too, and clearing here would hand the rule every surface.
+        let unnamed = session_on(
+            &sessions,
+            "/jail",
+            Some("/root"),
+            Some(SessionKind::Tui),
+            None,
+        );
+        store
+            .append_reflexion(&Reflexion {
+                id: "parked-unnamed".into(),
+                domain: "behavior".into(),
+                session_id: unnamed.meta.id.clone(),
+                trigger: "denial".into(),
+                context: "c".into(),
+                intervention: "Denied by the user: no".into(),
+                reflexion_text: "t".into(),
+                error_type: None,
+                confidence: None,
+                is_processed: false,
+                leap_run_id: None,
+                created_at: "2026-09-07T00:00:00Z".into(),
+                origin: mecha_core::learning::Origin::Clean,
+                evidence: mecha_core::learning::Evidence::Full,
+                edited_at: None,
+                dropped_at: None,
+                dropped_reason: None,
+                situation: Some(
+                    serde_json::from_str(r#"{"tools":["shell"],"surface":"copilot"}"#).unwrap(),
+                ),
+                situation_recomputed_at: None,
+            })
+            .unwrap();
+        let (listed, unreadable) = Session::list_counting(&sessions).unwrap();
+        let paths: std::collections::HashMap<String, PathBuf> =
+            listed.into_iter().map(|(m, p)| (m.id, p)).collect();
+        assert_eq!(
+            reconcile_recorded_keys(&store, &paths, unreadable, false).unwrap(),
+            0,
+            "nothing to replace it with: left parked"
+        );
+        assert_eq!(
+            sit("parked-unnamed").surface_unread.as_deref(),
+            Some("copilot"),
+            "still parked, still matching nothing"
         );
         let file = dir.join("learning").join("reflections.jsonl");
         let before = std::fs::read(&file).unwrap();
