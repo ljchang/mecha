@@ -194,6 +194,9 @@ def task_json(t, today_str):
         "defer_until": t.get("defer_until"),
         "context": t.get("context"),
         "project": t.get("project"),
+        # The parent's node id beside its name, as mecha-graph 0.1.6 renders
+        # it: the pointer a consumer cites, where the name is prose.
+        "project_id": t.get("project_id"),
         "waiting_on": t.get("waiting_on"),
         "about": t.get("about", []),
         "previously_waiting_on": t.get("previously_waiting_on"),
@@ -292,6 +295,7 @@ def kg_task_create(store, args):
         "defer_until": None,
         "context": args.get("context"),
         "project": store.resolve_node(project)["name"] if project is not None else None,
+        "project_id": store.resolve_node(project)["id"] if project is not None else None,
         "waiting_on": None,
         "about": [{"name": store.resolve_about(a)["name"], "unreviewed": False} for a in about],
         "previously_waiting_on": None,
@@ -303,7 +307,12 @@ def kg_task_create(store, args):
     }
     store.board["tasks"].append(task)
     store.save_board()
-    return {"v": 1, "status": "created", "id": task["id"], "due_at": due, "about": task["about"]}
+    # The whole row under `task` beside the top-level keys, as the real
+    # server's create echo renders it.
+    return {
+        "v": 1, "status": "created", "id": task["id"], "due_at": due, "about": task["about"],
+        "task": task_json(task, today()),
+    }
 
 
 def kg_task_update(store, args):
@@ -468,7 +477,7 @@ TOOLS = [
     {
         "name": "kg_task_list",
         "annotations": {"readOnlyHint": True, "openWorldHint": False},
-        "description": "The GTD board: every open task, actionable statuses first (next, inbox, scheduled, waiting), then by due date. Each task carries its status, due/defer dates, parent project, who it is waiting on, the entities it is `about`, and — when captured from something — a `captured_from` pointer. Use it to answer 'what should Ada do next', to check whether something is already tracked, and to find overdue items (due_at earlier than today). include_closed adds done/dropped history. `entity` narrows to one person, project or topic.",
+        "description": "The GTD board: every open task, actionable statuses first (next, inbox, scheduled, waiting), then by due date. Each task carries its status, due/defer dates, parent project (`project` is its name, `project_id` its node id — cite the id), who it is waiting on, the entities it is `about`, and — when captured from something — a `captured_from` pointer. Use it to answer 'what should Ada do next', to check whether something is already tracked, and to find overdue items (due_at earlier than today). include_closed adds done/dropped history. `entity` narrows to one person, project or topic.",
         "inputSchema": {
             "type": "object",
             "properties": {

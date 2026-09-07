@@ -1107,7 +1107,7 @@ pub fn claim_lines(text: &str, max: usize) -> Vec<String> {
         .collect()
 }
 
-/// the graph's deterministic verdicts on its own stored claims about an entity.
+/// The graph's deterministic verdicts on its own stored claims about an entity.
 ///
 /// No model in the loop: `kg_verify` dereferences each live claim to the
 /// evidence cited for it. This is the one part of an audit that cannot

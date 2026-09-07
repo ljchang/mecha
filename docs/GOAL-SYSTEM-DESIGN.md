@@ -2194,8 +2194,11 @@ note below.
    `goals` *after* the task — the run served the task, the task the
    project, and every error's pointer stays the tier the run was handed.
    The tier's own closure moment is the one this item names: **the owner
-   closing a project's last task closes the project**, and
-   `appraise_project_closure` folds every session that worked a task under
+   closing a project's last task closes the project** — detected off the
+   project's open list read before the task's own appraisal can stage a
+   follow-up under it, with membership by the row's own `project_id`
+   rather than the server's association filter (both found on review) —
+   and `appraise_project` folds every session that worked a task under
    it into one reading (`ProjectReading` — labels counted, valence summed
    positive and negative apart, `partial` if any reading was, and the
    tasks never delegated or unreadable counted rather than dropped),
