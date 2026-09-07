@@ -499,12 +499,16 @@ pub fn upsert_args(
         if let Some(g) = a.goals.first().and_then(|g| goal_pointer(g, known)) {
             meta["goal"] = Value::String(g);
         }
+        // `find_map`, not `find` then resolve: the first charter reference
+        // that *resolves* crosses, so a later one that would is not lost
+        // behind an earlier one that does not — the one line that still
+        // depended on the caller's ordering (found on review).
         if let Some(line) = a
             .goals
             .iter()
             .chain(a.attributed.iter())
-            .find(|g| matches!(g, crate::goal::GoalRef::Charter(_)))
-            .and_then(|g| goal_pointer(g, known))
+            .filter(|g| matches!(g, crate::goal::GoalRef::Charter(_)))
+            .find_map(|g| goal_pointer(g, known))
         {
             meta["serves_charter"] = Value::String(line);
         }
