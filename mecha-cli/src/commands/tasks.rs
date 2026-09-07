@@ -733,9 +733,14 @@ fn project_of(row: &Value) -> ProjectTier {
     let name = row["project"].as_str().filter(|s| !s.is_empty());
     let id = row["project_id"].as_str().filter(|s| !s.is_empty());
     match (id, name) {
-        (Some(id), _) => match format!("project:{id}").parse() {
-            Ok(p) => ProjectTier::Identified(p),
-            Err(_) => ProjectTier::Unidentified(name.unwrap_or(id).to_string()),
+        // The parser trims an id, and the trimmed form is what every row
+        // is then compared against — so an id the board and the parser
+        // spell differently (edge whitespace) would match no sibling and
+        // read a project with open tasks as closed (found on review). The
+        // row's own spelling is required, or the tier is unidentified.
+        (Some(id), _) => match format!("project:{id}").parse::<mecha_core::goal::GoalRef>() {
+            Ok(p) if p.id() == id => ProjectTier::Identified(p),
+            _ => ProjectTier::Unidentified(name.unwrap_or(id).to_string()),
         },
         (None, Some(name)) => ProjectTier::Unidentified(name.to_string()),
         (None, None) => ProjectTier::None,
@@ -1021,8 +1026,12 @@ async fn appraise_project(
         }
     }
     let fold = ProjectReading::fold(&readings, no_session, unread);
+    // `{name:?}`: a node name is prose the graph can acquire from
+    // extracted content, and a newline in it would forge a line beside
+    // the summary — the sibling in `project_closure_pending` prints it the
+    // same way (found on review).
     eprintln!(
-        "mecha's appraisal of project {pid} ({name}), closed with {task_id}: {}",
+        "mecha's appraisal of project {pid} ({name:?}), closed with {task_id}: {}",
         fold.describe()
     );
     for (tid, a) in &readings {
@@ -3212,6 +3221,12 @@ mod tests {
         assert_eq!(
             project_of(&json!({"project_id": "proj\ntide"})),
             ProjectTier::Unidentified("proj\ntide".into())
+        );
+        // Edge whitespace parses (the parser trims) but would match no
+        // row spelled the board's way: the row's own spelling is required.
+        assert_eq!(
+            project_of(&json!({"project": "Tide pool study", "project_id": " proj-tide"})),
+            ProjectTier::Unidentified("Tide pool study".into())
         );
     }
 
