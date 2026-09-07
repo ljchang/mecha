@@ -540,7 +540,7 @@ async fn set(
             // its own follow-up holding the project open and print nothing
             // (found on review). The fold itself runs after, so the task's
             // appraisal and the project's agree about the closed task.
-            let closed_project = project_closure_pending(&prepared, task, &before).await;
+            let closed = project_closure_pending(&prepared, task, &before).await;
             // One read of every store for the task's appraisal and the
             // project's fold alike, and each store's warning once — and
             // only when one of the two will read them: a hand-typed task
@@ -548,11 +548,11 @@ async fn set(
             // and must not pay five scans or print a store warning about
             // an appraisal that does not happen (found on review).
             let delegated = before["session"].as_str().is_some_and(|s| !s.is_empty());
-            if delegated || closed_project.is_some() {
+            if delegated || closed.is_some() {
                 let stores = ClosureStores::load(task);
                 appraise_closure(&prepared, task, status, &before, &stores).await;
-                if let Some(project) = closed_project {
-                    appraise_project(&prepared, task, &project, &stores).await;
+                if let Some((project, board)) = closed {
+                    appraise_project(task, &project, &board, &stores);
                 }
             }
         }
@@ -813,20 +813,25 @@ fn task_pointer(row: &Value) -> Option<&str> {
 }
 
 /// Whether closing `task_id` left its project with no open task — read off
-/// the board's *open* list for that project, fetched after the update
-/// landed and before anything else is staged. The closed task is not
-/// expected on that list, but a row of it is tolerated rather than read as
-/// "still open", since the answer this decides is "was that the last one".
-/// `None` when the answer cannot be read — no `items` array, a row without
-/// `project_id`, or a row with no string id: unknown is never "nothing else
-/// is open", and a project closure announced off a reply this build could
-/// not parse would be the false finding a fold is paid for (found on
-/// review).
-fn project_closed_by(open: &Value, pid: &str, task_id: &str) -> Option<bool> {
+/// the whole board, fetched after the update landed and before anything
+/// else is staged. The closed task's own row is not another open task,
+/// whatever its status reads, since the answer this decides is "was that
+/// the last one". `None` when the answer cannot be read — no `items`
+/// array, a row without `project_id`, a row with no string id or status:
+/// unknown is never "nothing else is open", and a project closure
+/// announced off a reply this build could not parse would be the false
+/// finding a fold is paid for (found on review).
+fn project_closed_by(board: &Value, pid: &str, task_id: &str) -> Option<bool> {
     let mut other_open = false;
-    for t in rows_under(open, pid)? {
+    for t in rows_under(board, pid)? {
         let id = t["id"].as_str()?;
-        other_open |= id != task_id;
+        // The board is read whole (`include_closed`), once, for this
+        // decision and the fold alike: open is a status that is not a
+        // closing one — the modelled server's and the real server's own
+        // predicate (`status NOT IN ('done','dropped')`) — and a row
+        // with no status cannot say, so the answer is unknown.
+        let status = t["status"].as_str()?;
+        other_open |= id != task_id && !crate::closure_guard::is_closing_status(status);
     }
     Some(!other_open)
 }
@@ -914,7 +919,7 @@ async fn project_closure_pending(
     prepared: &setup::PreparedTools,
     task_id: &str,
     before: &Value,
-) -> Option<mecha_core::goal::GoalRef> {
+) -> Option<(mecha_core::goal::GoalRef, Value)> {
     let project = match project_of(before) {
         ProjectTier::None => return None,
         ProjectTier::Unidentified(name) => {
@@ -928,24 +933,29 @@ async fn project_closure_pending(
         ProjectTier::Identified(p) => p,
     };
     let pid = project.id();
-    let open = match call_with(prepared, "kg_task_list", json!({})).await {
+    // One read of the whole board serves this decision and the fold: read
+    // here, before the task's appraisal can stage a follow-up, the fold no
+    // longer counts a task this same command created seconds earlier as
+    // one "never delegated" under a project it just called closed (found
+    // on review — the N+1 that used to be disclosed).
+    let board = match call_with(prepared, "kg_task_list", json!({ "include_closed": true })).await {
         Ok(v) => v,
         Err(e) => {
             eprintln!(
-                "mecha: could not read project {pid}'s open tasks after closing {task_id}, so \
-                 whether that closed the project is unknown: {e:#}"
+                "mecha: could not read the board after closing {task_id}, so whether that closed \
+                 project {pid} is unknown: {e:#}"
             );
             return None;
         }
     };
-    match project_closed_by(&open, pid, task_id) {
-        Some(true) => Some(project),
+    match project_closed_by(&board, pid, task_id) {
+        Some(true) => Some((project, board)),
         Some(false) => None,
         None => {
             eprintln!(
-                "mecha: could not read project {pid}'s open list after closing {task_id} (a \
-                 truncated answer, no `items`, or a row without an id or a `project_id`), so \
-                 whether that closed the project is unknown"
+                "mecha: could not read the board after closing {task_id} (a truncated answer, \
+                 no `items`, or a row without an id, a status or a `project_id`), so whether \
+                 that closed project {pid} is unknown"
             );
             None
         }
@@ -954,7 +964,8 @@ async fn project_closure_pending(
 
 /// The project's appraisal: the fold over every session that worked a task
 /// under it, printed on stderr where the task's own appraisal is. Runs
-/// after that appraisal, on the same best-effort terms.
+/// after that appraisal, on the same best-effort terms, over the board
+/// `project_closure_pending` read before it.
 ///
 /// What it does not do, deliberately. It stages no follow-up: §5.4 allows
 /// one per closure and the task's appraisal owns that one, so a project
@@ -967,30 +978,17 @@ async fn project_closure_pending(
 /// the project as much as a `done` one — the tier is empty either way —
 /// and the line says which task closed it. Membership is the row's own
 /// `project_id` over an unfiltered board, never the server's association
-/// filter (`rows_under`).
-/// One consequence of the ordering, named rather than hidden: a follow-up
-/// the task's appraisal staged moments earlier is on the board by the time
-/// the fold reads it, so it counts as one task never delegated under a
-/// project the line just called closed — an N+1 the reading carries and
-/// nothing stores.
-async fn appraise_project(
-    prepared: &setup::PreparedTools,
+/// filter (`rows_under`), and the board is the one read taken before the
+/// task's appraisal, so a follow-up it staged is not in the fold.
+fn appraise_project(
     task_id: &str,
     project: &mecha_core::goal::GoalRef,
+    board: &Value,
     stores: &ClosureStores,
 ) {
     let pid = project.id();
-    let all = match call_with(prepared, "kg_task_list", json!({ "include_closed": true })).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!(
-                "mecha: {task_id} closed project {pid}, but its tasks could not be read for the \
-                 project's appraisal: {e:#}"
-            );
-            return;
-        }
-    };
-    let Some(rows) = rows_under(&all, pid) else {
+    let all = board;
+    let Some(rows) = rows_under(all, pid) else {
         eprintln!(
             "mecha: {task_id} closed project {pid}, but the board's rows do not say which \
              project they are under (a truncated answer, no `items`, or a row without \
@@ -3360,12 +3358,29 @@ mod tests {
         let pid = "proj-tide";
         let empty = json!({"items": []});
         assert_eq!(project_closed_by(&empty, pid, "task-a"), Some(true));
-        // The just-closed task still on the list (a read racing the
-        // update) is not another open task.
+        // The just-closed task's own row is not another open task, and a
+        // closed sibling (the board is read whole) is not one either.
         let only_me = json!({"items": [{"id": "task-a", "status": "done", "project_id": pid}]});
         assert_eq!(project_closed_by(&only_me, pid, "task-a"), Some(true));
+        let closed_sibling = json!({"items": [
+            {"id": "task-a", "status": "done", "project_id": pid},
+            {"id": "task-b", "status": "dropped", "project_id": pid},
+        ]});
+        assert_eq!(
+            project_closed_by(&closed_sibling, pid, "task-a"),
+            Some(true)
+        );
         let another = json!({"items": [{"id": "task-b", "status": "next", "project_id": pid}]});
         assert_eq!(project_closed_by(&another, pid, "task-a"), Some(false));
+        // A row with no status cannot say whether it is open.
+        assert_eq!(
+            project_closed_by(
+                &json!({"items": [{"id": "task-b", "project_id": pid}]}),
+                pid,
+                "task-a"
+            ),
+            None
+        );
         // An open task merely associated with the project — `about` it,
         // waiting on it — is not under it and does not hold it open.
         let about_it = json!({"items": [{"id": "task-b", "status": "next", "project_id": null}]});

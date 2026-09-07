@@ -3046,11 +3046,12 @@ records `GoalRef::Project` on `goals` *after* the task, so every error's
 pointer stays the tier the run was handed (`appraise_session`'s rule). The
 owner closing the last open task under a project is the project's own
 closure moment (`GOAL-SYSTEM-DESIGN.md` §17.7 item 5):
-`project_closure_pending` reads the project's open list after the update
+`project_closure_pending` reads the whole board once, after the update
 and **before the task's own appraisal** — that appraisal may stage a
 follow-up under the same project, in `inbox`, and read after it the
 disappointed closure would see its own follow-up holding the project open
-and print nothing (found on review). Membership is the row's own
+and print nothing (found on review); the fold runs over that same read, so
+the follow-up is not counted under the project it just closed either. Membership is the row's own
 `project_id` over an **unfiltered** board (`rows_under`), never the
 server's `entity` filter, which narrows by association — a superset of the
 tier on the modelled server, and on one whose filter left the parent out a
