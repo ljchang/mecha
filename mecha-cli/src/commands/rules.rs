@@ -160,8 +160,17 @@ fn presented_keys_in(dir: &Path) -> Option<Presented> {
 /// the roster's prose and its JSON, so the two cannot drift.
 fn loads_nowhere(r: &Rule, keys: Option<&Presented>) -> Option<bool> {
     let scope = r.scope.as_ref()?.scope();
-    // A parked surface provably matches no run, whatever the store holds.
-    if scope.surface_unread.is_some() {
+    // A parked surface provably matches no run, whatever the store holds —
+    // and so does a corpus-mark surface on the stored scope, which
+    // `scope()` strips but `matches` refuses, since no front-end declares
+    // one; the roster must agree with the startup warning (found on
+    // review).
+    if scope.surface_unread.is_some()
+        || r.scope
+            .as_ref()
+            .and_then(|s| s.surface)
+            .is_some_and(|k| mecha_core::situation::Situation::MARK_KINDS.contains(&k))
+    {
         return Some(r.active());
     }
     if scope.workspace.is_none() && scope.surface.is_none() {
@@ -1232,6 +1241,14 @@ mod tests {
         assert_eq!(loads_nowhere(&parked, None), Some(true));
         assert_eq!(loads_nowhere(&parked, Some(&keys)), Some(true));
         assert!(!presented(&parked.scope.clone().unwrap().scope(), &keys));
+        // A corpus-mark surface on the stored scope: stripped by scope(),
+        // refused by matches — nowhere, and the roster says so.
+        let marked = Rule {
+            scope: Some(Situation::of_run(&["shell".into()], None).on(Some(SessionKind::Test))),
+            ..dark.clone()
+        };
+        assert_eq!(loads_nowhere(&marked, None), Some(true));
+        assert!(describe(&marked, &tallies, Some(&keys)).contains("LOADS NOWHERE"));
     }
 
     /// The store is read from the top of each transcript only, and a torn
@@ -1310,7 +1327,11 @@ mod tests {
                 .append(true)
                 .open(&r.path)
                 .unwrap();
-            f.write_all(b"{\"type\":\"message\",\"trunc").unwrap();
+            // A torn message line in the middle is never parsed and never
+            // hides a run record; a torn *run record* trailing the file is
+            // a killed process's residue and is tolerated.
+            f.write_all(b"{\"record\":\"message\",\"trunc\n{\"record\":\"config\",\"trunc")
+                .unwrap();
         }
         assert!(
             presented_keys_in(&residue).is_some(),
