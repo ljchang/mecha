@@ -468,13 +468,21 @@ fn reconcile_recorded_keys(
     dry_run: bool,
 ) -> Result<usize> {
     use mecha_core::learning::{reconcile_key, KeyReconcile, KeyUpdate};
+    // Rows a transcript produced, and only those: a pass domain's rows —
+    // the mail classifier's triage corrections — carry a synthetic session
+    // id and a surface the pass stamped itself, and every one of them
+    // printed as a session not found on every pass, forever, in the line
+    // that exists to say a transcript really went missing (found on
+    // review).
     let present: Vec<_> = store
         .reflexions()?
         .into_iter()
         .filter(|r| {
-            r.situation.as_ref().is_some_and(|s| {
-                s.workspace.is_some() || s.surface.is_some() || s.surface_unread.is_some()
-            }) && !r.session_id.is_empty()
+            !mecha_core::learning::PASS_DOMAINS.contains(&r.domain.as_str())
+                && r.situation.as_ref().is_some_and(|s| {
+                    s.workspace.is_some() || s.surface.is_some() || s.surface_unread.is_some()
+                })
+                && !r.session_id.is_empty()
         })
         .collect();
     if present.is_empty() {
@@ -1023,6 +1031,37 @@ mod tests {
             Some("copilot"),
             "parked on the way in"
         );
+        // A triage correction: a pass domain's row with a synthetic session
+        // id and the surface the pass stamped. No transcript produced it,
+        // so it is neither a missing session nor a row to touch.
+        store
+            .append_reflexion(&Reflexion {
+                id: "triage-x".into(),
+                domain: mecha_core::learning::TRIAGE_DOMAIN.into(),
+                session_id: "acct/thread-1".into(),
+                trigger: "correction".into(),
+                context: "c".into(),
+                intervention: "not spam".into(),
+                reflexion_text: "t".into(),
+                error_type: None,
+                confidence: None,
+                is_processed: false,
+                leap_run_id: None,
+                created_at: "2026-09-07T00:00:00Z".into(),
+                origin: mecha_core::learning::Origin::Clean,
+                evidence: mecha_core::learning::Evidence::Full,
+                edited_at: None,
+                dropped_at: None,
+                dropped_reason: None,
+                situation: Some(mecha_core::situation::Situation::recorded(
+                    &[],
+                    "correction",
+                    Some(SessionKind::Mail),
+                    None,
+                )),
+                situation_recomputed_at: None,
+            })
+            .unwrap();
         let (listed, unreadable) = Session::list_counting(&sessions).unwrap();
         let paths: std::collections::HashMap<String, PathBuf> =
             listed.into_iter().map(|(m, p)| (m.id, p)).collect();
@@ -1060,6 +1099,16 @@ mod tests {
             "replaced by what the record confirms"
         );
         assert_eq!(sit("parked").surface_unread, None, "nothing stays parked");
+        let triage = store.reflexion("triage-x").unwrap();
+        assert_eq!(
+            triage.situation.unwrap().surface,
+            Some(SessionKind::Mail),
+            "untouched"
+        );
+        assert_eq!(
+            triage.situation_recomputed_at, None,
+            "never read as a session"
+        );
         let file = dir.join("learning").join("reflections.jsonl");
         let before = std::fs::read(&file).unwrap();
         assert_eq!(
