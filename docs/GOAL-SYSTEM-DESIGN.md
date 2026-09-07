@@ -2254,10 +2254,13 @@ note below.
    `{kind, id}` object. `meta.goal` is the run's named goal,
    `meta.serves_charter` the charter line it cited or was attributed by a
    sensor, and `goal` on each error the pointer rather than the kind word
-   — possible since 2026-09-06 made an id one token, and re-proved at the
-   boundary by `distill::goal_pointer` because a reference built in code
-   never went through the parser (a non-token falls back to the kind word,
-   which is what crossed before). Pinned by a test on `meta`'s key set:
+   — resolved before it crosses, not merely well-formed: one token is not
+   a pointer (a hyphen-joined sentence under the id bound parses — found
+   on review), so a charter id crosses on `of_session`'s check against
+   the charter, a task or project id only if the board holds it
+   (`distill::KnownPointers`, one board read per run), a setpoint never
+   whole; what does not resolve falls back to the kind word, which is
+   what crossed before. Pinned by a test on `meta`'s key set:
    the hypothesis a run put to the owner, the owner's answer and the
    charter line's text never ride. The situation index on the graph side
    is not built; the id is there for it.
