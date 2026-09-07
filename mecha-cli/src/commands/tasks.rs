@@ -977,8 +977,9 @@ async fn project_closure_pending(
         None => {
             eprintln!(
                 "mecha: could not read the board after closing {task_id} (a truncated answer, \
-                 no `items`, or a row without an id, a status or a `project_id`), so whether \
-                 that closed project {pid} is unknown"
+                 no `items`, a row without an id, a status or a `project_id`, or a board that \
+                 did not carry {task_id} itself), so whether that closed project {pid} is \
+                 unknown"
             );
             None
         }
