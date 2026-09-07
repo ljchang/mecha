@@ -563,11 +563,18 @@ fn reconcile_recorded_keys(
             }
         }
         // A surface this build could not name is a recorded key no attach
-        // can confirm: it takes what the first attach presented, or none.
+        // can confirm, so it takes what the first attach presented, or
+        // none. Stood in for by a corpus mark here, since `reconcile_key`
+        // compares kinds and no attach ever presents a mark: the outcome
+        // is the same — nothing confirms it — and the log prints the raw.
         let surface_recorded = if s.surface_unread.is_some() {
             Some(mecha_core::session::SessionKind::Test)
         } else {
             s.surface
+        };
+        let show_recorded = || match &s.surface_unread {
+            Some(raw) => format!("{raw} (a surface this build cannot name)"),
+            None => show_k(s.surface).to_string(),
         };
         let surface_record = record
             .as_ref()
@@ -591,7 +598,7 @@ fn reconcile_recorded_keys(
                 // recorded; a surface-only row is counted here.
                 if s.workspace.is_none() {
                     left += 1;
-                    println!("· {} keeps surface {} — {why}", r.id, show_k(s.surface));
+                    println!("· {} keeps surface {} — {why}", r.id, show_recorded());
                 }
             }
             KeyReconcile::Set(matched) => {
@@ -601,7 +608,7 @@ fn reconcile_recorded_keys(
                 println!(
                     "· {} surface {} → {}",
                     r.id,
-                    show_k(s.surface),
+                    show_recorded(),
                     if matched.is_none() {
                         "none (the run record carries none)".to_string()
                     } else {
