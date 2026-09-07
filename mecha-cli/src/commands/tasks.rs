@@ -892,6 +892,11 @@ async fn project_closure_pending(
 /// the project as much as a `done` one — the tier is empty either way —
 /// and the line says which task closed it. Membership is the row's own
 /// `project_id`, never the server's association filter (`rows_under`).
+/// One consequence of the ordering, named rather than hidden: a follow-up
+/// the task's appraisal staged moments earlier is on the board by the time
+/// the fold reads it, so it counts as one task never delegated under a
+/// project the line just called closed — an N+1 the reading carries and
+/// nothing stores.
 async fn appraise_project(
     prepared: &setup::PreparedTools,
     task_id: &str,
@@ -1384,7 +1389,16 @@ async fn stage_follow_up(
             "at": a.created_at,
         },
     });
-    if let Some(p) = before["project"].as_str() {
+    // The project by its *id* where the board gave one, the name only on
+    // a board from before `project_id`: `kg_task_create` resolves either,
+    // and a name is prose two nodes can share, so a follow-up filed by name
+    // could land under a different project from the one just appraised
+    // (found on review — the same reason `project_of` reads the id).
+    if let Some(p) = before["project_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .or_else(|| before["project"].as_str())
+    {
         args["project"] = json!(p);
     }
     let out = match call_with(prepared, "kg_task_create", args.clone()).await {
