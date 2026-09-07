@@ -94,20 +94,20 @@ pub async fn execute(args: Args) -> Result<()> {
 }
 
 /// The workspace/surface pairs some run's rules block was matched against,
-/// off the first run record of every transcript in the session store —
+/// off every run record of every transcript in the session store —
 /// what a scope's workspace or surface key must be found in to load
 /// anywhere. `None` when the store cannot be read *in full*: a transcript
 /// whose header does not parse (`Session::list_counting` counts them;
 /// `list` drops them silently) or with a torn line before its first run
-/// record (`Session::first_run_config` refuses it) is evidence that could
+/// record (`Session::run_configs_streaming` refuses it) is evidence that could
 /// not be read, never evidence of absence — one torn file must not print
 /// "nowhere" about a rule that loads fine (found on review), and so is a
 /// listing with no record carrying either key — a missing store, or one
-/// written before the fields existed. Read from the
-/// top of each file only, so a roster costs what `Session::list` costs and
-/// not the whole store's bytes — the TUI's Rules pane runs the roster on
-/// a keypress (found on review). Read once per roster, and only when a
-/// scope names one of those keys (`needs_presented_keys`).
+/// written before the fields existed. Every attach's record counts, since
+/// a rule can be minted from a resumed run's keys (found on review); read
+/// streaming rather than slurped, once per roster, and only when a scope
+/// names one of those keys (`needs_presented_keys`) — the TUI's Rules
+/// pane runs the roster on a keypress.
 type Presented = Vec<(Option<PathBuf>, Option<SessionKind>)>;
 
 fn needs_presented_keys(rules: &[&Rule]) -> bool {
@@ -132,7 +132,7 @@ fn presented_keys_in(dir: &Path) -> Option<Presented> {
     }
     let mut out = Presented::new();
     for (_, path) in listed {
-        if let Some(rc) = Session::first_run_config(&path).ok()? {
+        for rc in Session::run_configs_streaming(&path).ok()? {
             let pair = (rc.rules_workspace, rc.rules_surface);
             if !out.contains(&pair) {
                 out.push(pair);
@@ -160,6 +160,10 @@ fn presented_keys_in(dir: &Path) -> Option<Presented> {
 /// the roster's prose and its JSON, so the two cannot drift.
 fn loads_nowhere(r: &Rule, keys: Option<&Presented>) -> Option<bool> {
     let scope = r.scope.as_ref()?.scope();
+    // A parked surface provably matches no run, whatever the store holds.
+    if scope.surface_unread.is_some() {
+        return Some(r.active());
+    }
     if scope.workspace.is_none() && scope.surface.is_none() {
         return Some(false);
     }
@@ -173,6 +177,10 @@ fn loads_nowhere(r: &Rule, keys: Option<&Presented>) -> Option<bool> {
 /// record of what runs actually presented (found on review). A scope that
 /// names neither key is presented by construction.
 fn presented(scope: &mecha_core::situation::Situation, presented: &Presented) -> bool {
+    // A parked surface is the one key `Situation::matches` refuses outright.
+    if scope.surface_unread.is_some() {
+        return false;
+    }
     if scope.workspace.is_none() && scope.surface.is_none() {
         return true;
     }
@@ -1212,6 +1220,18 @@ mod tests {
             None,
             "unscoped: no claim"
         );
+        // A parked surface provably matches no run: nowhere, whatever the
+        // store holds or whether it could be read.
+        let parked = Rule {
+            scope: Some(Situation {
+                surface_unread: Some("copilot".into()),
+                ..Situation::of_run(&["shell".into()], None)
+            }),
+            ..dark.clone()
+        };
+        assert_eq!(loads_nowhere(&parked, None), Some(true));
+        assert_eq!(loads_nowhere(&parked, Some(&keys)), Some(true));
+        assert!(!presented(&parked.scope.clone().unwrap().scope(), &keys));
     }
 
     /// The store is read from the top of each transcript only, and a torn
@@ -1221,7 +1241,7 @@ mod tests {
     /// `None` once the second is there. Fails on `Session::list`, which
     /// drops the torn file silently and answers with the pair.
     #[test]
-    fn presented_keys_come_off_the_first_run_record_and_a_torn_store_is_unknown() {
+    fn presented_keys_come_off_every_run_record_and_a_torn_store_is_unknown() {
         use mecha_core::session::{Record, RunConfig, SessionMeta};
         use mecha_core::situation::Situation;
         let dir = std::env::temp_dir().join(format!(
@@ -1248,8 +1268,8 @@ mod tests {
             ..Default::default()
         }))
         .unwrap();
-        // A second run record later in the file names another pair; only
-        // the first is read, since the walk stops at the top of the file.
+        // A second run record later in the file names another pair — a
+        // resumed run's — and it counts: a rule can be minted from it.
         s.append(&Record::Config(RunConfig {
             rules_workspace: Some(PathBuf::from("/later")),
             ..Default::default()
@@ -1258,7 +1278,57 @@ mod tests {
         let keys = presented_keys_in(&dir).expect("a readable store answers");
         assert_eq!(
             keys,
-            vec![(Some(PathBuf::from("/w")), Some(SessionKind::Web))]
+            vec![
+                (Some(PathBuf::from("/w")), Some(SessionKind::Web)),
+                (Some(PathBuf::from("/later")), None),
+            ]
+        );
+        // A torn trailing line is a killed process's residue and is
+        // tolerated; a torn line with records after it is not.
+        let residue = dir.join("residue");
+        let r = Session::create(
+            &residue,
+            SessionMeta {
+                id: Session::new_id(),
+                created_at: chrono::Utc::now(),
+                provider: "p".into(),
+                model: "m".into(),
+                workspace: PathBuf::from("/jail"),
+                title: None,
+                kind: Some(SessionKind::Tui),
+            },
+        )
+        .unwrap();
+        r.append(&Record::Config(RunConfig {
+            rules_workspace: Some(PathBuf::from("/w")),
+            ..Default::default()
+        }))
+        .unwrap();
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&r.path)
+                .unwrap();
+            f.write_all(b"{\"type\":\"message\",\"trunc").unwrap();
+        }
+        assert!(
+            presented_keys_in(&residue).is_some(),
+            "trailing residue tolerated"
+        );
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&r.path)
+                .unwrap();
+            f.write_all(b"\n").unwrap();
+        }
+        r.append(&Record::Config(RunConfig::default())).unwrap();
+        assert_eq!(
+            presented_keys_in(&residue),
+            None,
+            "torn in the middle: unknown"
         );
         // A store with no record carrying either key cannot answer: a
         // directory that does not exist, and one holding only a record

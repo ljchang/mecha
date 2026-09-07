@@ -1704,21 +1704,25 @@ impl Session {
         ))
     }
 
-    /// The first run configuration of a transcript, read from the top of
-    /// the file and no further — the front-end writes it at run start,
-    /// before the run's own messages, so this stays O(number of sessions)
-    /// across a store the way [`Self::peek_meta`] does, where
-    /// [`Self::run_configs`] slurps every byte. `Ok(None)` for a transcript
-    /// that reaches its first message (or its end) with no config recorded;
-    /// `Err` for one that cannot be opened *or whose lines up to that point
-    /// do not parse* — a torn line is "could not be read", never "no
-    /// config", for a reader that reports on the store (found on review).
-    pub fn first_run_config(path: &Path) -> Result<Option<RunConfig>> {
+    /// Every run configuration of a transcript, read line by line without
+    /// holding the file — the reader for a pass that reports on the whole
+    /// store, where [`Self::run_configs`] slurps each transcript. A record
+    /// from *any* attach counts: a rule can be minted from the keys of a
+    /// resumed run's record (`Transcript::config_covering`), so a reader
+    /// that stopped at the first record flagged a rule a run did present
+    /// (found on review). `Err` for a transcript that cannot be opened or
+    /// that has a line that does not parse *with records after it* — torn
+    /// in the middle is "could not be read", never "no record"; a torn
+    /// trailing line is the residue of a killed process and is tolerated,
+    /// as `messages_ever` tolerates it.
+    pub fn run_configs_streaming(path: &Path) -> Result<Vec<RunConfig>> {
         use std::io::BufRead;
         let file =
             std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
         let mut reader = std::io::BufReader::new(file);
         let mut line = String::new();
+        let mut out = Vec::new();
+        let mut torn: Option<String> = None;
         loop {
             line.clear();
             if reader
@@ -1726,19 +1730,21 @@ impl Session {
                 .with_context(|| format!("reading {}", path.display()))?
                 == 0
             {
-                return Ok(None);
+                return Ok(out);
             }
             if line.trim().is_empty() {
                 continue;
             }
-            match serde_json::from_str::<Record>(&line) {
-                Ok(Record::Config(c)) => return Ok(Some(c)),
-                Ok(Record::Meta(_)) => continue,
-                Ok(_) => return Ok(None),
-                Err(e) => anyhow::bail!(
-                    "{}: a line before the first run record does not parse: {e}",
+            if let Some(why) = torn.take() {
+                anyhow::bail!(
+                    "{}: a line before the last record does not parse: {why}",
                     path.display()
-                ),
+                );
+            }
+            match serde_json::from_str::<Record>(&line) {
+                Ok(Record::Config(c)) => out.push(c),
+                Ok(_) => {}
+                Err(e) => torn = Some(e.to_string()),
             }
         }
     }
