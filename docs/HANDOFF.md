@@ -1944,8 +1944,8 @@ the owner's word. Installed binaries and each repo's `main` agree at the
 tagged commits; nothing else is owed on this machine.
 
 **2026-09-07, mecha-a6: nothing deployed, nothing restarted.** Two PRs
-open and unmerged (mecha #206 at `fab98bef`, mecha-graph #10 at
-`fdf4538`); the installed binaries are unchanged from the 2026-09-06 row
+open and unmerged (mecha #206 at `835b77e3`, mecha-graph #10 at
+`667944e`); the installed binaries are unchanged from the 2026-09-06 row
 above. When they merge: the graph first (`mecha-graph-mcp` reinstalled,
 the four units' MCP children restart with them), then mecha's binary —
 the web dist is untouched by either. The graph worktree is
@@ -2913,8 +2913,8 @@ the mechanism and every decision. What it left standing:
 ### The goal system — rungs 0–10 all shipped, out of build order; §17's rulings are in, their first two sprint PRs exist, and rung 9's review-queue salience is unverified from this branch
 
 **2026-09-07 — §17.7 item 5 finished and item 8 built, with the pkg→graph
-rename: mecha PR #206 (`feat/project-tier`, head `fab98bef`) and
-mecha-graph PR #10 (`feat/task-project-id`, head `fdf4538`), both review
+rename: mecha PR #206 (`feat/project-tier`, head `835b77e3`) and
+mecha-graph PR #10 (`feat/task-project-id`, head `667944e`), both review
 loops closed at the bar, both unmerged when written — merging is the
 owner's call — and nothing deployed.** The design doc's built notes under
 §17.7 items 5 and 8 have the shape; `ARCHITECTURE.md` §the goal system
@@ -2962,12 +2962,13 @@ each pass finding one more *writer* of the parent the rule had not bound
 — the survey, retype, merge, the row-based type, the JSON branch, the
 nightly, the pending list, the re-file itself; every major and medium was
 fixed on the branch, and the untaken set is named on each PR body. **Deploy order is a
-hard dependency and, on an old server, a regression:** merge and deploy
-mecha-graph #10 first — `stage_follow_up` files by `project_id`, and a
-graph server that renders the column but predates #10's create change
-turns a follow-up that used to be filed into a stderr warning; a server
-from before the column leaves the project tier unidentified once and the
-task appraisal unchanged. **Owed after this:** an end-to-end test of the
+hard dependency, and on an old server a degradation rather than a
+loss:** merge and deploy mecha-graph #10 first — `stage_follow_up` files
+by `project_id`, and a graph server that renders the column but predates
+#10's create change refuses it, so the follow-up is filed under no
+project with a stderr line saying to re-file it (`tasks set --project`);
+a server from before the column leaves the project tier unidentified once
+and the task appraisal unchanged. **Owed after this:** an end-to-end test of the
 read-before-stage ordering (needs a delegated session with a recorded
 outcome under the fixture — the one guarantee here held by statement
 order alone); `merge_nodes` discards its detach count; and, still from
