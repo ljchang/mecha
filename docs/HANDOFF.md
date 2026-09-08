@@ -22,15 +22,18 @@ maps which document holds what.
 
 ## Where the work is
 
-**2026-09-08 review fixes:** branch `fix/review-security-and-lifecycle`
-contains the browser request guard, confined attachment I/O using the recorded
-session workspace, MCP child cleanup, bounded file reads, and Svelte state
-fixes. PR review and CI are the remaining release gate; no deployment occurred.
+**2026-09-08 review fixes:** PR #213 merged as `a3f1682d` and was installed
+with its web bundle; serve, Slack, triggers and drain restarted at 14:15 UTC.
+The running web route rejects writes without the request header and the HTTPS
+door serves the installed bundle. The follow-up branch
+`fix/chat-and-container-lifecycle` adds explicit chat opening with read-only
+transcript/event routes and Docker MCP container ownership. Those follow-up
+changes await PR review and CI and have not been installed.
 The eval fixture remains **36 cases, 15 tags**, counted from `eval/cases.jsonl`.
-Local validation: **2,501 passed, 2 ignored** across the workspace (CLI 794,
-first-run 20, core 1,439, fixtures 4, MCP 8, sandbox 9, mail 150 plus its
+Local validation: **2,507 passed, 2 ignored** across the workspace (CLI 795,
+first-run 20, core 1,441, fixtures 4, MCP 11, sandbox 9, mail 150 plus its
 binary test, Slack 75, and one doctest). Build, format, clippy with warnings
-denied, web tests/build, and all 13 browser render checks pass. Sandbox and MCP
+denied, web tests/build, and all 14 browser render checks pass. Sandbox and MCP
 integration suites also pass with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Source-verified corrections to the older open-work list are recorded in
 `HISTORY.md` under this date; dated measurements retain their original scope.
@@ -547,9 +550,13 @@ reported `model_alias = qwen3.6-35b-a3b`, `total_slots = 4`,
 checks found the serve, slack, drain, triggers, parakeet and voice-worker
 services enabled, plus frontdoor, mail-classify, ruminate and slots timers.
 This is configuration evidence, not proof of each service's running build.
-No binary was installed or service restarted in this session; older installed
-artifact, credential, private-store and remote deployment claims below remain
-dated observations, not freshly verified current state.
+PR #213's `mecha` binary and web bundle were installed from merged `a3f1682d`.
+Serve, Slack, drain and triggers restarted at 14:15 UTC and are active; the
+installed guard literal and live 403/400 request-header boundary were verified,
+as was the web bundle through the HTTPS door. Backups are in
+`~/.mecha/deploy-backups/pr-213/`. The Python workers and model server were not
+restarted. Older credential, private-store, other installed-artifact and remote
+deployment claims below remain dated observations, not freshly verified state.
 
 > **This checkout is a live service's `ExecStart`. Do not `git stash`, `git
 > checkout --`, `git restore` — or `git checkout <branch>`.**
@@ -2063,14 +2070,6 @@ is recoverable without the checkout's cwd. Record:
 ---
 
 ## What to do next
-
-- **Docker-confined MCP container cleanup remains open.** `McpClient` now
-  terminates its spawned process on drop, including failed initialization,
-  but `Sandbox::docker_args` starts a daemon-owned container through
-  `docker run --rm -i`. Killing that CLI does not stop a server that ignores
-  EOF, and `--rm` waits for the server to exit. Explicitly own the container
-  identity and remove it on shutdown and failed/cancelled startup; verify
-  with a real Docker server that ignores EOF, not only the direct-child test.
 
 - **The droplet is one release behind, and only the owner deploys it
   (2026-09-06).** `gate.mecha-factory.ai` serves factory 0.2.8 while

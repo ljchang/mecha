@@ -103,6 +103,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Chat transcript and event-stream reads no longer create sessions. The app
+  explicitly opens chats and repeats that step when reconnecting; scripted
+  clients must first `POST /api/chat/{key}` with `X-Mecha-Request: 1`.
+- Docker-confined MCP clients now own and remove their containers when the
+  last client drops, including failed or cancelled startup and servers that
+  ignore stdin EOF. Cleanup also works after the async runtime shuts down;
+  daemon failures are retried and reported.
 - Browser mutations now require a same-origin request header, including
   bodyless actions, uploads, and voice offers. Reload the web app after
   upgrading; scripted API clients must send `X-Mecha-Request: 1` on writes.
@@ -111,8 +118,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Downloads stream from confined file handles instead of buffering whole files.
 - MCP clients terminate their spawned child process and abort reader tasks
   when the last client is dropped, including after an unsuccessful handshake.
-  With Docker confinement this terminates the Docker CLI, not necessarily
-  its container; a server that ignores EOF can still require container cleanup.
 - `fs_read` applies line selection and its byte ceiling while reading, so a
   small selection does not allocate or decode an entire large file.
 - Graph route updates and charter drag state now use Svelte's reactive state

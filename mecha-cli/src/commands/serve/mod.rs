@@ -245,7 +245,7 @@ fn router(state: WebState, assets: Option<&std::path::Path>) -> Router {
         .route("/api/sessions", get(chat::sessions))
         .route("/api/history", get(chat::history))
         .route("/api/resume", axum::routing::post(chat::resume))
-        .route("/api/chat/{key}", get(chat::transcript))
+        .route("/api/chat/{key}", get(chat::transcript).post(chat::open))
         .route("/api/chat/{key}/send", axum::routing::post(chat::send))
         .route("/api/chat/{key}/cancel", axum::routing::post(chat::cancel))
         .route("/api/chat/{key}/events", get(chat::events))
@@ -1639,6 +1639,68 @@ mod boundary_tests {
         );
         assert!(!home.dir.join("work/web/unknown").exists());
         assert!(!home.dir.join("sessions").exists());
+    }
+
+    #[tokio::test]
+    async fn chat_reads_never_create_and_explicit_open_is_guarded_and_idempotent() {
+        let home = crate::testenv::HomeGuard::new("web-explicit-open");
+        let app = app(chat::test_chat());
+        for method in ["GET", "HEAD"] {
+            for suffix in ["", "/events"] {
+                let req = Request::builder()
+                    .method(method)
+                    .uri(format!("/api/chat/new{suffix}"))
+                    .header(TAILSCALE_LOGIN, "owner@example.com")
+                    .body(Body::empty())
+                    .unwrap();
+                assert_eq!(
+                    app.clone().oneshot(req).await.unwrap().status(),
+                    StatusCode::NOT_FOUND
+                );
+                assert!(!home.dir.join("sessions").exists());
+                assert!(!home.dir.join("work/web/new").exists());
+            }
+        }
+        let mut forged = post("/api/chat/new", "");
+        forged.headers_mut().remove("x-mecha-request");
+        assert_eq!(
+            app.clone().oneshot(forged).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        assert!(!home.dir.join("sessions").exists());
+        for _ in 0..2 {
+            assert_eq!(
+                app.clone()
+                    .oneshot(post("/api/chat/new", ""))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::NO_CONTENT
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(home.dir.join("sessions"))
+                .unwrap()
+                .count(),
+            1
+        );
+        for suffix in ["", "/events"] {
+            let req = Request::builder()
+                .uri(format!("/api/chat/new{suffix}"))
+                .header(TAILSCALE_LOGIN, "owner@example.com")
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(req).await.unwrap().status(),
+                StatusCode::OK
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(home.dir.join("sessions"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
