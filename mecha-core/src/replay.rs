@@ -233,11 +233,17 @@ fn batch_width(recorded: &[RecordedCall], i: usize) -> usize {
 
 /// Pair a recorded batch with the replayed calls facing it, ignoring order.
 ///
-/// `Some` maps each replayed call to the recorded one it was answered from;
-/// `None` means a replayed call had no recorded counterpart at all, which is a
-/// batch that gained or swapped a *tool* and a real divergence. `got` shorter
-/// than `want` still pairs — that is a batch cut short, and the caller reports
-/// the remainder as `Missing`.
+/// `Ok` maps each replayed call to the recorded one it was answered from.
+/// `Err((g, w))` means `got[g]` had no recorded counterpart at all — a batch
+/// that gained or swapped a *tool*, and a real divergence — where `w` is the
+/// first recorded call still unpaired. That pair is exactly what `decide` says
+/// when it stops: `w` is its cursor (which only advances over consumed calls,
+/// so "first unpaired" and "cursor" are the same index) and `got[g]` is the
+/// call it refused. Reporting anything else names calls that reproduced the
+/// recording and never names the tool that forked.
+///
+/// `got` shorter than `want` still pairs — that is a batch cut short, and the
+/// caller reports the remainder as `Missing`.
 ///
 /// **This must walk `got` in order, trying exact arguments then name alone for
 /// each call, because that is what `replay_run::ReplayTool::decide` does.**
@@ -261,12 +267,16 @@ fn batch_width(recorded: &[RecordedCall], i: usize) -> usize {
 /// on any batch with a repeated tool and one changed argument — the case this
 /// block is about — and it would fail nondeterministically rather than loudly.
 /// Whoever changes the loop should check this still holds.
-fn pair_batch(want: &[RecordedCall], got: &[ToolCallTrace]) -> Option<Vec<(usize, usize)>> {
+fn pair_batch(
+    want: &[RecordedCall],
+    got: &[ToolCallTrace],
+) -> Result<Vec<(usize, usize)>, (usize, usize)> {
     // `diff` slices `got` to at most `want.len()`, so this cannot fire from
     // there; it is here so a second caller cannot get a silently wrong pairing
-    // out of a wider batch.
+    // out of a wider batch. Blamed on `got[0]` against the first recorded call,
+    // the only indices a wider batch is known to have.
     if got.len() > want.len() {
-        return None;
+        return Err((0, 0));
     }
     let mut used = vec![false; want.len()];
     let mut pairs = Vec::with_capacity(got.len());
@@ -277,16 +287,22 @@ fn pair_batch(want: &[RecordedCall], got: &[ToolCallTrace]) -> Option<Vec<(usize
         // sibling and report two argument differences where the replay was
         // exact. The name-only fallback then takes the calls whose arguments
         // really did change, which is the difference this is here to report.
-        let w = (0..want.len())
+        let hit = (0..want.len())
             .find(|&w| {
                 !used[w] && want[w].name == call.name && same_arguments(&want[w].input, &call.input)
             })
-            .or_else(|| (0..want.len()).find(|&w| !used[w] && want[w].name == call.name))?;
+            .or_else(|| (0..want.len()).find(|&w| !used[w] && want[w].name == call.name));
+        let Some(w) = hit else {
+            // `g < got.len() <= want.len()` and exactly `g` calls are used, so
+            // there is always a first unpaired recorded call to name.
+            let unpaired = (0..want.len()).find(|&w| !used[w]).unwrap_or(0);
+            return Err((g, unpaired));
+        };
         used[w] = true;
         pairs.push((w, g));
     }
 
-    Some(pairs)
+    Ok(pairs)
 }
 
 /// Compare a replayed trace against its recording, batch by batch.
@@ -316,7 +332,7 @@ pub fn diff(recorded: &[RecordedCall], replayed: &[ToolCallTrace]) -> Vec<Diverg
         let got = &replayed[i..end.min(replayed.len())];
 
         match pair_batch(want, got) {
-            Some(pairs) => {
+            Ok(pairs) => {
                 // Arguments are compared against the recorded call each
                 // replayed one actually answered, which is the pairing
                 // `decide` made.
@@ -355,22 +371,18 @@ pub fn diff(recorded: &[RecordedCall], replayed: &[ToolCallTrace]) -> Vec<Diverg
                 }
             }
             // A replayed call no recorded one in the batch can answer: a tool
-            // this batch never called. Report the first position the two part
-            // company at and stop, rather than a cascade with one cause.
-            None => {
-                if let Some((offset, want, got)) = want
-                    .iter()
-                    .zip(got.iter())
-                    .enumerate()
-                    .find(|(_, (w, g))| w.name != g.name)
-                    .map(|(offset, (w, g))| (offset, w, g))
-                {
-                    out.push(Divergence::Tool {
-                        index: i + offset,
-                        expected: want.name.clone(),
-                        actual: got.name.clone(),
-                    });
-                }
+            // this batch never called. Reported at the pair `decide` refused,
+            // not at the first position the two sequences differ in — those
+            // are not the same call once a batch is reordered, and the
+            // positional one names calls that matched exactly while never
+            // naming the tool that forked. One report, then stop: after a fork
+            // every later comparison has the same one cause.
+            Err((g, w)) => {
+                out.push(Divergence::Tool {
+                    index: i + w,
+                    expected: want[w].name.clone(),
+                    actual: got[g].name.clone(),
+                });
                 return out;
             }
         }
@@ -645,6 +657,39 @@ mod tests {
             d.iter().map(|d| d.index()).collect::<Vec<_>>(),
             vec![0, 1],
             "index 0 cleared over a call decide got wrong: {d:?}"
+        );
+    }
+
+    /// A fork inside a reordered batch is reported where `decide` stopped, not
+    /// at the first position the two sequences differ in. Those stop being the
+    /// same call the moment a batch is reordered: here the first two replayed
+    /// calls reproduce the recording exactly, and blaming one of them would
+    /// name a call that matched while never naming the tool that forked.
+    #[test]
+    fn a_fork_in_a_reordered_batch_is_reported_where_decide_stopped() {
+        let batched = |name: &str, input: Value| RecordedCall {
+            batch: Some(0),
+            ..one(name, input)
+        };
+        let recorded = vec![
+            batched("kg_search", json!({"q": "a"})),
+            batched("fs_list", json!({"path": "."})),
+            batched("kg_entity", json!({"id": "x"})),
+        ];
+        let replayed = vec![
+            trace("fs_list", json!({"path": "."})),
+            trace("kg_search", json!({"q": "a"})),
+            trace("web_search", json!({"q": "z"})),
+        ];
+
+        assert_eq!(
+            diff(&recorded, &replayed),
+            vec![Divergence::Tool {
+                index: 2,
+                expected: "kg_entity".into(),
+                actual: "web_search".into(),
+            }],
+            "named a call that reproduced the recording"
         );
     }
 
