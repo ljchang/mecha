@@ -21,8 +21,8 @@ with turn admission and permanently closes `Questions` before cancelling
 active runs. Its task tracker waits through transcript/taint/outcome recording;
 background title generation yields to shutdown. `Facade::shutdown` likewise
 closes admission and waits for handlers, including owned voice slots; request
-reads yield to shutdown and socket writes have deadlines. An actual daemon
-regression first exited with SIGTERM instead of success, then passed with a
+reads yield to shutdown and socket writes have deadlines during shutdown. An
+actual daemon regression first exited with SIGTERM instead of success, then passed with a
 partial answer recorded. The expanded tests cover simultaneous typed/voice
 runs, waiting questions, two SSE subscribers, idle voice sockets and stdio MCP
 child cleanup.
@@ -44,8 +44,7 @@ MCP destructor cleanup. A real blocked-MCP regression covers the two-signal
 path and child cleanup. The other finding was `crypto.randomUUID` being absent
 on plain HTTP origins; request-id generation now has a fallback inside the
 send error handler. The two-browser regression disables that method, reproduced
-the lost message, and passes with the fallback. Normal voice socket writes
-also use the five-second deadline; it is not limited to shutdown.
+the lost message, and passes with the fallback.
 
 The service-unit follow-through found `KillMode=control-group`, which sends
 SIGTERM to MCP children before their host can finish a tool call. The checked-in
@@ -65,6 +64,18 @@ delivered and retains an early receipt through a late POST acknowledgement.
 Two actual-daemon tests distinguish folded input (present in the transcript)
 from late input (absent and retracted on both subscribers); the browser test
 first failed on the old premature delivery label.
+
+The third review caught a shutdown deadline applying during normal voice
+streaming and MCP close killing a server before its EOF flush. `VoiceStream`
+now preserves normal backpressure, starts the write deadline only on shutdown,
+and refuses further writes after a partial-write failure. The real-socket
+regression fills the send buffer, waits past the old deadline, then checks
+bounded shutdown and that no trailing frame reaches the wire. MCP close drops
+stdin, allows two seconds for EOF handling, then escalates through TERM/KILL
+within its outer bound. Readers stay alive throughout; a server that flushes
+more than a pipe buffer before saving its exit marker first failed under the
+immediate kill and now passes. Tokio child-stdio `shutdown()` is a no-op on
+Unix, so delivering EOF requires dropping the pipe itself.
 
 **2026-09-08 — explicit chat opening and Docker container ownership.**
 `serve::chat::open` creates a session through a guarded, idempotent POST;

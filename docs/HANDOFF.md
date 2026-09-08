@@ -35,9 +35,9 @@ stop window are part of graceful shutdown. Read-only verification of the live
 serve unit still reports `control-group` and 90 seconds; no unit was installed
 or reloaded during this session.
 The eval fixture remains **36 cases, 15 tags**, recounted from `eval/cases.jsonl`.
-Validation on top of PR #215 in a dedicated target directory: **2,536 passed,
-2 ignored** (CLI 798, first-run 20, process-exit 3, serve lifecycle 5,
-core 1,458, fixtures 4, MCP 12, sandbox 9, mail 150 plus its binary test,
+Validation on top of PR #215 in a dedicated target directory: **2,538 passed,
+2 ignored** (CLI 799, first-run 20, process-exit 3, serve lifecycle 5,
+core 1,458, fixtures 4, MCP 13, sandbox 9, mail 150 plus its binary test,
 Slack 75, and one doctest), with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Format, clippy with warnings denied, web tests/build, docs build, and all
 16 compiled-browser checks pass. These describe source, not the installed

@@ -43,7 +43,7 @@ pub struct McpClient {
     /// Capabilities forced onto every tool from this server, unioned with what
     /// it declares. See [`McpServerConfig::capabilities`].
     forced: Capabilities,
-    stdin: tokio::sync::Mutex<ChildStdin>,
+    stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
     next_id: AtomicU64,
     /// The directory the server was spawned in — where its relative paths
@@ -213,7 +213,7 @@ impl McpClient {
             name: cfg.name.clone(),
             prefix_tools: cfg.prefix_tools.unwrap_or(true),
             forced: cfg.capabilities.into(),
-            stdin: tokio::sync::Mutex::new(stdin),
+            stdin: tokio::sync::Mutex::new(Some(stdin)),
             pending,
             next_id: AtomicU64::new(1),
             workspace: workspace.to_path_buf(),
@@ -244,13 +244,39 @@ impl McpClient {
     /// dispatching and drain its runs first. Drop remains the fallback for
     /// failed handshakes, cancellation, and callers without a shutdown phase.
     pub async fn close(&self) -> Result<()> {
-        for task in &self.readers {
-            task.abort();
-        }
-        self.pending.lock().unwrap().clear();
         let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            // Dropping the pipe really delivers EOF; AsyncWrite::shutdown on
+            // Tokio's Unix child stdio is a no-op. Keep readers alive while
+            // the server flushes, including output larger than a pipe buffer.
+            let eof = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                self.stdin.lock().await.take();
+            })
+            .await
+            .is_ok();
             let mut child = self.child.lock().await;
             if child.try_wait()?.is_none() {
+                if eof {
+                    if let Ok(exited) =
+                        tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await
+                    {
+                        exited?;
+                        return Ok(());
+                    }
+                }
+                #[cfg(unix)]
+                if let Some(pid) = child.id() {
+                    // SAFETY: the locked Child still owns this unreaped PID.
+                    // No other close can reap/reuse it while the lock is held.
+                    unsafe {
+                        libc::kill(pid as i32, libc::SIGTERM);
+                    }
+                    if let Ok(exited) =
+                        tokio::time::timeout(std::time::Duration::from_secs(1), child.wait()).await
+                    {
+                        exited?;
+                        return Ok(());
+                    }
+                }
                 child.kill().await?;
             }
             Ok::<_, std::io::Error>(())
@@ -258,6 +284,10 @@ impl McpClient {
         .await
         .context("waiting for MCP process to exit")
         .and_then(|result| result.context("stopping MCP process"));
+        for task in &self.readers {
+            task.abort();
+        }
+        self.pending.lock().unwrap().clear();
         // Removal is still attempted if stopping the attach process failed.
         if let Some(container) = &self._container {
             container.close().await?;
@@ -272,7 +302,8 @@ impl McpClient {
     async fn send_line(&self, msg: &Value) -> Result<()> {
         let mut line = serde_json::to_string(msg)?;
         line.push('\n');
-        let mut stdin = self.stdin.lock().await;
+        let mut pipe = self.stdin.lock().await;
+        let stdin = pipe.as_mut().context("MCP client is closed")?;
         stdin.write_all(line.as_bytes()).await?;
         stdin.flush().await?;
         Ok(())

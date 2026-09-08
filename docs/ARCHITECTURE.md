@@ -1542,7 +1542,10 @@ recording, not just the model future. Pending browser questions must close
 permanently during shutdown: clearing the current map alone leaves a later
 approval waiting out its normal timeout. Tools retain their ordinary deadlines
 and safe cancellation points. SSE closes explicitly, voice request reads yield,
-and socket writes are bounded, so idle clients cannot retain the process.
+and voice socket writes gain a five-second deadline during shutdown, so idle
+clients cannot retain the process. Normal streaming preserves backpressure. A
+failed write permanently closes further writes on that connection: cancelling
+a partly written chunk and appending a trailer would corrupt the HTTP body.
 `ShutdownSignals` keeps SIGINT and SIGTERM receivers alive through the drain;
 a second signal forces return through normal runtime teardown, allowing
 remaining task owners to drop. Dropping Tokio's signal receiver alone does
@@ -1552,9 +1555,11 @@ The web host previously had no signal handler, making its voice cleanup
 unreachable and losing active partial turns on systemd stops. The shipped
 serve/voice units use `KillMode=mixed`: signal the main process first, then
 let it drain without terminating MCP children in the same first signal.
-`McpClient::close` finishes child termination and Docker removal before the
-daemon returns; relying on asynchronous Drop cleanup here lets the supervisor
-kill the removal subprocess when the main process exits. Drop remains the
+`McpClient::close` drops stdin to deliver EOF and keeps output readers alive
+while the server flushes. A bounded grace period precedes TERM/KILL escalation;
+closing stdin alone cannot stop a server that ignores EOF. Child termination
+and Docker removal finish before the daemon returns; relying on asynchronous
+Drop cleanup here lets the supervisor kill the removal subprocess when the main process exits. Drop remains the
 fallback for failed initialization, cancellation, and ordinary CLI callers.
 
 **Broadcast acceptance once and correlate the sender's acknowledgement.**
