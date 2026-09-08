@@ -14,6 +14,17 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — corrected drafts can complete a workflow.** PR #216's third review
+found that a rejected draft stayed linked and blocked completion forever, even
+after its replacement was sent. Rejected drafts and owner-abandoned questions now
+resolve their decisions; explicit delivery checks still fail on rejected drafts,
+and pending or uncertain replacements still block. Known outbox IDs use direct
+reads, with prefix fallback only when the exact record is absent. Owner closure
+uses the same bounded event bookkeeping while preserving verified evidence. A
+reported image-taint gap was checked through a live-divergence replay branch:
+`Agent::run_in` already calls `arm_for_content` before execution, and the new
+branch regression confirms an image plus external content blocks the live send.
+
 **2026-09-08 — workflow history and legacy replay disclosure.** PR #216's second
 review identified unbounded per-turn workflow history and overstated replay
 fidelity for old transcripts. Workflows now retain 128 recent events with a
