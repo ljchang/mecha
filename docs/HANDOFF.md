@@ -30,8 +30,8 @@ and Ctrl-C draining for serve and broadcasts typed/steered input across devices
 with request-id correlation. It awaits PR review and CI. **Deployment is on
 hold at the owner's request until the other sessions finish.**
 The eval fixture remains **36 cases, 15 tags**, recounted from `eval/cases.jsonl`.
-Validation on top of PR #215 in a dedicated target directory: **2,532 passed,
-2 ignored** (CLI 798, first-run 20, process-exit 3, serve lifecycle 2,
+Validation on top of PR #215 in a dedicated target directory: **2,533 passed,
+2 ignored** (CLI 798, first-run 20, process-exit 3, serve lifecycle 3,
 core 1,458, fixtures 4, MCP 11, sandbox 9, mail 150 plus its binary test,
 Slack 75, and one doctest), with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Format, clippy with warnings denied, web tests/build, docs build, and all

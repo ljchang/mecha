@@ -128,7 +128,8 @@ from one device does not duplicate its message there.
 Stopping `mecha serve` with Ctrl-C or SIGTERM stops new turns, closes pending
 questions, and saves active chat and voice turns before exiting. Tool calls
 finish at their normal safe stopping points, so shutdown can wait for a tool
-already in progress. Reload after restarting to read the saved partial turn.
+already in progress. A second Ctrl-C or SIGTERM forces termination and may
+lose unfinished turns. Reload after restarting to read the saved partial turn.
 
 ### Settings, and what a browser may write
 

@@ -319,6 +319,9 @@ for (const route of ROUTES) {
         const originalFetch = globalThis.fetch;
         const OriginalSource = globalThis.EventSource;
         window.syncProbe = {};
+        // Plain HTTP origins expose crypto but not its secure-context UUID
+        // method. Reproduce that capability boundary on the local test page.
+        Object.defineProperty(globalThis.crypto, 'randomUUID', {value: undefined, configurable: true});
         globalThis.EventSource = class extends OriginalSource {
           constructor(url) { super(url); window.syncProbe.source = this; }
         };

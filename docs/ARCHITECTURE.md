@@ -1543,6 +1543,11 @@ permanently during shutdown: clearing the current map alone leaves a later
 approval waiting out its normal timeout. Tools retain their ordinary deadlines
 and safe cancellation points. SSE closes explicitly, voice request reads yield,
 and socket writes are bounded, so idle clients cannot retain the process.
+`ShutdownSignals` keeps SIGINT and SIGTERM receivers alive through the drain;
+a second signal forces return through normal runtime teardown, allowing
+remaining task owners to drop. Dropping Tokio's signal receiver alone does
+not restore the operating system's default handler. Forced shutdown may lose
+unfinished turns; the ordinary first-signal path still waits for recording.
 The web host previously had no signal handler, making its voice cleanup
 unreachable and losing active partial turns on systemd stops.
 

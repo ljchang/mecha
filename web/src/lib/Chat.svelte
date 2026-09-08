@@ -429,11 +429,9 @@
           // Reset here rather than at run start: `WireEvent::Affect` is
           // always sent before `Done` within one `begin_turn`, so by the
           // time this fires the flag has already done its job for this
-          // run — and resetting only at run-start events (`data.started`,
-          // `'user'`) missed a second tab observing a *typed* turn driven
-          // from elsewhere, which emits neither: that tab's tint from an
-          // earlier run never cleared. Resetting here covers every
-          // observer, not just the one that sent the turn.
+          // run. Historically only spoken turns broadcast their start,
+          // so resetting at `Done` also covered observers of typed runs.
+          // It still covers an observer that joins after the start event.
           if (!sawAffectThisRun) {
             affect = null;
             valence = null;
@@ -824,8 +822,11 @@
     if (!text) return;
     draft = '';
     const sessionKey = key;
-    const request_id = crypto.randomUUID();
     try {
+      // Tailnet HTTP pages may not expose the secure-context UUID method.
+      // This id correlates UI events; it is not an authorization token.
+      const request_id = globalThis.crypto?.randomUUID?.()
+        ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const res = await fetch(`/api/chat/${sessionKey}/send`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
