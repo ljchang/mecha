@@ -194,6 +194,17 @@ class Store:
 # --- rendering, on the real server's shapes ------------------------------------------
 
 
+def calendar_date(raw):
+    try:
+        stamp = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            return None
+        offset = stamp.strftime("%z")
+        return stamp.strftime("%A %Y-%m-%d ") + offset[:3] + ":" + offset[3:]
+    except (ValueError, AttributeError):
+        return None
+
+
 def row(account, thread, m):
     return {
         "account": account,
@@ -202,6 +213,7 @@ def row(account, thread, m):
         "from": f"{m['from_name']} <{m['from_address']}>",
         "subject": thread["subject"],
         "date": m["date"],
+        "calendar_date": calendar_date(m["date"]),
         "snippet": (m.get("body", "").strip().splitlines() or [""])[0][:160],
         "unread": bool(m.get("unread", False)),
         "unread_scope": "owner_mailbox",
@@ -223,6 +235,7 @@ def render_thread(account, thread):
     for m in thread["messages"]:
         parts.append(
             f"--- [{account}] From: {m['from_name']} <{m['from_address']}> · {m['date']}\n"
+            f"Calendar date: {calendar_date(m['date']) or 'unknown'}\n"
             f"Subject: {thread['subject']}\n"
             f"Message id (for mail_reply): {m['id']}\n\n{m.get('body', '').strip()}"
         )

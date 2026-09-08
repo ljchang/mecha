@@ -785,6 +785,7 @@ fn render_rows(mut rows: Vec<(Provider, String, Email)>) -> String {
                 "from": format!("{} <{}>", e.from_name, e.from_address),
                 "subject": e.subject,
                 "date": e.date_received,
+                "calendar_date": crate::time::calendar_date(&e.date_received, crate::time::configured_zone()),
                 "snippet": e.snippet,
                 "unread": !e.is_read,
                 "unread_scope": "owner_mailbox",
@@ -807,11 +808,12 @@ fn render_thread(provider: Provider, account: &str, emails: &[Email]) -> String 
         .iter()
         .map(|e| {
             format!(
-                "--- [{}] From: {} <{}> · {}\nSubject: {}\nMessage id (for mail_reply): {}\n\n{}",
+                "--- [{}] From: {} <{}> · {}\nCalendar date: {}\nSubject: {}\nMessage id (for mail_reply): {}\n\n{}",
                 account,
                 e.from_name,
                 e.from_address,
                 e.date_received,
+                crate::time::calendar_date(&e.date_received, crate::time::configured_zone()).unwrap_or_else(|| "unknown".into()),
                 e.subject,
                 reply_id(provider, e),
                 clean_body(e)

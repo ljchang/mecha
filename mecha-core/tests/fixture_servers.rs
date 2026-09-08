@@ -543,6 +543,7 @@ async fn fixture_clock_survives_restart_and_mail_metadata_names_its_scope() {
         assert!(!err, "{text}");
         let rows: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(rows[0]["date"], "2001-10-11T09:00:00Z");
+        assert_eq!(rows[0]["calendar_date"], "Thursday 2001-10-11 +00:00");
         assert_eq!(rows[0]["unread_scope"], "owner_mailbox");
         assert_eq!(rows[0]["recipient_read_status"], "unknown");
         let (err, text) = call(
