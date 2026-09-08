@@ -33,9 +33,9 @@ and 15 tags; the additional assistant set has five cases and six tags. Source
 verification of the open-work section removed stale completed entries below;
 remote deployments and sibling-repository work were not reverified.
 
-Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,561
+Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,562
 workspace tests passed**, three ignored (796 CLI, 20 first-run, 3 process-exit,
-1,489 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
+1,490 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
 75 Slack, 1 doctest). The whole workspace ran with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Formatting, Clippy with warnings denied, all-targets build, frontend tests/build
 and documentation build passed. Demo endpoint coverage and all 16 browser
@@ -73,6 +73,10 @@ and reopening works; an old runner cannot overwrite its replacement. Generic
 structured tool errors deliberately remain unknown delivery outcomes. The fifth
 pass adds a Finished workflows section with web reopening; the real CLI data
 smoke and mobile close/reopen test now pass, including guarded POST requests.
+The sixth pass shares source reads and store handles within each Today/tick
+request, preserves fresh completion checks and documents cancellation's launch
+gate with an exact reopening command. The cache regression reproduces the old
+repeated-read behavior and verifies fresh requests detect corruption.
 
 ## Where the work is
 

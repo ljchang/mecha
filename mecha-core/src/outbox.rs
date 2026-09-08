@@ -796,8 +796,8 @@ impl OutboxStore {
         Ok(item)
     }
 
-    /// Record a failed release attempt. The item stays `pending`: the draft
-    /// is still good, and the next `send` retries.
+    /// Record a failed release attempt. The item stays `pending`; an uncertain
+    /// delivery still requires owner reconciliation before another `send`.
     pub fn record_error(&self, id: &str, error: &str) -> Result<()> {
         let mut item = self.item(id)?;
         item.error = Some(if item.delivery_uncertain() {

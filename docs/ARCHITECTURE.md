@@ -2287,6 +2287,14 @@ after confirming the old runner stopped. Recovery preserves partial effects and
 delivery uncertainty; `finish_task` requires the originating `run_id`, so an old
 completion or dropped guard cannot overwrite a replacement run.
 
+Today and scheduled ticks share an `ObservationCache` within each refresh: each
+source directory scan and linked-record read is cached per store root, including
+errors. Store handles and global configuration are loaded once per request.
+These are first-read observations, not a transaction across stores. A new request
+starts fresh; completion checks bypass the cache. Exact delivery reads remain
+independent of full scans so an unrelated corrupt draft cannot hide a known
+linked delivery. This avoids reparsing every source directory for every workflow.
+
 The workflow keeps its latest 128 lifecycle events; full conversations remain in
 session transcripts. A persisted `event_sequence` advances even when history is
 pruned, so a full history cannot suppress a new reminder or reuse an acknowledged
@@ -2301,7 +2309,10 @@ rereads artifacts; closure rechecks and preserves the separate owner gate on gra
 task closure. Rejected drafts and abandoned questions are resolved owner decisions;
 they do not block a corrected outcome, but never satisfy an explicit delivery
 check. `Workflow::close` preserves that checked evidence while sharing the bounded
-event append path. Cancelling tracking is recorded separately from completing work.
+event append path. Cancellation is separate from completion, but both block new
+task, chat and trigger runs until the owner explicitly reopens the workflow.
+Cancellation cannot silently restart canceled work; the CLI failure names the
+exact reopening command, and Today retains a web recovery action.
 
 Commitments and attention policy live in the owner's workflow store, outside
 project configuration. The trigger tick refreshes linked events and runs the same
