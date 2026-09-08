@@ -5,8 +5,8 @@ without moving the task board out of the graph or weakening the owner boundary.
 Implementation authorized by the owner after the harness review.
 
 Merged as PR #216 and installed from `main` at `c3f33f4c` on 2026-09-08; see
-`HISTORY.md` and the verified update in `HANDOFF.md`. The first implementation accepts
-commitments through owner commands, produces in-app reminders, and verifies
+`HISTORY.md` and the verified update in `HANDOFF.md`. The first implementation
+accepts commitments through owner commands, produces in-app reminders, and verifies
 explicit workflow criteria. Automatic promise extraction/proposal acceptance,
 external push notifications and a general in-loop convergence engine remain
 future extensions. Tool profiles are opt-in with `--tool-profile`; capability guidance also accompanies
@@ -60,5 +60,5 @@ build, documentation updates, and the repository handoff procedure.
 
 The implementation phase did not deploy services. The owner subsequently authorized
 the 2026-09-08 installation recorded in `HANDOFF.md`; no release was published.
-Native provider idempotency is used only
-where its contract is known; unsupported effects retain the reconciliation boundary.
+Native provider idempotency is used only where its contract is known; unsupported
+effects retain the reconciliation boundary.

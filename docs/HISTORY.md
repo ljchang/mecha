@@ -35,9 +35,8 @@ This update supersedes the earlier deployment hold and the branch-only deploymen
 statements below. It publishes no release and does not relabel the older 15/15
 live evaluations as measurements of the deployed commit.
 
-The handoff pass moved the repeated implementation/review narrative to this
-existing history and rechecked the remaining shutdown and synchronization claims
-against `ChatState::{stop, drain, close_mcp}`, `McpClient::close`,
+The integrated shutdown and synchronization paths are implemented by
+`ChatState::{stop, drain, close_mcp}`, `McpClient::close`,
 `chat::{send, begin_turn}` and `Chat.svelte::{receiveInput, markDelivery}`.
 PR #217's historical pre-integration validation remains 2,538 passed, two ignored
 and 16 browser checks; #216's integrated tree passed 2,575 and 17 respectively.
