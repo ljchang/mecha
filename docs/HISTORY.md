@@ -14,6 +14,44 @@ still worth knowing about, because the next person will otherwise re-derive it.
 
 ## What shipped, and when
 
+**2026-09-08 — source weekdays and a judge false negative.** The calendar-reference
+run passed all 15 automated trials, but manual review found one background sentence
+calling the incoming Sunday email Monday. The automated score is retained with
+that manual finding. `time::calendar_date` now adds computed weekday/date/offset
+metadata to mail rows and thread headers, preserving the raw timestamp and leaving
+unparseable stamps unknown. The fixture mirrors it, and the rubric/control set
+checks incoming-message weekdays as well as outgoing commitments. Model-judge
+passes still require human spot checks; adding a judge does not eliminate its
+blind spots.
+
+
+**2026-09-08 — computed calendar facts.** Once the rubric received the correct
+run context, it caught a real assistant error: “tomorrow, Thursday October 14”
+on Tuesday October 13. That run scored 14/15 overall, all artifact checks passed,
+and the original failure is retained. `date_context::render` now supplies local
+weekday/date pairs from yesterday through the coming week, computed with calendar
+days after timezone conversion. Boundary tests cover DST, year and leap day.
+
+**2026-09-08 — follow-up grounding and evaluation.** The assistant branch now
+includes `main`'s browser/MCP fixes at `a3f1682d`; `Today` uses `apiFetch` so its
+mutations carry the required request header. `unified::render_rows` explicitly
+names owner-mailbox read state and unknown recipient read status; fixture rows
+match. `capability_prompt` and the default prompt require evidence for calendar
+and relative-date claims, including in minimal configurations.
+
+`Fixtures::clock` pins each task's simulated instant and hashes the schedule into
+the experiment condition. `apply_clock`, `fixture_now` and `fixture_clock.py`
+share it across the model prompt, mail and board; real audit time is untouched.
+A real-MCP regression advances a day across restart and verifies the old sent
+timestamp is retained. `Manifest::judge` makes the rubric provider/model explicit;
+`grounding_evidence` supplies recorded system context and tool calls/results to
+the quarantined judge.
+A missing/corrupt transcript, oversized evidence or unavailable judge fails its
+check. The live known-answer calibration accepted three grounded answers and
+rejected four unsupported read-receipt, relative-date and calendar claims. This
+is calibrated evaluation, not a claim that a model judge guarantees truth.
+
+
 **2026-09-08 — serve shutdown and shared chat input (branch, not deployed).**
 `serve::execute` owns SIGTERM and Ctrl-C, stops HTTP admission, and drains
 chat and the mounted facade together. `ChatState::stop` serializes shutdown
@@ -5260,6 +5298,17 @@ Recorded so they are not hit twice. Each says what broke; the sentence that
 matters is the general shape.
 
 ### Measuring
+
+**2026-09-08 — a grounding judge missing the run context invents a failure.**
+The first clocked assistant measurement passed 14/15 overall and all 15 artifact
+checks. Its sole rubric failure called “3pm UTC” an invented timezone, because
+the judge received mail evidence without the system prompt that explicitly set
+the owner's timezone to UTC. `grounding_evidence` now includes recorded context;
+a control accepts that valid timezone while rejecting unsupported receipts and
+calendar state. **Give a critic the factual context the actor had, and calibrate
+both false positives and false negatives before interpreting its score.** The
+original 14/15 measurement remains recorded rather than silently regraded.
+
 
 **2026-09-08 — successful artifacts and correct narration are separate claims.**
 The assistant run delivered the exact reply and calendar event across all three

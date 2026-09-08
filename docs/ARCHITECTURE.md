@@ -4290,3 +4290,11 @@ This grades claims after a run; it is not a runtime guarantee of factual accurac
 mirror it. A mailbox flag cannot certify a recipient read receipt. Capability
 guidance makes that distinction even when no default prompt file is installed,
 and limits calendar absence claims to the source, account and range actually read.
+
+
+`time::calendar_date` supplies mail weekday/date/offset facts in the configured
+mailbox zone (or the source offset), beside the unchanged raw timestamp. RFC3339
+and RFC2822 are parsed; unknown formats stay unknown. This covers old message
+dates outside the prompt's near-term calendar reference. Manual review found a
+wrong incoming-message weekday that the initial grounded rubric missed, so the
+live controls include both a correct and an incorrect incoming weekday.

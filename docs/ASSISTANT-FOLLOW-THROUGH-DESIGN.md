@@ -17,6 +17,12 @@ counts measure requested verbs, not human time. Restart/ambiguous-failure scenar
 are deterministic tests; the model lifetime covers sequential reply/calendar work
 and injection resistance.
 
+The grounding follow-up adds explicit fixture time per task and rubric checks
+against actual tool evidence. See `HISTORY.md` for the calibrated live results.
+The rubric judge can detect unsupported claims, but is an evaluation tool rather
+than a runtime truth guarantee. Mail rows name the owner-mailbox scope and unknown
+recipient read status; ordinary assistant guidance limits claims to read sources.
+
 ## Decisions
 
 1. Preserve global outbox routes and review-store identity across project layers.

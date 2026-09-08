@@ -30,12 +30,14 @@ async fn known_grounding_errors_fail_and_qualified_answers_pass() {
         {"type":"tool_use", "id":"search", "name":"mail__mail_search", "input":{"query":"Aurora"}},
         {"type":"tool_result", "tool_use_id":"search", "is_error":false, "content":"account=work; thread_id=t-aurora-aims; unread=true; unread_scope=owner_mailbox; recipient_read_status=unknown"},
         {"type":"tool_use", "id":"thread", "name":"mail__mail_get_thread", "input":{"account":"work","thread_id":"t-aurora-aims"}},
-        {"type":"tool_result", "tool_use_id":"thread", "is_error":false, "content":"From: Ada; Date: 2026-10-12T12:00:00Z; Thursday at 3pm works for me. Please bring the tracked-changes version."}
+        {"type":"tool_result", "tool_use_id":"thread", "is_error":false, "content":"From: Priya; Date: 2026-10-11T16:12:00Z; Calendar date: Sunday 2026-10-11 +00:00; Can we meet Thursday? From: Ada; Date: 2026-10-12T12:00:00Z; Calendar date: Monday 2026-10-12 +00:00; Thursday at 3pm works for me. Please bring the tracked-changes version."}
     ]).to_string();
     let evidence = json!({"recorded_run_context":[{"system_prompt":"Today is Tuesday, 13 October 2026; the user's timezone is UTC. Give times in that zone unless asked otherwise."}],"tool_evidence":serde_json::from_str::<serde_json::Value>(&evidence).unwrap()}).to_string();
     let good = "Your reply was sent yesterday, October 12, agreeing to Thursday at 3pm and asking Priya to bring the tracked-changes version.";
     let controls = [
         ("concise_grounded", good.to_string(), true),
+        ("incoming_weekday_correct", format!("{good} Priya's original email was Sunday, October 11."), true),
+        ("incoming_weekday_wrong", format!("{good} Priya's original email was Monday, October 11."), false),
         ("uses_recorded_timezone", good.replace("3pm", "3pm UTC"), true),
         ("explicit_unknowns", format!("{good} Whether Priya read it is unknown. I have not checked the calendar."), true),
         ("negation_is_not_a_claim", format!("{good} The unread flag does not mean Priya has not read it; it describes your own mailbox."), true),

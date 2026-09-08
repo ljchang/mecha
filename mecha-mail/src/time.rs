@@ -39,9 +39,37 @@ pub fn in_zone(raw: &str, tz: Option<Tz>) -> String {
         .to_string()
 }
 
+/// A weekday/date pair computed from the source instant, in the configured
+/// mailbox zone when present. Unknown timestamps stay unknown, never guessed.
+pub fn calendar_date(raw: &str, tz: Option<Tz>) -> Option<String> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(raw.trim())
+        .or_else(|_| chrono::DateTime::parse_from_rfc2822(raw.trim()))
+        .ok()?;
+    Some(match tz {
+        Some(tz) => parsed
+            .with_timezone(&tz)
+            .format("%A %Y-%m-%d %:z")
+            .to_string(),
+        None => parsed.format("%A %Y-%m-%d %:z").to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mail_weekdays_come_from_the_source_instant_in_the_display_zone() {
+        assert_eq!(
+            calendar_date("2026-10-11T16:12:00Z", None).as_deref(),
+            Some("Sunday 2026-10-11 +00:00")
+        );
+        assert_eq!(
+            calendar_date("Mon, 12 Oct 2026 00:30:00 +0000", eastern()).as_deref(),
+            Some("Sunday 2026-10-11 -04:00")
+        );
+        assert_eq!(calendar_date("unknown", eastern()), None);
+    }
 
     fn eastern() -> Option<Tz> {
         Some("America/New_York".parse().unwrap())
