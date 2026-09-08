@@ -32,6 +32,24 @@ pub struct RecordedCall {
     /// What the tool returned at record time. Replayed verbatim.
     pub output: String,
     pub is_error: bool,
+    /// Which batch of concurrently-issued calls this one belonged to.
+    ///
+    /// One assistant turn emits its `tool_use` blocks together and the loop
+    /// runs them through `join_all`, so the order they appear in is an
+    /// artifact of generation, not a decision the model made. Recording the
+    /// grouping lets a replay accept the same batch in a different order —
+    /// worth four of the twelve episodes dropped by the 2026-09-08 harness
+    /// pass, each killed at call #0 or #1 by a batch it had reproduced
+    /// exactly.
+    ///
+    /// `None` degrades to its own batch of one — the strict positional
+    /// matching this module did throughout. No production path produces it:
+    /// `Trajectory` is never persisted, and every caller derives one fresh
+    /// from a transcript (`harness_probe`, `probe`, `commands::replay`), so
+    /// `extract` marks every call. The default is defensive, for the day this
+    /// type is stored rather than a migration anyone is mid-way through.
+    #[serde(default)]
+    pub batch: Option<u32>,
 }
 
 /// A transcript reduced to what a replay needs.
@@ -64,6 +82,9 @@ pub fn extract(messages: &[Message]) -> Trajectory {
     let mut t = Trajectory::default();
     // tool_use blocks awaiting their results, in the order they were issued.
     let mut pending: Vec<(String, String, Value)> = Vec::new();
+    // Results come back one message per assistant turn — the API allows no
+    // other shape — so counting those messages numbers the batches.
+    let mut batch: u32 = 0;
 
     for message in messages {
         match message.role {
@@ -114,9 +135,11 @@ pub fn extract(messages: &[Message]) -> Trajectory {
                             input,
                             output,
                             is_error,
+                            batch: Some(batch),
                         });
                     }
                 }
+                batch += 1;
             }
         }
     }
@@ -192,34 +215,178 @@ pub fn diff_from(
     out
 }
 
-/// Compare a replayed trace against its recording, call by call.
+/// How many recorded calls, starting at `i`, were issued together.
 ///
-/// Positional rather than set-based on purpose: the order tools are called in
-/// *is* the trajectory. A run that reads the same four files in a different
-/// order made different decisions, and a set comparison would call them equal.
+/// One when the call carries no batch marker — the strict behaviour, reached
+/// by the same code path rather than a branch somewhere else that has to agree
+/// with it. See [`RecordedCall::batch`] for why nothing in production is
+/// unmarked.
+fn batch_width(recorded: &[RecordedCall], i: usize) -> usize {
+    match recorded[i].batch {
+        None => 1,
+        Some(b) => recorded[i..]
+            .iter()
+            .take_while(|c| c.batch == Some(b))
+            .count(),
+    }
+}
+
+/// Pair a recorded batch with the replayed calls facing it, ignoring order.
+///
+/// `Ok` maps each replayed call to the recorded one it was answered from.
+/// `Err((g, w))` means `got[g]` had no recorded counterpart at all — a batch
+/// that gained or swapped a *tool*, and a real divergence — where `w` is the
+/// first recorded call still unpaired. That pair is exactly what `decide` says
+/// when it stops: `w` is its cursor (which only advances over consumed calls,
+/// so "first unpaired" and "cursor" are the same index) and `got[g]` is the
+/// call it refused. Reporting anything else names calls that reproduced the
+/// recording and never names the tool that forked.
+///
+/// `got` shorter than `want` still pairs — that is a batch cut short, and the
+/// caller reports the remainder as `Missing`.
+///
+/// **This must walk `got` in order, trying exact arguments then name alone for
+/// each call, because that is what `replay_run::ReplayTool::decide` does.**
+/// `decide` is online — it sees one call at a time and cannot revisit a
+/// choice — so it is the algorithm that has to be mirrored, not the one to
+/// mirror. A recorded-major two-phase version pairs *better* (every exact
+/// match made before any fallback) and is therefore wrong here: on recorded
+/// `[echo{a}, echo{b}]` against replayed `[echo{z}, echo{a}]` it mates
+/// recorded #0 with the `{a}` call and reports index 0 clean, while `decide`
+/// had already spent #0 on the `{z}` call and fed the `{a}` call #1's output.
+/// The report would clear the exact position the run got wrong. Agreement by
+/// construction beats two implementations staying in step.
+///
+/// **The premise that makes it construction rather than coincidence**: `got`
+/// is in the order the model emitted the calls (`ToolCallTrace` follows
+/// `join_all`'s input order), and `decide` sees a batch in that same order
+/// because `JoinAll` polls in index order and `ReplayTool::call` reaches
+/// `decide` synchronously, before its first await. Both hold today. If the
+/// batch ever moves to `tokio::spawn`, or a wrapper lands between the registry
+/// and `ReplayTool` that awaits first, these two greedy walks pair differently
+/// on any batch with a repeated tool and one changed argument — the case this
+/// block is about — and it would fail nondeterministically rather than loudly.
+/// Whoever changes the loop should check this still holds.
+fn pair_batch(
+    want: &[RecordedCall],
+    got: &[ToolCallTrace],
+) -> Result<Vec<(usize, usize)>, (usize, usize)> {
+    // `diff` slices `got` to at most `want.len()`, so this cannot fire from
+    // there; it is here so a second caller cannot get a silently wrong pairing
+    // out of a wider batch. Blamed on `got[0]` against the first recorded call,
+    // the only indices a wider batch is known to have.
+    if got.len() > want.len() {
+        return Err((0, 0));
+    }
+    let mut used = vec![false; want.len()];
+    let mut pairs = Vec::with_capacity(got.len());
+
+    for (g, call) in got.iter().enumerate() {
+        // Arguments first: a batch that called one tool twice has no order to
+        // appeal to, so pairing by name alone would mate each call with its
+        // sibling and report two argument differences where the replay was
+        // exact. The name-only fallback then takes the calls whose arguments
+        // really did change, which is the difference this is here to report.
+        let hit = (0..want.len())
+            .find(|&w| {
+                !used[w] && want[w].name == call.name && same_arguments(&want[w].input, &call.input)
+            })
+            .or_else(|| (0..want.len()).find(|&w| !used[w] && want[w].name == call.name));
+        let Some(w) = hit else {
+            // `g < got.len() <= want.len()` and exactly `g` calls are used, so
+            // there is always a first unpaired recorded call to name.
+            let unpaired = (0..want.len()).find(|&w| !used[w]).unwrap_or(0);
+            return Err((g, unpaired));
+        };
+        used[w] = true;
+        pairs.push((w, g));
+    }
+
+    Ok(pairs)
+}
+
+/// Compare a replayed trace against its recording, batch by batch.
+///
+/// Positional *between* batches on purpose: the order tools are called in
+/// across turns *is* the trajectory. A run that reads the same four files in
+/// four separate turns, in a different order, made different decisions, and a
+/// set comparison would call them equal.
+///
+/// Within one batch it is the opposite. Those calls were issued together and
+/// executed concurrently by `join_all`, so their order carries no decision and
+/// grading it as one drops episodes that reproduced the recording exactly.
+/// [`RecordedCall::batch`] is what tells the two apart; an unmarked call is its
+/// own batch, which is the strict positional comparison this did throughout.
+///
+/// This must agree with what the replay's own cursor accepts
+/// (`replay_run::ReplayTool::decide`) — a run that never left the recording
+/// reporting a divergence, or the reverse, is the split that makes a replay
+/// unreadable.
 pub fn diff(recorded: &[RecordedCall], replayed: &[ToolCallTrace]) -> Vec<Divergence> {
     let mut out = Vec::new();
 
-    for (index, (want, got)) in recorded.iter().zip(replayed.iter()).enumerate() {
-        if want.name != got.name {
-            out.push(Divergence::Tool {
-                index,
-                expected: want.name.clone(),
-                actual: got.name.clone(),
-            });
-            // Once the tools differ, every later comparison is between two
-            // sequences that already parted company. Report the first and stop
-            // rather than emitting a cascade that all has one cause.
-            return out;
+    let mut i = 0;
+    while i < recorded.len() && i < replayed.len() {
+        let end = (i + batch_width(recorded, i)).min(recorded.len());
+        let want = &recorded[i..end];
+        let got = &replayed[i..end.min(replayed.len())];
+
+        match pair_batch(want, got) {
+            Ok(pairs) => {
+                // Arguments are compared against the recorded call each
+                // replayed one actually answered, which is the pairing
+                // `decide` made.
+                for &(w, g) in &pairs {
+                    if !same_arguments(&want[w].input, &got[g].input) {
+                        out.push(Divergence::Arguments {
+                            index: i + w,
+                            tool: want[w].name.clone(),
+                            expected: want[w].input.clone(),
+                            actual: got[g].input.clone(),
+                        });
+                    }
+                }
+                // Every replayed call was answered, but the batch ran out of
+                // them: the run stopped inside the batch rather than calling
+                // something else, so those recorded calls went `Missing`. That
+                // is simply what happened — `Missing` is structural exactly as
+                // `Tool` is (`is_structural` excludes only `Arguments`) and at
+                // the same index, so nothing downstream drops differently. The
+                // reason to get it right is that `Tool` says the run called
+                // something else, which it did not.
+                if got.len() < want.len() {
+                    for w in (0..want.len()).filter(|w| !pairs.iter().any(|(p, _)| p == w)) {
+                        out.push(Divergence::Missing {
+                            index: i + w,
+                            expected: want[w].name.clone(),
+                        });
+                    }
+                    for (offset, missing) in recorded[end..].iter().enumerate() {
+                        out.push(Divergence::Missing {
+                            index: end + offset,
+                            expected: missing.name.clone(),
+                        });
+                    }
+                    return out;
+                }
+            }
+            // A replayed call no recorded one in the batch can answer: a tool
+            // this batch never called. Reported at the pair `decide` refused,
+            // not at the first position the two sequences differ in — those
+            // are not the same call once a batch is reordered, and the
+            // positional one names calls that matched exactly while never
+            // naming the tool that forked. One report, then stop: after a fork
+            // every later comparison has the same one cause.
+            Err((g, w)) => {
+                out.push(Divergence::Tool {
+                    index: i + w,
+                    expected: want[w].name.clone(),
+                    actual: got[g].name.clone(),
+                });
+                return out;
+            }
         }
-        if !same_arguments(&want.input, &got.input) {
-            out.push(Divergence::Arguments {
-                index,
-                tool: want.name.clone(),
-                expected: want.input.clone(),
-                actual: got.input.clone(),
-            });
-        }
+        i = end;
     }
 
     for (offset, extra) in replayed.iter().skip(recorded.len()).enumerate() {
@@ -245,7 +412,7 @@ pub fn diff(recorded: &[RecordedCall], replayed: &[ToolCallTrace]) -> Vec<Diverg
 /// `./a.md` and `a.md` name the same file — but it is tool-specific knowledge,
 /// and the loop is not supposed to know what any particular tool means. A
 /// caller that wants it can filter on [`Divergence::is_structural`].
-fn same_arguments(a: &Value, b: &Value) -> bool {
+pub(crate) fn same_arguments(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::String(x), Value::String(y)) => x.trim() == y.trim(),
         (Value::Object(x), Value::Object(y)) => {
@@ -281,6 +448,18 @@ mod tests {
         }
     }
 
+    /// A recorded call with no batch marker; the batch tests set `batch` with
+    /// struct update syntax so the grouping is visible at each call site.
+    fn one(name: &str, input: Value) -> RecordedCall {
+        RecordedCall {
+            name: name.into(),
+            input,
+            output: String::new(),
+            is_error: false,
+            batch: None,
+        }
+    }
+
     fn trace(name: &str, input: Value) -> ToolCallTrace {
         ToolCallTrace {
             name: name.into(),
@@ -290,6 +469,279 @@ mod tests {
             unknown: false,
             staged: false,
         }
+    }
+
+    /// The grouping the batch-tolerant matching is built on. Calls issued in
+    /// one assistant turn share a batch; the next turn starts a new one.
+    #[test]
+    fn calls_issued_together_share_a_batch_and_the_next_turn_starts_another() {
+        let messages = vec![
+            Message::user("look at both, then read one"),
+            Message::assistant(vec![
+                call("t1", "kg_search", json!({"q": "a"})),
+                call("t2", "fs_list", json!({"path": "."})),
+            ]),
+            Message::tool_results(vec![result("t1", "A"), result("t2", "B")]),
+            Message::assistant(vec![call("t3", "fs_read", json!({"path": "a.md"}))]),
+            Message::tool_results(vec![result("t3", "C")]),
+        ];
+
+        let t = extract(&messages);
+
+        let batches: Vec<_> = t.calls.iter().map(|c| c.batch).collect();
+        assert_eq!(batches, vec![Some(0), Some(0), Some(1)]);
+    }
+
+    /// The regression. The model issued the same batch, and the loop runs a
+    /// batch concurrently, so the order it happened to emit them in is not a
+    /// decision — grading it as one dropped four of the twelve episodes the
+    /// 2026-09-08 harness pass lost, each at call #0 or #1.
+    #[test]
+    fn a_batch_replayed_in_another_order_is_not_a_divergence() {
+        let recorded = vec![
+            RecordedCall {
+                batch: Some(0),
+                ..one("kg_search", json!({"q": "a"}))
+            },
+            RecordedCall {
+                batch: Some(0),
+                ..one("fs_list", json!({"path": "."}))
+            },
+        ];
+        let replayed = vec![
+            trace("fs_list", json!({"path": "."})),
+            trace("kg_search", json!({"q": "a"})),
+        ];
+
+        assert_eq!(diff(&recorded, &replayed), vec![]);
+    }
+
+    /// The other half of the same rule, and the reason this is not simply a
+    /// set comparison: across turns the order *is* the trajectory, because
+    /// each call was chosen after seeing the previous one's result.
+    #[test]
+    fn the_same_two_calls_in_separate_turns_still_diverge_when_swapped() {
+        let recorded = vec![
+            RecordedCall {
+                batch: Some(0),
+                ..one("kg_search", json!({"q": "a"}))
+            },
+            RecordedCall {
+                batch: Some(1),
+                ..one("fs_list", json!({"path": "."}))
+            },
+        ];
+        let replayed = vec![
+            trace("fs_list", json!({"path": "."})),
+            trace("kg_search", json!({"q": "a"})),
+        ];
+
+        assert_eq!(
+            diff(&recorded, &replayed),
+            vec![Divergence::Tool {
+                index: 0,
+                expected: "kg_search".into(),
+                actual: "fs_list".into(),
+            }]
+        );
+    }
+
+    /// Tolerating order must not tolerate a different *tool*: that is the
+    /// signal the whole module exists to catch.
+    #[test]
+    fn a_batch_that_swapped_a_tool_still_diverges() {
+        let recorded = vec![
+            RecordedCall {
+                batch: Some(0),
+                ..one("kg_search", json!({"q": "a"}))
+            },
+            RecordedCall {
+                batch: Some(0),
+                ..one("fs_list", json!({"path": "."}))
+            },
+        ];
+        let replayed = vec![
+            trace("kg_search", json!({"q": "a"})),
+            trace("kg_entity", json!({"id": "x"})),
+        ];
+
+        assert_eq!(
+            diff(&recorded, &replayed),
+            vec![Divergence::Tool {
+                index: 1,
+                expected: "fs_list".into(),
+                actual: "kg_entity".into(),
+            }]
+        );
+    }
+
+    /// A batch calling one tool twice has no order to appeal to, so the
+    /// arguments are what say which call is which. Pairing by name alone would
+    /// mate each with its sibling and report two argument differences over a
+    /// replay that was exact.
+    #[test]
+    fn a_reordered_batch_pairs_repeated_tools_by_their_arguments() {
+        let recorded = vec![
+            RecordedCall {
+                batch: Some(0),
+                ..one("fs_read", json!({"path": "a.md"}))
+            },
+            RecordedCall {
+                batch: Some(0),
+                ..one("fs_read", json!({"path": "b.md"}))
+            },
+        ];
+        let replayed = vec![
+            trace("fs_read", json!({"path": "b.md"})),
+            trace("fs_read", json!({"path": "a.md"})),
+        ];
+
+        assert_eq!(diff(&recorded, &replayed), vec![]);
+    }
+
+    /// And an argument that genuinely changed is still reported, against the
+    /// recorded call it answers rather than the one at its position.
+    #[test]
+    fn a_reordered_batch_still_reports_a_changed_argument() {
+        let recorded = vec![
+            RecordedCall {
+                batch: Some(0),
+                ..one("kg_search", json!({"q": "a"}))
+            },
+            RecordedCall {
+                batch: Some(0),
+                ..one("fs_list", json!({"path": "."}))
+            },
+        ];
+        let replayed = vec![
+            trace("fs_list", json!({"path": "src"})),
+            trace("kg_search", json!({"q": "a"})),
+        ];
+
+        assert_eq!(
+            diff(&recorded, &replayed),
+            vec![Divergence::Arguments {
+                index: 1,
+                tool: "fs_list".into(),
+                expected: json!({"path": "."}),
+                actual: json!({"path": "src"}),
+            }]
+        );
+    }
+
+    /// The pairing the two halves used to disagree on. A repeated tool with
+    /// one argument changed, the changed call emitted first: `decide` spends
+    /// recorded #0 on the `{z}` call and hands the `{a}` call #1's output, so
+    /// the diff must report *both* positions. A recorded-major pass would mate
+    /// #0 with the `{a}` call and clear index 0 — the exact position the run
+    /// got wrong.
+    #[test]
+    fn a_repeated_tool_pairs_the_way_decide_spent_the_recording() {
+        let recorded = vec![
+            RecordedCall {
+                batch: Some(0),
+                ..one("echo", json!({"value": "a"}))
+            },
+            RecordedCall {
+                batch: Some(0),
+                ..one("echo", json!({"value": "b"}))
+            },
+        ];
+        let replayed = vec![
+            trace("echo", json!({"value": "z"})),
+            trace("echo", json!({"value": "a"})),
+        ];
+
+        let d = diff(&recorded, &replayed);
+        assert_eq!(
+            d.iter().map(|d| d.index()).collect::<Vec<_>>(),
+            vec![0, 1],
+            "index 0 cleared over a call decide got wrong: {d:?}"
+        );
+    }
+
+    /// A fork inside a reordered batch is reported where `decide` stopped, not
+    /// at the first position the two sequences differ in. Those stop being the
+    /// same call the moment a batch is reordered: here the first two replayed
+    /// calls reproduce the recording exactly, and blaming one of them would
+    /// name a call that matched while never naming the tool that forked.
+    #[test]
+    fn a_fork_in_a_reordered_batch_is_reported_where_decide_stopped() {
+        let batched = |name: &str, input: Value| RecordedCall {
+            batch: Some(0),
+            ..one(name, input)
+        };
+        let recorded = vec![
+            batched("kg_search", json!({"q": "a"})),
+            batched("fs_list", json!({"path": "."})),
+            batched("kg_entity", json!({"id": "x"})),
+        ];
+        let replayed = vec![
+            trace("fs_list", json!({"path": "."})),
+            trace("kg_search", json!({"q": "a"})),
+            trace("web_search", json!({"q": "z"})),
+        ];
+
+        assert_eq!(
+            diff(&recorded, &replayed),
+            vec![Divergence::Tool {
+                index: 2,
+                expected: "kg_entity".into(),
+                actual: "web_search".into(),
+            }],
+            "named a call that reproduced the recording"
+        );
+    }
+
+    /// A batch the replay stopped inside is `Missing`, not a `Tool` fork.
+    /// `decide` matched the call it did make and never stopped, and `Tool` is
+    /// structural — the class the probes drop an episode on.
+    #[test]
+    fn a_batch_cut_short_reports_the_calls_that_went_missing() {
+        let recorded = vec![
+            RecordedCall {
+                batch: Some(0),
+                ..one("kg_search", json!({"q": "a"}))
+            },
+            RecordedCall {
+                batch: Some(0),
+                ..one("fs_list", json!({"path": "."}))
+            },
+        ];
+        let replayed = vec![trace("fs_list", json!({"path": "."}))];
+
+        assert_eq!(
+            diff(&recorded, &replayed),
+            vec![Divergence::Missing {
+                index: 0,
+                expected: "kg_search".into(),
+            }]
+        );
+    }
+
+    /// An unmarked call gets strict positional matching. `extract` marks every
+    /// call and `Trajectory` is never persisted, so this guards the struct's
+    /// defensive default rather than a recording anyone has — worth keeping
+    /// so the default cannot quietly become "match anything, anywhere".
+    #[test]
+    fn calls_with_no_batch_marker_are_matched_strictly() {
+        let recorded = vec![
+            one("kg_search", json!({"q": "a"})),
+            one("fs_list", json!({"path": "."})),
+        ];
+        let replayed = vec![
+            trace("fs_list", json!({"path": "."})),
+            trace("kg_search", json!({"q": "a"})),
+        ];
+
+        assert_eq!(
+            diff(&recorded, &replayed),
+            vec![Divergence::Tool {
+                index: 0,
+                expected: "kg_search".into(),
+                actual: "fs_list".into(),
+            }]
+        );
     }
 
     #[test]
@@ -380,6 +832,7 @@ mod tests {
             input: json!({"path": "a.md"}),
             output: "hello".into(),
             is_error: false,
+            batch: None,
         }];
         let replayed = vec![trace("fs_read", json!({"path": "a.md"}))];
 
@@ -396,18 +849,21 @@ mod tests {
                 input: json!({}),
                 output: String::new(),
                 is_error: false,
+                batch: None,
             },
             RecordedCall {
                 name: "fs_read".into(),
                 input: json!({}),
                 output: String::new(),
                 is_error: false,
+                batch: None,
             },
             RecordedCall {
                 name: "fs_read".into(),
                 input: json!({}),
                 output: String::new(),
                 is_error: false,
+                batch: None,
             },
         ];
         let replayed = vec![
@@ -437,6 +893,7 @@ mod tests {
             input: json!({"path": "a.md"}),
             output: String::new(),
             is_error: false,
+            batch: None,
         }];
         let replayed = vec![trace("fs_read", json!({"path": "./a.md"}))];
 
@@ -455,6 +912,7 @@ mod tests {
             input: json!({}),
             output: String::new(),
             is_error: false,
+            batch: None,
         };
 
         let extra = diff(
@@ -484,16 +942,20 @@ mod tests {
 
     #[test]
     fn order_is_part_of_the_trajectory_not_an_incidental_detail() {
-        // A set comparison would call these equal. They are not: reading the
-        // files in a different order is a different set of decisions.
-        let one = |p: &str| RecordedCall {
+        // A set comparison would call these equal. They are not: read in
+        // separate turns, the second was chosen after seeing the first one's
+        // result, so a different order is a different set of decisions.
+        // Within *one* batch the opposite holds — see
+        // `a_batch_replayed_in_another_order_is_not_a_divergence`.
+        let one = |b: u32, p: &str| RecordedCall {
             name: "fs_read".into(),
             input: json!({"path": p}),
             output: String::new(),
             is_error: false,
+            batch: Some(b),
         };
         let d = diff(
-            &[one("a.md"), one("b.md")],
+            &[one(0, "a.md"), one(1, "b.md")],
             &[
                 trace("fs_read", json!({"path": "b.md"})),
                 trace("fs_read", json!({"path": "a.md"})),
@@ -513,12 +975,14 @@ mod tests {
                 input: json!({}),
                 output: String::new(),
                 is_error: false,
+                batch: None,
             },
             RecordedCall {
                 name: "fs_read".into(),
                 input: json!({}),
                 output: String::new(),
                 is_error: false,
+                batch: None,
             },
         ];
         let replayed = vec![trace("fs_read", json!({})), trace("shell", json!({}))];
@@ -548,6 +1012,7 @@ mod tests {
             input: json!({"command": "ls -la"}),
             output: String::new(),
             is_error: false,
+            batch: None,
         }];
         let replayed = vec![trace("shell", json!({"command": "  ls -la  "}))];
 
