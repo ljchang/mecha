@@ -248,6 +248,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             .await;
     }
 
+    // `process::exit` skips destructors. Finish recording and session hooks
+    // first, then release the agent registry and its retained MCP clients so
+    // refusal/no-output exits also launch process and container cleanup.
+    drop(prepared);
+
     // Distinct codes so a script can tell "the model refused" from "it
     // produced nothing" from "everything worked". Exhaustion alone is *not*
     // a failure code: a run that hit its turn or token ceiling still answered

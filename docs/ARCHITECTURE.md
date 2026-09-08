@@ -1542,6 +1542,21 @@ through a CORS preflight; no middleware may grant those requests access.
 Raw uploads and bodyless approval routes previously accepted simple form
 requests even though JSON handlers happened to reject them.
 
+**Safe methods only read.** Chat transcript and event-stream GET/HEAD
+requests look up an existing session and return 404 when absent. Opening is
+an idempotent `POST /api/chat/{key}` behind `owner_guard`; the app awaits it
+before subscribing and loading, including on reconnection after a server
+restart. Otherwise a foreign page can create stores through GET even though
+every unsafe method is guarded. Abandoning an opening chat aborts its pending
+request and prevents a late response from subscribing to the old key.
+Every mutation that creates a session validates the decoded key, including
+mode changes: authentication and request intent do not make a traversal-shaped
+key safe to join into a workspace path.
+Opening retries stop on permanent 4xx responses (408 and 429 remain retryable)
+and back off from 1.5 seconds to 30 seconds on transient failures. A connected
+event stream resets the delay; a refused open must not become a permanent POST
+loop in every browser tab.
+
 **Attachments use the conversation's workspace.** `attachment_workspace`
 reads the same session entry as the agent; deriving a directory from a browser
 key loses the original jail when a task conversation is resumed. Downloads
@@ -1565,11 +1580,31 @@ Holding a Tokio `Child` without that option does not terminate it, and closing
 stdin alone does not stop a server that ignores EOF. Constructing the owner
 before initialization also covers failed and cancelled handshakes. This
 guarantee concerns the spawned child, not arbitrary descendants it launches.
-**Docker is a specific exception:** the spawned child is the `docker run`
-CLI, and killing it does not terminate the daemon-owned container. `--rm`
-removes a container after its server exits, not after the CLI dies; a server
-that ignores stdin EOF can keep its workspace mount alive. Container cleanup
-needs a separately owned container identity and remains open.
+`run::execute` releases `prepared` after transcript recording and session hooks
+but before its refusal/no-output `process::exit` calls, which skip destructors.
+`batch::execute` does the same after all results are flushed and before its
+failed-batch exit. Audit the other explicit exits when adding one: releasing
+an owner in one command does nothing for its siblings.
+**Docker needs a separate container owner.** Killing the attach CLI does not
+terminate a daemon-owned container, and `--rm` waits for its server to exit.
+`sandbox::DockerContainer` creates a uniquely named container before attaching
+with `docker start`. A creation worker retains the owner through cancellation:
+removing at cancellation time alone races a daemon still creating the container.
+Only completed creation can reach start; a late result is removed instead.
+Create, attach and removal retain the confined command's executable,
+environment and working directory, pinning the active Docker context when no
+explicit host/context was configured so `docker context use` cannot redirect
+cleanup. Drop launches the removal subprocess before returning, then uses a
+standard thread for bounded waits and retries. Merely scheduling an async task
+or a thread loses cleanup when the runtime or ordinary CLI exits immediately.
+A successful empty container listing proves an already-removed container;
+daemon errors never count as absence. Exhausted cleanup retries log the name
+for recovery. Control commands drain stderr continuously and retain a bounded
+tail for failures: discarding it turns missing images and inaccessible daemons
+into the same unexplained exit code, while reading only after exit can block
+Docker on a full progress-output pipe. This is normal-lifetime ownership, not
+crash recovery: an unavailable daemon, host crash, or forced termination can
+still leave resources.
 
 ## Hooks
 

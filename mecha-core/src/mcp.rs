@@ -6,7 +6,7 @@
 //! the agent loop.
 
 use crate::config::McpServerConfig;
-use crate::sandbox::Sandbox;
+use crate::sandbox::{Backend, DockerContainer, Sandbox};
 use crate::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -53,6 +53,7 @@ pub struct McpClient {
     /// Held so the child is killed when the client drops.
     _child: Child,
     readers: Vec<tokio::task::JoinHandle<()>>,
+    _container: Option<DockerContainer>,
 }
 
 impl Drop for McpClient {
@@ -140,6 +141,13 @@ impl McpClient {
         workspace: &Path,
     ) -> Result<Arc<Self>> {
         let mut command = Self::build_command(cfg, sandbox, workspace)?;
+        let container = if cfg.sandbox && sandbox.backend() == Backend::Docker {
+            let container = DockerContainer::create(command).await?;
+            command = container.start_command();
+            Some(container)
+        } else {
+            None
+        };
 
         command
             .kill_on_drop(true)
@@ -211,6 +219,7 @@ impl McpClient {
             workspace: workspace.to_path_buf(),
             _child: child,
             readers,
+            _container: container,
         });
 
         client

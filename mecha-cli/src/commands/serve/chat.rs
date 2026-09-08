@@ -1092,7 +1092,22 @@ fn ensure_session_as<'a>(
     Ok(sessions.get_mut(key).expect("just inserted"))
 }
 
-/// GET /api/chat/{key} — what a fresh page load renders.
+/// POST /api/chat/{key} — explicitly open a chat, idempotently. The owner
+/// guard requires request intent before this creates any persistent state.
+pub async fn open(
+    State(state): State<super::WebState>,
+    axum::extract::Path(key): axum::extract::Path<String>,
+) -> axum::response::Response {
+    if !valid_key(&key) {
+        return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
+    match attachment_workspace(&state, &key, true).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(response) => *response,
+    }
+}
+
+/// GET /api/chat/{key} — read an already-open chat without creating state.
 pub async fn transcript(
     State(state): Chat,
     axum::extract::Path(key): axum::extract::Path<String>,
@@ -1104,10 +1119,10 @@ pub async fn transcript(
     if !valid_key(&key) {
         return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
     }
-    let mut sessions = chat.sessions.lock().await;
-    let ws = match ensure_session(chat, &mut sessions, &key) {
-        Ok(ws) => ws,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response(),
+    let sessions = chat.sessions.lock().await;
+    let ws = match sessions.get(&key) {
+        Some(ws) => ws,
+        None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
     };
     let running = ws.live.is_some();
     let (entries, taint) = match &ws.conversation {
@@ -1965,12 +1980,10 @@ pub async fn events(
         return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
     }
     let rx = {
-        let mut sessions = chat.sessions.lock().await;
-        match ensure_session(&chat, &mut sessions, &key) {
-            Ok(ws) => ws.events.subscribe(),
-            Err(e) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}\n")).into_response()
-            }
+        let sessions = chat.sessions.lock().await;
+        match sessions.get(&key) {
+            Some(ws) => ws.events.subscribe(),
+            None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
         }
     };
     let stream = futures::stream::unfold(rx, |mut rx| async move {
@@ -2011,6 +2024,9 @@ pub async fn answer(
     axum::extract::Path(key): axum::extract::Path<String>,
     Json(body): Json<AnswerBody>,
 ) -> axum::response::Response {
+    if !valid_key(&key) {
+        return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
     let chat = match chat_state(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -2066,6 +2082,9 @@ pub async fn set_mode(
     axum::extract::Path(key): axum::extract::Path<String>,
     Json(body): Json<ModeBody>,
 ) -> axum::response::Response {
+    if !valid_key(&key) {
+        return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
     let chat = match chat_state(&state) {
         Ok(c) => c,
         Err(resp) => return resp,
