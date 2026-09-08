@@ -514,3 +514,75 @@ async fn a_fixture_server_without_a_store_refuses_to_start() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The next task's date and the prior task's sent timestamps must share the
+/// simulated clock; simply saying "yesterday" in a prompt measures no passage.
+#[tokio::test]
+async fn fixture_clock_survives_restart_and_mail_metadata_names_its_scope() {
+    if unavailable("python3", python3_available()) {
+        return;
+    }
+    let dir = tmpdir("fixture-clock");
+    let store = dir.join("mail");
+    seed_mail(&store);
+    let clock = dir.join("clock.json");
+    std::fs::write(&clock, r#""2001-10-12T12:00:00Z""#).unwrap();
+    let mut cfg = server("mail", "mail_server.py", &store, Some(false));
+    cfg.env.insert(
+        mecha_core::experiment::FIXTURE_CLOCK_ENV.into(),
+        clock.display().to_string(),
+    );
+    {
+        let (_client, tools) = connect(&cfg, &dir).await;
+        let (err, text) = call(
+            &tool_named(&tools, "mail_search"),
+            json!({"query":"Aurora"}),
+            &dir,
+        )
+        .await;
+        assert!(!err, "{text}");
+        let rows: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(rows[0]["date"], "2001-10-11T09:00:00Z");
+        assert_eq!(rows[0]["unread_scope"], "owner_mailbox");
+        assert_eq!(rows[0]["recipient_read_status"], "unknown");
+        let (err, text) = call(
+            &tool_named(&tools, "mail_reply"),
+            json!({"thread_id":"t-1", "body_markdown":"Thursday at 3pm works."}),
+            &dir,
+        )
+        .await;
+        assert!(!err, "{text}");
+    }
+    std::fs::write(&clock, r#""2001-10-13T12:00:00Z""#).unwrap();
+    let (_client, tools) = connect(&cfg, &dir).await;
+    let (err, text) = call(
+        &tool_named(&tools, "mail_get_thread"),
+        json!({"thread_id":"t-1"}),
+        &dir,
+    )
+    .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("2001-10-12T12:00:00Z"),
+        "the sent timestamp stays yesterday: {text}"
+    );
+    let sent: Value = serde_json::from_str(
+        std::fs::read_to_string(store.join("sent.jsonl"))
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    assert_eq!(sent["at"], "2001-10-12T12:00:00Z");
+    let board = dir.join("board");
+    seed_board(&board);
+    let mut board_cfg = server("graph", "board_server.py", &board, Some(false));
+    board_cfg.env.insert(
+        mecha_core::experiment::FIXTURE_CLOCK_ENV.into(),
+        clock.display().to_string(),
+    );
+    let (_board_client, board_tools) = connect(&board_cfg, &dir).await;
+    let (err, text) = call(&tool_named(&board_tools, "kg_task_list"), json!({}), &dir).await;
+    assert!(!err, "{text}");
+    let rows: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(rows["today"], "2001-10-13");
+}

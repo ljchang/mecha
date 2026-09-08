@@ -95,7 +95,7 @@ pub fn capability_prompt(registry: &Registry, routed: &[String]) -> String {
     } else {
         text.push_str(&format!("These tools stage for owner review: {}. When asked to prepare or draft an action, call its routed tool to create the reviewable draft. Prose in chat alone does not create a draft. Do not ask permission merely to stage the draft the owner requested; release is reviewed separately. Staged is not delivered; report the draft and remaining review.\n", staged.join(", ")));
     }
-    text.push_str("Before reporting completion, inspect the produced artifact or recorded action result and describe anything unverified. A failed or blocked call is not evidence of completion. Delegation inherits conversation taint.");
+    text.push_str("Ground factual claims in the sources actually read. Distinguish the owner's mailbox read/unread state from a recipient read receipt; the former never proves whether the recipient read a message. Establish calendar state only from calendar reads, and limit absence claims to the searched account and time range. Resolve yesterday/today against the supplied current date and the source timestamp, correcting a mistaken premise rather than adopting it. Before reporting completion, inspect the produced artifact or recorded action result and describe anything unverified. A failed or blocked call is not evidence of completion. Delegation inherits conversation taint.");
     text
 }
 
