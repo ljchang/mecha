@@ -33,9 +33,9 @@ and 15 tags; the additional assistant set has five cases and six tags. Source
 verification of the open-work section removed stale completed entries below;
 remote deployments and sibling-repository work were not reverified.
 
-Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,557
+Final branch verification on 2026-09-08, rebased onto `f22992c5`: **2,558
 workspace tests passed**, three ignored (796 CLI, 20 first-run, 3 process-exit,
-1,485 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
+1,486 core, 5 fixture, 11 MCP, 9 sandbox, 151 mail library, 1 mail binary,
 75 Slack, 1 doctest). The whole workspace ran with `MECHA_TEST_REQUIRE_BACKENDS=1`.
 Formatting, Clippy with warnings denied, all-targets build, frontend tests/build
 and documentation build passed. Demo endpoint coverage and all 15 browser
@@ -59,7 +59,10 @@ the live fixture run. A regression covers provenance following matched arguments
 when replay batches are reordered. PR review fixes restore unconditional
 untrusted-output warnings, report profile exclusions, remove duplicate scheduled
 scans, and correct retry/taint documentation; the spoofed-envelope regression
-failed before the fix and passes afterward.
+failed before the fix and passes afterward. The second pass bounds workflow
+events to 128 while preserving reminder deduplication and discloses legacy replay
+provenance differences in CLI text and JSON. Both regressions pass, with full
+workspace and documentation checks rerun.
 
 ## Where the work is
 
